@@ -15,14 +15,44 @@ import {
   expandRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
 } from '../src/evaluation/recall-fixture.js';
-import {rankRecallCandidates} from '../src/recall/rank.js';
+import {rankRecallCandidates, RECALL_RANKER_VERSION} from '../src/recall/rank.js';
+import {getThreadnoteVersion} from '../src/version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
+const CLEAN_GIT_STATUS_ARGUMENTS = [
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.untrackedCache=false',
+  '-c',
+  'status.showUntrackedFiles=all',
+  '-c',
+  'diff.ignoreSubmodules=none',
+  'status',
+  '--porcelain=v1',
+  '--untracked-files=all',
+  '--ignore-submodules=none',
+  '--no-renames',
+] as const;
 
 const benchmarkRecall = Effect.gen(function* () {
   const system = yield* SystemInfo;
+  const threadnoteVersion = yield* getThreadnoteVersion();
   const options = parseArguments(yield* scriptArguments());
+  const initialCleanCommit = options.requireClean
+    ? yield* Effect.gen(function* () {
+        const [commit, status] = yield* Effect.all([git(['rev-parse', 'HEAD']), git(CLEAN_GIT_STATUS_ARGUMENTS)], {
+          concurrency: 'unbounded',
+        });
+        if (status.length > 0) {
+          return yield* Effect.fail(
+            new ScriptError('--require-clean requires a clean checkout with no tracked or untracked changes.'),
+          );
+        }
+        return commit;
+      })
+    : undefined;
   const fixture = expandRecallEvaluationFixtureV2(
     createRecallEvaluationFixtureV2(),
     options.documentCount,
@@ -57,11 +87,16 @@ const benchmarkRecall = Effect.gen(function* () {
   const latency = benchmarkMeasurement('hybrid-rank-one-query', 'milliseconds', durations);
   const throughput = durations.map(duration => 1_000 / duration);
   const [commit, status, hardware] = yield* Effect.all(
-    [git(['rev-parse', 'HEAD']), git(['status', '--porcelain']), system.hardwareInfo],
+    [git(['rev-parse', 'HEAD']), git(CLEAN_GIT_STATUS_ARGUMENTS), system.hardwareInfo],
     {
       concurrency: 'unbounded',
     },
   );
+  if (options.requireClean && (status.length > 0 || commit !== initialCleanCommit)) {
+    return yield* Effect.fail(
+      new ScriptError('--require-clean checkout changed while the recall benchmark was running.'),
+    );
+  }
 
   const artifact: BenchmarkArtifactV1 = {
     createdAt: new Date().toISOString(),
@@ -89,9 +124,10 @@ const benchmarkRecall = Effect.gen(function* () {
       documents: fixture.documents.length,
       homeRedacted: system.homeDirectory.length > 0,
       queries: fixture.queries.length,
+      rankerVersion: RECALL_RANKER_VERSION,
       sampleProfile: options.samples < 10 ? 'scale-boundary' : 'standard',
       seed: options.seed,
-      sourceVersion: 'threadnote-3.0.3',
+      sourceVersion: `threadnote-${threadnoteVersion}`,
     },
     suite: 'recall-v2',
     version: BENCHMARK_ARTIFACT_VERSION,
@@ -107,6 +143,7 @@ const benchmarkRecall = Effect.gen(function* () {
 interface BenchmarkOptions {
   readonly documentCount: number;
   readonly outputPath?: string;
+  readonly requireClean: boolean;
   readonly samples: number;
   readonly seed: number;
   readonly warmups: number;
@@ -115,6 +152,7 @@ interface BenchmarkOptions {
 function parseArguments(args: readonly string[]): BenchmarkOptions {
   let documentCount = 10_000;
   let outputPath: string | undefined;
+  let requireClean = false;
   let samples = 25;
   let seed = 0x4_00_00;
   let warmups = 5;
@@ -122,12 +160,13 @@ function parseArguments(args: readonly string[]): BenchmarkOptions {
     const argument = args[index]!;
     if (argument === '--documents') documentCount = positiveInteger(args[++index], argument);
     else if (argument === '--output') outputPath = requiredValue(args[++index], argument);
+    else if (argument === '--require-clean') requireClean = true;
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--seed') seed = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
     else throw new ScriptError(`Unknown recall benchmark option: ${argument}`);
   }
-  return {documentCount, outputPath, samples, seed, warmups};
+  return {documentCount, outputPath, requireClean, samples, seed, warmups};
 }
 
 const git = Effect.fn('benchmark.git')((arguments_: readonly string[]) =>

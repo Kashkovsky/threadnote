@@ -20,11 +20,15 @@ The tested Jina reranker still turns every explicit no-answer query into an answ
 semantic ranking, so it remains unselected. Reproduce the selected core pipeline with:
 
 ```sh
-npm run eval:recall:models -- \
+bun run eval:recall:models -- \
+  --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
   --embedding bge-small-en-v1.5-q8 \
   --home .artifacts/model-bakeoff-home \
   --fail-on-regression
 ```
+
+The explicit historical baseline is required to reproduce these 4.0 summaries; new model evaluations default to the
+reviewed Threadnote 4.2.7 lexical baseline.
 
 The checked-in `benchmarks/darwin-arm64-m1-max/recall-index-sqlite-10000.json` run records lexical schema v3 on the same
 hardware class as the 3.0.3 indexed-recall baseline. Incremental-update p95 is 229.81 ms, source-validation p95 is

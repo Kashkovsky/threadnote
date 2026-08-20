@@ -1,8 +1,10 @@
 import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_document.js';
+import {stripGeneratedMemoryHygieneSources} from '../memory_hygiene_provenance.js';
+import {sha256HexSync} from '../crypto/sha256.js';
 import type {MemoryKind, MemoryStatus} from '../types.js';
 import {recallLexicalTerms} from './tokenize.js';
 
-export const RECALL_RANKER_VERSION = 'hybrid-v3';
+export const RECALL_RANKER_VERSION = 'hybrid-v6';
 
 export interface RecallFields {
   readonly identifiers?: readonly string[];
@@ -10,14 +12,22 @@ export interface RecallFields {
   readonly project?: string;
   readonly title?: string;
   readonly topic?: string;
+  readonly workspaceScope?: string;
 }
 
 export interface RecallCandidate {
   readonly authority?: MemoryAuthority;
+  /** Canonical body digest used only to prove that logical-memory aliases are byte-equivalent. */
+  readonly contentHash?: string;
+  /** Other authorized URIs that resolve to the same logical memory and canonical body. */
+  readonly equivalentUris?: readonly string[];
   readonly exactTerms?: readonly string[];
   readonly feedback?: number;
   readonly fields?: RecallFields;
+  /** The same memory_id was observed with more than one body digest in the authorized candidate set. */
+  readonly identityConflict?: boolean;
   readonly kind?: MemoryKind;
+  readonly memoryId?: string;
   readonly relations?: readonly MemoryRelation[];
   readonly reranker?: number;
   readonly semantic?: number;
@@ -40,6 +50,8 @@ export interface RecallRankContext {
   readonly project?: string;
   readonly queryVariants?: readonly string[];
   readonly seedUris?: readonly string[];
+  readonly workspaceBranch?: string;
+  readonly workspaceScope?: string;
 }
 
 export interface RecallCorpusStatistics {
@@ -51,6 +63,7 @@ export interface RecallCorpusStatistics {
 
 export interface RecallSignals {
   readonly authority: number;
+  readonly branch?: number;
   readonly bm25: number;
   readonly exact: number;
   readonly feedback: number;
@@ -63,6 +76,7 @@ export interface RecallSignals {
   readonly scope: number;
   readonly semantic: number;
   readonly temporal: number;
+  readonly workspace: number;
 }
 
 export interface RecallReason {
@@ -102,6 +116,7 @@ export function shouldExpandRecall(confidence: {readonly level: RecallConfidence
 
 const SIGNAL_WEIGHTS = {
   authority: 0.04,
+  branch: 0.06,
   bm25: 0.18,
   exact: 0.18,
   feedback: 0.03,
@@ -114,6 +129,7 @@ const SIGNAL_WEIGHTS = {
   scope: 0.03,
   semantic: 0.16,
   temporal: 0.02,
+  workspace: 0.04,
 } as const;
 
 const FIELD_WEIGHTS = {
@@ -245,27 +261,29 @@ export function rankRecallCandidates(
   candidates: readonly RecallCandidate[],
   context: RecallRankContext = {},
 ): RankedRecallSet {
+  const logicalCandidates = deduplicateLogicalRecallCandidates(candidates);
   const queryTermVariants = [
     tokenize(query),
     ...[...new Set(context.queryVariants?.map(variant => variant.trim()).filter(Boolean) ?? [])].map(tokenize),
   ];
-  const corpus = candidates.map(candidate => recallDocumentTerms(candidate));
-  const corpusStatistics = context.corpusStatistics ?? buildRecallCorpusStatistics(candidates);
-  const semanticAnchors = candidates
+  const corpusStatistics = context.workspaceScope?.trim()
+    ? buildRecallTopicalCorpusStatistics(logicalCandidates)
+    : (context.corpusStatistics ?? buildRecallCorpusStatistics(logicalCandidates));
+  const semanticAnchors = logicalCandidates
     .filter(candidate => (candidate.semantic ?? 0) >= GRAPH_SEMANTIC_ANCHOR_MINIMUM)
     .sort((left, right) => (right.semantic ?? 0) - (left.semantic ?? 0) || compareCodeUnits(left.uri, right.uri))
     .slice(0, MAX_GRAPH_SEMANTIC_ANCHORS)
     .map(candidate => candidate.uri);
   const explicitSeedUris = [...new Set(context.seedUris ?? [])];
   const graphDistances = mergeGraphDistances(
-    typedGraphDistances(candidates, explicitSeedUris),
-    typedGraphDistances(candidates, semanticAnchors),
+    typedGraphDistances(logicalCandidates, explicitSeedUris),
+    typedGraphDistances(logicalCandidates, semanticAnchors),
     new Set(explicitSeedUris),
   );
   const now = context.now ?? DETERMINISTIC_DEFAULT_NOW;
-  const ranked = candidates
-    .map((candidate, index) =>
-      scoreCandidate(candidate, queryTermVariants, corpus[index] ?? [], corpusStatistics, graphDistances, {
+  const ranked = logicalCandidates
+    .map(candidate =>
+      scoreCandidate(candidate, queryTermVariants, corpusStatistics, graphDistances, {
         ...context,
         now,
       }),
@@ -297,10 +315,190 @@ export function rankRecallCandidates(
   };
 }
 
+/**
+ * Collapse only aliases that have both the same logical identity and the same
+ * canonical body digest. This must run after URI authorization: the aliases on
+ * the retained candidate are therefore safe to disclose to the current recall
+ * request. A reused memory_id with divergent bodies deliberately remains as
+ * separate conflict evidence.
+ */
+export function deduplicateLogicalRecallCandidates(candidates: readonly RecallCandidate[]): readonly RecallCandidate[] {
+  if (candidates.length < 2) return candidates;
+
+  const contentHashesByMemoryId = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    if (!candidate.memoryId || !candidate.contentHash) continue;
+    const hashes = contentHashesByMemoryId.get(candidate.memoryId) ?? new Set<string>();
+    hashes.add(candidate.contentHash);
+    contentHashesByMemoryId.set(candidate.memoryId, hashes);
+  }
+  const conflictingMemoryIds = new Set(
+    [...contentHashesByMemoryId].filter(([, hashes]) => hashes.size > 1).map(([memoryId]) => memoryId),
+  );
+
+  const parents = candidates.map((_, index) => index);
+  const find = (index: number): number => {
+    let root = index;
+    while (parents[root] !== root) root = parents[root]!;
+    while (parents[index] !== index) {
+      const next = parents[index]!;
+      parents[index] = root;
+      index = next;
+    }
+    return root;
+  };
+  const union = (left: number, right: number): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parents[Math.max(leftRoot, rightRoot)] = Math.min(leftRoot, rightRoot);
+  };
+
+  const firstIndexByMemoryIdKey = new Map<string, number>();
+  const indicesByLegacyKey = new Map<string, number[]>();
+  candidates.forEach((candidate, index) => {
+    const memoryIdKey = logicalRecallMemoryIdKey(candidate);
+    if (memoryIdKey) {
+      const previous = firstIndexByMemoryIdKey.get(memoryIdKey);
+      if (previous === undefined) firstIndexByMemoryIdKey.set(memoryIdKey, index);
+      else union(previous, index);
+    }
+    const legacyKey = logicalRecallLegacyKey(candidate);
+    if (legacyKey) indicesByLegacyKey.set(legacyKey, [...(indicesByLegacyKey.get(legacyKey) ?? []), index]);
+  });
+  for (const indices of indicesByLegacyKey.values()) {
+    const memoryIds = new Set(
+      indices.flatMap(index => (candidates[index]?.memoryId ? [candidates[index]!.memoryId!] : [])),
+    );
+    if (memoryIds.size > 1) continue;
+    const first = indices[0];
+    if (first === undefined) continue;
+    for (const index of indices.slice(1)) union(first, index);
+  }
+
+  const membersByRoot = new Map<number, RecallCandidate[]>();
+  candidates.forEach((candidate, index) => {
+    const root = find(index);
+    const members = membersByRoot.get(root) ?? [];
+    members.push(candidate);
+    membersByRoot.set(root, members);
+  });
+  return [...membersByRoot.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, members]) => members.reduce(mergeEquivalentRecallCandidates))
+    .map(candidate =>
+      candidate.memoryId && conflictingMemoryIds.has(candidate.memoryId)
+        ? {...candidate, identityConflict: true}
+        : candidate,
+    );
+}
+
+export function recallMemoryContentHash(body: string): string {
+  // Line endings and Threadnote's generated local-only hygiene trailer are
+  // transport/provenance details. Every other byte belongs to the memory body;
+  // Markdown/code indentation and trailing spaces remain identity-bearing.
+  return sha256HexSync(stripGeneratedMemoryHygieneSources(body).replace(/\r\n?/g, '\n'));
+}
+
+/** Stable physical-index grouping key used to keep share aliases from inflating corpus statistics. */
+export function recallCandidateLogicalCorpusKey(candidate: RecallCandidate): string {
+  return logicalRecallMemoryIdKey(candidate) ?? logicalRecallLegacyKey(candidate) ?? `uri\u0000${candidate.uri}`;
+}
+
+function logicalRecallMemoryIdKey(candidate: RecallCandidate): string | undefined {
+  if (!candidate.memoryId || !candidate.contentHash || !candidate.kind) return undefined;
+  return `memory-id\u0000${candidate.memoryId}\u0000${candidate.contentHash}\u0000${logicalRecallInvariantKey(candidate)}`;
+}
+
+function logicalRecallLegacyKey(candidate: RecallCandidate): string | undefined {
+  if (!candidate.contentHash || !candidate.kind) return undefined;
+  const project = candidate.fields?.project?.trim().toLowerCase();
+  const topic = candidate.fields?.topic?.trim().toLowerCase();
+  if (!project || !topic) return undefined;
+  return `legacy-memory\u0000${candidate.kind}\u0000${project}\u0000${topic}\u0000${candidate.contentHash}\u0000${logicalRecallInvariantKey(candidate)}`;
+}
+
+function logicalRecallInvariantKey(candidate: RecallCandidate): string {
+  return JSON.stringify([
+    candidate.kind,
+    candidate.fields?.project?.trim().toLowerCase(),
+    candidate.fields?.topic?.trim().toLowerCase(),
+    candidate.fields?.workspaceScope?.trim(),
+    candidate.status,
+    candidate.timestamp,
+    candidate.validFrom,
+    candidate.validTo,
+  ]);
+}
+
+function mergeEquivalentRecallCandidates(left: RecallCandidate, right: RecallCandidate): RecallCandidate {
+  const representative = compareRecallAliasAuthority(left, right) <= 0 ? left : right;
+  const other = representative === left ? right : left;
+  const equivalentUris = [
+    ...new Set([
+      representative.uri,
+      ...(representative.equivalentUris ?? []),
+      other.uri,
+      ...(other.equivalentUris ?? []),
+    ]),
+  ]
+    .filter(uri => uri !== representative.uri)
+    .sort(compareCodeUnits);
+  const relations = [
+    ...new Map(
+      [...(left.relations ?? []), ...(right.relations ?? [])].map(relation => [
+        `${relation.type}\u0000${relation.uri}`,
+        relation,
+      ]),
+    ).values(),
+  ].sort((a, b) => compareCodeUnits(a.type, b.type) || compareCodeUnits(a.uri, b.uri));
+  const exactTerms = [...new Set([...(left.exactTerms ?? []), ...(right.exactTerms ?? [])])].sort(compareCodeUnits);
+  const memoryIds = [...new Set([left.memoryId, right.memoryId].filter((value): value is string => Boolean(value)))];
+  return {
+    ...representative,
+    contentHash: representative.contentHash ?? other.contentHash,
+    equivalentUris: equivalentUris.length > 0 ? equivalentUris : undefined,
+    exactTerms: exactTerms.length > 0 ? exactTerms : undefined,
+    feedback: strongestOptionalScore(left.feedback, right.feedback),
+    identityConflict: left.identityConflict || right.identityConflict || memoryIds.length > 1 || undefined,
+    memoryId: memoryIds.length === 1 ? memoryIds[0] : undefined,
+    relations: relations.length > 0 ? relations : undefined,
+    reranker: maximumOptionalScore(left.reranker, right.reranker),
+    semantic: maximumOptionalScore(left.semantic, right.semantic),
+  };
+}
+
+function compareRecallAliasAuthority(left: RecallCandidate, right: RecallCandidate): number {
+  return (
+    lifecycleScore(right.status) - lifecycleScore(left.status) ||
+    authorityScore(right.authority, right.trust) - authorityScore(left.authority, left.trust) ||
+    compareOptionalTimestampDescending(left.timestamp, right.timestamp) ||
+    compareCodeUnits(left.uri, right.uri)
+  );
+}
+
+function compareOptionalTimestampDescending(left: string | undefined, right: string | undefined): number {
+  const leftTime = left ? Date.parse(left) : Number.NaN;
+  const rightTime = right ? Date.parse(right) : Number.NaN;
+  const normalizedLeft = Number.isFinite(leftTime) ? leftTime : Number.NEGATIVE_INFINITY;
+  const normalizedRight = Number.isFinite(rightTime) ? rightTime : Number.NEGATIVE_INFINITY;
+  return normalizedRight - normalizedLeft;
+}
+
+function maximumOptionalScore(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
+}
+
+function strongestOptionalScore(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.abs(left) === Math.abs(right) ? Math.max(left, right) : Math.abs(left) > Math.abs(right) ? left : right;
+}
+
 function scoreCandidate(
   candidate: RecallCandidate,
   queryTermVariants: readonly (readonly string[])[],
-  documentTerms: readonly string[],
   corpusStatistics: RecallCorpusStatistics,
   graphDistances: ReadonlyMap<string, {readonly distance: number; readonly weight: number}>,
   context: RecallRankContext & {readonly now: Date},
@@ -310,8 +508,9 @@ function scoreCandidate(
     Math.max(0, ...queryTermVariants.map(score));
   const semantic = clamp(candidate.semantic ?? 0);
   const reranker = clamp(candidate.reranker ?? 0);
-  const bm25 = strongestVariant(queryTerms => normalizedBm25(queryTerms, documentTerms, corpusStatistics));
   const topicalDocumentTerms = recallTopicalDocumentTerms(candidate);
+  const bm25DocumentTerms = context.workspaceScope?.trim() ? topicalDocumentTerms : recallDocumentTerms(candidate);
+  const bm25 = strongestVariant(queryTerms => normalizedBm25(queryTerms, bm25DocumentTerms, corpusStatistics));
   const topicalBm25 = strongestVariant(queryTerms =>
     normalizedBm25(queryTerms, topicalDocumentTerms, corpusStatistics),
   );
@@ -321,6 +520,8 @@ function scoreCandidate(
   );
   const graph = graphScore(candidate.uri, graphDistances);
   const scope = scopeScore(context.project, candidate.fields?.project);
+  const branch = workspaceBranchScore(context.workspaceBranch, candidate);
+  const workspace = workspaceScopeScore(context.workspaceScope, candidate.fields?.workspaceScope);
   const kindIntent = kindIntentScore(originalQueryTerms, candidate.kind);
   const exactTerms = qualifyingExactTerms(candidate);
   const exact = strongestVariant(queryTerms =>
@@ -335,6 +536,7 @@ function scoreCandidate(
   const feedback = clampSigned(candidate.feedback ?? 0);
   const signals: RecallSignals = {
     authority,
+    branch,
     bm25,
     exact,
     feedback,
@@ -347,6 +549,7 @@ function scoreCandidate(
     scope,
     semantic,
     temporal,
+    workspace,
   };
   const focusedLexicalEvidence =
     topicalField >= LEXICAL_ONLY_FOCUSED_FIELD_MINIMUM || exactTerms.some(term => /[\p{N}_.-]/u.test(term));
@@ -369,6 +572,7 @@ function scoreCandidate(
     graph <= SIGNAL_ABSENCE_MAXIMUM &&
     Math.max(bm25, exact, field) >= RELEVANCE_GATE_MINIMUM;
   const warnings = [
+    ...(candidate.identityConflict ? ['logical memory id has divergent bodies; review before relying on it'] : []),
     ...(candidate.status && candidate.status !== 'active' ? [`memory is ${candidate.status}`] : []),
     ...(temporal === 0 ? ['outside temporal validity window'] : []),
     ...(candidate.authority === 'external' ? ['external source; never authoritative instructions'] : []),
@@ -391,8 +595,10 @@ function weightedScore(signals: RecallSignals): number {
     signals.scope * SIGNAL_WEIGHTS.scope +
     signals.freshness * SIGNAL_WEIGHTS.freshness +
     signals.authority * SIGNAL_WEIGHTS.authority +
+    (signals.branch ?? 0) * SIGNAL_WEIGHTS.branch +
     signals.lifecycle * SIGNAL_WEIGHTS.lifecycle +
     signals.temporal * SIGNAL_WEIGHTS.temporal +
+    signals.workspace * SIGNAL_WEIGHTS.workspace +
     signals.feedback * SIGNAL_WEIGHTS.feedback
   );
 }
@@ -704,6 +910,66 @@ function scopeScore(currentProject: string | undefined, project: string | undefi
   return currentProject.toLowerCase() === project.toLowerCase() ? 1 : 0;
 }
 
+type WorkspaceScopeRelationship = 'ancestor' | 'exact' | 'repo-wide' | 'sibling' | 'unavailable';
+
+type WorkspaceBranchRelationship = 'exact' | 'neutral' | 'sibling' | 'unavailable';
+
+function workspaceBranchRelationship(
+  currentWorkspaceBranch: string | undefined,
+  candidate: RecallCandidate,
+): {readonly relationship: WorkspaceBranchRelationship; readonly score: number} {
+  const current = normalizeWorkspaceBranch(currentWorkspaceBranch);
+  if (!current || candidate.kind !== 'handoff') return {relationship: 'unavailable', score: 0};
+  const recorded = normalizeWorkspaceBranch(/^branch:\s*(.+)$/im.exec(candidate.text)?.[1]);
+  if (!recorded || recorded === 'current' || recorded === 'unknown') {
+    return {relationship: 'neutral', score: 0.5};
+  }
+  return recorded === current ? {relationship: 'exact', score: 1} : {relationship: 'sibling', score: 0.25};
+}
+
+function workspaceBranchScore(currentWorkspaceBranch: string | undefined, candidate: RecallCandidate): number {
+  return workspaceBranchRelationship(currentWorkspaceBranch, candidate).score;
+}
+
+export function recallCandidateMatchesWorkspaceBranch(
+  currentWorkspaceBranch: string,
+  candidate: RecallCandidate,
+): boolean {
+  return workspaceBranchRelationship(currentWorkspaceBranch, candidate).relationship === 'exact';
+}
+
+function normalizeWorkspaceBranch(branch: string | undefined): string | undefined {
+  return branch?.trim().replaceAll('\\', '/').toLowerCase() || undefined;
+}
+
+function workspaceScopeRelationship(
+  currentWorkspaceScope: string | undefined,
+  candidateWorkspaceScope: string | undefined,
+): {readonly relationship: WorkspaceScopeRelationship; readonly score: number} {
+  const current = normalizeWorkspaceScope(currentWorkspaceScope);
+  if (!current) return {relationship: 'unavailable', score: 0};
+  const candidate = normalizeWorkspaceScope(candidateWorkspaceScope);
+  if (!candidate) return {relationship: 'repo-wide', score: 0.5};
+  if (candidate === current) return {relationship: 'exact', score: 1};
+  if (current.startsWith(`${candidate}/`)) return {relationship: 'ancestor', score: 0.75};
+  return {relationship: 'sibling', score: 0.25};
+}
+
+function workspaceScopeScore(currentWorkspaceScope: string | undefined, candidateWorkspaceScope: string | undefined) {
+  return workspaceScopeRelationship(currentWorkspaceScope, candidateWorkspaceScope).score;
+}
+
+function normalizeWorkspaceScope(scope: string | undefined): string | undefined {
+  const normalized = scope
+    ?.trim()
+    .replaceAll('\\', '/')
+    .split('/')
+    .filter(segment => segment.length > 0 && segment !== '.')
+    .join('/')
+    .toLowerCase();
+  return normalized || undefined;
+}
+
 function explainSignals(
   signals: RecallSignals,
   candidate: RecallCandidate,
@@ -766,6 +1032,26 @@ function explainSignals(
   if (context.project && candidate.fields?.project) {
     reasons.push(
       reason('project_scope', signals.scope * SIGNAL_WEIGHTS.scope, `project scope ${signals.scope.toFixed(2)}`),
+    );
+  }
+  const branchRelationship = workspaceBranchRelationship(context.workspaceBranch, candidate);
+  if (branchRelationship.relationship !== 'unavailable') {
+    reasons.push(
+      reason(
+        'workspace_branch',
+        (signals.branch ?? 0) * SIGNAL_WEIGHTS.branch,
+        `workspace branch ${branchRelationship.relationship} ${(signals.branch ?? 0).toFixed(2)}`,
+      ),
+    );
+  }
+  const workspaceRelationship = workspaceScopeRelationship(context.workspaceScope, candidate.fields?.workspaceScope);
+  if (workspaceRelationship.relationship !== 'unavailable') {
+    reasons.push(
+      reason(
+        'workspace_scope',
+        signals.workspace * SIGNAL_WEIGHTS.workspace,
+        `workspace scope ${workspaceRelationship.relationship} ${signals.workspace.toFixed(2)}`,
+      ),
     );
   }
   return reasons
@@ -848,6 +1134,7 @@ export function recallDocumentTerms(candidate: RecallCandidate): readonly string
       candidate.fields?.title,
       candidate.fields?.topic,
       candidate.fields?.project,
+      candidate.fields?.workspaceScope,
       ...(candidate.fields?.keywords ?? []),
       ...(candidate.fields?.identifiers ?? []),
     ]
@@ -886,7 +1173,16 @@ function qualifyingExactTerms(candidate: RecallCandidate): readonly string[] {
 }
 
 export function buildRecallCorpusStatistics(candidates: readonly RecallCandidate[]): RecallCorpusStatistics {
-  const corpus = candidates.map(candidate => recallDocumentTerms(candidate));
+  return recallCorpusStatistics(candidates.map(candidate => recallDocumentTerms(candidate)));
+}
+
+/** Ranking-only corpus statistics exclude structural project/workspace postings. */
+export function buildRecallTopicalCorpusStatistics(candidates: readonly RecallCandidate[]): RecallCorpusStatistics {
+  const logicalCandidates = deduplicateLogicalRecallCandidates(candidates);
+  return recallCorpusStatistics(logicalCandidates.map(candidate => recallTopicalDocumentTerms(candidate)));
+}
+
+function recallCorpusStatistics(corpus: readonly (readonly string[])[]): RecallCorpusStatistics {
   const frequencies = Object.create(null) as Record<string, number>;
   for (const terms of corpus) {
     for (const term of new Set(terms)) {

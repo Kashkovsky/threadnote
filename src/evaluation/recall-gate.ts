@@ -73,6 +73,18 @@ export function evaluateRecallNonInferiority(
       `contract failures increased by ${contractFailureIncrease}; maximum ${policy.maximumContractFailureIncrease}`,
     );
   }
+  const baselineHasReviewedFailureIdentities = baseline.failures.some(
+    failure => !failure.startsWith('known-baseline-defect-'),
+  );
+  if (baselineHasReviewedFailureIdentities) {
+    const reviewedFailures = new Set(baseline.failures);
+    const introducedFailures = [...new Set(candidate.failures.filter(failure => !reviewedFailures.has(failure)))];
+    if (introducedFailures.length > policy.maximumContractFailureIncrease) {
+      failures.push(
+        `new contract failure identities: ${introducedFailures.slice(0, 5).join('; ')}${introducedFailures.length > 5 ? `; … ${introducedFailures.length - 5} more` : ''}`,
+      );
+    }
+  }
 
   return {
     comparison,

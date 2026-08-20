@@ -1,6 +1,12 @@
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {rankRecallCandidates, type RecallCandidate, type RankedRecallCandidate} from '../../src/recall/rank.js';
+import {
+  deduplicateLogicalRecallCandidates,
+  rankRecallCandidates,
+  recallMemoryContentHash,
+  type RecallCandidate,
+  type RankedRecallCandidate,
+} from '../../src/recall/rank.js';
 import {mergeRecallHits, RECALL_CATEGORY_ORDER, type RecallCategory, type RecallHit} from '../../src/utils.js';
 
 const FIXED_NOW = new Date('2026-07-30T00:00:00.000Z');
@@ -184,7 +190,126 @@ const structuredIdentifierCaseArbitrary = FC.record({
   suffix: FC.integer({max: 999, min: 100}),
 });
 
+const workspaceHierarchyCaseArbitrary = FC.uniqueArray(
+  FC.constantFrom('api', 'apps', 'billing', 'core', 'query', 'search', 'services', 'worker'),
+  {maxLength: 4, minLength: 4},
+).chain(([root, component, leaf, sibling]) => {
+  const current = `${root}/${component}/${leaf}`;
+  const candidates: RecallCandidate[] = [
+    {
+      fields: {title: 'Checkout retry contract', topic: 'checkout-retry-contract', workspaceScope: current},
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://exact.md',
+    },
+    {
+      fields: {
+        title: 'Checkout retry contract',
+        topic: 'checkout-retry-contract',
+        workspaceScope: `${root}/${component}`,
+      },
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://ancestor.md',
+    },
+    {
+      fields: {title: 'Checkout retry contract', topic: 'checkout-retry-contract'},
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://repo-wide.md',
+    },
+    {
+      fields: {
+        title: 'Checkout retry contract',
+        topic: 'checkout-retry-contract',
+        workspaceScope: `${root}/${sibling}`,
+      },
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://sibling.md',
+    },
+  ];
+  return FC.shuffledSubarray(candidates, {maxLength: candidates.length, minLength: candidates.length}).map(
+    permutation => ({current, permutation}),
+  );
+});
+
 describe('recall ranking properties', () => {
+  it.prop(
+    'generated hygiene source sets do not change logical memory identity',
+    {
+      body: FC.string({maxLength: 80}),
+      sources: FC.uniqueArray(FC.stringMatching(/^[a-z]{1,8}$/), {maxLength: 12, minLength: 1}),
+    },
+    ({body: rawBody, sources}) => {
+      const body = rawBody.replace(/\s+$/u, '') || 'body';
+      const decorated = [
+        body,
+        '',
+        '<!-- threadnote:hygiene-sources:v1 -->',
+        '## Threadnote Hygiene Sources',
+        '',
+        ...sources.map(source => `- threadnote://user/me/memories/handoffs/archived/threadnote/${source}.md`),
+      ].join('\n');
+
+      expect(recallMemoryContentHash(decorated)).toBe(recallMemoryContentHash(body));
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'keeps workspace hierarchy ordering stable across valid paths and candidate permutations',
+    {hierarchyCase: workspaceHierarchyCaseArbitrary},
+    ({hierarchyCase}) => {
+      const ranked = rankRecallCandidates('checkout retry contract', hierarchyCase.permutation, {
+        workspaceScope: hierarchyCase.current,
+      });
+
+      expect(ranked.results.map(result => result.candidate.uri)).toEqual([
+        'threadnote://exact.md',
+        'threadnote://ancestor.md',
+        'threadnote://repo-wide.md',
+        'threadnote://sibling.md',
+      ]);
+      expect(ranked.results.map(result => result.signals.workspace)).toEqual([1, 0.75, 0.5, 0.25]);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'logical-memory alias deduplication is permutation-invariant and idempotent',
+    {
+      teams: FC.uniqueArray(FC.stringMatching(/^[a-z]{1,8}$/), {maxLength: 12, minLength: 1}),
+    },
+    ({teams}) => {
+      const body = 'A stable package-scoped recall contract.';
+      const aliases: RecallCandidate[] = teams.map((team, index) => ({
+        authority: 'reviewed_shared',
+        contentHash: recallMemoryContentHash(body),
+        fields: {project: 'threadnote', topic: 'package-scope'},
+        kind: 'durable',
+        memoryId: index % 2 === 0 ? 'tn_package_scope' : undefined,
+        status: 'active',
+        text: body,
+        trust: 'approved',
+        uri: `threadnote://user/test/memories/shared/${team}/durable/projects/threadnote/package-scope.md`,
+      }));
+      const forward = deduplicateLogicalRecallCandidates(aliases);
+      const reverse = deduplicateLogicalRecallCandidates([...aliases].reverse());
+      const middle = Math.floor(aliases.length / 2);
+      const partitioned = deduplicateLogicalRecallCandidates([
+        ...deduplicateLogicalRecallCandidates(aliases.slice(0, middle)),
+        ...deduplicateLogicalRecallCandidates(aliases.slice(middle)),
+      ]);
+
+      expect(reverse).toEqual(forward);
+      expect(partitioned).toEqual(forward);
+      expect(deduplicateLogicalRecallCandidates(forward)).toEqual(forward);
+      expect(forward).toHaveLength(1);
+      expect(forward[0]?.memoryId).toBe('tn_package_scope');
+      expect([forward[0]!.uri, ...(forward[0]!.equivalentUris ?? [])].sort(compareCodeUnits)).toEqual(
+        aliases.map(candidate => candidate.uri).sort(compareCodeUnits),
+      );
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it.prop(
     'requires a structured identifier declaration before components contribute exact evidence',
     {identifierCase: structuredIdentifierCaseArbitrary},

@@ -161,6 +161,11 @@ surprising cross-community links. Analysis also supports stable community drill-
 audits, and suggested follow-up questions. MCP impact accepts either an explicit symbol/path query or a Git `base` ref.
 A task can combine the tools without a graph build adding latency or surprise I/O to ordinary recall.
 
+MCP recall returns a compact unread-pointer queue within a 1,500-token response budget. Use `budgetTokens` to request a
+smaller ranked prefix and `explain: true` only when full ranking reasons, signals, and warnings are needed. The
+`threshold` input filters topical `relevanceScore` before lifecycle/trust scoring; its default is
+`THREADNOTE_RECALL_THRESHOLD` when configured, otherwise `0.3`.
+
 ## Native Code Graph
 
 The first graph query lazily builds a disposable snapshot below `~/.threadnote/indexes/code-graph/`. Committed source
@@ -343,6 +348,11 @@ Use Markdown files. Threadnote makes them operational.
 - **Threadnote memories:** Markdown in a canonical local store plus hybrid recall, stable URIs, explicit lifecycle,
   scoped compaction, MCP tools, safe team sharing, and optional Obsidian views.
 
+In a monorepo, passing a nested `callerCwd` lets Threadnote attach the nearest package/app manifest root to new MCP
+memories and use that scope during recall. Legacy records without `workspace_scope` remain repo-wide. Identical
+`memory_id` copies published through multiple authorized shares occupy one recall result, with the other URIs retained
+as aliases; divergent copies remain visible for review.
+
 The source of truth remains ordinary files. Threadnote lets agents find the right record, understand why it ranked,
 decide whether it is current, update it without creating duplicates, and safely move the reusable part into a
 teammate's agent.
@@ -421,7 +431,8 @@ threadnote index status
 The model download is resumable and preserved across upgrades. Every built-in manifest pins its immutable revision,
 filename, size, SHA-256, license, runtime version, and memory class; checksums are verified before atomic promotion,
 and native compilation is disabled. Additional embedding, reranking, and generation models remain explicit choices.
-BGE Small passes the frozen category and no-answer gates; the measured Jina reranker does not and is not selected.
+In the historical 4.0 bake-off, BGE Small passed the frozen 3.0.3 category and no-answer gates; the measured Jina
+reranker did not and is not selected. New model evaluations default to the reviewed 4.2.7 lexical baseline.
 
 ## Upgrade from 3.x
 
@@ -440,8 +451,12 @@ The source home is never modified or deleted, so rollback remains available whil
 ## Quality Contract
 
 The reviewed recall-v2 corpus contains 200 documents and 250 queries across lexical, semantic, code, scope, lifecycle,
-authority, time, graph, no-answer, adversarial, chunking, and multilingual categories. Frozen 3.0.3 quality and M1 Max
-performance baselines are checked in under `test/evaluation/baselines/threadnote-3.0.3/`.
+authority, time, graph, no-answer, adversarial, chunking, and multilingual categories. The active lexical quality gate
+and current Apple M1 Max `hybrid-v3` rank-performance reference use clean-commit Threadnote 4.2.7 artifacts under
+`test/evaluation/baselines/threadnote-4.2.7/`. The performance reference covers 200, 1k, 10k, and 100k documents and is
+a same-hardware comparison point, not a universal latency threshold. Frozen 3.0.3 quality and performance artifacts
+remain immutable historical evidence under
+`test/evaluation/baselines/threadnote-3.0.3/`; they are not the current gate.
 
 The original code-graph-v1 repository fixture preserves compiler-backed TypeScript behavior and gates definitions,
 paths, impact, documentation, false edges, no-answer behavior, and worktree isolation against frozen
@@ -452,7 +467,7 @@ fixtures.
 
 ```sh
 bun run eval:recall:v2 -- \
-  --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
+  --fail-on-contract \
   --fail-on-regression
 bun run eval:recall:models -- --embedding bge-small-en-v1.5-q8 --install
 bun run bench:recall:micro -- --json

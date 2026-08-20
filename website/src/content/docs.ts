@@ -219,14 +219,14 @@ export const mcpTools: McpToolReference[] = [
   {
     name: 'recall_context',
     toolset: 'core',
-    summary: 'Search historical memories and seeded project guidance, returning ranked threadnote:// pointers.',
-    keyInputs: ['query', 'project', 'callerCwd', 'nodeLimit', 'threshold', 'workset', 'includeArchived'],
+    summary: 'Search historical memory, returning an unread queue of ranked threadnote:// pointers.',
+    keyInputs: ['query', 'project', 'callerCwd', 'budgetTokens', 'explain', 'threshold'],
   },
   {
     name: 'read_context',
     toolset: 'core',
-    summary: 'Read one or more canonical threadnote:// file URIs returned by recall or list.',
-    keyInputs: ['uri or uris'],
+    summary: 'Read one or more canonical threadnote:// file URIs so their content can be used as evidence.',
+    keyInputs: ['uri or uris', 'budgetTokens', 'cursor', 'mode or section'],
   },
   {
     name: 'list_context',
@@ -238,7 +238,7 @@ export const mcpTools: McpToolReference[] = [
     name: 'remember_context',
     toolset: 'core',
     summary: 'Store or replace normal durable knowledge, handoffs, incidents, or preferences.',
-    keyInputs: ['text', 'kind', 'project', 'topic', 'replaceUri', 'references', 'sourceAgentClient'],
+    keyInputs: ['text', 'kind', 'project', 'topic', 'callerCwd', 'replaceUri', 'references', 'sourceAgentClient'],
   },
   {
     name: 'inspect_code_graph',
@@ -313,7 +313,7 @@ export const mcpTools: McpToolReference[] = [
   {
     name: 'compact_context',
     toolset: 'full',
-    summary: 'Plan or apply scoped hygiene for duplicate memories and stale handoffs.',
+    summary: 'Plan or apply lifecycle hygiene and read-only cross-share merge review.',
     keyInputs: ['project', 'topic', 'kind', 'apply'],
   },
   {
@@ -703,7 +703,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'MCP clients can read one canonical threadnote:// URI through the standard resources/read protocol without enumerating private memories. Protocol reads are UTF-8 text capped at 1 MiB and authorize the active account and user; use read_context when a returned canonical memory needs a complete, larger read.',
+            text: 'MCP clients can read one canonical threadnote:// URI through the standard resources/read protocol without enumerating private memories. Protocol reads are UTF-8 text capped at 4,500 bytes and authorize the active account and user; use paged read_context for larger evidence.',
           },
           {
             type: 'table',
@@ -800,7 +800,7 @@ threadnote index status`,
             type: 'list',
             items: [
               'Confidence and no-answer gates prevent weak semantic-only results from being presented as answers.',
-              'Ranking output explains why each result matched and warns when evidence is lexical-only or untrusted.',
+              'The default MCP response is a budgeted unread pointer queue. Set explain=true to include full ranking reasons, signals, and warnings.',
               'The lexical path remains available if local inference is temporarily unavailable.',
               'Concurrent refreshes are generation-fenced. If the corpus keeps changing during semantic scoring, Threadnote retries with a fresh lexical snapshot and can return lexical-only results instead of mixing generations.',
               'Recall returns pointers, so an agent loads selected records instead of replaying all history.',
@@ -1888,7 +1888,7 @@ threadnote report-issue \\
                 'Choose the per-developer seed manifest',
                 '~/.threadnote/seed-manifest.yaml',
               ],
-              ['THREADNOTE_RECALL_THRESHOLD', 'Default minimum recall relevance', 'Product default'],
+              ['THREADNOTE_RECALL_THRESHOLD', 'Default topical relevanceScore floor', '0.3'],
               ['THREADNOTE_CALLER_CWD', 'Fallback workspace for CLI scope resolution', 'Current process directory'],
               ['THREADNOTE_MCP_TOOLSET', 'Select core or full MCP tools', 'core'],
               [

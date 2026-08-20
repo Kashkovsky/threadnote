@@ -5,6 +5,7 @@ import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 
 import {canonicalMemoryDocumentContent} from './memory_document.js';
+import {stripGeneratedMemoryHygieneSources} from './memory_hygiene_provenance.js';
 
 import {ResourceStore} from './effect/resource-store.js';
 
@@ -851,7 +852,7 @@ export function stripPersonalProvenance(content: string): string {
   for (let index = headerEnd; index < lines.length; index += 1) {
     cleaned.push(lines[index]);
   }
-  return cleaned.join('\n');
+  return stripGeneratedMemoryHygieneSources(cleaned.join('\n'));
 }
 
 export function setMemoryVisibility(content: string, visibility: 'personal' | 'shared'): string {

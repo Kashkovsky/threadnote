@@ -25,6 +25,8 @@ describe('buildOnboardingGuide', () => {
     expect(guide).toMatch(/Do NOT paste this list verbatim/);
     expect(guide).toContain('Store routine durable feature knowledge and handoffs directly');
     expect(guide).toContain('Review only additional session-extracted candidates');
+    expect(guide).toContain('unread pointer queue, not evidence');
+    expect(guide).toContain('read_context the most relevant');
     expect(guide).toContain('"decisions":["Additional decision..."]');
     expect(guide).toContain('"sourceSessionId":"<session-id>"');
   });
@@ -38,6 +40,8 @@ describe('buildOnboardingGuide', () => {
   it('describes shared durable writes and transient local handoffs for Cursor Cloud', () => {
     const guide = buildOnboardingGuide({seededProjects: [], teams: ['engineering'], toolset: 'cursor-cloud'});
     expect(guide).toContain('exclusive shared-memory scope');
+    expect(guide).toContain('unread pointers, not evidence');
+    expect(guide).toContain('use read_context before relying');
     expect(guide).toContain('remember_context');
     expect(guide).toContain('committed and pushed');
     expect(guide).toContain('kind=handoff write stays local');

@@ -9,9 +9,15 @@ alwaysApply: true
 Use Threadnote as shared local context and memory. Repo files remain authoritative; follow the nearest checked-in
 `AGENTS.md`, `CLAUDE.md`, or equivalent guidance first.
 
-At the start of a non-trivial task, call `recall_context` with the project and absolute `callerCwd`, then read relevant
-`threadnote://` results. Memory recall provides prior decisions and handoffs; code-graph inspection provides current
+At the start of a non-trivial task, call `recall_context` with the project and absolute `callerCwd`; in a monorepo, use
+the nested package/app cwd. Memory recall provides prior decisions and handoffs; code-graph inspection provides current
 source evidence.
+
+A recall result is an unread pointer queue, not evidence. Read relevant `threadnote://` results with `read_context`
+before relying on them or citing memory-backed claims.
+
+Recall is compact and budgeted by default. Request `explain: true` only when ranking diagnostics are needed; it does
+not turn unread pointers into evidence.
 
 For unfamiliar source or relationship claims, call `inspect_code_graph` before broad text search. Use `query` to find a
 concept, then round-trip its stable ID through `node`, `neighbors`, or `path`; use `impact` for reverse dependencies and

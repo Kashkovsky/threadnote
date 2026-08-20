@@ -17,7 +17,6 @@ const MAX_RECALL_EXPANSION_CACHE_ENTRIES = 128;
 const RECALL_EXPANSION_TIMEOUT_MILLISECONDS = 5_000;
 export const RECALL_SELECTION_TIMEOUT_MILLISECONDS = 5_000;
 const RECALL_VOCABULARY_DESCRIPTION_SEPARATOR = ' :: ';
-const DEFAULT_HYBRID_RECALL_MINIMUM_SCORE = 0.3;
 export const MAX_RECALL_SELECTION_CANDIDATES = 24;
 const MAX_RECALL_SELECTED_CANDIDATES = 8;
 const MAX_RECALL_SELECTION_ID_LENGTH = 16;
@@ -292,8 +291,8 @@ export function mergeRecallRewritesForConfidence(
   return limitRecallRewritesForConfidence(confidence, merged);
 }
 
-export function recallHybridMinimumScore(threshold: number, explicitThreshold: boolean): number {
-  return explicitThreshold ? threshold : DEFAULT_HYBRID_RECALL_MINIMUM_SCORE;
+export function recallHybridMinimumScore(threshold: number): number {
+  return threshold;
 }
 
 export function normalizeRecallRewrites(

@@ -131,6 +131,10 @@ describe('recall evaluation contract v2', () => {
         }),
       );
       const unchanged = evaluateRecallNonInferiority(baseline, baseline);
+      const swappedContractFailure = evaluateRecallNonInferiority(baseline, {
+        ...baseline,
+        failures: [...baseline.failures.slice(1), 'new-query: newly introduced failure'],
+      });
       const regressed = evaluateRecallNonInferiority(baseline, {
         ...baseline,
         metrics: {
@@ -140,6 +144,10 @@ describe('recall evaluation contract v2', () => {
       });
 
       expect(unchanged.passed).toBe(true);
+      expect(swappedContractFailure.passed).toBe(false);
+      expect(swappedContractFailure.failures.some(failure => failure.includes('new contract failure identities'))).toBe(
+        true,
+      );
       expect(regressed.passed).toBe(false);
       expect(regressed.failures).toContain('aggregate.forbiddenHitRate regressed by 0.001000; maximum 0.000000');
     },

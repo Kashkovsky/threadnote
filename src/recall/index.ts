@@ -29,10 +29,38 @@ import {
   selectQueryTerms,
   stripRecallAnchor,
   type RecallIndexPosting,
-  type RecallQueryTermStatistics,
 } from './index_lexical.js';
-import {recallDocumentTerms, type RecallCandidate, type RecallCorpusStatistics} from './rank.js';
+import {
+  deduplicateLogicalRecallCandidates,
+  recallCandidateLogicalCorpusKey,
+  recallMemoryContentHash,
+  recallDocumentTerms,
+  type RecallCandidate,
+  type RecallCorpusStatistics,
+} from './rank.js';
 import {normalizeRecallSearchText} from './tokenize.js';
+import {removeLegacyRecallIndexArtifacts} from './index_cleanup.js';
+import {boundedRecallPhysicalCandidateLimit, recallStatisticTerms} from './index_query.js';
+import * as RecallIndexIdentity from './index_identity.js';
+import {
+  combineRecallSqlPredicates,
+  normalizeRecallWorkspaceScope,
+  recallUriMatchesScopes,
+  recallUriScopePredicate,
+  recallWorkspaceScopeMatches,
+  recallWorkspaceScopePredicate,
+  type RecallWorkspaceScopeMode,
+} from './index_scope.js';
+import {
+  recallProjectMatches,
+  recallProjectPredicate,
+  recallQuerySelectionIsExhaustive,
+  recallSelectionHasDocuments,
+  selectRecallDocumentSample,
+  selectRecallQueryTermStatistics,
+} from './index_selection.js';
+
+export {recallUriMatchesScopes} from './index_scope.js';
 
 class RecallIndexOperationError extends Error {
   readonly _tag = 'RecallIndexOperationError' as const;
@@ -66,6 +94,8 @@ export interface RecallIndexData {
   readonly candidates: readonly RecallCandidate[];
   readonly corpusStatistics: RecallCorpusStatistics;
   readonly generation: string;
+  /** True only when the query selection proves that no matching candidate was truncated. */
+  readonly queryExhaustive: boolean;
 }
 
 export interface RecallExactMatch {
@@ -146,7 +176,7 @@ interface IndexedRecallSource {
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 4;
+const RECALL_INDEX_DATABASE_VERSION = 6;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -191,6 +221,9 @@ interface LoadRecallIndexOptions {
   readonly project?: string;
   readonly query?: string;
   readonly requiredUris?: readonly string[];
+  readonly workspaceScope?: string;
+  /** Select the protected hierarchy by default, or only scopes outside it for the bounded challenger lane. */
+  readonly workspaceScopeMode?: RecallWorkspaceScopeMode;
 }
 
 interface LoadRecallIndexBatchOptions {
@@ -261,20 +294,19 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
       const metadata = yield* loadRecallMetadata(sql);
       const generation = metadata.get('content_generation') ?? '';
       const corpusStatistics = yield* loadRecallCorpusStatistics(sql, recallStatisticTerms(options));
+      const loadIdentityConflicts = RecallIndexIdentity.createRecallIdentityConflictLoader(sql);
+      const selectData = (selection: LoadRecallIndexOptions) =>
+        selectRecallIndexData(sql, corpusStatistics, generation, selection, loadIdentityConflicts);
       const result =
         'terms' in options
           ? yield* selectRecallExactMatches(sql, options)
           : 'selections' in options
             ? yield* Effect.forEach(
                 options.selections,
-                selection =>
-                  selectRecallIndexData(sql, corpusStatistics, generation, {
-                    ...selection,
-                    includeInactive: options.includeInactive,
-                  }),
+                selection => selectData({...selection, includeInactive: options.includeInactive}),
                 {concurrency: 1},
               )
-            : yield* selectRecallIndexData(sql, corpusStatistics, generation, options);
+            : yield* selectData(options);
       if (prepareForActivation) {
         yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
         yield* sql.unsafe('PRAGMA journal_mode = DELETE');
@@ -408,7 +440,7 @@ export const recallIndexStatus = Effect.fn('recall.indexStatus')(function* (
           reason: 'not initialized; run `threadnote repair`',
         } satisfies RecallIndexStatus;
       }
-      if (!recallMetadataIntegrityIsCurrent(metadata)) {
+      if (!RecallIndexIdentity.recallIndexMetadataIsCurrent(metadata)) {
         return {
           databasePath,
           documentCount: numericMetadata(metadata, 'document_count'),
@@ -502,48 +534,83 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
   corpusStatistics: RecallCorpusStatistics,
   generation: string,
   options: LoadRecallIndexOptions,
+  loadIdentityConflicts: ReturnType<typeof RecallIndexIdentity.createRecallIdentityConflictLoader>,
 ) {
   if (options.query === undefined) {
     const rows =
-      options.allowedUriScopes?.length || options.limit !== undefined || options.project !== undefined
-        ? yield* selectDocumentSample(sql, options.allowedUriScopes, options.project, options.limit)
+      options.allowedUriScopes?.length ||
+      options.limit !== undefined ||
+      options.project !== undefined ||
+      options.workspaceScope !== undefined
+        ? yield* selectRecallDocumentSample(sql, options)
         : yield* sql<RecallDocumentRow>`SELECT id, uri, candidate_json FROM documents ORDER BY uri`;
+    const logicalCandidates = deduplicateLogicalRecallCandidates(rows.map(decodeCandidateRow));
+    const candidates = options.limit === undefined ? logicalCandidates : logicalCandidates.slice(0, options.limit);
+    const identityConflicts = yield* loadIdentityConflicts(
+      options.allowedUriScopes,
+      candidates.flatMap(candidate => (candidate.memoryId ? [candidate.memoryId] : [])),
+    );
     return {
-      candidates: rows.map(decodeCandidateRow),
+      candidates: RecallIndexIdentity.markRecallIdentityConflicts(candidates, identityConflicts),
       corpusStatistics,
       generation,
+      queryExhaustive: options.limit === undefined,
     } satisfies RecallIndexData;
   }
   const selected: RecallCandidate[] = [];
   const selectedIds = new Set<number>();
   const requiredUris = [...new Set((options.requiredUris ?? []).map(stripRecallAnchor))];
   if (requiredUris.length > 0) {
-    const requiredRows = yield* selectDocumentsByUris(sql, requiredUris);
+    const requiredRows = yield* selectDocumentRows(sql, 'uri', requiredUris);
     const rowByUri = new Map(requiredRows.map(row => [row.uri, row]));
     for (const uri of requiredUris) {
       const row = rowByUri.get(uri);
-      if (row && recallUriMatchesScopes(row.uri, options.allowedUriScopes) && !selectedIds.has(row.id)) {
+      if (!row || selectedIds.has(row.id) || !recallUriMatchesScopes(row.uri, options.allowedUriScopes)) continue;
+      const candidate = decodeCandidateRow(row);
+      if (
+        recallProjectMatches(options.project, candidate.fields?.project) &&
+        recallWorkspaceScopeMatches(
+          options.workspaceScope,
+          candidate.fields?.workspaceScope,
+          options.workspaceScopeMode,
+        )
+      ) {
         selectedIds.add(row.id);
-        selected.push(decodeCandidateRow(row));
+        selected.push(candidate);
       }
     }
   }
   const resultLimit = options.limit ?? DEFAULT_QUERY_RESULT_LIMIT;
   const postingPoolLimit = Math.max(MINIMUM_QUERY_POSTING_POOL, resultLimit * QUERY_POSTING_POOL_MULTIPLIER);
   const indexedQueryTerms = [...new Set(indexTerms(options.query))];
-  const queryTermStatistics = yield* loadRecallQueryTermStatistics(
-    sql,
-    indexedQueryTerms,
-    corpusStatistics,
-    options.allowedUriScopes,
-  );
-  const queryTerms = selectQueryTerms(indexedQueryTerms, queryTermStatistics);
+  const siblingWorkspaceSelection = options.workspaceScopeMode === 'sibling' && options.workspaceScope !== undefined;
+  if (siblingWorkspaceSelection && !(yield* recallSelectionHasDocuments(sql, options))) {
+    return {
+      candidates: [],
+      corpusStatistics,
+      generation,
+      queryExhaustive: true,
+    } satisfies RecallIndexData;
+  }
+  const queryCorpusStatistics = siblingWorkspaceSelection
+    ? corpusStatistics
+    : yield* selectRecallQueryTermStatistics(sql, indexedQueryTerms, corpusStatistics, options);
+  const queryTerms = selectQueryTerms(indexedQueryTerms, queryCorpusStatistics);
+  const postingCorpusStatistics =
+    options.workspaceScope === undefined && options.project === undefined
+      ? corpusStatistics
+      : siblingWorkspaceSelection
+        ? corpusStatistics
+        : queryCorpusStatistics;
   const postingRows = yield* selectTopPostingsByTerms(
     sql,
     queryTerms,
     options.allowedUriScopes,
+    options.project,
+    options.workspaceScope,
+    options.workspaceScopeMode,
     postingPoolLimit,
-    corpusStatistics,
+    postingCorpusStatistics,
   );
   yield* options.onQueryDiagnostics?.({
     postingRows: postingRows.length,
@@ -559,7 +626,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
         termFrequency: posting.term_frequency,
       },
       posting.term,
-      corpusStatistics,
+      postingCorpusStatistics,
     );
     scores.set(posting.document_id, (scores.get(posting.document_id) ?? 0) + score);
   }
@@ -569,18 +636,48 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
       ([leftId, leftScore], [rightId, rightScore]) =>
         rightScore - leftScore || (uriByDocumentId.get(leftId) ?? '').localeCompare(uriByDocumentId.get(rightId) ?? ''),
     )
-    .slice(0, resultLimit)
     .map(([documentId]) => documentId);
-  const rankedRows = yield* selectDocumentsByIds(sql, rankedIds);
+  const candidateDecodeLimit = boundedRecallPhysicalCandidateLimit(resultLimit);
+  const boundedRankedIds = rankedIds.slice(0, candidateDecodeLimit);
+  const rankedRows = yield* selectDocumentRows(sql, 'id', boundedRankedIds);
   const rowById = new Map(rankedRows.map(row => [row.id, row]));
-  for (const documentId of rankedIds) {
+  for (const documentId of boundedRankedIds) {
     const row = rowById.get(documentId);
     if (row && !selectedIds.has(documentId)) {
       selectedIds.add(documentId);
       selected.push(decodeCandidateRow(row));
     }
   }
-  return {candidates: selected, corpusStatistics, generation} satisfies RecallIndexData;
+  const deduplicated = deduplicateLogicalRecallCandidates(selected);
+  const requiredUriSet = new Set(requiredUris);
+  const requiredCandidates = deduplicated.filter(candidate =>
+    [candidate.uri, ...(candidate.equivalentUris ?? [])].some(uri => requiredUriSet.has(stripRecallAnchor(uri))),
+  );
+  const rankedCandidates = deduplicated
+    .filter(candidate => !requiredCandidates.includes(candidate))
+    .slice(0, resultLimit);
+  const candidates = [...requiredCandidates, ...rankedCandidates];
+  const queryExhaustive = recallQuerySelectionIsExhaustive({
+    candidateDecodeLimit,
+    deduplicatedCandidateCount: deduplicated.length,
+    documentFrequency: queryCorpusStatistics.documentFrequency,
+    indexedQueryTerms,
+    postingPoolLimit,
+    postingTerms: postingRows.map(posting => posting.term),
+    queryTerms,
+    rankedDocumentCount: rankedIds.length,
+    resultLimit,
+  });
+  const identityConflicts = yield* loadIdentityConflicts(
+    options.allowedUriScopes,
+    candidates.flatMap(candidate => (candidate.memoryId ? [candidate.memoryId] : [])),
+  );
+  return {
+    candidates: RecallIndexIdentity.markRecallIdentityConflicts(candidates, identityConflicts),
+    corpusStatistics,
+    generation,
+    queryExhaustive,
+  } satisfies RecallIndexData;
 });
 
 const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function* (
@@ -629,19 +726,6 @@ const selectRecallExactMatches = Effect.fn('recall.selectExactMatches')(function
       uri,
     })) satisfies readonly RecallExactMatch[];
 });
-
-export function recallUriMatchesScopes(uri: string, scopes: readonly string[] | undefined): boolean {
-  if (scopes === undefined || scopes.length === 0) {
-    return true;
-  }
-  const documentUri = stripRecallAnchor(uri);
-  const normalizedScopes = normalizeRecallUriScopes(scopes);
-  return normalizedScopes.some(scope => documentUri === scope || documentUri.startsWith(`${scope}/`));
-}
-
-function normalizeRecallUriScopes(scopes: readonly string[]): readonly string[] {
-  return [...new Set(scopes.map(scope => stripRecallAnchor(scope).replace(/\/+$/, '').trim()).filter(Boolean))];
-}
 
 export function recallIndexDatabaseFilename(includeInactive: boolean): string {
   return includeInactive ? INACTIVE_DATABASE_FILENAME : ACTIVE_DATABASE_FILENAME;
@@ -759,11 +843,13 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
       id INTEGER PRIMARY KEY,
       uri TEXT UNIQUE NOT NULL,
       project TEXT,
+      workspace_scope TEXT,
       source_path TEXT NOT NULL,
       source_modified_at TEXT,
       source_size INTEGER NOT NULL CHECK (source_size >= 0),
       authority_policy_key TEXT,
       candidate_json TEXT NOT NULL,
+      logical_key TEXT NOT NULL,
       document_length INTEGER NOT NULL CHECK (document_length >= 0)
     )
   `);
@@ -791,10 +877,13 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
     )
   `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_uri ON documents(uri)');
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_logical_key ON documents(logical_key)');
+  yield* RecallIndexIdentity.initializeRecallIdentityIndex(sql);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_modified_uri ON documents(source_modified_at DESC, uri)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS documents_project_modified_uri ON documents(project, source_modified_at DESC, uri)',
   );
+  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS documents_workspace_scope_uri ON documents(workspace_scope, uri)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS postings_document_id ON postings(document_id)');
   yield* sql`
     INSERT INTO metadata (key, value)
@@ -840,7 +929,7 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
   const now = yield* Clock.currentTimeMillis;
   if (
     options.forceRefresh !== true &&
-    recallMetadataIntegrityIsCurrent(metadata) &&
+    RecallIndexIdentity.recallIndexMetadataIsCurrent(metadata) &&
     metadata.get('initialized') === 'true' &&
     metadata.get('stale_generation') === (staleMarker?.generation ?? '') &&
     now - numericMetadata(metadata, 'validated_at') < CACHE_VALIDATION_INTERVAL_MILLISECONDS
@@ -853,7 +942,7 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
     const lockedNow = yield* Clock.currentTimeMillis;
     if (
       options.forceRefresh !== true &&
-      recallMetadataIntegrityIsCurrent(lockedMetadata) &&
+      RecallIndexIdentity.recallIndexMetadataIsCurrent(lockedMetadata) &&
       lockedMetadata.get('initialized') === 'true' &&
       lockedMetadata.get('stale_generation') === (lockedStaleMarker?.generation ?? '') &&
       lockedNow - numericMetadata(lockedMetadata, 'validated_at') < CACHE_VALIDATION_INTERVAL_MILLISECONDS
@@ -861,7 +950,7 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
       return;
     }
     const repairLogicalCorruption =
-      lockedMetadata.get('initialized') === 'true' && !recallMetadataIntegrityIsCurrent(lockedMetadata);
+      lockedMetadata.get('initialized') === 'true' && !RecallIndexIdentity.recallIndexMetadataIsCurrent(lockedMetadata);
     yield* refreshRecallDatabase(
       sql,
       fs,
@@ -995,21 +1084,25 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           `INSERT INTO documents (
             uri,
             project,
+            workspace_scope,
             source_path,
             source_modified_at,
             source_size,
             authority_policy_key,
             candidate_json,
+            logical_key,
             document_length
-          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
           batch.flatMap(indexed => [
             stripRecallAnchor(indexed.candidate.uri),
             indexed.candidate.fields?.project?.trim().toLowerCase() || null,
+            normalizeRecallWorkspaceScope(indexed.candidate.fields?.workspaceScope) ?? null,
             indexed.source.path,
             indexed.source.modifiedAt ?? null,
             indexed.source.size,
             canonicalResourcePolicy.entryKeyByUri.get(indexed.source.uri) ?? null,
             JSON.stringify(indexed.candidate),
+            recallCandidateLogicalCorpusKey(indexed.candidate),
             indexed.documentLength,
           ]),
         );
@@ -1071,13 +1164,16 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         }
       }
       yield* flushPostings();
+      yield* RecallIndexIdentity.rebuildRecallIdentityConflicts(sql);
       for (const terms of chunkValues([...affectedTerms], 400)) {
         yield* sql`DELETE FROM term_statistics WHERE ${sql.in('term', terms)}`;
         yield* sql`
           INSERT INTO term_statistics (term, document_frequency)
-          SELECT term, COUNT(*) FROM postings
+          SELECT p.term, COUNT(DISTINCT d.logical_key)
+          FROM postings AS p
+          INNER JOIN documents AS d ON d.id = p.document_id
           WHERE ${sql.in('term', terms)}
-          GROUP BY term
+          GROUP BY p.term
         `;
       }
       const aggregate = yield* sql<{
@@ -1089,11 +1185,27 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
       `;
       const documentCount = aggregate[0]?.document_count ?? 0;
       const totalDocumentLength = aggregate[0]?.total_document_length ?? 0;
+      const logicalAggregate = yield* sql<{
+        readonly document_count: number;
+        readonly total_document_length: number | null;
+      }>`
+        SELECT COUNT(*) AS document_count, COALESCE(SUM(document_length), 0) AS total_document_length
+        FROM (
+          SELECT logical_key, MAX(document_length) AS document_length
+          FROM documents
+          GROUP BY logical_key
+        )
+      `;
+      const logicalDocumentCount = logicalAggregate[0]?.document_count ?? 0;
+      const logicalTotalDocumentLength = logicalAggregate[0]?.total_document_length ?? 0;
       const metadataEntries = [
         ['content_generation', contentGeneration],
         ['document_count', String(documentCount)],
         ['include_inactive', includeInactive ? 'true' : 'false'],
         ['initialized', 'true'],
+        ['memory_identity_conflict_generation', contentGeneration],
+        ['logical_document_count', String(logicalDocumentCount)],
+        ['logical_total_document_length', String(logicalTotalDocumentLength)],
         ['oversized_document_count', String(sourceScan.skippedOversizedDocumentCount)],
         ['stale_generation', staleGeneration ?? ''],
         ['total_document_length', String(totalDocumentLength)],
@@ -1116,7 +1228,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   if (markerChanged && staleMarker) {
     yield* clearStaleMarkerInvalidations(fs, staleMarkerBasePath, staleMarker).pipe(Effect.catch(() => Effect.void));
   }
-  yield* removeLegacyRecallCaches(fs, path, config.agentContextHome);
+  yield* removeLegacyRecallIndexArtifacts(fs, path, config.agentContextHome, RECALL_INDEX_DATABASE_VERSION);
 });
 
 function scanRecallSources(
@@ -1193,8 +1305,8 @@ const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(func
     ],
     {concurrency: 2},
   );
-  const documentCount = numericMetadata(metadata, 'document_count');
-  const totalDocumentLength = numericMetadata(metadata, 'total_document_length');
+  const documentCount = numericMetadata(metadata, 'logical_document_count');
+  const totalDocumentLength = numericMetadata(metadata, 'logical_total_document_length');
   return {
     averageDocumentLength: documentCount === 0 ? 1 : totalDocumentLength / documentCount,
     documentCount,
@@ -1205,55 +1317,6 @@ const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(func
     totalDocumentLength,
   } satisfies RecallCorpusStatistics;
 });
-
-function recallStatisticTerms(
-  options: LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
-): readonly string[] {
-  if ('terms' in options) {
-    return [];
-  }
-  const queries =
-    'selections' in options
-      ? options.selections.flatMap(selection => (selection.query === undefined ? [] : [selection.query]))
-      : options.query === undefined
-        ? []
-        : [options.query];
-  return [...new Set(queries.flatMap(indexTerms))];
-}
-
-function selectDocumentsByUris(sql: SqlClient.SqlClient, uris: readonly string[]) {
-  return selectDocumentRows(sql, 'uri', uris);
-}
-
-function selectDocumentsByIds(sql: SqlClient.SqlClient, ids: readonly number[]) {
-  return selectDocumentRows(sql, 'id', ids);
-}
-
-function selectDocumentSample(
-  sql: SqlClient.SqlClient,
-  allowedUriScopes: readonly string[] | undefined,
-  project: string | undefined,
-  limit: number | undefined,
-) {
-  const normalizedLimit = limit === undefined ? undefined : Math.max(0, Math.floor(limit));
-  if (normalizedLimit === 0) return Effect.succeed<readonly RecallDocumentRow[]>([]);
-  const scope = recallUriScopePredicate('d', allowedUriScopes);
-  const normalizedProject = project?.trim().toLowerCase();
-  const projectPredicate = normalizedProject ? ' AND d.project = ?' : '';
-  const bounded = normalizedLimit === undefined ? '' : ' LIMIT ?';
-  const order = normalizedLimit === undefined ? 'd.uri' : 'd.source_modified_at DESC, d.uri';
-  return sql.unsafe<RecallDocumentRow>(
-    `SELECT d.id, d.uri, d.candidate_json
-     FROM documents AS d
-     WHERE ${scope.sql}${projectPredicate}
-     ORDER BY ${order}${bounded}`,
-    [
-      ...scope.params,
-      ...(normalizedProject ? [normalizedProject] : []),
-      ...(normalizedLimit === undefined ? [] : [normalizedLimit]),
-    ],
-  );
-}
 
 function selectDocumentRows(sql: SqlClient.SqlClient, column: 'id' | 'uri', values: readonly (number | string)[]) {
   return Effect.gen(function* () {
@@ -1269,65 +1332,34 @@ function selectDocumentRows(sql: SqlClient.SqlClient, column: 'id' | 'uri', valu
   });
 }
 
-function loadRecallQueryTermStatistics(
-  sql: SqlClient.SqlClient,
-  terms: readonly string[],
-  corpusStatistics: RecallCorpusStatistics,
-  allowedUriScopes: readonly string[] | undefined,
-) {
-  if (!allowedUriScopes || allowedUriScopes.length === 0) {
-    return Effect.succeed<RecallQueryTermStatistics>({
-      documentCount: corpusStatistics.documentCount,
-      documentFrequency: corpusStatistics.documentFrequency,
-    });
-  }
-  return Effect.gen(function* () {
-    const scope = recallUriScopePredicate('d', allowedUriScopes);
-    const documentCountRows = yield* sql.unsafe<{readonly document_count: number}>(
-      `SELECT COUNT(*) AS document_count FROM documents AS d INDEXED BY documents_uri WHERE ${scope.sql}`,
-      scope.params,
-    );
-    const frequencies: RecallTermStatisticRow[] = [];
-    for (const batch of chunkValues(terms, 300)) {
-      if (batch.length === 0) continue;
-      frequencies.push(
-        ...(yield* sql.unsafe<RecallTermStatisticRow>(
-          `SELECT p.term, COUNT(*) AS document_frequency
-           FROM documents AS d INDEXED BY documents_uri
-           INNER JOIN postings AS p ON p.document_id = d.id
-           WHERE p.term IN (${batch.map(() => '?').join(', ')})
-             AND ${scope.sql}
-           GROUP BY p.term`,
-          [...batch, ...scope.params],
-        )),
-      );
-    }
-    return {
-      documentCount: documentCountRows[0]?.document_count ?? 0,
-      documentFrequency: Object.assign(
-        Object.create(null) as Record<string, number>,
-        Object.fromEntries(frequencies.map(row => [row.term, row.document_frequency])),
-      ),
-    } satisfies RecallQueryTermStatistics;
-  });
-}
-
 function selectTopPostingsByTerms(
   sql: SqlClient.SqlClient,
   terms: readonly string[],
   allowedUriScopes: readonly string[] | undefined,
+  project: string | undefined,
+  workspaceScope: string | undefined,
+  workspaceScopeMode: RecallWorkspaceScopeMode | undefined,
   postingPoolLimit: number,
   corpusStatistics: RecallCorpusStatistics,
 ) {
   if (terms.length === 0) return Effect.succeed<readonly RecallPostingRow[]>([]);
-  const scope = recallUriScopePredicate('d', allowedUriScopes);
+  const uriScope = recallUriScopePredicate('d', allowedUriScopes);
+  const workspace = recallWorkspaceScopePredicate('d', workspaceScope, workspaceScopeMode);
+  const scope = combineRecallSqlPredicates(uriScope, recallProjectPredicate('d', project), workspace);
   const queryTermValues = terms.map(() => '(?, ?)').join(', ');
   const queryTermParameters = terms.flatMap(term => [term, postingInverseDocumentFrequency(term, corpusStatistics)]);
-  const fromClause = scope.restricted
-    ? `documents AS d INDEXED BY documents_uri
+  const indexHint = uriScope.restricted
+    ? ' INDEXED BY documents_uri'
+    : workspace.restricted
+      ? ' INDEXED BY documents_workspace_scope_uri'
+      : '';
+  const postingsFirst = workspaceScopeMode === 'sibling';
+  const fromClause =
+    scope.restricted && !postingsFirst
+      ? `documents AS d${indexHint}
        INNER JOIN postings AS p ON p.document_id = d.id
        INNER JOIN query_terms AS q ON q.term = p.term`
-    : `query_terms AS q
+      : `query_terms AS q
        INNER JOIN postings AS p ON p.term = q.term
        INNER JOIN documents AS d ON d.id = p.document_id`;
   return sql.unsafe<RecallPostingRow>(
@@ -1388,24 +1420,6 @@ function selectTopPostingsByTerms(
       postingPoolLimit,
     ],
   );
-}
-
-function recallUriScopePredicate(
-  alias: string,
-  allowedUriScopes: readonly string[] | undefined,
-): {readonly params: readonly string[]; readonly restricted: boolean; readonly sql: string} {
-  if (allowedUriScopes === undefined || allowedUriScopes.length === 0) {
-    return {params: [], restricted: false, sql: '1 = 1'};
-  }
-  const scopes = normalizeRecallUriScopes(allowedUriScopes);
-  if (scopes.length === 0) return {params: [], restricted: true, sql: '0 = 1'};
-  const params: string[] = [];
-  const clauses = scopes.map(scope => {
-    const prefix = `${scope}/`;
-    params.push(scope, prefix, `${scope}0`);
-    return `(${alias}.uri = ? OR (${alias}.uri >= ? AND ${alias}.uri < ?))`;
-  });
-  return {params, restricted: true, sql: `(${clauses.join(' OR ')})`};
 }
 
 function selectPostingTermsByDocumentIds(sql: SqlClient.SqlClient, documentIds: readonly number[]) {
@@ -1470,11 +1484,6 @@ function removeRecallDatabaseAuxiliaryFiles(fs: FileSystem.FileSystem, databaseP
   });
 }
 
-function recallMetadataIntegrityIsCurrent(metadata: ReadonlyMap<string, string>): boolean {
-  const mutationSequence = metadata.get('mutation_sequence');
-  return mutationSequence !== undefined && mutationSequence === metadata.get('integrity_sequence');
-}
-
 function isRecoverableRecallIndexCause(cause: Cause.Cause<unknown>): boolean {
   const squashed = Cause.squash(cause);
   if (squashed instanceof RecallIndexCorrupt || squashed instanceof RecallIndexSchemaIncompatible) {
@@ -1488,19 +1497,6 @@ function isRecoverableRecallIndexCause(cause: Cause.Cause<unknown>): boolean {
 function nextRecallGenerationCounter(): number {
   staleGenerationCounter += 1;
   return staleGenerationCounter;
-}
-
-function removeLegacyRecallCaches(fs: FileSystem.FileSystem, path: Path.Path, home: string) {
-  return Effect.gen(function* () {
-    const cacheRoot = path.join(home, 'cache');
-    if (!(yield* fs.exists(cacheRoot))) return;
-    const entries = yield* fs.readDirectory(cacheRoot);
-    for (const entry of entries) {
-      if (/^recall-index-v[0-9]+(?:-with-inactive)?\.json(?:\.stale)?$/.test(entry)) {
-        yield* fs.remove(path.join(cacheRoot, entry), {force: true});
-      }
-    }
-  });
 }
 
 function chunkValues<Value>(values: readonly Value[], size: number): readonly (readonly Value[])[] {
@@ -1556,11 +1552,14 @@ function indexCandidate(uri: string, content: string, canonicalResource: boolean
     project: memory?.metadata.project ?? resourceProject(uri),
     title: firstHeading(text) ?? uriBasename(uri),
     topic: memory?.metadata.topic ?? uriTopic(uri),
+    workspaceScope: memory?.metadata.workspaceScope,
   };
   return {
     authority: boundedMemoryAuthority(uri, memory?.metadata, {canonicalResource}),
+    contentHash: memory ? recallMemoryContentHash(memory.body) : undefined,
     fields,
     kind: memory?.metadata.kind,
+    memoryId: memory?.metadata.memoryId,
     relations: memoryRelations(memory),
     status: memory?.metadata.status,
     text,
@@ -1888,7 +1887,17 @@ function recallCandidateIsValid(value: unknown): value is RecallCandidate {
   if (!isPlainRecord(value) || typeof value.uri !== 'string' || typeof value.text !== 'string') {
     return false;
   }
-  const stringValues = ['authority', 'kind', 'status', 'timestamp', 'trust', 'validFrom', 'validTo'] as const;
+  const stringValues = [
+    'authority',
+    'contentHash',
+    'kind',
+    'memoryId',
+    'status',
+    'timestamp',
+    'trust',
+    'validFrom',
+    'validTo',
+  ] as const;
   if (stringValues.some(key => value[key] !== undefined && typeof value[key] !== 'string')) {
     return false;
   }
@@ -1896,14 +1905,22 @@ function recallCandidateIsValid(value: unknown): value is RecallCandidate {
   if (numberValues.some(key => value[key] !== undefined && !isFiniteNumber(value[key]))) {
     return false;
   }
+  if (value.identityConflict !== undefined && typeof value.identityConflict !== 'boolean') {
+    return false;
+  }
   if (value.exactTerms !== undefined && !isStringArray(value.exactTerms)) {
+    return false;
+  }
+  if (value.equivalentUris !== undefined && !isStringArray(value.equivalentUris)) {
     return false;
   }
   if (value.fields !== undefined) {
     if (!isPlainRecord(value.fields)) return false;
     const fields = value.fields;
     if (
-      !['project', 'title', 'topic'].every(key => fields[key] === undefined || typeof fields[key] === 'string') ||
+      !['project', 'title', 'topic', 'workspaceScope'].every(
+        key => fields[key] === undefined || typeof fields[key] === 'string',
+      ) ||
       !['identifiers', 'keywords'].every(key => fields[key] === undefined || isStringArray(fields[key]))
     ) {
       return false;

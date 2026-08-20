@@ -8,6 +8,7 @@ import {
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
 import {parseAgentClient} from './mcp.js';
+import {captureConsole} from './effect/console.js';
 import {SystemInfo} from './effect/system.js';
 import {runHandoff, runRecall} from './memory.js';
 import {applyScrubber} from './share.js';
@@ -229,14 +230,16 @@ export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOp
     if (!project) {
       return;
     }
-    yield* Console.log(`## Threadnote — latest context for ${project}\n`);
-    yield* runRecall(config, {
-      dryRun: options.dryRun === true,
-      inferScope: true,
-      nodeLimit: '5',
-      // Keep "current branch" here so recall enriches the query with local git/workspace terms.
-      query: `${project} current branch latest handoff durable feature memory`,
-    });
+    const recalled = yield* captureConsole(
+      runRecall(config, {
+        dryRun: options.dryRun === true,
+        inferScope: true,
+        nodeLimit: '5',
+        // Keep the intent phrase so recall resolves the branch as separate, non-topical context.
+        query: `${project} current branch latest handoff durable feature memory`,
+      }),
+    );
+    yield* Console.log(renderSessionStartRecallQueue(project, recalled.output));
   }).pipe(
     Effect.catch(error =>
       Console.error(
@@ -244,6 +247,83 @@ export function runSessionStartHook(config: RuntimeConfig, options: HookRunnerOp
       ),
     ),
   );
+}
+
+/**
+ * The session-start hook is an action queue, not a second recall UI. It keeps
+ * ranking diagnostics out of the always-injected surface and makes the
+ * required pointer-follow explicit. The full explainable recall remains
+ * available through recall_context and the interactive CLI.
+ */
+export function renderSessionStartRecallQueue(project: string, recallOutput: string): string {
+  const uris = rankedRecallUris(recallOutput).slice(0, SESSION_START_RECALL_POINTER_LIMIT);
+  const warnings = operationalRecallWarnings(recallOutput);
+  const queue =
+    uris.length > 0
+      ? uris.map(uri => `- [unread] ${uri}`)
+      : warnings.length > 0
+        ? ['No unread context pointers were returned, but recall ran in degraded mode.']
+        : ['No unread context pointers were recalled for this workspace.'];
+  const warningSection =
+    warnings.length > 0 ? ['', 'Recall warnings (bounded):', ...warnings.map(warning => `- ${warning}`)] : [];
+  return [
+    `## Threadnote — unread context queue for ${project}`,
+    '',
+    ...queue,
+    ...warningSection,
+    '',
+    uris.length > 0
+      ? 'Required next action: call `read_context` for the relevant URI above before relying on memory-backed claims.'
+      : warnings.length > 0
+        ? 'Required next action: continue with repository evidence, follow the warning remediation, and retry recall when healthy. Do not treat this empty queue as proof that no memory exists.'
+        : 'Continue with current repository evidence; there is no recalled memory to treat as context.',
+    'A ranked recall pointer is not evidence until its content has been read.',
+  ].join('\n');
+}
+
+const SESSION_START_RECALL_POINTER_LIMIT = 5;
+const SESSION_START_RECALL_WARNING_LIMIT = 4;
+const SESSION_START_RECALL_WARNING_MAX_CHARACTERS = 320;
+const SESSION_START_RECALL_WARNING_PREFIXES = [
+  'Auto-sync warning:',
+  'Local AI recall warning:',
+  'Recall index warning:',
+  'Recall warning:',
+  'Recall error:',
+] as const;
+
+function operationalRecallWarnings(output: string): readonly string[] {
+  const seen = new Set<string>();
+  const warnings: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const normalized = line.trim().replace(/\s+/g, ' ');
+    if (!SESSION_START_RECALL_WARNING_PREFIXES.some(prefix => normalized.startsWith(prefix))) continue;
+    const bounded = boundedRecallWarning(normalized);
+    if (seen.has(bounded)) continue;
+    seen.add(bounded);
+    warnings.push(bounded);
+    if (warnings.length === SESSION_START_RECALL_WARNING_LIMIT) break;
+  }
+  return warnings;
+}
+
+function boundedRecallWarning(warning: string): string {
+  const characters = [...warning];
+  return characters.length <= SESSION_START_RECALL_WARNING_MAX_CHARACTERS
+    ? warning
+    : `${characters.slice(0, SESSION_START_RECALL_WARNING_MAX_CHARACTERS - 1).join('')}…`;
+}
+
+function rankedRecallUris(output: string): readonly string[] {
+  const seen = new Set<string>();
+  const uris: string[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const uri = /^\s*\d+\.\s+.*\s·\s+(threadnote:\/\/\S+)\s*$/.exec(line)?.[1];
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    uris.push(uri);
+  }
+  return uris;
 }
 
 interface TraceContext {

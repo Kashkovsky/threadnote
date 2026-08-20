@@ -217,6 +217,42 @@ describe('stripPersonalProvenance', () => {
     expect(out).not.toMatch(/^supersedes:/m);
     expect(out).toContain('project: y');
   });
+
+  it('strips generated hygiene trailers before sharing without removing authored prose', () => {
+    const personalUri = 'threadnote://user/me/memories/handoffs/archived/threadnote/private-task.md';
+    const generated = [
+      'MEMORY',
+      'kind: durable',
+      'project: threadnote',
+      '',
+      'Public durable contract.',
+      '',
+      '<!-- threadnote:hygiene-sources:v1 -->',
+      '## Threadnote Hygiene Sources',
+      '',
+      `- ${personalUri}`,
+    ].join('\n');
+    const authored = [
+      'MEMORY',
+      'kind: durable',
+      'project: threadnote',
+      '',
+      'Public durable contract.',
+      '',
+      '## Threadnote Hygiene Sources',
+      '',
+      'This heading is ordinary user-authored prose.',
+    ].join('\n');
+    const legacyGenerated = generated.replace('<!-- threadnote:hygiene-sources:v1 -->\n', '');
+
+    const scrubbed = stripPersonalProvenance(generated);
+
+    expect(scrubbed).toContain('Public durable contract.');
+    expect(scrubbed).not.toContain('threadnote:hygiene-sources');
+    expect(scrubbed).not.toContain(personalUri);
+    expect(stripPersonalProvenance(legacyGenerated)).not.toContain(personalUri);
+    expect(stripPersonalProvenance(authored)).toBe(authored);
+  });
 });
 
 describe('setMemoryVisibility', () => {

@@ -8,6 +8,8 @@ import {join} from '../helpers/node-path.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
+import {renderSessionStartRecallQueue} from '../../src/hooks.js';
+import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 
 interface TextContent {
   readonly text: string;
@@ -21,14 +23,15 @@ interface ThreadnoteProgress {
   readonly total?: number;
 }
 
-interface CanonicalReadMetadata {
-  readonly resources: readonly {readonly contentIndex: number; readonly uri: string}[];
-  readonly type: 'threadnote-canonical-read';
-  readonly version: 1;
+interface ReadPageStructuredContent {
+  readonly budgetTokens: number;
+  readonly complete: boolean;
+  readonly cursor?: string;
+  readonly estimatedTokens: number;
+  readonly type: 'threadnote-read-page';
 }
 
-const CANONICAL_READ_METADATA_KEY = 'threadnote.io/canonical-read';
-const MCP_RESOURCE_READ_MAX_BYTES = 1_048_576;
+const MCP_RESOURCE_READ_MAX_BYTES = 4_500;
 const RECALL_PROGRESS_PHASES = [
   'recall.shared-sync',
   'recall.obsidian-sync',
@@ -211,11 +214,12 @@ describe('Threadnote MCP toolsets', () => {
         expect(instructions).toContain('directly');
         expect(instructions).toContain('additional user-approved candidates');
         expect(instructions).toContain('Do not store');
+        expect(instructions).toContain('Results are unread `threadnote://` pointers, not evidence');
+        expect(instructions).toContain('read them via `read_context`');
         expect(instructions).toContain('`inspect_code_graph` before broad `rg`/grep');
-        expect(instructions).toContain('`analyze_code_graph` for whole-repo stats');
-        expect(instructions).toContain('exact text search remains useful meanwhile');
+        expect(instructions).toContain('`analyze_code_graph` for architecture');
+        expect(instructions).toContain('exact search remains useful');
         expect(instructions).toContain('Retry `state=indexing` after `retryAfterMilliseconds`');
-        expect(instructions).toContain('communities, hubs, and surprises');
         const reviewTool = (await client.listTools()).tools.find(tool => tool.name === 'review_session_context');
         expect(reviewTool?.description).toContain('After routine durable and handoff writes');
         expect(reviewTool?.description).toContain('additional reviewable');
@@ -230,8 +234,11 @@ describe('Threadnote MCP toolsets', () => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CORE_TOOL_NAMES);
         expect(Buffer.byteLength(JSON.stringify(tools.tools))).toBeLessThanOrEqual(15_000);
+        expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
+          'unread threadnote:// pointers, not evidence',
+        );
         expect(tools.tools.find(tool => tool.name === 'read_context')?.description).toContain(
-          'Canonical memory content is returned in full.',
+          'no more than 1500 estimated tokens',
         );
       },
       {toolset: null},
@@ -289,7 +296,10 @@ describe('Threadnote MCP toolsets', () => {
         await writeCanonicalMemory(
           fixture.home,
           'oversized-protocol-resource.md',
-          canonicalMemoryContent('oversized-protocol-resource', 'x'.repeat(MCP_RESOURCE_READ_MAX_BYTES)),
+          canonicalMemoryContent(
+            'oversized-protocol-resource',
+            `LOCAL_RESOURCE_PRIVATE_SENTINEL\n${'x'.repeat(1_000_000)}`,
+          ),
         );
         const foreignAccountResources = join(fixture.home, 'data', 'other-account', 'resources');
         await mkdir(foreignAccountResources, {recursive: true});
@@ -358,12 +368,17 @@ describe('Threadnote MCP toolsets', () => {
         expect(invalidUtf8Error?.message).not.toContain('invalid-utf8-protocol-resource');
         expect(invalidUtf8Error?.message).not.toContain(fixture.root);
         expect(invalidUtf8Error?.data).toBeUndefined();
-        await expect(client.readResource({uri: oversizedUri})).rejects.toMatchObject({
+        const oversizedError = await client.readResource({uri: oversizedUri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(oversizedError).toMatchObject({
           code: -32602,
           message: expect.stringContaining(
-            `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context for a complete canonical read.`,
+            `Threadnote resource exceeds the ${MCP_RESOURCE_READ_MAX_BYTES}-byte resources/read limit; use read_context pagination.`,
           ),
         });
+        expect(oversizedError?.message).not.toContain('LOCAL_RESOURCE_PRIVATE_SENTINEL');
       },
       {toolset: 'core'},
     );
@@ -377,7 +392,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(recall?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
+            budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
             callerCwd: {type: 'string'},
+            explain: {type: 'boolean'},
             nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
             project: {type: 'string'},
             query: {type: 'string'},
@@ -386,6 +403,8 @@ describe('Threadnote MCP toolsets', () => {
           type: 'object',
         });
         expect(JSON.stringify(recall?.inputSchema)).not.toContain('null');
+        const read = tools.tools.find(tool => tool.name === 'read_context');
+        expect(read?.inputSchema.properties).not.toHaveProperty('full');
 
         const validationError = await callErrorText(client, 'recall_context', {
           nodeLimit: 0,
@@ -397,11 +416,19 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
-  it('returns hybrid recall confidence and ranking explanations as structured content', async () => {
+  it('returns a budgeted unread queue and gates full ranking explanations behind explain', async () => {
     await withMcpClient(
-      async client => {
+      async (client, fixture) => {
+        await writeCanonicalMemory(
+          fixture.home,
+          'structured-recall.md',
+          canonicalMemoryContent('structured-recall', 'Structured recall ranking anchor qz-structured-7788.'),
+        );
         const result = await client.callTool(
-          {arguments: {project: 'threadnote', query: 'threadnote recall ranking'}, name: 'recall_context'},
+          {
+            arguments: {project: 'threadnote', query: 'qz-structured-7788', threshold: 0},
+            name: 'recall_context',
+          },
           undefined,
           {timeout: 5000},
         );
@@ -410,12 +437,155 @@ describe('Threadnote MCP toolsets', () => {
           confidence: {
             level: expect.stringMatching(/^(?:high|medium|low|no_answer)$/),
           },
-          rankerVersion: 'hybrid-v3',
+          nextAction: {tool: 'read_context', uris: expect.any(Array)},
+          output: {budgetTokens: 1_500, explain: false, returnedResults: expect.any(Number)},
+          rankerVersion: 'hybrid-v6',
           results: expect.any(Array),
         });
+        const compact = result.structuredContent as {
+          readonly nextAction: {readonly uris: readonly string[]};
+          readonly results: readonly Record<string, unknown>[];
+        };
+        expect(compact.results.length).toBeGreaterThan(0);
+        expect(compact.results[0]).toMatchObject({readState: 'unread', reason: expect.any(String)});
+        expect(compact.results[0]).not.toHaveProperty('reasons');
+        expect(compact.results[0]).not.toHaveProperty('signals');
+        expect(compact.nextAction.uris[0]).toBe(compact.results[0]?.uri);
+        const compactText = (result.content as TextContent[]).map(item => item.text).join('\n');
+        expect(
+          Buffer.byteLength(JSON.stringify(result.structuredContent)) + Buffer.byteLength(compactText),
+        ).toBeLessThanOrEqual(1_500 * 3);
         expect(result.structuredContent).not.toHaveProperty('codeGraph');
+
+        const explained = await client.callTool(
+          {
+            arguments: {explain: true, project: 'threadnote', query: 'qz-structured-7788', threshold: 0},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        const explainedResults = (explained.structuredContent as {readonly results: readonly Record<string, unknown>[]})
+          .results;
+        expect(explainedResults[0]).toMatchObject({reasons: expect.any(Array), signals: expect.any(Object)});
+
+        const tooSmall = await client.callTool(
+          {
+            arguments: {budgetTokens: 1, project: 'threadnote', query: 'qz-structured-7788', threshold: 0},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        expect(tooSmall.isError).toBe(true);
+        expect(JSON.stringify(tooSmall.content)).toContain('cannot fit the required');
       },
       {toolset: 'core'},
+    );
+  });
+
+  it('returns a typed identity-conflict warning in the default compact recall result', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const memory = (topic: string, body: string) =>
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            `topic: ${topic}`,
+            'source_agent_client: integration-test',
+            'timestamp: 2026-08-01T00:00:00.000Z',
+            'memory_id: tn_mcp_identity_conflict',
+            '',
+            body,
+          ].join('\n');
+        await writeCanonicalMemory(
+          fixture.home,
+          'identity-conflict-target.md',
+          memory('identity-conflict-target', 'Identity conflict anchor qz-identity-7788.'),
+        );
+        const sharedPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'shared',
+          'platform',
+          'durable',
+          'projects',
+          'threadnote',
+          'identity-conflict-alias.md',
+        );
+        await mkdir(join(sharedPath, '..'), {recursive: true});
+        await writeFile(sharedPath, memory('identity-conflict-alias', 'A divergent body.'), 'utf8');
+
+        const result = await client.callTool(
+          {
+            arguments: {project: 'threadnote', query: 'qz-identity-7788', threshold: 0},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+
+        expect(result.isError).not.toBe(true);
+        const structured = result.structuredContent as {
+          readonly output?: {readonly explain?: boolean};
+          readonly results?: readonly {
+            readonly rankWarnings?: unknown;
+            readonly warnings?: readonly {readonly code?: unknown; readonly message?: unknown}[];
+          }[];
+        };
+        expect(structured.output?.explain).toBe(false);
+        expect(structured.results?.[0]?.warnings).toEqual([
+          expect.objectContaining({
+            code: 'memory_identity_conflict',
+            message: expect.stringContaining('divergent bodies'),
+          }),
+        ]);
+        expect(structured.results?.[0]).not.toHaveProperty('rankWarnings');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('honors THREADNOTE_RECALL_THRESHOLD as the topical relevanceScore floor', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        await writeCanonicalMemory(
+          fixture.home,
+          'environment-threshold.md',
+          canonicalMemoryContent('environment-threshold', 'Environment threshold anchor qz-environment-8811.'),
+        );
+
+        const configured = await client.callTool(
+          {
+            arguments: {project: 'threadnote', query: 'qz-environment-8811'},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect((configured.structuredContent as {readonly results?: readonly unknown[]} | undefined)?.results).toEqual(
+          [],
+        );
+
+        const broadened = await client.callTool(
+          {
+            arguments: {project: 'threadnote', query: 'qz-environment-8811', threshold: 0},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(
+          (broadened.structuredContent as {readonly results?: readonly unknown[]} | undefined)?.results?.length,
+        ).toBeGreaterThan(0);
+      },
+      {environment: {THREADNOTE_RECALL_THRESHOLD: '1'}, toolset: 'core'},
     );
   });
 
@@ -485,6 +655,52 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(phaseTimings?.find(timing => timing.phase === 'recall.semantic-retrieval')?.outcome).toBe('unavailable');
         expect(productionLog).not.toContain(privateQuery);
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('returns a typed degraded warning when exact and ranked lexical recovery both fail', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const lexicalRoot = join(fixture.home, 'indexes', 'lexical');
+        await mkdir(lexicalRoot, {recursive: true});
+        await writeFile(join(lexicalRoot, recallIndexDatabaseFilename(false)), 'not a sqlite database', 'utf8');
+        await writeFile(join(lexicalRoot, 'generations'), 'blocks index recovery', 'utf8');
+
+        const result = await client.callTool(
+          {
+            arguments: {project: 'threadnote', query: 'degraded lexical exact anchor 7788'},
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(result.isError).not.toBe(true);
+        const structured = result.structuredContent as {
+          readonly results?: readonly unknown[];
+          readonly warnings?: readonly {
+            readonly code?: unknown;
+            readonly message?: unknown;
+            readonly remediation?: unknown;
+          }[];
+        };
+        expect(structured.results).toEqual([]);
+        expect(structured.warnings).toEqual([
+          expect.objectContaining({
+            code: 'lexical_index_unavailable',
+            message: expect.stringContaining('could not be read or recovered'),
+            remediation: expect.stringContaining('threadnote doctor --dry-run'),
+          }),
+        ]);
+        const text = (result.content as TextContent[]).map(item => item.text).join('\n');
+        expect(text).toContain('Recall index warning:');
+        expect(text).toContain('Recall returned 0/0 unread pointer(s)');
+
+        const hookQueue = renderSessionStartRecallQueue('threadnote', text);
+        expect(hookQueue).toContain('recall ran in degraded mode');
+        expect(hookQueue).toContain('Do not treat this empty queue as proof that no memory exists.');
+        expect(hookQueue).not.toContain('there is no recalled memory to treat as context');
       },
       {toolset: 'core'},
     );
@@ -602,134 +818,110 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
-  it('returns complete large canonical memories without applying graph response budgets', async () => {
+  it('bounds read_context by default and reconstructs exact Unicode content through opaque continuations', async () => {
     await withMcpClient(
-      async client => {
-        const largeText = Array.from(
-          {length: 12_000},
-          (_, index) =>
-            `Large-memory-read-contract ${index.toString().padStart(5, '0')} ${'payload '.repeat(7)}payload`,
-        ).join('\n');
-        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/large-read-contract.md';
-        await callText(client, 'remember_context', {
-          kind: 'durable',
-          project: 'threadnote',
-          sourceAgentClient: 'codex',
-          status: 'active',
-          text: largeText,
-          topic: 'large-read-contract',
-        });
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/bounded-read.md';
+        const content = canonicalMemoryContent('bounded-read', `${'Unicode evidence 🙂漢字\n'.repeat(1_000)}terminal`);
+        await writeCanonicalMemory(fixture.home, 'bounded-read.md', content);
 
-        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const metadata = result._meta?.[CANONICAL_READ_METADATA_KEY] as CanonicalReadMetadata | undefined;
-        const content = Array.isArray(result.content) ? result.content : [];
-        const text = (content[0] as TextContent | undefined)?.text;
+        const budgetTokens = 256;
+        const reconstructed: string[] = [];
+        let cursor: string | undefined;
+        let previousCursor: string | undefined;
+        for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+          const result = await client.callTool(
+            {
+              arguments: cursor === undefined ? {budgetTokens, uri} : {budgetTokens, cursor},
+              name: 'read_context',
+            },
+            undefined,
+            {timeout: 30_000},
+          );
+          expect(result.isError, JSON.stringify(result)).not.toBe(true);
+          const output = Array.isArray(result.content) ? result.content : [];
+          const pageText = (output[0] as TextContent | undefined)?.text ?? '';
+          const structured = result.structuredContent as ReadPageStructuredContent;
+          const responseBytes =
+            output.reduce(
+              (total, item) => total + (item.type === 'text' ? Buffer.byteLength(item.text, 'utf8') : 0),
+              0,
+            ) + Buffer.byteLength(JSON.stringify(structured), 'utf8');
+          expect(responseBytes).toBeLessThanOrEqual(budgetTokens * 3);
+          expect(structured.estimatedTokens).toBe(Math.ceil(responseBytes / 3));
+          expect(structured.type).toBe('threadnote-read-page');
+          expect(result._meta).not.toHaveProperty('threadnote.io/canonical-read');
+          reconstructed.push(pageText);
+          if (structured.complete) {
+            expect(structured.cursor).toBeUndefined();
+            break;
+          }
+          expect(structured.cursor).toMatch(/^tnrc_[0-9a-f]{32}$/u);
+          expect(structured.cursor).not.toContain('threadnote');
+          previousCursor = cursor;
+          cursor = structured.cursor;
+          if (pageNumber === 99) throw new TestError('Bounded read did not terminate.');
+        }
+        expect(reconstructed.join('')).toBe(content);
 
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(result.structuredContent).toBeUndefined();
-        expect(metadata).toEqual({
-          resources: [{contentIndex: 0, uri}],
-          type: 'threadnote-canonical-read',
-          version: 1,
-        });
-        expect(text).toContain(largeText);
-        expect(Buffer.byteLength(text ?? '')).toBeGreaterThan(1_024 * 1_024);
+        if (previousCursor) {
+          const replay = await client.callTool({arguments: {cursor: previousCursor}, name: 'read_context'});
+          expect(replay.isError).toBe(true);
+          const replayContent = Array.isArray(replay.content) ? replay.content : [];
+          expect((replayContent[0] as TextContent | undefined)?.text).toContain('already consumed');
+        }
       },
       {toolset: 'core'},
     );
   }, 40_000);
 
-  it('returns an exact 8.5 MiB canonical memory through the default MCP client buffer', async () => {
+  it('invalidates a read_context cursor when canonical content changes between pages', async () => {
     await withMcpClient(
       async (client, fixture) => {
-        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/default-buffer-read.md';
-        const content = canonicalMemoryContent('default-buffer-read', 'd'.repeat(8 * 1_024 * 1_024 + 512 * 1_024));
-        await writeCanonicalMemory(fixture.home, 'default-buffer-read.md', content);
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/stale-bounded-read.md';
+        const original = canonicalMemoryContent('stale-bounded-read', 'original evidence\n'.repeat(1_000));
+        await writeCanonicalMemory(fixture.home, 'stale-bounded-read.md', original);
+        const first = await client.callTool({arguments: {budgetTokens: 128, uri}, name: 'read_context'});
+        const cursor = (first.structuredContent as ReadPageStructuredContent | undefined)?.cursor;
+        expect(cursor).toMatch(/^tnrc_/u);
 
-        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(result.content).toEqual([{text: content, type: 'text'}]);
-        expect(result.structuredContent).toBeUndefined();
-        expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
-          resources: [{contentIndex: 0, uri}],
-          type: 'threadnote-canonical-read',
-          version: 1,
-        });
-        expect(Buffer.byteLength(content)).toBeGreaterThan(8 * 1_024 * 1_024);
-        expect(Buffer.byteLength(content)).toBeLessThan(9 * 1_024 * 1_024);
-      },
-      {toolset: 'core'},
-    );
-  }, 40_000);
-
-  it('returns a canonical memory larger than the SDK default stdio buffer when the client permits it', async () => {
-    await withMcpClient(
-      async (client, fixture) => {
-        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/oversized-read-contract.md';
-        const content = canonicalMemoryContent('oversized-read-contract', 'x'.repeat(11 * 1_024 * 1_024));
-        await writeCanonicalMemory(fixture.home, 'oversized-read-contract.md', content);
-
-        const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
-        const output = Array.isArray(result.content) ? result.content : [];
-        const text = (output[0] as TextContent | undefined)?.text;
-
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(Buffer.byteLength(text ?? '')).toBeGreaterThan(10 * 1_024 * 1_024);
-        expect(text).toBe(content);
-        expect(result.structuredContent).toBeUndefined();
-        expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
-          resources: [{contentIndex: 0, uri}],
-          type: 'threadnote-canonical-read',
-          version: 1,
-        });
-      },
-      // The SDK's default inbound frame is finite client policy, not a
-      // Threadnote read limit. Increase it to verify an uncapped server read.
-      {maxBufferSize: 32 * 1_024 * 1_024, toolset: 'core'},
-    );
-  }, 40_000);
-
-  it('returns multiple large canonical memories in full through the read alias', async () => {
-    await withMcpClient(
-      async (client, fixture) => {
-        const firstUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/multi-read-first.md';
-        const secondUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/multi-read-second.md';
-        const firstContent = canonicalMemoryContent('multi-read-first', `first:${'a'.repeat(6 * 1_024 * 1_024)}`);
-        const secondContent = canonicalMemoryContent('multi-read-second', `second:${'b'.repeat(6 * 1_024 * 1_024)}`);
-        await writeCanonicalMemory(fixture.home, 'multi-read-first.md', firstContent);
-        await writeCanonicalMemory(fixture.home, 'multi-read-second.md', secondContent);
-
-        const tools = await client.listTools();
-        expect(tools.tools.find(tool => tool.name === 'read')?.description).toContain(
-          'Canonical memory content is returned in full.',
+        await writeCanonicalMemory(
+          fixture.home,
+          'stale-bounded-read.md',
+          canonicalMemoryContent('stale-bounded-read', 'changed evidence\n'.repeat(1_000)),
         );
-        const result = await client.callTool({arguments: {uris: [firstUri, secondUri]}, name: 'read'}, undefined, {
-          timeout: 30_000,
-        });
-        const output = Array.isArray(result.content) ? result.content : [];
-
-        expect(result.isError, JSON.stringify(result)).not.toBe(true);
-        expect(output).toEqual([
-          {text: firstContent, type: 'text'},
-          {text: secondContent, type: 'text'},
-        ]);
-        expect(result.structuredContent).toBeUndefined();
-        expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
-          resources: [
-            {contentIndex: 0, uri: firstUri},
-            {contentIndex: 1, uri: secondUri},
-          ],
-          type: 'threadnote-canonical-read',
-          version: 1,
-        });
-        expect(Buffer.byteLength(firstContent) + Buffer.byteLength(secondContent)).toBeGreaterThan(10 * 1_024 * 1_024);
+        const continued = await client.callTool({arguments: {cursor}, name: 'read_context'});
+        expect(continued.isError).toBe(true);
+        const continuedContent = Array.isArray(continued.content) ? continued.content : [];
+        expect((continuedContent[0] as TextContent | undefined)?.text).toContain('source changed');
       },
-      {maxBufferSize: 32 * 1_024 * 1_024, toolset: 'full'},
+      {toolset: 'core'},
     );
-  }, 40_000);
+  });
 
-  it('keeps a large canonical read exact while healthy auto-sync contention is quietly deferred', async () => {
+  it('keeps compatibility-alias continuations on the read tool that issued the cursor', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/alias-bounded-read.md';
+        await writeCanonicalMemory(
+          fixture.home,
+          'alias-bounded-read.md',
+          canonicalMemoryContent('alias-bounded-read', 'alias evidence\n'.repeat(1_000)),
+        );
+        const first = await client.callTool({arguments: {budgetTokens: 128, uri}, name: 'read'});
+        const cursor = (first.structuredContent as ReadPageStructuredContent | undefined)?.cursor;
+        expect(cursor).toMatch(/^tnrc_/u);
+        const firstContent = Array.isArray(first.content) ? first.content : [];
+        expect((firstContent[1] as TextContent | undefined)?.text).toContain('Continue with read cursor');
+
+        const continued = await client.callTool({arguments: {budgetTokens: 128, cursor}, name: 'read'});
+        expect(continued.isError, JSON.stringify(continued)).not.toBe(true);
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('keeps a large canonical read bounded while healthy auto-sync contention is quietly deferred', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/sync-contention-read.md';
@@ -767,20 +959,24 @@ describe('Threadnote MCP toolsets', () => {
             await Bun.sleep(10);
           }
 
-          const result = await client.callTool({arguments: {uri}, name: 'read_context'}, undefined, {timeout: 30_000});
+          const result = await client.callTool({arguments: {budgetTokens: 256, uri}, name: 'read_context'}, undefined, {
+            timeout: 30_000,
+          });
           const output = Array.isArray(result.content) ? result.content : [];
           const primary = output[0] as TextContent | undefined;
+          const structured = result.structuredContent as ReadPageStructuredContent;
 
           expect(result.isError, JSON.stringify(result)).not.toBe(true);
-          expect(output).toHaveLength(1);
-          expect(primary).toEqual({text: content, type: 'text'});
-          expect(Buffer.byteLength(primary?.text ?? '')).toBeGreaterThan(1_024 * 1_024);
-          expect(result.structuredContent).toBeUndefined();
-          expect(result._meta?.[CANONICAL_READ_METADATA_KEY]).toEqual({
-            resources: [{contentIndex: 0, uri}],
-            type: 'threadnote-canonical-read',
-            version: 1,
-          });
+          expect(primary?.type).toBe('text');
+          expect(content.startsWith(primary?.text ?? '')).toBe(true);
+          expect(structured.complete).toBe(false);
+          expect(structured.cursor).toMatch(/^tnrc_/u);
+          expect(
+            output.reduce(
+              (total, item) => total + (item.type === 'text' ? Buffer.byteLength(item.text, 'utf8') : 0),
+              0,
+            ) + Buffer.byteLength(JSON.stringify(structured), 'utf8'),
+          ).toBeLessThanOrEqual(256 * 3);
         } finally {
           await writeFile(release, 'release\n', 'utf8');
           const exited = await Promise.race([owner.exited, Bun.sleep(5_000).then(() => undefined)]);
@@ -796,6 +992,168 @@ describe('Threadnote MCP toolsets', () => {
       {toolset: 'core'},
     );
   }, 40_000);
+
+  it('persists nested package scope and uses it to rank otherwise similar monorepo memories', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const workspace = join(fixture.root, 'monorepo');
+        const searchCwd = join(workspace, 'apps', 'search', 'src');
+        const billingCwd = join(workspace, 'apps', 'billing', 'src');
+        await mkdir(searchCwd, {recursive: true});
+        await mkdir(billingCwd, {recursive: true});
+        await writeFile(join(workspace, 'package.json'), '{"name":"@acme/monorepo","private":true}\n', 'utf8');
+        await writeFile(join(workspace, 'apps', 'search', 'package.json'), '{"name":"@acme/search"}\n', 'utf8');
+        await writeFile(join(workspace, 'apps', 'billing', 'package.json'), '{"name":"@acme/billing"}\n', 'utf8');
+        execFileSync('git', ['init', '-q'], {cwd: workspace});
+
+        for (const [callerCwd, topic] of [
+          [searchCwd, 'search-implementation'],
+          [billingCwd, 'billing-implementation'],
+        ] as const) {
+          await callText(client, 'remember_context', {
+            callerCwd,
+            kind: 'durable',
+            project: 'monorepo',
+            sourceAgentClient: 'codex',
+            status: 'active',
+            text: 'Implementation note for the current package.',
+            topic,
+          });
+        }
+
+        const stored = await callText(client, 'read_context', {
+          uri: 'threadnote://user/test-user/memories/durable/projects/monorepo/search-implementation.md',
+        });
+        expect(stored).toContain('workspace_scope: apps/search');
+
+        await callText(client, 'remember_context', {
+          callerCwd: billingCwd,
+          kind: 'durable',
+          project: 'monorepo',
+          replaceUri: 'threadnote://user/test-user/memories/durable/projects/monorepo/search-implementation.md',
+          sourceAgentClient: 'codex',
+          status: 'active',
+          text: 'Updated implementation note without migrating its package scope.',
+          topic: 'search-implementation',
+        });
+        const replacedSearch = await callText(client, 'read_context', {
+          uri: 'threadnote://user/test-user/memories/durable/projects/monorepo/search-implementation.md',
+        });
+        expect(replacedSearch).toContain('workspace_scope: apps/search');
+        expect(replacedSearch).not.toContain('workspace_scope: apps/billing');
+
+        const repoWideUri = 'threadnote://user/test-user/memories/durable/projects/monorepo/repo-wide.md';
+        await callText(client, 'remember_context', {
+          kind: 'durable',
+          project: 'monorepo',
+          sourceAgentClient: 'codex',
+          status: 'active',
+          text: 'Repository-wide contract.',
+          topic: 'repo-wide',
+        });
+        await callText(client, 'remember_context', {
+          callerCwd: searchCwd,
+          kind: 'durable',
+          project: 'monorepo',
+          replaceUri: repoWideUri,
+          sourceAgentClient: 'codex',
+          status: 'active',
+          text: 'Updated repository-wide contract.',
+          topic: 'repo-wide',
+        });
+        const replacedRepoWide = await callText(client, 'read_context', {uri: repoWideUri});
+        expect(replacedRepoWide).not.toContain('workspace_scope:');
+
+        const recalled = await client.callTool(
+          {
+            arguments: {
+              callerCwd: searchCwd,
+              nodeLimit: 5,
+              project: 'monorepo',
+              query: 'implementation note',
+              threshold: 0,
+            },
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        expect(recalled.isError).not.toBe(true);
+        const structured = recalled.structuredContent as
+          {readonly results?: readonly {readonly uri?: string}[]} | undefined;
+        const results = structured?.results;
+        expect(results?.[0]?.uri).toContain('/search-implementation.md');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('uses structured current-branch affinity to outrank a newer sibling handoff', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const workspace = join(fixture.root, 'branch-workspace');
+        await mkdir(workspace, {recursive: true});
+        execFileSync('git', ['init', '-q'], {cwd: workspace});
+        execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/feature/search-recall'], {cwd: workspace});
+        const handoffRoot = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+        );
+        await mkdir(handoffRoot, {recursive: true});
+        const handoff = (branch: string, timestamp: string) =>
+          [
+            'MEMORY',
+            'kind: handoff',
+            'status: active',
+            'project: threadnote',
+            'topic: current-branch-latest-handoff-durable-feature-memory',
+            'source_agent_client: integration-test',
+            `timestamp: ${timestamp}`,
+            '',
+            'repo: threadnote',
+            `branch: ${branch}`,
+            'task: Continue the current branch handoff feature implementation.',
+          ].join('\n');
+        await writeFile(
+          join(handoffRoot, 'current.md'),
+          handoff('feature/search-recall', '2026-07-01T00:00:00.000Z'),
+          'utf8',
+        );
+        await writeFile(
+          join(handoffRoot, 'sibling.md'),
+          handoff('feature/billing', '2026-08-20T00:00:00.000Z'),
+          'utf8',
+        );
+
+        const recalled = await client.callTool(
+          {
+            arguments: {
+              callerCwd: workspace,
+              nodeLimit: 5,
+              project: 'threadnote',
+              query: 'current branch latest handoff durable feature memory',
+              threshold: 0,
+            },
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5000},
+        );
+        expect(recalled.isError).not.toBe(true);
+        const structured = recalled.structuredContent as
+          {readonly results?: readonly {readonly uri?: string}[]} | undefined;
+        expect(structured?.results?.[0]?.uri).toContain('/current.md');
+      },
+      {toolset: 'core'},
+    );
+  });
 
   it('keeps an explicit recall project ahead of conflicting caller workspace inference', async () => {
     await withMcpClient(
@@ -2086,6 +2444,119 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
+  it('refreshes shared audit provenance and leaves shared bytes unchanged while applying personal hygiene', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'shared-compact-topic';
+        const personalPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+          `${topic}.md`,
+        );
+        await mkdir(join(personalPath, '..'), {recursive: true});
+        await writeFile(
+          personalPath,
+          [
+            'HANDOFF',
+            'kind: handoff',
+            'status: active',
+            'project: threadnote',
+            `topic: ${topic}`,
+            'source_agent_client: integration-test',
+            'timestamp: 2026-07-01T00:00:00.000Z',
+            '',
+            'Old personal working notes.',
+          ].join('\n'),
+          'utf8',
+        );
+        const sharedPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'shared',
+          'platform',
+          'durable',
+          'projects',
+          'threadnote',
+          `${topic}.md`,
+        );
+        const sharedContent = canonicalMemoryContent(topic, 'Reviewed shared notes.');
+        await mkdir(join(sharedPath, '..'), {recursive: true});
+        await writeFile(sharedPath, sharedContent, 'utf8');
+
+        const output = await callText(client, 'compact_context', {
+          apply: true,
+          project: 'threadnote',
+          topic,
+        });
+
+        expect(output).toContain('Records scanned: 2');
+        expect(output).toContain('same project/topic spans multiple memory scopes');
+        expect(output).toContain('threadnote://user/test-user/memories/shared/platform/');
+        expect(output).toContain('Shared audit source:');
+        expect(output).toContain('bounded auto-sync attempted before scanning local canonical mirrors');
+        expect(output).toContain('Archived original memory:');
+        expect(output).toContain('Forget exact duplicates (0):\n- none');
+        expect(await readFile(sharedPath, 'utf8')).toBe(sharedContent);
+        expect(existsSync(personalPath)).toBe(false);
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('applies an exact-duplicate survivor update and retirement through compact_context', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const topic = 'atomic-duplicate';
+        const content = canonicalMemoryContent(topic, 'One exact duplicate contract.');
+        const memoryDirectory = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+        );
+        const survivorPath = join(memoryDirectory, `${topic}.md`);
+        const duplicatePath = join(memoryDirectory, 'threadnote-copy.md');
+        await mkdir(memoryDirectory, {recursive: true});
+        await writeFile(survivorPath, content, 'utf8');
+        await writeFile(duplicatePath, content, 'utf8');
+
+        const output = await callText(client, 'compact_context', {
+          apply: true,
+          project: 'threadnote',
+          topic,
+        });
+
+        expect(output).toContain('Updated kept memory:');
+        expect(output).toContain('Forgot exact duplicate:');
+        expect(existsSync(duplicatePath)).toBe(false);
+        const survivor = await readFile(survivorPath, 'utf8');
+        expect(survivor).toContain(
+          'threadnote://user/test-user/memories/durable/projects/threadnote/atomic-duplicate.md',
+        );
+        expect(survivor).toContain(
+          'threadnote://user/test-user/memories/durable/projects/threadnote/threadnote-copy.md',
+        );
+      },
+      {toolset: 'full'},
+    );
+  });
+
   it('imports distinct portable filenames without collisions', async () => {
     await withMcpClient(
       async (client, fixture) => {
@@ -2115,6 +2586,39 @@ describe('Threadnote MCP toolsets', () => {
           pinnedUri: 'threadnote://resources/import-collision-test',
           query: 'alpha-42',
         });
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('rejects generic imports into managed memory namespaces', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const source = join(fixture.root, 'attempted-memory-import.md');
+        await writeFile(source, 'unlocked replacement attempt', 'utf8');
+        const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/import-race.md';
+
+        const error = await callErrorText(client, 'add_resource', {path: source, to: uri});
+
+        expect(error).toContain('cannot write Threadnote memory namespaces');
+        expect(error).toContain('remember_context');
+        await expect(
+          readFile(
+            join(
+              fixture.root,
+              'data',
+              'local',
+              'user',
+              'test-user',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+              'import-race.md',
+            ),
+            'utf8',
+          ),
+        ).rejects.toThrow();
       },
       {toolset: 'full'},
     );

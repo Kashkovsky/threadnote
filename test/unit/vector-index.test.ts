@@ -76,17 +76,32 @@ describe('vector index generations', () => {
         const catalog = yield* LocalModelCatalog;
         yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
         const rebuilt = yield* rebuildVectorIndex({agentContextHome: home}, manifest, [
-          {text: '# Alpha\n\nThe release semaphore controls deployment.', uri: 'threadnote://resources/repos/a.md'},
-          {text: '# Beta\n\nThe orchard contains pear trees.', uri: 'threadnote://resources/repos/b.md'},
+          {
+            equivalentUris: ['threadnote://user/me/memories/shared/team-b/durable/projects/demo/a.md'],
+            text: '# Alpha\n\nThe release semaphore controls deployment.',
+            uri: 'threadnote://resources/repos/a.md',
+          },
+          {
+            equivalentUris: Array.from(
+              {length: 250},
+              (_, index) => `threadnote://user/me/memories/shared/team-${index}/durable/projects/demo/irrelevant.md`,
+            ),
+            text: '# Beta\n\nThe orchard contains pear trees.',
+            uri: 'threadnote://resources/repos/b.md',
+          },
         ]);
-        const scores = yield* selectedSemanticScores({agentContextHome: home}, 'alpha deployment');
+        const scores = yield* selectedSemanticScores({agentContextHome: home}, 'alpha deployment', {limit: 1});
         return {rebuilt, scores};
       }).pipe(provideTestLayer(runtimeLayer), provideTestLayer(modelStoreLayer));
       const {rebuilt, scores} = await runEffect(effect);
       expect(rebuilt.ready).toBe(true);
       expect(rebuilt.chunkCount).toBe(2);
       expect(scores?.get('threadnote://resources/repos/a.md')).toBeCloseTo(1);
-      expect(scores?.get('threadnote://resources/repos/b.md')).toBeCloseTo(0);
+      expect(scores?.get('threadnote://user/me/memories/shared/team-b/durable/projects/demo/a.md')).toBeCloseTo(1);
+      expect(scores?.has('threadnote://resources/repos/b.md')).toBe(false);
+      expect(
+        [...(scores?.keys() ?? [])].some(uri => uri.includes('/shared/team-') && uri.endsWith('/irrelevant.md')),
+      ).toBe(false);
     } finally {
       await rm(home, {force: true, recursive: true});
     }
@@ -114,13 +129,18 @@ describe('vector index generations', () => {
 
       const database = new Database(vectorDatabasePath(home), {readonly: true});
       try {
-        expect(database.query('PRAGMA user_version').get()).toEqual({user_version: 2});
+        expect(database.query('PRAGMA user_version').get()).toEqual({user_version: 4});
         expect(database.query('SELECT COUNT(*) AS count FROM vector_chunks').get()).toEqual({count: 2});
         expect(database.query('SELECT COUNT(*) AS count FROM vector_values').get()).toEqual({count: 2});
         expect(database.query('SELECT MIN(length(vector)) AS bytes FROM vector_values').get()).toEqual({
           bytes: manifest.dimensions! * 4,
         });
         expect(database.query('SELECT state FROM vector_generations').all()).toEqual([{state: 'ready'}]);
+        expect(
+          database
+            .query("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'vector_aliases_by_representative'")
+            .get(),
+        ).toEqual({name: 'vector_aliases_by_representative'});
       } finally {
         database.close();
       }
@@ -161,7 +181,7 @@ describe('vector index generations', () => {
         expect(rebuilt.embeddedChunkCount).toBe(1);
         const current = new Database(vectorDatabasePath(home), {readonly: true});
         try {
-          expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 2});
+          expect(current.query('PRAGMA user_version').get()).toEqual({user_version: 4});
         } finally {
           current.close();
         }

@@ -239,7 +239,8 @@ jobs:
       - name: Recall-v2 category and safety gate
         run: >-
           bun run eval:recall:v2 --
-          --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json
+          --baseline test/evaluation/baselines/threadnote-4.2.7/recall-v2-lexical.json
+          --fail-on-contract
           --fail-on-regression
           --max-failures 10
 

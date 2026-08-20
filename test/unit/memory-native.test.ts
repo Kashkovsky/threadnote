@@ -1,15 +1,26 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import {Context, Effect, FileSystem, Layer, Option, Path, Scope} from 'effect';
+import {Context, Deferred, Effect, Fiber, FileSystem, Layer, Option, Path, Scope} from 'effect';
 import {describe} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {isolatedLocalModelRuntimeLayer} from '../../src/effect/ai/isolated-local-model-runtime.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
+import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {runExportPack, runForget, runImportPack, runList, runRead, runRecall, runRemember} from '../../src/memory.js';
+import {
+  runArchive,
+  runCompact,
+  runExportPack,
+  runForget,
+  runImportPack,
+  runList,
+  runRead,
+  runRecall,
+  runRemember,
+} from '../../src/memory.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
@@ -207,6 +218,217 @@ describe('native memory workflow', () => {
         expect(Option.isNone(yield* Effect.option(store.stat(location, retired)))).toBe(true);
         expect(yield* store.read(location, sibling)).toBe('active');
       }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('rolls back an archive copy when its source changes during the archive write', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-archive-race-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        const store = yield* ResourceStore;
+        const location = {account: config.account, home: config.agentContextHome, user: config.user};
+        const sourceUri = 'threadnote://user/tester/memories/handoffs/active/threadnote/archive-race.md';
+        const original = [
+          'HANDOFF',
+          'kind: handoff',
+          'status: active',
+          'project: threadnote',
+          'topic: archive-race',
+          'source_agent_client: test',
+          'timestamp: 2026-07-01T00:00:00.000Z',
+          '',
+          'Original archive candidate.',
+        ].join('\n');
+        const changed = `${original}\n\nConcurrent source update.`;
+        yield* store.write(location, sourceUri, original, {mode: 'create'});
+
+        let sourceChanged = false;
+        const racingStore = ResourceStore.of({
+          ...store,
+          write: (writeLocation, writeUri, content, options) =>
+            store.write(writeLocation, writeUri, content, options).pipe(
+              Effect.tap(() => {
+                if (sourceChanged || !writeUri.includes('/handoffs/archived/')) return Effect.void;
+                sourceChanged = true;
+                return store.write(location, sourceUri, changed, {mode: 'replace'}).pipe(Effect.asVoid);
+              }),
+            ),
+        });
+
+        const failure = yield* Effect.flip(
+          runArchive(config, sourceUri, {
+            expectedContent: original,
+            kind: 'handoff',
+            project: 'threadnote',
+            topic: 'archive-race',
+          }).pipe(Effect.provideService(ResourceStore, racingStore)),
+        );
+
+        expect(String(failure)).toContain('archived copy was rolled back');
+        expect(yield* store.read(location, sourceUri)).toBe(changed);
+        const archived = yield* store
+          .list(location, 'threadnote://user/tester/memories/handoffs/archived/threadnote')
+          .pipe(Effect.catchTag('ResourceNotFound', () => Effect.succeed([])));
+        expect(archived).toEqual([]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('keeps concurrent compact updates independent without a shared scratch file', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-compact-concurrency-'});
+          const store = yield* ResourceStore;
+          const projects = ['alpha', 'beta'] as const;
+          // The former scratch path was keyed only by agentContextHome, so
+          // distinct account stores still collided here while avoiding an
+          // unrelated account-wide mutation-lock bottleneck in this test.
+          const cases = projects.map(project => ({
+            config: {
+              account: `local-${project}`,
+              agentContextHome: home,
+              agentId: 'threadnote',
+              manifestPath: path.join(home, 'seed-manifest.yaml'),
+              user: 'tester',
+            } satisfies RuntimeConfig,
+            copy: `threadnote://user/tester/memories/durable/projects/${project}/threadnote-copy.md`,
+            project,
+            stable: `threadnote://user/tester/memories/durable/projects/${project}/contract.md`,
+          }));
+          for (const candidate of cases) {
+            const location = {
+              account: candidate.config.account,
+              home: candidate.config.agentContextHome,
+              user: candidate.config.user,
+            };
+            const content = [
+              'MEMORY',
+              'kind: durable',
+              'status: active',
+              `project: ${candidate.project}`,
+              'topic: contract',
+              'source_agent_client: test',
+              'timestamp: 2026-08-20T00:00:00.000Z',
+              '',
+              `Contract for ${candidate.project}.`,
+            ].join('\n');
+            yield* store.write(location, candidate.stable, content, {mode: 'create'});
+            yield* store.write(location, candidate.copy, content, {mode: 'create'});
+          }
+
+          let sharedScratchWrites = 0;
+          const observedFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            writeFileString: (target, content, options) => {
+              if (target.endsWith('/compact-memory-update.txt')) sharedScratchWrites += 1;
+              return fs.writeFileString(target, content, options);
+            },
+          });
+          yield* Effect.all(
+            cases.map(candidate =>
+              captureConsole(runCompact(candidate.config, {apply: true, project: candidate.project})),
+            ),
+            {concurrency: 'unbounded'},
+          ).pipe(Effect.provideService(FileSystem.FileSystem, observedFileSystem));
+
+          expect(sharedScratchWrites).toBe(0);
+          for (const candidate of cases) {
+            const location = {
+              account: candidate.config.account,
+              home: candidate.config.agentContextHome,
+              user: candidate.config.user,
+            };
+            const kept = yield* store.read(location, candidate.stable);
+            expect(kept).toContain(`- ${candidate.stable}`);
+            expect(kept).toContain(`- ${candidate.copy}`);
+            expect(Option.isNone(yield* Effect.option(store.stat(location, candidate.copy)))).toBe(true);
+          }
+        }),
+      ),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('preserves the unchanged duplicate when the survivor is removed or mutated during compact apply', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-compact-survivor-race-'});
+          const store = yield* ResourceStore;
+
+          for (const race of ['mutate', 'remove'] as const) {
+            const home = path.join(root, race);
+            const config: RuntimeConfig = {
+              account: 'local',
+              agentContextHome: home,
+              agentId: 'threadnote',
+              manifestPath: path.join(home, 'seed-manifest.yaml'),
+              user: 'tester',
+            };
+            const location = {account: config.account, home: config.agentContextHome, user: config.user};
+            const survivorUri = `threadnote://user/tester/memories/durable/projects/${race}/contract.md`;
+            const duplicateUri = `threadnote://user/tester/memories/durable/projects/${race}/threadnote-copy.md`;
+            const original = [
+              'MEMORY',
+              'kind: durable',
+              'status: active',
+              `project: ${race}`,
+              'topic: contract',
+              'source_agent_client: test',
+              'timestamp: 2026-08-20T00:00:00.000Z',
+              '',
+              `Stable ${race} contract.`,
+            ].join('\n');
+            const concurrentContent = `${original}\n\nConcurrent survivor mutation.`;
+            yield* store.write(location, survivorUri, original, {mode: 'create'});
+            yield* store.write(location, duplicateUri, original, {mode: 'create'});
+
+            let raced = false;
+            const racingStore = ResourceStore.of({
+              ...store,
+              write: (writeLocation, writeUri, content, options) =>
+                store.write(writeLocation, writeUri, content, options).pipe(
+                  Effect.tap(() => {
+                    if (raced || writeUri !== survivorUri) return Effect.void;
+                    raced = true;
+                    return race === 'remove'
+                      ? store.remove(location, survivorUri)
+                      : store.write(location, survivorUri, concurrentContent, {mode: 'replace'}).pipe(Effect.asVoid);
+                  }),
+                ),
+            });
+
+            const failure = yield* Effect.flip(
+              captureConsole(runCompact(config, {apply: true, project: race})).pipe(
+                Effect.provideService(ResourceStore, racingStore),
+              ),
+            );
+
+            expect(raced).toBe(true);
+            expect(String(failure)).toContain('survivor changed during its hygiene update');
+            expect(String(failure)).toContain('exact duplicate was preserved');
+            expect(yield* store.read(location, duplicateUri)).toBe(original);
+            if (race === 'remove') {
+              expect(Option.isNone(yield* Effect.option(store.stat(location, survivorUri)))).toBe(true);
+            } else {
+              expect(yield* store.read(location, survivorUri)).toBe(concurrentContent);
+            }
+          }
+        }),
+      ),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -429,6 +651,108 @@ describe('native memory workflow', () => {
         expect((yield* captureConsole(runRead(targetConfig, importedUri, {}))).output).toContain(
           'Pack round-trip preserves',
         );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('holds every managed pack destination lock before importing any memory', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-pack-locks-'});
+          const packPath = path.join(home, 'memories.threadnote-pack.json');
+          const config: RuntimeConfig = {
+            account: 'local',
+            agentContextHome: home,
+            agentId: 'threadnote',
+            manifestPath: path.join(home, 'seed-manifest.yaml'),
+            user: 'tester',
+          };
+          yield* fs.writeFileString(
+            packPath,
+            JSON.stringify({
+              resources: [
+                {content: 'first imported memory', relativeUri: 'first.md'},
+                {content: 'second imported memory', relativeUri: 'second.md'},
+              ],
+              sourceUri: 'threadnote://user/source/memories/durable/projects/threadnote',
+              version: 1,
+            }),
+          );
+          const firstUri = 'threadnote://user/tester/memories/durable/projects/threadnote/first.md';
+          const secondUri = 'threadnote://user/tester/memories/durable/projects/threadnote/second.md';
+          const acquired = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const owner = yield* withMemoryUriLocks(
+            fs,
+            home,
+            [secondUri],
+            Deferred.succeed(acquired, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(acquired);
+
+          yield* Effect.gen(function* () {
+            const importCompleted = yield* Deferred.make<void>();
+            const importer = yield* runImportPack(config, {path: packPath}).pipe(
+              Effect.ensuring(Deferred.succeed(importCompleted, undefined)),
+              Effect.forkScoped,
+            );
+            yield* Effect.sleep(100);
+            expect(yield* Deferred.isDone(importCompleted)).toBe(false);
+            const store = yield* ResourceStore;
+            const location = {account: config.account, home, user: config.user};
+            expect(Option.isNone(yield* store.stat(location, firstUri).pipe(Effect.option))).toBe(true);
+            expect(Option.isNone(yield* store.stat(location, secondUri).pipe(Effect.option))).toBe(true);
+
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(importer);
+            expect(yield* store.read(location, firstUri)).toBe('first imported memory');
+            expect(yield* store.read(location, secondUri)).toBe('second imported memory');
+          }).pipe(
+            Effect.ensuring(
+              Deferred.succeed(release, undefined).pipe(Effect.andThen(Fiber.await(owner)), Effect.asVoid),
+            ),
+          );
+        }),
+      ),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('imports resource-only packs without creating managed-memory URI locks', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-resource-pack-'});
+        const packPath = path.join(home, 'resources.threadnote-pack.json');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        yield* fs.writeFileString(
+          packPath,
+          JSON.stringify({
+            resources: [{content: 'portable resource', relativeUri: 'guide.md'}],
+            sourceUri: 'threadnote://resources/source',
+            version: 1,
+          }),
+        );
+
+        yield* runImportPack(config, {path: packPath, targetUri: 'threadnote://resources/imported'});
+
+        expect(yield* fs.exists(path.join(home, 'threadnote', 'memory-locks'))).toBe(false);
+        const store = yield* ResourceStore;
+        expect(
+          yield* store.read(
+            {account: config.account, home, user: config.user},
+            'threadnote://resources/imported/guide.md',
+          ),
+        ).toBe('portable resource');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

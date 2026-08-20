@@ -7,6 +7,8 @@ import {
 } from './recall.js';
 
 export const RECALL_BASELINE_VERSION = 1 as const;
+export const CURRENT_RECALL_BASELINE_PATH =
+  'test/evaluation/baselines/threadnote-4.2.7/recall-v2-lexical.json' as const;
 
 export interface RecallEvaluationBaselineV1 {
   readonly createdAt: string;
@@ -17,12 +19,16 @@ export interface RecallEvaluationBaselineV1 {
     readonly version: number;
   };
   readonly knownContractFailures: number;
+  /** Exact reviewed failure identities. Older frozen baselines omit this and retain count-only compatibility. */
+  readonly reviewedContractFailures?: readonly string[];
   readonly result: {
     readonly categories: Partial<Record<RecallEvaluationCategory, RecallEvaluationMetricSetV1>>;
     readonly metrics: RecallEvaluationMetricSetV1;
     readonly pipeline: RecallEvaluationResultV1['pipeline'];
   };
   readonly source: {
+    readonly commit?: string;
+    readonly dirty?: boolean;
     readonly openVikingVersion: string;
     readonly rankerVersion: string;
     readonly threadnoteVersion: string;
@@ -31,6 +37,7 @@ export interface RecallEvaluationBaselineV1 {
 }
 
 const NonEmptyString = Schema.String.check(Schema.isMinLength(1));
+const GitCommit = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
 const NonNegativeFinite = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 const Rate = NonNegativeFinite.check(Schema.isLessThanOrEqualTo(1));
 const MetricSet = Schema.Struct({
@@ -71,6 +78,7 @@ export const RecallEvaluationBaselineSchemaV1 = Schema.Struct({
     version: NonNegativeFinite,
   }),
   knownContractFailures: NonNegativeFinite,
+  reviewedContractFailures: Schema.optionalKey(Schema.Array(NonEmptyString)),
   result: Schema.Struct({
     categories: Categories,
     metrics: MetricSet,
@@ -81,6 +89,8 @@ export const RecallEvaluationBaselineSchemaV1 = Schema.Struct({
     }),
   }),
   source: Schema.Struct({
+    commit: Schema.optionalKey(GitCommit),
+    dirty: Schema.optionalKey(Schema.Boolean),
     openVikingVersion: NonEmptyString,
     rankerVersion: NonEmptyString,
     threadnoteVersion: NonEmptyString,
@@ -98,14 +108,34 @@ export function parseRecallEvaluationBaselineV1(value: unknown): RecallEvaluatio
   ] as const) {
     if (!Number.isInteger(value)) throw new Error(`Recall baseline ${name} must be an integer`);
   }
+  if (
+    baseline.reviewedContractFailures &&
+    (baseline.reviewedContractFailures.length !== baseline.knownContractFailures ||
+      new Set(baseline.reviewedContractFailures).size !== baseline.reviewedContractFailures.length)
+  ) {
+    throw new Error('Recall baseline reviewedContractFailures must be unique and match knownContractFailures');
+  }
   return baseline;
 }
 
 export function baselineResult(baseline: RecallEvaluationBaselineV1): RecallEvaluationResultV1 {
   return {
     ...baseline.result,
-    failures: Array.from({length: baseline.knownContractFailures}, (_, index) => `known-baseline-defect-${index}`),
+    failures:
+      baseline.reviewedContractFailures ??
+      Array.from({length: baseline.knownContractFailures}, (_, index) => `known-baseline-defect-${index}`),
     queryResults: [],
     version: 1,
   };
+}
+
+export function exceedsReviewedContractFailureLimit(
+  candidateFailures: readonly string[],
+  baseline?: RecallEvaluationBaselineV1,
+): boolean {
+  if (!baseline) return candidateFailures.length > 0;
+  if (candidateFailures.length > baseline.knownContractFailures) return true;
+  if (!baseline.reviewedContractFailures) return false;
+  const reviewed = new Set(baseline.reviewedContractFailures);
+  return candidateFailures.some(failure => !reviewed.has(failure));
 }

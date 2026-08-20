@@ -16,12 +16,13 @@ class VectorIndexOperationError extends Error {
   readonly _tag = 'VectorIndexOperationError' as const;
 }
 
-const VECTOR_INDEX_DATABASE_VERSION = 2;
+const VECTOR_INDEX_DATABASE_VERSION = 4;
 const VECTOR_INDEX_EMBED_BATCH_SIZE = 256;
 const VECTOR_INDEX_PAGE_SIZE = 400;
 const VECTOR_INDEX_INSERT_BATCH_SIZE = 100;
 const VECTOR_INDEX_DATABASE_FILENAME = `vectors-v${VECTOR_INDEX_DATABASE_VERSION}.sqlite`;
 const VECTOR_INDEX_SCHEMA_COLUMNS = {
+  vector_aliases: ['generation', 'uri', 'representative_uri'],
   vector_chunks: ['generation', 'chunk_id', 'uri', 'fingerprint', 'vector_id'],
   vector_generations: [
     'generation',
@@ -69,6 +70,11 @@ interface DesiredVectorChunk extends RecallChunk {
 }
 
 interface SemanticChunkMatch extends VectorSearchResult {
+  readonly uri: string;
+}
+
+interface VectorAliasRow {
+  readonly representative_uri: string;
   readonly uri: string;
 }
 
@@ -258,6 +264,11 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
   const store = yield* LocalModelStore;
   const installed = yield* store.verify(config.agentContextHome, manifest);
   const chunks = preparedChunks ?? candidates.flatMap(candidate => chunkRecallDocument(candidate.uri, candidate.text));
+  const aliases = candidates
+    .flatMap(candidate =>
+      [candidate.uri, ...(candidate.equivalentUris ?? [])].map(uri => ({representativeUri: candidate.uri, uri})),
+    )
+    .sort((left, right) => left.uri.localeCompare(right.uri));
   const recipe = embeddingRecipe(manifest);
   const desiredChunks = chunks.map(chunk => ({
     ...chunk,
@@ -269,6 +280,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
     JSON.stringify({
       chunkerVersion: RECALL_CHUNKER_VERSION,
       chunks: chunks.map(chunk => ({fingerprint: chunk.fingerprint, id: chunk.id, uri: chunk.uri})),
+      aliases,
       corpusGeneration: options.corpusGeneration ?? null,
       dimensions: manifest.dimensions,
       modelSha256: manifest.sha256,
@@ -340,6 +352,7 @@ const rebuildVectorIndexUnlocked = Effect.fn('vectorIndex.rebuildUnlocked')(func
         );
       }
 
+      yield* replaceVectorAliases(sql, building.generation, aliases);
       yield* removeUndesiredVectorRows(sql, building.generation);
       yield* mapReusableVectorRows(sql, building.generation);
       yield* removeInvalidVectorRows(sql, building.generation, dimensions);
@@ -526,6 +539,11 @@ export const selectedSemanticScores = Effect.fn('vectorIndex.selectedSemanticSco
           const scores = new Map<string, number>();
           for (const result of best) {
             scores.set(result.uri, Math.max(scores.get(result.uri) ?? 0, Math.max(0, result.score)));
+          }
+          const aliases = yield* loadVectorAliasesForRepresentatives(sql, active.generation, [...scores.keys()]);
+          for (const alias of aliases) {
+            const score = scores.get(alias.representative_uri);
+            if (score !== undefined) scores.set(alias.uri, Math.max(scores.get(alias.uri) ?? 0, score));
           }
           return scores;
         }),
@@ -766,6 +784,7 @@ const initializeVectorDatabase = Effect.fn('vectorIndex.initializeDatabase')(fun
   const version = Number(versions[0]?.user_version ?? 0);
   if (version !== 0 && version !== VECTOR_INDEX_DATABASE_VERSION) {
     yield* sql.unsafe('DROP TABLE IF EXISTS vector_pointer');
+    yield* sql.unsafe('DROP TABLE IF EXISTS vector_aliases');
     yield* sql.unsafe('DROP TABLE IF EXISTS vector_chunks');
     yield* sql.unsafe('DROP TABLE IF EXISTS vector_generations');
     yield* sql.unsafe('DROP TABLE IF EXISTS vector_values');
@@ -809,7 +828,18 @@ const initializeVectorDatabase = Effect.fn('vectorIndex.initializeDatabase')(fun
       PRIMARY KEY (generation, chunk_id)
     ) WITHOUT ROWID
   `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS vector_aliases (
+      generation TEXT NOT NULL REFERENCES vector_generations(generation) ON DELETE CASCADE,
+      uri TEXT NOT NULL,
+      representative_uri TEXT NOT NULL,
+      PRIMARY KEY (generation, uri)
+    ) WITHOUT ROWID
+  `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS vector_chunks_by_value ON vector_chunks (vector_id)');
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS vector_aliases_by_representative ON vector_aliases (generation, representative_uri, uri)',
+  );
   yield* sql.unsafe(`PRAGMA user_version = ${VECTOR_INDEX_DATABASE_VERSION}`);
   yield* validateVectorDatabaseStructure(sql);
 });
@@ -909,6 +939,43 @@ const prepareDesiredChunks = Effect.fn('vectorIndex.prepareDesiredChunks')(funct
       batch.flatMap(chunk => [chunk.id, chunk.uri, chunk.fingerprint, chunk.vectorKey]),
     );
   }
+});
+
+const replaceVectorAliases = Effect.fn('vectorIndex.replaceAliases')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+  aliases: readonly {readonly representativeUri: string; readonly uri: string}[],
+) {
+  yield* sql`DELETE FROM vector_aliases WHERE generation = ${generation}`;
+  for (let start = 0; start < aliases.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
+    const batch = aliases.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
+    yield* sql.unsafe(
+      `INSERT INTO vector_aliases (generation, uri, representative_uri)
+       VALUES ${batch.map(() => '(?, ?, ?)').join(', ')}`,
+      batch.flatMap(alias => [generation, alias.uri, alias.representativeUri]),
+    );
+  }
+});
+
+const loadVectorAliasesForRepresentatives = Effect.fn('vectorIndex.loadAliasesForRepresentatives')(function* (
+  sql: SqlClient.SqlClient,
+  generation: string,
+  representativeUris: readonly string[],
+) {
+  const aliases: VectorAliasRow[] = [];
+  for (let start = 0; start < representativeUris.length; start += VECTOR_INDEX_INSERT_BATCH_SIZE) {
+    const batch = representativeUris.slice(start, start + VECTOR_INDEX_INSERT_BATCH_SIZE);
+    aliases.push(
+      ...(yield* sql.unsafe<VectorAliasRow>(
+        `SELECT uri, representative_uri
+         FROM vector_aliases
+         WHERE generation = ? AND representative_uri IN (${batch.map(() => '?').join(', ')})
+         ORDER BY representative_uri, uri`,
+        [generation, ...batch],
+      )),
+    );
+  }
+  return aliases;
 });
 
 const removeUndesiredVectorRows = Effect.fn('vectorIndex.removeUndesiredRows')(function* (
@@ -1361,6 +1428,9 @@ const removeLegacyVectorSidecars = Effect.fn('vectorIndex.removeLegacySidecars')
 ) {
   for (const legacy of ['active.json', 'generations', 'staging']) {
     yield* fs.remove(path.join(root, legacy), {force: true, recursive: true}).pipe(Effect.catch(() => Effect.void));
+  }
+  for (let version = 1; version < VECTOR_INDEX_DATABASE_VERSION; version += 1) {
+    yield* removeVectorDatabaseFiles(fs, path.join(root, `vectors-v${version}.sqlite`));
   }
 });
 

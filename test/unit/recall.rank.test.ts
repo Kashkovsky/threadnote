@@ -1,7 +1,262 @@
 import {describe, expect, it} from 'vitest';
-import {buildRecallCorpusStatistics, rankRecallCandidates, RECALL_RANKER_VERSION} from '../../src/recall/rank.js';
+import {
+  buildRecallCorpusStatistics,
+  deduplicateLogicalRecallCandidates,
+  rankRecallCandidates,
+  recallMemoryContentHash,
+  RECALL_RANKER_VERSION,
+} from '../../src/recall/rank.js';
 
 describe('hybrid recall ranker', () => {
+  it('collapses authorized share aliases only when logical identity and body both agree', () => {
+    const contentHash = recallMemoryContentHash('Use the package-local recall scope.');
+    const personal = {
+      authority: 'agent_generated' as const,
+      contentHash,
+      fields: {project: 'threadnote', topic: 'recall-scope'},
+      kind: 'durable' as const,
+      memoryId: 'tn_recall_scope',
+      status: 'active' as const,
+      text: 'Use the package-local recall scope.',
+      trust: 'inferred' as const,
+      uri: 'threadnote://user/me/memories/durable/projects/threadnote/recall-scope.md',
+    };
+    const shared = {
+      ...personal,
+      authority: 'reviewed_shared' as const,
+      trust: 'approved' as const,
+      uri: 'threadnote://user/me/memories/shared/platform/durable/projects/threadnote/recall-scope.md',
+    };
+
+    expect(deduplicateLogicalRecallCandidates([personal, shared])).toEqual([
+      {
+        ...shared,
+        equivalentUris: [personal.uri],
+      },
+    ]);
+  });
+
+  it('retains divergent bodies with the same memory id as conflict evidence', () => {
+    const candidate = (body: string, team: string) => ({
+      contentHash: recallMemoryContentHash(body),
+      fields: {project: 'threadnote', topic: 'recall-scope'},
+      kind: 'durable' as const,
+      memoryId: 'tn_recall_scope',
+      text: body,
+      uri: `threadnote://user/me/memories/shared/${team}/durable/projects/threadnote/recall-scope.md`,
+    });
+
+    const deduplicated = deduplicateLogicalRecallCandidates([
+      candidate('Package-first.', 'alpha'),
+      candidate('Repo-first.', 'beta'),
+    ]);
+
+    expect(deduplicated).toHaveLength(2);
+    expect(deduplicated.every(result => result.identityConflict)).toBe(true);
+    expect(
+      rankRecallCandidates('package repo', deduplicated).results.every(result =>
+        result.warnings.includes('logical memory id has divergent bodies; review before relying on it'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not collapse bodies whose meaningful whitespace differs', () => {
+    const body = 'Run:\n\n```sh\n  bun test\n```';
+    const candidate = (content: string, team: string) => ({
+      contentHash: recallMemoryContentHash(content),
+      fields: {project: 'threadnote', topic: 'build'},
+      kind: 'durable' as const,
+      memoryId: 'tn_build',
+      text: content,
+      uri: `threadnote://user/me/memories/shared/${team}/durable/projects/threadnote/build.md`,
+    });
+
+    const result = deduplicateLogicalRecallCandidates([candidate(body, 'alpha'), candidate(`${body} `, 'beta')]);
+
+    expect(result).toHaveLength(2);
+    expect(result.every(item => item.identityConflict)).toBe(true);
+  });
+
+  it('ignores generated hygiene provenance, but not authored lookalikes, in alias identity hashes', () => {
+    const body = 'Use package-local recall scope.';
+    const generated = [
+      body,
+      '',
+      '<!-- threadnote:hygiene-sources:v1 -->',
+      '## Threadnote Hygiene Sources',
+      '',
+      '- threadnote://user/me/memories/handoffs/archived/threadnote/old-task.md',
+    ].join('\n');
+    const legacyGenerated = generated.replace('<!-- threadnote:hygiene-sources:v1 -->\n', '');
+    const authored = [body, '', '## Threadnote Hygiene Sources', '', 'This is authored guidance.'].join('\n');
+
+    expect(recallMemoryContentHash(generated)).toBe(recallMemoryContentHash(body));
+    expect(recallMemoryContentHash(legacyGenerated)).toBe(recallMemoryContentHash(body));
+    expect(recallMemoryContentHash(authored)).not.toBe(recallMemoryContentHash(body));
+  });
+
+  it('does not collapse aliases whose ranking-relevant metadata differs', () => {
+    const body = 'Use the package-local recall scope.';
+    const base = {
+      contentHash: recallMemoryContentHash(body),
+      fields: {project: 'threadnote', topic: 'recall-scope'},
+      kind: 'durable' as const,
+      memoryId: 'tn_recall_scope',
+      status: 'active' as const,
+      text: body,
+      timestamp: '2026-08-20T00:00:00.000Z',
+    };
+    const packageAlias = {
+      ...base,
+      fields: {...base.fields, workspaceScope: 'apps/search'},
+      uri: 'threadnote://user/me/memories/shared/alpha/durable/projects/threadnote/recall-scope.md',
+    };
+    const repoAlias = {
+      ...base,
+      uri: 'threadnote://user/me/memories/shared/beta/durable/projects/threadnote/recall-scope.md',
+      validTo: '2026-08-19T00:00:00.000Z',
+    };
+
+    expect(deduplicateLogicalRecallCandidates([packageAlias, repoAlias])).toHaveLength(2);
+  });
+
+  it('orders topical matches by hierarchical workspace proximity', () => {
+    const candidate = (uri: string, workspaceScope?: string) => ({
+      fields: {
+        project: 'monorepo',
+        title: 'Checkout retry contract',
+        topic: 'checkout-retry-contract',
+        workspaceScope,
+      },
+      kind: 'durable' as const,
+      status: 'active' as const,
+      text: 'Checkout retry contract uses bounded attempts.',
+      uri,
+    });
+    const ranked = rankRecallCandidates(
+      'checkout retry contract',
+      [
+        candidate('threadnote://repo-wide.md'),
+        candidate('threadnote://sibling.md', 'apps/billing'),
+        candidate('threadnote://ancestor.md', 'apps/search'),
+        candidate('threadnote://exact.md', 'apps/search/packages/query'),
+      ],
+      {project: 'monorepo', workspaceScope: 'apps/search/packages/query'},
+    );
+
+    expect(ranked.results.map(result => result.candidate.uri)).toEqual([
+      'threadnote://exact.md',
+      'threadnote://ancestor.md',
+      'threadnote://repo-wide.md',
+      'threadnote://sibling.md',
+    ]);
+    expect(ranked.results.map(result => result.signals.workspace)).toEqual([1, 0.75, 0.5, 0.25]);
+    expect(ranked.results.every(result => result.reasons.some(reason => reason.code === 'workspace_scope'))).toBe(true);
+  });
+
+  it('prefers an older current-branch handoff over a newer sibling branch without query enrichment', () => {
+    const handoff = (branch: string, timestamp: string, uri: string) => ({
+      fields: {
+        project: 'threadnote',
+        title: 'Current branch handoff status',
+        topic: branch,
+      },
+      kind: 'handoff' as const,
+      status: 'active' as const,
+      text: `repo: threadnote\nbranch: ${branch}\ntask: Continue the feature implementation.`,
+      timestamp,
+      uri,
+    });
+    const current = handoff('feature/search-recall', '2026-07-01T00:00:00.000Z', 'threadnote://current.md');
+    const sibling = handoff('feature/billing', '2026-08-20T00:00:00.000Z', 'threadnote://sibling.md');
+    const query = 'current branch latest handoff durable feature memory';
+
+    const scoped = rankRecallCandidates(query, [sibling, current], {
+      now: new Date('2026-08-20T00:00:00.000Z'),
+      project: 'threadnote',
+      workspaceBranch: 'feature/search-recall',
+    });
+    expect(query).not.toContain('search-recall');
+    expect(scoped.results.map(result => result.candidate.uri)).toEqual([current.uri, sibling.uri]);
+    expect(scoped.results.map(result => result.signals.branch)).toEqual([1, 0.25]);
+    expect(scoped.results[0]?.reasons).toEqual(
+      expect.arrayContaining([expect.objectContaining({code: 'workspace_branch'})]),
+    );
+
+    const detached = rankRecallCandidates(query, [sibling, current], {
+      now: new Date('2026-08-20T00:00:00.000Z'),
+      project: 'threadnote',
+    });
+    expect(detached.results[0]?.candidate.uri).toBe(sibling.uri);
+    expect(detached.results.every(result => result.signals.branch === 0)).toBe(true);
+  });
+
+  it('does not let workspace-only index evidence pass the topical gate or exact rescue', () => {
+    const ranked = rankRecallCandidates(
+      'apps search',
+      [
+        {
+          exactTerms: ['apps', 'search'],
+          fields: {
+            project: 'monorepo',
+            title: 'Billing telemetry',
+            topic: 'billing-telemetry',
+            workspaceScope: 'apps/search',
+          },
+          text: 'Unrelated package-local operational note.',
+          uri: 'threadnote://scope-only.md',
+        },
+      ],
+      {allowExactRescue: true, minimumScore: 0, project: 'monorepo', workspaceScope: 'apps/search'},
+    );
+
+    expect(ranked.results).toEqual([]);
+  });
+
+  it('preserves a modern identity when it collapses with a legacy alias', () => {
+    const body = 'Use the package-local recall scope.';
+    const base = {
+      contentHash: recallMemoryContentHash(body),
+      fields: {project: 'threadnote', topic: 'recall-scope'},
+      kind: 'durable' as const,
+      status: 'active' as const,
+      text: body,
+      timestamp: '2026-08-20T00:00:00.000Z',
+    };
+    const legacy = {
+      ...base,
+      authority: 'reviewed_shared' as const,
+      uri: 'threadnote://user/me/memories/shared/alpha/durable/projects/threadnote/recall-scope.md',
+    };
+    const modern = {
+      ...base,
+      memoryId: 'tn_recall_scope',
+      uri: 'threadnote://user/me/memories/durable/projects/threadnote/recall-scope.md',
+    };
+
+    expect(deduplicateLogicalRecallCandidates([legacy, modern])).toEqual([
+      expect.objectContaining({memoryId: 'tn_recall_scope'}),
+    ]);
+  });
+
+  it('does not use a legacy topic key to collapse different modern identities', () => {
+    const body = 'Use the package-local recall scope.';
+    const candidate = (memoryId: string, team: string) => ({
+      contentHash: recallMemoryContentHash(body),
+      fields: {project: 'threadnote', topic: 'recall-scope'},
+      kind: 'durable' as const,
+      memoryId,
+      status: 'active' as const,
+      text: body,
+      timestamp: '2026-08-20T00:00:00.000Z',
+      uri: `threadnote://user/me/memories/shared/${team}/durable/projects/threadnote/recall-scope.md`,
+    });
+
+    expect(
+      deduplicateLogicalRecallCandidates([candidate('tn_one', 'alpha'), candidate('tn_two', 'beta')]),
+    ).toHaveLength(2);
+  });
+
   it('ranks a Ukrainian lexical match without semantic assistance', () => {
     const ranked = rankRecallCandidates('памʼять про київську зустріч', [
       {
@@ -809,5 +1064,28 @@ describe('hybrid recall ranker', () => {
 
     expect(alone.results[0]?.signals.bm25).toBe(withPool.results[0]?.signals.bm25);
     expect(corpusStatistics.documentCount).toBe(101);
+  });
+
+  it('rebuilds topical corpus statistics for structured workspace recall', () => {
+    const target = {
+      fields: {title: 'Search checkout retry contract'},
+      text: 'Search checkout retry contract uses bounded attempts.',
+      uri: 'threadnote://repo-wide.md',
+    };
+    const scopeOnly = Array.from({length: 100}, (_unused, index) => ({
+      fields: {title: `Unrelated note ${index}`, workspaceScope: 'apps/search'},
+      text: 'Unrelated package-local operational note.',
+      uri: `threadnote://scope-only-${index}.md`,
+    }));
+    const candidates = [target, ...scopeOnly];
+    const pollutedIndexStatistics = buildRecallCorpusStatistics(candidates);
+    const scoped = rankRecallCandidates('search checkout retry contract', candidates, {workspaceScope: 'apps/search'});
+    const scopedWithIndexStatistics = rankRecallCandidates('search checkout retry contract', candidates, {
+      corpusStatistics: pollutedIndexStatistics,
+      workspaceScope: 'apps/search',
+    });
+
+    expect(pollutedIndexStatistics.documentFrequency.search).toBe(101);
+    expect(scopedWithIndexStatistics.results[0]?.signals.bm25).toBe(scoped.results[0]?.signals.bm25);
   });
 });

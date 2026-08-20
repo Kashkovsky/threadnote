@@ -2,7 +2,12 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {baselineResult, parseRecallEvaluationBaselineV1} from '../src/evaluation/recall-baseline.js';
+import {
+  baselineResult,
+  CURRENT_RECALL_BASELINE_PATH,
+  exceedsReviewedContractFailureLimit,
+  parseRecallEvaluationBaselineV1,
+} from '../src/evaluation/recall-baseline.js';
 import {
   createRecallEvaluationFixtureV2,
   expandRecallEvaluationFixtureV2,
@@ -11,16 +16,18 @@ import {
 } from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallNonInferiority} from '../src/evaluation/recall-gate.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
+import {getThreadnoteVersion} from '../src/version.js';
 import {atomicWrite, fixtureHash, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
 const evaluateRecall = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
+  const threadnoteVersion = yield* getThreadnoteVersion();
   const baseFixture = createRecallEvaluationFixtureV2();
   const fixture = expandRecallEvaluationFixtureV2(baseFixture, options.documentCount, options.seed);
   const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
   const run = runLexicalRecallEvaluationV2(fixture, {
     fixtureHash: hash,
-    pipelineName: 'threadnote-3.x-lexical-only',
+    pipelineName: `threadnote-${threadnoteVersion}-lexical-only`,
   });
   const result = evaluateRecallRunV2(fixture, run);
   const baseline = options.baselinePath
@@ -66,7 +73,10 @@ const evaluateRecall = Effect.gen(function* () {
     yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
   }
   yield* printJson(options.full ? artifact : summary);
-  if ((options.failOnContract && result.failures.length > 0) || (options.failOnRegression && gate && !gate.passed)) {
+  if (
+    (options.failOnContract && exceedsReviewedContractFailureLimit(result.failures, baseline)) ||
+    (options.failOnRegression && gate && !gate.passed)
+  ) {
     yield* markFailure();
   }
 });
@@ -83,7 +93,7 @@ interface EvaluationOptions {
 }
 
 function parseArguments(args: readonly string[]): EvaluationOptions {
-  let baselinePath: string | undefined;
+  let baselinePath: string | undefined = CURRENT_RECALL_BASELINE_PATH;
   let documentCount = 200;
   let failOnContract = false;
   let failOnRegression = false;
@@ -95,6 +105,7 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
     const argument = args[index]!;
     if (argument === '--documents') documentCount = positiveInteger(args[++index], '--documents');
     else if (argument === '--baseline') baselinePath = requiredValue(args[++index], '--baseline');
+    else if (argument === '--no-baseline') baselinePath = undefined;
     else if (argument === '--fail-on-contract') failOnContract = true;
     else if (argument === '--fail-on-regression') failOnRegression = true;
     else if (argument === '--full') full = true;
@@ -104,7 +115,7 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
     else throw new ScriptError(`Unknown recall-v2 evaluation option: ${argument}`);
   }
   if (failOnRegression && !baselinePath) {
-    throw new ScriptError('--fail-on-regression requires --baseline <path>');
+    throw new ScriptError('--fail-on-regression cannot be combined with --no-baseline');
   }
   return {
     baselinePath,

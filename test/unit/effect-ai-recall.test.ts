@@ -4,6 +4,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {Cause, Effect, Exit, Fiber, Layer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe} from 'vitest';
+import {SystemInfo} from '../../src/effect/system.js';
 import {
   boundedRecallCandidateSelection,
   boundedRecallExpansionScopes,
@@ -22,6 +23,7 @@ import {
   selectExpandedRecallCandidatesEffect,
   shouldExpandRecall,
 } from '../../src/effect/ai/recall.js';
+import {recallScoreThresholdPolicy, validatedRecallScoreThreshold} from '../../src/utils.js';
 
 describe('Effect AI recall expansion', () => {
   it('only expands weak deterministic recalls', () => {
@@ -86,10 +88,45 @@ describe('Effect AI recall expansion', () => {
     ]);
   });
 
-  it('uses the hybrid score scale by default and preserves explicit thresholds', () => {
-    expect(recallHybridMinimumScore(0.45, false)).toBe(0.3);
-    expect(recallHybridMinimumScore(0.9, true)).toBe(0.9);
+  it('uses the resolved default, environment, or explicit threshold without a hidden hybrid override', () => {
+    expect(recallHybridMinimumScore(0.3)).toBe(0.3);
+    expect(recallHybridMinimumScore(0.45)).toBe(0.45);
+    expect(recallHybridMinimumScore(0.9)).toBe(0.9);
   });
+
+  it('validates explicit recall thresholds on the same 0-1 scale', () => {
+    expect(validatedRecallScoreThreshold(' 0.45 ', '--threshold')).toBe('0.45');
+    expect(() => validatedRecallScoreThreshold('NaN', '--threshold')).toThrow(
+      '--threshold must be a number from 0 to 1',
+    );
+    expect(() => validatedRecallScoreThreshold('1.1', '--threshold')).toThrow(
+      '--threshold must be a number from 0 to 1',
+    );
+  });
+
+  it.effect('honors a valid environment threshold and rejects an invalid one', () =>
+    Effect.gen(function* () {
+      const system = yield* SystemInfo;
+      const configuredSystem = SystemInfo.of({
+        ...system,
+        environment: () => ({...system.environment(), THREADNOTE_RECALL_THRESHOLD: '0.67'}),
+      });
+      expect(yield* recallScoreThresholdPolicy().pipe(Effect.provideService(SystemInfo, configuredSystem))).toEqual({
+        source: 'environment',
+        value: '0.67',
+      });
+
+      const invalidSystem = SystemInfo.of({
+        ...system,
+        environment: () => ({...system.environment(), THREADNOTE_RECALL_THRESHOLD: 'not-a-number'}),
+      });
+      const error = yield* recallScoreThresholdPolicy().pipe(
+        Effect.provideService(SystemInfo, invalidSystem),
+        Effect.flip,
+      );
+      expect(error.message).toContain('THREADNOTE_RECALL_THRESHOLD must be a number from 0 to 1');
+    }).pipe(provideTestLayer(SystemInfo.layer)),
+  );
 
   it('only treats explicit loopback Effect AI endpoints as local', () => {
     expect(isLoopbackAiEndpoint('http://127.0.0.1:8081/v1')).toBe(true);

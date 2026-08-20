@@ -6,11 +6,13 @@ import {
   expireRecallIndexValidation,
   loadRecallExactMatches,
   loadRecallIndex,
+  loadRecallIndexData,
   loadRecallIndexDataBatch,
   recallIndexDatabaseFilename,
   recallIndexStatus,
   recallUriMatchesScopes,
 } from '../../src/recall/index.js';
+import {recallWorkspaceScopeMatches} from '../../src/recall/index_scope.js';
 import {chunksForRecallCandidates} from '../../src/search/vector-index.js';
 import {join, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
@@ -47,6 +49,13 @@ describe('local recall index', () => {
 
   afterEach(async () => {
     await rm(directory, {force: true, recursive: true});
+  });
+
+  it('admits repo-wide and ancestor memories into a valid package scope while failing closed on invalid scope', () => {
+    expect(recallWorkspaceScopeMatches('apps/search/packages/query', undefined)).toBe(true);
+    expect(recallWorkspaceScopeMatches('apps/search/packages/query', 'apps/search')).toBe(true);
+    expect(recallWorkspaceScopeMatches('apps/search/packages/query', 'apps/billing')).toBe(false);
+    expect(recallWorkspaceScopeMatches('../apps/search', undefined)).toBe(false);
   });
 
   it('indexes the full eligible local corpus and atomically caches tokens and metadata', async () => {
@@ -137,6 +146,278 @@ describe('local recall index', () => {
       isFile: expect.any(Function),
     });
     expect(await run(loadRecallIndex(config(), {includeInactive: false}))).toHaveLength(2);
+  });
+
+  it('collapses identical shared-memory aliases after scope authorization and before result limits', async () => {
+    const sharedRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'shared');
+    const uniquePath = join(sharedRoot, 'alpha', 'durable', 'projects', 'threadnote', 'unique.md');
+    await mkdir(join(uniquePath, '..'), {recursive: true});
+    await writeFile(
+      uniquePath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        'topic: unique',
+        'source_agent_client: codex',
+        'timestamp: 2026-08-19T00:00:00.000Z',
+        'memory_id: tn_unique',
+        '',
+        'Independent vocabulary anchor.',
+      ].join('\n'),
+      'utf8',
+    );
+    await utimes(uniquePath, new Date('2026-08-19T00:00:00.000Z'), new Date('2026-08-19T00:00:00.000Z'));
+    const body = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      'project: threadnote',
+      'topic: package-scope',
+      'source_agent_client: codex',
+      'timestamp: 2026-08-20T00:00:00.000Z',
+      'memory_id: tn_package_scope',
+      '',
+      'Package-local anchor uses the nearest manifest.',
+    ].join('\n');
+    const pathForTeam = (team: string) =>
+      join(sharedRoot, team, 'durable', 'projects', 'threadnote', 'package-scope.md');
+    for (const team of ['alpha', 'beta']) {
+      const path = pathForTeam(team);
+      await mkdir(join(path, '..'), {recursive: true});
+      await writeFile(path, body, 'utf8');
+    }
+
+    const recalled = await run(
+      loadRecallIndex(config(), {includeInactive: false, limit: 1, query: 'package-local anchor'}),
+    );
+    expect(recalled).toHaveLength(1);
+    expect([recalled[0]!.uri, ...(recalled[0]!.equivalentUris ?? [])].sort()).toEqual([
+      'threadnote://user/me/memories/shared/alpha/durable/projects/threadnote/package-scope.md',
+      'threadnote://user/me/memories/shared/beta/durable/projects/threadnote/package-scope.md',
+    ]);
+
+    const betaScope = 'threadnote://user/me/memories/shared/beta';
+    const betaOnly = await run(
+      loadRecallIndex(config(), {
+        allowedUriScopes: [betaScope],
+        includeInactive: false,
+        limit: 1,
+        query: 'package-local anchor',
+      }),
+    );
+    expect(betaOnly).toHaveLength(1);
+    expect(betaOnly[0]?.uri).toBe(`${betaScope}/durable/projects/threadnote/package-scope.md`);
+    expect(betaOnly[0]?.equivalentUris).toBeUndefined();
+
+    const sampled = await run(loadRecallIndex(config(), {includeInactive: false, limit: 2, project: 'threadnote'}));
+    expect(sampled).toHaveLength(2);
+    const indexData = await run(loadRecallIndexData(config(), {includeInactive: false, query: 'package-local anchor'}));
+    expect(indexData.corpusStatistics.documentCount).toBe(2);
+    expect(indexData.corpusStatistics.documentFrequency.package).toBe(1);
+  });
+
+  it('collapses personal and shared aliases when only a generated hygiene-source trailer differs', async () => {
+    const personalPath = join(
+      directory,
+      'data',
+      'local',
+      'user',
+      'me',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'hygiene-alias.md',
+    );
+    const sharedPath = join(
+      directory,
+      'data',
+      'local',
+      'user',
+      'me',
+      'memories',
+      'shared',
+      'platform',
+      'durable',
+      'projects',
+      'threadnote',
+      'hygiene-alias.md',
+    );
+    const personalUri = 'threadnote://user/me/memories/durable/projects/threadnote/hygiene-alias.md';
+    const sharedUri = 'threadnote://user/me/memories/shared/platform/durable/projects/threadnote/hygiene-alias.md';
+    const body = 'Hygiene trailer identity anchor stays stable.';
+    const memory = (memoryBody: string) =>
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        'topic: hygiene-alias',
+        'source_agent_client: codex',
+        'timestamp: 2026-08-20T00:00:00.000Z',
+        'memory_id: tn_hygiene_alias',
+        '',
+        memoryBody,
+      ].join('\n');
+    await mkdir(join(personalPath, '..'), {recursive: true});
+    await mkdir(join(sharedPath, '..'), {recursive: true});
+    await writeFile(
+      personalPath,
+      memory(
+        `${body}\n\n<!-- threadnote:hygiene-sources:v1 -->\n## Threadnote Hygiene Sources\n\n- ${personalUri}\n- ${sharedUri}`,
+      ),
+      'utf8',
+    );
+    await writeFile(sharedPath, memory(body), 'utf8');
+
+    const recalled = await run(
+      loadRecallIndex(config(), {includeInactive: false, limit: 5, query: 'hygiene trailer identity anchor'}),
+    );
+
+    expect(recalled).toHaveLength(1);
+    expect(recalled[0]?.identityConflict).toBeUndefined();
+    expect([recalled[0]!.uri, ...(recalled[0]!.equivalentUris ?? [])].sort()).toEqual([personalUri, sharedUri].sort());
+  });
+
+  it('removes bounded v5 lexical files and their pointer generation after a successful v6 build', async () => {
+    const lexicalRoot = join(directory, 'indexes', 'lexical');
+    const oldGeneration = join(lexicalRoot, 'generations', 'active-old.sqlite');
+    const oldFixed = join(lexicalRoot, 'active-v5.sqlite');
+    const oldPointer = join(lexicalRoot, 'active-v5.pointer.json');
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'current.md');
+    await mkdir(join(oldGeneration, '..'), {recursive: true});
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(oldGeneration, 'old generation', 'utf8');
+    await writeFile(oldFixed, 'old fixed database', 'utf8');
+    await writeFile(`${oldFixed}-wal`, 'old wal', 'utf8');
+    await writeFile(oldPointer, JSON.stringify({database: 'generations/active-old.sqlite', version: 1}), 'utf8');
+    await writeFile(resourcePath, '# Current\n\nv6 lexical index', 'utf8');
+
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    await expect(stat(oldGeneration)).rejects.toThrow();
+    await expect(stat(oldFixed)).rejects.toThrow();
+    await expect(stat(`${oldFixed}-wal`)).rejects.toThrow();
+    await expect(stat(oldPointer)).rejects.toThrow();
+    await expect(stat(databasePath())).resolves.toBeDefined();
+  });
+
+  it('hashes raw memory bodies so secrets that redact alike remain conflict evidence', async () => {
+    const sharedRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'shared');
+    const pathForTeam = (team: string) =>
+      join(sharedRoot, team, 'durable', 'projects', 'threadnote', 'credential-rotation.md');
+    for (const [team, secret] of [
+      ['alpha', 'first-secret'],
+      ['beta', 'second-secret'],
+    ] as const) {
+      const path = pathForTeam(team);
+      await mkdir(join(path, '..'), {recursive: true});
+      await writeFile(
+        path,
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: threadnote',
+          'topic: credential-rotation',
+          'source_agent_client: codex',
+          'timestamp: 2026-08-20T00:00:00.000Z',
+          'memory_id: tn_credential_rotation',
+          '',
+          `Credential rotation uses api_key=${secret}.`,
+        ].join('\n'),
+        'utf8',
+      );
+    }
+
+    const recalled = await run(
+      loadRecallIndex(config(), {includeInactive: false, limit: 5, query: 'credential rotation'}),
+    );
+
+    expect(recalled).toHaveLength(2);
+    expect(recalled.every(candidate => candidate.identityConflict)).toBe(true);
+    expect(recalled.every(candidate => candidate.text.includes('api_key=[REDACTED]'))).toBe(true);
+  });
+
+  it('marks a required candidate when its divergent memory id is beyond the bounded posting window', async () => {
+    const memoryRoot = join(directory, 'data', 'local', 'user', 'me', 'memories', 'durable', 'projects', 'threadnote');
+    const targetPath = join(memoryRoot, 'selected-target.md');
+    const divergentPath = join(memoryRoot, 'zz-divergent-alias.md');
+    const targetUri = 'threadnote://user/me/memories/durable/projects/threadnote/selected-target.md';
+    const divergentUri = 'threadnote://user/me/memories/durable/projects/threadnote/zz-divergent-alias.md';
+    const memory = (topic: string, body: string, memoryId?: string) =>
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: threadnote',
+        `topic: ${topic}`,
+        'source_agent_client: codex',
+        'timestamp: 2026-08-20T00:00:00.000Z',
+        ...(memoryId ? [`memory_id: ${memoryId}`] : []),
+        '',
+        body,
+      ].join('\n');
+    await mkdir(memoryRoot, {recursive: true});
+    await Promise.all([
+      writeFile(targetPath, memory('selected-target', 'Selected target contract.', 'tn_global_conflict'), 'utf8'),
+      writeFile(divergentPath, memory('divergent-alias', 'crowdinganchor', 'tn_global_conflict'), 'utf8'),
+      ...Array.from({length: 525}, (_unused, index) =>
+        writeFile(
+          join(memoryRoot, `noise-${String(index).padStart(3, '0')}.md`),
+          memory(`crowdinganchor-${index}`, 'crowdinganchor crowdinganchor crowdinganchor'),
+          'utf8',
+        ),
+      ),
+    ]);
+    let postingRows = 0;
+    const recalled = await run(
+      loadRecallIndex(config(), {
+        includeInactive: false,
+        limit: 5,
+        onQueryDiagnostics: diagnostics =>
+          Effect.sync(() => {
+            postingRows = diagnostics.postingRows;
+          }),
+        query: 'crowdinganchor',
+        requiredUris: [targetUri],
+      }),
+    );
+
+    expect(postingRows).toBe(500);
+    expect(recalled.map(candidate => candidate.uri)).not.toContain(divergentUri);
+    expect(recalled.find(candidate => candidate.uri === targetUri)?.identityConflict).toBe(true);
+    const identityPlan = queryDatabase<{readonly detail: string}>(`
+      EXPLAIN QUERY PLAN
+      SELECT json_extract(d.candidate_json, '$.memoryId') AS memory_id
+      FROM documents AS d
+      WHERE (
+        d.uri = 'threadnote://user/me/memories/durable/projects/threadnote'
+        OR (
+          d.uri >= 'threadnote://user/me/memories/durable/projects/threadnote/'
+          AND d.uri < 'threadnote://user/me/memories/durable/projects/threadnote0'
+        )
+      )
+        AND json_extract(d.candidate_json, '$.memoryId') IN ('tn_global_conflict')
+        AND json_type(d.candidate_json, '$.memoryId') = 'text'
+        AND json_type(d.candidate_json, '$.contentHash') = 'text'
+      GROUP BY json_extract(d.candidate_json, '$.memoryId')
+      HAVING COUNT(DISTINCT json_extract(d.candidate_json, '$.contentHash')) > 1
+    `);
+    expect(identityPlan.some(row => row.detail.includes('documents_memory_identity'))).toBe(true);
+
+    const pinned = await run(
+      loadRecallIndex(config(), {
+        allowedUriScopes: [targetUri],
+        includeInactive: false,
+        limit: 1,
+        query: 'crowdinganchor',
+        requiredUris: [targetUri],
+      }),
+    );
+    expect(pinned[0]?.identityConflict).toBeUndefined();
   });
 
   it('retrieves pure Ukrainian text and keeps redacted natural language for vector chunks', async () => {
@@ -298,6 +579,84 @@ describe('local recall index', () => {
       {project: 'outside'},
       {project: 'threadnote'},
     ]);
+  });
+
+  it('uses a cheap project lookup to skip sibling posting work when the project has no outside scope', async () => {
+    const memoryPath = join(
+      directory,
+      'data',
+      'local',
+      'user',
+      'me',
+      'memories',
+      'durable',
+      'projects',
+      'monorepo',
+      'current.md',
+    );
+    await mkdir(join(memoryPath, '..'), {recursive: true});
+    await writeFile(
+      memoryPath,
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: monorepo',
+        'topic: common-posting-anchor',
+        'workspace_scope: apps/search',
+        'source_agent_client: test',
+        'timestamp: 2026-08-20T00:00:00.000Z',
+        '',
+        'Common posting anchor.',
+      ].join('\n'),
+      'utf8',
+    );
+    let postingStatements = 0;
+    const selected = await run(
+      loadRecallIndexData(config(), {
+        includeInactive: false,
+        onQueryDiagnostics: diagnostics =>
+          Effect.sync(() => {
+            postingStatements += diagnostics.postingStatements;
+          }),
+        project: 'monorepo',
+        query: 'common posting anchor',
+        workspaceScope: 'apps/search',
+        workspaceScopeMode: 'sibling',
+      }),
+    );
+    const plan = queryDatabase<{detail: string}>(`
+      EXPLAIN QUERY PLAN
+      SELECT 1
+      FROM documents AS d
+      WHERE d.project = 'monorepo'
+        AND d.workspace_scope IS NOT NULL
+        AND d.workspace_scope NOT IN ('apps', 'apps/search')
+      LIMIT 1
+    `)
+      .map(row => row.detail)
+      .join('\n');
+    const postingPlan = queryDatabase<{detail: string}>(`
+      EXPLAIN QUERY PLAN
+      WITH query_terms(term) AS (VALUES ('common'))
+      SELECT p.term, p.document_id
+      FROM query_terms AS q
+      INNER JOIN postings AS p ON p.term = q.term
+      INNER JOIN documents AS d ON d.id = p.document_id
+      WHERE d.project = 'monorepo'
+        AND d.workspace_scope IS NOT NULL
+        AND d.workspace_scope NOT IN ('apps', 'apps/search')
+    `)
+      .map(row => row.detail)
+      .join('\n');
+
+    expect(selected.candidates).toEqual([]);
+    expect(selected.queryExhaustive).toBe(true);
+    expect(postingStatements).toBe(0);
+    expect(plan).toContain('documents_project_modified_uri');
+    expect(plan).not.toContain('SCAN d');
+    expect(postingPlan).toContain('SEARCH p USING');
+    expect(postingPlan).not.toContain('SCAN p');
   });
 
   it('reconstructs canonical encoded URIs for external resource paths', async () => {
@@ -553,7 +912,7 @@ describe('local recall index', () => {
     );
 
     const selected = await run(
-      loadRecallIndex(config(), {
+      loadRecallIndexData(config(), {
         includeInactive: false,
         limit: 5,
         query: 'alpha-42',
@@ -561,10 +920,11 @@ describe('local recall index', () => {
       }),
     );
 
-    expect(selected.map(candidate => candidate.uri)).toEqual([
+    expect(selected.candidates.map(candidate => candidate.uri)).toEqual([
       'threadnote://resources/repos/threadnote/000.md',
       'threadnote://resources/repos/threadnote/139.md',
     ]);
+    expect(selected.queryExhaustive).toBe(true);
     expect(
       queryDatabase<{posting_count: number}>('SELECT COUNT(*) AS posting_count FROM postings')[0]?.posting_count,
     ).toBeGreaterThan(0);
@@ -630,7 +990,7 @@ describe('local recall index', () => {
 
     const diagnostics: Array<{postingRows: number; postingStatements: number; queryTerms: number}> = [];
     const selected = await run(
-      loadRecallIndex(config(), {
+      loadRecallIndexData(config(), {
         includeInactive: false,
         limit: 5,
         onQueryDiagnostics: event =>
@@ -641,7 +1001,8 @@ describe('local recall index', () => {
       }),
     );
 
-    expect(selected[0]?.uri).toBe('threadnote://resources/repos/threadnote/699.md');
+    expect(selected.candidates[0]?.uri).toBe('threadnote://resources/repos/threadnote/699.md');
+    expect(selected.queryExhaustive).toBe(false);
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]?.postingStatements).toBe(1);
     expect(diagnostics[0]?.queryTerms).toBeGreaterThan(1);

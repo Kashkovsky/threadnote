@@ -39,10 +39,16 @@ async function makeHome(root: string): Promise<string> {
       'status: active',
       'project: foo',
       'topic: bar',
+      'memory_id: tn_foo_bar',
       'source_agent_client: test',
       'timestamp: 2026-07-23T00:00:00.000Z',
       '',
       'Body',
+      '',
+      '<!-- threadnote:hygiene-sources:v1 -->',
+      '## Threadnote Hygiene Sources',
+      '',
+      '- threadnote://user/test-user/memories/handoffs/archived/foo/private-task.md',
     ].join('\n'),
   );
   await mkdir(join(home, 'share'), {recursive: true});
@@ -147,6 +153,19 @@ describe('Threadnote MCP share_publish', () => {
     const client = new Client({name: 'threadnote-test', version: '0.0.0'});
     try {
       await client.connect(transport);
+      const preview = await client.callTool(
+        {
+          arguments: {preview: true, uri: sourceUri},
+          name: 'share_publish',
+        },
+        undefined,
+        {timeout: 5000},
+      );
+      const previewText = (preview.content as TextContent[]).map(item => item.text).join('\n');
+      expect(previewText).toContain('Body');
+      expect(previewText).not.toContain('threadnote:hygiene-sources');
+      expect(previewText).not.toContain('/private-task.md');
+
       const result = await client.callTool(
         {
           arguments: {
@@ -164,9 +183,14 @@ describe('Threadnote MCP share_publish', () => {
       const text = (result.content as TextContent[]).map(item => item.text).join('\n');
       expect(text).toContain(`Published ${sourceUri} -> ${targetUri}`);
       expect(text).toContain('git push skipped (push=false)');
-      await expect(
-        readFile(join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md'), 'utf8'),
-      ).resolves.toContain('Body');
+      const published = await readFile(
+        join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md'),
+        'utf8',
+      );
+      expect(published).toContain('Body');
+      expect(published).toContain('memory_id: tn_foo_bar');
+      expect(published).not.toContain('threadnote:hygiene-sources');
+      expect(published).not.toContain('/private-task.md');
     } finally {
       await client.close().catch(() => undefined);
       await rm(root, {force: true, recursive: true});

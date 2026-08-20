@@ -1319,7 +1319,10 @@ const recall = Command.make(
     ),
     project: optionalString('project', 'Add a scoped project memory pass alongside global search'),
     query: requiredString('query', 'Search query'),
-    threshold: optionalString('threshold', 'Minimum relevance score 0-1'),
+    threshold: optionalString(
+      'threshold',
+      'Minimum topical relevanceScore 0-1; defaults to THREADNOTE_RECALL_THRESHOLD or 0.3',
+    ),
     uri: optionalString('uri', 'Restrict search to a threadnote:// URI'),
     workset: optionalString('workset', 'Recall across a named seed-manifest workset'),
   },

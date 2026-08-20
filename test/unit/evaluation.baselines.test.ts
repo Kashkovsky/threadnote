@@ -3,30 +3,87 @@ import {readFileSync, readdirSync} from '../helpers/node-fs.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from '@effect/vitest';
 import {parseBenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
-import {parseRecallEvaluationBaselineV1} from '../../src/evaluation/recall-baseline.js';
+import {
+  CURRENT_RECALL_BASELINE_PATH,
+  exceedsReviewedContractFailureLimit,
+  parseRecallEvaluationBaselineV1,
+} from '../../src/evaluation/recall-baseline.js';
 import {
   createRecallEvaluationFixtureV2,
+  expandRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
 } from '../../src/evaluation/recall-fixture.js';
 
-const BASELINE_ROOT = 'test/evaluation/baselines/threadnote-3.0.3';
-const BENCHMARK_ROOT = join(BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
+const HISTORICAL_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-3.0.3';
+const CURRENT_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-4.2.7';
+const BENCHMARK_ROOT = join(HISTORICAL_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
+const CURRENT_BENCHMARK_ROOT = join(CURRENT_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
 const CANDIDATE_ROOT = 'test/evaluation/candidates/threadnote-4.0.0';
+const CURRENT_RANK_CANDIDATE_ROOT =
+  'test/evaluation/candidates/threadnote-4.2.7-hybrid-v6/benchmarks/darwin-arm64-m1-max';
+const CURRENT_BENCHMARK_COMMIT = '6f090189249de0a95c24d3084946f1a94360653e';
+const CURRENT_RANK_CANDIDATE_COMMIT = '02b8ff90c57962cc9745f0a52e10759fefcf3664';
+const CURRENT_RANK_BENCHMARKS = [
+  {
+    documents: 200,
+    fixtureHash: '3967acf33893251f03126720ebf6fb55f6b6eed62f2c84f768963e9a352e9348',
+    name: 'recall-rank-200.json',
+    sampleProfile: 'standard',
+    samples: 25,
+    warmups: 5,
+  },
+  {
+    documents: 1_000,
+    fixtureHash: 'dbc8258af5e0e10b99e34eb55f8e5b0b2b992e7f647d5726ace7ae2e12deab74',
+    name: 'recall-rank-1000.json',
+    sampleProfile: 'standard',
+    samples: 25,
+    warmups: 5,
+  },
+  {
+    documents: 10_000,
+    fixtureHash: '30beea845c4e2052a27bbf27af29f140a3c59ca7357d1dfc2e14363ad647deb0',
+    name: 'recall-rank-10000.json',
+    sampleProfile: 'standard',
+    samples: 25,
+    warmups: 5,
+  },
+  {
+    documents: 100_000,
+    fixtureHash: '21d54f12a71d06be69e95cfbcc531c50cb8e917a5beb1ddfa12ba8453a254ae6',
+    name: 'recall-rank-100000.json',
+    sampleProfile: 'scale-boundary',
+    samples: 5,
+    warmups: 1,
+  },
+] as const;
+const CURRENT_RANK_MEASUREMENTS = [
+  'hybrid-rank-one-query',
+  'hybrid-rank-throughput',
+  'process-rss',
+  'process-external-memory',
+  'process-heap-used',
+] as const;
 
 describe('frozen Threadnote 3.0.3 baselines', () => {
   it('validates the compact recall-v2 baseline', () => {
-    const baseline = parseRecallEvaluationBaselineV1(readJson(join(BASELINE_ROOT, 'recall-v2-lexical.json')));
+    const baseline = parseRecallEvaluationBaselineV1(
+      readJson(join(HISTORICAL_BASELINE_ROOT, 'recall-v2-lexical.json')),
+    );
     const fixture = createRecallEvaluationFixtureV2();
     const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
 
     expect(baseline.fixture).toMatchObject({documents: 200, queries: 250, version: 2});
     expect(baseline.fixture.hash).toBe(fixtureHash);
     expect(fixture.documents.every(document => document.uri.startsWith('threadnote://'))).toBe(true);
-    expect(baseline.knownContractFailures).toBeGreaterThan(0);
+    expect(baseline.knownContractFailures).toBe(205);
+    expect(baseline.result.pipeline.name).toBe('threadnote-3.0.3-lexical-only');
     expect(baseline.source).toMatchObject({
       openVikingVersion: '0.4.10',
       threadnoteVersion: '3.0.3',
     });
+    expect(baseline.source.commit).toBeUndefined();
+    expect(baseline.source.dirty).toBeUndefined();
   });
 
   it('validates every rank benchmark and preserves all scale points', () => {
@@ -180,6 +237,133 @@ describe('frozen Threadnote 3.0.3 baselines', () => {
     expect(withReranker?.gate.passed).toBe(false);
     expect(withReranker?.gate.failures.some(failure => failure.includes('noAnswerRecall'))).toBe(true);
     expect(withReranker?.result.metrics.noAnswerRecall).toBe(0);
+  });
+});
+
+describe('reviewed current recall baseline', () => {
+  it('keeps v4.2.7 provenance distinct from the frozen historical artifact', () => {
+    const baselinePath = join(CURRENT_BASELINE_ROOT, 'recall-v2-lexical.json');
+    const baseline = parseRecallEvaluationBaselineV1(readJson(baselinePath));
+    const fixture = createRecallEvaluationFixtureV2();
+    const fixtureHash = createHash('sha256').update(serializeRecallEvaluationFixtureV2Identity(fixture)).digest('hex');
+
+    expect(baselinePath).toBe(CURRENT_RECALL_BASELINE_PATH);
+    expect(baseline.createdAt).toBe('2026-08-20T07:54:46.000Z');
+    expect(baseline.fixture).toMatchObject({documents: 200, hash: fixtureHash, queries: 250, version: 2});
+    expect(baseline.knownContractFailures).toBe(193);
+    expect(baseline.reviewedContractFailures).toHaveLength(193);
+    expect(new Set(baseline.reviewedContractFailures).size).toBe(193);
+    expect(baseline.result.pipeline.name).toBe('threadnote-4.2.7-lexical-only');
+    expect(baseline.source).toEqual({
+      commit: '297cdb92bd164ed2ea58dd6c366c60c67aba97cf',
+      dirty: false,
+      openVikingVersion: 'not-applicable',
+      rankerVersion: 'hybrid-v3',
+      threadnoteVersion: '4.2.7',
+    });
+  });
+
+  it('treats reviewed failures as a ceiling and remains zero-tolerance without a baseline', () => {
+    const baseline = parseRecallEvaluationBaselineV1(readJson(join(CURRENT_BASELINE_ROOT, 'recall-v2-lexical.json')));
+
+    const reviewed = baseline.reviewedContractFailures ?? [];
+    expect(exceedsReviewedContractFailureLimit(reviewed, baseline)).toBe(false);
+    expect(exceedsReviewedContractFailureLimit([...reviewed.slice(1), 'new-query: new failure'], baseline)).toBe(true);
+    expect(exceedsReviewedContractFailureLimit([...reviewed, reviewed[0]!], baseline)).toBe(true);
+    expect(exceedsReviewedContractFailureLimit([])).toBe(false);
+    expect(exceedsReviewedContractFailureLimit(['new-query: new failure'])).toBe(true);
+  });
+});
+
+describe('reviewed Threadnote 4.2.7 performance baseline', () => {
+  it('stores exactly the clean hybrid-v3 M1 Max rank captures at every reviewed scale', () => {
+    const names = readdirSync(CURRENT_BENCHMARK_ROOT)
+      .filter(name => /^recall-rank-\d+\.json$/u.test(name))
+      .sort();
+    expect(names).toEqual(CURRENT_RANK_BENCHMARKS.map(benchmark => benchmark.name).sort());
+
+    for (const expected of CURRENT_RANK_BENCHMARKS) {
+      const artifact = parseBenchmarkArtifactV1(readJson(join(CURRENT_BENCHMARK_ROOT, expected.name)));
+      const fixture = expandRecallEvaluationFixtureV2(createRecallEvaluationFixtureV2(), expected.documents, 262_144);
+      const fixtureHash = createHash('sha256')
+        .update(serializeRecallEvaluationFixtureV2Identity(fixture))
+        .digest('hex');
+
+      expect(fixtureHash).toBe(expected.fixtureHash);
+      expect(artifact.environment).toEqual({
+        architecture: 'arm64',
+        commit: CURRENT_BENCHMARK_COMMIT,
+        cpu: 'Apple M1 Max',
+        dirty: false,
+        fixtureHash: expected.fixtureHash,
+        memoryBytes: 68_719_476_736,
+        node: 'bun/1.3.14',
+        operatingSystem: 'macOS 27.0',
+        packageManager: 'bun/1.3.14',
+        runner: 'threadnote-recall-e2e',
+        runnerVersion: '2',
+      });
+      expect(artifact.environment.commit).toMatch(/^[0-9a-f]{40}$/u);
+      expect(artifact.metadata).toEqual({
+        documents: expected.documents,
+        homeRedacted: true,
+        queries: 250,
+        rankerVersion: 'hybrid-v3',
+        sampleProfile: expected.sampleProfile,
+        seed: 262_144,
+        sourceVersion: 'threadnote-4.2.7',
+      });
+      expect(artifact.measurements.map(measurement => measurement.name)).toEqual(CURRENT_RANK_MEASUREMENTS);
+      expect(artifact.measurements.map(measurement => measurement.samples)).toEqual(
+        CURRENT_RANK_MEASUREMENTS.map(() => expected.samples),
+      );
+      expect(artifact.suite).toBe('recall-v2');
+      expect(artifact.version).toBe(1);
+      expect(artifact.warmups).toBe(expected.warmups);
+    }
+  });
+});
+
+describe('reviewed Threadnote 4.2.7 hybrid-v6 performance candidate', () => {
+  it('matches the hybrid-v3 fixture and host contract at every reviewed scale', () => {
+    const names = readdirSync(CURRENT_RANK_CANDIDATE_ROOT)
+      .filter(name => /^recall-rank-\d+\.json$/u.test(name))
+      .sort();
+    expect(names).toEqual(CURRENT_RANK_BENCHMARKS.map(benchmark => benchmark.name).sort());
+
+    for (const expected of CURRENT_RANK_BENCHMARKS) {
+      const artifact = parseBenchmarkArtifactV1(readJson(join(CURRENT_RANK_CANDIDATE_ROOT, expected.name)));
+
+      expect(artifact.environment).toEqual({
+        architecture: 'arm64',
+        commit: CURRENT_RANK_CANDIDATE_COMMIT,
+        cpu: 'Apple M1 Max',
+        dirty: false,
+        fixtureHash: expected.fixtureHash,
+        memoryBytes: 68_719_476_736,
+        node: 'bun/1.3.14',
+        operatingSystem: 'macOS 27.0',
+        packageManager: 'bun/1.3.14',
+        runner: 'threadnote-recall-e2e',
+        runnerVersion: '2',
+      });
+      expect(artifact.metadata).toEqual({
+        documents: expected.documents,
+        homeRedacted: true,
+        queries: 250,
+        rankerVersion: 'hybrid-v6',
+        sampleProfile: expected.sampleProfile,
+        seed: 262_144,
+        sourceVersion: 'threadnote-4.2.7',
+      });
+      expect(artifact.measurements.map(measurement => measurement.name)).toEqual(CURRENT_RANK_MEASUREMENTS);
+      expect(artifact.measurements.map(measurement => measurement.samples)).toEqual(
+        CURRENT_RANK_MEASUREMENTS.map(() => expected.samples),
+      );
+      expect(artifact.suite).toBe('recall-v2');
+      expect(artifact.version).toBe(1);
+      expect(artifact.warmups).toBe(expected.warmups);
+    }
   });
 });
 

@@ -90,9 +90,9 @@ function surfaceCards(artifact: RetainedPerformanceArtifact | undefined) {
     },
     {
       label: 'Memory MCP',
-      title: 'Canonical memory reads stay complete',
-      body: 'Recall returns ranked pointers. Reading a selected canonical memory returns the complete record; graph response budgets are never reused to truncate memory content.',
-      detail: 'Ranked recall · uncapped canonical read',
+      title: 'Canonical memory reads stay retrievable',
+      body: 'Recall returns ranked pointers. Bounded memory pages preserve canonical content and provide explicit continuation until the selected record is complete.',
+      detail: 'Ranked recall · bounded continuation',
     },
   ] as const;
 }

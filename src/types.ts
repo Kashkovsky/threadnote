@@ -266,6 +266,8 @@ export interface HandoffOptions {
 
 export interface ArchiveOptions {
   readonly dryRun?: boolean;
+  /** Internal optimistic-concurrency guard used by hygiene apply. */
+  readonly expectedContent?: string;
   readonly kind?: MemoryKind;
   readonly project?: string;
   readonly topic?: string;
