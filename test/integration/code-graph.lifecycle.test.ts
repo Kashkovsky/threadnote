@@ -1117,7 +1117,7 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  effectIt.effect('falls back to raw replay without counting a partial materialized shard set', () =>
+  effectIt.effect('reuses valid peers from a partial materialized shard set', () =>
     Effect.gen(function* () {
       const root = createManySourceRepository(12);
       const home = join(root, '.threadnote-test-home');
@@ -1127,19 +1127,52 @@ describe('native code graph lifecycle', () => {
       const first = yield* indexer.index({cwd: root, threadnoteHome: home});
       const databasePath = codeGraphDatabasePath(home, first);
       const firstGraph = yield* store.loadGraph(databasePath, first.snapshot.id);
-      const discardedShardBytes = yield* Effect.sync(() => {
+      const partialShardState = yield* Effect.sync(() => {
         const database = new Database(databasePath);
         try {
-          database.exec(`DELETE FROM materialized_file_shards
-                         WHERE id = (SELECT id FROM materialized_file_shards ORDER BY id LIMIT 1)`);
-          return (
+          const missing = database
+            .query<{readonly id: string; readonly path: string}, []>(
+              `SELECT id, path_hint AS path FROM materialized_file_shards ORDER BY id LIMIT 1`,
+            )
+            .get();
+          if (!missing) throw new Error('Expected a materialized shard to remove.');
+          const missingRawBytes =
+            database
+              .query<{readonly bytes: number}, [string]>(
+                `SELECT COALESCE(SUM(${storedCodeGraphFactRawBytesSql('facts_json')}), 0) AS bytes
+                 FROM file_blobs WHERE path_hint = ?`,
+              )
+              .get(missing.path)?.bytes ?? 0;
+          database.query('DELETE FROM materialized_file_shards WHERE id = ?').run(missing.id);
+          database.exec(`
+            CREATE TABLE materialized_shard_write_audit (
+              operation TEXT NOT NULL,
+              path_hint TEXT NOT NULL
+            );
+            CREATE TRIGGER materialized_shard_insert_audit
+            AFTER INSERT ON materialized_file_shards
+            BEGIN
+              INSERT INTO materialized_shard_write_audit VALUES ('insert', NEW.path_hint);
+            END;
+            CREATE TRIGGER materialized_shard_update_audit
+            AFTER UPDATE ON materialized_file_shards
+            BEGIN
+              INSERT INTO materialized_shard_write_audit VALUES ('update', NEW.path_hint);
+            END;
+            CREATE TRIGGER materialized_shard_delete_audit
+            AFTER DELETE ON materialized_file_shards
+            BEGIN
+              INSERT INTO materialized_shard_write_audit VALUES ('delete', OLD.path_hint);
+            END;
+          `);
+          const reusedShardBytes =
             database
               .query<{readonly bytes: number}, []>(
                 `SELECT COALESCE(SUM(${storedCodeGraphFactRawBytesSql('facts_json')}), 0) AS bytes
                  FROM materialized_file_shards`,
               )
-              .get()?.bytes ?? 0
-          );
+              .get()?.bytes ?? 0;
+          return {missingPath: missing.path, missingRawBytes, reusedShardBytes};
         } finally {
           database.close();
         }
@@ -1153,17 +1186,37 @@ describe('native code graph lifecycle', () => {
       });
       const rebuiltGraph = yield* store.loadGraph(databasePath, rebuilt.snapshot.id);
       const metrics = finalFullMaterializationMetrics(progress);
+      const persistedReuse = yield* Effect.sync(() => {
+        const database = new Database(databasePath, {readonly: true});
+        try {
+          const associations =
+            database
+              .query<{readonly count: number}, [string]>(
+                'SELECT COUNT(*) AS count FROM snapshot_file_shards WHERE snapshot_id = ?',
+              )
+              .get(rebuilt.snapshot.id)?.count ?? 0;
+          const writes = database
+            .query<{readonly operation: string; readonly path: string}, []>(
+              `SELECT operation, path_hint AS path
+               FROM materialized_shard_write_audit ORDER BY rowid`,
+            )
+            .all();
+          return {associations, writes};
+        } finally {
+          database.close();
+        }
+      });
 
-      expect(
-        rebuilt.diagnostics.some(diagnostic =>
-          diagnostic.startsWith('Reused content-addressed materialized shards for'),
-        ),
-      ).toBe(false);
-      expect(discardedShardBytes).toBeGreaterThan(0);
-      expect(metrics.cachedFactReplayBytesCompleted).toBe(metrics.cachedFactBytesTotal);
-      expect(metrics.cachedFactReplayBytesCompleted).not.toBe(
-        (metrics.cachedFactBytesTotal ?? 0) + discardedShardBytes,
+      expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 11 file(s).');
+      expect(partialShardState.missingRawBytes).toBeGreaterThan(0);
+      expect(partialShardState.reusedShardBytes).toBeGreaterThan(0);
+      expect(metrics.cachedFactReplayBytesCompleted).toBe(
+        partialShardState.missingRawBytes + partialShardState.reusedShardBytes,
       );
+      expect(persistedReuse).toEqual({
+        associations: 12,
+        writes: [{operation: 'insert', path: partialShardState.missingPath}],
+      });
       expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
@@ -1284,11 +1337,7 @@ describe('native code graph lifecycle', () => {
         }
 
         expect(rebuilt.materialization).toEqual({mode: 'full', stagedFiles: 2, totalFiles: 2});
-        expect(
-          rebuilt.diagnostics.some(diagnostic =>
-            diagnostic.startsWith('Reused content-addressed materialized shards for'),
-          ),
-        ).toBe(false);
+        expect(rebuilt.diagnostics).toContain('Reused content-addressed materialized shards for 1 file(s).');
         expect(normalizeStoredGraph(rebuiltGraph)).toEqual(normalizeStoredGraph(firstGraph));
       }).pipe(provideTestLayer(ApplicationLayer)),
     ),

@@ -11,6 +11,13 @@ const attributionCase = FC.record({
   rotation: FC.integer({max: 31, min: 0}),
 });
 
+const mixedReuseCase = FC.record({
+  batchWidth: FC.integer({max: 5, min: 1}),
+  hitMask: FC.array(FC.boolean(), {maxLength: 24, minLength: 1}),
+  packageCount: FC.integer({max: 12, min: 1}),
+  rotation: FC.integer({max: 31, min: 0}),
+});
+
 describe('code graph repository-attribution properties', () => {
   it.prop(
     'matches one-shot attribution across arbitrary cache-batch boundaries and multi-package references',
@@ -39,6 +46,35 @@ describe('code graph repository-attribution properties', () => {
             .every(symbol => symbol.packageName === `package-${index}`),
         ).toBe(true);
       }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'matches one-shot attribution when arbitrary final-shard hits are mixed with batched raw misses',
+    {scenario: mixedReuseCase},
+    ({scenario}) => {
+      const files = repositoryFiles(scenario.packageCount);
+      const workspace = discoverManifestWorkspace(files);
+      const raw = syntheticFacts(files);
+      const attributeBatch = createCachedCodeGraphFactsAttributor(files, workspace);
+      const expected = attributeBatch(raw);
+      const hitPaths = new Set(
+        raw.filter((_, index) => scenario.hitMask[index % scenario.hitMask.length]).map(file => file.path),
+      );
+      const hitFacts = new Map(expected.filter(file => hitPaths.has(file.path)).map(file => [file.path, file]));
+      const misses = raw.filter(file => !hitPaths.has(file.path));
+      const rotation = misses.length === 0 ? 0 : scenario.rotation % misses.length;
+      const reorderedMisses = [...misses.slice(rotation), ...misses.slice(0, rotation)];
+      const attributedMisses = new Map<string, CodeGraphFileFacts>();
+      for (let index = 0; index < reorderedMisses.length; index += scenario.batchWidth) {
+        for (const fact of attributeBatch(reorderedMisses.slice(index, index + scenario.batchWidth))) {
+          attributedMisses.set(fact.path, fact);
+        }
+      }
+      const merged = raw.map(file => hitFacts.get(file.path) ?? attributedMisses.get(file.path)!);
+
+      expect(normalizeFacts(merged)).toEqual(normalizeFacts(expected));
     },
     {fastCheck: {numRuns: 100}},
   );
