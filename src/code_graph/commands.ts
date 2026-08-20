@@ -53,6 +53,18 @@ import {
   renderCodeGraphReport,
   type CodeGraphAnalysisView,
 } from './analysis_render.js';
+import {
+  renderCodeGraphCliAnalysisState,
+  resolveCodeGraphAnalysisSnapshot,
+  type CodeGraphCliAnalysisState,
+} from './analysis_cli.js';
+import {
+  CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS,
+  CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS,
+  codeGraphCliReadPlan,
+  type CodeGraphCliFreshnessPolicy,
+  type CodeGraphCliReadPlan,
+} from './cli_freshness.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
 import {
   readCodeGraphBuildStatuses,
@@ -79,33 +91,11 @@ interface CwdOption {
   readonly cwd?: string;
 }
 
-export type CodeGraphCliFreshnessPolicy = 'allow-stale' | 'current' | 'ready';
-
-export interface CodeGraphCliReadPlan {
-  readonly refresh: boolean;
-  readonly strictFreshness: boolean;
-  readonly unavailable: boolean;
-}
+export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan};
+export type {CodeGraphCliFreshnessPolicy, CodeGraphCliReadPlan};
 
 class CodeGraphCommandError extends Error {
   readonly _tag = 'CodeGraphCommandError' as const;
-}
-
-export const CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS = 25_000;
-const CODE_GRAPH_CLI_READ_RETRY_MILLISECONDS = 1_000;
-
-export function codeGraphCliReadPlan(
-  policy: CodeGraphCliFreshnessPolicy,
-  status: Pick<CodeGraphStatus, 'readySnapshot' | 'stale'>,
-): CodeGraphCliReadPlan {
-  const hasReadySnapshot = status.readySnapshot !== undefined;
-  const strictFreshness = policy === 'current';
-  const unavailable = policy === 'allow-stale' && !hasReadySnapshot;
-  return {
-    refresh: !unavailable && (!hasReadySnapshot || (status.stale && strictFreshness)),
-    strictFreshness,
-    unavailable,
-  };
 }
 
 export function defaultCodeGraphCliFreshness(
@@ -908,10 +898,12 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
   config: RuntimeConfig,
   options: CwdOption & {
     readonly communityId?: string;
+    readonly freshness?: CodeGraphCliFreshnessPolicy;
     readonly includeHeuristic?: boolean;
     readonly includeModelAssociations?: boolean;
     readonly json?: boolean;
     readonly memberLimit?: number;
+    readonly readTimeoutMilliseconds?: number;
     readonly view: CodeGraphAnalysisView;
   },
 ) {
@@ -924,7 +916,22 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
       ),
     );
   }
-  const status = yield* ensureAnalysisSnapshot(config, cwd, options.json === true);
+  const freshness = options.freshness ?? 'ready';
+  const resolution = yield* ensureAnalysisSnapshot(
+    config,
+    cwd,
+    options.json === true,
+    freshness,
+    options.view,
+    options.readTimeoutMilliseconds,
+  );
+  if (!resolution.ready) {
+    yield* writeFinalCliOutput(
+      options.json ? JSON.stringify(resolution.state) : renderCodeGraphCliAnalysisState(resolution.state).trimEnd(),
+    );
+    return;
+  }
+  const status = resolution;
   const analysis = yield* CodeGraphAnalysis;
   const result = yield* analysis.analyze({
     allowedProvenances: [
@@ -942,6 +949,8 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
   if (options.json) {
     yield* writeFinalCliOutput(
       JSON.stringify({
+        freshness: status.freshness,
+        freshnessPolicy: status.freshnessPolicy,
         type: 'code-graph-analysis',
         repository: status.repository,
         result,
@@ -950,7 +959,9 @@ export const runCodeGraphAnalysis = Effect.fn('codeGraph.command.analysis')(func
     );
     return;
   }
-  yield* writeFinalCliOutput(renderCodeGraphAnalysis(result, options.view).trimEnd());
+  const rendered = renderCodeGraphAnalysis(result, options.view).trimEnd().split('\n');
+  rendered.splice(1, 0, `Snapshot freshness: ${status.freshness} (requested ${status.freshnessPolicy})`);
+  yield* writeFinalCliOutput(rendered.join('\n'));
 });
 
 export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function* (
@@ -959,6 +970,7 @@ export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function
     readonly includeHeuristic?: boolean;
     readonly includeModelAssociations?: boolean;
     readonly output: string;
+    readonly readTimeoutMilliseconds?: number;
   },
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -967,7 +979,22 @@ export const runCodeGraphReport = Effect.fn('codeGraph.command.report')(function
   const output = path.resolve(options.output);
   if (yield* fs.exists(output))
     return yield* Effect.fail(new CodeGraphCommandError(`Report output already exists: ${output}`));
-  const status = yield* ensureAnalysisSnapshot(config, cwd, false);
+  const resolution = yield* ensureAnalysisSnapshot(
+    config,
+    cwd,
+    false,
+    'current',
+    'report',
+    options.readTimeoutMilliseconds,
+  );
+  if (!resolution.ready) {
+    return yield* Effect.fail(
+      new CodeGraphCommandError(
+        `${renderCodeGraphCliAnalysisState(resolution.state).trim()} The report output was not created.`,
+      ),
+    );
+  }
+  const status = resolution;
   const analysis = yield* CodeGraphAnalysis;
   const result = yield* analysis.analyze({
     allowedProvenances: [
@@ -1664,49 +1691,39 @@ const ensureAnalysisSnapshot = Effect.fn('codeGraph.command.ensureAnalysisSnapsh
   config: RuntimeConfig,
   cwd: string,
   json: boolean,
+  freshnessPolicy: CodeGraphCliFreshnessPolicy,
+  operation: CodeGraphCliAnalysisState['operation'],
+  readTimeoutMilliseconds = CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS,
 ) {
-  const query = yield* CodeGraphQueryService;
   const indexer = yield* CodeGraphIndexer;
-  let status = yield* query.status(config.agentContextHome, cwd);
-  const identity = status.identity;
-  if (status.stale || !status.readySnapshot) {
-    status = yield* query.attachSharedReadySnapshot(config.agentContextHome, identity, status);
-  }
-  if (status.stale) {
-    if (json) {
-      const reportProgress = yield* makeCodeGraphJsonProgressReporter();
-      yield* indexer.index({
-        cwd,
-        ensureVectors: false,
-        onProgress: reportProgress,
-        threadnoteHome: config.agentContextHome,
-      });
-    } else {
-      yield* Effect.acquireUseRelease(
-        startProgress('Refreshing repository graph before analysis.'),
-        progress =>
-          indexer.index({
-            cwd,
-            ensureVectors: false,
-            onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
-            threadnoteHome: config.agentContextHome,
-          }),
-        progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
-      );
-    }
-    status = yield* query.status(config.agentContextHome, cwd);
-  }
-  if (!status.readySnapshot) {
-    return yield* Effect.fail(new CodeGraphCommandError('No ready native code graph snapshot exists after indexing.'));
-  }
-  return {
-    databasePath: status.databasePath,
-    repository: {
-      displayName: status.identity.displayName,
-      repositoryId: status.identity.repositoryId,
-    },
-    snapshot: status.readySnapshot,
-  };
+  return yield* resolveCodeGraphAnalysisSnapshot(
+    config,
+    cwd,
+    freshnessPolicy,
+    () =>
+      json
+        ? Effect.gen(function* () {
+            const reportProgress = yield* makeCodeGraphJsonProgressReporter();
+            yield* indexer.index({
+              cwd,
+              ensureVectors: false,
+              onProgress: reportProgress,
+              threadnoteHome: config.agentContextHome,
+            });
+          })
+        : Effect.acquireUseRelease(
+            startProgress('Refreshing repository graph before analysis.'),
+            progress =>
+              indexer.index({
+                cwd,
+                ensureVectors: false,
+                onProgress: state => progress.update(progressMessage(state)).pipe(Effect.catch(() => Effect.void)),
+                threadnoteHome: config.agentContextHome,
+              }),
+            progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
+          ),
+    {operation, readTimeoutMilliseconds},
+  );
 });
 
 function progressMessage(progress: CodeGraphProgress): string {

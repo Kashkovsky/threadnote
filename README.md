@@ -187,6 +187,14 @@ worktree; that refresh has a 25-second foreground budget by default and reports 
 the budget expires. `--read-timeout-ms` changes the budget, while `--freshness allow-stale` guarantees that the read
 will not start indexing. `graph path` remains current by default, and `graph impact` remains strict-current.
 
+`graph analyze` and its statistics, community, group, hub, surprise, and confidence aliases likewise analyze an
+existing ready snapshot by default. Their output labels the selected snapshot freshness. Use `--freshness current` to
+refresh before analysis, or `--freshness allow-stale` to return an unavailable state instead of starting a cold index
+when no ready snapshot exists. A required refresh has the same 25-second foreground budget by default;
+`--read-timeout-ms` changes it, and a timeout returns an explicit state without running analysis. `graph report`
+remains strict-current and uses the same bounded refresh contract; for a large stale graph, run `graph index` explicitly
+before writing the report.
+
 TypeScript and JavaScript retain the compiler-backed extractor that shipped with the first native graph. Java,
 Kotlin, Swift, Bash, C, C++, C#, Dart, Elixir, Go, HCL/Terraform, Julia, Lua, Objective-C, PHP, PowerShell, Python,
 Ruby, Rust, Scala, Solidity, Svelte, SystemVerilog/Verilog, Vue, and Zig use exact-pinned, bundled Tree-sitter WASM
