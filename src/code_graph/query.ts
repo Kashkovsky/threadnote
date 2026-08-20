@@ -478,9 +478,12 @@ export class CodeGraphQueryService extends Context.Service<
                   'fallback',
                 )).identity;
               const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
-              const existing = statusObservation?.borrowedSnapshotId
-                ? yield* store.readySnapshotById(layout.databasePath, statusObservation.borrowedSnapshotId)
-                : yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
+              const existing =
+                options.refresh === false
+                  ? undefined
+                  : statusObservation?.borrowedSnapshotId
+                    ? yield* store.readySnapshotById(layout.databasePath, statusObservation.borrowedSnapshotId)
+                    : yield* store.readySnapshot(layout.databasePath, identity.worktreeId);
               const runtimeCurrent = existing
                 ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, existing, languagePacks)
                 : false;

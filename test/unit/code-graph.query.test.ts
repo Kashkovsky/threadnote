@@ -108,7 +108,7 @@ const embedding = {
 } as unknown as CodeGraphEmbeddingIndexShape;
 
 describe('code graph query budgets', () => {
-  it.effect('requests one path-free maintenance opportunity unless an internal evidence read opts out', () =>
+  it.effect('avoids duplicate refresh:false snapshot reads and requests one path-free maintenance opportunity', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fixtureRoot = yield* Effect.acquireRelease(
@@ -176,14 +176,26 @@ describe('code graph query budgets', () => {
           }),
         );
         const snapshotRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
+        const emptyStoreReads = () => ({
+          leasesAcquired: 0,
+          leasesReleased: 0,
+          provenance: 0,
+          readyById: 0,
+          readyByWorktree: 0,
+        });
+        const storeReads = yield* Ref.make(emptyStoreReads());
+        const recordStoreRead = (
+          field: 'leasesAcquired' | 'leasesReleased' | 'provenance' | 'readyById' | 'readyByWorktree',
+        ) => Ref.update(storeReads, current => ({...current, [field]: current[field] + 1}));
         const storeLayer = Layer.succeed(
           CodeGraphStore,
           CodeGraphStore.of({
-            acquireSnapshotLease: () => Effect.succeed('lease'),
-            readySnapshot: () => Ref.get(snapshotRef),
+            acquireSnapshotLease: () => recordStoreRead('leasesAcquired').pipe(Effect.as('lease')),
+            readySnapshot: () => recordStoreRead('readyByWorktree').pipe(Effect.andThen(Ref.get(snapshotRef))),
+            readySnapshotById: () => recordStoreRead('readyById').pipe(Effect.andThen(Ref.get(snapshotRef))),
             readySnapshotForCommit: () => Effect.succeed(undefined),
-            releaseSnapshotLease: () => Effect.void,
-            snapshotPackProvenance: () => Effect.succeed([]),
+            releaseSnapshotLease: () => recordStoreRead('leasesReleased'),
+            snapshotPackProvenance: () => recordStoreRead('provenance').pipe(Effect.as([])),
             symbolsByIds: () => Effect.succeed([]),
             withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
           } as unknown as CodeGraphStoreShape),
@@ -260,6 +272,7 @@ describe('code graph query budgets', () => {
           expect(statusCommandCalls.some(call => call.executable === 'git')).toBe(true);
           expect(JSON.stringify(deferredHotStatus)).not.toContain('statusObservation');
           yield* Ref.set(commandCalls, []);
+          yield* Ref.set(storeReads, emptyStoreReads());
           const deferredHotInspection = yield* query.inspect({
             cwd: fixtureRoot.repository,
             nodeId: `cgs_${'a'.repeat(32)}`,
@@ -271,6 +284,33 @@ describe('code graph query budgets', () => {
           });
           expect(deferredHotInspection.freshness).toBe('deferred');
           expect(yield* Ref.get(commandCalls)).toEqual([]);
+          expect(yield* Ref.get(storeReads)).toEqual({
+            leasesAcquired: 1,
+            leasesReleased: 1,
+            provenance: 1,
+            readyById: 0,
+            readyByWorktree: 1,
+          });
+          for (const refresh of [undefined, true] as const) {
+            yield* Ref.set(storeReads, emptyStoreReads());
+            const refreshedInspection = yield* query.inspect({
+              cwd: fixtureRoot.repository,
+              nodeId: `cgs_${'a'.repeat(32)}`,
+              operation: 'node',
+              ...(refresh === undefined ? {} : {refresh}),
+              requestMaintenance: false,
+              statusObservation: observationFromCodeGraphStatus(deferredHotStatus),
+              threadnoteHome: fixtureRoot.home,
+            });
+            expect(refreshedInspection.freshness).toBe('current');
+            expect(yield* Ref.get(storeReads)).toEqual({
+              leasesAcquired: 1,
+              leasesReleased: 1,
+              provenance: 2,
+              readyById: 0,
+              readyByWorktree: 2,
+            });
+          }
 
           const telemetryStatus = yield* query.status(fixtureRoot.home, fixtureRoot.repository, {
             observeWorktree: false,
@@ -289,6 +329,7 @@ describe('code graph query budgets', () => {
             telemetry,
           });
           telemetryEvents.splice(0);
+          yield* Ref.set(storeReads, emptyStoreReads());
           const strictInspection = yield* query.inspect({
             cwd: fixtureRoot.repository,
             nodeId: `cgs_${'a'.repeat(32)}`,
@@ -304,7 +345,15 @@ describe('code graph query budgets', () => {
           expect(telemetryEvents.splice(0)).toEqual([
             {phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
           ]);
+          expect(yield* Ref.get(storeReads)).toEqual({
+            leasesAcquired: 1,
+            leasesReleased: 1,
+            provenance: 1,
+            readyById: 0,
+            readyByWorktree: 1,
+          });
 
+          yield* Ref.set(storeReads, emptyStoreReads());
           const fallbackInspection = yield* query.inspect({
             cwd: fixtureRoot.repository,
             nodeId: `cgs_${'a'.repeat(32)}`,
@@ -324,6 +373,13 @@ describe('code graph query budgets', () => {
             {disposition: 'skipped', phase: 'graph.query.execute', stage: 'query-worktree-observation'},
             {disposition: 'skipped', phase: 'graph.query.execute', stage: 'query-strict-reobservation'},
           ]);
+          expect(yield* Ref.get(storeReads)).toEqual({
+            leasesAcquired: 1,
+            leasesReleased: 1,
+            provenance: 1,
+            readyById: 0,
+            readyByWorktree: 1,
+          });
 
           const assertOneRequest = Effect.fn(function* (run: Effect.Effect<unknown, unknown>) {
             yield* Ref.set(requests, []);
