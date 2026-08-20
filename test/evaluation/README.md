@@ -494,6 +494,10 @@ The current Apple M1 Max/64 GiB `hybrid-v3` reference covers 200, 1k, 10k, and 1
 candidate latency only on like hardware/runtime and matching fixture hashes; do not turn one host's timings into
 universal CI thresholds.
 
+The checked-in `candidates/threadnote-4.2.7-hybrid-v6/` capture is the matched clean post-change comparison. Its p95
+rank latency ranges from 0.986× to 1.001× the `hybrid-v3` reference across 200 through 100k documents, with lower p95
+RSS at the three larger scales. It remains candidate evidence rather than a replacement baseline.
+
 To add a benchmark scenario, expose a stable operation from `scripts/benchmark-target.ts`, register it in
 `scripts/benchmark-recall-micro.mjs`, and add a named measurement to the end-to-end runner when process-level
 telemetry matters. Never assert tight latency limits from a shared-host result.

@@ -19,7 +19,10 @@ const CURRENT_BASELINE_ROOT = 'test/evaluation/baselines/threadnote-4.2.7';
 const BENCHMARK_ROOT = join(HISTORICAL_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
 const CURRENT_BENCHMARK_ROOT = join(CURRENT_BASELINE_ROOT, 'benchmarks', 'darwin-arm64-m1-max');
 const CANDIDATE_ROOT = 'test/evaluation/candidates/threadnote-4.0.0';
+const CURRENT_RANK_CANDIDATE_ROOT =
+  'test/evaluation/candidates/threadnote-4.2.7-hybrid-v6/benchmarks/darwin-arm64-m1-max';
 const CURRENT_BENCHMARK_COMMIT = '6f090189249de0a95c24d3084946f1a94360653e';
+const CURRENT_RANK_CANDIDATE_COMMIT = '02b8ff90c57962cc9745f0a52e10759fefcf3664';
 const CURRENT_RANK_BENCHMARKS = [
   {
     documents: 200,
@@ -306,6 +309,49 @@ describe('reviewed Threadnote 4.2.7 performance baseline', () => {
         homeRedacted: true,
         queries: 250,
         rankerVersion: 'hybrid-v3',
+        sampleProfile: expected.sampleProfile,
+        seed: 262_144,
+        sourceVersion: 'threadnote-4.2.7',
+      });
+      expect(artifact.measurements.map(measurement => measurement.name)).toEqual(CURRENT_RANK_MEASUREMENTS);
+      expect(artifact.measurements.map(measurement => measurement.samples)).toEqual(
+        CURRENT_RANK_MEASUREMENTS.map(() => expected.samples),
+      );
+      expect(artifact.suite).toBe('recall-v2');
+      expect(artifact.version).toBe(1);
+      expect(artifact.warmups).toBe(expected.warmups);
+    }
+  });
+});
+
+describe('reviewed Threadnote 4.2.7 hybrid-v6 performance candidate', () => {
+  it('matches the hybrid-v3 fixture and host contract at every reviewed scale', () => {
+    const names = readdirSync(CURRENT_RANK_CANDIDATE_ROOT)
+      .filter(name => /^recall-rank-\d+\.json$/u.test(name))
+      .sort();
+    expect(names).toEqual(CURRENT_RANK_BENCHMARKS.map(benchmark => benchmark.name).sort());
+
+    for (const expected of CURRENT_RANK_BENCHMARKS) {
+      const artifact = parseBenchmarkArtifactV1(readJson(join(CURRENT_RANK_CANDIDATE_ROOT, expected.name)));
+
+      expect(artifact.environment).toEqual({
+        architecture: 'arm64',
+        commit: CURRENT_RANK_CANDIDATE_COMMIT,
+        cpu: 'Apple M1 Max',
+        dirty: false,
+        fixtureHash: expected.fixtureHash,
+        memoryBytes: 68_719_476_736,
+        node: 'bun/1.3.14',
+        operatingSystem: 'macOS 27.0',
+        packageManager: 'bun/1.3.14',
+        runner: 'threadnote-recall-e2e',
+        runnerVersion: '2',
+      });
+      expect(artifact.metadata).toEqual({
+        documents: expected.documents,
+        homeRedacted: true,
+        queries: 250,
+        rankerVersion: 'hybrid-v6',
         sampleProfile: expected.sampleProfile,
         seed: 262_144,
         sourceVersion: 'threadnote-4.2.7',
