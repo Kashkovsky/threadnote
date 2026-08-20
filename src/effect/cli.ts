@@ -818,9 +818,16 @@ const graphTopology = Command.make(
 
 const graphAnalysisBounds = {
   cwd: graphBounds.cwd,
+  freshness: defaultChoice(
+    'freshness',
+    ['ready', 'current', 'allow-stale'],
+    'Ready uses an existing snapshot, current refreshes before analysis, and allow-stale never starts indexing',
+    'ready',
+  ),
   includeHeuristic: graphBounds.includeHeuristic,
   includeModelAssociations: graphBounds.includeModelAssociations,
   json: graphBounds.json,
+  readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
 } as const;
 
 const graphCommunityMemberLimit = optional(
@@ -891,6 +898,7 @@ const graphReport = Command.make(
     includeHeuristic: graphBounds.includeHeuristic,
     includeModelAssociations: graphBounds.includeModelAssociations,
     output: requiredString('output', 'New Markdown report path; existing files are never overwritten'),
+    readTimeoutMilliseconds: graphBounds.readTimeoutMilliseconds,
   },
   options => withRuntimeEffect(config => runCodeGraphReport(config, options)),
 ).pipe(Command.withDescription('Write a deterministic architecture report with suggested graph questions'));

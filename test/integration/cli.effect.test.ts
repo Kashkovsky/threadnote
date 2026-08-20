@@ -85,6 +85,7 @@ describe('Effect CLI', () => {
     const contextBrief = await runCli(['context', 'brief', '--help']);
     const inventory = await runCli(['graph', 'inventory', '--help']);
     const analyze = await runCli(['graph', 'analyze', '--help']);
+    const report = await runCli(['graph', 'report', '--help']);
     const diagnostics = await runCli(['graph', 'diagnostics', '--help']);
     const exportHelp = await runCli(['graph', 'export', '--help']);
     const purge = await runCli(['graph', 'purge', '--help']);
@@ -135,6 +136,10 @@ describe('Effect CLI', () => {
       'choices: stats, communities, community, groups, hubs, surprises, confidence, full',
     );
     expect(analyze.stdout).toContain('--community-id string');
+    expect(analyze.stdout).toContain('--freshness choice');
+    expect(analyze.stdout).toContain('choices: ready, current, allow-stale');
+    expect(analyze.stdout).toContain('--read-timeout-ms integer');
+    expect(report.stdout).toContain('--read-timeout-ms integer');
     expect(diagnostics.stdout).toContain('--analyze');
     expect(diagnostics.stdout).toContain('--deep');
     expect(diagnostics.stdout).not.toContain('--cwd');
@@ -440,6 +445,161 @@ describe('Effect CLI', () => {
       expect(graph.snapshot?.commit).toBe(indexedCommit);
       expect(graph.nodes?.some(node => node.name === 'indexedBeforePull')).toBe(true);
       expect(result.stderr).toBe('');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
+
+  it('bounds cold analysis and report refreshes without leaving an indexing owner or report', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-analysis-timeout-'));
+    const home = join(root, '.threadnote-test-home');
+    const report = join(root, 'architecture.md');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"analysis-timeout"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function boundedAnalysis(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      const timedOut = await runCli([
+        'graph',
+        'analyze',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--view',
+        'stats',
+        '--read-timeout-ms',
+        '1',
+        '--json',
+      ]);
+      expect(JSON.parse(timedOut.stdout)).toMatchObject({
+        budgetMilliseconds: 1,
+        freshnessPolicy: 'ready',
+        operation: 'stats',
+        reason: 'read-timeout',
+        state: 'timed-out',
+        type: 'code-graph-analysis-state',
+        version: 1,
+      });
+      expect(timedOut.stdout).not.toContain('"result"');
+
+      const reportFailure = await runCli([
+        'graph',
+        'report',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--output',
+        report,
+        '--read-timeout-ms',
+        '1',
+      ]).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+      expect(reportFailure).toMatchObject({code: 1});
+      expect(String(reportFailure.stderr)).toContain('No analysis ran');
+      expect(String(reportFailure.stderr)).toContain('Run graph index explicitly');
+      expect(String(reportFailure.stderr)).toContain('report output was not created');
+      await expect(access(report)).rejects.toMatchObject({code: 'ENOENT'});
+
+      const recovered = JSON.parse(
+        (await runCli(['graph', 'index', '--home', home, '--cwd', root, '--json'])).stdout,
+      ) as {readonly snapshot?: {readonly fileCount?: number}};
+      expect(recovered.snapshot?.fileCount).toBe(2);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 30_000);
+
+  it('analyzes a stale ready snapshot by default and refreshes only when current is requested', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-stale-analysis-'));
+    const home = join(root, '.threadnote-test-home');
+    try {
+      await writeFile(join(root, 'package.json'), '{"name":"stale-analysis"}\n');
+      await writeFile(join(root, 'index.ts'), 'export function indexedForAnalysis(): number { return 1; }\n');
+      await execFilePromise('git', ['-C', root, 'init', '-q']);
+      await execFilePromise('git', ['-C', root, 'add', '.']);
+      await execFilePromise('git', [
+        '-C',
+        root,
+        '-c',
+        'user.name=Threadnote Test',
+        '-c',
+        'user.email=test@threadnote.local',
+        'commit',
+        '-qm',
+        'fixture',
+      ]);
+
+      const unavailable = await runCli([
+        'graph',
+        'analyze',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--view',
+        'stats',
+        '--freshness',
+        'allow-stale',
+        '--json',
+      ]);
+      expect(JSON.parse(unavailable.stdout)).toMatchObject({
+        freshnessPolicy: 'allow-stale',
+        operation: 'stats',
+        reason: 'no-ready-snapshot',
+        state: 'unavailable',
+        type: 'code-graph-analysis-state',
+        version: 1,
+      });
+      expect(unavailable.stderr).toBe('');
+
+      const indexed = JSON.parse(
+        (await runCli(['graph', 'index', '--home', home, '--cwd', root, '--json'])).stdout,
+      ) as {readonly snapshot: {readonly id: string}};
+      await writeFile(join(root, 'index.ts'), 'export function changedForAnalysis(): number { return 2; }\n');
+
+      const ready = await runCli(['graph', 'analyze', '--home', home, '--cwd', root, '--view', 'stats', '--json']);
+      const readyAnalysis = JSON.parse(ready.stdout) as {
+        readonly freshness: string;
+        readonly freshnessPolicy: string;
+        readonly result: {readonly snapshot: {readonly id: string}};
+      };
+      expect(readyAnalysis).toMatchObject({freshness: 'stale', freshnessPolicy: 'ready'});
+      expect(readyAnalysis.result.snapshot.id).toBe(indexed.snapshot.id);
+      expect(ready.stderr).toBe('');
+
+      const current = await runCli([
+        'graph',
+        'analyze',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--view',
+        'stats',
+        '--freshness',
+        'current',
+        '--json',
+      ]);
+      const currentAnalysis = JSON.parse(current.stdout) as {
+        readonly freshness: string;
+        readonly freshnessPolicy: string;
+        readonly result: {readonly snapshot: {readonly id: string}};
+      };
+      expect(currentAnalysis).toMatchObject({freshness: 'current', freshnessPolicy: 'current'});
+      expect(currentAnalysis.result.snapshot.id).not.toBe(indexed.snapshot.id);
     } finally {
       await rm(root, {force: true, recursive: true});
     }
