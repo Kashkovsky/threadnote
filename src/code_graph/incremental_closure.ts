@@ -423,7 +423,6 @@ function hasCompleteDeclaredDependencyModel(
     const detailedTargets = new Set(project.dependencyDetails.map(dependency => dependency.targetId));
     if (
       dependencies.size !== project.dependencies.length ||
-      detailedTargets.size !== project.dependencyDetails.length ||
       !sameStrings([...dependencies], [...detailedTargets]) ||
       project.dependencyDetails.some(dependency => dependency.provenance !== 'declared') ||
       [...dependencies].some(id => !projectsById.has(id))
