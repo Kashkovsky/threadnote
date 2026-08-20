@@ -290,34 +290,42 @@ describe('native memory workflow', () => {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-compact-concurrency-'});
-          const config: RuntimeConfig = {
-            account: 'local',
-            agentContextHome: home,
-            agentId: 'threadnote',
-            manifestPath: path.join(home, 'seed-manifest.yaml'),
-            user: 'tester',
-          };
           const store = yield* ResourceStore;
-          const location = {account: config.account, home: config.agentContextHome, user: config.user};
           const projects = ['alpha', 'beta'] as const;
-          const uris = projects.map(project => ({
+          // The former scratch path was keyed only by agentContextHome, so
+          // distinct account stores still collided here while avoiding an
+          // unrelated account-wide mutation-lock bottleneck in this test.
+          const cases = projects.map(project => ({
+            config: {
+              account: `local-${project}`,
+              agentContextHome: home,
+              agentId: 'threadnote',
+              manifestPath: path.join(home, 'seed-manifest.yaml'),
+              user: 'tester',
+            } satisfies RuntimeConfig,
             copy: `threadnote://user/tester/memories/durable/projects/${project}/threadnote-copy.md`,
+            project,
             stable: `threadnote://user/tester/memories/durable/projects/${project}/contract.md`,
           }));
-          for (const [index, project] of projects.entries()) {
+          for (const candidate of cases) {
+            const location = {
+              account: candidate.config.account,
+              home: candidate.config.agentContextHome,
+              user: candidate.config.user,
+            };
             const content = [
               'MEMORY',
               'kind: durable',
               'status: active',
-              `project: ${project}`,
+              `project: ${candidate.project}`,
               'topic: contract',
               'source_agent_client: test',
               'timestamp: 2026-08-20T00:00:00.000Z',
               '',
-              `Contract for ${project}.`,
+              `Contract for ${candidate.project}.`,
             ].join('\n');
-            yield* store.write(location, uris[index]!.stable, content, {mode: 'create'});
-            yield* store.write(location, uris[index]!.copy, content, {mode: 'create'});
+            yield* store.write(location, candidate.stable, content, {mode: 'create'});
+            yield* store.write(location, candidate.copy, content, {mode: 'create'});
           }
 
           let sharedScratchWrites = 0;
@@ -329,16 +337,23 @@ describe('native memory workflow', () => {
             },
           });
           yield* Effect.all(
-            projects.map(project => captureConsole(runCompact(config, {apply: true, project}))),
+            cases.map(candidate =>
+              captureConsole(runCompact(candidate.config, {apply: true, project: candidate.project})),
+            ),
             {concurrency: 'unbounded'},
           ).pipe(Effect.provideService(FileSystem.FileSystem, observedFileSystem));
 
           expect(sharedScratchWrites).toBe(0);
-          for (const pair of uris) {
-            const kept = yield* store.read(location, pair.stable);
-            expect(kept).toContain(`- ${pair.stable}`);
-            expect(kept).toContain(`- ${pair.copy}`);
-            expect(Option.isNone(yield* Effect.option(store.stat(location, pair.copy)))).toBe(true);
+          for (const candidate of cases) {
+            const location = {
+              account: candidate.config.account,
+              home: candidate.config.agentContextHome,
+              user: candidate.config.user,
+            };
+            const kept = yield* store.read(location, candidate.stable);
+            expect(kept).toContain(`- ${candidate.stable}`);
+            expect(kept).toContain(`- ${candidate.copy}`);
+            expect(Option.isNone(yield* Effect.option(store.stat(location, candidate.copy)))).toBe(true);
           }
         }),
       ),
