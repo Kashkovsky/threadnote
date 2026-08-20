@@ -78,7 +78,7 @@ describe('anonymous telemetry OTLP transport', () => {
             'service.version': localServiceVersion,
             'session.id': 'tns_000102030405060708090a0b0c0d0e0f',
             'threadnote.session.scope': 'invocation',
-            'threadnote.telemetry.schema_version': 2,
+            'threadnote.telemetry.schema_version': 3,
           });
           expect(envelope.scopeName).toBe('threadnote');
           expect(envelope.spanFieldNumbers).toEqual([1, 2, 5, 6, 7, 8, 9, 15]);

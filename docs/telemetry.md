@@ -21,9 +21,11 @@ threadnote telemetry disable --apply
 unsupported telemetry configuration always fails closed. Install, update, repair, doctor, help, and telemetry consent
 commands never enable telemetry implicitly.
 
-Consent is versioned independently from the configuration-file shape. When the allowlist gains a material data
-category, an older consent version fails closed and telemetry remains off until the user reviews the current preview
-and explicitly runs `threadnote telemetry enable --apply` again. Threadnote never migrates an earlier opt-in silently.
+Consent is versioned independently from the configuration-file shape. Schema v3's graph-query performance surface
+requires consent version 3. A version 1 or version 2 opt-in fails closed under a v3 producer: telemetry remains off
+until the user reviews the current preview and explicitly runs `threadnote telemetry enable --apply` again. Threadnote
+never migrates an earlier opt-in silently, even though the gateway continues to admit the frozen v1 and v2 wire
+contracts for older supported producers.
 
 Applied disable is observed by active exporters at their next event or transport gate. Queued requests that have not
 started are dropped. A network request that already started cannot be recalled, but no later request is sent. Enabling
@@ -54,6 +56,11 @@ The current versioned allowlist is limited to:
   rewrite/replay-amplification buckets. A failed graph build adds only bounded outcome/failure type to this lifecycle
   surface, while an interrupted graph build adds only outcome/duration; neither includes graph classifications or
   buckets;
+- graph-query timing for `inspect_code_graph` and `analyze_code_graph`: a closed request kind and local/workset scope;
+  the closed `graph.query.status`, `graph.query.snapshot`, and `graph.query.execute` phase durations; and, for a local
+  published snapshot, closed selection/freshness classes plus power-of-two file-, symbol-, and edge-count buckets.
+  Workset requests do not export a member repository's snapshot surface, and non-successful completions do not export
+  snapshot buckets;
 - a random agent-session identifier and correlation scope, plus a random per-invocation identifier that joins that
   operation's completion, phase, and liveness spans;
 - a bounded safe failure type for every failed operation, plus structured fields when a subsystem exposes a closed
@@ -63,9 +70,9 @@ The current versioned allowlist is limited to:
 
 It never contains command arguments, environment values, user/account/agent identifiers, process IDs, host names,
 paths, working directories, repository names or identities, commit hashes, branches/remotes, memory or transcript
-content, recall/code queries or results, MCP payloads, request IDs, progress tokens, logs, SQL, exception messages, or
-stack traces. The exporter is best-effort: network, configuration, batching, and shutdown failures cannot change a
-command or MCP result or cause application work to run twice.
+content, recall/code query text or results, symbol names, exact file/symbol/edge counts, MCP payloads, request IDs,
+progress tokens, logs, SQL, exception messages, or stack traces. The exporter is best-effort: network, configuration,
+batching, and shutdown failures cannot change a command or MCP result or cause application work to run twice.
 
 Threadnote deliberately has no persistent installation identifier. An MCP session identifier is random for one broker
 lifetime and survives promotion to a newer MCP child. A standalone CLI invocation has a fresh identifier. When an
@@ -118,16 +125,18 @@ Tempo-compatible trace storage
 ```
 
 The gateway, rather than the open-source binary, owns vendor credentials. It rejects logs and metrics, admits the
-immutable v1 and v2 trace contracts, validates the complete versioned resource/span envelope before forwarding, caps
-bodies and rates, rejects unknown fields, avoids forwarding client IP headers, and emits no application access logs.
+immutable v1, v2, and v3 trace contracts, validates the complete versioned resource/span envelope before forwarding,
+caps bodies and rates, rejects unknown fields, avoids forwarding client IP headers, and emits no application access
+logs. V1 and v2 are frozen; v3 adds only the closed, bucketed graph-query surface described above.
 Accepted traces are stored in Grafana Cloud EU with
 the 14-day retention of its Always Free plan. The gateway's fixed accepted-byte budget keeps the required two-Machine
 deployment below 3 GB of canonical input per month, leaving headroom within the plan's 50 GB allowance for bounded
 retries. The static Threadnote GitHub Pages site cannot receive OTLP and public GitHub issues are not an appropriate
 telemetry sink.
 
-The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, schema
-validation, forwarding, and Grafana query visibility independently of the application release.
+The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, all three
+immutable schemas, forwarding, and Grafana query visibility independently of the application release. Schema v3 is
+rolled out gateway and canary first, then the v3-capable dashboard, and only then the consent-v3 producer.
 
 ## Local Jaeger dogfooding
 

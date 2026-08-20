@@ -127,7 +127,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" } | count_over_time() by (span.threadnote.component, span.threadnote.outcome)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" } | count_over_time() by (span.threadnote.component, span.threadnote.outcome)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -200,7 +200,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" } | count_over_time() by (resource.service.version) | topk(10)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" } | count_over_time() by (resource.service.version) | topk(10)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -264,7 +264,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" } | count_over_time() by (span.threadnote.operation, span.threadnote.outcome) | topk(20)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" } | count_over_time() by (span.threadnote.operation, span.threadnote.outcome) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -337,7 +337,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" } | count_over_time() by (span.threadnote.operation, span.threadnote.outcome) | topk(20)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" } | count_over_time() by (span.threadnote.operation, span.threadnote.outcome) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -401,7 +401,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "instant",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.duration_ms != nil && span.threadnote.operation != \"mcp-server\" && span.threadnote.operation != \"mcp-broker\" && span.threadnote.operation != \"manage\" } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.operation) | topk(20)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.duration_ms != nil && span.threadnote.operation != \"mcp-server\" && span.threadnote.operation != \"mcp-broker\" && span.threadnote.operation != \"manage\" } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.operation) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -489,7 +489,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "instant",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.phase)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.phase)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -586,7 +586,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase != nil } | count_over_time() by (span.threadnote.phase, span.threadnote.phase.outcome) | topk(20)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase != nil } | count_over_time() by (span.threadnote.phase, span.threadnote.phase.outcome) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -659,7 +659,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" && span.error.type != nil } | count_over_time() by (span.error.type) | topk(20)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" && span.error.type != nil } | count_over_time() by (span.error.type) | topk(20)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -723,7 +723,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.memory.rss.end_bucket != nil } | count_over_time() by (span.threadnote.memory.rss.end_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.memory.rss.end_bucket != nil } | count_over_time() by (span.threadnote.memory.rss.end_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -787,7 +787,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.memory.heap.end_bucket != nil } | count_over_time() by (span.threadnote.memory.heap.end_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.memory.heap.end_bucket != nil } | count_over_time() by (span.threadnote.memory.heap.end_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -851,7 +851,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.memory.peak_rss.end_bucket != nil } | count_over_time() by (span.threadnote.memory.peak_rss.end_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.memory.peak_rss.end_bucket != nil } | count_over_time() by (span.threadnote.memory.peak_rss.end_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -992,7 +992,7 @@
           },
           "limit": 100,
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" && span.threadnote.outcome != \"interrupted\" } | select(resource.service.version, resource.session.id, resource.threadnote.session.scope, span.threadnote.component, span.threadnote.operation, span.threadnote.outcome, span.error.type, span.threadnote.duration_ms, span.threadnote.failure.domain, span.threadnote.failure.code, span.threadnote.failure.recovery, span.threadnote.invocation.id) with (most_recent=true)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome != \"success\" && span.threadnote.outcome != \"interrupted\" } | select(resource.service.version, resource.session.id, resource.threadnote.session.scope, span.threadnote.component, span.threadnote.operation, span.threadnote.outcome, span.error.type, span.threadnote.duration_ms, span.threadnote.failure.domain, span.threadnote.failure.code, span.threadnote.failure.recovery, span.threadnote.invocation.id) with (most_recent=true)",
           "queryType": "traceql",
           "refId": "A",
           "spanLimit": 3,
@@ -1007,6 +1007,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
+      "description": "Unexpected full materializations as a percentage of real dirty builds. Synthetic canaries are excluded, and empty buckets render as 0%.",
       "fieldConfig": {
         "defaults": {
           "decimals": 2,
@@ -1041,7 +1042,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && (span.threadnote.graph.efficiency_class = \"small-delta-full\" || span.threadnote.graph.efficiency_class = \"high-amplification-full\" || span.threadnote.graph.efficiency_class = \"critical-amplification-full\") } | count_over_time()",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && (span.threadnote.graph.efficiency_class = \"small-delta-full\" || span.threadnote.graph.efficiency_class = \"high-amplification-full\" || span.threadnote.graph.efficiency_class = \"critical-amplification-full\") } | count_over_time()",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces",
@@ -1053,7 +1054,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" } | count_over_time()",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" } | count_over_time()",
           "queryType": "traceql",
           "refId": "B",
           "tableType": "traces",
@@ -1064,7 +1065,7 @@
             "type": "__expr__",
             "uid": "__expr__"
           },
-          "expression": "$A / $B * 100",
+          "expression": "$A / ($B + ($B == 0)) * 100",
           "refId": "C",
           "type": "math"
         }
@@ -1106,7 +1107,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" } | count_over_time() by (resource.service.version) | topk(10)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" } | count_over_time() by (resource.service.version) | topk(10)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -1149,7 +1150,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" } | count_over_time() by (span.threadnote.graph.materialization_mode, span.threadnote.graph.efficiency_class)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" } | count_over_time() by (span.threadnote.graph.materialization_mode, span.threadnote.graph.efficiency_class)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -1192,7 +1193,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.materialization_mode = \"full\" } | count_over_time() by (span.threadnote.graph.fallback_reason, span.threadnote.graph.efficiency_class)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.materialization_mode = \"full\" } | count_over_time() by (span.threadnote.graph.fallback_reason, span.threadnote.graph.efficiency_class)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -1235,7 +1236,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && span.threadnote.graph.delta_files_bucket != \"0\" } | count_over_time() by (span.threadnote.graph.rewrite_amplification_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && span.threadnote.graph.delta_files_bucket != \"0\" } | count_over_time() by (span.threadnote.graph.rewrite_amplification_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -1278,7 +1279,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && span.threadnote.graph.delta_files_bucket != \"0\" } | count_over_time() by (span.threadnote.graph.cached_fact_replay_bytes_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && span.threadnote.graph.delta_files_bucket != \"0\" } | count_over_time() by (span.threadnote.graph.cached_fact_replay_bytes_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -1321,7 +1322,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && span.threadnote.graph.changed_fact_bytes_bucket != \"0\" } | count_over_time() by (span.threadnote.graph.fact_replay_amplification_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"lifecycle\" && span.threadnote.operation = \"graph-build\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.build_kind = \"dirty\" && span.threadnote.graph.changed_fact_bytes_bucket != \"0\" } | count_over_time() by (span.threadnote.graph.fact_replay_amplification_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -1425,36 +1426,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "threadnote.graph.materialization_mode"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Materialization mode"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
               "options": "threadnote.graph.rewrite_amplification_bucket"
             },
             "properties": [
               {
                 "id": "displayName",
                 "value": "Rewrite amplification"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "threadnote.graph.build_kind"
-            },
-            "properties": [
-              {
-                "id": "displayName",
-                "value": "Build kind"
               }
             ]
           },
@@ -1593,7 +1570,7 @@
           },
           "limit": 100,
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.threadnote.telemetry.schema_version = 2 && span.threadnote.graph.efficiency_class =~ \"(small|high|critical).*full\" } | select(resource.service.version,span.threadnote.graph.build_kind,span.threadnote.graph.materialization_mode,span.threadnote.graph.fallback_reason,span.threadnote.graph.resolution_closure,span.threadnote.graph.efficiency_class,span.threadnote.graph.changed_files_bucket,span.threadnote.graph.deleted_files_bucket,span.threadnote.graph.delta_files_bucket,span.threadnote.graph.extracted_files_bucket,span.threadnote.graph.reused_files_bucket,span.threadnote.graph.staged_files_bucket,span.threadnote.graph.total_files_bucket,span.threadnote.graph.cached_fact_replay_bytes_bucket,span.threadnote.graph.changed_fact_bytes_bucket,span.threadnote.graph.final_fact_bytes_bucket,span.threadnote.graph.rewrite_amplification_bucket,span.threadnote.graph.fact_replay_amplification_bucket,span.threadnote.duration_ms) with (most_recent=true)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3) && span.threadnote.graph.efficiency_class =~ \"(small|high|critical).*full\" } | select(resource.service.version,span.threadnote.graph.fallback_reason,span.threadnote.graph.resolution_closure,span.threadnote.graph.efficiency_class,span.threadnote.graph.changed_files_bucket,span.threadnote.graph.deleted_files_bucket,span.threadnote.graph.delta_files_bucket,span.threadnote.graph.extracted_files_bucket,span.threadnote.graph.reused_files_bucket,span.threadnote.graph.staged_files_bucket,span.threadnote.graph.total_files_bucket,span.threadnote.graph.cached_fact_replay_bytes_bucket,span.threadnote.graph.changed_fact_bytes_bucket,span.threadnote.graph.final_fact_bytes_bucket,span.threadnote.graph.rewrite_amplification_bucket,span.threadnote.graph.fact_replay_amplification_bucket,span.threadnote.duration_ms) with (most_recent=true)",
           "queryType": "traceql",
           "refId": "A",
           "spanLimit": 3,
@@ -1602,6 +1579,343 @@
       ],
       "title": "Recent inefficient graph materializations",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "${DS_TEMPO}"
+      },
+      "description": "Successful graph-query completion duration p50, p95, and p99 by closed request kind. Schema v3 only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 88
+      },
+      "id": 21,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "metricsQueryType": "instant",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.request_kind != nil && span.threadnote.duration_ms != nil } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.graph.request_kind)",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "traces"
+        }
+      ],
+      "title": "Graph request duration quantiles",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.graph\\.request_kind=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2: p$1"
+          }
+        },
+        {
+          "id": "reduce",
+          "options": {
+            "includeTimeField": false,
+            "mode": "seriesToRows",
+            "reducers": ["lastNotNull"]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{"desc": true, "field": "Last *"}]
+          }
+        },
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {"fieldName": "Field", "handlerKey": "field.name"},
+              {"fieldName": "Last *", "handlerKey": "field.value"}
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "${DS_TEMPO}"
+      },
+      "description": "Graph-query checkpoint elapsed-time p50 and p95 by closed request kind and query phase. Schema v3 only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 88
+      },
+      "id": 22,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "metricsQueryType": "instant",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.phase =~ \"graph.query.*\" && span.threadnote.graph.request_kind != nil && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95) by (span.threadnote.graph.request_kind, span.threadnote.phase)",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "traces"
+        }
+      ],
+      "title": "Graph query stage quantiles",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.graph\\.request_kind=\"([^\"]+)\", span\\.threadnote\\.phase=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2 / $3: p$1"
+          }
+        },
+        {
+          "id": "reduce",
+          "options": {
+            "includeTimeField": false,
+            "mode": "seriesToRows",
+            "reducers": ["lastNotNull"]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{"desc": true, "field": "Last *"}]
+          }
+        },
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {"fieldName": "Field", "handlerKey": "field.name"},
+              {"fieldName": "Last *", "handlerKey": "field.value"}
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "${DS_TEMPO}"
+      },
+      "description": "Successful graph-query p95 duration by closed request kind and published snapshot file-count bucket. Local selected snapshots only; schema v3 only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 97
+      },
+      "id": 23,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "metricsQueryType": "instant",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.request_kind != nil && span.threadnote.graph.snapshot_files_bucket != nil && span.threadnote.duration_ms != nil } | quantile_over_time(span.threadnote.duration_ms, .95) by (span.threadnote.graph.request_kind, span.threadnote.graph.snapshot_files_bucket) | topk(40)",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "traces"
+        }
+      ],
+      "title": "Graph request latency by snapshot size",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{p=([0-9.]+), span\\.threadnote\\.graph\\.request_kind=\"([^\"]+)\", span\\.threadnote\\.graph\\.snapshot_files_bucket=\"([^\"]+)\"\\}$",
+            "renamePattern": "$2 / files $3: p$1"
+          }
+        },
+        {
+          "id": "reduce",
+          "options": {
+            "includeTimeField": false,
+            "mode": "seriesToRows",
+            "reducers": ["lastNotNull"]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [{"desc": true, "field": "Last *"}]
+          }
+        },
+        {
+          "id": "rowsToFields",
+          "options": {
+            "mappings": [
+              {"fieldName": "Field", "handlerKey": "field.name"},
+              {"fieldName": "Last *", "handlerKey": "field.value"}
+            ]
+          }
+        }
+      ],
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "${DS_TEMPO}"
+      },
+      "description": "Successful local graph-query completions grouped by closed snapshot selection and freshness classes. Schema v3 only.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
+          },
+          "mappings": [],
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 97
+      },
+      "id": 24,
+      "options": {
+        "legend": {
+          "calcs": ["sum"],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${DS_TEMPO}"
+          },
+          "metricsQueryType": "range",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 3 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.outcome = \"success\" && span.threadnote.graph.request_kind != nil && span.threadnote.graph.snapshot_selection != nil && span.threadnote.graph.snapshot_freshness != nil } | count_over_time() by (span.threadnote.graph.snapshot_selection, span.threadnote.graph.snapshot_freshness)",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "traces"
+        }
+      ],
+      "title": "Graph snapshot selection and freshness",
+      "transformations": [
+        {
+          "id": "renameByRegex",
+          "options": {
+            "regex": "^\\{span\\.threadnote\\.graph\\.snapshot_selection=\"([^\"]+)\", span\\.threadnote\\.graph\\.snapshot_freshness=\"([^\"]+)\"\\}$",
+            "renamePattern": "$1: $2"
+          }
+        }
+      ],
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",

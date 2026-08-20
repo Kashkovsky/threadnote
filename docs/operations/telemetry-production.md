@@ -181,8 +181,8 @@ Rotate without an ingestion gap:
    token or build a Basic header in shell output.
 3. Deploy/restart when rotating Fly ingest auth, then run the storage canary.
    For read auth, dispatch the canary directly after updating the secret.
-4. Confirm both stored schema canaries and normal exporter logs, then revoke the old
-   token. Record policy/token IDs and dates, not values.
+4. Confirm all four stored canary traces and normal exporter logs, then
+   revoke the old token. Record policy/token IDs and dates, not values.
 5. A failed canary blocks revocation and release. Restore the old secret while
    it remains valid and investigate.
 
@@ -191,15 +191,17 @@ Rotate without an ingestion gap:
 [`telemetry-delivery-canary.yml`](../../.github/workflows/telemetry-delivery-canary.yml)
 runs every 15 minutes and on demand. It first pipes `flyctl machine list --json`
 into the budget verifier; no Machine identifiers are logged. It then generates
-two random, schema-valid, content-free traces: one frozen schema-v1 completion
-and one complete schema-v2 terminal graph-build lifecycle. It posts each through
-the public gateway and polls Grafana Tempo by the exact trace IDs until both
-stored protobufs contain the expected version-specific resource and span
-identity. The synthetic version is `0.0.0-canary`, making it filterable from
-product telemetry. Success proves the two-Machine budget, public TLS,
-dual-version route and schema validation, Collector export, Grafana ingestion,
-storage, read credentials, and query availability. `/healthz` proves none of
-the storage/read path.
+four random, schema-valid, content-free traces: one frozen schema-v1 completion,
+one complete schema-v2 terminal graph-build lifecycle, one schema-v3 execute
+checkpoint, and one schema-v3 completion carrying the execute-inherited snapshot
+surface. It posts each through the public gateway and polls Grafana Tempo by the
+exact trace IDs until all four stored protobufs contain the expected
+version-specific resource and span identity. The synthetic version is
+`0.0.0-canary`, making it filterable from product telemetry and explicitly
+excluded by every operated dashboard query. Success proves the two-Machine
+budget, public TLS, triple-version route and schema validation, Collector export,
+Grafana ingestion, storage, read credentials, and query availability. `/healthz`
+proves none of the storage/read path.
 
 The exact query contract is:
 
@@ -262,7 +264,8 @@ cancellation and use the checked-in canary strategy with at most one unavailable
 Machine. The deploy is update-only, so unexpected process-group drift cannot
 create additional Machines. A successful rollout must end with exactly two
 healthy Machines running the reviewed digest, healthy production and canonical
-Fly endpoints, and a stored frozen-v1 plus terminal-v2 trace. The rollout queue
+Fly endpoints, and stored frozen-v1 completion, terminal-v2 graph-build, v3
+execute-checkpoint, and v3 execute-inherited completion traces. The rollout queue
 retains up to 100 pending `main` runs so a later non-runtime workflow cannot
 displace a queued deployment. The separately serialized scheduled canary
 boundedly retries its exact two-Machine check while Fly may be replacing a
@@ -298,20 +301,29 @@ is healthy; blindly changing the gateway image would hide that distinction. On
 failure, diagnose first, then use the previous immutable image recorded in the
 workflow summary and follow the rollback procedure below.
 
-For a telemetry schema rollout, deployment order is a hard compatibility gate:
+For a telemetry schema rollout, deployment order is a hard compatibility gate.
+Schema v1 and v2 are immutable; v3 is additive and does not redefine either
+older contract:
 
-1. Deploy the gateway/Collector revision that accepts both frozen schema v1 and
-   the new immutable schema v2. Do not release a v2 producer yet.
-2. Dispatch the production storage canary and require both the v1 completion and
-   complete v2 terminal graph-build traces to be accepted and queryable.
-3. Only after that dual-version proof succeeds, release the schema-v2 producer.
-4. Keep schema-v1 ingress and canary coverage until every supported v1 producer
-   is retired in a separately reviewed schema-removal change.
+1. Deploy the gateway/Collector revision that accepts frozen schemas v1 and v2
+   plus the new immutable schema v3. Do not release a v3 producer yet.
+2. Dispatch the production storage canary and require the v1 completion, complete
+   v2 terminal graph-build lifecycle, v3 execute checkpoint, and v3
+   execute-inherited completion to be accepted, stored, and queryable.
+3. Deploy the dashboard revision. Verify that generic panels admit v1/v2/v3,
+   graph-build panels admit v2/v3, and graph-query panels select v3 only. Exercise
+   the query panels against both stored synthetic v3 traces before producer release.
+4. Only after the gateway, four-trace/three-version canary, and dashboard gates
+   pass, release the consent-v3 producer. Existing consent-v1/v2 configurations must fail closed
+   until the user reviews and explicitly reapplies consent; never migrate opt-in
+   silently.
+5. Keep v1/v2 ingress and canary coverage until every supported older producer is
+   retired in a separately reviewed schema-removal change.
 
-A v2 canary rejection blocks the producer release even when `/healthz` and the
-v1 canary pass. If a producer was released out of order, roll it back before
-debugging the gateway; telemetry remains best-effort and must not drive an
-unsafe compatibility exception.
+A v3 canary rejection or an unvalidated dashboard blocks the producer release
+even when `/healthz` and the v1/v2 canaries pass. If a producer was released out
+of order, roll it back before debugging the gateway; telemetry remains
+best-effort and must not drive an unsafe compatibility exception.
 
 ## DNS and TLS launch checklist
 

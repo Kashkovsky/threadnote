@@ -1,4 +1,4 @@
-// Command canary proves that frozen-v1 and terminal-v2 privacy-safe synthetic
+// Command canary proves that frozen-v1, terminal-v2, and query-v3 privacy-safe synthetic
 // traces traverse the public gateway and become queryable in Grafana Cloud Tempo.
 package main
 
@@ -48,6 +48,7 @@ type canaryIDs struct {
 
 type canaryTrace struct {
 	ids           canaryIDs
+	queryEvent    string
 	schemaVersion uint64
 }
 
@@ -70,7 +71,7 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "threadnote-telemetry-canary:", err)
 		os.Exit(1)
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1 and v2 traces stored")
+	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1, v2, and v3 checkpoint/completion traces stored")
 }
 
 func configFromEnvironment() (config, error) {
@@ -140,15 +141,23 @@ func run(
 	newIDs func() (canaryIDs, error),
 ) error {
 	started := now().UTC()
-	traces := make([]canaryTrace, 0, 2)
-	for _, schemaVersion := range []uint64{1, 2} {
+	traces := make([]canaryTrace, 0, 4)
+	for _, target := range []struct {
+		queryEvent    string
+		schemaVersion uint64
+	}{
+		{schemaVersion: 1},
+		{schemaVersion: 2},
+		{queryEvent: "checkpoint", schemaVersion: 3},
+		{queryEvent: "completion", schemaVersion: 3},
+	} {
 		ids, err := newIDs()
 		if err != nil {
 			return errors.New("generate random identifiers")
 		}
-		trace := canaryTrace{ids: ids, schemaVersion: schemaVersion}
+		trace := canaryTrace{ids: ids, queryEvent: target.queryEvent, schemaVersion: target.schemaVersion}
 		if err := postTrace(ctx, configuration, client, buildEnvelope(trace, started)); err != nil {
-			return fmt.Errorf("schema v%d: %w", schemaVersion, err)
+			return fmt.Errorf("schema v%d: %w", target.schemaVersion, err)
 		}
 		traces = append(traces, trace)
 	}
@@ -296,7 +305,7 @@ func inspectStoredTrace(body []byte, canary canaryTrace) (storedTraceState, erro
 					continue
 				}
 				if bytes.Equal(span.TraceId, ids.traceID) && bytes.Equal(span.SpanId, ids.spanID) &&
-					span.Name == "threadnote.anonymous-diagnostic" && storedSpanMatchesVersion(span, canary.schemaVersion) {
+					span.Name == "threadnote.anonymous-diagnostic" && storedSpanMatchesVersion(span, canary) {
 					return storedTraceMatched, nil
 				}
 			}
@@ -383,16 +392,19 @@ func hasIntAttribute(attributes []*commonpb.KeyValue, key string, expected uint6
 	return false
 }
 
-func storedSpanMatchesVersion(span *tracepb.Span, schemaVersion uint64) bool {
+func storedSpanMatchesVersion(span *tracepb.Span, canary canaryTrace) bool {
 	if !hasIntAttribute(span.Attributes, "threadnote.duration_ms", 1) {
 		return false
 	}
-	for _, expected := range canaryStringAttributes(schemaVersion) {
+	if canary.schemaVersion == 3 && !hasIntAttribute(span.Attributes, "threadnote.phase.elapsed_ms", 1) {
+		return false
+	}
+	for _, expected := range canaryStringAttributes(canary) {
 		if !hasStringAttribute(span.Attributes, expected.key, expected.value) {
 			return false
 		}
 	}
-	return schemaVersion == 1 || schemaVersion == 2
+	return canary.schemaVersion == 1 || canary.schemaVersion == 2 || canary.schemaVersion == 3
 }
 
 func randomIDs() (canaryIDs, error) {
@@ -439,10 +451,13 @@ func buildEnvelope(canary canaryTrace, timestamp time.Time) []byte {
 	nanoseconds := uint64(timestamp.UnixNano())
 	span = append(span, fixed64Field(7, nanoseconds)...)
 	span = append(span, fixed64Field(8, nanoseconds+1_000_000)...)
-	for _, attribute := range canaryStringAttributes(canary.schemaVersion) {
+	for _, attribute := range canaryStringAttributes(canary) {
 		span = append(span, message(9, keyValue(attribute.key, stringValue(attribute.value)))...)
 	}
 	span = append(span, message(9, keyValue("threadnote.duration_ms", intValue(1)))...)
+	if canary.schemaVersion == 3 {
+		span = append(span, message(9, keyValue("threadnote.phase.elapsed_ms", intValue(1)))...)
+	}
 	span = append(span, message(15, varintField(3, 1))...)
 	scopeSpans := message(1, scope)
 	scopeSpans = append(scopeSpans, message(2, span)...)
@@ -451,7 +466,8 @@ func buildEnvelope(canary canaryTrace, timestamp time.Time) []byte {
 	return message(1, resourceSpans)
 }
 
-func canaryStringAttributes(schemaVersion uint64) []canaryStringAttribute {
+func canaryStringAttributes(canary canaryTrace) []canaryStringAttribute {
+	schemaVersion := canary.schemaVersion
 	attributes := []canaryStringAttribute{
 		{"threadnote.component", "cli"},
 		{"threadnote.runtime.architecture", "synthetic"},
@@ -464,7 +480,7 @@ func canaryStringAttributes(schemaVersion uint64) []canaryStringAttribute {
 			canaryStringAttribute{"threadnote.event", "completion"},
 			canaryStringAttribute{"threadnote.operation", "health"},
 		)
-	} else {
+	} else if schemaVersion == 2 {
 		attributes = append(attributes,
 			canaryStringAttribute{"threadnote.event", "lifecycle"},
 			canaryStringAttribute{"threadnote.operation", "graph-build"},
@@ -487,6 +503,24 @@ func canaryStringAttributes(schemaVersion uint64) []canaryStringAttribute {
 			{"threadnote.graph.final_fact_bytes_bucket", "2^30"},
 			{"threadnote.graph.rewrite_amplification_bucket", "2^9"},
 			{"threadnote.graph.fact_replay_amplification_bucket", "2^20"},
+		}...)
+	} else if schemaVersion == 3 {
+		event := "completion"
+		if canary.queryEvent == "checkpoint" {
+			event = "checkpoint"
+		}
+		attributes = append(attributes, []canaryStringAttribute{
+			{"threadnote.event", event},
+			{"threadnote.operation", "inspect_code_graph"},
+			{"threadnote.phase", "graph.query.execute"},
+			{"threadnote.phase.outcome", "success"},
+			{"threadnote.graph.request_kind", "inspect.query"},
+			{"threadnote.graph.request_scope", "local"},
+			{"threadnote.graph.snapshot_selection", "active"},
+			{"threadnote.graph.snapshot_freshness", "deferred"},
+			{"threadnote.graph.snapshot_files_bucket", "2^10"},
+			{"threadnote.graph.snapshot_symbols_bucket", "2^12"},
+			{"threadnote.graph.snapshot_edges_bucket", "2^13"},
 		}...)
 	}
 	return attributes

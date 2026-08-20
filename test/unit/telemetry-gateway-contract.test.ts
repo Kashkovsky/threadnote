@@ -39,8 +39,11 @@ const operationsSource = sourceFile('src/telemetry/operations.ts');
 const schemaV1 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v1.json'), 'utf8'),
 ) as TelemetrySchema;
-const schema = JSON.parse(
+const schemaV2 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v2.json'), 'utf8'),
+) as TelemetrySchema;
+const schema = JSON.parse(
+  readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v3.json'), 'utf8'),
 ) as TelemetrySchema;
 
 describe('telemetry producer and production gateway schema', () => {
@@ -83,17 +86,19 @@ describe('telemetry producer and production gateway schema', () => {
     ]);
   });
 
-  it('retains the frozen v1 boundary while v2 adds only the closed graph-build surface', () => {
+  it('retains frozen v1/v2 while v3 adds only the closed graph-query surface', () => {
     expect(schemaV1.schemaVersion).toBe(1);
-    expect(schema.schemaVersion).toBe(2);
-    expect(schemaV1.attributeContract.resource).toEqual(schema.attributeContract.resource);
+    expect(schemaV2.schemaVersion).toBe(2);
+    expect(schema.schemaVersion).toBe(3);
+    expect(schemaV1.attributeContract.resource).toEqual(schemaV2.attributeContract.resource);
+    expect(schemaV2.attributeContract.resource).toEqual(schema.attributeContract.resource);
     expect(
       schemaV1.attributeContract.span.some(
         key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
       ),
     ).toBe(false);
 
-    const graphAttributes = schema.attributeContract.span.filter(
+    const graphAttributes = schemaV2.attributeContract.span.filter(
       key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
     );
     expect(graphAttributes).toEqual([
@@ -116,12 +121,27 @@ describe('telemetry producer and production gateway schema', () => {
       'threadnote.graph.total_files_bucket',
     ]);
     expect(graphAttributes.some(key => /(?:repository|path|commit|session|invocation)/u.test(key))).toBe(false);
+    const graphQueryAttributes = schema.attributeContract.span.filter(
+      key => key.startsWith('threadnote.graph.') && !schemaV2.attributeContract.span.includes(key),
+    );
+    expect(graphQueryAttributes).toEqual([
+      'threadnote.graph.request_kind',
+      'threadnote.graph.request_scope',
+      'threadnote.graph.snapshot_edges_bucket',
+      'threadnote.graph.snapshot_files_bucket',
+      'threadnote.graph.snapshot_freshness',
+      'threadnote.graph.snapshot_selection',
+      'threadnote.graph.snapshot_symbols_bucket',
+    ]);
+    expect(
+      graphQueryAttributes.some(key => /(?:repository|path|commit|query_text|symbol_id|graph_id)/u.test(key)),
+    ).toBe(false);
     const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
     const canarySource = readFileSync(join(root, 'infra', 'telemetry-gateway', 'cmd', 'canary', 'main.go'), 'utf8');
     expect(collector).toContain(
-      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2',
+      'resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3',
     );
-    for (const attribute of graphAttributes) {
+    for (const attribute of [...graphAttributes, ...graphQueryAttributes]) {
       expect(collector).toContain(`"${attribute}"`);
       expect(canarySource).toContain(`"${attribute}"`);
     }
@@ -173,7 +193,13 @@ describe('telemetry producer and production gateway schema', () => {
   it('packages the canonical schema into the production gateway image', () => {
     const dockerfile = readFileSync(join(root, 'infra', 'telemetry-gateway', 'Dockerfile'), 'utf8');
     const dockerignore = readFileSync(join(root, '.dockerignore'), 'utf8');
-    for (const file of ['go.sum', 'schema.go', 'telemetry-schema-v1.json', 'telemetry-schema-v2.json']) {
+    for (const file of [
+      'go.sum',
+      'schema.go',
+      'telemetry-schema-v1.json',
+      'telemetry-schema-v2.json',
+      'telemetry-schema-v3.json',
+    ]) {
       expect(dockerfile).toContain(`infra/telemetry-gateway/${file}`);
       expect(dockerignore).toContain(`!infra/telemetry-gateway/${file}`);
     }
@@ -212,7 +238,10 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canary).toContain('THREADNOTE_TELEMETRY_CANARY_FLY_READ_TOKEN');
     expect(canary).toContain('vars.THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(canary).toContain('flyctl machine list --app threadnote-telemetry --json | go run ./cmd/budget');
-    expect(canarySource).toContain('[]uint64{1, 2}');
+    expect(canarySource).toContain('{schemaVersion: 1}');
+    expect(canarySource).toContain('{schemaVersion: 2}');
+    expect(canarySource).toContain('{queryEvent: "checkpoint", schemaVersion: 3}');
+    expect(canarySource).toContain('{queryEvent: "completion", schemaVersion: 3}');
     expect(canarySource).toContain('threadnote.graph.build_kind');
     expect(canarySource).toContain('threadnote.graph.fact_replay_amplification_bucket');
     expect(gatewayWorkflow).toContain("github.event_name != 'pull_request'");
@@ -249,8 +278,8 @@ describe('telemetry producer and production gateway schema', () => {
     expect(runbook).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled');
     expect(runbook).toContain('THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(runbook).toContain('deployment order is a hard compatibility gate');
-    expect(runbook).toContain('Only after that dual-version proof succeeds');
-    expect(runbook).toContain('Keep schema-v1 ingress and canary coverage');
+    expect(runbook).toContain('Only after the gateway, four-trace/three-version canary, and dashboard gates');
+    expect(runbook).toContain('Keep v1/v2 ingress and canary coverage');
   });
 });
 
@@ -278,6 +307,10 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
     failureReason: interfacePropertyStrings(diagnosticSource, 'AnonymousTelemetryDiagnostic', 'reason'),
     failureRecovery: literalRegistry(diagnosticSource, 'CODE_GRAPH_STORE_RECOVERIES'),
     fallbackReason: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS'),
+    graphRequestKind: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS'),
+    graphRequestScope: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES'),
+    graphSnapshotFreshness: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS'),
+    graphSnapshotSelection: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS'),
     memoryBucket: functionStringLiterals(effectTelemetrySource, 'byteBucket'),
     materializationMode: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES'),
     modelWorkerOperation: modelWorkerOperations,

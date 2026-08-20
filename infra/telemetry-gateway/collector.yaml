@@ -37,7 +37,7 @@ processors:
           - not IsString(resource.attributes["session.id"])
           - not IsMatch(resource.attributes["session.id"], "^tns_[0-9a-f]{32}$$")
           - resource.attributes["threadnote.session.scope"] != "broker" and resource.attributes["threadnote.session.scope"] != "invocation" and resource.attributes["threadnote.session.scope"] != "provider-session"
-          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2
+          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3
       - context: scope
         conditions:
           - scope.name != "threadnote"
@@ -97,7 +97,14 @@ processors:
               "threadnote.graph.materialization_mode",
               "threadnote.graph.resolution_closure",
               "threadnote.graph.reused_files_bucket",
+              "threadnote.graph.request_kind",
+              "threadnote.graph.request_scope",
               "threadnote.graph.rewrite_amplification_bucket",
+              "threadnote.graph.snapshot_edges_bucket",
+              "threadnote.graph.snapshot_files_bucket",
+              "threadnote.graph.snapshot_freshness",
+              "threadnote.graph.snapshot_selection",
+              "threadnote.graph.snapshot_symbols_bucket",
               "threadnote.graph.staged_files_bucket",
               "threadnote.graph.total_files_bucket",
               "threadnote.invocation.id",

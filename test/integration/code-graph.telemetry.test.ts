@@ -3,16 +3,135 @@ import {execFileSync} from '../helpers/node-child-process.js';
 import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
-import {Effect, Exit, Layer, Tracer} from 'effect';
+import {Effect, Exit, Layer, Option, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
+import {McpSchema, McpServer} from 'effect/unstable/ai';
 import {describe, expect} from 'vitest';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {CodeGraphWatcher} from '../../src/code_graph/watcher.js';
+import {EffectMcpServerAdapter, type EffectMcpServer} from '../../src/effect/ai/mcp.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {anonymousTelemetryTestLayer} from '../../src/effect/telemetry.js';
+import {registerCodeGraphTool} from '../../src/mcp_server_code_graph.js';
+import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 describe('code graph terminal telemetry wiring', () => {
+  effectIt.effect(
+    'emits the complete privacy-safe query lifecycle through the registered MCP tool',
+    () => {
+      const capture = capturingTracer();
+      let watcherEnsures = 0;
+
+      return Effect.acquireUseRelease(
+        Effect.sync(createRepositoryFixture),
+        fixture => {
+          const config = runtimeConfig(fixture.home);
+          const server = new EffectMcpServerAdapter('threadnote-graph-telemetry-test', '1.0.0', 'Test server.');
+          registerCodeGraphTool(server, config);
+          type AddedTool = Parameters<EffectMcpServer['addTool']>[0];
+          let inspectHandle: AddedTool['handle'] | undefined;
+          const mcpLayer = Layer.succeed(McpServer.McpServer, {
+            addTool: (options: AddedTool) =>
+              Effect.sync(() => {
+                if (options.tool.name === 'inspect_code_graph') inspectHandle = options.handle;
+              }),
+          } as unknown as EffectMcpServer);
+          const applicationLayer = Layer.merge(
+            ApplicationLayer,
+            Layer.succeed(
+              CodeGraphWatcher,
+              CodeGraphWatcher.of({
+                ensure: () => Effect.sync(() => watcherEnsures++).pipe(Effect.asVoid),
+                metrics: Effect.succeed({
+                  activeRefreshKeys: 0,
+                  activeWatches: 0,
+                  executingRefreshes: 0,
+                  executingRefreshHighWater: 0,
+                  idleSweepFibers: 0,
+                  maximumWatchers: 0,
+                  pendingTrailingRefreshes: 0,
+                  retainedStatuses: 0,
+                }),
+                refresh: () => Effect.succeed(false),
+                status: () => Effect.succeed(Option.none()),
+                watch: () => Effect.void,
+              }),
+            ),
+          );
+          const layer = server
+            .registrationLayer()
+            .pipe(
+              Layer.provideMerge(mcpLayer),
+              Layer.provideMerge(applicationLayer),
+              Layer.provideMerge(
+                anonymousTelemetryTestLayer({system: telemetrySystemInfoStub(), tracer: capture.tracer}),
+              ),
+            );
+
+          return Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            yield* indexer.index({cwd: fixture.root, ensureVectors: false, threadnoteHome: fixture.home});
+            const handle = inspectHandle;
+            if (handle === undefined) return yield* Effect.die('inspect_code_graph was not registered');
+            const result = yield* handle({callerCwd: fixture.root, operation: 'query', query: 'value'}).pipe(
+              Effect.provideService(
+                McpSchema.McpServerClient,
+                McpSchema.McpServerClient.of({
+                  clientId: 0,
+                  getClient: Effect.never,
+                  initializePayload: {
+                    capabilities: {},
+                    clientInfo: {name: 'telemetry-test', version: '1.0.0'},
+                    protocolVersion: '2025-06-18',
+                  },
+                }),
+              ),
+            );
+
+            expect(result.isError).not.toBe(true);
+            expect(watcherEnsures).toBe(1);
+            const spans = capture.spans
+              .map(span => Object.fromEntries(span.attributes))
+              .filter(attributes => attributes['threadnote.operation'] === 'inspect_code_graph');
+            expect(spans).toHaveLength(4);
+            expect(spans.slice(0, 3).map(attributes => attributes['threadnote.phase'])).toEqual([
+              'graph.query.status',
+              'graph.query.snapshot',
+              'graph.query.execute',
+            ]);
+            for (const attributes of spans) {
+              expect(attributes).toMatchObject({
+                'threadnote.graph.request_kind': 'inspect.query',
+                'threadnote.graph.request_scope': 'local',
+              });
+            }
+            expect(spans[0]).not.toHaveProperty('threadnote.graph.snapshot_selection');
+            for (const attributes of spans.slice(1)) {
+              expect(attributes).toMatchObject({
+                'threadnote.graph.snapshot_edges_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
+                'threadnote.graph.snapshot_files_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
+                'threadnote.graph.snapshot_freshness': 'deferred',
+                'threadnote.graph.snapshot_selection': 'active',
+                'threadnote.graph.snapshot_symbols_bucket': expect.stringMatching(/^(?:0|2\^\d+)$/u),
+              });
+            }
+            expect(spans[3]).toMatchObject({
+              'threadnote.event': 'completion',
+              'threadnote.outcome': 'success',
+            });
+            const serialized = JSON.stringify(spans);
+            expect(serialized).not.toContain(fixture.root);
+            expect(serialized).not.toContain('value');
+          }).pipe(TestClock.withLive, provideTestLayer(layer));
+        },
+        fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+      );
+    },
+    {timeout: 90_000},
+  );
+
   effectIt.effect('emits a terminal lifecycle surface for a short detached commit build', () => {
     const capture = capturingTracer();
     const layer = Layer.mergeAll(
@@ -217,6 +336,16 @@ function createRepositoryFixture(): {commit: string; home: string; root: string}
     commit: git(root, ['rev-parse', 'HEAD']).trim(),
     home: join(root, '.threadnote-test-home'),
     root,
+  };
+}
+
+function runtimeConfig(agentContextHome: string): RuntimeConfig {
+  return {
+    account: 'local',
+    agentContextHome,
+    agentId: 'telemetry-test',
+    manifestPath: join(agentContextHome, 'seed-manifest.yaml'),
+    user: 'telemetry-test',
   };
 }
 

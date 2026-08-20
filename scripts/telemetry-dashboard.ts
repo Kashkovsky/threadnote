@@ -19,6 +19,8 @@ export const telemetryDashboardFolderUid = 'threadnote-telemetry-private';
 export const telemetryDashboardFolderTitle = 'Threadnote private telemetry';
 export const telemetryDashboardUid = 'threadnote-telemetry';
 export const telemetryDashboardQueryLengthLimit = 1024;
+export const telemetryDashboardSyntheticCanaryExclusion = 'resource.service.version != "0.0.0-canary"';
+export const telemetryDashboardUnexpectedFullBuildExpression = '$A / ($B + ($B == 0)) * 100';
 
 type JsonPrimitive = boolean | null | number | string;
 interface JsonArray extends ReadonlyArray<JsonValue> {
@@ -42,8 +44,8 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 const datasourcePlaceholder = '${DS_TEMPO}';
 const serverOwnedDashboardKeys = new Set(['id', 'iteration', 'schemaVersion', 'uid', 'version']);
 const migrationEmptyFieldConfigPanelIds = new Set([14, 15, 16, 17, 18, 19]);
-const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13]);
+const migrationEmptyMappingsPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 21, 22, 23, 24]);
+const migrationEmptyOverridesPanelIds = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 21, 22, 23, 24]);
 const grafanaDefaultRefreshIntervals = ['5s', '10s', '30s', '1m', '5m', '15m', '30m', '1h', '2h', '1d'];
 const grafanaCloudNamespacePattern = /^stacks-[1-9][0-9]*$/u;
 const gitCommitPattern = /^[0-9a-f]{40}$/u;
@@ -195,11 +197,45 @@ export function collectTempoQueries(resource: DashboardArtifact): readonly Tempo
           `Dashboard panel ${panelId} target ${targetIndex} exceeds the ${telemetryDashboardQueryLengthLimit}-character Tempo query limit.`,
         );
       }
+      if (!target.query.includes(telemetryDashboardSyntheticCanaryExclusion)) {
+        throw new ScriptError(`Dashboard panel ${panelId} target ${targetIndex} does not exclude synthetic canaries.`);
+      }
       queries.push({panelId, query: target.query, target: target as Readonly<Record<string, JsonValue>>, targetIndex});
     }
   }
   if (queries.length === 0) throw new ScriptError('Dashboard artifact has no Tempo queries.');
   return queries;
+}
+
+function unexpectedFullBuildExpressionTarget(resource: DashboardArtifact): Readonly<Record<string, JsonValue>> {
+  const panels = resource.spec.panels;
+  if (!Array.isArray(panels)) throw new ScriptError('Dashboard artifact has no panels.');
+  const matches = panels.filter(panelValue => isObject(panelValue) && panelValue.id === 13);
+  if (matches.length !== 1)
+    throw new ScriptError('Dashboard must contain exactly one unexpected-full percentage panel.');
+  const panel = record(matches[0], 'dashboard panel 13');
+  if (!Array.isArray(panel.targets) || panel.targets.length !== 3) {
+    throw new ScriptError('Dashboard panel 13 must contain numerator, denominator, and math targets.');
+  }
+  const [numeratorValue, denominatorValue, expressionValue] = panel.targets;
+  const numerator = record(numeratorValue, 'dashboard panel 13 numerator');
+  const denominator = record(denominatorValue, 'dashboard panel 13 denominator');
+  const expression = record(expressionValue, 'dashboard panel 13 expression');
+  if (
+    numerator.refId !== 'A' ||
+    numerator.metricsQueryType !== 'range' ||
+    numerator.hide !== true ||
+    denominator.refId !== 'B' ||
+    denominator.metricsQueryType !== 'range' ||
+    denominator.hide !== true ||
+    expression.refId !== 'C' ||
+    expression.type !== 'math' ||
+    expression.expression !== telemetryDashboardUnexpectedFullBuildExpression ||
+    !isDatasource(expression.datasource, '__expr__', '__expr__')
+  ) {
+    throw new ScriptError('Dashboard panel 13 must use the guarded executable A/B percentage expression.');
+  }
+  return expression as Readonly<Record<string, JsonValue>>;
 }
 
 export function validateDashboardArtifact(value: unknown): DashboardArtifact {
@@ -214,6 +250,7 @@ export function validateDashboardArtifact(value: unknown): DashboardArtifact {
     if (Object.hasOwn(spec, key)) throw new ScriptError(`Dashboard artifact retains server-owned field ${key}.`);
   }
   collectTempoQueries(artifact);
+  unexpectedFullBuildExpressionTarget(artifact);
   return artifact;
 }
 
@@ -371,7 +408,7 @@ export function assessDashboardThreeWay(
 }
 
 export function buildTempoQueryRequest(resource: DashboardArtifact, now = Date.now()): JsonValue {
-  const queries = collectTempoQueries(resource).map(({panelId, target, targetIndex}) => ({
+  const queries: JsonObject[] = collectTempoQueries(resource).map(({panelId, target, targetIndex}) => ({
     ...target,
     datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
     intervalMs: 300_000,
@@ -380,6 +417,13 @@ export function buildTempoQueryRequest(resource: DashboardArtifact, now = Date.n
     refId: `P${panelId}T${targetIndex}`,
     spanLimit: 1,
   }));
+  const expression = unexpectedFullBuildExpressionTarget(resource);
+  queries.push({
+    ...expression,
+    datasource: {type: '__expr__', uid: '__expr__'},
+    expression: telemetryDashboardUnexpectedFullBuildExpression.replaceAll('$A', '$P13T0').replaceAll('$B', '$P13T1'),
+    refId: 'P13T2',
+  });
   return {from: String(now - 5 * 60_000), queries, to: String(now)};
 }
 

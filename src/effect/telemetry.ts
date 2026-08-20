@@ -16,7 +16,7 @@ import {
 } from '../telemetry/diagnostic.js';
 import {safeAnonymousTelemetryOperation} from '../telemetry/operations.js';
 
-const TELEMETRY_SCHEMA_VERSION = 2;
+const TELEMETRY_SCHEMA_VERSION = 3;
 const TELEMETRY_VERSION_MAX_BYTES = 96;
 const FIRST_CHECKPOINT_DELAY = '30 seconds';
 const CHECKPOINT_INTERVAL = '60 seconds';
@@ -25,6 +25,9 @@ export const ANONYMOUS_TELEMETRY_PHASES = [
   'graph.activating',
   'graph.embedding',
   'graph.materializing',
+  'graph.query.execute',
+  'graph.query.snapshot',
+  'graph.query.status',
   'graph.reclaiming',
   'graph.registering',
   'graph.resolving',
@@ -136,13 +139,37 @@ const ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES = [
   'reused-snapshot',
 ] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_RESOLUTION_CLOSURES = ['changed', 'full', 'none', 'project'] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS = [
+  'analyze.communities',
+  'analyze.community',
+  'analyze.confidence',
+  'analyze.full',
+  'analyze.groups',
+  'analyze.hubs',
+  'analyze.stats',
+  'analyze.surprises',
+  'inspect.explain',
+  'inspect.impact',
+  'inspect.neighbors',
+  'inspect.node',
+  'inspect.path',
+  'inspect.query',
+  'inspect.topology',
+] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES = ['local', 'workset'] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS = ['current', 'deferred', 'stale'] as const;
+const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS = ['active', 'borrowed', 'none', 'promoted'] as const;
 
 type AnonymousTelemetryGraphBuildKind = (typeof ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS)[number];
 type AnonymousTelemetryGraphEfficiencyClass = (typeof ANONYMOUS_TELEMETRY_GRAPH_EFFICIENCY_CLASSES)[number];
 type AnonymousTelemetryGraphFallbackReason = (typeof ANONYMOUS_TELEMETRY_GRAPH_FALLBACK_REASONS)[number];
 type AnonymousTelemetryGraphMaterializationMode = (typeof ANONYMOUS_TELEMETRY_GRAPH_MATERIALIZATION_MODES)[number];
 type AnonymousTelemetryGraphResolutionClosure = (typeof ANONYMOUS_TELEMETRY_GRAPH_RESOLUTION_CLOSURES)[number];
-type AnonymousTelemetryQuantityBucket = '0' | `2^${number}`;
+export type AnonymousTelemetryGraphRequestKind = (typeof ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS)[number];
+export type AnonymousTelemetryGraphRequestScope = (typeof ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES)[number];
+export type AnonymousTelemetryGraphSnapshotFreshness = (typeof ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS)[number];
+export type AnonymousTelemetryGraphSnapshotSelection = (typeof ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS)[number];
+export type AnonymousTelemetryQuantityBucket = '0' | `2^${number}`;
 
 export interface AnonymousTelemetryFields {
   readonly batchesCompleted?: number;
@@ -185,6 +212,8 @@ export interface AnonymousTelemetryFields {
   readonly readingMilliseconds?: number;
   readonly resolutionClosure?: AnonymousTelemetryGraphResolutionClosure;
   readonly reusedFilesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly requestKind?: AnonymousTelemetryGraphRequestKind;
+  readonly requestScope?: AnonymousTelemetryGraphRequestScope;
   readonly rewriteAmplificationBucket?: AnonymousTelemetryQuantityBucket;
   readonly sourceBytesCompleted?: number;
   readonly sourceBytesTotal?: number;
@@ -192,6 +221,11 @@ export interface AnonymousTelemetryFields {
   readonly stageElapsedMilliseconds?: number;
   readonly stagedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly subphase?: AnonymousTelemetrySubphase;
+  readonly snapshotEdgesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly snapshotFilesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly snapshotFreshness?: AnonymousTelemetryGraphSnapshotFreshness;
+  readonly snapshotSelection?: AnonymousTelemetryGraphSnapshotSelection;
+  readonly snapshotSymbolsBucket?: AnonymousTelemetryQuantityBucket;
   readonly total?: number;
   readonly totalFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly transactionMilliseconds?: number;
@@ -221,6 +255,16 @@ export interface AnonymousTelemetryInvocationOptions<A = unknown> {
   readonly reportedFailure?: (value: A) => boolean;
   readonly reportedFailureType?: string;
   readonly reportedOutcome?: (value: A) => AnonymousTelemetryReportedOutcome | undefined;
+}
+
+export interface AnonymousTelemetryCheckpointOptions<A> {
+  /** Closed fields known before the checkpointed operation starts. */
+  readonly fields: AnonymousTelemetryFields;
+  /** Defaults to true. False keeps checkpoint-only fields off the terminal recorder. */
+  readonly retainFields?: boolean;
+  /** Additional closed fields derived only from a successful result. */
+  readonly successFields?: (value: A) => AnonymousTelemetryFields;
+  readonly successOutcome?: (value: A) => 'failure' | 'success' | 'timed-out' | 'unavailable';
 }
 
 interface MutableAnonymousTelemetryRecorder {
@@ -496,6 +540,18 @@ export function withAnonymousTelemetryPhase<A, E, R>(
   effect: Effect.Effect<A, E, R>,
   successOutcome?: (value: A) => 'failure' | 'success' | 'timed-out' | 'unavailable',
 ): Effect.Effect<A, E, R> {
+  return withAnonymousTelemetryCheckpoint({fields: {phase}, successOutcome}, effect);
+}
+
+/**
+ * Emits one invocation-scoped checkpoint when an Effect exits. Failure and
+ * interruption keep only fields known before execution; result-derived fields
+ * are admitted only after a successful exit.
+ */
+export function withAnonymousTelemetryCheckpoint<A, E, R>(
+  options: AnonymousTelemetryCheckpointOptions<A>,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> {
   return Effect.flatMap(CurrentAnonymousTelemetryRecorder, recorder => {
     if (recorder === undefined || !recorder.active) return effect;
     return Effect.gen(function* () {
@@ -507,9 +563,17 @@ export function withAnonymousTelemetryPhase<A, E, R>(
               if (!recorder.active) return;
               const finishedAt = yield* Clock.currentTimeMillis;
               const elapsedMilliseconds = Math.max(0, finishedAt - startedAt);
-              const classified = safePhaseOutcome(exit, successOutcome);
-              const fields = {elapsedMilliseconds, phase, phaseOutcome: classified.outcome} as const;
-              yield* recordAnonymousTelemetryFields(fields);
+              const classified = safePhaseOutcome(exit, options.successOutcome);
+              const successFields = Exit.isSuccess(exit)
+                ? Result.try(() => options.successFields?.(exit.value) ?? {})
+                : Result.succeed({});
+              const fields = {
+                ...options.fields,
+                ...(Result.isSuccess(successFields) ? successFields.success : {}),
+                elapsedMilliseconds,
+                phaseOutcome: classified.outcome,
+              } as const;
+              if (options.retainFields !== false) yield* recordAnonymousTelemetryFields(fields);
               yield* emitAnonymousTelemetryEvent({
                 component: recorder.component,
                 ...(classified.errorType === undefined ? {} : {errorType: classified.errorType}),
@@ -727,6 +791,24 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
   ) {
     attributes['threadnote.graph.resolution_closure'] = fields.resolutionClosure;
   }
+  if (fields.requestKind !== undefined && ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS.includes(fields.requestKind)) {
+    attributes['threadnote.graph.request_kind'] = fields.requestKind;
+  }
+  if (fields.requestScope !== undefined && ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES.includes(fields.requestScope)) {
+    attributes['threadnote.graph.request_scope'] = fields.requestScope;
+  }
+  if (
+    fields.snapshotFreshness !== undefined &&
+    ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS.includes(fields.snapshotFreshness)
+  ) {
+    attributes['threadnote.graph.snapshot_freshness'] = fields.snapshotFreshness;
+  }
+  if (
+    fields.snapshotSelection !== undefined &&
+    ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS.includes(fields.snapshotSelection)
+  ) {
+    attributes['threadnote.graph.snapshot_selection'] = fields.snapshotSelection;
+  }
   for (const [key, attribute] of Object.entries(GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
     const value = fields[key as GraphQuantityBucketField];
     if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
@@ -762,7 +844,11 @@ type NumericTelemetryField = Exclude<
   | 'mode'
   | 'phase'
   | 'phaseOutcome'
+  | 'requestKind'
+  | 'requestScope'
   | 'resolutionClosure'
+  | 'snapshotFreshness'
+  | 'snapshotSelection'
   | 'stage'
   | 'subphase'
   | 'waitingReason'
@@ -779,6 +865,9 @@ type GraphQuantityBucketField =
   | 'finalFactBytesBucket'
   | 'reusedFilesBucket'
   | 'rewriteAmplificationBucket'
+  | 'snapshotEdgesBucket'
+  | 'snapshotFilesBucket'
+  | 'snapshotSymbolsBucket'
   | 'stagedFilesBucket'
   | 'totalFilesBucket';
 
@@ -793,6 +882,9 @@ const GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<GraphQuantityBucketF
   finalFactBytesBucket: 'threadnote.graph.final_fact_bytes_bucket',
   reusedFilesBucket: 'threadnote.graph.reused_files_bucket',
   rewriteAmplificationBucket: 'threadnote.graph.rewrite_amplification_bucket',
+  snapshotEdgesBucket: 'threadnote.graph.snapshot_edges_bucket',
+  snapshotFilesBucket: 'threadnote.graph.snapshot_files_bucket',
+  snapshotSymbolsBucket: 'threadnote.graph.snapshot_symbols_bucket',
   stagedFilesBucket: 'threadnote.graph.staged_files_bucket',
   totalFilesBucket: 'threadnote.graph.total_files_bucket',
 };
@@ -870,7 +962,16 @@ function mergeTelemetryFields(
       (key === 'degradationReason' && isDegradationReason(value)) ||
       (key === 'stage' && ANONYMOUS_TELEMETRY_STAGES.includes(value as AnonymousTelemetryStage)) ||
       (key === 'waitingReason' &&
-        ANONYMOUS_TELEMETRY_WAITING_REASONS.includes(value as AnonymousTelemetryWaitingReason))
+        ANONYMOUS_TELEMETRY_WAITING_REASONS.includes(value as AnonymousTelemetryWaitingReason)) ||
+      (key === 'requestKind' &&
+        ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS.includes(value as AnonymousTelemetryGraphRequestKind)) ||
+      (key === 'requestScope' &&
+        ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES.includes(value as AnonymousTelemetryGraphRequestScope)) ||
+      (key === 'snapshotFreshness' &&
+        ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS.includes(value as AnonymousTelemetryGraphSnapshotFreshness)) ||
+      (key === 'snapshotSelection' &&
+        ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS.includes(value as AnonymousTelemetryGraphSnapshotSelection)) ||
+      (key in GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS && isQuantityBucket(value as string))
     ) {
       merged[key] = value;
     }

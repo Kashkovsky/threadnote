@@ -18,7 +18,9 @@ import {
   telemetryDashboardFolderUid,
   telemetryDashboardQueryLengthLimit,
   telemetryDashboardSourcePath,
+  telemetryDashboardSyntheticCanaryExclusion,
   telemetryDashboardUid,
+  telemetryDashboardUnexpectedFullBuildExpression,
   validateGrafanaCloudNamespace,
   validateDashboardArtifactBytes,
   validateReaderPermissions,
@@ -74,6 +76,10 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function evaluateUnexpectedFullBuildPercentage(numerator: number, denominator: number): number {
+  return (numerator / (denominator + (denominator === 0 ? 1 : 0))) * 100;
+}
+
 function grafanaV42DashboardSpec(spec: Readonly<Record<string, JsonValue>>): Record<string, JsonValue> {
   const migrated = clone(spec) as Record<string, JsonValue>;
   migrated.schemaVersion = 42;
@@ -87,8 +93,10 @@ function grafanaV42DashboardSpec(spec: Readonly<Record<string, JsonValue>>): Rec
     if (typeof panel.id !== 'number') continue;
     const fieldConfig = panel.fieldConfig as Record<string, JsonValue>;
     const defaults = fieldConfig.defaults as Record<string, JsonValue>;
-    if (panel.id >= 1 && panel.id <= 12) delete defaults.mappings;
-    if ((panel.id >= 1 && panel.id <= 11) || panel.id === 13) delete fieldConfig.overrides;
+    if ((panel.id >= 1 && panel.id <= 12) || (panel.id >= 21 && panel.id <= 24)) delete defaults.mappings;
+    if ((panel.id >= 1 && panel.id <= 11) || panel.id === 13 || (panel.id >= 21 && panel.id <= 24)) {
+      delete fieldConfig.overrides;
+    }
     if (panel.id >= 14 && panel.id <= 19) delete panel.fieldConfig;
     if (panel.id === 20) delete fieldConfig.defaults;
     if (panel.id === 13) panel.datasource = {type: 'mixed', uid: '-- Mixed --'};
@@ -255,9 +263,68 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(new Set(queries.map(query => `${query.panelId}:${query.targetIndex}`)).size).toBe(queries.length);
     for (const {query, target} of queries) {
       expect(query.length).toBeLessThanOrEqual(telemetryDashboardQueryLengthLimit);
+      expect(query).toContain(telemetryDashboardSyntheticCanaryExclusion);
       expect(target.datasource).toEqual({type: 'tempo', uid: telemetryDashboardDatasourceUid});
     }
+
+    const queryRequest = buildTempoQueryRequest(checkedIn) as Readonly<Record<string, JsonValue>>;
+    const verificationQueries = queryRequest.queries as readonly Readonly<Record<string, JsonValue>>[];
+    const expressionQueries = verificationQueries.filter(query => {
+      const datasource = query.datasource;
+      return (
+        datasource !== null &&
+        typeof datasource === 'object' &&
+        !Array.isArray(datasource) &&
+        (datasource as Readonly<Record<string, JsonValue>>).type === '__expr__'
+      );
+    });
+    expect(expressionQueries).toEqual([
+      expect.objectContaining({
+        datasource: {type: '__expr__', uid: '__expr__'},
+        expression: '$P13T0 / ($P13T1 + ($P13T1 == 0)) * 100',
+        refId: 'P13T2',
+        type: 'math',
+      }),
+    ]);
+    for (const refId of ['P13T0', 'P13T1']) {
+      expect(verificationQueries).toContainEqual(
+        expect.objectContaining({
+          datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
+          metricsQueryType: 'range',
+          refId,
+        }),
+      );
+    }
   });
+
+  it('rejects an unguarded unexpected-full percentage expression', () => {
+    const source = clone(readDashboardSource()) as Record<string, JsonValue>;
+    const panel = (source.panels as Record<string, JsonValue>[]).find(candidate => candidate.id === 13)!;
+    const expression = (panel.targets as Record<string, JsonValue>[])[2]!;
+    expression.expression = '$A / $B * 100';
+
+    expect(() => renderDashboardArtifact(source)).toThrow(/guarded executable A\/B percentage expression/u);
+    expect(telemetryDashboardUnexpectedFullBuildExpression).toBe('$A / ($B + ($B == 0)) * 100');
+    expect(evaluateUnexpectedFullBuildPercentage(0, 0)).toBe(0);
+    expect(evaluateUnexpectedFullBuildPercentage(1, 2)).toBe(50);
+  });
+
+  it.prop(
+    'keeps the guarded unexpected-full percentage finite for every subset count',
+    {
+      denominator: FC.integer({max: 1_000_000, min: 0}),
+      numeratorSeed: FC.integer({max: 1_000_000, min: 0}),
+    },
+    ({denominator, numeratorSeed}) => {
+      const numerator = denominator === 0 ? 0 : numeratorSeed % (denominator + 1);
+      const percentage = evaluateUnexpectedFullBuildPercentage(numerator, denominator);
+      expect(Number.isFinite(percentage)).toBe(true);
+      expect(percentage).toBeGreaterThanOrEqual(0);
+      expect(percentage).toBeLessThanOrEqual(100);
+      expect(percentage).toBe(denominator === 0 ? 0 : (numerator / denominator) * 100);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it.prop(
     'renders identically regardless of source object-key order',

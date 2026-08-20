@@ -42,7 +42,7 @@ describe('telemetry configuration', () => {
         unexpected: true,
         version: 1,
       },
-      {consentVersion: 3, enabled: false, version: 1},
+      {consentVersion: 4, enabled: false, version: 1},
       {consentVersion: 2, enabled: false, version: 2},
     ]) {
       expect(() => parseTelemetryConfiguration(JSON.stringify(malformed))).toThrow(TelemetryConfigurationError);
@@ -142,7 +142,7 @@ describe('telemetry configuration', () => {
         yield* fs.writeFileString(
           file,
           `${JSON.stringify({
-            consentVersion: 1,
+            consentVersion: 2,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
             sessionSalt: FIXED_SESSION_SALT,

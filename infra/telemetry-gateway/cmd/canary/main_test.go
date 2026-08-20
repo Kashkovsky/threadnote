@@ -17,9 +17,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestCanaryPostsAndProvesFrozenV1AndTerminalV2(t *testing.T) {
+func TestCanaryPostsAndProvesFrozenV1TerminalV2AndQueryV3(t *testing.T) {
 	started := time.Unix(1_700_000_000, 0)
-	traces := []canaryTrace{fixedTrace(1), fixedTrace(2)}
+	traces := []canaryTrace{fixedTrace(1), fixedTrace(2), fixedV3Checkpoint(), fixedTrace(3)}
 	byTraceID := make(map[string]canaryTrace, len(traces))
 	for _, trace := range traces {
 		byTraceID[hex.EncodeToString(trace.ids.traceID)] = trace
@@ -74,8 +74,8 @@ func TestCanaryPostsAndProvesFrozenV1AndTerminalV2(t *testing.T) {
 	if err := run(context.Background(), configuration, server.Client(), func() time.Time { return started }, idSequence(traces)); err != nil {
 		t.Fatal(err)
 	}
-	if postCount != 2 || queryCount != 2 {
-		t.Fatalf("posts = %d, queries = %d, want 2 each", postCount, queryCount)
+	if postCount != 4 || queryCount != 4 {
+		t.Fatalf("posts = %d, queries = %d, want 4 each", postCount, queryCount)
 	}
 }
 
@@ -119,8 +119,48 @@ func TestV2CanaryEnvelopeCarriesTheCompleteTerminalGraphSurface(t *testing.T) {
 	}
 }
 
+func TestV3CanaryEnvelopesCarryCheckpointAndCompletionGraphQuerySurfaces(t *testing.T) {
+	for _, trace := range []canaryTrace{fixedV3Checkpoint(), fixedTrace(3)} {
+		t.Run(trace.queryEvent, func(t *testing.T) {
+			request := &collectortracepb.ExportTraceServiceRequest{}
+			if err := proto.Unmarshal(buildEnvelope(trace, time.Unix(1_700_000_000, 0)), request); err != nil {
+				t.Fatal(err)
+			}
+			if len(request.ResourceSpans) != 1 || len(request.ResourceSpans[0].ScopeSpans) != 1 ||
+				len(request.ResourceSpans[0].ScopeSpans[0].Spans) != 1 {
+				t.Fatal("v3 canary did not contain exactly one span")
+			}
+			resource := request.ResourceSpans[0].Resource
+			if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", 3) {
+				t.Fatal("v3 canary resource did not declare schema version 3")
+			}
+			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+			for _, attribute := range []canaryStringAttribute{
+				{"threadnote.event", trace.queryEvent},
+				{"threadnote.operation", "inspect_code_graph"},
+				{"threadnote.phase", "graph.query.execute"},
+				{"threadnote.phase.outcome", "success"},
+				{"threadnote.graph.request_kind", "inspect.query"},
+				{"threadnote.graph.request_scope", "local"},
+				{"threadnote.graph.snapshot_selection", "active"},
+				{"threadnote.graph.snapshot_freshness", "deferred"},
+				{"threadnote.graph.snapshot_files_bucket", "2^10"},
+				{"threadnote.graph.snapshot_symbols_bucket", "2^12"},
+				{"threadnote.graph.snapshot_edges_bucket", "2^13"},
+			} {
+				if !hasStringAttribute(span.Attributes, attribute.key, attribute.value) {
+					t.Fatalf("v3 canary is missing %s=%s", attribute.key, attribute.value)
+				}
+			}
+			if !hasIntAttribute(span.Attributes, "threadnote.phase.elapsed_ms", 1) {
+				t.Fatal("v3 canary is missing the execute-phase elapsed time")
+			}
+		})
+	}
+}
+
 func TestCanaryFailsClosedOnAcceptedButMissingOrWrongTrace(t *testing.T) {
-	traces := []canaryTrace{fixedTrace(1), fixedTrace(2)}
+	traces := []canaryTrace{fixedTrace(1), fixedTrace(2), fixedV3Checkpoint(), fixedTrace(3)}
 	v1 := traces[0]
 	tests := []struct {
 		name      string
@@ -228,6 +268,8 @@ func fixedTrace(schemaVersion uint64) canaryTrace {
 	sessionID := "tns_000102030405060708090a0b0c0d0e0f"
 	if schemaVersion == 2 {
 		sessionID = "tns_101112131415161718191a1b1c1d1e1f"
+	} else if schemaVersion == 3 {
+		sessionID = "tns_202122232425262728292a2b2c2d2e2f"
 	}
 	return canaryTrace{
 		ids: canaryIDs{
@@ -235,7 +277,20 @@ func fixedTrace(schemaVersion uint64) canaryTrace {
 			spanID:    bytes.Repeat([]byte{marker + 2}, 8),
 			sessionID: sessionID,
 		},
+		queryEvent:    "completion",
 		schemaVersion: schemaVersion,
+	}
+}
+
+func fixedV3Checkpoint() canaryTrace {
+	return canaryTrace{
+		ids: canaryIDs{
+			traceID:   bytes.Repeat([]byte{4}, 16),
+			spanID:    bytes.Repeat([]byte{6}, 8),
+			sessionID: "tns_303132333435363738393a3b3c3d3e3f",
+		},
+		queryEvent:    "checkpoint",
+		schemaVersion: 3,
 	}
 }
 

@@ -5,7 +5,7 @@ import type {RuntimeConfig} from '../types.js';
 import {isJsonObject} from '../utils.js';
 
 export const TELEMETRY_CONFIGURATION_VERSION = 1 as const;
-export const TELEMETRY_CONSENT_VERSION = 2 as const;
+export const TELEMETRY_CONSENT_VERSION = 3 as const;
 export const DEFAULT_TELEMETRY_ENDPOINT = 'https://telemetry.threadnote.io/v1/traces';
 
 export interface DisabledTelemetryConfiguration {
