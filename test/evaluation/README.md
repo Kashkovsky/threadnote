@@ -387,14 +387,19 @@ counts. Validate that:
 4. required reason codes are stable domain contracts, not model prose;
 5. provenance is synthetic or public project material, never copied memory/customer data.
 
-Any intentional fixture change requires regenerating both checked-in baselines and reviewing the metric deltas:
+The Threadnote 3.0.3 baselines are frozen historical artifacts and must never be overwritten. An intentional fixture or
+ranker change requires capturing a new reviewed current baseline from a clean commit and reviewing every metric delta:
 
 ```sh
-bun run eval:recall:baseline -- --output test/evaluation/baselines/threadnote-3.0.3/recall-v1.json
-bun run eval:recall:baseline:v2 -- --output test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json
+git status --short
+bun run eval:recall:baseline:v2
 ```
 
-The default timestamp is fixed. `SOURCE_DATE_EPOCH` or `--created-at` may record a reviewed replacement baseline.
+The v2 capture refuses a dirty checkout and defaults to
+`baselines/threadnote-<package-version>/recall-v2-lexical.json`. It derives the package version, pipeline name, commit,
+clean state, and commit timestamp from the checkout. `SOURCE_DATE_EPOCH`, `--created-at`, or `--output` may override the
+reproducible timestamp or destination, but must not be used to relabel historical behavior. The legacy v1 capture
+remains only for its frozen contract.
 
 ## Metrics
 
@@ -429,15 +434,18 @@ bun run eval:recall
 
 # v2 current-pipeline non-inferiority check
 bun run eval:recall:v2 -- \
-  --baseline test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json \
+  --fail-on-contract \
   --fail-on-regression
 
 # Keep the full query run as an untracked CI artifact
-bun run eval:recall:v2 -- --documents 10000 --full --output artifacts/recall-v2-10k.json
+bun run eval:recall:v2 -- --no-baseline --documents 10000 --full --output artifacts/recall-v2-10k.json
 ```
 
-The frozen 3.0.3 lexical baseline has known failures. These are evidence of behavior to improve, not waived release
-criteria. A candidate passes only when it does not add failures or regress safety/quality metrics.
+The evaluator and model bake-off default to the reviewed Threadnote 4.2.7 lexical baseline. Its 193 exact contract
+failure identities remain visible work, not silent waivers: with a baseline, `--fail-on-contract` allows fixes but
+rejects any new identity or count increase; with `--no-baseline`, it remains zero-tolerance. A candidate must also pass
+the independent non-inferiority gate for global, category, and safety metrics. Pass `--baseline` explicitly only to
+reproduce a historical comparison.
 
 ## Performance suites
 
@@ -458,6 +466,10 @@ RAM, warmups, and samples:
 bun run bench:recall -- --documents 10000 --samples 25 --warmups 5 \
   --output artifacts/recall-10k.json
 ```
+
+New benchmark captures derive `sourceVersion` from the package instead of claiming Threadnote 3.0.3. Existing 3.0.3
+and 4.0 performance files remain historical observations; this quality-baseline transition did not regenerate or
+promote them as current performance evidence.
 
 To add a benchmark scenario, expose a stable operation from `scripts/benchmark-target.ts`, register it in
 `scripts/benchmark-recall-micro.mjs`, and add a named measurement to the end-to-end runner when process-level
@@ -481,7 +493,8 @@ bun run eval:recall:models -- \
 
 - Recall fixture: version 2 (`RecallEvaluationFixtureSchemaV2`)
 - Pipeline run: version 1 (`RecallEvaluationRunSchemaV1`)
-- Compact baseline: version 1 (`RecallEvaluationBaselineSchemaV1`)
+- Compact baseline: version 1 (`RecallEvaluationBaselineSchemaV1`); current artifacts add optional commit and dirty
+  provenance while released artifacts without those fields remain valid
 - Non-inferiority gate: version 1 (`RecallNonInferiorityGateV1`)
 - Benchmark artifact: version 1 (`BenchmarkArtifactSchemaV1`)
 

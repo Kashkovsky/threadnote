@@ -4,7 +4,11 @@ import {Effect, FileSystem, Path} from 'effect';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
 import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {baselineResult, parseRecallEvaluationBaselineV1} from '../src/evaluation/recall-baseline.js';
+import {
+  baselineResult,
+  CURRENT_RECALL_BASELINE_PATH,
+  parseRecallEvaluationBaselineV1,
+} from '../src/evaluation/recall-baseline.js';
 import {
   createRecallEvaluationFixtureV2,
   serializeRecallEvaluationFixtureV2Identity,
@@ -213,7 +217,7 @@ interface Options {
 }
 
 function parseArguments(args: readonly string[], resolve: (value: string) => string): Options {
-  let baseline = resolve('test/evaluation/baselines/threadnote-3.0.3/recall-v2-lexical.json');
+  let baseline = resolve(CURRENT_RECALL_BASELINE_PATH);
   let embedding: string | undefined;
   let failOnRegression = false;
   let home = resolve('.artifacts/model-bakeoff-home');

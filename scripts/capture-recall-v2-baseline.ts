@@ -1,6 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
+import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {
   RECALL_BASELINE_VERSION,
@@ -13,24 +14,39 @@ import {
 } from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
 import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
+import {getThreadnoteVersion} from '../src/version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
-
-const DEFAULT_CREATED_AT = '2026-07-27T00:00:00.000Z';
 
 const captureBaseline = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
+  const [threadnoteVersion, commit, committedAt, status] = yield* Effect.all(
+    [
+      getThreadnoteVersion(),
+      git(['rev-parse', 'HEAD']),
+      git(['show', '-s', '--format=%cI', 'HEAD']),
+      git(['status', '--porcelain', '--untracked-files=all']),
+    ],
+    {concurrency: 'unbounded'},
+  );
+  if (status.length > 0) {
+    return yield* Effect.fail(
+      new ScriptError('Recall baselines must be captured from a clean checkout; commit or stash changes first.'),
+    );
+  }
+  const createdAt = options.createdAt ?? sourceDate(committedAt);
+  const outputPath = options.outputPath ?? baselinePath(threadnoteVersion);
   const fixture = createRecallEvaluationFixtureV2();
   const hash = yield* fixtureHash(serializeRecallEvaluationFixtureV2Identity(fixture));
   const result = evaluateRecallRunV2(
     fixture,
     runLexicalRecallEvaluationV2(fixture, {
-      createdAt: options.createdAt,
+      createdAt,
       fixtureHash: hash,
-      pipelineName: 'threadnote-3.0.3-lexical-only',
+      pipelineName: `threadnote-${threadnoteVersion}-lexical-only`,
     }),
   );
   const artifact: RecallEvaluationBaselineV1 = {
-    createdAt: options.createdAt,
+    createdAt,
     fixture: {
       documents: fixture.documents.length,
       hash,
@@ -38,31 +54,34 @@ const captureBaseline = Effect.gen(function* () {
       version: fixture.version,
     },
     knownContractFailures: result.failures.length,
+    reviewedContractFailures: [...result.failures].sort(),
     result: {
       categories: result.categories,
       metrics: result.metrics,
       pipeline: result.pipeline,
     },
     source: {
-      openVikingVersion: '0.4.10',
+      commit,
+      dirty: false,
+      openVikingVersion: 'not-applicable',
       rankerVersion: RECALL_RANKER_VERSION,
-      threadnoteVersion: '3.0.3',
+      threadnoteVersion,
     },
     version: RECALL_BASELINE_VERSION,
   };
   parseRecallEvaluationBaselineV1(artifact);
   const json = `${JSON.stringify(artifact, undefined, 2)}\n`;
-  if (options.outputPath) yield* atomicWrite(options.outputPath, json);
+  yield* atomicWrite(outputPath, json);
   yield* printJson(artifact);
 });
 
 interface Options {
-  readonly createdAt: string;
+  readonly createdAt?: string;
   readonly outputPath?: string;
 }
 
 function parseArguments(args: readonly string[]): Options {
-  let createdAt = sourceDate();
+  let createdAt: string | undefined;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
@@ -73,10 +92,18 @@ function parseArguments(args: readonly string[]): Options {
   return {createdAt, outputPath};
 }
 
-function sourceDate(): string {
+function sourceDate(committedAt: string): string {
   const epoch = Bun.env.SOURCE_DATE_EPOCH;
-  return epoch ? isoDate(new Date(Number(epoch) * 1_000).toISOString()) : DEFAULT_CREATED_AT;
+  return epoch ? isoDate(new Date(Number(epoch) * 1_000).toISOString()) : isoDate(committedAt);
 }
+
+function baselinePath(threadnoteVersion: string): string {
+  return `test/evaluation/baselines/threadnote-${threadnoteVersion}/recall-v2-lexical.json`;
+}
+
+const git = Effect.fn('captureRecallBaseline.git')((arguments_: readonly string[]) =>
+  runCommandEffect('git', arguments_, {timeoutMs: 30_000}).pipe(Effect.map(result => result.stdout.trim())),
+);
 
 function isoDate(value: string): string {
   const date = new Date(value);

@@ -1,10 +1,12 @@
-# 4.0 rollout
+# Recall and 4.0 rollout gates
 
 Release gates are cumulative:
 
-1. Frozen 3.0.3 recall-v2 and M1 Max performance baselines remain immutable.
+1. Frozen 3.0.3 recall-v2 and M1 Max performance artifacts remain immutable historical evidence; the active lexical
+   quality gate is the reviewed clean-commit Threadnote 4.2.7 baseline.
 2. Unit, integration, type, lint, formatting, coverage, build, and package-content checks pass.
-3. Global and per-category recall non-inferiority pass with no safety or contract regression.
+3. Global and per-category recall non-inferiority pass with no safety regression, no new reviewed contract-failure
+   identity, and no increase in the current failure count.
 4. Clean install and core recall pass on Linux, macOS, and Windows without an interpreter or daemon.
 5. Migration fault-injection covers interruption, insufficient space, unsafe links, source mutation, unrelated target,
    idempotence, and preserved rollback source.
