@@ -98,7 +98,8 @@ export interface CodeGraphStatusObservation {
   /** Read-only shared evidence selected without changing this worktree's active pointer. */
   readonly borrowedSnapshotId?: string;
   readonly identity: RepositoryIdentity;
-  readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
+  /** Present only when status performed an exact worktree observation. */
+  readonly overlay?: {readonly dirty: boolean; readonly fingerprint?: string};
 }
 
 export interface CodeGraphSharedReadyAttachInterlock {
@@ -126,7 +127,7 @@ type ObservedCodeGraphStatus = CodeGraphStatus & {
   readonly [CODE_GRAPH_STATUS_OBSERVATION]?: CodeGraphStatusObservation;
 };
 
-/** Retrieve exact pre-read evidence without including it in JSON, CLI, or MCP status output. */
+/** Retrieve pre-read identity and optional exact overlay evidence without serializing it. */
 export function observationFromCodeGraphStatus(status: CodeGraphStatus): CodeGraphStatusObservation | undefined {
   return (status as ObservedCodeGraphStatus)[CODE_GRAPH_STATUS_OBSERVATION];
 }
@@ -306,7 +307,7 @@ export class CodeGraphQueryService extends Context.Service<
             readySnapshot: readySnapshot ? {...readySnapshot, worktreeId: identity.worktreeId} : undefined,
             stale,
           } satisfies CodeGraphStatus;
-          return attachCodeGraphStatusObservation(status, overlay === undefined ? undefined : {identity, overlay});
+          return attachCodeGraphStatusObservation(status, {identity, ...(overlay === undefined ? {} : {overlay})});
         });
       const attachExactSharedReadySnapshot = (
         threadnoteHome: string,
@@ -320,7 +321,7 @@ export class CodeGraphQueryService extends Context.Service<
           const observation = observedStatus && observationFromCodeGraphStatus(observedStatus);
           const reusableStatus =
             observedStatus !== undefined &&
-            observation !== undefined &&
+            observation?.overlay !== undefined &&
             sameRepositoryIdentity(observedStatus.identity, identity) &&
             sameRepositoryIdentity(observation.identity, identity)
               ? observedStatus
@@ -548,7 +549,7 @@ export class CodeGraphQueryService extends Context.Service<
                       layout,
                       languagePacks,
                       deferWorktreeObservation: overlay === undefined && !rebuilt,
-                      observation: overlay === undefined || rebuilt ? undefined : {identity, overlay},
+                      observation: rebuilt ? undefined : {identity, ...(overlay === undefined ? {} : {overlay})},
                       options,
                       store,
                       strictFreshness,
@@ -1143,7 +1144,7 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly observation?: {
     readonly identity: RepositoryIdentity;
-    readonly overlay: {readonly dirty: boolean; readonly fingerprint?: string};
+    readonly overlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   };
   readonly options: CodeGraphInspectOptions;
   readonly store: CodeGraphStoreShape;

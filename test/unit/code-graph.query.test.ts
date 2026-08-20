@@ -17,7 +17,13 @@ import {CodeGraphIndexer, extractorSetIdentityFromPackProvenance} from '../../sr
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
-import {CodeGraphQueryService, exactNodeQuery, neighborQuery, traversalQuery} from '../../src/code_graph/query.js';
+import {
+  CodeGraphQueryService,
+  exactNodeQuery,
+  neighborQuery,
+  observationFromCodeGraphStatus,
+  traversalQuery,
+} from '../../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
 import type {CodeGraphEdge, CodeGraphQueryNode, CodeGraphSnapshot} from '../../src/code_graph/types.js';
@@ -122,10 +128,26 @@ describe('code graph query budgets', () => {
           fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
         );
         const requests = yield* Ref.make<readonly {allowIndexPreparation?: true; databasePath: string}[]>([]);
+        const commandCalls = yield* Ref.make<readonly {args: readonly string[]; executable: string}[]>([]);
         const systemLayer = SystemInfo.layer;
-        const commandLayer = CommandExecutor.layer.pipe(
+        const liveCommandLayer = CommandExecutor.layer.pipe(
           Layer.provideMerge(Layer.merge(BunServices.layer, systemLayer)),
         );
+        const commandLayer = Layer.effect(
+          CommandExecutor,
+          Effect.gen(function* () {
+            const command = yield* CommandExecutor;
+            const record = (executable: string, args: readonly string[]) =>
+              Ref.update(commandCalls, current => [...current, {args: [...args], executable}]);
+            return CommandExecutor.of({
+              ...command,
+              execute: (executable, args, options) =>
+                record(executable, args).pipe(Effect.andThen(command.execute(executable, args, options))),
+              executeBytes: (executable, args, options) =>
+                record(executable, args).pipe(Effect.andThen(command.executeBytes!(executable, args, options))),
+            });
+          }),
+        ).pipe(Layer.provide(liveCommandLayer));
         const maintenanceLayer = Layer.succeed(
           CodeGraphMaintenanceCoordinator,
           CodeGraphMaintenanceCoordinator.of({
@@ -193,7 +215,41 @@ describe('code graph query budgets', () => {
             symbolCount: 0,
             worktreeId: identity.worktreeId,
           } satisfies CodeGraphSnapshot;
+          const deferredColdStatus = yield* query.statusForIdentity(fixtureRoot.home, identity, {
+            observeWorktree: false,
+            requestMaintenance: false,
+          });
+          const exactColdAttach = yield* query.attachSharedReadySnapshot(
+            fixtureRoot.home,
+            identity,
+            deferredColdStatus,
+            {requestMaintenance: false},
+          );
+          expect(observationFromCodeGraphStatus(deferredColdStatus)?.overlay).toBeUndefined();
+          expect(observationFromCodeGraphStatus(exactColdAttach)?.overlay).toEqual({dirty: false});
           yield* Ref.set(snapshotRef, snapshot);
+
+          yield* Ref.set(commandCalls, []);
+          const deferredHotStatus = yield* query.status(fixtureRoot.home, fixtureRoot.repository, {
+            observeWorktree: false,
+            requestMaintenance: false,
+          });
+          const statusCommandCalls = yield* Ref.get(commandCalls);
+          expect(statusCommandCalls.length).toBeGreaterThan(0);
+          expect(statusCommandCalls.some(call => call.executable === 'git')).toBe(true);
+          expect(JSON.stringify(deferredHotStatus)).not.toContain('statusObservation');
+          yield* Ref.set(commandCalls, []);
+          const deferredHotInspection = yield* query.inspect({
+            cwd: fixtureRoot.repository,
+            nodeId: `cgs_${'a'.repeat(32)}`,
+            operation: 'node',
+            refresh: false,
+            requestMaintenance: false,
+            statusObservation: observationFromCodeGraphStatus(deferredHotStatus),
+            threadnoteHome: fixtureRoot.home,
+          });
+          expect(deferredHotInspection.freshness).toBe('deferred');
+          expect(yield* Ref.get(commandCalls)).toEqual([]);
 
           const assertOneRequest = Effect.fn(function* (run: Effect.Effect<unknown, unknown>) {
             yield* Ref.set(requests, []);
@@ -205,6 +261,8 @@ describe('code graph query budgets', () => {
 
           yield* assertOneRequest(query.status(fixtureRoot.home, fixtureRoot.repository, {observeWorktree: false}));
           const status = yield* query.statusForIdentity(fixtureRoot.home, identity, {observeWorktree: false});
+          expect(observationFromCodeGraphStatus(status)).toMatchObject({identity});
+          expect(observationFromCodeGraphStatus(status)?.overlay).toBeUndefined();
           expect(yield* Ref.get(requests)).toHaveLength(2);
           yield* assertOneRequest(query.attachSharedReadySnapshot(fixtureRoot.home, identity, status));
           yield* assertOneRequest(

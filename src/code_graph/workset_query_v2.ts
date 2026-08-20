@@ -2,7 +2,7 @@ import {Clock, Effect, FileSystem} from 'effect';
 import {readSeedManifest, requireWorkset} from '../manifest.js';
 import type {ProjectManifest, RuntimeConfig} from '../types.js';
 import {expandPath} from '../utils.js';
-import {CodeGraphQueryService, observationFromCodeGraphStatus} from './query.js';
+import {CodeGraphQueryService, observationFromCodeGraphStatus, type CodeGraphStatusOptions} from './query.js';
 import type {CodeGraphQueryResult, CodeGraphStatus, RepositoryIdentityExpectation} from './types.js';
 import {
   attachCodeGraphWorksetBridgeRelationships,
@@ -52,6 +52,12 @@ import {
 } from './workset_router.js';
 
 export const CODE_GRAPH_WORKSET_QUERY_V2_VERSION = 1 as const;
+
+/** Qualified-reference routing needs identity and a ready pointer, not exact dirty-overlay evidence. */
+export const CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS = {
+  observeWorktree: false,
+  requestMaintenance: false,
+} as const satisfies CodeGraphStatusOptions;
 
 const DEFAULT_DEADLINE_MILLISECONDS = 3_000;
 const MAXIMUM_DEADLINE_MILLISECONDS = 60_000;
@@ -480,7 +486,11 @@ export const resolveCodeGraphQualifiedRefTarget = Effect.fn('codeGraphWorksetV2.
     cwd =>
       Effect.gen(function* () {
         if (!(yield* fs.exists(cwd))) return undefined;
-        const status = yield* queryService.status(config.agentContextHome, cwd, {requestMaintenance: false});
+        const status = yield* queryService.status(
+          config.agentContextHome,
+          cwd,
+          CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
+        );
         return status.identity.repositoryId === record.repositoryId && status.readySnapshot !== undefined
           ? ({cwd, status} as const)
           : undefined;

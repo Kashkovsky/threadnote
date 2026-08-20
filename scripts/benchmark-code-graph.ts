@@ -15,9 +15,19 @@ import {CodeGraphAnalysis} from '../src/code_graph/analysis.js';
 import {codeGraphAnalysisLimitsForView} from '../src/code_graph/analysis_render.js';
 import {codeGraphLayout} from '../src/code_graph/layout.js';
 import {parserWorkerCapacity} from '../src/code_graph/parser_worker.js';
-import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../src/code_graph/query.js';
+import {
+  CodeGraphQueryService,
+  observationFromCodeGraphStatus,
+  type CodeGraphInspectOptions,
+  type CodeGraphStatusOptions,
+} from '../src/code_graph/query.js';
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
-import type {CodeGraphActivationActivity, CodeGraphProgress, CodeGraphQueryResult} from '../src/code_graph/types.js';
+import type {
+  CodeGraphActivationActivity,
+  CodeGraphProgress,
+  CodeGraphQueryResult,
+  CodeGraphStatus,
+} from '../src/code_graph/types.js';
 import {
   managerGraphCatalog,
   ManagerGraphBusyError,
@@ -36,7 +46,7 @@ import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
 import {LocalModelCatalog} from '../src/models/catalog.js';
 import {selectLocalModel} from '../src/models/selection.js';
 import {LocalModelStore} from '../src/models/store.js';
-import {codeGraphMcpResponse} from '../src/mcp_server.js';
+import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '../src/mcp_server.js';
 import {
   createGraphQueryRequestGate,
   managerGraphClientRenderProxy,
@@ -713,6 +723,14 @@ const benchmarkCodeGraph = Effect.scoped(
         requestMaintenance: false,
         threadnoteHome: prepared.home,
       });
+      yield* query.inspect({
+        cwd: prepared.repository,
+        operation: 'query',
+        query: queryText,
+        refresh: false,
+        requestMaintenance: false,
+        threadnoteHome: prepared.home,
+      });
     }
     const queryDurations: number[] = [];
     const queryCpuDurations: number[] = [];
@@ -728,6 +746,64 @@ const benchmarkCodeGraph = Effect.scoped(
       });
       queryDurations.push(Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND);
       queryCpuDurations.push(cpuMilliseconds(processStarted, processTelemetry()).total);
+    }
+    const exactReadyQueryDurations: number[] = [];
+    const exactReadyQueryCpuDurations: number[] = [];
+    const deferredQueryDurations: number[] = [];
+    const deferredQueryCpuDurations: number[] = [];
+    for (let index = 0; index < options.samples; index += 1) {
+      let exactDigest: string | undefined;
+      let deferredDigest: string | undefined;
+      const order = index % 2 === 0 ? (['deferred', 'exact'] as const) : (['exact', 'deferred'] as const);
+      for (const freshnessPolicy of order) {
+        const started = yield* Clock.currentTimeNanos;
+        const processStarted = processTelemetry();
+        const status = yield* query.status(prepared.home, prepared.repository, {
+          observeWorktree: freshnessPolicy === 'exact',
+          requestMaintenance: false,
+        });
+        const result = yield* query.inspect({
+          cwd: prepared.repository,
+          operation: 'query',
+          query: queryText,
+          refresh: false,
+          requestMaintenance: false,
+          statusObservation: observationFromCodeGraphStatus(status),
+          threadnoteHome: prepared.home,
+        });
+        const response = codeGraphMcpResponse(result);
+        const duration = Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND;
+        const cpu = cpuMilliseconds(processStarted, processTelemetry()).total;
+        if (freshnessPolicy === 'deferred') {
+          deferredQueryDurations.push(duration);
+          deferredQueryCpuDurations.push(cpu);
+          deferredDigest = queryResultStructuralDigest(result);
+          if (result.freshness !== 'deferred') {
+            return yield* Effect.fail(
+              new ScriptError('The deferred-ready query benchmark observed the worktree unexpectedly.'),
+            );
+          }
+        } else {
+          exactReadyQueryDurations.push(duration);
+          exactReadyQueryCpuDurations.push(cpu);
+          exactDigest = queryResultStructuralDigest(result);
+          if (result.freshness !== 'current') {
+            return yield* Effect.fail(new ScriptError('The exact query benchmark did not observe current evidence.'));
+          }
+        }
+        if (
+          result.snapshot.id !== cold.snapshot.id ||
+          result.nodes.length === 0 ||
+          response.structuredContent.operation !== 'query'
+        ) {
+          return yield* Effect.fail(new ScriptError('The ready-query benchmark did not retain its snapshot contract.'));
+        }
+      }
+      if (exactDigest !== deferredDigest) {
+        return yield* Effect.fail(
+          new ScriptError('Exact and deferred ready-query benchmark results diverged structurally.'),
+        );
+      }
     }
 
     const changedPath = path.join(
@@ -1203,6 +1279,18 @@ const benchmarkCodeGraph = Effect.scoped(
           queryDurations,
         ),
         benchmarkMeasurement('hot-query-process-cpu', 'milliseconds', queryCpuDurations),
+        benchmarkMeasurement('hot-exact-ready-query-orchestration', 'milliseconds', exactReadyQueryDurations),
+        benchmarkMeasurement(
+          'hot-exact-ready-query-orchestration-process-cpu',
+          'milliseconds',
+          exactReadyQueryCpuDurations,
+        ),
+        benchmarkMeasurement('hot-deferred-ready-query-orchestration', 'milliseconds', deferredQueryDurations),
+        benchmarkMeasurement(
+          'hot-deferred-ready-query-orchestration-process-cpu',
+          'milliseconds',
+          deferredQueryCpuDurations,
+        ),
         benchmarkMeasurement('whole-graph-structural-analysis', 'milliseconds', analysisDurations),
         benchmarkMeasurement('whole-graph-structural-analysis-process-cpu', 'milliseconds', analysisCpuDurations),
         benchmarkMeasurement('first-repository-status-read', 'milliseconds', [coldStatusDuration]),
@@ -1357,6 +1445,8 @@ const benchmarkCodeGraph = Effect.scoped(
         coldIndexSamples: 1,
         ...(coldVectorMappingDigest === undefined ? {} : {coldVectorMappingDigest}),
         cpuMeasurement: 'process.cpuUsage delta at operation boundary',
+        deferredReadyQueryMeasurement:
+          'status + inspect + compact MCP serialization with worktree observation explicitly deferred; excludes maintenance, watcher bookkeeping, and MCP transport',
         effectiveParserMemoryBytes: hardware.effectiveMemoryBytes,
         effectiveParserWorkers,
         environmentOverrides: JSON.stringify(benchmarkEnvironmentProvenance()),
@@ -1381,7 +1471,7 @@ const benchmarkCodeGraph = Effect.scoped(
           'aggregate phase duration plus stage-attributed SQLite wall time, process CPU, boundary RSS, and row counts; no repository paths or source content',
         mcpOperationCount: mcpOperationMatrix.length,
         mcpOperationMeasurement:
-          'query, node, neighbors, explain, impact, and path latency plus compact text/structured byte counts; no graph content retained',
+          'status + inspect + compact serialization for query, node, neighbors, explain, impact, and path; excludes maintenance, watcher bookkeeping, and MCP transport; no graph content retained',
         ...(coldMaterializationStorage?.estimateBasis
           ? {coldMaterializationEstimateBasis: coldMaterializationStorage.estimateBasis}
           : {}),
@@ -3357,6 +3447,11 @@ interface McpOperationBenchmarkResult {
 
 interface BenchmarkCodeGraphQuery {
   readonly inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, unknown>;
+  readonly status: (
+    threadnoteHome: string,
+    cwd: string,
+    options?: CodeGraphStatusOptions,
+  ) => Effect.Effect<CodeGraphStatus, unknown>;
 }
 
 const benchmarkExternalQueryControl = Effect.fn('benchmarkCodeGraph.externalQueryControl')(function* (
@@ -3413,18 +3508,23 @@ const benchmarkMcpOperationMatrix = Effect.fn('benchmarkCodeGraph.mcpOperationMa
   const results: McpOperationBenchmarkResult[] = [];
   const execute = Effect.fn('benchmarkCodeGraph.mcpOperation')(function* (options: CodeGraphQueryOptionsForBenchmark) {
     const started = yield* Clock.currentTimeNanos;
-    const result = yield* query
-      .inspect({
+    const {response, result} = yield* Effect.gen(function* () {
+      const status = yield* query.status(threadnoteHome, cwd, {
+        observeWorktree: codeGraphInspectionObservesWorktree(options.operation),
+        requestMaintenance: false,
+      });
+      const result = yield* query.inspect({
         ...options,
         cwd,
         edgeLimit: 80,
         nodeLimit: 40,
         refresh: false,
         requestMaintenance: false,
+        statusObservation: observationFromCodeGraphStatus(status),
         threadnoteHome,
-      })
-      .pipe(Effect.timeout(25_000));
-    const response = codeGraphMcpResponse(result);
+      });
+      return {response: codeGraphMcpResponse(result), result};
+    }).pipe(Effect.timeout(25_000));
     const structuredBytes = encodedBytes(JSON.stringify(response.structuredContent));
     const textBytes = encodedBytes(response.text);
     if (structuredBytes > 24 * 1_024 || textBytes > 24 * 1_024) {

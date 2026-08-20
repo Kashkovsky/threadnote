@@ -11,6 +11,7 @@ import {
   type CodeGraphCrossRepositoryBridgeV1,
 } from '../../src/code_graph/cross_repository/resolver.js';
 import {
+  CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
   runCodeGraphWorksetQueryV2Core,
   type CodeGraphWorksetQueryV2InputV1,
 } from '../../src/code_graph/workset_query_v2.js';
@@ -26,6 +27,13 @@ import type {
 } from '../../src/code_graph/workset_catalog/types.js';
 
 describe('code graph Workset Search V2 core', () => {
+  it('resolves qualified references without observing dirty worktree state', () => {
+    expect(CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS).toEqual({
+      observeWorktree: false,
+      requestMaintenance: false,
+    });
+  });
+
   effectIt.effect('returns compact qualified evidence and persists every referenced handle', () =>
     Effect.gen(function* () {
       const fixture = makeFixture(4);
