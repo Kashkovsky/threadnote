@@ -52,6 +52,7 @@ export function GraphSummary(props: {
   readonly onAnalyze: () => void;
   readonly sizeMetric: GraphSizeMetric;
 }): React.ReactElement {
+  const partialTopology = props.analysis?.coverage.topology.state === 'partial';
   return (
     <div className="graph-summary">
       <p className="eyebrow">{props.graph.mode === 'overview' ? 'Repository overview' : 'Component working set'}</p>
@@ -115,7 +116,7 @@ export function GraphSummary(props: {
       <section className="graph-analysis-summary">
         <header>
           <div>
-            <p className="eyebrow">Whole-graph analysis</p>
+            <p className="eyebrow">{partialTopology ? 'Bounded graph analysis' : 'Whole-graph analysis'}</p>
             <h4>Architecture signals</h4>
           </div>
           <button className="quiet-button" disabled={props.analysisLoading} onClick={props.onAnalyze} type="button">
@@ -126,7 +127,7 @@ export function GraphSummary(props: {
           <>
             <dl className="metric-list graph-analysis-metrics">
               <div>
-                <dt>Communities</dt>
+                <dt>{partialTopology ? 'Observed communities' : 'Communities'}</dt>
                 <dd>
                   {graphAnalysisTopologyAvailable(props.analysis)
                     ? compactNumber(props.analysis.statistics.communityCount)
@@ -134,7 +135,7 @@ export function GraphSummary(props: {
                 </dd>
               </div>
               <div>
-                <dt>Components</dt>
+                <dt>{partialTopology ? 'Observed components' : 'Components'}</dt>
                 <dd>
                   {graphAnalysisTopologyAvailable(props.analysis)
                     ? compactNumber(props.analysis.statistics.connectedComponentCount)
@@ -142,7 +143,7 @@ export function GraphSummary(props: {
                 </dd>
               </div>
               <div>
-                <dt>Hubs</dt>
+                <dt>{partialTopology ? 'Observed hubs' : 'Hubs'}</dt>
                 <dd>
                   {graphAnalysisTopologyAvailable(props.analysis)
                     ? compactNumber(props.analysis.hubs.length)
@@ -156,7 +157,7 @@ export function GraphSummary(props: {
             </dl>
             {props.analysis.hubs.length > 0 ? (
               <div className="graph-analysis-list">
-                <h5>Highest-connectivity nodes</h5>
+                <h5>{partialTopology ? 'Highest observed-connectivity nodes' : 'Highest-connectivity nodes'}</h5>
                 {props.analysis.hubs.slice(0, 4).map(hub => (
                   <div key={`${hub.node.path}:${hub.node.label}`}>
                     <span>
@@ -709,6 +710,8 @@ export function GraphAdministration(props: {
                         snapshot: candidate.snapshot,
                         worktreeId: candidate.viewWorktreeId,
                       });
+                      const partialTopology = candidate.analysis?.coverage.topology.state === 'partial';
+                      const boundedNodePrefix = partialTopology && !candidate.analysis?.coverage.nodesComplete;
                       return (
                         <div key={`${database.checkoutId}:${candidate.viewWorktreeId}`}>
                           <strong>{candidate.repository.displayName}</strong>
@@ -730,11 +733,18 @@ export function GraphAdministration(props: {
                               {candidate.analysis.coverage.topology.state === 'complete' ||
                               candidate.analysis.coverage.topology.state === 'partial' ? (
                                 <>
-                                  {candidate.analysis.statistics.connectedComponentCount.toLocaleString()} components ·{' '}
-                                  {candidate.analysis.statistics.communityCount.toLocaleString()} communities · average
-                                  degree {candidate.analysis.statistics.averageDegree.toFixed(2)} · maximum{' '}
+                                  {candidate.analysis.statistics.connectedComponentCount.toLocaleString()}{' '}
+                                  {partialTopology ? 'observed components' : 'components'} ·{' '}
+                                  {candidate.analysis.statistics.communityCount.toLocaleString()}{' '}
+                                  {partialTopology ? 'observed communities' : 'communities'} ·{' '}
+                                  {partialTopology ? 'observed average' : 'average'} degree{' '}
+                                  {candidate.analysis.statistics.averageDegree.toFixed(2)} ·{' '}
+                                  {partialTopology ? 'observed maximum' : 'maximum'}{' '}
                                   {candidate.analysis.statistics.maximumDegree.toLocaleString()} ·{' '}
-                                  {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()} isolated
+                                  {candidate.analysis.statistics.isolatedNodeCount.toLocaleString()}{' '}
+                                  {partialTopology
+                                    ? `${boundedNodePrefix ? 'retained nodes' : 'nodes'} with zero observed degree`
+                                    : 'isolated'}
                                 </>
                               ) : (
                                 <>topology {candidate.analysis.coverage.topology.state}</>

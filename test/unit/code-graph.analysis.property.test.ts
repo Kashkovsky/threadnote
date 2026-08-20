@@ -18,6 +18,20 @@ const analysisCase = FC.record({
   ),
 });
 
+const boundedAnalysisCase = FC.record({
+  nodeCount: FC.integer({max: 18, min: 2}),
+  packageCount: FC.integer({max: 5, min: 1}),
+  prefixSeed: FC.nat({max: 31}),
+  rawEdges: FC.array(
+    FC.record({
+      relation: FC.constantFrom<CodeGraphEdge['relation']>('calls', 'contains', 'extends', 'imports', 'references'),
+      source: FC.integer({max: 31, min: 0}),
+      target: FC.integer({max: 31, min: 0}),
+    }),
+    {maxLength: 48},
+  ),
+});
+
 describe('code graph analysis properties', () => {
   it.effect.prop(
     'keeps partitions, identifiers, labels, and ranking stable across input order and page size',
@@ -83,6 +97,73 @@ describe('code graph analysis properties', () => {
       });
     },
     {fastCheck: {numRuns: 80}},
+  );
+
+  it.effect.prop(
+    'keeps bounded induced topology deterministic and excludes relationships to omitted nodes',
+    {fixture: boundedAnalysisCase},
+    ({fixture}) => {
+      const symbols = Array.from({length: fixture.nodeCount}, (_, index) =>
+        analysisSymbol(
+          `node-${index.toString().padStart(2, '0')}`,
+          `package-${index % fixture.packageCount}`,
+          `packages/p${index % fixture.packageCount}/src/${index}.ts`,
+        ),
+      );
+      const uniqueEdges = new Map<string, CodeGraphEdge>();
+      for (const [index, raw] of fixture.rawEdges.entries()) {
+        const source = symbols[raw.source % symbols.length]!;
+        const target = symbols[raw.target % symbols.length]!;
+        const key = `${source.id}:${raw.relation}:${target.id}`;
+        if (!uniqueEdges.has(key)) {
+          uniqueEdges.set(key, analysisEdge(`edge-${index.toString().padStart(3, '0')}`, source, target, raw.relation));
+        }
+      }
+      const edges = [...uniqueEdges.values()];
+      const snapshot = analysisSnapshot(symbols, edges);
+      const prefixSize = 1 + (fixture.prefixSeed % (symbols.length - 1));
+      const orderedSymbols = [...symbols].sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) ||
+          left.qualifiedName.localeCompare(right.qualifiedName) ||
+          left.id.localeCompare(right.id),
+      );
+      const retainedIds = new Set(orderedSymbols.slice(0, prefixSize).map(symbol => symbol.id));
+      const expectedInducedEdges = edges.filter(
+        edge => retainedIds.has(edge.sourceId!) && retainedIds.has(edge.targetId!),
+      ).length;
+      const budget = {
+        aggregatePageSize: 1,
+        maxEdges: edges.length,
+        maxEdgeVisits: edges.length * 2,
+        maxNodes: prefixSize,
+        pageSize: 1,
+      } as const;
+
+      return Effect.gen(function* () {
+        const first = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, edges), {
+          budget,
+          databasePath: '/property/bounded.sqlite',
+          snapshot,
+        });
+        const second = yield* analyzeCodeGraph(pagedAnalysisStore([...symbols].reverse(), [...edges].reverse()), {
+          budget: {...budget, aggregatePageSize: 7, pageSize: 7},
+          databasePath: '/property/bounded.sqlite',
+          snapshot,
+        });
+
+        expect(stableProjection(second)).toEqual(stableProjection(first));
+        expect(first.coverage).toMatchObject({
+          nodesComplete: false,
+          topology: {complete: false, state: 'partial'},
+        });
+        expect(first.statistics.analyzedNodeCount).toBe(prefixSize);
+        expect(first.statistics.analyzedEdgeCount).toBe(expectedInducedEdges);
+        expect(new Set(first.memberships.map(item => item.node.id))).toEqual(retainedIds);
+        expect(first.warnings).toContainEqual(expect.stringContaining('bounded path-prefix induced subgraph'));
+      });
+    },
+    {fastCheck: {numRuns: 60}},
   );
 });
 

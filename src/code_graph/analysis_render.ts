@@ -82,7 +82,11 @@ export function renderCodeGraphReport(
                 `| ${markdownCell(hub.node.label)} | ${hub.classification} | ${hub.degree} | ${hub.incoming} | ${hub.outgoing} | \`${markdownCode(hub.node.path)}\` |`,
             ),
           ]
-        : ['No hubs met the deterministic threshold.']),
+        : [
+            result.coverage.topology.complete
+              ? 'No hubs met the deterministic threshold.'
+              : 'No hubs were observed in bounded topology; absence is not proven.',
+          ]),
     '',
     '## Confidence audit',
     '',
@@ -101,7 +105,11 @@ export function renderCodeGraphReport(
                 `| ${markdownCell(community.label)} | ${community.memberCount} | ${community.internalEdgeCount} | ${community.crossCommunityIncoming + community.crossCommunityOutgoing} | \`${markdownCode(community.representative.path)}\` |`,
             ),
           ]
-        : ['No structural communities were found.']),
+        : [
+            result.coverage.topology.complete
+              ? 'No structural communities were found.'
+              : 'No structural communities were observed in bounded topology; absence is not proven.',
+          ]),
     '',
     '## Surprising cross-community links',
     '',
@@ -113,7 +121,11 @@ export function renderCodeGraphReport(
               `- ${markdownText(link.source.label)} **${link.relation}** ${markdownText(link.target.label)} ` +
               `(score ${link.score.toFixed(3)}, ${link.provenance}, confidence ${link.confidence.toFixed(2)})`,
           )
-        : ['No cross-community links met the deterministic ranking criteria.']),
+        : [
+            result.coverage.topology.complete
+              ? 'No cross-community links met the deterministic ranking criteria.'
+              : 'No cross-community links were observed in bounded topology; absence is not proven.',
+          ]),
     '',
     '## Structural relationship groups',
     '',
@@ -125,7 +137,11 @@ export function renderCodeGraphReport(
               `- ${markdownText(group.center.label)} (${group.direction}, ${group.relationshipCount} relationships; ` +
               `${group.members.length} bounded member${group.members.length === 1 ? '' : 's'})`,
           )
-        : ['No high-degree fan-in or fan-out groups met the deterministic threshold.']),
+        : [
+            result.coverage.topology.complete
+              ? 'No high-degree fan-in or fan-out groups met the deterministic threshold.'
+              : 'No high-degree fan-in or fan-out groups were observed in bounded topology; absence is not proven.',
+          ]),
     '',
     '## Questions this graph can answer',
     '',
@@ -147,11 +163,24 @@ function renderStatistics(result: CodeGraphAnalysisResult): readonly string[] {
     `- Confidence (${result.confidenceAudit.summaryComplete ? 'exact' : 'observed'}): average ${result.confidenceAudit.averageConfidence.toFixed(2)}; ${formatConfidenceBands(result.confidenceAudit)}`,
   ];
   if (result.coverage.topology.state === 'complete' || result.coverage.topology.state === 'partial') {
+    const boundedNodePrefix = !result.coverage.nodesComplete;
+    const partialTopology = !result.coverage.topology.complete;
+    const boundedTopologyLabel = boundedNodePrefix
+      ? result.coverage.edgesComplete
+        ? 'bounded path-prefix induced subgraph'
+        : 'bounded path/relationship-prefix observation'
+      : 'bounded relationship-prefix observation';
     lines.splice(
       1,
       0,
-      `- Topology (${result.coverage.topology.state}): ${statistics.connectedComponentCount.toLocaleString()} connected components; ${statistics.communityCount.toLocaleString()} structural communities`,
-      `- Topology (${result.coverage.topology.state}): ${statistics.isolatedNodeCount.toLocaleString()} isolated nodes; average degree ${statistics.averageDegree.toFixed(2)}; maximum degree ${statistics.maximumDegree.toLocaleString()}`,
+      partialTopology
+        ? `- Topology (${boundedTopologyLabel}): ${statistics.connectedComponentCount.toLocaleString()} observed connected components; ${statistics.communityCount.toLocaleString()} observed structural communities`
+        : `- Topology (${result.coverage.topology.state}): ${statistics.connectedComponentCount.toLocaleString()} connected components; ${statistics.communityCount.toLocaleString()} structural communities`,
+      partialTopology
+        ? boundedNodePrefix
+          ? `- Topology (retained nodes only): ${statistics.isolatedNodeCount.toLocaleString()} retained nodes with zero observed degree; average observed degree ${statistics.averageDegree.toFixed(2)}; maximum observed degree ${statistics.maximumDegree.toLocaleString()}`
+          : `- Topology (bounded relationship scan): ${statistics.isolatedNodeCount.toLocaleString()} nodes with zero observed degree; average observed degree ${statistics.averageDegree.toFixed(2)}; maximum observed degree ${statistics.maximumDegree.toLocaleString()}`
+        : `- Topology (${result.coverage.topology.state}): ${statistics.isolatedNodeCount.toLocaleString()} isolated nodes; average degree ${statistics.averageDegree.toFixed(2)}; maximum degree ${statistics.maximumDegree.toLocaleString()}`,
     );
   } else {
     lines.splice(
@@ -211,7 +240,13 @@ function renderConfidenceAudit(audit: CodeGraphConfidenceAudit): readonly string
 function renderCommunities(result: CodeGraphAnalysisResult): readonly string[] {
   if (topologyUnavailable(result)) return ['Communities: unavailable because topology was not derived'];
   const communities = result.communities;
-  if (communities.length === 0) return ['Communities: none'];
+  if (communities.length === 0) {
+    return [
+      result.coverage.topology.complete
+        ? 'Communities: none'
+        : 'Communities: none observed in bounded topology; absence is not proven',
+    ];
+  }
   return [
     result.coverage.topology.state === 'partial' ? 'Communities (observed partial topology):' : 'Communities:',
     ...communities.map(
@@ -239,7 +274,13 @@ function renderCommunityDrillDown(drillDown: CodeGraphCommunityDrillDown | undef
 function renderHubs(result: CodeGraphAnalysisResult): readonly string[] {
   if (topologyUnavailable(result)) return ['Hubs: unavailable because topology was not derived'];
   const hubs = result.hubs;
-  if (hubs.length === 0) return ['Hubs: none met the deterministic threshold'];
+  if (hubs.length === 0) {
+    return [
+      result.coverage.topology.complete
+        ? 'Hubs: none met the deterministic threshold'
+        : 'Hubs: none observed in bounded topology; absence is not proven',
+    ];
+  }
   return [
     result.coverage.topology.state === 'partial' ? 'Hubs (observed partial topology):' : 'Hubs:',
     ...hubs.map(
@@ -255,7 +296,13 @@ function renderRelationshipGroups(result: CodeGraphAnalysisResult): readonly str
     return ['Structural relationship groups: unavailable because topology was not derived'];
   }
   const groups = result.relationshipGroups;
-  if (groups.length === 0) return ['Structural relationship groups: none met the deterministic threshold'];
+  if (groups.length === 0) {
+    return [
+      result.coverage.topology.complete
+        ? 'Structural relationship groups: none met the deterministic threshold'
+        : 'Structural relationship groups: none observed in bounded topology; absence is not proven',
+    ];
+  }
   return [
     `Structural relationship groups (derived n-ary evidence${result.coverage.topology.state === 'partial' ? '; observed partial topology' : ''}):`,
     ...groups.map(
@@ -270,7 +317,13 @@ function renderRelationshipGroups(result: CodeGraphAnalysisResult): readonly str
 function renderSurprises(result: CodeGraphAnalysisResult): readonly string[] {
   if (topologyUnavailable(result)) return ['Surprising links: unavailable because topology was not derived'];
   const links = result.surprisingLinks;
-  if (links.length === 0) return ['Surprising links: none'];
+  if (links.length === 0) {
+    return [
+      result.coverage.topology.complete
+        ? 'Surprising links: none'
+        : 'Surprising links: none observed in bounded topology; absence is not proven',
+    ];
+  }
   return [
     result.coverage.topology.state === 'partial'
       ? 'Surprising cross-community links (observed partial topology):'

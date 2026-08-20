@@ -431,7 +431,7 @@ describe('code graph analysis', () => {
     }),
   );
 
-  it.effect('returns an honest partial result when node, edge, visit, and output limits are exhausted', () =>
+  it.effect('returns honest bounded topology when node, edge, visit, and output limits are exhausted', () =>
     Effect.gen(function* () {
       const symbols = Array.from({length: 8}, (_, index) =>
         analysisSymbol(`node-${index}`, `package-${index % 2}`, `src/${index}.ts`),
@@ -457,18 +457,18 @@ describe('code graph analysis', () => {
         edgeMetricsComplete: false,
         edgesComplete: false,
         nodesComplete: false,
-        topology: {complete: false, state: 'unavailable'},
+        topology: {complete: false, state: 'partial'},
       });
       expect(result.statistics.analyzedNodeCount).toBe(3);
-      expect(result.statistics.analyzedEdgeCount).toBe(0);
+      expect(result.statistics.analyzedEdgeCount).toBeLessThanOrEqual(2);
       expect(result.statistics.scannedEdgeCount).toBe(2);
-      expect(result.usage.edgeVisits).toBe(2);
-      expect(result.memberships).toHaveLength(0);
+      expect(result.usage.edgeVisits).toBe(3);
+      expect(result.memberships).toHaveLength(1);
       expect(result.warnings).toEqual(
         expect.arrayContaining([
           expect.stringContaining('Symbol aggregates cover 3 of 8'),
           expect.stringContaining('Relationship aggregates cover 2 of 8'),
-          expect.stringContaining('Topology was not derived'),
+          expect.stringContaining('bounded observation over a path-prefix node set'),
         ]),
       );
       expect(Math.max(...observation.symbolPageLimits, ...observation.edgePageLimits)).toBeLessThanOrEqual(2);

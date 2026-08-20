@@ -234,6 +234,7 @@ export interface CodeGraphAnalysisCoverage {
   readonly complete: boolean;
   readonly edgeMetricsComplete: boolean;
   readonly edgesComplete: boolean;
+  /** Every snapshot symbol participated; false means topology is a bounded path-prefix observation. */
   readonly nodesComplete: boolean;
   readonly topology: {
     readonly complete: boolean;
@@ -572,7 +573,10 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   let confidenceTotal = edgeAggregateSupported ? edgeAggregates.confidenceTotal : 0;
   let invalidConfidenceEdgeCount = edgeAggregateSupported ? edgeAggregates.invalidConfidenceEdgeCount : 0;
   const firstEdgeBudget = Math.min(budget.maxEdges, budget.maxEdgeVisits);
-  const topologyEnabled = needsTopology && nodesComplete;
+  // A non-empty bounded node prefix can still support an honest partial topology
+  // observation. Coverage keeps nodesComplete=false, so none of its connectivity
+  // or degree observations can be mistaken for whole-graph conclusions.
+  const topologyEnabled = needsTopology && (nodesComplete || nodes.length > 0);
   const needsPrimaryEdgeScan = topologyEnabled || needsConfidenceFindingScan;
   const topologyScan = !needsPrimaryEdgeScan
     ? emptyEdgeScan(false)
@@ -658,13 +662,6 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     topologyScan.visits >= options.snapshot.edgeCount ||
     options.snapshot.edgeCount === 0;
   const observedTopologyNodeCount = nodes.length;
-  if (needsTopology && !topologyEnabled) {
-    // A path-prefix node slice without the complete endpoint set cannot support
-    // truthful connectivity, isolation, hub, or community claims. Preserve the
-    // observed row count for coverage, but derive no topology from that slice.
-    nodes.length = 0;
-    nodeIndex.clear();
-  }
 
   const componentGroups = new Map<number, MutableGroup>();
   const communityGroups = new Map<number, MutableGroup>();
@@ -1042,7 +1039,11 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   }
   if (needsTopology && !nodesComplete) {
     warnings.push(
-      `Topology was not derived because only ${observedTopologyNodeCount.toLocaleString()} of ${options.snapshot.symbolCount.toLocaleString()} symbols fit the node/time budget.`,
+      topologyEnabled
+        ? edgesComplete
+          ? `Topology is a bounded path-prefix induced subgraph over ${observedTopologyNodeCount.toLocaleString()} of ${options.snapshot.symbolCount.toLocaleString()} symbols. Connectivity, degree, isolation, hub, component, community, and absence claims apply only to retained nodes.`
+          : `Topology is a bounded observation over a path-prefix node set (${observedTopologyNodeCount.toLocaleString()} of ${options.snapshot.symbolCount.toLocaleString()} symbols) and the relationship rows that fit the edge/time budget. Connectivity, degree, isolation, hub, component, community, and absence claims are not whole-graph conclusions.`
+        : `Topology was not derived because none of ${options.snapshot.symbolCount.toLocaleString()} symbols fit the node/time budget.`,
     );
   }
   if (needsTopology && topologyEnabled && !edgesComplete)
