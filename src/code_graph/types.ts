@@ -207,22 +207,32 @@ export interface CodeGraphMaterializationActivity {
 
 /** Cumulative, privacy-safe measurements for the current materialization phase. */
 export interface CodeGraphMaterializationMetrics {
+  /** Files whose parser facts were postprocessed and attributed during this materialization. */
+  readonly attributedFilesCompleted?: number;
   readonly attributionMilliseconds?: number;
   readonly batchesCompleted: number;
   readonly batchesTotal: number;
   readonly cachedFactBytesCompleted?: number;
   readonly cachedFactBytesTotal?: number;
-  /** Exact UTF-8 bytes of decoded facts consumed by materialization: final-shard hits plus raw-cache misses. */
+  /** Saturating sum of materialized-shard and raw-fact replay bytes. */
   readonly cachedFactReplayBytesCompleted?: number;
   /** Exact consumed cached-fact bytes for current paths changed from the committed inventory. */
   readonly changedFactBytesCompleted?: number;
+  /** Files selected from future cross-generation materialized-shard batches; zero until eligibility exists. */
+  readonly crossGenerationShardFilesCompleted?: number;
+  /** Files selected from complete materialized-shard batches for the current exact derivation. */
+  readonly exactGenerationShardFilesCompleted?: number;
   /** Exact bounded reason a repository-wide rewrite was selected, when known. */
   readonly fallbackReason?: CodeGraphOverlayFallbackReason;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
   readonly factsBytesCompleted?: number;
   readonly factsBytesTotal?: number;
   readonly loadingMilliseconds?: number;
+  /** Exact UTF-8 bytes decoded from materialized shards, including inspected shards later discarded by batch fallback. */
+  readonly materializedShardReplayBytesCompleted?: number;
   readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
+  /** Exact UTF-8 bytes decoded from raw parser-fact cache rows for attribution. */
+  readonly rawFactReplayBytesCompleted?: number;
   /** Closed, path-free evidence for the declaration-publication gate. */
   readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
   /** Closed, path-free evidence for the declaration-publication gate. */

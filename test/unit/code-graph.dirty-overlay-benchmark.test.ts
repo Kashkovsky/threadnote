@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   dirtyOverlayAmplificationEvidence,
   dirtyOverlayChangedSource,
+  dirtyOverlayReplayEvidence,
   parseDirtyOverlayBenchmarkArguments,
 } from '../../scripts/benchmark-code-graph-dirty-overlay.js';
 import {generatedStaticReexportControlStatement} from '../../scripts/code-graph-fixture.js';
@@ -51,5 +52,39 @@ describe('code graph dirty-overlay benchmark evidence', () => {
         stagedFiles: 102,
       }),
     ).toEqual({factReplayAmplification: 128, rewriteAmplification: 102});
+  });
+
+  it('projects the local physical replay split and rejects inconsistent benchmark evidence', () => {
+    const metrics = {
+      attributedFilesCompleted: 7,
+      batchesCompleted: 1,
+      batchesTotal: 1,
+      cachedFactReplayBytesCompleted: 4_096,
+      changedFactBytesCompleted: 256,
+      crossGenerationShardFilesCompleted: 0,
+      exactGenerationShardFilesCompleted: 5,
+      materializedShardReplayBytesCompleted: 3_072,
+      rawFactReplayBytesCompleted: 1_024,
+      sourceBytesCompleted: 2_048,
+      sourceBytesTotal: 2_048,
+    };
+
+    expect(dirtyOverlayReplayEvidence(metrics, 256)).toEqual({
+      attributedFiles: 7,
+      cachedFactReplayBytes: 4_096,
+      changedFactBytes: 256,
+      crossGenerationShardFiles: 0,
+      exactGenerationShardFiles: 5,
+      materializedShardReplayBytes: 3_072,
+      rawFactReplayBytes: 1_024,
+    });
+    expect(() => dirtyOverlayReplayEvidence({...metrics, cachedFactReplayBytesCompleted: 4_095}, 256)).toThrow(
+      'replay-byte split is inconsistent',
+    );
+    expect(() => dirtyOverlayReplayEvidence({...metrics, rawFactReplayBytesCompleted: undefined}, 256)).toThrow(
+      'did not retain complete physical replay evidence',
+    );
+    expect(() => dirtyOverlayReplayEvidence(undefined, 0)).toThrow('did not retain complete physical replay evidence');
+    expect(() => dirtyOverlayReplayEvidence(metrics, 255)).toThrow('changed-fact byte evidence is inconsistent');
   });
 });

@@ -379,35 +379,63 @@ describe('code graph release evidence', () => {
     ).toThrow(/reviewed default production-large profile/);
   });
 
-  it('retains and requires split storage planning and relationship deduplication counters', () => {
+  it('retains and requires split replay, storage planning, and relationship deduplication counters', () => {
     expect(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS).toEqual(
       expect.arrayContaining([
+        {name: 'cold-materialization-attributed-files-n1', unit: 'count'},
         {name: 'cold-materialization-cached-fact-bytes-total-n1', unit: 'bytes'},
+        {name: 'cold-materialization-cached-fact-replay-bytes-n1', unit: 'bytes'},
+        {name: 'cold-materialization-changed-fact-bytes-n1', unit: 'bytes'},
+        {name: 'cold-materialization-cross-generation-shard-files-n1', unit: 'count'},
+        {name: 'cold-materialization-exact-generation-shard-files-n1', unit: 'count'},
         {name: 'cold-materialization-estimated-temp-filesystem-required-n1', unit: 'bytes'},
         {name: 'cold-materialization-estimated-durable-filesystem-required-n1', unit: 'bytes'},
         {name: 'cold-materialization-temp-filesystem-available-n1', unit: 'bytes'},
         {name: 'cold-materialization-durable-filesystem-available-n1', unit: 'bytes'},
         {name: 'cold-materialization-filesystems-shared-n1', unit: 'count'},
+        {name: 'cold-materialization-materialized-shard-replay-bytes-n1', unit: 'bytes'},
+        {name: 'cold-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-deduplicated-edge-rows-n1', unit: 'count'},
         {name: 'cold-materialization-deduplicated-reference-rows-n1', unit: 'count'},
         {name: 'one-file-reindex-materialization-deduplicated-edge-rows-n1', unit: 'count'},
         {name: 'one-file-reindex-materialization-deduplicated-reference-rows-n1', unit: 'count'},
+        {name: 'same-overlay-reference-materialization-attributed-files-n1', unit: 'count'},
+        {name: 'same-overlay-reference-materialization-cached-fact-replay-bytes-n1', unit: 'bytes'},
+        {name: 'same-overlay-reference-materialization-changed-fact-bytes-n1', unit: 'bytes'},
+        {name: 'same-overlay-reference-materialization-cross-generation-shard-files-n1', unit: 'count'},
+        {name: 'same-overlay-reference-materialization-exact-generation-shard-files-n1', unit: 'count'},
+        {name: 'same-overlay-reference-materialization-materialized-shard-replay-bytes-n1', unit: 'bytes'},
+        {name: 'same-overlay-reference-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
       ]),
     );
     const retained = new Map(
       materializationStorageMeasurements('cold', {
+        attributedFilesCompleted: 6,
         cachedFactBytesTotal: 10,
+        cachedFactReplayBytesCompleted: 12,
+        changedFactBytesCompleted: 2,
+        crossGenerationShardFilesCompleted: 0,
         durableAvailableBytes: 20,
         estimateBasis: 'cached-fact-bytes',
         estimatedDurableFilesystemRequiredBytes: 30,
         estimatedTemporaryFilesystemRequiredBytes: 40,
         filesystemsShared: false,
+        exactGenerationShardFilesCompleted: 3,
+        materializedShardReplayBytesCompleted: 8,
+        rawFactReplayBytesCompleted: 4,
         temporaryAvailableBytes: 50,
       }).map(measurement => [measurement.name, measurement.minimum]),
     );
     expect(retained).toEqual(
       new Map([
+        ['cold-materialization-attributed-files-n1', 6],
         ['cold-materialization-cached-fact-bytes-total-n1', 10],
+        ['cold-materialization-cached-fact-replay-bytes-n1', 12],
+        ['cold-materialization-changed-fact-bytes-n1', 2],
+        ['cold-materialization-cross-generation-shard-files-n1', 0],
+        ['cold-materialization-exact-generation-shard-files-n1', 3],
+        ['cold-materialization-materialized-shard-replay-bytes-n1', 8],
+        ['cold-materialization-raw-fact-replay-bytes-n1', 4],
         ['cold-materialization-estimated-temp-filesystem-required-n1', 40],
         ['cold-materialization-estimated-durable-filesystem-required-n1', 30],
         ['cold-materialization-temp-filesystem-available-n1', 50],
@@ -427,10 +455,24 @@ describe('code graph release evidence', () => {
       'code-graph-production-large-v1',
     );
     for (const missing of [
+      'cold-materialization-attributed-files-n1',
+      'cold-materialization-cached-fact-replay-bytes-n1',
+      'cold-materialization-changed-fact-bytes-n1',
+      'cold-materialization-cross-generation-shard-files-n1',
+      'cold-materialization-exact-generation-shard-files-n1',
+      'cold-materialization-materialized-shard-replay-bytes-n1',
+      'cold-materialization-raw-fact-replay-bytes-n1',
       'cold-materialization-estimated-temp-filesystem-required-n1',
       'cold-materialization-estimated-durable-filesystem-required-n1',
       'cold-materialization-deduplicated-edge-rows-n1',
       'cold-materialization-deduplicated-reference-rows-n1',
+      'same-overlay-reference-materialization-attributed-files-n1',
+      'same-overlay-reference-materialization-cached-fact-replay-bytes-n1',
+      'same-overlay-reference-materialization-changed-fact-bytes-n1',
+      'same-overlay-reference-materialization-cross-generation-shard-files-n1',
+      'same-overlay-reference-materialization-exact-generation-shard-files-n1',
+      'same-overlay-reference-materialization-materialized-shard-replay-bytes-n1',
+      'same-overlay-reference-materialization-raw-fact-replay-bytes-n1',
     ]) {
       expect(() =>
         assertProductionReleaseEvidence({
@@ -438,6 +480,18 @@ describe('code graph release evidence', () => {
           measurements: artifact.measurements.filter(measurement => measurement.name !== missing),
         }),
       ).toThrow(new RegExp(missing));
+    }
+    for (const prefix of ['cold', 'same-overlay-reference'] as const) {
+      expect(() =>
+        assertProductionReleaseEvidence({
+          ...artifact,
+          measurements: artifact.measurements.map(measurement =>
+            measurement.name === `${prefix}-materialization-cached-fact-replay-bytes-n1`
+              ? benchmarkMeasurement(measurement.name, 'bytes', [3])
+              : measurement,
+          ),
+        }),
+      ).toThrow(new RegExp(`${prefix} materialization replay-byte equation`));
     }
   });
 
@@ -1363,18 +1417,20 @@ function requiredReleaseMeasurements(
     benchmarkMeasurement(measurement.name, measurement.unit, [
       measurement.name === 'cold-activation-observed-stages-n1'
         ? 3
-        : measurement.name.startsWith('production-shape-')
-          ? 100
-          : measurement.name.startsWith('cold-activation-copying-') && measurement.name.endsWith('-observed-n1')
-            ? 0
-            : measurement.name.endsWith('-activation-observed-stages-n1')
-              ? 32
-              : measurement.name.endsWith('-external-sampler-version-n1')
-                ? 4
-                : measurement.name.endsWith('-external-process-tree-failures-n1') ||
-                    measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
-                  ? 0
-                  : 1,
+        : measurement.name.endsWith('-materialization-cached-fact-replay-bytes-n1')
+          ? 2
+          : measurement.name.startsWith('production-shape-')
+            ? 100
+            : measurement.name.startsWith('cold-activation-copying-') && measurement.name.endsWith('-observed-n1')
+              ? 0
+              : measurement.name.endsWith('-activation-observed-stages-n1')
+                ? 32
+                : measurement.name.endsWith('-external-sampler-version-n1')
+                  ? 4
+                  : measurement.name.endsWith('-external-process-tree-failures-n1') ||
+                      measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+                    ? 0
+                    : 1,
     ]),
   );
 }

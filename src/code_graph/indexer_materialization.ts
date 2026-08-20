@@ -1083,6 +1083,63 @@ function saturatingAdd(...values: readonly number[]): number {
   return values.reduce((total, value) => Math.min(Number.MAX_SAFE_INTEGER, total + value), 0);
 }
 
+export interface CodeGraphMaterializationReplayMetrics {
+  readonly attributedFilesCompleted: number;
+  readonly cachedFactReplayBytesCompleted: number;
+  readonly crossGenerationShardFilesCompleted: number;
+  readonly exactGenerationShardFilesCompleted: number;
+  readonly materializedShardReplayBytesCompleted: number;
+  readonly rawFactReplayBytesCompleted: number;
+}
+
+export interface CodeGraphMaterializationReplayObservation {
+  readonly attributedFiles?: number;
+  readonly crossGenerationShardFiles?: number;
+  readonly exactGenerationShardFiles?: number;
+  readonly materializedShardReplayBytes?: number;
+  readonly rawFactReplayBytes?: number;
+}
+
+export function emptyMaterializationReplayMetrics(): CodeGraphMaterializationReplayMetrics {
+  return {
+    attributedFilesCompleted: 0,
+    cachedFactReplayBytesCompleted: 0,
+    crossGenerationShardFilesCompleted: 0,
+    exactGenerationShardFilesCompleted: 0,
+    materializedShardReplayBytesCompleted: 0,
+    rawFactReplayBytesCompleted: 0,
+  };
+}
+
+/** Adds one physical replay observation while retaining an exact, safely bounded split. */
+export function addMaterializationReplayMetrics(
+  current: CodeGraphMaterializationReplayMetrics,
+  observation: CodeGraphMaterializationReplayObservation,
+): CodeGraphMaterializationReplayMetrics {
+  const materializedShardReplayBytesCompleted = saturatingAdd(
+    current.materializedShardReplayBytesCompleted,
+    observation.materializedShardReplayBytes ?? 0,
+  );
+  const rawFactReplayBytesCompleted = saturatingAdd(
+    current.rawFactReplayBytesCompleted,
+    observation.rawFactReplayBytes ?? 0,
+  );
+  return {
+    attributedFilesCompleted: saturatingAdd(current.attributedFilesCompleted, observation.attributedFiles ?? 0),
+    cachedFactReplayBytesCompleted: saturatingAdd(materializedShardReplayBytesCompleted, rawFactReplayBytesCompleted),
+    crossGenerationShardFilesCompleted: saturatingAdd(
+      current.crossGenerationShardFilesCompleted,
+      observation.crossGenerationShardFiles ?? 0,
+    ),
+    exactGenerationShardFilesCompleted: saturatingAdd(
+      current.exactGenerationShardFilesCompleted,
+      observation.exactGenerationShardFiles ?? 0,
+    ),
+    materializedShardReplayBytesCompleted,
+    rawFactReplayBytesCompleted,
+  };
+}
+
 export function factMaterializationBatches<T extends {readonly path: string; readonly size: number}>(
   values: readonly T[],
   cachedFactBytesByPath: ReadonlyMap<string, number> = new Map(),

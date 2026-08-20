@@ -313,6 +313,18 @@ const SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'one-file-reindex', 'sam
   ],
 );
 
+const MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'same-overlay-reference'] as const).flatMap(
+  prefix => [
+    {name: `${prefix}-materialization-attributed-files-n1`, unit: 'count'} as const,
+    {name: `${prefix}-materialization-cached-fact-replay-bytes-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-changed-fact-bytes-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-cross-generation-shard-files-n1`, unit: 'count'} as const,
+    {name: `${prefix}-materialization-exact-generation-shard-files-n1`, unit: 'count'} as const,
+    {name: `${prefix}-materialization-materialized-shard-replay-bytes-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-raw-fact-replay-bytes-n1`, unit: 'bytes'} as const,
+  ],
+);
+
 export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'cold-materialization', unit: 'milliseconds'},
   {name: 'cold-materialization-process-cpu-n1', unit: 'milliseconds'},
@@ -351,6 +363,7 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'production-shape-symbol-target-attainment', unit: 'percent'},
   {name: 'production-shape-edge-target-attainment', unit: 'percent'},
   {name: 'production-shape-lexical-term-target-attainment', unit: 'percent'},
+  ...MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS,
   ...SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS,
   ...ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS,
 ] as const;
@@ -1889,9 +1902,14 @@ export class IndexPhaseTimeline {
         }
         if (progress.metrics?.storage) {
           this.#materializationStorage = {
+            attributedFilesCompleted: progress.metrics.attributedFilesCompleted,
             ...(progress.metrics.cachedFactBytesTotal === undefined
               ? {}
               : {cachedFactBytesTotal: progress.metrics.cachedFactBytesTotal}),
+            cachedFactReplayBytesCompleted: progress.metrics.cachedFactReplayBytesCompleted,
+            changedFactBytesCompleted: progress.metrics.changedFactBytesCompleted,
+            crossGenerationShardFilesCompleted: progress.metrics.crossGenerationShardFilesCompleted,
+            exactGenerationShardFilesCompleted: progress.metrics.exactGenerationShardFilesCompleted,
             ...(progress.metrics.factsBytesTotal === undefined
               ? {}
               : {finalFactBytesTotal: progress.metrics.factsBytesTotal}),
@@ -1905,7 +1923,9 @@ export class IndexPhaseTimeline {
             estimatedTemporaryFilesystemRequiredBytes:
               progress.metrics.storage.estimatedTemporaryFilesystemRequiredBytes,
             filesystemsShared: progress.metrics.storage.filesystemsShared,
+            materializedShardReplayBytesCompleted: progress.metrics.materializedShardReplayBytesCompleted,
             materializationMode: progress.metrics.storage.materializationMode,
+            rawFactReplayBytesCompleted: progress.metrics.rawFactReplayBytesCompleted,
             temporaryAvailableBytes: progress.metrics.storage.temporaryAvailableBytes,
           };
         }
@@ -2108,7 +2128,12 @@ export function measureSampledBenchmarkIndex<A>(
 }
 
 export interface IndexMaterializationStorageEvidence {
+  readonly attributedFilesCompleted?: number;
   readonly cachedFactBytesTotal?: number;
+  readonly cachedFactReplayBytesCompleted?: number;
+  readonly changedFactBytesCompleted?: number;
+  readonly crossGenerationShardFilesCompleted?: number;
+  readonly exactGenerationShardFilesCompleted?: number;
   readonly finalFactBytesTotal?: number;
   readonly durableAvailableBytes?: number;
   readonly durableDatabaseGrowthHighWaterBytes?: number;
@@ -2119,7 +2144,9 @@ export interface IndexMaterializationStorageEvidence {
   readonly estimatedDurableFilesystemRequiredBytes?: number;
   readonly estimatedTemporaryFilesystemRequiredBytes?: number;
   readonly filesystemsShared?: boolean;
+  readonly materializedShardReplayBytesCompleted?: number;
   readonly materializationMode?: 'direct-persistent' | 'temporary-staged';
+  readonly rawFactReplayBytesCompleted?: number;
   readonly temporaryAvailableBytes?: number;
 }
 
@@ -2204,8 +2231,15 @@ export function materializationStorageMeasurements(
   const add = (name: string, unit: 'bytes' | 'count', value: number | undefined) => {
     if (value !== undefined) measurements.push(benchmarkMeasurement(`${prefix}-${name}`, unit, [value]));
   };
+  add('materialization-attributed-files-n1', 'count', storage.attributedFilesCompleted);
   add('materialization-cached-fact-bytes-total-n1', 'bytes', storage.cachedFactBytesTotal);
+  add('materialization-cached-fact-replay-bytes-n1', 'bytes', storage.cachedFactReplayBytesCompleted);
+  add('materialization-changed-fact-bytes-n1', 'bytes', storage.changedFactBytesCompleted);
+  add('materialization-cross-generation-shard-files-n1', 'count', storage.crossGenerationShardFilesCompleted);
+  add('materialization-exact-generation-shard-files-n1', 'count', storage.exactGenerationShardFilesCompleted);
   add('materialization-final-fact-bytes-total-n1', 'bytes', storage.finalFactBytesTotal);
+  add('materialization-materialized-shard-replay-bytes-n1', 'bytes', storage.materializedShardReplayBytesCompleted);
+  add('materialization-raw-fact-replay-bytes-n1', 'bytes', storage.rawFactReplayBytesCompleted);
   add(
     'materialization-estimated-temp-filesystem-required-n1',
     'bytes',
@@ -4150,6 +4184,7 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
     const measurement = measurements.get(required.name);
     return measurement?.unit === required.unit ? [] : [`${required.name} (${required.unit})`];
   });
+  missing.push(...missingMaterializationReplayEquations(measurements));
   if (artifact.metadata.oneFileReindexMaterializationMode !== 'incremental-overlay') {
     missing.push('one-file reindex incremental-overlay materialization mode');
   }
@@ -4174,6 +4209,44 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
   if (missing.length > 0) {
     throw new ScriptError(`Production release evidence is incomplete: ${missing.join(', ')}.`);
   }
+}
+
+function missingMaterializationReplayEquations(
+  measurements: ReadonlyMap<string, BenchmarkArtifactV1['measurements'][number]>,
+): readonly string[] {
+  return (['cold', 'same-overlay-reference'] as const).flatMap(prefix => {
+    const cached = measurements.get(`${prefix}-materialization-cached-fact-replay-bytes-n1`);
+    const materialized = measurements.get(`${prefix}-materialization-materialized-shard-replay-bytes-n1`);
+    const raw = measurements.get(`${prefix}-materialization-raw-fact-replay-bytes-n1`);
+    if (!cached || !materialized || !raw) return [];
+    const cachedBytes = exactSingleSampleCount(cached);
+    const materializedBytes = exactSingleSampleCount(materialized);
+    const rawBytes = exactSingleSampleCount(raw);
+    return cachedBytes !== undefined &&
+      materializedBytes !== undefined &&
+      rawBytes !== undefined &&
+      cachedBytes === Math.min(Number.MAX_SAFE_INTEGER, materializedBytes + rawBytes)
+      ? []
+      : [`${prefix} materialization replay-byte equation`];
+  });
+}
+
+function exactSingleSampleCount(measurement: BenchmarkArtifactV1['measurements'][number]): number | undefined {
+  const values = [
+    measurement.minimum,
+    measurement.maximum,
+    measurement.mean,
+    measurement.p50,
+    measurement.p95,
+    measurement.p99,
+  ];
+  const value = values[0];
+  return measurement.samples === 1 &&
+    value !== undefined &&
+    Number.isSafeInteger(value) &&
+    values.every(candidate => candidate === value)
+    ? value
+    : undefined;
 }
 
 function missingProductionShapeTargetAttainment(

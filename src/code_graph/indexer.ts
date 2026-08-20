@@ -25,6 +25,7 @@ export {
   reusableBaseFileSetFingerprint,
 } from './indexer_incremental.js';
 export {
+  addMaterializationReplayMetrics,
   addMaterializationRows,
   cacheContentBatch,
   codeGraphActiveParserCacheKey,
@@ -32,6 +33,7 @@ export {
   codeGraphParserCacheLookupGenerations,
   deduplicateMaterializationRelationships,
   directFullSnapshotIdentity,
+  emptyMaterializationReplayMetrics,
   estimatedMaterializationStorageBytes,
   extractorSetIdentity,
   extractorSetIdentityFromPackProvenance,
@@ -47,6 +49,8 @@ export {
   type CodeGraphCacheContentCoalescer,
   type CodeGraphCacheExtractedRow,
   type DirectPersistentCapacityContext,
+  type CodeGraphMaterializationReplayMetrics,
+  type CodeGraphMaterializationReplayObservation,
   type MaterializationStorageAvailability,
   type MaterializationStoragePlan,
   type PersistentMaterializationTransactionCandidate,

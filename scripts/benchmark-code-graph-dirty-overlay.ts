@@ -2,7 +2,11 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Clock, Effect, FileSystem, Path} from 'effect';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../src/code_graph/indexer.js';
-import type {CodeGraphIndexSummary, CodeGraphProgress} from '../src/code_graph/types.js';
+import type {
+  CodeGraphIndexSummary,
+  CodeGraphMaterializationMetrics,
+  CodeGraphProgress,
+} from '../src/code_graph/types.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
@@ -27,10 +31,21 @@ interface DirtyOverlayObservation {
   readonly fallbackReason?: string;
   readonly materializationMilliseconds: number;
   readonly materializationMode: string;
+  readonly replay: DirtyOverlayReplayEvidence;
   readonly rewriteAmplification?: number;
   readonly stagedFiles: number;
   readonly symbols: number;
   readonly totalFiles: number;
+}
+
+export interface DirtyOverlayReplayEvidence {
+  readonly attributedFiles: number;
+  readonly cachedFactReplayBytes: number;
+  readonly changedFactBytes: number;
+  readonly crossGenerationShardFiles: number;
+  readonly exactGenerationShardFiles: number;
+  readonly materializedShardReplayBytes: number;
+  readonly rawFactReplayBytes: number;
 }
 
 const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
@@ -103,6 +118,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
               }
             : {}),
           materializationMilliseconds: fullMaterialization,
+          replay: full[0]!.replay,
           stagedFiles: full[0]?.stagedFiles ?? 0,
         },
         incremental: {
@@ -116,6 +132,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
               }
             : {}),
           materializationMilliseconds: incrementalMaterialization,
+          replay: incremental[0]!.replay,
           stagedFiles: incremental[0]?.stagedFiles ?? 0,
         },
         improvement: {
@@ -158,7 +175,7 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
     Clock.currentTimeNanos.pipe(
       Effect.tap(now =>
         Effect.sync(() => {
-          if (scenario === 'unchanged-static-reexport' && progress.phase === 'materializing') {
+          if (progress.phase === 'materializing') {
             if (previousProgressPhase !== 'materializing') finalMaterializationMetrics = undefined;
             if (progress.metrics !== undefined) finalMaterializationMetrics = progress.metrics;
           }
@@ -188,10 +205,13 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
   if (scenario === 'unchanged-static-reexport' && changedFactBytes <= 0) {
     return yield* Effect.fail(new ScriptError('Dirty-overlay benchmark did not retain changed-fact byte evidence.'));
   }
+  const replay = incrementalOverlay
+    ? incrementalDirtyOverlayReplayEvidence(changedFactBytes)
+    : dirtyOverlayReplayEvidence(finalMaterializationMetrics, changedFactBytes);
   const amplification =
     scenario === 'unchanged-static-reexport'
       ? dirtyOverlayAmplificationEvidence({
-          cachedFactReplayBytes: finalMaterializationMetrics?.cachedFactReplayBytesCompleted ?? 0,
+          cachedFactReplayBytes: replay.cachedFactReplayBytes,
           changedFactBytes,
           deltaFiles: 1,
           stagedFiles: summary.materialization?.stagedFiles ?? 0,
@@ -211,11 +231,59 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
     ...(summary.materialization?.fallbackReason ? {fallbackReason: summary.materialization.fallbackReason} : {}),
     materializationMilliseconds: Number(materializationNanoseconds) / NANOSECONDS_PER_MILLISECOND,
     materializationMode: summary.materialization?.mode ?? 'unreported',
+    replay,
     stagedFiles: summary.materialization?.stagedFiles ?? -1,
     symbols: summary.snapshot.symbolCount,
     totalFiles: summary.materialization?.totalFiles ?? -1,
   } satisfies DirtyOverlayObservation;
 });
+
+export function dirtyOverlayReplayEvidence(
+  metrics: CodeGraphMaterializationMetrics | undefined,
+  changedFactBytes: number,
+): DirtyOverlayReplayEvidence {
+  if (
+    metrics?.attributedFilesCompleted === undefined ||
+    metrics.cachedFactReplayBytesCompleted === undefined ||
+    metrics.changedFactBytesCompleted === undefined ||
+    metrics.crossGenerationShardFilesCompleted === undefined ||
+    metrics.exactGenerationShardFilesCompleted === undefined ||
+    metrics.materializedShardReplayBytesCompleted === undefined ||
+    metrics.rawFactReplayBytesCompleted === undefined
+  ) {
+    throw new ScriptError('Dirty-overlay benchmark did not retain complete physical replay evidence.');
+  }
+  const cachedFactReplayBytes = metrics.cachedFactReplayBytesCompleted;
+  const materializedShardReplayBytes = metrics.materializedShardReplayBytesCompleted;
+  const rawFactReplayBytes = metrics.rawFactReplayBytesCompleted;
+  if (cachedFactReplayBytes !== Math.min(Number.MAX_SAFE_INTEGER, materializedShardReplayBytes + rawFactReplayBytes)) {
+    throw new ScriptError('Dirty-overlay benchmark replay-byte split is inconsistent.');
+  }
+  if (changedFactBytes !== metrics.changedFactBytesCompleted) {
+    throw new ScriptError('Dirty-overlay benchmark changed-fact byte evidence is inconsistent.');
+  }
+  return {
+    attributedFiles: metrics.attributedFilesCompleted,
+    cachedFactReplayBytes,
+    changedFactBytes,
+    crossGenerationShardFiles: metrics.crossGenerationShardFilesCompleted,
+    exactGenerationShardFiles: metrics.exactGenerationShardFilesCompleted,
+    materializedShardReplayBytes,
+    rawFactReplayBytes,
+  };
+}
+
+function incrementalDirtyOverlayReplayEvidence(changedFactBytes: number): DirtyOverlayReplayEvidence {
+  return {
+    attributedFiles: 0,
+    cachedFactReplayBytes: 0,
+    changedFactBytes,
+    crossGenerationShardFiles: 0,
+    exactGenerationShardFiles: 0,
+    materializedShardReplayBytes: 0,
+    rawFactReplayBytes: 0,
+  };
+}
 
 export function dirtyOverlayAmplificationEvidence(input: {
   readonly cachedFactReplayBytes: number;

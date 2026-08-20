@@ -23,10 +23,14 @@ const observationCase = FC.record({
 });
 
 const materializationCase = FC.record({
+  attributedFiles: FC.integer({max: 1_000_000, min: 0}),
   availableBytes: FC.integer({max: 1_000_000_000, min: 0}),
   batchCompleted: FC.integer({max: 100, min: 0}),
   cachedFactBytes: FC.integer({max: 1_000_000_000, min: 0}),
   edges: FC.integer({max: 1_000_000, min: 0}),
+  exactGenerationShardFiles: FC.integer({max: 1_000_000, min: 0}),
+  materializedShardReplayBytes: FC.integer({max: 1_000_000_000, min: 0}),
+  rawFactReplayBytes: FC.integer({max: 1_000_000_000, min: 0}),
   sourceBytes: FC.integer({max: 1_000_000_000, min: 0}),
   stagingBytes: FC.integer({max: 1_000_000_000, min: 0}),
   symbols: FC.integer({max: 1_000_000, min: 0}),
@@ -177,12 +181,17 @@ describe('code graph build-status properties', () => {
             startedAt: status.timestamps.phaseStartedAt,
           },
           metrics: {
+            attributedFilesCompleted: sample.attributedFiles,
             batchesCompleted: sample.batchCompleted,
             batchesTotal,
             cachedFactBytesCompleted: sample.cachedFactBytes,
             cachedFactBytesTotal: sample.cachedFactBytes,
-            cachedFactReplayBytesCompleted: sample.cachedFactBytes,
+            cachedFactReplayBytesCompleted: sample.materializedShardReplayBytes + sample.rawFactReplayBytes,
             changedFactBytesCompleted: sample.cachedFactBytes,
+            crossGenerationShardFilesCompleted: 0,
+            exactGenerationShardFilesCompleted: sample.exactGenerationShardFiles,
+            materializedShardReplayBytesCompleted: sample.materializedShardReplayBytes,
+            rawFactReplayBytesCompleted: sample.rawFactReplayBytes,
             rows: {
               deduplicatedEdges: sample.edges,
               deduplicatedReferences: sample.symbols,
@@ -214,6 +223,19 @@ describe('code graph build-status properties', () => {
       expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(materializing)))?.materialization).toEqual(
         materializing.materialization,
       );
+      expect(
+        parseCodeGraphBuildStatus({
+          ...materializing,
+          materialization: {
+            ...materializing.materialization,
+            metrics: {
+              ...materializing.materialization!.metrics!,
+              cachedFactReplayBytesCompleted:
+                materializing.materialization!.metrics!.cachedFactReplayBytesCompleted! + 1,
+            },
+          },
+        }),
+      ).toBeUndefined();
       expect(
         parseCodeGraphBuildStatus({
           ...materializing,

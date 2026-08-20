@@ -23,11 +23,13 @@ import {
   PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES,
   PERSISTENT_MATERIALIZATION_TRANSACTION_FILES,
   PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES,
+  addMaterializationReplayMetrics,
   addMaterializationRows,
   cachedFactsMetadata,
   codeGraphDirectPersistentCapacityProtector,
   deduplicateMaterializationRelationships,
   embeddingSymbolSource,
+  emptyMaterializationReplayMetrics,
   estimatedMaterializationStorageBytes,
   extractorSetIdentity,
   extractorSetIdentityFromPackProvenance,
@@ -1221,7 +1223,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         .filter(file => committedHashesByPath.get(file.path) !== file.contentHash)
         .map(file => file.path),
     );
-    let cachedFactReplayBytesCompleted = 0;
+    let replayMetrics = emptyMaterializationReplayMetrics();
     let changedFactBytesCompleted: number | undefined = 0;
     const storageEstimate = estimatedMaterializationStorageBytes(
       cachedFactBytesTotal,
@@ -1292,7 +1294,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       batchesTotal,
       cachedFactBytesCompleted,
       cachedFactBytesTotal,
-      cachedFactReplayBytesCompleted,
+      ...replayMetrics,
       ...(changedFactBytesCompleted === undefined ? {} : {changedFactBytesCompleted}),
       ...(fallbackReason === undefined ? {} : {fallbackReason}),
       factsBytesCompleted,
@@ -1534,10 +1536,11 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       // Count every decoded cache payload, including valid final shards that
       // were inspected before an incomplete batch fell back to all raw facts.
       const batchReplayBytes = Math.min(Number.MAX_SAFE_INTEGER, materializedShards.bytes + cached.bytes);
-      cachedFactReplayBytesCompleted = Math.min(
-        Number.MAX_SAFE_INTEGER,
-        cachedFactReplayBytesCompleted + batchReplayBytes,
-      );
+      replayMetrics = addMaterializationReplayMetrics(replayMetrics, {
+        exactGenerationShardFiles: materializedShardBatchComplete ? files.length : 0,
+        materializedShardReplayBytes: materializedShards.bytes,
+        rawFactReplayBytes: cached.bytes,
+      });
       // Changed-fact bytes are the logical selected representation used as the
       // replay-amplification denominator, not every physical cache decode.
       const batchChangedFactBytes = selectedDecodedFactBytes(
@@ -1578,6 +1581,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       const attributedFallbackFacts = attributeFacts(
         fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
       );
+      replayMetrics = addMaterializationReplayMetrics(replayMetrics, {attributedFiles: fallbackFiles.length});
       if (fallbackFiles.length > 0) {
         yield* input.store.cacheMaterializedFileShards(
           input.layout.databasePath,

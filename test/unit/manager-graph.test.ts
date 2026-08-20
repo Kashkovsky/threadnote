@@ -425,10 +425,16 @@ describe('manager graph focus', () => {
       counters: {completed: 37_209, reused: 58_482, total: 59_076, unit: 'files'},
       materialization: {
         metrics: {
+          attributedFilesCompleted: 6,
           batchesCompleted: 707,
           batchesTotal: 933,
+          cachedFactReplayBytesCompleted: 12_288,
+          crossGenerationShardFilesCompleted: 0,
+          exactGenerationShardFilesCompleted: 3,
           fallbackReason: 'file-set-changed',
+          materializedShardReplayBytesCompleted: 8_192,
           mode: 'full' as const,
+          rawFactReplayBytesCompleted: 4_096,
           sourceBytesCompleted: 1,
           sourceBytesTotal: 2,
         },
@@ -450,6 +456,12 @@ describe('manager graph focus', () => {
 
     expect(markup).toContain('Full materialization selected');
     expect(markup).toContain('incremental fallback: file set changed');
+    expect(markup).toContain('Physical cache replay: 12.0 KiB total decoded');
+    expect(markup).toContain('8.00 KiB materialized-shard payloads decoded');
+    expect(markup).toContain('4.00 KiB raw parser-fact payloads decoded');
+    expect(markup).toContain('6 raw parser-fact files postprocessed and attributed');
+    expect(markup).toContain('3 files selected from exact-generation materialized shards');
+    expect(markup).toContain('0 files selected from cross-generation materialized shards');
   });
 
   it('shows the active owner, latest queued target, and stale queryable snapshot without claiming FIFO order', () => {
