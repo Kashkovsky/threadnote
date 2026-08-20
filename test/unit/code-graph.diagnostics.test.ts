@@ -110,6 +110,30 @@ describe('all-code-graph diagnostics', () => {
       expect(ordinaryStorage.pageStorage).not.toHaveProperty('attribution');
       expect(JSON.stringify(report)).not.toContain(home);
       expect(renderCodeGraphDiagnostics(report)).toContain('Native code graph diagnostics');
+      const partialReport = {
+        ...report,
+        databases: report.databases.map(database => ({
+          ...database,
+          views: database.views.map(view =>
+            view.analysis
+              ? {
+                  ...view,
+                  analysis: {
+                    ...view.analysis,
+                    coverage: {
+                      ...view.analysis.coverage,
+                      complete: false,
+                      topology: {...view.analysis.coverage.topology, complete: false, state: 'partial' as const},
+                    },
+                  },
+                }
+              : view,
+          ),
+        })),
+      };
+      expect(renderCodeGraphDiagnostics(partialReport)).toContain(
+        'Analysis: partial · 0 observed component(s) · 0 observed communities',
+      );
 
       const deepReport = yield* inspectAllCodeGraphs(home, {deep: true});
       const deepStorage = deepReport.databases.find(database => database.checkoutId === healthyCheckoutId)?.storage;

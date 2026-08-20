@@ -48,6 +48,7 @@ import {
   type GraphRepositoryGroup,
   type GraphQueryVisualization,
 } from '../../src/manager_graph.js';
+import {GraphSummary} from '../../src/manager_graph_panels.js';
 
 describe('manager graph focus', () => {
   it('carries the complete selected graph identity into administration actions', () => {
@@ -974,10 +975,29 @@ describe('manager graph focus', () => {
     const unavailable = graphAnalysis('unavailable', false);
     expect(graphAnalysisTopologyAvailable(unavailable)).toBe(false);
     expect(graphAnalysisCoverageLabel(unavailable)).toBe('Topology unavailable');
-    const partial = graphAnalysis('partial', false);
+    const partial = graphAnalysis('partial', false, true);
     expect(graphAnalysisTopologyAvailable(partial)).toBe(true);
     expect(graphAnalysisCoverageLabel(partial)).toBe('Topology partial');
+    expect(graphAnalysisCoverageLabel(graphAnalysis('partial', false, false))).toBe('Bounded topology');
     expect(graphAnalysisCoverageLabel(graphAnalysis('complete', true))).toBe('Complete');
+  });
+
+  it('labels every partial topology as bounded observed evidence in the graph summary', () => {
+    const markup = renderToStaticMarkup(
+      createElement(GraphSummary, {
+        analysis: graphAnalysis('partial', false, true),
+        analysisError: '',
+        analysisLoading: false,
+        graph: queryVisualization('partial analysis'),
+        onAnalyze: () => undefined,
+        sizeMetric: 'connections',
+      }),
+    );
+    expect(markup).toContain('Bounded graph analysis');
+    expect(markup).toContain('Observed communities');
+    expect(markup).toContain('Observed components');
+    expect(markup).toContain('Observed hubs');
+    expect(markup).not.toContain('Whole-graph analysis');
   });
 
   it('centers a searched detail node and zooms into its labels', () => {
@@ -1435,10 +1455,14 @@ describe('manager graph focus', () => {
   });
 });
 
-function graphAnalysis(state: GraphAnalysis['coverage']['topology']['state'], complete: boolean): GraphAnalysis {
+function graphAnalysis(
+  state: GraphAnalysis['coverage']['topology']['state'],
+  complete: boolean,
+  nodesComplete = state === 'complete',
+): GraphAnalysis {
   return {
     communities: [],
-    coverage: {complete, topology: {complete: state === 'complete', state}},
+    coverage: {complete, nodesComplete, topology: {complete: state === 'complete', state}},
     hubs: [],
     statistics: {
       analyzedEdgeCount: 0,

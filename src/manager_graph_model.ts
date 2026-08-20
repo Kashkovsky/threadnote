@@ -1251,6 +1251,7 @@ export interface GraphAnalysis {
   }[];
   readonly coverage: {
     readonly complete: boolean;
+    readonly nodesComplete: boolean;
     readonly topology: {
       readonly complete: boolean;
       readonly state: 'complete' | 'not-requested' | 'partial' | 'unavailable';
@@ -1286,7 +1287,7 @@ export function graphAnalysisCoverageLabel(analysis: GraphAnalysis): string {
     case 'complete':
       return analysis.coverage.complete ? 'Complete' : 'Topology complete';
     case 'partial':
-      return 'Topology partial';
+      return analysis.coverage.nodesComplete ? 'Topology partial' : 'Bounded topology';
     case 'not-requested':
       return 'Topology not requested';
     case 'unavailable':

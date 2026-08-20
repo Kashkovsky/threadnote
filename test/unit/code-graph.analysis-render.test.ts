@@ -54,7 +54,7 @@ describe('code graph analysis rendering', () => {
     }),
   );
 
-  effectIt.effect('does not turn unavailable partial topology into false zero or none claims', () =>
+  effectIt.effect('labels bounded topology without making whole-graph zero or absence claims', () =>
     Effect.gen(function* () {
       const symbols = Array.from({length: 8}, (_, index) =>
         analysisSymbol(`node-${index}`, '@acme/partial', `src/${index}.ts`),
@@ -69,16 +69,49 @@ describe('code graph analysis rendering', () => {
       });
       const rendered = renderCodeGraphAnalysis(result, 'full');
       const report = renderCodeGraphReport(result, {displayName: 'partial', repositoryId: 'repository'});
-      expect(result.coverage.topology.state).toBe('unavailable');
-      expect(rendered).toContain('Topology: unavailable');
-      expect(rendered).toContain('Communities: unavailable because topology was not derived');
-      expect(rendered).not.toContain('0 isolated nodes');
-      expect(rendered).not.toContain('Communities: none');
-      expect(report).toContain(
-        'Community analysis was unavailable because the complete symbol endpoint set did not fit',
+      expect(result.coverage).toMatchObject({nodesComplete: false, topology: {state: 'partial'}});
+      expect(rendered).toContain('Topology (bounded path/relationship-prefix observation)');
+      expect(rendered).toContain('retained nodes with zero observed degree');
+      expect(rendered).toContain('Communities (observed partial topology):');
+      expect(rendered).toContain('bounded observation over a path-prefix node set (3 of 8 symbols)');
+      expect(rendered).not.toContain(' isolated nodes');
+      expect(report).toContain('bounded observation over a path-prefix node set (3 of 8 symbols)');
+      expect(report).not.toContain(' isolated nodes');
+
+      const noEdgeResult = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, []), {
+        budget: {maxNodes: 3, pageSize: 2},
+        databasePath: ':memory:',
+        snapshot: analysisSnapshot(symbols, []),
+      });
+      const noEdgeRendered = renderCodeGraphAnalysis(noEdgeResult, 'full');
+      const noEdgeReport = renderCodeGraphReport(noEdgeResult, {
+        displayName: 'partial',
+        repositoryId: 'repository',
+      });
+      expect(noEdgeRendered).toContain('Hubs: none observed in bounded topology; absence is not proven');
+      expect(noEdgeRendered).toContain(
+        'Structural relationship groups: none observed in bounded topology; absence is not proven',
       );
-      expect(report).not.toContain('0 isolated nodes');
-      expect(report).not.toContain('No high-degree fan-in or fan-out groups met the deterministic threshold.');
+      expect(noEdgeRendered).toContain('Surprising links: none observed in bounded topology; absence is not proven');
+      expect(noEdgeReport).toContain('No hubs were observed in bounded topology; absence is not proven.');
+      expect(noEdgeReport).toContain(
+        'No cross-community links were observed in bounded topology; absence is not proven.',
+      );
+      expect(noEdgeReport).toContain(
+        'No high-degree fan-in or fan-out groups were observed in bounded topology; absence is not proven.',
+      );
+
+      const edgePartialResult = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, edges), {
+        budget: {maxEdges: 2, maxEdgeVisits: 2, maxNodes: symbols.length, pageSize: 2},
+        databasePath: ':memory:',
+        snapshot: analysisSnapshot(symbols, edges),
+      });
+      const edgePartialRendered = renderCodeGraphAnalysis(edgePartialResult, 'stats');
+      expect(edgePartialResult.coverage).toMatchObject({nodesComplete: true, topology: {state: 'partial'}});
+      expect(edgePartialRendered).toContain('Topology (bounded relationship-prefix observation)');
+      expect(edgePartialRendered).toContain('observed connected components');
+      expect(edgePartialRendered).toContain('nodes with zero observed degree');
+      expect(edgePartialRendered).not.toContain(' isolated nodes');
     }),
   );
 });

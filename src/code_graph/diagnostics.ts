@@ -491,9 +491,17 @@ export function renderCodeGraphDiagnostics(
         lines.push(`Folder: ${codeGraphLocalAssociationLabel(view.localAssociation)} · ${view.localAssociation.state}`);
       }
       if (view.analysis) {
-        lines.push(
-          `Analysis: ${view.analysis.coverage.complete ? 'complete' : 'partial'} · ${view.analysis.statistics.connectedComponentCount} component(s) · ${view.analysis.statistics.communityCount} communit${view.analysis.statistics.communityCount === 1 ? 'y' : 'ies'}`,
-        );
+        const topology = view.analysis.coverage.topology;
+        if (topology.state === 'complete' || topology.state === 'partial') {
+          const observed = topology.complete ? '' : 'observed ';
+          lines.push(
+            `Analysis: ${view.analysis.coverage.complete ? 'complete' : 'partial'} · ${view.analysis.statistics.connectedComponentCount} ${observed}component(s) · ${view.analysis.statistics.communityCount} ${observed}communit${view.analysis.statistics.communityCount === 1 ? 'y' : 'ies'}`,
+          );
+        } else {
+          lines.push(
+            `Analysis: ${view.analysis.coverage.complete ? 'complete' : 'partial'} · topology ${topology.state}`,
+          );
+        }
       }
     }
     for (const issue of database.issues) lines.push(`Warning: ${issue.code}: ${issue.message}`);

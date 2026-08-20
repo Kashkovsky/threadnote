@@ -652,7 +652,7 @@ describe('MCP code graph indexing progress', () => {
   );
 
   effectIt.effect(
-    'marks MCP topology unavailable above the retained-node cap without changing the analysis defaults',
+    'returns explicitly partial MCP topology above the retained-node cap without changing the analysis defaults',
     () =>
       Effect.gen(function* () {
         const symbols = [analysisSymbol('one', '@acme/capped', 'src/one.ts')];
@@ -665,9 +665,9 @@ describe('MCP code graph indexing progress', () => {
         });
 
         expect(result.budget).toMatchObject(codeGraphMcpAnalysisBudget());
-        expect(result.coverage.topology.state).toBe('unavailable');
+        expect(result.coverage).toMatchObject({nodesComplete: false, topology: {complete: false, state: 'partial'}});
         expect(result.warnings).toContain(
-          `Topology was not derived because only 1 of ${snapshot.symbolCount.toLocaleString()} symbols fit the node/time budget.`,
+          `Topology is a bounded path-prefix induced subgraph over 1 of ${snapshot.symbolCount.toLocaleString()} symbols. Connectivity, degree, isolation, hub, component, community, and absence claims apply only to retained nodes.`,
         );
       }),
   );
