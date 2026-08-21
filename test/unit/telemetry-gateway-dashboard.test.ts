@@ -519,7 +519,7 @@ describe('Threadnote Grafana dashboard', () => {
       expect(automaticUpdates?.title).toBe('Automatic update results');
       expect(automaticUpdates?.type).toBe('timeseries');
       expect(automaticUpdates?.targets).toHaveLength(1);
-      expect(automaticUpdates?.transformations).toEqual([]);
+      expect(automaticUpdates?.transformations).toBeUndefined();
       const automaticUpdateQuery = automaticUpdates?.targets[0]?.query;
       expect(automaticUpdateQuery).toContain(autoUpdateSchemaPredicate);
       expect(automaticUpdateQuery).toContain(canaryExclusionPredicate);
