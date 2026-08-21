@@ -4,7 +4,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {JSON_SCHEMA, load} from 'js-yaml';
 import {
   assessDashboardThreeWay,
-  buildTempoQueryRequest,
+  buildTempoQueryRequests,
   canonicalDashboardSemantics,
   canonicalJson,
   collectTempoQueries,
@@ -119,10 +119,22 @@ function permuteObjectKeys(value: unknown, choices: readonly number[], offset = 
   return Object.fromEntries(rotated.map(([key, item]) => [key, permuteObjectKeys(item, choices, offset)]));
 }
 
-function successfulQueryResponse(resource: DashboardArtifact): unknown {
-  const request = buildTempoQueryRequest(resource) as Readonly<Record<string, JsonValue>>;
+function successfulQueryResponse(request: Readonly<Record<string, JsonValue>>): unknown {
   const queries = request.queries as readonly Readonly<Record<string, JsonValue>>[];
   return {results: Object.fromEntries(queries.map(query => [query.refId, {frames: []}]))};
+}
+
+function queryRequests(resource: DashboardArtifact, now = Date.now()): readonly Readonly<Record<string, JsonValue>>[] {
+  return buildTempoQueryRequests(resource, now) as readonly Readonly<Record<string, JsonValue>>[];
+}
+
+function requestQueries(request: Readonly<Record<string, JsonValue>>): readonly Readonly<Record<string, JsonValue>>[] {
+  return request.queries as readonly Readonly<Record<string, JsonValue>>[];
+}
+
+function queryRequestFromBody(body: BodyInit | null | undefined): Readonly<Record<string, JsonValue>> {
+  if (typeof body !== 'string') throw new Error('expected JSON query request body');
+  return JSON.parse(body) as Readonly<Record<string, JsonValue>>;
 }
 
 function liveDashboard(
@@ -266,19 +278,34 @@ describe('direct Grafana dashboard provisioning', () => {
       expect(query).toContain(telemetryDashboardSyntheticCanaryExclusion);
       expect(target.datasource).toEqual({type: 'tempo', uid: telemetryDashboardDatasourceUid});
     }
+  });
 
-    const queryRequest = buildTempoQueryRequest(checkedIn) as Readonly<Record<string, JsonValue>>;
-    const verificationQueries = queryRequest.queries as readonly Readonly<Record<string, JsonValue>>[];
-    const expressionQueries = verificationQueries.filter(query => {
-      const datasource = query.datasource;
-      return (
-        datasource !== null &&
-        typeof datasource === 'object' &&
-        !Array.isArray(datasource) &&
-        (datasource as Readonly<Record<string, JsonValue>>).type === '__expr__'
-      );
+  it('builds isolated pure Tempo and expression requests with every target exactly once', () => {
+    const resource = readDashboardArtifact();
+    const collected = collectTempoQueries(resource);
+    const now = 1_700_000_000_000;
+    const requests = queryRequests(resource, now);
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.from).toBe(String(now - 5 * 60_000));
+      expect(request.to).toBe(String(now));
+    }
+
+    const [tempoRequest, expressionRequest] = requests;
+    const tempoRequestQueries = requestQueries(tempoRequest!);
+    const expressionRequestQueries = requestQueries(expressionRequest!);
+    const expressionQueries = expressionRequestQueries.filter(query => {
+      const datasource = query.datasource as Readonly<Record<string, JsonValue>>;
+      return datasource.type === '__expr__';
     });
-    expect(expressionQueries).toEqual([
+    expect(tempoRequestQueries).toContainEqual(expect.objectContaining({tableType: 'spans'}));
+    expect(tempoRequestQueries).not.toContainEqual(
+      expect.objectContaining({datasource: expect.objectContaining({type: '__expr__'})}),
+    );
+    expect(expressionQueries).toHaveLength(1);
+    expect(expressionRequestQueries).toEqual([
+      expect.objectContaining({metricsQueryType: 'range', refId: 'P13T0', tableType: 'traces'}),
+      expect.objectContaining({metricsQueryType: 'range', refId: 'P13T1', tableType: 'traces'}),
       expect.objectContaining({
         datasource: {type: '__expr__', uid: '__expr__'},
         expression: '$P13T0 / ($P13T1 + ($P13T1 == 0)) * 100',
@@ -286,14 +313,28 @@ describe('direct Grafana dashboard provisioning', () => {
         type: 'math',
       }),
     ]);
-    for (const refId of ['P13T0', 'P13T1']) {
-      expect(verificationQueries).toContainEqual(
-        expect.objectContaining({
-          datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
-          metricsQueryType: 'range',
-          refId,
-        }),
-      );
+    expect(expressionRequestQueries).not.toContainEqual(expect.objectContaining({tableType: 'spans'}));
+
+    const allTempoQueries = [...tempoRequestQueries, ...expressionRequestQueries].filter(query => {
+      const datasource = query.datasource as Readonly<Record<string, JsonValue>>;
+      return datasource.type === 'tempo';
+    });
+    const expectedTempoReferences = collected.map(({panelId, targetIndex}) => `P${panelId}T${targetIndex}`);
+    const actualTempoReferences = allTempoQueries.map(query => query.refId as string);
+    expect(actualTempoReferences).toHaveLength(expectedTempoReferences.length);
+    expect(new Set(actualTempoReferences).size).toBe(expectedTempoReferences.length);
+    expect([...actualTempoReferences].sort()).toEqual([...expectedTempoReferences].sort());
+    const actualReferences = requests.flatMap(request => requestQueries(request).map(query => query.refId as string));
+    expect(actualReferences).toHaveLength(collected.length + 1);
+    expect(new Set(actualReferences).size).toBe(actualReferences.length);
+    for (const query of allTempoQueries) {
+      expect(query).toMatchObject({
+        datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
+        intervalMs: 300_000,
+        limit: 1,
+        maxDataPoints: 1,
+        spanLimit: 1,
+      });
     }
   });
 
@@ -776,34 +817,54 @@ describe('direct Grafana dashboard provisioning', () => {
         }
         if (url.includes('/apis/folder.grafana.app/')) return Response.json(liveFolder());
         if (url.endsWith('/permissions')) return Response.json([]);
-        return Response.json(successfulQueryResponse(resource));
+        return Response.json(successfulQueryResponse(queryRequestFromBody(init?.body)));
       },
       namespace: testGrafanaNamespace,
       resource,
       token: 'read-only-token',
     });
-    expect(requests.map(request => request.method ?? 'GET')).toEqual(['GET', 'GET', 'GET', 'GET', 'POST']);
-    expect(requests.at(-1)?.url).toBe(`${testGrafanaUrl}/api/ds/query`);
+    expect(requests.map(request => request.method ?? 'GET')).toEqual(['GET', 'GET', 'GET', 'GET', 'POST', 'POST']);
+    const queryPosts = requests.filter(request => request.method === 'POST');
+    expect(queryPosts).toHaveLength(2);
+    expect(queryPosts.every(request => request.url === `${testGrafanaUrl}/api/ds/query`)).toBe(true);
   });
 
-  it('fails closed when any bounded Tempo query result is absent', async () => {
+  it.each([
+    ['missing', 0],
+    ['error', 0],
+    ['missing', 1],
+    ['error', 1],
+  ] as const)('fails closed on a %s result in query request %i', async (failure, failedRequestIndex) => {
     const resource = readDashboardArtifact();
+    let queryRequestIndex = 0;
     await expect(
       verifyLiveDashboard({
         baseUrl: testGrafanaUrl,
-        fetcher: async input => {
+        fetcher: async (input, init) => {
           const url = String(input);
           if (url.endsWith('/api/access-control/user/permissions')) return Response.json(readerPermissions());
           if (url.includes('/apis/dashboard.grafana.app/')) return Response.json(liveDashboard(resource));
           if (url.includes('/apis/folder.grafana.app/')) return Response.json(liveFolder());
           if (url.endsWith('/permissions')) return Response.json([]);
-          return Response.json({results: {}});
+          const request = queryRequestFromBody(init?.body);
+          const response = successfulQueryResponse(request) as {
+            results: Record<string, {error?: string; frames: unknown[]}>;
+          };
+          const requestIndex = queryRequestIndex;
+          queryRequestIndex += 1;
+          if (requestIndex === failedRequestIndex) {
+            const firstReference = requestQueries(request)[0]!.refId as string;
+            if (failure === 'missing') delete response.results[firstReference];
+            else response.results[firstReference] = {error: 'rejected', frames: []};
+          }
+          return Response.json(response);
         },
         namespace: testGrafanaNamespace,
         resource,
         token: 'read-only-token',
       }),
     ).rejects.toThrow(/rejected \d+ bounded dashboard query targets/u);
+    expect(queryRequestIndex).toBe(failedRequestIndex + 1);
   });
 
   it('accepts only an explicit Grafana Cloud stack namespace', () => {

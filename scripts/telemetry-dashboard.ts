@@ -438,24 +438,36 @@ export function assessDashboardThreeWay(
   throw new ScriptError('Live Grafana dashboard drifted from the current and trusted historical canonical artifacts.');
 }
 
-export function buildTempoQueryRequest(resource: DashboardArtifact, now = Date.now()): JsonValue {
-  const queries: JsonObject[] = collectTempoQueries(resource).map(({panelId, target, targetIndex}) => ({
-    ...target,
-    datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
-    intervalMs: 300_000,
-    limit: 1,
-    maxDataPoints: 1,
-    refId: `P${panelId}T${targetIndex}`,
-    spanLimit: 1,
-  }));
+export function buildTempoQueryRequests(resource: DashboardArtifact, now = Date.now()): readonly JsonValue[] {
+  const tempoQueries: JsonObject[] = [];
+  const expressionQueries: JsonObject[] = [];
+  for (const {panelId, target, targetIndex} of collectTempoQueries(resource)) {
+    const query: JsonObject = {
+      ...target,
+      datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
+      intervalMs: 300_000,
+      limit: 1,
+      maxDataPoints: 1,
+      refId: `P${panelId}T${targetIndex}`,
+      spanLimit: 1,
+    };
+    (panelId === 13 ? expressionQueries : tempoQueries).push(query);
+  }
   const expression = unexpectedFullBuildExpressionTarget(resource);
-  queries.push({
+  // Grafana routes every query sharing a request with __expr__ through expression evaluation. Keep that request to
+  // panel 13's time-series operands so spans-table targets in the pure Tempo request retain their native response path.
+  expressionQueries.push({
     ...expression,
     datasource: {type: '__expr__', uid: '__expr__'},
     expression: telemetryDashboardUnexpectedFullBuildExpression.replaceAll('$A', '$P13T0').replaceAll('$B', '$P13T1'),
     refId: 'P13T2',
   });
-  return {from: String(now - 5 * 60_000), queries, to: String(now)};
+  const from = String(now - 5 * 60_000);
+  const to = String(now);
+  return [
+    {from, queries: tempoQueries, to},
+    {from, queries: expressionQueries, to},
+  ];
 }
 
 function grafanaUrl(baseUrl: string, path: string): URL {
@@ -734,21 +746,22 @@ async function verifyTempoQueries(
   token: string,
   resource: DashboardArtifact,
 ): Promise<void> {
-  const request = buildTempoQueryRequest(resource);
-  const response = await fetchJson(
-    fetcher,
-    grafanaUrl(baseUrl, '/api/ds/query'),
-    token,
-    {body: JSON.stringify(request), method: 'POST'},
-    200,
-  );
-  const requestRecord = record(request, 'Grafana query request');
-  const queries = requestRecord.queries as readonly Readonly<Record<string, JsonValue>>[];
-  const errors = queryErrors(
-    response,
-    queries.map(query => query.refId as string),
-  );
-  if (errors.length > 0) throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query targets.`);
+  for (const request of buildTempoQueryRequests(resource)) {
+    const response = await fetchJson(
+      fetcher,
+      grafanaUrl(baseUrl, '/api/ds/query'),
+      token,
+      {body: JSON.stringify(request), method: 'POST'},
+      200,
+    );
+    const requestRecord = record(request, 'Grafana query request');
+    const queries = requestRecord.queries as readonly Readonly<Record<string, JsonValue>>[];
+    const errors = queryErrors(
+      response,
+      queries.map(query => query.refId as string),
+    );
+    if (errors.length > 0) throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query targets.`);
+  }
 }
 
 export async function verifyLiveDashboard(
