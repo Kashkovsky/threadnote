@@ -307,7 +307,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       benchmarkValidatedManagedReleaseMetadataSha256: '5'.repeat(64),
       benchmarkValidatedManagedRuntime: 'bun-1.3.14',
       benchmarkValidatedManagedTarget: 'darwin-arm64',
-      benchmarkValidatedManagedVersion: `4.0.0-beta.32.local.g${sourceCommit}`,
+      benchmarkValidatedManagedVersion: `4.3.1-local.g${sourceCommit}`,
       coldMaterializationStorageMode: 'direct-persistent',
       externalControlCount: 4,
       externalControlEvidence: JSON.stringify(controls),
@@ -336,9 +336,12 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       mcpOperationCount: 6,
       oneFileReindexMaterializationMode: 'incremental-overlay',
       oneFileReindexMaterializationStorageMode: 'temporary-staged',
-      releaseEvidenceRef: 'refs/tags/v4.0.0-beta.32',
+      releaseEvidenceRef: 'refs/tags/v4.3.1',
+      releaseEvidenceHarnessCommit: sourceCommit,
+      releaseEvidenceHarnessDeltaPaths: '[]',
       releaseEvidenceResolvedSha: sourceCommit,
       releaseEvidenceSha: sourceCommit,
+      releaseEvidenceSourceMode: 'exact-release',
       retrievalMode: 'lexical-only',
       runnerClass: 'local-unclassified',
       runnerIdentity: 'runner-0123456789abcdef',
@@ -1105,6 +1108,12 @@ describe('Threadnote 4 website content', () => {
         'credential metadata',
         fixture => {
           (fixture.metadata as Record<string, unknown>).runnerIdentity = 'token=github_pat_example';
+        },
+      ],
+      [
+        'release tag outside Threadnote 4',
+        fixture => {
+          (fixture.metadata as Record<string, unknown>).releaseEvidenceRef = 'refs/tags/v5.0.0';
         },
       ],
       [

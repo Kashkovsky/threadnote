@@ -225,6 +225,9 @@ describe('code graph release evidence', () => {
       ref: 'refs/tags/v4.0.0-beta.30',
       resolvedSha: commit,
       sha: commit,
+      harnessCommit: commit,
+      harnessDeltaPaths: '[]',
+      sourceMode: 'exact-release',
     });
     const sha256Commit = 'a'.repeat(64);
     expect(
@@ -243,7 +246,7 @@ describe('code graph release evidence', () => {
       /locally resolvable tag/,
     );
     expect(() => resolvedReleaseEvidenceSource('refs/tags/v4.0.0-beta.30', commit, commit, commit, true)).toThrow(
-      /clean checkout/,
+      /clean exact commit|clean descendant/,
     );
   });
 
@@ -261,9 +264,100 @@ describe('code graph release evidence', () => {
           ref,
           resolvedSha: commit,
           sha: commit,
+          harnessCommit: commit,
+          harnessDeltaPaths: '[]',
+          sourceMode: 'exact-release',
         });
       }),
       {numRuns: 250},
+    );
+  });
+
+  it('accepts a clean release descendant only when every runtime delta is a reviewed harness path', () => {
+    const releaseCommit = '0'.repeat(40);
+    const harnessCommit = '1'.repeat(40);
+    const reviewedPaths = ['scripts/benchmark-code-graph.ts', 'src/evaluation/external_evidence.ts'];
+
+    expect(
+      resolvedReleaseEvidenceSource(
+        'refs/tags/v4.3.1',
+        releaseCommit,
+        releaseCommit,
+        harnessCommit,
+        false,
+        reviewedPaths,
+        true,
+      ),
+    ).toEqual({
+      ref: 'refs/tags/v4.3.1',
+      resolvedSha: releaseCommit,
+      sha: releaseCommit,
+      harnessCommit,
+      harnessDeltaPaths: JSON.stringify(reviewedPaths),
+      sourceMode: 'release-plus-reviewed-harness-delta',
+    });
+    expect(() =>
+      resolvedReleaseEvidenceSource(
+        'refs/tags/v4.3.1',
+        releaseCommit,
+        releaseCommit,
+        harnessCommit,
+        false,
+        ['src/code_graph.ts'],
+        true,
+      ),
+    ).toThrow(/reviewed harness changes/);
+    expect(() =>
+      resolvedReleaseEvidenceSource(
+        'refs/tags/v4.3.1',
+        releaseCommit,
+        releaseCommit,
+        harnessCommit,
+        false,
+        reviewedPaths,
+        false,
+      ),
+    ).toThrow(/reviewed harness changes/);
+  });
+
+  it('accepts exactly the non-empty unique subsets of reviewed harness paths', () => {
+    const releaseCommit = '0'.repeat(40);
+    const harnessCommit = '1'.repeat(40);
+    const reviewedPaths = [
+      'scripts/benchmark-code-graph.ts',
+      'scripts/site-performance-evidence.ts',
+      'src/evaluation/external_evidence.ts',
+    ] as const;
+
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.constantFrom(...reviewedPaths), {maxLength: reviewedPaths.length, minLength: 1}),
+        paths => {
+          const result = resolvedReleaseEvidenceSource(
+            'refs/tags/v4.3.1',
+            releaseCommit,
+            releaseCommit,
+            harnessCommit,
+            false,
+            paths,
+            true,
+          );
+          expect(JSON.parse(result.harnessDeltaPaths)).toEqual([...paths].sort());
+          expect(result.sourceMode).toBe('release-plus-reviewed-harness-delta');
+          expect(() =>
+            resolvedReleaseEvidenceSource(
+              'refs/tags/v4.3.1',
+              releaseCommit,
+              releaseCommit,
+              harnessCommit,
+              false,
+              [...paths, 'src/code_graph.ts'],
+              true,
+            ),
+          ).toThrow(/reviewed harness changes/);
+        },
+      ),
+      {numRuns: 50},
     );
   });
 
@@ -1096,7 +1190,7 @@ describe('code graph release evidence', () => {
         benchmarkValidatedManagedReleaseMetadataSha256: 'e'.repeat(64),
         benchmarkValidatedManagedRuntime: 'bun-test',
         benchmarkValidatedManagedTarget: 'linux-x64',
-        benchmarkValidatedManagedVersion: `4.0.0.local.g${commit}`,
+        benchmarkValidatedManagedVersion: `4.0.0-beta.32-local.g${commit}`,
         coldMaterializationStorageMode: 'direct-persistent',
         externalQueryControlTimeoutMilliseconds: 120_000,
         externalControlCount: 4,
@@ -1126,8 +1220,11 @@ describe('code graph release evidence', () => {
         oneFileReindexMaterializationMode: 'incremental-overlay',
         oneFileReindexMaterializationStorageMode: 'temporary-staged',
         releaseEvidenceRef: 'refs/tags/v4.0.0-beta.32',
+        releaseEvidenceHarnessCommit: commit,
+        releaseEvidenceHarnessDeltaPaths: '[]',
         releaseEvidenceResolvedSha: commit,
         releaseEvidenceSha: commit,
+        releaseEvidenceSourceMode: 'exact-release',
         retrievalMode: 'lexical-only',
         sameOverlayReferenceMaterializationMode: 'full',
         sameOverlayReferenceMaterializationStorageMode: 'direct-persistent',
@@ -1150,6 +1247,23 @@ describe('code graph release evidence', () => {
 
     expect(() => assertExternalPerformanceEvidence(artifact)).not.toThrow();
     expect(() => validateRetainedPerformancePayload(artifact)).not.toThrow();
+    const harnessDeltaArtifact: BenchmarkArtifactV1 = {
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        releaseEvidenceHarnessCommit: artifact.environment.commit,
+        releaseEvidenceHarnessDeltaPaths: JSON.stringify([
+          'scripts/benchmark-code-graph.ts',
+          'scripts/site-performance-evidence.ts',
+          'src/evaluation/external_evidence.ts',
+        ]),
+        releaseEvidenceResolvedSha: 'f'.repeat(40),
+        releaseEvidenceSha: 'f'.repeat(40),
+        releaseEvidenceSourceMode: 'release-plus-reviewed-harness-delta',
+      },
+    };
+    expect(() => assertExternalPerformanceEvidence(harnessDeltaArtifact)).not.toThrow();
+    expect(() => validateRetainedPerformancePayload(harnessDeltaArtifact)).not.toThrow();
     const projected = retainedPerformanceArtifactFromHarness(artifact, {
       artifactSha256: 'f'.repeat(64),
       artifactUrl: '/performance/performance-evidence.json',
@@ -1395,8 +1509,11 @@ function benchmarkArtifact(
         ? {
             ...productionProfileArtifactMetadata(PRODUCTION_LARGE_CODE_GRAPH_PROFILE),
             releaseEvidenceRef: 'refs/tags/v4.0.0-beta.30',
+            releaseEvidenceHarnessCommit: commit,
+            releaseEvidenceHarnessDeltaPaths: '[]',
             releaseEvidenceResolvedSha: commit,
             releaseEvidenceSha: commit,
+            releaseEvidenceSourceMode: 'exact-release',
           }
         : {}),
       ...metadata,
