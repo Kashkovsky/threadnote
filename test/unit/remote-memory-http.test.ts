@@ -474,7 +474,7 @@ describe('remote memory HTTP transport', () => {
     expect(test.calls).toContain('read:request-123');
   });
 
-  it('reconstructs a 1 MB remote memory through revision-pinned pages within the declared budget', async () => {
+  it('reconstructs a 1 MB remote memory from structured-first revision-pinned pages within budget', async () => {
     const prefix = 'MEMORY\nkind: durable\n\nREMOTE_PRIVATE_SENTINEL\n';
     const content = `${prefix}${'x'.repeat(1_000_000 - prefix.length)}`;
     const test = fixture({readContent: content, trackRateLimits: true});
@@ -502,8 +502,9 @@ describe('remote memory HTTP transport', () => {
       };
       expect(result.isError, JSON.stringify(payload)).not.toBe(true);
       const blocks = result.content ?? [];
-      const pageContent = blocks[0]?.text ?? '';
       const structured = result.structuredContent ?? {};
+      const pageContent = typeof structured.content === 'string' ? structured.content : '';
+      expect(blocks[0]?.text).toBe(pageContent);
       const responseBytes =
         blocks.reduce(
           (total, block) => total + (block.type === 'text' ? Buffer.byteLength(block.text ?? '', 'utf8') : 0),
@@ -511,7 +512,6 @@ describe('remote memory HTTP transport', () => {
         ) + Buffer.byteLength(JSON.stringify(structured), 'utf8');
       expect(responseBytes).toBeLessThanOrEqual(budgetTokens * 3);
       expect(structured.estimatedTokens).toBe(Math.ceil(responseBytes / 3));
-      expect(structured).not.toHaveProperty('content');
       reconstructed.push(pageContent);
       if (structured.complete === true) {
         expect(structured.cursor).toBeUndefined();
@@ -525,7 +525,9 @@ describe('remote memory HTTP transport', () => {
     expect(reconstructed.join('')).toBe(content);
     expect(test.readInputs[0]).toEqual({uri});
     expect(test.readInputs.slice(1).every(input => input.revision === 'revision-1')).toBe(true);
-    expect(test.readInputs.length).toBeLessThanOrEqual(300);
+    // Both MCP result channels carry the page body, so the bounded 1 MB fixture needs
+    // roughly twice as many requests as the former metadata-only structured result.
+    expect(test.readInputs.length).toBeLessThanOrEqual(650);
     expect(test.calls.filter(call => call === 'rate:read_context')).toHaveLength(test.readInputs.length);
   }, 30_000);
 

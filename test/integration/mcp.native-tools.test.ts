@@ -26,8 +26,11 @@ interface ThreadnoteProgress {
 interface ReadPageStructuredContent {
   readonly budgetTokens: number;
   readonly complete: boolean;
+  readonly content: string;
   readonly cursor?: string;
   readonly estimatedTokens: number;
+  readonly resource: number;
+  readonly resourceCount: number;
   readonly type: 'threadnote-read-page';
 }
 
@@ -240,9 +243,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(tools.tools.find(tool => tool.name === 'recall_context')?.description).toContain(
           'unread threadnote:// pointers, not evidence',
         );
-        expect(tools.tools.find(tool => tool.name === 'read_context')?.description).toContain(
-          'no more than 1500 estimated tokens',
-        );
+        const readContext = tools.tools.find(tool => tool.name === 'read_context');
+        expect(readContext?.description).toContain('no more than 1500 estimated tokens');
+        expect(readContext?.description).toContain('pass cursor without uri, uris, mode, or section');
       },
       {toolset: null},
     );
@@ -821,7 +824,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
-  it('bounds read_context by default and reconstructs exact Unicode content through opaque continuations', async () => {
+  it('bounds read_context and reconstructs exact Unicode content for content- and structured-first clients', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/bounded-read.md';
@@ -832,7 +835,7 @@ describe('Threadnote MCP toolsets', () => {
         const reconstructed: string[] = [];
         let cursor: string | undefined;
         let previousCursor: string | undefined;
-        for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        for (let pageNumber = 0; pageNumber < 1_000; pageNumber += 1) {
           const result = await client.callTool(
             {
               arguments: cursor === undefined ? {budgetTokens, uri} : {budgetTokens, cursor},
@@ -843,8 +846,9 @@ describe('Threadnote MCP toolsets', () => {
           );
           expect(result.isError, JSON.stringify(result)).not.toBe(true);
           const output = Array.isArray(result.content) ? result.content : [];
-          const pageText = (output[0] as TextContent | undefined)?.text ?? '';
           const structured = result.structuredContent as ReadPageStructuredContent;
+          const pageText = structured.content;
+          expect((output[0] as TextContent | undefined)?.text).toBe(pageText);
           const responseBytes =
             output.reduce(
               (total, item) => total + (item.type === 'text' ? Buffer.byteLength(item.text, 'utf8') : 0),
@@ -863,7 +867,7 @@ describe('Threadnote MCP toolsets', () => {
           expect(structured.cursor).not.toContain('threadnote');
           previousCursor = cursor;
           cursor = structured.cursor;
-          if (pageNumber === 99) throw new TestError('Bounded read did not terminate.');
+          if (pageNumber === 999) throw new TestError('Bounded read did not terminate.');
         }
         expect(reconstructed.join('')).toBe(content);
 
@@ -877,6 +881,47 @@ describe('Threadnote MCP toolsets', () => {
       {toolset: 'core'},
     );
   }, 40_000);
+
+  it('advances read_context across repeated pages of one resource and then later resources', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const names = ['multi-one', 'multi-two', 'multi-three'] as const;
+        const uris = names.map(name => `threadnote://user/test-user/memories/durable/projects/threadnote/${name}.md`);
+        const contents = [
+          canonicalMemoryContent(names[0], `${'0123456789'.repeat(260)}first terminal`),
+          canonicalMemoryContent(names[1], 'second resource'),
+          canonicalMemoryContent(names[2], 'third resource'),
+        ];
+        for (const [index, name] of names.entries()) {
+          await writeCanonicalMemory(fixture.home, `${name}.md`, contents[index]!);
+        }
+
+        const resources: number[] = [];
+        const pages: string[] = [];
+        let cursor: string | undefined;
+        for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+          const result = await client.callTool({
+            arguments: cursor === undefined ? {budgetTokens: 1_500, uris} : {budgetTokens: 1_500, cursor},
+            name: 'read_context',
+          });
+          expect(result.isError, JSON.stringify(result)).not.toBe(true);
+          const output = Array.isArray(result.content) ? result.content : [];
+          const structured = result.structuredContent as ReadPageStructuredContent;
+          expect((output[0] as TextContent | undefined)?.text).toBe(structured.content);
+          resources.push(structured.resource);
+          pages.push(structured.content);
+          if (structured.complete) break;
+          cursor = structured.cursor;
+          if (pageNumber === 9) throw new TestError('Multi-resource read did not terminate.');
+        }
+
+        expect(resources).toEqual([1, 1, 2, 3]);
+        expect(pages[0]).not.toBe(pages[1]);
+        expect(pages.join('')).toBe(contents.join(''));
+      },
+      {toolset: 'core'},
+    );
+  });
 
   it('invalidates a read_context cursor when canonical content changes between pages', async () => {
     await withMcpClient(

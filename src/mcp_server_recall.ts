@@ -1185,13 +1185,15 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Paged at no more than 1500 estimated tokens; pass its cursor to continue.`,
+      description: `${description} Paged at no more than 1500 estimated tokens. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
       inputSchema: {
-        budgetTokens: McpInput.integer(undefined, {
+        budgetTokens: McpInput.integer('Whole-response budget; defaults to 1500 tokens', {
           minimum: MEMORY_READ_MINIMUM_BUDGET_TOKENS,
           maximum: MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
         }),
-        cursor: McpInput.string(),
+        cursor: McpInput.string(
+          'Opaque single-use continuation from the prior page; omit uri, uris, mode, and section when present',
+        ),
         mode: McpInput.literals(['content', 'outline']),
         section: McpInput.string(),
         uri: McpInput.string(),
