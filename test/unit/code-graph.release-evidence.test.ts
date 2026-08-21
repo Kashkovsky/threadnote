@@ -13,6 +13,7 @@ import {
   externalSamplerMeasurements,
   materializationStorageMeasurements,
   parseCodeGraphBenchmarkArguments,
+  performanceControlExpectedNodeLanguage,
   productionProfile,
   productionProfileArtifactMetadata,
   resolvedReleaseEvidenceSource,
@@ -29,6 +30,13 @@ const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budge
 const BETA30_STAGING_EVIDENCE = 'test/evaluation/baselines/code-graph-v1/beta30-staging-development.json';
 
 describe('code graph release evidence', () => {
+  it('maps the public Bazel control category to the graph node language', () => {
+    expect(performanceControlExpectedNodeLanguage('bazel-build')).toBe('starlark');
+    expect(performanceControlExpectedNodeLanguage('java')).toBe('java');
+    expect(performanceControlExpectedNodeLanguage('kotlin')).toBe('kotlin');
+    expect(performanceControlExpectedNodeLanguage('typescript')).toBe('typescript');
+  });
+
   it('scales the v2 monorepo surrogate without losing exact class accounting', () => {
     const profile = productionProfile(
       parseCodeGraphBenchmarkArguments([

@@ -4082,6 +4082,9 @@ function externalQueryControlParityMeasurements(
 
 const performanceControlMetadataKey = (language: string): string => (language === 'bazel-build' ? 'bazel' : language);
 
+export const performanceControlExpectedNodeLanguage = (language: string): string =>
+  language === 'bazel-build' ? 'starlark' : language;
+
 export function retainedExternalControlEvidence(
   controls: readonly ExternalRepositoryQueryControl[],
   coldResults: readonly ExternalQueryControlResult[],
@@ -4136,7 +4139,9 @@ function assertExternalQueryPositiveControl(
   readonly stableNodeId: string;
 } {
   const expectedNodes = result.nodes.filter(
-    node => node.path === expected.expectedPath && node.language === expected.expectedLanguage,
+    node =>
+      node.path === expected.expectedPath &&
+      node.language === performanceControlExpectedNodeLanguage(expected.expectedLanguage),
   );
   if (result.snapshot.id !== expected.expectedSnapshotId || result.nodes.length === 0 || expectedNodes.length === 0) {
     throw new ScriptError(
