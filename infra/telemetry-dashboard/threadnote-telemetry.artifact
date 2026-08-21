@@ -1667,7 +1667,6 @@
           }
         ],
         "title": "Automatic update results",
-        "transformations": [],
         "type": "timeseries"
       },
       {
