@@ -119,9 +119,12 @@ function permuteObjectKeys(value: unknown, choices: readonly number[], offset = 
   return Object.fromEntries(rotated.map(([key, item]) => [key, permuteObjectKeys(item, choices, offset)]));
 }
 
-function successfulQueryResponse(request: Readonly<Record<string, JsonValue>>): unknown {
+function grafanaQueryResponse(request: Readonly<Record<string, JsonValue>>): unknown {
   const queries = request.queries as readonly Readonly<Record<string, JsonValue>>[];
-  return {results: Object.fromEntries(queries.map(query => [query.refId, {frames: []}]))};
+  // Grafana executes hidden operands but omits their result entries from the server-side expression response.
+  return {
+    results: Object.fromEntries(queries.filter(query => query.hide !== true).map(query => [query.refId, {frames: []}])),
+  };
 }
 
 function queryRequests(resource: DashboardArtifact, now = Date.now()): readonly Readonly<Record<string, JsonValue>>[] {
@@ -304,8 +307,8 @@ describe('direct Grafana dashboard provisioning', () => {
     );
     expect(expressionQueries).toHaveLength(1);
     expect(expressionRequestQueries).toEqual([
-      expect.objectContaining({metricsQueryType: 'range', refId: 'P13T0', tableType: 'traces'}),
-      expect.objectContaining({metricsQueryType: 'range', refId: 'P13T1', tableType: 'traces'}),
+      expect.objectContaining({hide: false, metricsQueryType: 'range', refId: 'P13T0', tableType: 'traces'}),
+      expect.objectContaining({hide: false, metricsQueryType: 'range', refId: 'P13T1', tableType: 'traces'}),
       expect.objectContaining({
         datasource: {type: '__expr__', uid: '__expr__'},
         expression: '$P13T0 / ($P13T1 + ($P13T1 == 0)) * 100',
@@ -817,7 +820,7 @@ describe('direct Grafana dashboard provisioning', () => {
         }
         if (url.includes('/apis/folder.grafana.app/')) return Response.json(liveFolder());
         if (url.endsWith('/permissions')) return Response.json([]);
-        return Response.json(successfulQueryResponse(queryRequestFromBody(init?.body)));
+        return Response.json(grafanaQueryResponse(queryRequestFromBody(init?.body)));
       },
       namespace: testGrafanaNamespace,
       resource,
@@ -830,42 +833,52 @@ describe('direct Grafana dashboard provisioning', () => {
   });
 
   it.each([
-    ['missing', 0],
-    ['error', 0],
-    ['missing', 1],
-    ['error', 1],
-  ] as const)('fails closed on a %s result in query request %i', async (failure, failedRequestIndex) => {
-    const resource = readDashboardArtifact();
-    let queryRequestIndex = 0;
-    await expect(
-      verifyLiveDashboard({
-        baseUrl: testGrafanaUrl,
-        fetcher: async (input, init) => {
-          const url = String(input);
-          if (url.endsWith('/api/access-control/user/permissions')) return Response.json(readerPermissions());
-          if (url.includes('/apis/dashboard.grafana.app/')) return Response.json(liveDashboard(resource));
-          if (url.includes('/apis/folder.grafana.app/')) return Response.json(liveFolder());
-          if (url.endsWith('/permissions')) return Response.json([]);
-          const request = queryRequestFromBody(init?.body);
-          const response = successfulQueryResponse(request) as {
-            results: Record<string, {error?: string; frames: unknown[]}>;
-          };
-          const requestIndex = queryRequestIndex;
-          queryRequestIndex += 1;
-          if (requestIndex === failedRequestIndex) {
-            const firstReference = requestQueries(request)[0]!.refId as string;
-            if (failure === 'missing') delete response.results[firstReference];
-            else response.results[firstReference] = {error: 'rejected', frames: []};
-          }
-          return Response.json(response);
-        },
-        namespace: testGrafanaNamespace,
-        resource,
-        token: 'read-only-token',
-      }),
-    ).rejects.toThrow(/rejected \d+ bounded dashboard query targets/u);
-    expect(queryRequestIndex).toBe(failedRequestIndex + 1);
-  });
+    ['missing', 0, 0],
+    ['error', 0, 0],
+    ['missing', 1, 0],
+    ['missing', 1, 1],
+    ['missing', 1, 2],
+    ['error', 1, 0],
+  ] as const)(
+    'fails closed on a %s result in query request %i',
+    async (failure, failedRequestIndex, failedReferenceIndex) => {
+      const resource = readDashboardArtifact();
+      const failedReference = requestQueries(queryRequests(resource)[failedRequestIndex]!)[failedReferenceIndex]!
+        .refId as string;
+      let queryRequestIndex = 0;
+      await expect(
+        verifyLiveDashboard({
+          baseUrl: testGrafanaUrl,
+          fetcher: async (input, init) => {
+            const url = String(input);
+            if (url.endsWith('/api/access-control/user/permissions')) return Response.json(readerPermissions());
+            if (url.includes('/apis/dashboard.grafana.app/')) return Response.json(liveDashboard(resource));
+            if (url.includes('/apis/folder.grafana.app/')) return Response.json(liveFolder());
+            if (url.endsWith('/permissions')) return Response.json([]);
+            const request = queryRequestFromBody(init?.body);
+            const response = grafanaQueryResponse(request) as {
+              results: Record<string, {error?: string; frames?: unknown[]}>;
+            };
+            const requestIndex = queryRequestIndex;
+            queryRequestIndex += 1;
+            if (requestIndex === failedRequestIndex) {
+              if (failure === 'missing') delete response.results[failedReference];
+              else response.results[failedReference] = {error: 'rejected'};
+            }
+            return Response.json(response);
+          },
+          namespace: testGrafanaNamespace,
+          resource,
+          token: 'read-only-token',
+        }),
+      ).rejects.toThrow(
+        failure === 'missing'
+          ? `Grafana rejected 1 bounded dashboard query checks (${failedReference}:missing).`
+          : `Grafana rejected 2 bounded dashboard query checks (${failedReference}:error, ${failedReference}:frames).`,
+      );
+      expect(queryRequestIndex).toBe(failedRequestIndex + 1);
+    },
+  );
 
   it('accepts only an explicit Grafana Cloud stack namespace', () => {
     expect(validateGrafanaCloudNamespace(testGrafanaNamespace)).toBe(testGrafanaNamespace);
