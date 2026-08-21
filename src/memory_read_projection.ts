@@ -34,6 +34,8 @@ export interface MemoryReadCursorState {
 export interface MemoryReadPageStructuredContent {
   readonly budgetTokens: number;
   readonly complete: boolean;
+  /** Mirrors the text content block for MCP clients that surface only structured results. */
+  readonly content: string;
   readonly contentBytes: number;
   readonly cursor?: string;
   readonly estimatedTokens: number;
@@ -201,59 +203,66 @@ export function projectMemoryReadPage(
     {section, warnings: undefined},
     {section: undefined, warnings: undefined},
   ] as const;
+  const firstBoundary = unicodeBoundariesWithin(resource.text, position.characterOffset, 4)[1];
+  const minimumContent =
+    firstBoundary === undefined ? '' : resource.text.slice(position.characterOffset, firstBoundary);
   const responseOptions = responseOptionCandidates.find(candidate => {
-    const envelope = baseStructuredContent({
-      budgetTokens,
-      complete: false,
-      contentBytes: maximumBytes,
-      cursor: options.continuationCursor,
-      estimatedTokens: budgetTokens,
-      mode,
-      resourceCount: resources.length,
-      resourceIndex: position.resourceIndex,
-      section: candidate.section,
-      warnings: candidate.warnings,
-    });
-    return maximumBytes - utf8Bytes(receipt ?? '') - utf8Bytes(JSON.stringify(envelope)) >= 4;
+    const envelope = finalizedStructuredContent(
+      baseStructuredContent({
+        budgetTokens,
+        complete: false,
+        content: minimumContent,
+        contentBytes: utf8Bytes(minimumContent),
+        cursor: options.continuationCursor,
+        mode,
+        resourceCount: resources.length,
+        resourceIndex: position.resourceIndex,
+        section: candidate.section,
+        warnings: candidate.warnings,
+      }),
+      receipt,
+    );
+    return responseBytes(minimumContent, receipt, envelope) <= maximumBytes;
   }) ?? {section: undefined, warnings: undefined};
+
+  const structuredContentFor = (
+    content: string,
+    complete: boolean,
+    cursor: string | undefined,
+    responseReceipt: string | undefined,
+  ): MemoryReadPageStructuredContent =>
+    finalizedStructuredContent(
+      baseStructuredContent({
+        budgetTokens,
+        complete,
+        content,
+        contentBytes: utf8Bytes(content),
+        ...(cursor === undefined ? {} : {cursor}),
+        mode,
+        resourceCount: resources.length,
+        resourceIndex: position.resourceIndex,
+        section: responseOptions.section,
+        warnings: responseOptions.warnings,
+      }),
+      responseReceipt,
+    );
 
   const completeCandidate = resource.text.slice(position.characterOffset);
   const isLastResource = position.resourceIndex === resources.length - 1;
   if (isLastResource) {
-    const completeEnvelope = baseStructuredContent({
-      budgetTokens,
-      complete: true,
-      contentBytes: utf8Bytes(completeCandidate),
-      mode,
-      resourceCount: resources.length,
-      resourceIndex: position.resourceIndex,
-      section: responseOptions.section,
-      warnings: responseOptions.warnings,
-    });
-    const completed = finalizedStructuredContent(completeEnvelope, completeCandidate);
+    const completed = structuredContentFor(completeCandidate, true, undefined, undefined);
     if (responseBytes(completeCandidate, undefined, completed) <= maximumBytes) {
       return {complete: true, content: completeCandidate, structuredContent: completed, uri: resource.uri};
     }
   }
 
-  const conservativeEnvelope = baseStructuredContent({
-    budgetTokens,
-    complete: false,
-    contentBytes: maximumBytes,
-    cursor: options.continuationCursor,
-    estimatedTokens: budgetTokens,
-    mode,
-    resourceCount: resources.length,
-    resourceIndex: position.resourceIndex,
-    section: responseOptions.section,
-    warnings: responseOptions.warnings,
-  });
-  const availableContentBytes =
-    maximumBytes - utf8Bytes(receipt ?? '') - utf8Bytes(JSON.stringify(conservativeEnvelope));
-  if (availableContentBytes < 1) {
-    throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit the paging envelope.`);
-  }
-  const slice = utf8Prefix(resource.text, position.characterOffset, availableContentBytes);
+  const slice = largestFittingMemoryReadPrefix(
+    resource.text,
+    position.characterOffset,
+    maximumBytes,
+    receipt,
+    content => structuredContentFor(content, false, options.continuationCursor, receipt),
+  );
   if (slice.end === position.characterOffset && position.characterOffset < resource.text.length) {
     throw new MemoryReadProjectionError(`Memory read budgetTokens=${budgetTokens} cannot fit one Unicode character.`);
   }
@@ -264,18 +273,7 @@ export function projectMemoryReadPage(
   if (nextPosition.resourceIndex >= resources.length) {
     throw new MemoryReadProjectionError('Memory read projection produced an invalid terminal continuation.');
   }
-  const envelope = baseStructuredContent({
-    budgetTokens,
-    complete: false,
-    contentBytes: utf8Bytes(slice.text),
-    cursor: options.continuationCursor,
-    mode,
-    resourceCount: resources.length,
-    resourceIndex: position.resourceIndex,
-    section: responseOptions.section,
-    warnings: responseOptions.warnings,
-  });
-  const structuredContent = finalizedStructuredContent(envelope, slice.text, receipt);
+  const structuredContent = structuredContentFor(slice.text, false, options.continuationCursor, receipt);
   if (responseBytes(slice.text, receipt, structuredContent) > maximumBytes) {
     throw new MemoryReadProjectionError('Memory read projection exceeded its response budget.');
   }
@@ -287,6 +285,50 @@ export function projectMemoryReadPage(
     structuredContent,
     uri: resource.uri,
   };
+}
+
+function largestFittingMemoryReadPrefix(
+  value: string,
+  start: number,
+  maximumBytes: number,
+  receipt: string | undefined,
+  structuredContentFor: (content: string) => MemoryReadPageStructuredContent,
+): {readonly end: number; readonly text: string} {
+  const boundaries = unicodeBoundariesWithin(value, start, maximumBytes);
+  let lower = 0;
+  let upper = boundaries.length - 1;
+  let selected = 0;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const end = boundaries[middle]!;
+    const content = value.slice(start, end);
+    const structuredContent = structuredContentFor(content);
+    if (responseBytes(content, receipt, structuredContent) <= maximumBytes) {
+      selected = middle;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  const end = boundaries[selected]!;
+  return {end, text: value.slice(start, end)};
+}
+
+function unicodeBoundariesWithin(value: string, start: number, maximumBytes: number): number[] {
+  const boundaries = [start];
+  let bytes = 0;
+  let end = start;
+  while (end < value.length) {
+    const codePoint = value.codePointAt(end);
+    if (codePoint === undefined) break;
+    const width = codePoint > 0xffff ? 2 : 1;
+    const characterBytes = utf8Bytes(value.slice(end, end + width));
+    if (bytes + characterBytes > maximumBytes) break;
+    bytes += characterBytes;
+    end += width;
+    boundaries.push(end);
+  }
+  return boundaries;
 }
 
 export function memoryReadPageEstimatedTokens(page: MemoryReadPage): number {
@@ -383,6 +425,7 @@ function boundedWarnings(warnings: readonly string[] | undefined): string[] | un
 function baseStructuredContent(input: {
   readonly budgetTokens: number;
   readonly complete: boolean;
+  readonly content: string;
   readonly contentBytes: number;
   readonly cursor?: string;
   readonly estimatedTokens?: number;
@@ -395,6 +438,7 @@ function baseStructuredContent(input: {
   return {
     budgetTokens: input.budgetTokens,
     complete: input.complete,
+    content: input.content,
     contentBytes: input.contentBytes,
     ...(input.cursor === undefined ? {} : {cursor: input.cursor}),
     estimatedTokens: input.estimatedTokens ?? 0,
@@ -410,12 +454,11 @@ function baseStructuredContent(input: {
 
 function finalizedStructuredContent(
   input: MemoryReadPageStructuredContent,
-  content: string,
   receipt?: string,
 ): MemoryReadPageStructuredContent {
   let value = input;
   for (let iteration = 0; iteration < 4; iteration += 1) {
-    const next = {...value, estimatedTokens: estimatedTokens(responseBytes(content, receipt, value))};
+    const next = {...value, estimatedTokens: estimatedTokens(responseBytes(value.content, receipt, value))};
     if (next.estimatedTokens === value.estimatedTokens) return next;
     value = next;
   }

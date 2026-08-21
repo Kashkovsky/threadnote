@@ -29,7 +29,8 @@ describe('bounded memory read projection', () => {
               continuationCursor: memoryReadCursorToken('deterministic-property-cursor'),
               ...(position === undefined ? {} : {position}),
             });
-            reconstructed.push(page.content);
+            expect(page.structuredContent.content).toBe(page.content);
+            reconstructed.push(page.structuredContent.content);
             expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(budgetTokens);
             expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
             if (page.complete) break;
@@ -53,6 +54,51 @@ describe('bounded memory read projection', () => {
     expect(projectMemoryReadPage(resources, options)).toEqual(projectMemoryReadPage(resources, options));
   });
 
+  it('reports measured response tokens instead of the allotted budget for a short complete page', () => {
+    const page = projectMemoryReadPage([{text: 'short evidence', uri: 'threadnote://test/short.md'}], {
+      budgetTokens: 1_500,
+      continuationCursor: memoryReadCursorToken('short-page-cursor'),
+    });
+
+    expect(page.complete).toBe(true);
+    expect(page.structuredContent.content).toBe('short evidence');
+    expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
+    expect(page.structuredContent.estimatedTokens).toBeLessThan(page.structuredContent.budgetTokens);
+  });
+
+  it('mirrors a complete outline with its measured response budget', () => {
+    const page = projectMemoryReadPage(
+      [{text: '# Root\nintro\n## Details\nevidence\n', uri: 'threadnote://test/outline.md'}],
+      {
+        budgetTokens: 400,
+        continuationCursor: memoryReadCursorToken('outline-page-cursor'),
+        mode: 'outline',
+      },
+    );
+
+    expect(page.complete).toBe(true);
+    expect(page.content).toContain('## Details');
+    expect(page.structuredContent.content).toBe(page.content);
+    expect(page.structuredContent.estimatedTokens).toBe(memoryReadPageEstimatedTokens(page));
+    expect(page.structuredContent.estimatedTokens).toBeLessThan(page.structuredContent.budgetTokens);
+  });
+
+  it('drops optional metadata before rejecting a leading four-byte Unicode scalar at minimum budget', () => {
+    const page = projectMemoryReadPage(
+      [{text: `🙂${'bounded evidence\n'.repeat(100)}`, uri: 'threadnote://test/minimum-budget.md'}],
+      {
+        budgetTokens: 128,
+        continuationCursor: memoryReadCursorToken('minimum-budget-cursor'),
+        warnings: ['optional warning '.repeat(100)],
+      },
+    );
+
+    expect(page.content.startsWith('🙂')).toBe(true);
+    expect(page.structuredContent.content).toBe(page.content);
+    expect(page.structuredContent.warnings).toBeUndefined();
+    expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(128);
+  });
+
   it('retrieves a 100k-character memory exactly through bounded successive pages', () => {
     const content = `${'🙂漢字 bounded memory\n'.repeat(5_000)}terminal`;
     expect(content.length).toBeGreaterThan(100_000);
@@ -65,7 +111,8 @@ describe('bounded memory read projection', () => {
         continuationCursor: memoryReadCursorToken('large-memory-cursor'),
         ...(position === undefined ? {} : {position}),
       });
-      reconstructed.push(page.content);
+      expect(page.structuredContent.content).toBe(page.content);
+      reconstructed.push(page.structuredContent.content);
       if (page.complete) break;
       position = page.nextPosition;
       if (pageNumber === 999) throw new Error('Large memory pagination did not terminate.');

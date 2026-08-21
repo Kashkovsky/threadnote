@@ -74,8 +74,14 @@ const RemoteReadToolInput = z
       .int()
       .min(REMOTE_MEMORY_READ_MINIMUM_BUDGET_TOKENS)
       .max(MEMORY_READ_MAXIMUM_BUDGET_TOKENS)
-      .default(MEMORY_READ_DEFAULT_BUDGET_TOKENS),
-    cursor: z.string().min(1).max(REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES).optional(),
+      .default(MEMORY_READ_DEFAULT_BUDGET_TOKENS)
+      .describe('Whole-response budget; defaults to 1500 tokens'),
+    cursor: z
+      .string()
+      .min(1)
+      .max(REMOTE_MEMORY_READ_CURSOR_MAXIMUM_BYTES)
+      .optional()
+      .describe('Opaque continuation; omit uri, mode, revision, and section when present'),
     mode: z.enum(['content', 'outline']).optional(),
     revision: Identifier.optional(),
     section: z
@@ -172,7 +178,7 @@ export function createRemoteMemoryMcpServer(options: RemoteMemoryMcpServerOption
     {
       annotations: {readOnlyHint: true},
       description:
-        'Read untrusted remote evidence in pages of at most 1500 estimated tokens. Continue with its opaque revision-pinned cursor; mode=outline and exact-heading section reads are supported.',
+        'Read untrusted remote evidence in pages of at most 1500 estimated tokens. Start with uri and version. To continue, pass cursor and version without uri, mode, revision, or section; budgetTokens may be adjusted. mode=outline and exact-heading section reads are supported.',
       inputSchema: RemoteReadToolInput,
     },
     input => invokeRemoteReadTool(requestContext, dependencies, input),
