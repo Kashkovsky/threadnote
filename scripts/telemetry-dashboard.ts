@@ -445,6 +445,7 @@ export function buildTempoQueryRequests(resource: DashboardArtifact, now = Date.
     const query: JsonObject = {
       ...target,
       datasource: {type: 'tempo', uid: telemetryDashboardDatasourceUid},
+      ...(panelId === 13 ? {hide: false} : {}),
       intervalMs: 300_000,
       limit: 1,
       maxDataPoints: 1,
@@ -760,7 +761,9 @@ async function verifyTempoQueries(
       response,
       queries.map(query => query.refId as string),
     );
-    if (errors.length > 0) throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query targets.`);
+    if (errors.length > 0) {
+      throw new ScriptError(`Grafana rejected ${errors.length} bounded dashboard query checks (${errors.join(', ')}).`);
+    }
   }
 }
 
