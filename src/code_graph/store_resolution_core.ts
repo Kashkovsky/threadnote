@@ -487,18 +487,14 @@ function decodePersistedReferenceCandidateRows(
   });
 }
 
-/**
- * Retain only lookup keys shared by distinct references in the current page.
- * The resolver uses this exact bounded set to carry summaries into the next
- * page; repeated tiers for one reference do not make a key hot.
- */
-export function codeGraphRetainRepeatedLookupKeysStatement(): string {
-  return `INSERT INTO activation_resolution_retained_lookup_key (lookup_key)
-    SELECT lookup_key
-    FROM activation_resolution_candidate_page
-    GROUP BY lookup_key
-    HAVING MIN(edge_id) <> MAX(edge_id)
-    ORDER BY lookup_key`;
+/** Retain exactly the preceding lookup summaries requested by the current page. */
+export function codeGraphPruneLookupSummariesStatement(): string {
+  return `DELETE FROM activation_resolution_lookup_page
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM activation_resolution_candidate_page AS candidate
+      WHERE candidate.lookup_key = activation_resolution_lookup_page.lookup_key
+    )`;
 }
 
 /** @internal Exposed so regression tests can verify the SQLite access plan. */

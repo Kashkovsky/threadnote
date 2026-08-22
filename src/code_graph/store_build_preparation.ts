@@ -79,9 +79,9 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
   }
   // Persistent full builds keep repository-sized facts in durable tables.
   // Their connection-private tables are bounded to the current resolution page
-  // plus lookup keys shared by distinct references in the preceding page, so
-  // retaining those small B-trees in memory avoids temp-file pager and journal
-  // I/O without risking repository-proportional RSS.
+  // plus the immediately preceding page's lookup summaries. Retaining those
+  // small B-trees in memory avoids temp-file pager and journal I/O without
+  // risking repository-proportional RSS.
   yield* sql.unsafe('PRAGMA temp_store = MEMORY');
   yield* configureReconstructibleBuildDurability(sql);
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
@@ -264,15 +264,9 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
       PRIMARY KEY (lookup_key, resolution_domain)
     ) WITHOUT ROWID
   `);
-  yield* sql.unsafe(`
-    CREATE TEMP TABLE IF NOT EXISTS activation_resolution_retained_lookup_key (
-      lookup_key TEXT PRIMARY KEY
-    ) WITHOUT ROWID
-  `);
   yield* sql.unsafe('DELETE FROM activation_resolution_reference_page');
   yield* sql.unsafe('DELETE FROM activation_resolution_candidate_page');
   yield* sql.unsafe('DELETE FROM activation_resolution_lookup_page');
-  yield* sql.unsafe('DELETE FROM activation_resolution_retained_lookup_key');
   yield* prepareAnalysisResolutionTables(sql);
   yield* sql.unsafe('DELETE FROM activation_state');
   yield* sql`

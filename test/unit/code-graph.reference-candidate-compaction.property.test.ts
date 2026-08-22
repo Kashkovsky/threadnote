@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   codeGraphPersistentReferencePageStatement,
-  codeGraphRetainRepeatedLookupKeysStatement,
+  codeGraphPruneLookupSummariesStatement,
 } from '../../src/code_graph/store.js';
 
 interface CandidateMetadata {
@@ -90,9 +90,33 @@ describe('persistent reference candidate compaction', () => {
     }
   });
 
-  it('retains exactly keys shared by distinct references regardless of candidate order', () => {
+  it('prunes prior summaries through lookup-key primary-key probes', () => {
+    const database = lookupSummaryDatabase();
+    try {
+      const plan = database
+        .query(`EXPLAIN QUERY PLAN ${codeGraphPruneLookupSummariesStatement()}`)
+        .all()
+        .map(row => (row as {readonly detail: string}).detail);
+      expect(plan).toContain('SEARCH candidate USING PRIMARY KEY (lookup_key=?)');
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('retains exactly prior summaries requested by the current page regardless of candidate order', () => {
     fc.assert(
       fc.property(
+        fc.uniqueArray(
+          fc.record({
+            domain: fc.stringMatching(/^[x-z]{1,3}$/u),
+            lookupKey: fc.stringMatching(/^[a-f]{1,5}$/u),
+            symbolCount: fc.integer({max: 5, min: 0}),
+          }),
+          {
+            maxLength: 300,
+            selector: row => `${row.lookupKey}\0${row.domain}`,
+          },
+        ),
         fc.uniqueArray(
           fc.record({
             edgeId: fc.integer({max: 30, min: 0}).map(index => `edge-${index}`),
@@ -104,11 +128,16 @@ describe('persistent reference candidate compaction', () => {
             selector: row => `${row.lookupKey}\0${row.edgeId}\0${row.tier}`,
           },
         ),
-        candidates => {
-          const expected = repeatedLookupKeys(candidates);
-          expect(retainedLookupKeys(candidates)).toEqual(expected);
-          expect(retainedLookupKeys([...candidates].reverse())).toEqual(expected);
-          expect(expected.length).toBeLessThanOrEqual(Math.floor(candidates.length / 2));
+        (summaries, candidates) => {
+          const currentKeys = new Set(candidates.map(candidate => candidate.lookupKey));
+          const expected = summaries
+            .filter(summary => currentKeys.has(summary.lookupKey))
+            .sort(
+              (left, right) => left.lookupKey.localeCompare(right.lookupKey) || left.domain.localeCompare(right.domain),
+            );
+          expect(prunedLookupSummaries(summaries, candidates)).toEqual(expected);
+          expect(prunedLookupSummaries(summaries, [...candidates].reverse())).toEqual(expected);
+          expect(expected.length).toBeLessThanOrEqual(summaries.length);
         },
       ),
       {numRuns: 200},
@@ -122,49 +151,60 @@ interface LookupCandidate {
   readonly tier: number;
 }
 
-function retainedLookupKeys(candidates: readonly LookupCandidate[]): readonly string[] {
-  const database = new Database(':memory:', {strict: true});
+interface LookupSummary {
+  readonly domain: string;
+  readonly lookupKey: string;
+  readonly symbolCount: number;
+}
+
+function prunedLookupSummaries(
+  summaries: readonly LookupSummary[],
+  candidates: readonly LookupCandidate[],
+): readonly LookupSummary[] {
+  const database = lookupSummaryDatabase();
   try {
-    database.exec(`
-      CREATE TEMP TABLE activation_resolution_candidate_page (
-        lookup_key TEXT NOT NULL,
-        edge_id TEXT NOT NULL,
-        tier INTEGER NOT NULL,
-        PRIMARY KEY (lookup_key, edge_id, tier)
-      ) WITHOUT ROWID;
-      CREATE TEMP TABLE activation_resolution_retained_lookup_key (
-        lookup_key TEXT PRIMARY KEY
-      ) WITHOUT ROWID
-    `);
-    const insert = database.prepare(
+    const insertCandidate = database.prepare(
       'INSERT INTO activation_resolution_candidate_page (lookup_key, edge_id, tier) VALUES (?, ?, ?)',
     );
+    const insertSummary = database.prepare(
+      `INSERT INTO activation_resolution_lookup_page (lookup_key, resolution_domain, symbol_count)
+       VALUES (?, ?, ?)`,
+    );
     database.transaction(() => {
-      for (const candidate of candidates) insert.run(candidate.lookupKey, candidate.edgeId, candidate.tier);
+      for (const summary of summaries) insertSummary.run(summary.lookupKey, summary.domain, summary.symbolCount);
+      for (const candidate of candidates) insertCandidate.run(candidate.lookupKey, candidate.edgeId, candidate.tier);
     })();
-    database.exec(codeGraphRetainRepeatedLookupKeysStatement());
+    database.exec(codeGraphPruneLookupSummariesStatement());
     return database
-      .query<{readonly lookup_key: string}, []>(
-        'SELECT lookup_key FROM activation_resolution_retained_lookup_key ORDER BY lookup_key',
+      .query<{readonly lookup_key: string; readonly resolution_domain: string; readonly symbol_count: number}, []>(
+        `SELECT lookup_key, resolution_domain, symbol_count
+         FROM activation_resolution_lookup_page
+         ORDER BY lookup_key, resolution_domain`,
       )
       .all()
-      .map(row => row.lookup_key);
+      .map(row => ({domain: row.resolution_domain, lookupKey: row.lookup_key, symbolCount: row.symbol_count}));
   } finally {
     database.close(false);
   }
 }
 
-function repeatedLookupKeys(candidates: readonly LookupCandidate[]): readonly string[] {
-  const edgesByKey = new Map<string, Set<string>>();
-  for (const candidate of candidates) {
-    const edges = edgesByKey.get(candidate.lookupKey) ?? new Set<string>();
-    edges.add(candidate.edgeId);
-    edgesByKey.set(candidate.lookupKey, edges);
-  }
-  return [...edgesByKey]
-    .filter(([, edges]) => edges.size > 1)
-    .map(([key]) => key)
-    .sort();
+function lookupSummaryDatabase(): Database {
+  const database = new Database(':memory:', {strict: true});
+  database.exec(`
+    CREATE TEMP TABLE activation_resolution_candidate_page (
+      lookup_key TEXT NOT NULL,
+      edge_id TEXT NOT NULL,
+      tier INTEGER NOT NULL,
+      PRIMARY KEY (lookup_key, edge_id, tier)
+    ) WITHOUT ROWID;
+    CREATE TEMP TABLE activation_resolution_lookup_page (
+      lookup_key TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      symbol_count INTEGER NOT NULL,
+      PRIMARY KEY (lookup_key, resolution_domain)
+    ) WITHOUT ROWID
+  `);
+  return database;
 }
 
 function candidateDatabase(metadata: readonly CandidateMetadata[]): Database {

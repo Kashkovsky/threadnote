@@ -1590,7 +1590,7 @@ describe('code graph full-build materialization store', () => {
     expect(result.resolution.referencesExamined).toBeLessThanOrEqual(allEdges.length * 2);
   });
 
-  effectIt.effect('invalidates retained lookup summaries when a resolved reference publishes an alias', () =>
+  effectIt.effect('invalidates cached lookup summaries when a resolved reference publishes an alias', () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(materializationFixture);
       const targetKey = 'typescript:name:lookupCacheTarget';
@@ -1626,7 +1626,7 @@ describe('code graph full-build materialization store', () => {
       });
       const snapshot = {
         ...readySnapshot(fixture.identity, 4, 3),
-        id: 'retained-lookup-summary-alias-invalidation',
+        id: 'cached-lookup-summary-alias-invalidation',
       };
       const store = yield* CodeGraphStore;
       const result = yield* store.withSession(

@@ -27,7 +27,7 @@ import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
-  codeGraphRetainRepeatedLookupKeysStatement,
+  codeGraphPruneLookupSummariesStatement,
   codeGraphPersistentReferencePageStatement,
   decodePersistedReferenceCandidateRows,
   persistentFullReferencePageTotal,
@@ -475,19 +475,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       const batchEnd = pending.at(-1)!.edge_id;
       if (persistentFull && Option.isSome(persistentPage)) {
         yield* sql.unsafe('DELETE FROM activation_resolution_reference_page');
-        // Keep summaries only for keys shared by distinct references in the
-        // immediately preceding page. During this page the peak is therefore
-        // bounded by that hot subset plus the current page's summaries.
-        yield* sql.unsafe(`
-          DELETE FROM activation_resolution_lookup_page
-          WHERE NOT EXISTS (
-            SELECT 1
-            FROM activation_resolution_retained_lookup_key AS retained
-            WHERE retained.lookup_key = activation_resolution_lookup_page.lookup_key
-          )
-        `);
         yield* sql.unsafe('DELETE FROM activation_resolution_candidate_page');
-        yield* sql.unsafe('DELETE FROM activation_resolution_retained_lookup_key');
         yield* sql.unsafe(
           `INSERT INTO activation_resolution_reference_page (
              edge_id, resolution_domain, exported_only, relation, source_id
@@ -512,7 +500,12 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             candidateBatch.flat(),
           );
         }
-        yield* sql.unsafe(codeGraphRetainRepeatedLookupKeysStatement());
+        // Candidate rows are already key-ordered. Prune the preceding page's
+        // summaries only after staging this page so the retained set is the
+        // exact adjacent-page intersection rather than a frequency heuristic.
+        // Peak TEMP state remains bounded by one prior summary page plus one
+        // current candidate page.
+        yield* sql.unsafe(codeGraphPruneLookupSummariesStatement());
         yield* Effect.yieldNow;
         // Aggregate each requested lookup set once. Joining the edge-ordered
         // candidate surface directly to snapshot_symbol_lookup multiplied hot
@@ -559,8 +552,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
              ORDER BY lookup.lookup_key, lookup.resolution_domain`,
             [...requestedLookupKeys.map(row => row.lookup_key), persistentFull.snapshotId],
           );
-          // The empty-domain sentinel never joins a real reference, but lets a
-          // retained hot miss skip the durable lookup probe on the next page.
+          // The empty-domain sentinel never joins a real reference, but lets an
+          // adjacent-page miss skip the durable lookup probe on the next page.
           yield* sql.unsafe(
             `INSERT OR IGNORE INTO activation_resolution_lookup_page (
                lookup_key, resolution_domain, symbol_count,
