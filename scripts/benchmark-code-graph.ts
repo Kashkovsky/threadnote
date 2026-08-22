@@ -188,16 +188,16 @@ export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
   },
   'mmap-256m': {
     description: 'Isolates a 256 MiB main-database mmap window.',
-    tuning: {mainCacheKiB: 64 * 1_024, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 64, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 1_000},
   },
   'wal-checkpoint-8192': {
     description: 'Isolates an 8,192-page passive WAL auto-checkpoint cadence.',
-    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 8_192},
+    tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 8_192},
   },
   'building-normal-full-publication': {
     description: 'Uses NORMAL only for reconstructible full-build rows and restores FULL before publication.',
     tuning: {
-      mainCacheKiB: 64 * 1_024,
+      mainCacheKiB: 64,
       reconstructibleBuildSynchronous: 'normal',
       walAutoCheckpointPages: 1_000,
     },

@@ -339,6 +339,26 @@ describe('code graph external benchmark harness', () => {
     );
   });
 
+  it('keeps isolated SQLite writer candidates on the production cache baseline', () => {
+    const profiles = CODE_GRAPH_SQLITE_WRITER_PROFILES;
+
+    expect(profiles.current.tuning).toEqual({mainCacheKiB: 64, walAutoCheckpointPages: 1_000});
+    expect(profiles['mmap-256m'].tuning).toEqual({
+      mainCacheKiB: 64,
+      mmapSizeBytes: 256 * 1_024 * 1_024,
+      walAutoCheckpointPages: 1_000,
+    });
+    expect(profiles['wal-checkpoint-8192'].tuning).toEqual({
+      mainCacheKiB: 64,
+      walAutoCheckpointPages: 8_192,
+    });
+    expect(profiles['building-normal-full-publication'].tuning).toEqual({
+      mainCacheKiB: 64,
+      reconstructibleBuildSynchronous: 'normal',
+      walAutoCheckpointPages: 1_000,
+    });
+  });
+
   it('accepts only forced-no-reuse 10k embedding-context candidates', () => {
     for (const embeddingContexts of [1, 2, 4, 8] as const) {
       expect(
@@ -529,7 +549,7 @@ describe('code graph external benchmark harness', () => {
   it('requires effective PRAGMA readback and FULL-after-NORMAL publication ordering', () => {
     const connection = (benchmarkPhase: 'cold' | 'one-file-reindex' | 'same-overlay-reference') => ({
       benchmarkPhase,
-      cacheSizePragma: -64 * 1_024,
+      cacheSizePragma: -64,
       journalMode: 'wal',
       mmapSizeBytes: 0,
       phase: 'connection' as const,

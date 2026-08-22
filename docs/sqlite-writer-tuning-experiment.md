@@ -36,6 +36,10 @@ Repeat with one candidate at a time. Alternate control and candidate order to re
 bias. Treat each artifact's phase timings as one observation; repeat the control and any apparent winner at least
 three times before selecting a default.
 
+Every isolated profile retains the production 64 KiB writer cache and 1,000-page checkpoint baseline except for the
+single setting named by that profile. The cache profile changes only cache size; the combined profile is intentionally
+multi-variable. Verify this in each artifact's effective PRAGMA evidence before comparing timings.
+
 Compare at least:
 
 - cold and independent-full materialization wall and process CPU;
