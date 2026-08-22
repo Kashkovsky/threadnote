@@ -9,7 +9,6 @@ import {
 import {configureConnection} from './store_session.js';
 import {type CodeGraphProvenance, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
 import {
-  ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS,
   activationMode,
   type ActivationResolutionRow,
   assertPersistentBuildOwner,
@@ -28,13 +27,13 @@ import {
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
   codeGraphPersistentReferencePageStatement,
-  decodePersistedReferenceCandidateRows,
   persistentFullReferencePageTotal,
   persistentReferenceResolutionCapacityBoundary,
 } from './store_resolution_core.js';
+import {resolvePersistedFullReferencePage} from './store_resolution_matching.js';
 import {expandTransitiveReexportAliases} from './store_persistent_build.js';
 import {activationEdgeId, chunk, lookupDomain, parseLookupKeys, sqlTextOption} from './store_utilities.js';
-import {PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS, snapshotPromotionLeaseCapacity} from './store_staging_core.js';
+import {snapshotPromotionLeaseCapacity} from './store_staging_core.js';
 import {
   codeGraphWorktreeReconciliationSchemaCompatible,
   markSnapshotLeaseRetirementBaton,
@@ -465,171 +464,63 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           );
       if (pending.length === 0) break;
       const batchEnd = pending.at(-1)!.edge_id;
-      if (persistentFull && Option.isSome(persistentPage)) {
-        yield* sql.unsafe('DELETE FROM activation_resolution_reference_page');
-        yield* sql.unsafe('DELETE FROM activation_resolution_candidate_page');
-        yield* sql.unsafe('DELETE FROM activation_resolution_lookup_page');
-        yield* sql.unsafe(
-          `INSERT INTO activation_resolution_reference_page (
-             edge_id, resolution_domain, exported_only, relation, source_id
-           )
-           SELECT reference.edge_id, reference.resolution_domain, reference.exported_only,
-             edge.relation, edge.source_id
-           FROM building_references AS reference
-           CROSS JOIN edges AS edge
-             ON edge.snapshot_id = reference.snapshot_id AND edge.id = reference.edge_id
-           WHERE reference.snapshot_id = ?
-             AND reference.edge_id > ? AND reference.edge_id <= ?
-             AND edge.target_id IS NULL
-           ORDER BY reference.edge_id`,
-          [persistentFull.snapshotId, cursor, batchEnd],
-        );
-        yield* Effect.yieldNow;
-        const candidateRows = yield* decodePersistedReferenceCandidateRows(persistentPage.value);
-        for (const candidateBatch of chunk(candidateRows, ACTIVATION_REFERENCE_CANDIDATE_BATCH_ROWS)) {
-          yield* sql.unsafe(
-            `INSERT INTO activation_resolution_candidate_page (lookup_key, edge_id, tier)
-             VALUES ${candidateBatch.map(() => '(?, ?, ?)').join(', ')}`,
-            candidateBatch.flat(),
-          );
-        }
-        yield* Effect.yieldNow;
-        // Aggregate each requested lookup set once. Joining the edge-ordered
-        // candidate surface directly to snapshot_symbol_lookup multiplied hot
-        // names (for example language constructors) for every reference and
-        // turned a 5,000-reference page into minutes of random B-tree reads.
-        // The lookup-key-first page makes the durable scan sequential and the
-        // summary bounds all later work by page candidates, not raw fan-out.
-        let lookupCursor = '';
-        for (;;) {
-          const requestedLookupKeys = yield* sql.unsafe<{readonly lookup_key: string}>(
-            `SELECT lookup_key
-             FROM activation_resolution_candidate_page
-             WHERE lookup_key > ?
-             GROUP BY lookup_key
-             ORDER BY lookup_key
-             LIMIT ${PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS}`,
-            [lookupCursor],
-          );
-          if (requestedLookupKeys.length === 0) break;
-          yield* sql.unsafe(
-            `WITH requested(lookup_key) AS (
-               VALUES ${requestedLookupKeys.map(() => '(?)').join(', ')}
-             )
-             INSERT INTO activation_resolution_lookup_page (
-               lookup_key, resolution_domain, symbol_count,
-               minimum_symbol_id, maximum_symbol_id,
-               exported_symbol_count,
-               minimum_exported_symbol_id, maximum_exported_symbol_id
-             )
-             SELECT lookup.lookup_key, lookup.resolution_domain,
-               COUNT(*), MIN(lookup.symbol_id), MAX(lookup.symbol_id),
-               SUM(CASE WHEN lookup.exported = 1 THEN 1 ELSE 0 END),
-               MIN(CASE WHEN lookup.exported = 1 THEN lookup.symbol_id END),
-               MAX(CASE WHEN lookup.exported = 1 THEN lookup.symbol_id END)
-             FROM requested
-             CROSS JOIN snapshot_symbol_lookup AS lookup
-             WHERE lookup.snapshot_id = ? AND lookup.lookup_key = requested.lookup_key
-             GROUP BY lookup.lookup_key, lookup.resolution_domain
-             ORDER BY lookup.lookup_key, lookup.resolution_domain`,
-            [...requestedLookupKeys.map(row => row.lookup_key), persistentFull.snapshotId],
-          );
-          lookupCursor = requestedLookupKeys.at(-1)!.lookup_key;
-          yield* onProgress?.({
-            aliasesDiscovered,
-            elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
-            matchingMilliseconds: matchingMilliseconds + (yield* Clock.currentTimeMillis) - pageStartedAt,
-            pageCompleted,
-            pageTotal,
-            pagesCompleted,
-            pass,
-            referencesCompleted,
-            referencesExamined,
-            referencesTotal,
-            resolved,
-            transactionMilliseconds,
-            transactionStageMilliseconds: transactionStageMilliseconds(),
-          }) ?? Effect.void;
-          yield* Effect.yieldNow;
-        }
-      }
-      const candidateTable = persistentFull ? 'building_reference_candidates' : 'activation_reference_candidates';
-      const referenceTable = persistentFull ? 'building_references' : 'activation_references';
-      const edgeTable = persistentFull ? 'edges' : 'activation_edges';
-      const resolvedLookupTable = persistentFull ? 'snapshot_symbol_lookup' : 'activation_symbol_lookup';
-      const resolvedSymbolTable = persistentFull ? 'symbols' : 'activation_symbols';
-      const referenceSnapshotJoin = persistentFull ? 'reference.snapshot_id = ? AND' : '';
-      const edgeSnapshotJoin = persistentFull ? 'edge.snapshot_id = ? AND' : '';
-      const lookupSnapshotJoin = persistentFull ? 'lookup.snapshot_id = ? AND' : '';
-      const candidateSnapshotWhere = persistentFull ? 'candidate.snapshot_id = ? AND' : '';
-      const symbolSnapshotJoin = persistentFull ? 'symbol.snapshot_id = ? AND' : '';
-      const candidateMatchesCtes = persistentFull
-        ? `candidate_options AS (
-            SELECT candidate.edge_id, candidate.tier, candidate.lookup_key,
-              reference.relation, reference.source_id,
-              CASE WHEN reference.exported_only = 1
-                THEN lookup.exported_symbol_count ELSE lookup.symbol_count END AS symbol_count,
-              CASE WHEN reference.exported_only = 1
-                THEN lookup.minimum_exported_symbol_id ELSE lookup.minimum_symbol_id END AS minimum_symbol_id,
-              CASE WHEN reference.exported_only = 1
-                THEN lookup.maximum_exported_symbol_id ELSE lookup.maximum_symbol_id END AS maximum_symbol_id
-            FROM activation_resolution_candidate_page AS candidate
-            JOIN activation_resolution_reference_page AS reference
-              ON reference.edge_id = candidate.edge_id
-            JOIN activation_resolution_lookup_page AS lookup
-              ON lookup.lookup_key = candidate.lookup_key
-             AND lookup.resolution_domain = reference.resolution_domain
-          ),
-          filtered_candidates AS (
-            SELECT edge_id, tier, lookup_key,
-              symbol_count - CASE
-                WHEN relation = 'overrides' AND source_id IS NOT NULL
-                  AND (source_id = minimum_symbol_id OR source_id = maximum_symbol_id)
-                THEN 1 ELSE 0
-              END AS remaining_count,
-              CASE
-                WHEN symbol_count = 1 THEN minimum_symbol_id
-                WHEN relation = 'overrides' AND symbol_count = 2 AND source_id = minimum_symbol_id
-                  THEN maximum_symbol_id
-                WHEN relation = 'overrides' AND symbol_count = 2 AND source_id = maximum_symbol_id
-                  THEN minimum_symbol_id
-                ELSE minimum_symbol_id
-              END AS symbol_id
-            FROM candidate_options
-          ),
-          candidate_matches AS (
-            SELECT edge_id, tier, symbol_id,
-              CASE WHEN remaining_count > 1 THEN 1 ELSE 0 END AS ambiguous
-            FROM filtered_candidates
-            WHERE remaining_count > 0 AND symbol_id IS NOT NULL
-          )`
-        : `candidate_matches AS (
-            SELECT DISTINCT
-              candidate.edge_id,
-              candidate.tier,
-              lookup.symbol_id,
-              0 AS ambiguous
-            FROM ${candidateTable} AS candidate
-            CROSS JOIN ${referenceTable} AS reference
-              ON ${referenceSnapshotJoin} reference.edge_id = candidate.edge_id
-            CROSS JOIN ${edgeTable} AS edge
-              ON ${edgeSnapshotJoin} edge.id = candidate.edge_id AND edge.target_id IS NULL
-            CROSS JOIN ${resolvedLookupTable} AS lookup
-              ON ${lookupSnapshotJoin} lookup.lookup_key = candidate.lookup_key
-             AND lookup.resolution_domain = reference.resolution_domain
-             AND (reference.exported_only = 0 OR lookup.exported = 1)
-             AND (edge.relation <> 'overrides' OR lookup.symbol_id IS NOT edge.source_id)
-            WHERE ${candidateSnapshotWhere} candidate.edge_id > ? AND candidate.edge_id <= ?
-          )`;
-      const rows = persistedBaseSnapshotId
-        ? yield* (() => {
-            const statement = codeGraphPersistedDeltaResolutionPageStatement(persistedBaseSnapshotId, cursor, batchEnd);
-            return sql.unsafe<ResolvableActivationReferenceRow>(statement.text, statement.parameters);
-          })()
-        : yield* sql.unsafe<ResolvableActivationReferenceRow>(
-            `
+      const rows =
+        persistentFull && Option.isSome(persistentPage)
+          ? yield* resolvePersistedFullReferencePage(
+              sql,
+              persistentFull.snapshotId,
+              persistentPage.value,
+              cursor,
+              batchEnd,
+              () =>
+                Effect.gen(function* () {
+                  yield* onProgress?.({
+                    aliasesDiscovered,
+                    elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+                    matchingMilliseconds: matchingMilliseconds + (yield* Clock.currentTimeMillis) - pageStartedAt,
+                    pageCompleted,
+                    pageTotal,
+                    pagesCompleted,
+                    pass,
+                    referencesCompleted,
+                    referencesExamined,
+                    referencesTotal,
+                    resolved,
+                    transactionMilliseconds,
+                    transactionStageMilliseconds: transactionStageMilliseconds(),
+                  }) ?? Effect.void;
+                }),
+            )
+          : persistedBaseSnapshotId
+            ? yield* (() => {
+                const statement = codeGraphPersistedDeltaResolutionPageStatement(
+                  persistedBaseSnapshotId,
+                  cursor,
+                  batchEnd,
+                );
+                return sql.unsafe<ResolvableActivationReferenceRow>(statement.text, statement.parameters);
+              })()
+            : yield* sql.unsafe<ResolvableActivationReferenceRow>(
+                `
         WITH
-        ${candidateMatchesCtes},
+        candidate_matches AS (
+          SELECT DISTINCT
+            candidate.edge_id,
+            candidate.tier,
+            lookup.symbol_id,
+            0 AS ambiguous
+          FROM activation_reference_candidates AS candidate
+          CROSS JOIN activation_references AS reference
+            ON reference.edge_id = candidate.edge_id
+          CROSS JOIN activation_edges AS edge
+            ON edge.id = candidate.edge_id AND edge.target_id IS NULL
+          CROSS JOIN activation_symbol_lookup AS lookup
+            ON lookup.lookup_key = candidate.lookup_key
+           AND lookup.resolution_domain = reference.resolution_domain
+           AND (reference.exported_only = 0 OR lookup.exported = 1)
+           AND (edge.relation <> 'overrides' OR lookup.symbol_id IS NOT edge.source_id)
+          WHERE candidate.edge_id > ? AND candidate.edge_id <= ?
+        ),
         first_tiers AS (
           SELECT edge_id, MIN(tier) AS tier
           FROM candidate_matches
@@ -652,20 +543,14 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           symbol.kind AS symbol_kind,
           symbol.resolution_domain AS symbol_resolution_domain
         FROM unique_candidates AS candidate
-        CROSS JOIN ${edgeTable} AS edge ON ${edgeSnapshotJoin} edge.id = candidate.edge_id
-        CROSS JOIN ${referenceTable} AS reference
-          ON ${referenceSnapshotJoin} reference.edge_id = candidate.edge_id
-        CROSS JOIN ${resolvedSymbolTable} AS symbol ON ${symbolSnapshotJoin} symbol.id = candidate.symbol_id
+        CROSS JOIN activation_edges AS edge ON edge.id = candidate.edge_id
+        CROSS JOIN activation_references AS reference ON reference.edge_id = candidate.edge_id
+        CROSS JOIN activation_symbols AS symbol ON symbol.id = candidate.symbol_id
         ORDER BY candidate.edge_id
         LIMIT ${pageRows}
         `,
-            [
-              ...(persistentFull ? [] : [cursor, batchEnd]),
-              ...(persistentFull
-                ? [persistentFull.snapshotId, persistentFull.snapshotId, persistentFull.snapshotId]
-                : []),
-            ],
-          );
+                [cursor, batchEnd],
+              );
       matchingMilliseconds += (yield* Clock.currentTimeMillis) - pageStartedAt;
       cursor = batchEnd;
       const resolutions: ActivationResolutionRow[] = [];

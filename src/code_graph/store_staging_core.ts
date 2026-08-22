@@ -896,13 +896,6 @@ function parseTypeScriptPathNameLookupKey(value: string): {readonly name: string
   }
 }
 
-// A sampled 232k-file graph resolved a 5,000-reference page with roughly 80k
-// candidate matches in less than four seconds once persistent writes bypassed
-// row triggers. Keep connection-private/delta pages conservative, while clean
-// full-build pages are independently bounded by reference count, candidate
-// count, and encoded payload bytes before their lookup tiers are decoded.
-const PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS = 256;
-
 const REEXPORT_CLOSURE_SEED_PAGE_ROWS = 100;
 
 const REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS = 10_000;
@@ -972,7 +965,6 @@ export {
   stageActivationReferences,
   stageActivationMonikers,
   stageSnapshotMonikers,
-  PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS,
   REEXPORT_CLOSURE_SEED_PAGE_ROWS,
   REEXPORT_CLOSURE_PAGE_MAXIMUM_ROWS,
 };

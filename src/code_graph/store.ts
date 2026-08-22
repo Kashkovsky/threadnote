@@ -101,6 +101,14 @@ export {
   codeGraphPersistentReferencePageStatement,
   codeGraphPersistedDeltaResolutionPageStatement,
 } from './store_resolution_core.js';
+export {
+  codeGraphPersistentLookupMatchStatement,
+  resolvePersistedReferenceSelections,
+  type PersistedLookupPair,
+  type PersistedLookupSummary,
+  type PersistedReferenceResolutionInput,
+  type PersistedReferenceResolutionSelection,
+} from './store_resolution_matching.js';
 export {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
 export {type CodeGraphPersistentReferencePageLimits} from './store_staging_core.js';
 export {normalizedTerms, sanitizeCodeGraphStoreDiagnostic} from './store_utilities.js';

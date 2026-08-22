@@ -2218,6 +2218,64 @@ describe('code graph full-build materialization store', () => {
     expect(resumed.graph.edges).toEqual([unresolved]);
   });
 
+  effectIt.effect('aggregates an overflowing lookup pair without truncating an exported-only match', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => materializationFixture());
+      const lookupKey = 'typescript:name:highFanoutTarget';
+      const caller = symbol('high-fanout-caller', 'highFanoutCaller', ['typescript:name:highFanoutCaller']);
+      const candidates = Array.from({length: 10_002}, (_, index) => ({
+        ...symbol(`high-fanout-${String(index).padStart(5, '0')}`, `highFanout${index}`, [lookupKey]),
+        exported: index === 10_001,
+      }));
+      const target = candidates.at(-1)!;
+      const unresolved = edge('high-fanout-edge', caller, target.name);
+      const reference: CodeGraphReference = {
+        edgeId: unresolved.id,
+        evidencePath: fixture.file.path,
+        evidenceSpan: unresolved.evidenceSpan,
+        exportedOnly: true,
+        lookupTiers: [[lookupKey]],
+        provenance: 'syntactic',
+        relation: 'calls',
+        resolutionDomain: 'typescript',
+        sourceId: caller.id,
+        sourceName: caller.name,
+        targetName: unresolved.targetName,
+      };
+      const snapshot = {
+        ...readySnapshot(fixture.identity, candidates.length + 1, 1),
+        id: 'high-fanout-lookup-fallback',
+      };
+      const store = yield* CodeGraphStore;
+      const result = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+          yield* store.stageActivationFacts(
+            fixture.databasePath,
+            [caller, ...candidates],
+            [unresolved],
+            [reference],
+            undefined,
+            0,
+          );
+          const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+          return {graph: yield* store.loadGraph(fixture.databasePath, snapshot.id), resolution};
+        }),
+      );
+
+      expect(result.resolution.resolved).toBe(1);
+      expect(result.graph.edges).toEqual([
+        expect.objectContaining({provenance: 'resolved', targetId: target.id, targetName: target.name}),
+      ]);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it('keeps an oversized direct reference edge unresolved without persisting its candidates', async () => {
     const fixture = await materializationFixture();
     const caller = symbol('oversized-reference-caller', 'oversizedReferenceCaller', [
