@@ -1,5 +1,4 @@
-import {strToU8, unzlibSync, zlibSync} from 'fflate';
-import {sha256HexSync} from '../crypto/sha256.js';
+import {unzlibSync} from 'fflate';
 import {
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
   ensureBoundedCodeGraphFact,
@@ -14,6 +13,7 @@ export const CODE_GRAPH_STORED_FACT_MINIMUM_SAVINGS_BYTES = 256;
 export const CODE_GRAPH_STORED_FACT_MINIMUM_SAVINGS_RATIO = 0.1;
 
 const storedFactDecoder = new TextDecoder('utf-8', {fatal: true});
+const storedFactEncoder = new TextEncoder();
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 
@@ -43,16 +43,16 @@ export function encodeStoredCodeGraphFact(fact: BoundedCodeGraphFact): EncodedSt
   if (rawBytes < CODE_GRAPH_STORED_FACT_COMPRESSION_MINIMUM_BYTES) {
     return {codec: 'json', json: fact.json, rawBytes, storedBytes: rawBytes};
   }
-  const raw = strToU8(fact.json);
+  const raw = storedFactEncoder.encode(fact.json);
   if (raw.byteLength !== rawBytes) throw new Error('Code graph fact byte measurement changed before persistence.');
-  const payload = Buffer.from(zlibSync(raw, {level: CODE_GRAPH_STORED_FACT_COMPRESSION_LEVEL})).toString('base64');
+  const payload = Buffer.from(compressStoredFact(raw)).toString('base64');
   const envelope: StoredCodeGraphFactEnvelope = {
     codec: CODE_GRAPH_STORED_FACT_CODEC,
     path: fact.facts.path,
     pathOccurrences: serializedPathOccurrences(fact.json, fact.facts.path),
     payload,
     rawBytes,
-    sha256: sha256HexSync(raw),
+    sha256: storedFactSha256Hex(raw),
   };
   const json = JSON.stringify(envelope);
   const storedBytes = Buffer.byteLength(json, 'utf8');
@@ -85,8 +85,10 @@ export function decodeStoredCodeGraphFact(json: string, expectedPath?: string): 
     throw new Error('Stored code graph fact envelope path does not match its cache key.');
   }
   const compressed = decodeCanonicalBase64(parsed.payload);
+  // Keep the caller-owned output buffer: Bun's synchronous inflate API does
+  // not currently expose an equivalent decompressed-byte ceiling.
   const raw = unzlibSync(compressed, {out: new Uint8Array(parsed.rawBytes)});
-  if (raw.byteLength !== parsed.rawBytes || sha256HexSync(raw) !== parsed.sha256) {
+  if (raw.byteLength !== parsed.rawBytes || storedFactSha256Hex(raw) !== parsed.sha256) {
     throw new Error('Stored code graph fact envelope failed integrity validation.');
   }
   const bounded = ensureBoundedCodeGraphFact(JSON.parse(storedFactDecoder.decode(raw)) as CodeGraphFileFacts);
@@ -128,7 +130,7 @@ function isStoredCodeGraphFactEnvelope(value: unknown): value is StoredCodeGraph
     candidate.payload.length <= Math.ceil((CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM * 4) / 3) + 4 &&
     typeof candidate.rawBytes === 'number' &&
     Number.isSafeInteger(candidate.rawBytes) &&
-    candidate.rawBytes >= 0 &&
+    candidate.rawBytes >= CODE_GRAPH_STORED_FACT_COMPRESSION_MINIMUM_BYTES &&
     candidate.rawBytes <= CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM &&
     typeof candidate.sha256 === 'string' &&
     SHA256_HEX.test(candidate.sha256)
@@ -157,4 +159,23 @@ function serializedPathOccurrences(json: string, path: string): number {
     count += 1;
     offset = next + needle.length;
   }
+}
+
+function storedFactSha256Hex(value: Uint8Array): string {
+  return Bun.SHA256.hash(value, 'hex');
+}
+
+function compressStoredFact(raw: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+  // Bun's libdeflate path emits raw DEFLATE. Add the canonical level-3 zlib
+  // header and Adler-32 trailer so existing zlib-base64-v1 readers stay valid.
+  const body = Bun.deflateSync(raw, {
+    level: CODE_GRAPH_STORED_FACT_COMPRESSION_LEVEL,
+    library: 'libdeflate',
+  });
+  const output = new Uint8Array(body.byteLength + 6);
+  output[0] = 0x78;
+  output[1] = 0x5e;
+  output.set(body, 2);
+  new DataView(output.buffer).setUint32(output.byteLength - 4, Bun.hash.adler32(raw) >>> 0, false);
+  return output;
 }
