@@ -1897,6 +1897,13 @@ export class IndexPhaseTimeline {
   #materializedReferenceCandidates = 0;
   readonly #materializationStageMilliseconds = new Map<(typeof MATERIALIZATION_STAGES)[number], number>();
   #materializationStorage: IndexMaterializationStorageEvidence | undefined;
+  #referenceResolutionAliasesDiscovered = 0;
+  #referenceResolutionMatchingMilliseconds = 0;
+  #referenceResolutionPagesCompleted = 0;
+  #referenceResolutionPassesObserved = 0;
+  #referenceResolutionReferencesExamined = 0;
+  #referenceResolutionResolved = 0;
+  #referenceResolutionTransactionMilliseconds = 0;
   #sqliteDurableDatabaseHighWaterBytes = 0;
   #sqliteTemporaryDatabaseHighWaterBytes = 0;
 
@@ -1985,8 +1992,36 @@ export class IndexPhaseTimeline {
         if (progress.completed >= progress.total) this.#set('materializing:complete', at, telemetry);
         break;
       case 'resolving':
-        if (progress.subphase === 'references') this.#first('resolving:references', at, telemetry);
-        else this.#set('resolving:complete', at, telemetry);
+        if (progress.subphase === 'references') {
+          this.#first('resolving:references', at, telemetry);
+          if (progress.activity) {
+            this.#referenceResolutionAliasesDiscovered = Math.max(
+              this.#referenceResolutionAliasesDiscovered,
+              progress.activity.aliasesDiscovered,
+            );
+            this.#referenceResolutionMatchingMilliseconds = Math.max(
+              this.#referenceResolutionMatchingMilliseconds,
+              progress.activity.matchingMilliseconds,
+            );
+            this.#referenceResolutionPagesCompleted = Math.max(
+              this.#referenceResolutionPagesCompleted,
+              progress.activity.pagesCompleted,
+            );
+            this.#referenceResolutionPassesObserved = Math.max(
+              this.#referenceResolutionPassesObserved,
+              progress.activity.pass,
+            );
+            this.#referenceResolutionReferencesExamined = Math.max(
+              this.#referenceResolutionReferencesExamined,
+              progress.activity.referencesExamined,
+            );
+            this.#referenceResolutionResolved = Math.max(this.#referenceResolutionResolved, progress.activity.resolved);
+            this.#referenceResolutionTransactionMilliseconds = Math.max(
+              this.#referenceResolutionTransactionMilliseconds,
+              progress.activity.transactionMilliseconds,
+            );
+          }
+        } else this.#set('resolving:complete', at, telemetry);
         break;
       case 'activating':
         this.#maximumActivationTransactionMilliseconds = Math.max(
@@ -2090,6 +2125,34 @@ export class IndexPhaseTimeline {
 
   materializationStageMilliseconds(stage: (typeof MATERIALIZATION_STAGES)[number]): number | undefined {
     return this.#materializationStageMilliseconds.get(stage);
+  }
+
+  referenceResolutionAliasesDiscovered(): number {
+    return this.#referenceResolutionAliasesDiscovered;
+  }
+
+  referenceResolutionMatchingMilliseconds(): number {
+    return this.#referenceResolutionMatchingMilliseconds;
+  }
+
+  referenceResolutionPagesCompleted(): number {
+    return this.#referenceResolutionPagesCompleted;
+  }
+
+  referenceResolutionPassesObserved(): number {
+    return this.#referenceResolutionPassesObserved;
+  }
+
+  referenceResolutionReferencesExamined(): number {
+    return this.#referenceResolutionReferencesExamined;
+  }
+
+  referenceResolutionResolved(): number {
+    return this.#referenceResolutionResolved;
+  }
+
+  referenceResolutionTransactionMilliseconds(): number {
+    return this.#referenceResolutionTransactionMilliseconds;
   }
 
   sqliteTemporaryDatabaseHighWaterBytes(): number {
@@ -2232,6 +2295,27 @@ export function indexPhaseMeasurements(
     ]),
     benchmarkMeasurement(`${prefix}-reference-resolution`, 'milliseconds', [
       timeline.duration('resolving:references', 'resolving:complete'),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-matching-n1`, 'milliseconds', [
+      timeline.referenceResolutionMatchingMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-transactions-n1`, 'milliseconds', [
+      timeline.referenceResolutionTransactionMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-pages-n1`, 'count', [
+      timeline.referenceResolutionPagesCompleted(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-passes-n1`, 'count', [
+      timeline.referenceResolutionPassesObserved(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-references-examined-n1`, 'count', [
+      timeline.referenceResolutionReferencesExamined(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-resolved-n1`, 'count', [
+      timeline.referenceResolutionResolved(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-aliases-discovered-n1`, 'count', [
+      timeline.referenceResolutionAliasesDiscovered(),
     ]),
     benchmarkMeasurement(`${prefix}-resolved-fact-accounting`, 'milliseconds', [
       timeline.duration('resolving:complete', 'activating:validating-input'),

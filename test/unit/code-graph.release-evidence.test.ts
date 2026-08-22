@@ -67,6 +67,51 @@ describe('code graph release evidence', () => {
     });
   });
 
+  it('emits the resolver work split and cumulative cardinalities', () => {
+    const telemetry = {cpuSystemMicroseconds: 0, cpuUserMicroseconds: 0, peakRssBytes: 0, rssBytes: 0};
+    const timeline = new IndexPhaseTimeline(0n, telemetry);
+    timeline.observe(
+      {
+        activity: {
+          aliasesDiscovered: 13,
+          elapsedMilliseconds: 1_000,
+          matchingMilliseconds: 700,
+          pageCompleted: 2,
+          pageTotal: 2,
+          pagesCompleted: 5,
+          pass: 3,
+          referencesCompleted: 80,
+          referencesExamined: 240,
+          referencesTotal: 80,
+          resolved: 61,
+          transactionMilliseconds: 250,
+        },
+        phase: 'resolving',
+        subphase: 'references',
+      },
+      1_000_000_000n,
+      telemetry,
+    );
+    timeline.observe(
+      {edges: 240, phase: 'resolving', resolved: 61, subphase: 'complete', symbols: 179},
+      1_100_000_000n,
+      telemetry,
+    );
+
+    const measurements = new Map(
+      indexPhaseMeasurements('cold', timeline, false).map(measurement => [measurement.name, measurement.minimum]),
+    );
+    expect(Object.fromEntries([...measurements].filter(([name]) => name.includes('reference-resolution-')))).toEqual({
+      'cold-reference-resolution-aliases-discovered-n1': 13,
+      'cold-reference-resolution-matching-n1': 700,
+      'cold-reference-resolution-pages-n1': 5,
+      'cold-reference-resolution-passes-n1': 3,
+      'cold-reference-resolution-references-examined-n1': 240,
+      'cold-reference-resolution-resolved-n1': 61,
+      'cold-reference-resolution-transactions-n1': 250,
+    });
+  });
+
   it('maps the public Bazel control category to the graph node language', () => {
     expect(performanceControlExpectedNodeLanguage('bazel-build')).toBe('starlark');
     expect(performanceControlExpectedNodeLanguage('java')).toBe('java');
