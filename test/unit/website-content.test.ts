@@ -195,7 +195,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     harnessMeasurement('cold-materialized-file-rows', 'count', 90),
     harnessMeasurement('cold-materialized-symbol-rows', 'count', 1_000),
     harnessMeasurement('cold-materialized-edge-rows', 'count', 2_000),
-    harnessMeasurement('cold-materialization-deduplicated-reference-rows-n1', 'count', 500),
+    harnessMeasurement('cold-materialization-deduplicated-reference-rows-n1', 'count', 0),
     harnessMeasurement('cold-materialized-reference-candidate-rows-n1', 'count', 700),
     harnessMeasurement('cold-materialized-lookup-key-rows-n1', 'count', 3_000),
     harnessMeasurement('cold-materialized-lexical-term-rows', 'count', 10_000),
@@ -307,7 +307,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       benchmarkValidatedManagedReleaseMetadataSha256: '5'.repeat(64),
       benchmarkValidatedManagedRuntime: 'bun-1.3.14',
       benchmarkValidatedManagedTarget: 'darwin-arm64',
-      benchmarkValidatedManagedVersion: `4.0.0-beta.32.local.g${sourceCommit}`,
+      benchmarkValidatedManagedVersion: `4.3.1-local.g${sourceCommit}`,
       coldMaterializationStorageMode: 'direct-persistent',
       externalControlCount: 4,
       externalControlEvidence: JSON.stringify(controls),
@@ -336,9 +336,12 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
       mcpOperationCount: 6,
       oneFileReindexMaterializationMode: 'incremental-overlay',
       oneFileReindexMaterializationStorageMode: 'temporary-staged',
-      releaseEvidenceRef: 'refs/tags/v4.0.0-beta.32',
+      releaseEvidenceRef: 'refs/tags/v4.3.1',
+      releaseEvidenceHarnessCommit: sourceCommit,
+      releaseEvidenceHarnessDeltaPaths: '[]',
       releaseEvidenceResolvedSha: sourceCommit,
       releaseEvidenceSha: sourceCommit,
+      releaseEvidenceSourceMode: 'exact-release',
       retrievalMode: 'lexical-only',
       runnerClass: 'local-unclassified',
       runnerIdentity: 'runner-0123456789abcdef',
@@ -1000,7 +1003,8 @@ describe('Threadnote 4 website content', () => {
     expect(performancePage).toContain('aria-label={`Open the pinned');
     expect(performancePage).toContain('Threadnote 4.1 also gates large-worktree safety');
     expect(performancePage).toContain('never merged into a universal latency percentile');
-    expect(performancePage).toContain('deliberately makes no “maximum performance” claim');
+    expect(performancePage).toContain('The release-run adapter verified all');
+    expect(performancePage).toContain('source-mismatched evidence');
     expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
@@ -1065,6 +1069,7 @@ describe('Threadnote 4 website content', () => {
           generatedAt: '2026-08-02T20:00:00Z',
         },
         source: {threadnote: {commit: 'b'.repeat(40)}},
+        graph: {referenceCandidates: 700},
       },
     });
   });
@@ -1105,6 +1110,12 @@ describe('Threadnote 4 website content', () => {
         'credential metadata',
         fixture => {
           (fixture.metadata as Record<string, unknown>).runnerIdentity = 'token=github_pat_example';
+        },
+      ],
+      [
+        'release tag outside Threadnote 4',
+        fixture => {
+          (fixture.metadata as Record<string, unknown>).releaseEvidenceRef = 'refs/tags/v5.0.0';
         },
       ],
       [

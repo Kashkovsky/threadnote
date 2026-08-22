@@ -134,6 +134,12 @@ const CORE_REQUIRED_MEASUREMENTS = [
 
 export const EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS = CORE_REQUIRED_MEASUREMENTS;
 
+export const RELEASE_EVIDENCE_HARNESS_DELTA_PATHS = [
+  'scripts/benchmark-code-graph.ts',
+  'scripts/site-performance-evidence.ts',
+  'src/evaluation/external_evidence.ts',
+] as const;
+
 const RELEASE_SITE_REQUIRED_MEASUREMENTS = [
   {name: 'cold-index', unit: 'milliseconds'},
   {name: 'cold-registration-lock-and-database-setup', unit: 'milliseconds'},
@@ -200,8 +206,11 @@ export const EXTERNAL_PUBLIC_METADATA_KEYS = [
   'oneFileReindexMaterializationMode',
   'oneFileReindexMaterializationStorageMode',
   'releaseEvidenceRef',
+  'releaseEvidenceHarnessCommit',
+  'releaseEvidenceHarnessDeltaPaths',
   'releaseEvidenceResolvedSha',
   'releaseEvidenceSha',
+  'releaseEvidenceSourceMode',
   'retrievalMode',
   'runnerClass',
   'runnerIdentity',
@@ -221,9 +230,10 @@ export const EXTERNAL_PUBLIC_METADATA_KEYS = [
 ] as const;
 
 const EXTERNAL_PUBLIC_METADATA_KEY_SET = new Set<string>(EXTERNAL_PUBLIC_METADATA_KEYS);
+const RELEASE_EVIDENCE_HARNESS_DELTA_PATH_SET = new Set<string>(RELEASE_EVIDENCE_HARNESS_DELTA_PATHS);
 const EXACT_GIT_COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const RELEASE_REF_PATTERN = /^refs\/tags\/v4\.0\.0(?:-(?:beta|rc)\.\d+)?$/;
+const RELEASE_REF_PATTERN = /^refs\/tags\/v(4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?)$/;
 const SAFE_RUNNER_CLASS = /^(?:github-hosted-linux-(?:arm64|x64)|local-unclassified|other)$/;
 const SAFE_RUNNER_IDENTITY = /^(?:local|runner-[0-9a-f]{16})$/;
 const LOCAL_PATH_PATTERN =
@@ -736,6 +746,13 @@ function validateLanguageControls(
 
 function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean, missing: string[]): void {
   const metadata = artifact.metadata;
+  const releaseRef = metadata.releaseEvidenceRef;
+  const releaseMatch = typeof releaseRef === 'string' ? RELEASE_REF_PATTERN.exec(releaseRef) : null;
+  const managedVersion = metadata.benchmarkValidatedManagedVersion;
+  const managedVersionMatchesCommit =
+    typeof managedVersion === 'string' &&
+    (managedVersion.endsWith(`-local.g${artifact.environment.commit}`) ||
+      managedVersion.endsWith(`.local.g${artifact.environment.commit}`));
   if (
     metadata.benchmarkMeasuredExecutionMode !== 'local-source-application-layer' ||
     metadata.benchmarkMeasuredSourceCommit !== artifact.environment.commit ||
@@ -766,8 +783,7 @@ function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean
       metadata.benchmarkValidatedManagedRuntime.length === 0 ||
       typeof metadata.benchmarkValidatedManagedTarget !== 'string' ||
       metadata.benchmarkValidatedManagedTarget.length === 0 ||
-      typeof metadata.benchmarkValidatedManagedVersion !== 'string' ||
-      !metadata.benchmarkValidatedManagedVersion.endsWith(`.local.g${artifact.environment.commit}`)
+      !managedVersionMatchesCommit
     ) {
       missing.push('complete separately validated exact-HEAD managed payload provenance');
     }
@@ -778,15 +794,41 @@ function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean
     missing.push('release evidence with separately validated managed exact-HEAD payload');
   }
   if (releaseBound) {
-    const ref = metadata.releaseEvidenceRef;
     const sha = metadata.releaseEvidenceSha;
+    const sourceMode = metadata.releaseEvidenceSourceMode;
+    const harnessCommit = metadata.releaseEvidenceHarnessCommit;
+    const harnessDeltaPaths = metadata.releaseEvidenceHarnessDeltaPaths;
+    let parsedHarnessDeltaPaths: readonly string[] = [];
+    try {
+      const parsed = JSON.parse(String(harnessDeltaPaths ?? '[]'));
+      if (Array.isArray(parsed) && parsed.every(path => typeof path === 'string')) parsedHarnessDeltaPaths = parsed;
+    } catch {
+      // Report invalid release provenance through the shared missing-evidence path below.
+    }
+    const canonicalHarnessDelta =
+      parsedHarnessDeltaPaths.length > 0 &&
+      new Set(parsedHarnessDeltaPaths).size === parsedHarnessDeltaPaths.length &&
+      parsedHarnessDeltaPaths.every(path => RELEASE_EVIDENCE_HARNESS_DELTA_PATH_SET.has(path)) &&
+      JSON.stringify([...parsedHarnessDeltaPaths].sort()) === JSON.stringify(parsedHarnessDeltaPaths);
+    const sourceModeValid =
+      (sourceMode === 'exact-release' &&
+        harnessCommit === sha &&
+        artifact.environment.commit === sha &&
+        harnessDeltaPaths === '[]') ||
+      (sourceMode === 'release-plus-reviewed-harness-delta' &&
+        typeof harnessCommit === 'string' &&
+        EXACT_GIT_COMMIT_PATTERN.test(harnessCommit) &&
+        harnessCommit === artifact.environment.commit &&
+        harnessCommit !== sha &&
+        canonicalHarnessDelta);
     if (
-      typeof ref !== 'string' ||
-      !RELEASE_REF_PATTERN.test(ref) ||
+      !releaseMatch ||
+      (managedVersion !== `${releaseMatch[1]}-local.g${artifact.environment.commit}` &&
+        managedVersion !== `${releaseMatch[1]}.local.g${artifact.environment.commit}`) ||
       typeof sha !== 'string' ||
       !EXACT_GIT_COMMIT_PATTERN.test(sha) ||
       metadata.releaseEvidenceResolvedSha !== sha ||
-      sha !== artifact.environment.commit ||
+      !sourceModeValid ||
       artifact.environment.dirty
     ) {
       missing.push('clean exact release source provenance');

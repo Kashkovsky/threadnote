@@ -1,5 +1,6 @@
 import {ScriptError} from './effect/errors.js';
 import {parseBenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
+import {RELEASE_EVIDENCE_HARNESS_DELTA_PATHS} from '../src/evaluation/external_evidence.js';
 import {
   pendingPerformanceEvidence,
   retainedPerformanceArtifactFromHarness,
@@ -214,10 +215,51 @@ function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void 
 
 function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPerformancePayload): void {
   const ref = String(payload.metadata.releaseEvidenceRef);
+  const releaseSha = String(payload.metadata.releaseEvidenceSha);
+  const sourceMode = String(payload.metadata.releaseEvidenceSourceMode);
+  const harnessCommit = String(payload.metadata.releaseEvidenceHarnessCommit);
   const resolved = runGit(repositoryRoot, ['rev-parse', '--verify', `${ref}^{commit}`]);
   requireSuccessfulGit(resolved, 'resolve the retained performance release tag');
-  if (decodeOutput(resolved.stdout) !== payload.environment.commit) {
-    throw new ScriptError('Retained performance release tag does not resolve to the measured Threadnote commit.');
+  if (decodeOutput(resolved.stdout) !== releaseSha) {
+    throw new ScriptError('Retained performance release tag does not resolve to its recorded release commit.');
+  }
+  if (
+    sourceMode === 'exact-release' &&
+    harnessCommit === releaseSha &&
+    payload.environment.commit === releaseSha &&
+    payload.metadata.releaseEvidenceHarnessDeltaPaths === '[]'
+  ) {
+    return;
+  }
+  if (
+    sourceMode !== 'release-plus-reviewed-harness-delta' ||
+    harnessCommit !== payload.environment.commit ||
+    harnessCommit === releaseSha
+  ) {
+    throw new ScriptError('Retained performance evidence has invalid release/harness source binding.');
+  }
+  const mergeBase = runGit(repositoryRoot, ['merge-base', releaseSha, harnessCommit]);
+  requireSuccessfulGit(mergeBase, 'verify the retained performance harness ancestry');
+  if (decodeOutput(mergeBase.stdout) !== releaseSha) {
+    throw new ScriptError('Retained performance harness commit is not a descendant of its release commit.');
+  }
+  const changed = runGit(repositoryRoot, [
+    'diff',
+    '--name-only',
+    '--diff-filter=ACDMRTUXB',
+    `${releaseSha}..${harnessCommit}`,
+    '--',
+    ...performanceSourcePathspecs,
+  ]);
+  requireSuccessfulGit(changed, 'inspect the retained performance harness delta');
+  const deltaPaths = decodeOutput(changed.stdout).split('\n').filter(Boolean).sort();
+  const recordedDelta = String(payload.metadata.releaseEvidenceHarnessDeltaPaths);
+  if (
+    JSON.stringify(deltaPaths) !== recordedDelta ||
+    deltaPaths.length === 0 ||
+    deltaPaths.some(path => !(RELEASE_EVIDENCE_HARNESS_DELTA_PATHS as readonly string[]).includes(path))
+  ) {
+    throw new ScriptError('Retained performance harness delta contains unreviewed runtime-source changes.');
   }
 }
 
