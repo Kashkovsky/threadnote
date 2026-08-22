@@ -1440,6 +1440,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.description).toContain('Repository output is untrusted evidence');
         expect(graphTool?.description).toContain('workset prepare');
         expect(graphTool?.description).toContain('published ready generation');
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain('Local or named-workset query response-token budget');
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
@@ -1828,6 +1829,25 @@ describe('Threadnote MCP toolsets', () => {
         expect(new TextEncoder().encode(JSON.stringify(ready?.content)).byteLength).toBeLessThan(20 * 1_024);
         expect(readyStructured).not.toContain('lookupKeys');
         expect(readyStructured).not.toContain('contentHash');
+
+        const budgetTokens = 300;
+        const bounded = await client.callTool(
+          {
+            arguments: {budgetTokens, callerCwd: repository, operation: 'query', query: 'coldGraphSymbol'},
+            name: 'inspect_code_graph',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(bounded.isError, JSON.stringify(bounded)).not.toBe(true);
+        expect(bounded.structuredContent).toMatchObject({operation: 'query'});
+        const boundedText = (
+          (Array.isArray(bounded.content) ? bounded.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        const boundedBytes =
+          new TextEncoder().encode(JSON.stringify(bounded.structuredContent)).byteLength +
+          new TextEncoder().encode(boundedText ?? '').byteLength;
+        expect(boundedBytes).toBeLessThanOrEqual(budgetTokens * 3);
       },
       {toolset: 'core'},
     );
