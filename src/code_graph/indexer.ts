@@ -15,6 +15,7 @@ export {
   type CodeGraphCommitLease,
   type CodeGraphIndexerShape,
   type CodeGraphIndexOptions,
+  type CodeGraphPersistentMaterializationTransactionBatchLimit,
   type DirectPersistentCapacityProtection,
 } from './indexer_types.js';
 export {
@@ -44,6 +45,7 @@ export {
   materializationStorageShortfalls,
   parserCacheIdentity,
   persistentMaterializationTransactionBatches,
+  persistentMaterializationTransactionBounds,
   shouldReuseReadySnapshotForCleanCommit,
   snapshotIdentity,
   type CodeGraphCacheContentCoalescer,

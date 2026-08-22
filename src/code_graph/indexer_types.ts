@@ -17,6 +17,8 @@ import type {
   RepositoryIdentityExpectation,
 } from './types.js';
 
+export type CodeGraphPersistentMaterializationTransactionBatchLimit = 1 | 4 | 8;
+
 export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   /** @internal Home-global builder admission priority. CLI defaults to current-required. */
   readonly admissionClass?: CodeGraphBuilderAdmissionClass;
@@ -31,7 +33,7 @@ export interface CodeGraphIndexOptions extends CodeGraphInventoryOptions {
   /** @internal Records read-back PRAGMA values for controlled benchmark evidence. */
   readonly onSqliteWriterConfigured?: (settings: CodeGraphSqliteWriterSettings) => Effect.Effect<void, never>;
   /** @internal Benchmark-only physical transaction grouping; normal indexing uses four logical receipts. */
-  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly persistentMaterializationTransactionBatchLimit?: CodeGraphPersistentMaterializationTransactionBatchLimit;
   /** @internal Benchmark-only SQLite writer candidate; normal indexing leaves this unset. */
   readonly sqliteWriterTuning?: CodeGraphSqliteWriterTuning;
   /** @internal Deterministic fresh-capacity probe used by lifecycle fault tests. */

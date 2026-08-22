@@ -20,9 +20,6 @@ import {
 import {
   CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
   CODE_GRAPH_LOCK_OPTIONS,
-  PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES,
-  PERSISTENT_MATERIALIZATION_TRANSACTION_FILES,
-  PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES,
   addMaterializationReplayMetrics,
   addMaterializationRows,
   cachedFactsMetadata,
@@ -45,6 +42,7 @@ import {
   materializationStorageShortfalls,
   messageOf,
   persistentMaterializationTransactionBatches,
+  persistentMaterializationTransactionBounds,
   promoteReadySnapshotWithCapacity,
   reusableReadySnapshotForCleanCommit,
   snapshotIdentity,
@@ -60,6 +58,7 @@ import {
 } from './indexer_shared.js';
 import type {
   CodeGraphIndexOptions,
+  CodeGraphPersistentMaterializationTransactionBatchLimit,
   CommittedBaseResult,
   DirectPersistentCapacityProtection,
   IncrementalOverlayAssessment,
@@ -401,7 +400,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
   readonly layout: CodeGraphLayout;
   readonly logicalSnapshotId: string;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly persistentMaterializationTransactionBatchLimit?: CodeGraphPersistentMaterializationTransactionBatchLimit;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
@@ -555,7 +554,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
     readonly layout: CodeGraphLayout;
     readonly logicalSnapshotId: string;
     readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-    readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+    readonly persistentMaterializationTransactionBatchLimit?: CodeGraphPersistentMaterializationTransactionBatchLimit;
     readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
     readonly startedAt: number;
     readonly store: CodeGraphStoreShape;
@@ -956,7 +955,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly persistentMaterializationTransactionBatchLimit?: CodeGraphPersistentMaterializationTransactionBatchLimit;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
@@ -1114,7 +1113,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
+  readonly persistentMaterializationTransactionBatchLimit?: CodeGraphPersistentMaterializationTransactionBatchLimit;
   readonly persistentOwnerToken?: string;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
@@ -1380,6 +1379,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace, persistentCapacityGuard);
     let persistentBatchCursor = 0;
     const persistentTransactionBatchLimit = input.persistentMaterializationTransactionBatchLimit ?? 4;
+    const persistentTransactionBounds = persistentMaterializationTransactionBounds(persistentTransactionBatchLimit);
     interface PendingMaterializationBatch extends PersistentMaterializationTransactionCandidate {
       readonly attributionMilliseconds: number;
       readonly batchCachedFactBytes: number;
@@ -1744,10 +1744,10 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         const pendingSourceBytes = pendingBatches.reduce((total, batch) => total + batch.sourceBytes, 0);
         if (
           !directPersistentMaterialization ||
-          pendingBatches.length >= persistentTransactionBatchLimit ||
-          pendingFiles >= PERSISTENT_MATERIALIZATION_TRANSACTION_FILES ||
-          pendingSourceBytes >= PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES ||
-          pendingFactsBytes >= PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES
+          pendingBatches.length >= persistentTransactionBounds.batchLimit ||
+          pendingFiles >= persistentTransactionBounds.fileCount ||
+          pendingSourceBytes >= persistentTransactionBounds.sourceBytes ||
+          pendingFactsBytes >= persistentTransactionBounds.factBytes
         ) {
           yield* flushPendingBatches();
         }

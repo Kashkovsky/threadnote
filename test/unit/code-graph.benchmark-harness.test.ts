@@ -345,8 +345,12 @@ describe('code graph external benchmark harness', () => {
       parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '4'])
         .materializationTransactionBatchLimit,
     ).toBe(4);
+    expect(
+      parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '8'])
+        .materializationTransactionBatchLimit,
+    ).toBe(8);
     expect(() => parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '2'])).toThrow(
-      'must be 1 or 4',
+      'must be 1, 4, or 8',
     );
   });
 

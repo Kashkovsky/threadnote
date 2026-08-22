@@ -17,6 +17,7 @@ import {
   materializationStoragePlan,
   materializationStorageShortfalls,
   persistentMaterializationTransactionBatches,
+  persistentMaterializationTransactionBounds,
   snapshotIdentity,
 } from '../../src/code_graph/indexer.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -349,32 +350,39 @@ describe('code graph indexer properties', () => {
           {maxLength: 40},
         ),
         candidates => {
-          const groups = persistentMaterializationTransactionBatches(candidates);
+          for (const limit of [4, 8] as const) {
+            const groups = persistentMaterializationTransactionBatches(candidates, limit);
+            const bounds = persistentMaterializationTransactionBounds(limit);
 
-          expect(persistentMaterializationTransactionBatches(candidates)).toEqual(groups);
-          expect(groups.flat()).toEqual(candidates);
-          expect(groups.every(group => group.length > 0 && group.length <= 4)).toBe(true);
-          let cursor = 0;
-          for (const group of groups) {
-            expect(group).toEqual(candidates.slice(cursor, cursor + group.length));
-            cursor += group.length;
-            const factBytes = group.reduce((total, value) => total + value.factBytes, 0);
-            const fileCount = group.reduce((total, value) => total + value.fileCount, 0);
-            const sourceBytes = group.reduce((total, value) => total + value.sourceBytes, 0);
-            expect(
-              (factBytes <= 32 * 1_048_576 && fileCount <= 512 && sourceBytes <= 64 * 1_048_576) || group.length === 1,
-            ).toBe(true);
+            expect(persistentMaterializationTransactionBatches(candidates, limit)).toEqual(groups);
+            expect(groups.flat()).toEqual(candidates);
+            expect(groups.every(group => group.length > 0 && group.length <= limit)).toBe(true);
+            let cursor = 0;
+            for (const group of groups) {
+              expect(group).toEqual(candidates.slice(cursor, cursor + group.length));
+              cursor += group.length;
+              const factBytes = group.reduce((total, value) => total + value.factBytes, 0);
+              const fileCount = group.reduce((total, value) => total + value.fileCount, 0);
+              const sourceBytes = group.reduce((total, value) => total + value.sourceBytes, 0);
+              expect(
+                (factBytes <= bounds.factBytes && fileCount <= bounds.fileCount && sourceBytes <= bounds.sourceBytes) ||
+                  group.length === 1,
+              ).toBe(true);
+            }
+            for (let index = 0; index < groups.length - 1; index += 1) {
+              const combined = [...groups[index]!, ...groups[index + 1]!];
+              const factBytes = combined.reduce((total, value) => total + value.factBytes, 0);
+              const fileCount = combined.reduce((total, value) => total + value.fileCount, 0);
+              const sourceBytes = combined.reduce((total, value) => total + value.sourceBytes, 0);
+              expect(
+                combined.length <= bounds.batchLimit &&
+                  factBytes <= bounds.factBytes &&
+                  fileCount <= bounds.fileCount &&
+                  sourceBytes <= bounds.sourceBytes,
+              ).toBe(false);
+            }
+            expect(cursor).toBe(candidates.length);
           }
-          for (let index = 0; index < groups.length - 1; index += 1) {
-            const combined = [...groups[index]!, ...groups[index + 1]!];
-            const factBytes = combined.reduce((total, value) => total + value.factBytes, 0);
-            const fileCount = combined.reduce((total, value) => total + value.fileCount, 0);
-            const sourceBytes = combined.reduce((total, value) => total + value.sourceBytes, 0);
-            expect(
-              combined.length <= 4 && factBytes <= 32 * 1_048_576 && fileCount <= 512 && sourceBytes <= 64 * 1_048_576,
-            ).toBe(false);
-          }
-          expect(cursor).toBe(candidates.length);
         },
       ),
       {numRuns: 250},
