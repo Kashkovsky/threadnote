@@ -66,6 +66,18 @@ export interface CodeGraphInventory {
   readonly workspace?: CodeGraphWorkspace;
 }
 
+export interface CodeGraphOverlayObservation {
+  readonly addedPaths: readonly string[];
+  readonly changedPaths: readonly string[];
+  readonly deletedPaths: readonly string[];
+  readonly untrackedPaths: readonly string[];
+}
+
+export interface CodeGraphBuildRequestObservation {
+  readonly overlay: CodeGraphOverlayObservation;
+  readonly state: {readonly dirty: boolean; readonly fingerprint?: string};
+}
+
 export interface CodeGraphInventoryPolicyExclusionSummary {
   readonly bytes: number;
   readonly files: number;
@@ -160,6 +172,8 @@ export interface CodeGraphInventoryOptions {
   /** Binary media is metadata-only structural evidence and may be deferred until vector indexing is requested. */
   readonly includeOpaqueCorpusAssets?: boolean;
   readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
+  /** Exact post-lock Git observation reused by inventory to avoid repeating diff and untracked scans. */
+  readonly overlayObservation?: CodeGraphOverlayObservation;
   readonly onContentBatch?: (
     files: readonly CodeGraphInventoryFile[],
     context: CodeGraphContentBatchContext,
@@ -396,6 +410,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
                 })
             : undefined,
           options.onOverlayStart,
+          options.overlayObservation,
         );
   const filesByPath = new Map(committed.files.map(file => [file.path, file]));
   for (const changed of overlay.changed) filesByPath.delete(changed);
@@ -536,6 +551,7 @@ const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')
       dirty: false,
       entries: committedEntries,
       omittedUnsafeWorktreeFiles: 0,
+      untracked: new Set<string>(),
     };
   }
   const fs = yield* FileSystem.FileSystem;
@@ -582,7 +598,14 @@ const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')
         {concurrency: 2},
       );
   const changes = parseNameStatus(diffOutput);
-  for (const relative of untrackedOutput.split('\0').filter(Boolean).map(normalizeRepositoryPath)) {
+  const untracked = new Set(
+    untrackedOutput
+      .split('\0')
+      .filter(Boolean)
+      .map(normalizeRepositoryPath)
+      .filter(relative => !excludePath(relative)),
+  );
+  for (const relative of untracked) {
     if (excludePath(relative)) continue;
     changes.added.add(relative);
     changes.changed.add(relative);
@@ -617,6 +640,7 @@ const readInventoryPreviewTree = Effect.fn('codeGraph.readInventoryPreviewTree')
     dirty: changes.changed.size > 0 || changes.deleted.size > 0,
     entries: [...entries.values()].sort((left, right) => compareCodeUnits(left.path, right.path)),
     omittedUnsafeWorktreeFiles,
+    untracked,
   };
 });
 
@@ -674,7 +698,7 @@ export const worktreeOverlayState = Effect.fn('codeGraph.worktreeOverlayState')(
  * still streamed through SHA-256 with the same containment and race checks, so
  * two processes can safely coalesce only the exact same worktree bytes.
  */
-export const worktreeBuildRequestState = Effect.fn('codeGraph.worktreeBuildRequestState')(function* (
+export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuildRequestObservation')(function* (
   identity: RepositoryIdentity,
   threadnoteHome?: string,
 ) {
@@ -701,7 +725,12 @@ export const worktreeBuildRequestState = Effect.fn('codeGraph.worktreeBuildReque
     ['-C', identity.repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', ...pathspec],
     {maxOutputBytes: 0, timeoutMs: 0},
   );
-  if (porcelain.stdout.length === 0) return {dirty: false, fingerprint: undefined};
+  if (porcelain.stdout.length === 0) {
+    return {
+      overlay: {addedPaths: [], changedPaths: [], deletedPaths: [], untrackedPaths: []},
+      state: {dirty: false, fingerprint: undefined},
+    } satisfies CodeGraphBuildRequestObservation;
+  }
   const tree = yield* readInventoryPreviewTree(identity, path, [], true, excludedPathPrefix);
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const fileRows: string[] = [];
@@ -722,19 +751,34 @@ export const worktreeBuildRequestState = Effect.fn('codeGraph.worktreeBuildReque
   }
   const dirty = tree.changes.changed.size > 0 || tree.changes.deleted.size > 0;
   return {
-    dirty,
-    fingerprint: dirty
-      ? sha256HexSync(
-          [
-            'build-request-overlay-v1',
-            `I\0${sha256HexSync(threadnoteIgnore)}`,
-            ...[...tree.changes.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
-            ...fileRows,
-            ...skippedRows,
-          ].join('\n'),
-        )
-      : undefined,
-  };
+    overlay: {
+      addedPaths: [...tree.changes.added].sort(compareCodeUnits),
+      changedPaths: [...tree.changes.changed].sort(compareCodeUnits),
+      deletedPaths: [...tree.changes.deleted].sort(compareCodeUnits),
+      untrackedPaths: [...tree.untracked].sort(compareCodeUnits),
+    },
+    state: {
+      dirty,
+      fingerprint: dirty
+        ? sha256HexSync(
+            [
+              'build-request-overlay-v1',
+              `I\0${sha256HexSync(threadnoteIgnore)}`,
+              ...[...tree.changes.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
+              ...fileRows,
+              ...skippedRows,
+            ].join('\n'),
+          )
+        : undefined,
+    },
+  } satisfies CodeGraphBuildRequestObservation;
+});
+
+export const worktreeBuildRequestState = Effect.fn('codeGraph.worktreeBuildRequestState')(function* (
+  identity: RepositoryIdentity,
+  threadnoteHome?: string,
+) {
+  return (yield* worktreeBuildRequestObservation(identity, threadnoteHome)).state;
 });
 
 export function parseGitTree(output: string): readonly GitTreeEntry[] {
@@ -1361,40 +1405,50 @@ const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   includeOpaqueCorpusAssets = true,
   onContentBatch?: CodeGraphInventoryOptions['onContentBatch'],
   onOverlayStart?: CodeGraphInventoryOptions['onOverlayStart'],
+  overlayObservation?: CodeGraphOverlayObservation,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const repositoryRoot = yield* fs.realPath(identity.repoRoot);
   const unborn = isZeroObjectId(identity.headCommit);
-  const [diffOutput, untrackedOutput] = unborn
-    ? [
-        '',
-        (yield* runCommandEffect(
-          'git',
-          ['-C', identity.repoRoot, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
-          {
-            maxOutputBytes: 0,
-            timeoutMs: 0,
-          },
-        )).stdout,
-      ]
-    : yield* Effect.all(
-        [
-          runCommandEffect(
+  let changes: ReturnType<typeof parseNameStatus>;
+  let untracked: Set<string>;
+  if (overlayObservation !== undefined) {
+    changes = {
+      added: new Set(overlayObservation.addedPaths),
+      changed: new Set(overlayObservation.changedPaths),
+      deleted: new Set(overlayObservation.deletedPaths),
+    };
+    untracked = new Set(overlayObservation.untrackedPaths);
+  } else {
+    const [diffOutput, untrackedOutput] = unborn
+      ? [
+          '',
+          (yield* runCommandEffect(
             'git',
-            ['-C', identity.repoRoot, 'diff', '--name-status', '-z', '--find-renames', identity.headCommit, '--'],
-            {maxOutputBytes: 0, timeoutMs: 0},
-          ).pipe(Effect.map(result => result.stdout)),
-          runCommandEffect('git', ['-C', identity.repoRoot, 'ls-files', '-z', '--others', '--exclude-standard'], {
-            maxOutputBytes: 0,
-            timeoutMs: 0,
-          }).pipe(Effect.map(result => result.stdout)),
-        ],
-        {concurrency: 2},
-      );
-  const changes = parseNameStatus(diffOutput);
-  const untracked = new Set(untrackedOutput.split('\0').filter(Boolean).map(normalizeRepositoryPath));
-  for (const value of untracked) {
-    changes.changed.add(value);
+            ['-C', identity.repoRoot, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+            {
+              maxOutputBytes: 0,
+              timeoutMs: 0,
+            },
+          )).stdout,
+        ]
+      : yield* Effect.all(
+          [
+            runCommandEffect(
+              'git',
+              ['-C', identity.repoRoot, 'diff', '--name-status', '-z', '--find-renames', identity.headCommit, '--'],
+              {maxOutputBytes: 0, timeoutMs: 0},
+            ).pipe(Effect.map(result => result.stdout)),
+            runCommandEffect('git', ['-C', identity.repoRoot, 'ls-files', '-z', '--others', '--exclude-standard'], {
+              maxOutputBytes: 0,
+              timeoutMs: 0,
+            }).pipe(Effect.map(result => result.stdout)),
+          ],
+          {concurrency: 2},
+        );
+    changes = parseNameStatus(diffOutput);
+    untracked = new Set(untrackedOutput.split('\0').filter(Boolean).map(normalizeRepositoryPath));
+    for (const value of untracked) changes.changed.add(value);
   }
   if (changes.changed.size > 0 || changes.deleted.size > 0) yield* onOverlayStart?.() ?? Effect.void;
   const relevantChangedPaths = [...new Set([...changes.changed, ...changes.deleted])].filter(relative =>

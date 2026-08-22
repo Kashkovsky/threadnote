@@ -50,7 +50,7 @@ import type {
   IncrementalOverlayPreassessment,
 } from './indexer_types.js';
 import {codeGraphIndexEnsuresVectors} from './indexer_types.js';
-import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
+import {type CodeGraphOverlayObservation, inventoryRepository, worktreeBuildRequestObservation} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {codeGraphLayout} from './layout.js';
 import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
@@ -107,7 +107,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               initialIdentity.checkoutId,
               initialIdentity.worktreeId,
             );
-            const requestedOverlay = yield* worktreeBuildRequestState(initialIdentity, request.threadnoteHome);
+            const requestedBuildRequest = yield* worktreeBuildRequestObservation(
+              initialIdentity,
+              request.threadnoteHome,
+            );
+            const requestedOverlay = requestedBuildRequest.state;
             yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
             const requestKey = request.force
               ? undefined
@@ -208,11 +212,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         },
                       );
                       yield* store.initialize(layout.databasePath);
+                      let inventoryOverlayObservation: CodeGraphOverlayObservation;
                       {
-                        const currentOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome);
+                        const currentBuildRequest = yield* worktreeBuildRequestObservation(
+                          identity,
+                          options.threadnoteHome,
+                        );
+                        const currentOverlay = currentBuildRequest.state;
                         if (!sameOverlayState(currentOverlay, requestedOverlay)) {
                           return yield* Effect.fail(new WorktreeChangedDuringIndex());
                         }
+                        inventoryOverlayObservation = currentBuildRequest.overlay;
                         if (requestKey) {
                           const completedByOwner = yield* completedConcurrentSnapshot(
                             store,
@@ -288,6 +298,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         cachedCommittedFileKeys,
                         includeOpaqueCorpusAssets: ensureVectors,
                         languagePacks,
+                        overlayObservation: inventoryOverlayObservation,
                         onContentBatch: cacheCoalescer.onContentBatch,
                         onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
                       }).pipe(

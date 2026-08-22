@@ -43,6 +43,7 @@ import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local
 import {
   inventoryRepository,
   readContainedStableRegularFile,
+  worktreeBuildRequestObservation,
   worktreeBuildRequestState,
   worktreeOverlayState,
 } from '../../src/code_graph/inventory.js';
@@ -67,6 +68,7 @@ import {
   type CodeGraphProgress,
 } from '../../src/code_graph/types.js';
 import {captureConsole} from '../../src/effect/console.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {runDoctor, runRepair} from '../../src/lifecycle.js';
@@ -3252,6 +3254,46 @@ describe('native code graph lifecycle', () => {
       replaceFunction(root, 'ensureVectorIndex', 'ensureChangedVectorIndex');
       expect((yield* worktreeBuildRequestState(identity, home)).dirty).toBe(true);
     }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('reuses the post-lock overlay observation without repeating Git overlay scans', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      yield* Effect.sync(() => {
+        replaceFunction(root, 'ensureVectorIndex', 'ensureObservedVectorIndex');
+        rmSync(join(root, 'docs/architecture.md'));
+        writeFileSync(join(root, 'packages/app/src/untracked.ts'), 'export const untracked = true;\n');
+      });
+      const identity = yield* resolveRepositoryIdentity(root);
+      const observation = yield* worktreeBuildRequestObservation(identity);
+      const independentlyScanned = yield* inventoryRepository(identity);
+      const command = yield* CommandExecutor;
+      const repeatedOverlayCommands: string[] = [];
+      const observedCommand = CommandExecutor.of({
+        ...command,
+        execute: (executable, args, options) => {
+          if (
+            executable === 'git' &&
+            (args.includes('diff') || (args.includes('ls-files') && args.includes('--others')))
+          ) {
+            repeatedOverlayCommands.push(args.join(' '));
+          }
+          return command.execute(executable, args, options);
+        },
+      });
+      const reused = yield* inventoryRepository(identity, {overlayObservation: observation.overlay}).pipe(
+        Effect.provideService(CommandExecutor, observedCommand),
+      );
+
+      expect(observation.overlay.changedPaths).toEqual([
+        'packages/app/src/untracked.ts',
+        'packages/search/src/vector-index.ts',
+      ]);
+      expect(observation.overlay.deletedPaths).toEqual(['docs/architecture.md']);
+      expect(observation.overlay.untrackedPaths).toEqual(['packages/app/src/untracked.ts']);
+      expect(repeatedOverlayCommands).toEqual([]);
+      expect(reused).toEqual(independentlyScanned);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('reuses manifest-only workspace discovery until a resolution context changes', () =>
