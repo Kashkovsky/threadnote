@@ -1,5 +1,6 @@
 import {Clock, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import {
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphResolutionProgressCallback,
@@ -23,6 +24,7 @@ import {
 } from './store_build_core.js';
 import {
   adjustPersistedAnalysisResolutionEdges,
+  aggregatePersistentReferenceResolutionCapacityBoundaries,
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
   codeGraphPersistentReferencePageStatement,
@@ -50,8 +52,8 @@ const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
 
 interface ResolutionTransactionPage {
   readonly aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[];
+  readonly capacity: CodeGraphDirectPersistentCapacityBoundary;
   readonly resolutions: readonly ActivationResolutionRow[];
-  readonly rows: readonly ResolvableActivationReferenceRow[];
 }
 
 /** @internal Total-pass convergence fence; every admitted pass is independently page-bounded. */
@@ -269,15 +271,13 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     const transactionPages: ResolutionTransactionPage[] = [];
     const flushTransactionPages = Effect.fn('codeGraph.flushResolutionTransactionPages')(function* () {
       if (transactionPages.length === 0) return;
-      const rows: ResolvableActivationReferenceRow[] = [];
       const resolutions: ActivationResolutionRow[] = [];
       const aliases: Array<readonly [string, string, string, number, 'alias', string, string]> = [];
       for (const page of transactionPages) {
-        for (const row of page.rows) rows.push(row);
         for (const resolution of page.resolutions) resolutions.push(resolution);
         for (const alias of page.aliases) aliases.push(alias);
       }
-      if (rows.length > 0) {
+      if (resolutions.length > 0) {
         const transactionStartedAt = yield* Clock.currentTimeMillis;
         const transaction = sql.withTransaction(
           Effect.gen(function* () {
@@ -416,13 +416,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
         yield* persistentCapacityProtector
           ? persistentCapacityProtector(
-              persistentReferenceResolutionCapacityBoundary(
-                mode?.mode === 'persisted-full' ? mode.snapshotId : (persistedBaseSnapshotId ?? 'temporary'),
-                rows,
-                resolutions,
-                aliases,
-                mode?.mode !== 'persisted-full',
-              ),
+              aggregatePersistentReferenceResolutionCapacityBoundaries(transactionPages.map(page => page.capacity)),
               gatedTransaction,
             )
           : gatedTransaction;
@@ -430,8 +424,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       }
       aliasesInPass += aliases.length;
       aliasesDiscovered += aliases.length;
-      resolvedInPass += rows.length;
-      resolved += rows.length;
+      resolvedInPass += resolutions.length;
+      resolved += resolutions.length;
       transactionPages.length = 0;
     });
     yield* onProgress?.({
@@ -712,7 +706,17 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           ]);
         }
       }
-      transactionPages.push({aliases, resolutions, rows});
+      transactionPages.push({
+        aliases,
+        capacity: persistentReferenceResolutionCapacityBoundary(
+          mode?.mode === 'persisted-full' ? mode.snapshotId : (persistedBaseSnapshotId ?? 'temporary'),
+          rows,
+          resolutions,
+          aliases,
+          mode?.mode !== 'persisted-full',
+        ),
+        resolutions,
+      });
       pageCompleted += 1;
       // Aggregate candidate/byte ceilings normally predict the exact page
       // count. Pathological alternating payload shapes can require more pages;

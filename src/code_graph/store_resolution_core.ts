@@ -770,6 +770,35 @@ function persistentReferenceResolutionCapacityBoundary(
   };
 }
 
+function aggregatePersistentReferenceResolutionCapacityBoundaries(
+  boundaries: readonly CodeGraphDirectPersistentCapacityBoundary[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  const first = boundaries[0];
+  if (first === undefined) {
+    return {finalFactBytes: Number.NaN, operation: 'resolve persistent code graph references', rowCount: Number.NaN};
+  }
+  const compatible = boundaries.every(
+    boundary =>
+      (boundary.operation === 'resolve persistent code graph references' ||
+        boundary.operation === 'resolve temporary code graph references') &&
+      boundary.operation === first.operation &&
+      boundary.mainFilesystem === first.mainFilesystem &&
+      boundary.transientFilesystem === first.transientFilesystem &&
+      Number.isSafeInteger(boundary.finalFactBytes) &&
+      boundary.finalFactBytes >= 0 &&
+      Number.isSafeInteger(boundary.rowCount) &&
+      boundary.rowCount >= 0,
+  );
+  if (!compatible) return {...first, finalFactBytes: Number.NaN, rowCount: Number.NaN};
+  return {
+    finalFactBytes: saturatingCapacityAdd(...boundaries.map(boundary => boundary.finalFactBytes)),
+    operation: first.operation,
+    rowCount: saturatingCapacityAdd(...boundaries.map(boundary => boundary.rowCount)),
+    ...(first.mainFilesystem === undefined ? {} : {mainFilesystem: first.mainFilesystem}),
+    ...(first.transientFilesystem === undefined ? {} : {transientFilesystem: first.transientFilesystem}),
+  };
+}
+
 const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(function* (
   sql: SqlClient.SqlClient,
   baseSnapshotId: string | undefined,
@@ -838,6 +867,7 @@ export {
   capturePersistedAnalysisResolutionEdges,
   adjustPersistedAnalysisResolutionEdges,
   persistentReferenceResolutionCapacityBoundary,
+  aggregatePersistentReferenceResolutionCapacityBoundaries,
   identifyChangedSymbols,
   promotionRemovedSnapshotId,
   selectResumableForcedBuild,
