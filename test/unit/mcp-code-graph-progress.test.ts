@@ -24,6 +24,7 @@ import {
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';
+import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
 import {analysisEdge, analysisSnapshot, analysisSymbol, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {
   readAnonymousTelemetryDiagnostic,
@@ -434,6 +435,33 @@ describe('MCP code graph indexing progress', () => {
     expect(response.text).toContain('MCP output was bounded to');
     expect(new TextEncoder().encode(response.text).byteLength).toBeLessThan(20 * 1_024);
   });
+
+  it.prop(
+    'honors explicit local graph response budgets across result cardinalities',
+    {
+      budgetTokens: FC.integer({max: 1_500, min: 300}),
+      edgeCount: FC.integer({max: 200, min: 0}),
+      nodeCount: FC.integer({max: 100, min: 0}),
+      warningCount: FC.integer({max: 20, min: 0}),
+    },
+    ({budgetTokens, edgeCount, nodeCount, warningCount}) => {
+      const verbose = verboseCodeGraphResult();
+      const result = {
+        ...verbose,
+        edges: verbose.edges.slice(0, edgeCount),
+        nodes: verbose.nodes.slice(0, nodeCount),
+        warnings: verbose.warnings.slice(0, warningCount),
+      };
+      const response = codeGraphMcpResponse(result, budgetTokens);
+      const measurement = measureAgentToolResponse(response);
+
+      expect(measurement.estimatedTokens).toBeLessThanOrEqual(budgetTokens);
+      expect(measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+      expect(response.structuredContent.output.returnedNodes).toBeLessThanOrEqual(nodeCount);
+      expect(response.structuredContent.output.returnedEdges).toBeLessThanOrEqual(edgeCount);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
 
   it('keeps MCP timing and whole-graph analysis limits context-sized', () => {
     expect(
