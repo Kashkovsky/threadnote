@@ -1776,6 +1776,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     ? undefined
     : {
         fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
+        ...(input.inventory.reuseReceipt ? {inventory: {...input.inventory.reuseReceipt, workspace}} : {}),
         packProvenance: input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path)),
         workspaceFingerprint: workspace.fingerprint,
       };
@@ -1804,7 +1805,6 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     symbols: stagedCounts.symbols,
   }) ?? Effect.void;
   yield* input.store.shrinkMemory(input.layout.databasePath);
-
   const ready: CodeGraphSnapshot = {
     ...input.building,
     edgeCount: stagedCounts.edges,

@@ -50,7 +50,12 @@ import type {
   IncrementalOverlayPreassessment,
 } from './indexer_types.js';
 import {codeGraphIndexEnsuresVectors} from './indexer_types.js';
-import {type CodeGraphOverlayObservation, inventoryRepository, worktreeBuildRequestObservation} from './inventory.js';
+import {
+  type CodeGraphOverlayObservation,
+  inventoryRepository,
+  inventoryRepositoryFromReusableCleanBase,
+  worktreeBuildRequestObservation,
+} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {codeGraphLayout} from './layout.js';
 import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
@@ -273,9 +278,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           }
                         }
                       }
-                      const cachedCommittedFileKeys = options.force
-                        ? new Set<string>()
-                        : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
@@ -293,14 +295,56 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         threadnoteHome: options.threadnoteHome,
                         treeSitter,
                       });
-                      const inventory = yield* inventoryRepository(identity, {
-                        ...options,
-                        cachedCommittedFileKeys,
-                        includeOpaqueCorpusAssets: ensureVectors,
-                        languagePacks,
-                        overlayObservation: inventoryOverlayObservation,
-                        onContentBatch: cacheCoalescer.onContentBatch,
-                        onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                      const inventory = yield* Effect.gen(function* () {
+                        const changedPathCount =
+                          inventoryOverlayObservation.changedPaths.length +
+                          inventoryOverlayObservation.deletedPaths.length;
+                        const reusableInventoryBase =
+                          !options.force &&
+                          options.incrementalOverlay !== false &&
+                          changedPathCount > 0 &&
+                          changedPathCount <= 200
+                            ? yield* store.reusableCleanBaseForCommit(
+                                layout.databasePath,
+                                identity.repositoryId,
+                                identity.headCommit,
+                              )
+                            : undefined;
+                        if (reusableInventoryBase !== undefined) {
+                          const targetedCachedFileKeys = yield* cachedFileKeys(
+                            store,
+                            layout.databasePath,
+                            languagePacks,
+                            options.onProgress,
+                            inventoryOverlayObservation.files,
+                          );
+                          const reusedInventory = yield* inventoryRepositoryFromReusableCleanBase(
+                            identity,
+                            reusableInventoryBase,
+                            {
+                              ...options,
+                              cachedCommittedFileKeys: targetedCachedFileKeys,
+                              includeOpaqueCorpusAssets: ensureVectors,
+                              languagePacks,
+                              overlayObservation: inventoryOverlayObservation,
+                              onContentBatch: cacheCoalescer.onContentBatch,
+                              onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                            },
+                          );
+                          if (Option.isSome(reusedInventory)) return reusedInventory.value;
+                        }
+                        const cachedCommittedFileKeys = options.force
+                          ? new Set<string>()
+                          : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
+                        return yield* inventoryRepository(identity, {
+                          ...options,
+                          cachedCommittedFileKeys,
+                          includeOpaqueCorpusAssets: ensureVectors,
+                          languagePacks,
+                          overlayObservation: inventoryOverlayObservation,
+                          onContentBatch: cacheCoalescer.onContentBatch,
+                          onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                        });
                       }).pipe(
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),

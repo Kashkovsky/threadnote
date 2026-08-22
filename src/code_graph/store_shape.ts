@@ -247,6 +247,7 @@ export interface CodeGraphStoreShape {
   readonly cachedCommittedFileKeys: (
     databasePath: string,
     extractorSet: string,
+    files?: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
   ) => Effect.Effect<ReadonlySet<string>, CodeGraphStoreError>;
   readonly loadCachedFacts: (
     databasePath: string,
@@ -443,6 +444,11 @@ export interface CodeGraphStoreShape {
     graphContentId?: string,
     preferredCommitGroups?: readonly (readonly string[])[],
     allowExtractorMismatch?: boolean,
+  ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
+  readonly reusableCleanBaseForCommit: (
+    databasePath: string,
+    repositoryId: string,
+    commit: string,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
   readonly reusableOverlayBase?: (
     databasePath: string,

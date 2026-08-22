@@ -6,6 +6,7 @@ import {
   type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
+import {encodeCodeGraphInventoryReuseReceipt} from './inventory_reuse.js';
 import {configureConnection} from './store_session.js';
 import {type CodeGraphSnapshot, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
 import {type CodeGraphActivationLease} from './store_internal_models.js';
@@ -400,13 +401,14 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           INSERT INTO snapshot_reuse_receipts (
             snapshot_id, format_version, resolution_surface_version, extractor_set,
             workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
-            reexport_count, created_at
+            reexport_count, inventory_receipt_json, created_at
           )
           SELECT
             ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             COUNT(*), COALESCE(SUM(CASE WHEN provenance = 'alias' THEN 1 ELSE 0 END), 0),
             (SELECT COUNT(*) FROM activation_reexport_provenance),
+            ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
             ${new Date().toISOString()}
           FROM activation_symbol_lookup
         `;

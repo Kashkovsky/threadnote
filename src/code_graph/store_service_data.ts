@@ -8,6 +8,7 @@ import {selectCachedCommittedFileKeys} from './store_query_core.js';
 import {stageActivationFiles, activationMode, type CodeGraphWriterGate} from './store_build_core.js';
 import {
   selectReusableBaseReceipt,
+  selectReusableCleanBaseForCommit,
   selectReadySnapshot,
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
@@ -115,6 +116,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'reusableBaseReceipt'
   | 'snapshotPackProvenance'
   | 'reusableCleanBase'
+  | 'reusableCleanBaseForCommit'
   | 'reusableOverlayBase'
   | 'reusableReexports'
   | 'relationshipSummaryForNode'
@@ -255,11 +257,11 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists => (exists ? useDatabase(databasePath, diagnoseDatabase()) : Effect.succeed(undefined))),
         Effect.mapError(cause => storeError('diagnose code graph database', cause)),
       ),
-    cachedCommittedFileKeys: (databasePath, extractorSet) =>
+    cachedCommittedFileKeys: (databasePath, extractorSet, files) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet))
+            ? useReadOnlyDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet, files))
             : Effect.succeed(new Set<string>()),
         ),
         Effect.mapError(cause => storeError('load cached code graph file keys', cause)),
@@ -618,6 +620,15 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
+      ),
+    reusableCleanBaseForCommit: (databasePath, repositoryId, commit) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommit(repositoryId, commit))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable clean code graph base for commit', cause)),
       ),
     reusableOverlayBase: (databasePath, repositoryId, extractorSet, overlayFingerprint) =>
       fs.exists(databasePath).pipe(

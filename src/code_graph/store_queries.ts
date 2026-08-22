@@ -4,6 +4,7 @@ import {type CodeGraphBlobReuseFile} from './blob_reuse.js';
 import {codeGraphUtf8ByteLength} from './disk_capacity.js';
 import {decodeStoredCodeGraphFact, storedCodeGraphFactRawBytesSql} from './fact_storage.js';
 import {compareCodeUnits} from './ordering.js';
+import {decodeCodeGraphInventoryReuseReceipt} from './inventory_reuse.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
@@ -271,6 +272,30 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
   return yield* loadFirstReusableCleanBase(legacyCandidates);
 });
 
+const selectReusableCleanBaseForCommit = Effect.fn('codeGraph.selectReusableCleanBaseForCommit')(function* (
+  repositoryId: string,
+  commit: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const candidates = yield* sql<SnapshotRow>`
+    SELECT snapshot.*
+    FROM snapshots AS snapshot
+    JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+    WHERE snapshot.repository_id = ${repositoryId}
+      AND snapshot.commit_id = ${commit}
+      AND snapshot.state = 'ready'
+      AND snapshot.dirty = 0
+      AND snapshot.base_snapshot_id IS NULL
+      AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+      AND receipt.resolution_surface_version = 1
+      AND receipt.inventory_receipt_json IS NOT NULL
+    ORDER BY snapshot.completed_at DESC, snapshot.id
+    LIMIT 8
+  `;
+  return yield* loadFirstReusableCleanBase(candidates);
+});
+
 const selectReusableOverlayBase = Effect.fn('codeGraph.selectReusableOverlayBase')(function* (
   repositoryId: string,
   extractorSet: string,
@@ -396,6 +421,7 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
     readonly file_set_fingerprint: string;
     readonly format_version: number;
     readonly lookup_count: number;
+    readonly inventory_receipt_json: string | null;
     readonly reexport_count: number;
     readonly resolution_surface_version: number;
     readonly snapshot_id: string;
@@ -457,11 +483,13 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
   ) {
     return undefined;
   }
+  const inventory = decodeCodeGraphInventoryReuseReceipt(row.inventory_receipt_json);
   return {
     aliasCount,
     fileSetFingerprint: row.file_set_fingerprint,
     formatVersion: Number(row.format_version),
     lookupCount,
+    ...(inventory === undefined ? {} : {inventory}),
     packProvenance,
     reexportCount,
     resolutionSurfaceVersion: Number(row.resolution_surface_version),
@@ -1173,6 +1201,7 @@ function compareEdgeRowsByPriority(left: EdgeRow, right: EdgeRow): number {
 
 export {
   selectReusableBaseReceipt,
+  selectReusableCleanBaseForCommit,
   selectAllEffectiveSymbols,
   SearchSymbolRow,
   compactLexicalTermBranch,

@@ -137,12 +137,54 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
 
-        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(12);
+        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(13);
         expect(observed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
         expect(observed.ready).toEqual({state: 'ready'});
         expect(observed.building).toEqual({state: 'building'});
         expect(observed.active).toEqual([{snapshot_id: SNAPSHOT_ID, worktree_id: WORKTREE_ID}]);
         expect(observed.cleanupDefinition).toEqual({sql: expect.stringMatching(/WITHOUT\s+ROWID/iu)});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('adds inventory reuse evidence when upgrading a revision 12 database', () =>
+    withFixture('threadnote-inventory-receipt-migration-', ({databasePath}) =>
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database.exec('ALTER TABLE snapshot_reuse_receipts DROP COLUMN inventory_receipt_json');
+            database
+              .query("UPDATE schema_metadata SET value = '12' WHERE key = 'persistent_extension_schema_revision'")
+              .run();
+          } finally {
+            database.close(false);
+          }
+        });
+
+        yield* store.initialize(databasePath);
+
+        const observed = yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            return {
+              columns: database
+                .query<{readonly name: string}, []>('PRAGMA table_info(snapshot_reuse_receipts)')
+                .all()
+                .map(row => row.name),
+              revision: database
+                .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+                .get(),
+            };
+          } finally {
+            database.close(false);
+          }
+        });
+
+        expect(observed.columns).toContain('inventory_receipt_json');
+        expect(observed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

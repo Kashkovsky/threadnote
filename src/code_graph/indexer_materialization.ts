@@ -1399,15 +1399,20 @@ export function cachedFileKeys(
   databasePath: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>,
+  files?: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
 ): Effect.Effect<ReadonlySet<string>, unknown> {
   return Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis;
-    const generations = codeGraphParserCacheLookupGenerations(languagePacks.cacheIdentities);
+    const cacheIdentities =
+      files === undefined
+        ? languagePacks.cacheIdentities
+        : languagePacks.activeCacheIdentities(files.map(file => file.path));
+    const generations = codeGraphParserCacheLookupGenerations(cacheIdentities);
     const sets = yield* Effect.forEach(
       generations,
       generation =>
         store
-          .cachedCommittedFileKeys(databasePath, generation.storedIdentity)
+          .cachedCommittedFileKeys(databasePath, generation.storedIdentity, files)
           .pipe(
             Effect.map(
               keys =>

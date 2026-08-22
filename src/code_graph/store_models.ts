@@ -6,6 +6,7 @@ import type {
   CodeGraphWorkspaceBuildSystem,
   CodeGraphWorkspaceComponentKind,
   CodeGraphWorkspaceProvenance,
+  CodeGraphWorkspace,
 } from './languages/types.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
@@ -20,11 +21,41 @@ import {
   type CodeGraphStoreError,
   type CodeGraphSymbol,
 } from './types.js';
+import {
+  CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
+  type CodeGraphInventoryExclusionReason,
+} from './inventory_policy.js';
 
 export const CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION = 2 as const;
+export const CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION = 1 as const;
+
+export interface CodeGraphInventoryPolicyExclusionReasonSummary {
+  readonly bytes: number;
+  readonly files: number;
+  readonly reason: CodeGraphInventoryExclusionReason;
+}
+
+export interface CodeGraphInventoryPolicyExclusionSummary {
+  readonly bytes: number;
+  readonly files: number;
+  readonly policyVersion: typeof CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION;
+  readonly reasons: readonly CodeGraphInventoryPolicyExclusionReasonSummary[];
+}
+
+export interface CodeGraphInventoryReuseReceipt {
+  readonly contract: string;
+  readonly diagnostics: readonly string[];
+  readonly environmentFingerprint: string;
+  readonly includeOpaqueCorpusAssets: boolean;
+  readonly policyExclusions: CodeGraphInventoryPolicyExclusionSummary;
+  readonly skipped: number;
+  readonly version: typeof CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION;
+  readonly workspace: CodeGraphWorkspace;
+}
 
 export interface CodeGraphReusableBaseReceiptInput {
   readonly fileSetFingerprint: string;
+  readonly inventory?: CodeGraphInventoryReuseReceipt;
   readonly packProvenance: readonly CodeGraphLanguagePackProvenance[];
   readonly workspaceFingerprint: string;
 }

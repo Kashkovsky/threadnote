@@ -152,9 +152,18 @@ function reusableFileBlobFirstDonorSubquery(): string {
       AND json_extract(donor.facts_json, '$.path') = donor.path_hint`;
 }
 
-export function codeGraphCachedCommittedFileKeysStatement(extractorSet: string): CodeGraphSqlQueryStatement {
+export function codeGraphCachedCommittedFileKeysStatement(
+  extractorSet: string,
+  files?: readonly {readonly contentHash: string; readonly path: string}[],
+): CodeGraphSqlQueryStatement {
+  const targetPredicate =
+    files === undefined
+      ? ''
+      : files.length === 0
+        ? ' AND 0'
+        : ` AND (${files.map(() => '(path_hint = ? AND content_hash = ?)').join(' OR ')})`;
   return {
-    parameters: [extractorSet],
+    parameters: [extractorSet, ...(files?.flatMap(file => [file.path, file.contentHash]) ?? [])],
     text: `SELECT
       CASE
         WHEN typeof(blob_id) = 'text' AND length(CAST(blob_id AS BLOB)) IN (40, 64) THEN blob_id
@@ -167,16 +176,17 @@ export function codeGraphCachedCommittedFileKeysStatement(extractorSet: string):
         ELSE NULL
       END AS reuse_class
     FROM ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE}
-    WHERE extractor_set = ?`,
+    WHERE extractor_set = ?${targetPredicate}`,
   };
 }
 
 const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommittedFileKeys')(function* (
   extractorSet: string,
+  files?: readonly {readonly contentHash: string; readonly path: string}[],
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  const statement = codeGraphCachedCommittedFileKeysStatement(extractorSet);
+  const statement = codeGraphCachedCommittedFileKeysStatement(extractorSet, files);
   const rows = yield* sql.unsafe<{
     readonly blob_id: unknown;
     readonly content_hash: string;
