@@ -46,6 +46,18 @@ bun run bench:code-graph:heavy-tail -- --smoke \
   --output artifacts/code-graph-heavy-tail-smoke.json
 ```
 
+`--ratchet <path>` applies a reviewed, versioned JSON ratchet to the completed artifact. It is independent of the
+portable `--fail-on-budget` fixture gate and is therefore available to production-large and external-repository runs.
+A ratchet binds exact primitive `environment` and `metadata` conditions plus `suite`, then names every independently
+guarded measurement with its unit and one or more bounds. Environment conditions must include `fixtureHash`, `node`,
+`runner`, and `runnerVersion`; metadata conditions must include `runnerClass`, `runtimePlatform`, and `vectorEnabled`.
+Supported bounds are `maximum`, `minimum`, `meanMaximum`, `p50Maximum`,
+`p95Maximum`, or `p99Maximum`. `samplesMinimum` can require distributional support. Missing or duplicate measurements,
+unit drift, condition mismatches, unknown fields, and every exceeded bound fail closed. Ratchet updates require
+reviewed repeated before/after evidence and rationale; do not widen a limit to make a regression pass. `--output` is
+required with `--ratchet`; a provenance-valid artifact is written before a ratchet failure is reported so the
+regression remains reviewable.
+
 ### Cross-repository workset contract
 
 The workset fixture scales one deterministic set of repository archetypes into prefix worksets. Sizes 1, 8, 32, 64,

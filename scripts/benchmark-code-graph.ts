@@ -498,6 +498,8 @@ const benchmarkCodeGraph = Effect.scoped(
       process.env[THREADNOTE_EMBEDDING_CONTEXTS_ENV] = String(options.embeddingContexts);
     }
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
+    const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
+    if (ratchet !== undefined) validateCodeGraphBenchmarkRatchet(ratchet);
     const runtimeProvenanceRequired =
       options.profile === 'production-large' ||
       options.repository !== undefined ||
@@ -1734,6 +1736,18 @@ const benchmarkCodeGraph = Effect.scoped(
       );
       enforceCodeGraphBenchmarkBudget(artifact, yield* readJsonFile(budgetPath), options.scaleSymbols);
     }
+    const ratchetFailure =
+      ratchet === undefined
+        ? undefined
+        : yield* Effect.try({
+            catch: cause => scriptError(cause, 'Code graph performance ratchet failed.'),
+            try: () => enforceCodeGraphBenchmarkRatchet(artifact, ratchet),
+          }).pipe(
+            Effect.match({
+              onFailure: failure => failure,
+              onSuccess: () => undefined,
+            }),
+          );
     if (runtimeProvenanceRequired) {
       const finalRuntimeProvenance = yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot);
       if (JSON.stringify(finalRuntimeProvenance) !== JSON.stringify(runtimeProvenance)) {
@@ -1755,6 +1769,7 @@ const benchmarkCodeGraph = Effect.scoped(
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
+    if (ratchetFailure) return yield* Effect.fail(ratchetFailure);
     if (!options.quiet) yield* printJson(artifact);
   }),
 );
@@ -5055,6 +5070,7 @@ export interface CodeGraphBenchmarkOptions {
   readonly profileSymbols?: number;
   readonly queryText?: string;
   readonly quiet: boolean;
+  readonly ratchetPath?: string;
   readonly referenceHomePath?: string;
   readonly repository?: string;
   readonly retainHomes: boolean;
@@ -5084,6 +5100,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let profileSymbols: number | undefined;
   let queryText: string | undefined;
   let quiet = false;
+  let ratchetPath: string | undefined;
   let referenceHomePath: string | undefined;
   let repository: string | undefined;
   let retainHomes = false;
@@ -5135,6 +5152,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
       sqliteWriterProfile = value as CodeGraphSqliteWriterProfile;
     } else if (argument === '--warmups') warmups = integer(args[++index], argument, 0);
     else if (argument === '--fail-on-budget') failOnBudget = true;
+    else if (argument === '--ratchet') ratchetPath = required(args[++index], argument);
     else if (argument === '--preflight') preflight = true;
     else if (argument === '--retain-homes') retainHomes = true;
     else if (argument === '--vectors') vectors = true;
@@ -5169,6 +5187,12 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   }
   if (embeddingContexts !== undefined && failOnBudget) {
     throw new ScriptError('Embedding-context candidates retain comparison evidence and cannot use production budgets.');
+  }
+  if (preflight && ratchetPath !== undefined) {
+    throw new ScriptError('--ratchet evaluates a completed artifact and cannot be combined with --preflight.');
+  }
+  if (ratchetPath !== undefined && outputPath === undefined) {
+    throw new ScriptError('--ratchet requires --output so failed evidence remains reviewable.');
   }
   const legacyControlValues = [queryText, expectedPath, expectedLanguage].filter(value => value !== undefined).length;
   if (structuredControls.length > 0 && legacyControlValues > 0) {
@@ -5237,6 +5261,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     profileSymbols,
     queryText: externalControls[0]?.query,
     quiet,
+    ratchetPath,
     referenceHomePath,
     repository,
     retainHomes,
@@ -6283,6 +6308,263 @@ function benchmarkComparisonKey(input: {
   return [input.runnerClass, input.operatingSystem, input.architecture, input.cpu, input.memoryBytes]
     .map(value => String(value).trim().replace(/\s+/g, ' '))
     .join('|');
+}
+
+type BenchmarkRatchetPrimitive = boolean | number | string;
+type BenchmarkMeasurementUnit = BenchmarkArtifactV1['measurements'][number]['unit'];
+
+interface CodeGraphBenchmarkMeasurementRatchetV1 {
+  readonly meanMaximum?: number;
+  readonly maximum?: number;
+  readonly minimum?: number;
+  readonly p50Maximum?: number;
+  readonly p95Maximum?: number;
+  readonly p99Maximum?: number;
+  readonly samplesMinimum?: number;
+  readonly unit: BenchmarkMeasurementUnit;
+}
+
+interface CodeGraphBenchmarkRatchetV1 {
+  readonly environment: Readonly<Record<string, BenchmarkRatchetPrimitive>>;
+  readonly measurements: Readonly<Record<string, CodeGraphBenchmarkMeasurementRatchetV1>>;
+  readonly metadata: Readonly<Record<string, BenchmarkRatchetPrimitive>>;
+  readonly suite: string;
+  readonly version: 1;
+}
+
+const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
+  'bytes',
+  'count',
+  'milliseconds',
+  'operations_per_second',
+  'percent',
+]);
+
+/**
+ * Enforces independent bounds for every measurement named by a reviewed
+ * ratchet. Conditions bind the limits to one suite, fixture, and runner class;
+ * unrelated or partial artifacts fail closed instead of silently skipping a
+ * threshold.
+ */
+export function enforceCodeGraphBenchmarkRatchet(artifact: BenchmarkArtifactV1, value: unknown): void {
+  const ratchet = parseCodeGraphBenchmarkRatchet(value);
+  const failures: string[] = [];
+  if (artifact.suite !== ratchet.suite) {
+    failures.push(`suite ${JSON.stringify(artifact.suite)} does not match ${JSON.stringify(ratchet.suite)}`);
+  }
+  for (const [name, expected] of Object.entries(ratchet.environment).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const actual = artifact.environment[name as keyof BenchmarkArtifactV1['environment']];
+    if (actual !== expected) {
+      failures.push(`environment.${name} ${formatRatchetValue(actual)} does not match ${formatRatchetValue(expected)}`);
+    }
+  }
+  for (const [name, expected] of Object.entries(ratchet.metadata).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const actual = artifact.metadata[name];
+    if (actual !== expected) {
+      failures.push(`metadata.${name} ${formatRatchetValue(actual)} does not match ${formatRatchetValue(expected)}`);
+    }
+  }
+  const measurementsByName = new Map<string, BenchmarkArtifactV1['measurements'][number][]>();
+  for (const measurement of artifact.measurements) {
+    const matches = measurementsByName.get(measurement.name) ?? [];
+    matches.push(measurement);
+    measurementsByName.set(measurement.name, matches);
+  }
+  for (const [name, limit] of Object.entries(ratchet.measurements).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const matches = measurementsByName.get(name) ?? [];
+    if (matches.length === 0) {
+      failures.push(`${name} measurement is missing`);
+      continue;
+    }
+    if (matches.length !== 1) {
+      failures.push(`${name} measurement occurs ${matches.length} times instead of exactly once`);
+      continue;
+    }
+    const measurement = matches[0]!;
+    if (measurement.unit !== limit.unit) {
+      failures.push(`${name} unit ${measurement.unit} does not match ${limit.unit}`);
+      continue;
+    }
+    if (limit.samplesMinimum !== undefined && measurement.samples < limit.samplesMinimum) {
+      failures.push(`${name} has ${measurement.samples} samples, below ${limit.samplesMinimum}`);
+    }
+    if (limit.maximum !== undefined && measurement.maximum > limit.maximum) {
+      failures.push(`${name} maximum ${measurement.maximum} exceeds ${limit.maximum}`);
+    }
+    if (limit.meanMaximum !== undefined && measurement.mean > limit.meanMaximum) {
+      failures.push(`${name} mean ${measurement.mean} exceeds ${limit.meanMaximum}`);
+    }
+    if (limit.p50Maximum !== undefined && measurement.p50 > limit.p50Maximum) {
+      failures.push(`${name} p50 ${measurement.p50} exceeds ${limit.p50Maximum}`);
+    }
+    if (limit.p95Maximum !== undefined && measurement.p95 > limit.p95Maximum) {
+      failures.push(`${name} p95 ${measurement.p95} exceeds ${limit.p95Maximum}`);
+    }
+    if (limit.p99Maximum !== undefined && measurement.p99 > limit.p99Maximum) {
+      failures.push(`${name} p99 ${measurement.p99} exceeds ${limit.p99Maximum}`);
+    }
+    if (limit.minimum !== undefined && measurement.minimum < limit.minimum) {
+      failures.push(`${name} minimum ${measurement.minimum} is below ${limit.minimum}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new ScriptError(`Code graph performance ratchet failed: ${failures.join('; ')}`);
+  }
+}
+
+export function validateCodeGraphBenchmarkRatchet(value: unknown): void {
+  parseCodeGraphBenchmarkRatchet(value);
+}
+
+function parseCodeGraphBenchmarkRatchet(value: unknown): CodeGraphBenchmarkRatchetV1 {
+  const ratchet = ratchetRecord(value, 'Code graph performance ratchet');
+  rejectRatchetUnknownKeys(ratchet, ['environment', 'measurements', 'metadata', 'suite', 'version'], 'ratchet');
+  if (ratchet.version !== 1) throw new ScriptError('Code graph performance ratchet version must be 1.');
+  if (typeof ratchet.suite !== 'string' || ratchet.suite.trim().length === 0) {
+    throw new ScriptError('Code graph performance ratchet suite must be a non-empty string.');
+  }
+  const measurements = ratchetRecord(ratchet.measurements, 'Code graph performance ratchet measurements');
+  const measurementEntries = Object.entries(measurements);
+  if (measurementEntries.length === 0) {
+    throw new ScriptError('Code graph performance ratchet must constrain at least one measurement.');
+  }
+  const parsedMeasurements = Object.create(null) as Record<string, CodeGraphBenchmarkMeasurementRatchetV1>;
+  for (const [name, rawLimit] of measurementEntries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (name.trim().length === 0) {
+      throw new ScriptError('Code graph performance ratchet measurement names must be non-empty.');
+    }
+    const limit = ratchetRecord(rawLimit, `Code graph performance ratchet measurement ${name}`);
+    rejectRatchetUnknownKeys(
+      limit,
+      ['maximum', 'meanMaximum', 'minimum', 'p50Maximum', 'p95Maximum', 'p99Maximum', 'samplesMinimum', 'unit'],
+      `measurement ${name}`,
+    );
+    if (typeof limit.unit !== 'string' || !BENCHMARK_RATCHET_UNITS.has(limit.unit as BenchmarkMeasurementUnit)) {
+      throw new ScriptError(`Code graph performance ratchet measurement ${name} has an invalid unit.`);
+    }
+    const minimum = optionalRatchetThreshold(limit.minimum, name, 'minimum');
+    const maximum = optionalRatchetThreshold(limit.maximum, name, 'maximum');
+    const meanMaximum = optionalRatchetThreshold(limit.meanMaximum, name, 'meanMaximum');
+    const p50Maximum = optionalRatchetThreshold(limit.p50Maximum, name, 'p50Maximum');
+    const p95Maximum = optionalRatchetThreshold(limit.p95Maximum, name, 'p95Maximum');
+    const p99Maximum = optionalRatchetThreshold(limit.p99Maximum, name, 'p99Maximum');
+    if (
+      minimum === undefined &&
+      maximum === undefined &&
+      meanMaximum === undefined &&
+      p50Maximum === undefined &&
+      p95Maximum === undefined &&
+      p99Maximum === undefined
+    ) {
+      throw new ScriptError(`Code graph performance ratchet measurement ${name} requires at least one bound.`);
+    }
+    if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
+      throw new ScriptError(`Code graph performance ratchet measurement ${name} has minimum above maximum.`);
+    }
+    const samplesMinimum = limit.samplesMinimum;
+    if (
+      samplesMinimum !== undefined &&
+      (typeof samplesMinimum !== 'number' || !Number.isSafeInteger(samplesMinimum) || samplesMinimum < 1)
+    ) {
+      throw new ScriptError(
+        `Code graph performance ratchet measurement ${name} samplesMinimum must be a positive integer.`,
+      );
+    }
+    parsedMeasurements[name] = {
+      ...(maximum === undefined ? {} : {maximum}),
+      ...(meanMaximum === undefined ? {} : {meanMaximum}),
+      ...(minimum === undefined ? {} : {minimum}),
+      ...(p50Maximum === undefined ? {} : {p50Maximum}),
+      ...(p95Maximum === undefined ? {} : {p95Maximum}),
+      ...(p99Maximum === undefined ? {} : {p99Maximum}),
+      ...(samplesMinimum === undefined ? {} : {samplesMinimum}),
+      unit: limit.unit as BenchmarkMeasurementUnit,
+    };
+  }
+  const environment = parseRatchetConditions(ratchet.environment, 'environment');
+  const metadata = parseRatchetConditions(ratchet.metadata, 'metadata');
+  requireRatchetConditionKeys(environment, ['fixtureHash', 'node', 'runner', 'runnerVersion'], 'environment');
+  requireRatchetConditionKeys(metadata, ['runnerClass', 'runtimePlatform', 'vectorEnabled'], 'metadata');
+  return {
+    environment,
+    measurements: parsedMeasurements,
+    metadata,
+    suite: ratchet.suite,
+    version: 1,
+  };
+}
+
+function parseRatchetConditions(
+  value: unknown,
+  label: 'environment' | 'metadata',
+): Readonly<Record<string, BenchmarkRatchetPrimitive>> {
+  if (value === undefined) return {};
+  const conditions = ratchetRecord(value, `Code graph performance ratchet ${label}`);
+  const parsed = Object.create(null) as Record<string, BenchmarkRatchetPrimitive>;
+  for (const [name, expected] of Object.entries(conditions).sort(([left], [right]) => left.localeCompare(right))) {
+    if (
+      name.trim().length === 0 ||
+      (typeof expected !== 'boolean' && typeof expected !== 'string' && typeof expected !== 'number') ||
+      (typeof expected === 'number' && !Number.isFinite(expected))
+    ) {
+      throw new ScriptError(`Code graph performance ratchet ${label}.${name || '<empty>'} must be a finite primitive.`);
+    }
+    parsed[name] = expected;
+  }
+  return parsed;
+}
+
+function ratchetRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ScriptError(`${label} must be an object.`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function requireRatchetConditionKeys(
+  conditions: Readonly<Record<string, BenchmarkRatchetPrimitive>>,
+  required: readonly string[],
+  label: 'environment' | 'metadata',
+): void {
+  const missing = required.filter(name => !(name in conditions));
+  if (missing.length > 0) {
+    throw new ScriptError(`Code graph performance ratchet ${label} is missing condition(s): ${missing.join(', ')}.`);
+  }
+}
+
+function rejectRatchetUnknownKeys(
+  value: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const unknown = Object.keys(value)
+    .filter(key => !allowed.includes(key))
+    .sort();
+  if (unknown.length > 0) {
+    throw new ScriptError(`Code graph performance ${label} has unknown field(s): ${unknown.join(', ')}.`);
+  }
+}
+
+function optionalRatchetThreshold(
+  value: unknown,
+  name: string,
+  bound: 'maximum' | 'meanMaximum' | 'minimum' | 'p50Maximum' | 'p95Maximum' | 'p99Maximum',
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new ScriptError(`Code graph performance ratchet measurement ${name} ${bound} must be non-negative finite.`);
+  }
+  return value;
+}
+
+function formatRatchetValue(value: unknown): string {
+  return value === undefined ? '<missing>' : JSON.stringify(value);
 }
 
 export function enforceCodeGraphBenchmarkBudget(

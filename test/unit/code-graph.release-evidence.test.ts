@@ -10,6 +10,7 @@ import {
   assertExternalRepositoryEvidence,
   assertProductionReleaseEvidence,
   enforceCodeGraphBenchmarkBudget,
+  enforceCodeGraphBenchmarkRatchet,
   externalSamplerMeasurements,
   indexPhaseMeasurements,
   materializationStorageMeasurements,
@@ -962,6 +963,133 @@ describe('code graph release evidence', () => {
     };
     expect(() => enforceCodeGraphBenchmarkBudget(regressed, budget, undefined)).toThrow(
       /one-file-reindex-materialization/,
+    );
+  });
+
+  it('ratchets every named metric independently and binds it to exact evidence conditions', () => {
+    const artifact = benchmarkArtifact(
+      [
+        benchmarkMeasurement('cold-index', 'milliseconds', [10]),
+        benchmarkMeasurement('one-file-reindex-index', 'milliseconds', [5]),
+        benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', [1, 2, 3, 4]),
+        benchmarkMeasurement('structural-graph-digest-parity', 'count', [0]),
+        benchmarkMeasurement('incremental-process-peak-rss', 'bytes', [100]),
+      ],
+      {runnerClass: 'pinned-test', runtimePlatform: 'linux', vectorEnabled: false},
+      'code-graph-production-large-v2',
+    );
+    const ratchet = {
+      environment: {
+        architecture: 'arm64',
+        fixtureHash: 'fixture',
+        node: 'bun/test',
+        runner: 'threadnote-code-graph-e2e',
+        runnerVersion: '1',
+      },
+      measurements: {
+        'cold-index': {maximum: 9, unit: 'milliseconds'},
+        'hot-exact-lexical-query': {p50Maximum: 2, p95Maximum: 3, unit: 'milliseconds'},
+        'incremental-process-peak-rss': {maximum: 110, unit: 'count'},
+        'one-file-reindex-index': {maximum: 5, samplesMinimum: 2, unit: 'milliseconds'},
+        'primary-query-structural-parity': {minimum: 1, unit: 'count'},
+        'structural-graph-digest-parity': {minimum: 1, unit: 'count'},
+      },
+      metadata: {runnerClass: 'different-runner', runtimePlatform: 'linux', vectorEnabled: false},
+      suite: 'code-graph-production-large-v2',
+      version: 1,
+    };
+
+    let message = '';
+    try {
+      enforceCodeGraphBenchmarkRatchet(artifact, ratchet);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('environment.architecture "x64" does not match "arm64"');
+    expect(message).toContain('metadata.runnerClass "pinned-test" does not match "different-runner"');
+    expect(message).toContain('cold-index maximum 10 exceeds 9');
+    expect(message).toContain('hot-exact-lexical-query p50 3 exceeds 2');
+    expect(message).toContain('hot-exact-lexical-query p95 4 exceeds 3');
+    expect(message).toContain('incremental-process-peak-rss unit bytes does not match count');
+    expect(message).toContain('one-file-reindex-index has 1 samples, below 2');
+    expect(message).toContain('primary-query-structural-parity measurement is missing');
+    expect(message).toContain('structural-graph-digest-parity minimum 0 is below 1');
+  });
+
+  it('rejects incomplete or ambiguous ratchet configurations before comparing evidence', () => {
+    const artifact = benchmarkArtifact([benchmarkMeasurement('cold-index', 'milliseconds', [10])]);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(artifact, {
+        measurements: {'cold-index': {unit: 'milliseconds'}},
+        suite: 'code-graph-v1',
+        version: 1,
+      }),
+    ).toThrow(/requires at least one bound/);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(artifact, {
+        measurements: {'cold-index': {maximum: 20, typoMaximum: 30, unit: 'milliseconds'}},
+        suite: 'code-graph-v1',
+        version: 1,
+      }),
+    ).toThrow(/unknown field.*typoMaximum/);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        {...artifact, measurements: [...artifact.measurements, ...artifact.measurements]},
+        {
+          environment: {
+            fixtureHash: 'fixture',
+            node: 'bun/test',
+            runner: 'threadnote-code-graph-e2e',
+            runnerVersion: '1',
+          },
+          measurements: {'cold-index': {maximum: 20, unit: 'milliseconds'}},
+          metadata: {runnerClass: 'test', runtimePlatform: 'linux', vectorEnabled: false},
+          suite: 'code-graph-v1',
+          version: 1,
+        },
+      ),
+    ).toThrow(/occurs 2 times instead of exactly once/);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(artifact, {
+        measurements: {'cold-index': {maximum: 20, unit: 'milliseconds'}},
+        suite: 'code-graph-v1',
+        version: 1,
+      }),
+    ).toThrow(/environment is missing condition/);
+  });
+
+  it('is invariant to artifact measurement order for arbitrary bounded exact ratchets', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({max: 1_000_000, min: 0}), {maxLength: 30, minLength: 1}), values => {
+        const measurements = values.map((value, index) =>
+          benchmarkMeasurement(`metric-${index}`, index % 2 === 0 ? 'milliseconds' : 'bytes', [value]),
+        );
+        const ratchet = {
+          environment: {
+            fixtureHash: 'fixture',
+            node: 'bun/test',
+            runner: 'threadnote-code-graph-e2e',
+            runnerVersion: '1',
+          },
+          measurements: Object.fromEntries(
+            measurements.map(measurement => [
+              measurement.name,
+              {maximum: measurement.maximum, minimum: measurement.minimum, unit: measurement.unit},
+            ]),
+          ),
+          metadata: {runnerClass: 'test', runtimePlatform: 'linux', vectorEnabled: false},
+          suite: 'code-graph-v1',
+          version: 1,
+        };
+        const metadata = {runnerClass: 'test', runtimePlatform: 'linux', vectorEnabled: false};
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(benchmarkArtifact(measurements, metadata), ratchet),
+        ).not.toThrow();
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(benchmarkArtifact([...measurements].reverse(), metadata), ratchet),
+        ).not.toThrow();
+      }),
+      {numRuns: 100},
     );
   });
 

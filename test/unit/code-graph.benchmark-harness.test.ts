@@ -269,6 +269,18 @@ describe('code graph external benchmark harness', () => {
     expect(source.match(/sampleProcessTree\s*\? startExternalSampler/g)).toHaveLength(3);
   });
 
+  it('retains provenance-valid artifact evidence before reporting a ratchet regression', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    const finalization = sourceSlice(source, 'const ratchetFailure =', 'if (!options.quiet)');
+    expectInOrder(finalization, [
+      'enforceCodeGraphBenchmarkRatchet(artifact, ratchet)',
+      'validateBenchmarkRuntimeProvenance(threadnoteSourceRoot)',
+      'verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit)',
+      'atomicWrite(options.outputPath',
+      'if (ratchetFailure) return yield* Effect.fail(ratchetFailure)',
+    ]);
+  });
+
   it('retains privacy-safe structural parity evidence before a failed external run exits', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     const analysisParity = sourceSlice(source, 'if (!analysisComplete)', 'const structuralGraphParityEvidence');
@@ -325,6 +337,20 @@ describe('code graph external benchmark harness', () => {
       referenceHomePath: '/tmp/reference-home',
       retainHomes: true,
     });
+    expect(
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--ratchet',
+        '/tmp/production-large-ratchet.json',
+        '--output',
+        '/tmp/production-large.json',
+      ]).ratchetPath,
+    ).toBe('/tmp/production-large-ratchet.json');
+    expect(() => parseCodeGraphBenchmarkArguments(['--preflight', '--ratchet', '/tmp/ratchet.json'])).toThrow(
+      'cannot be combined with --preflight',
+    );
+    expect(() => parseCodeGraphBenchmarkArguments(['--ratchet', '/tmp/ratchet.json'])).toThrow('requires --output');
   });
 
   it('selects explicit SQLite writer candidates without exposing production environment knobs', () => {
