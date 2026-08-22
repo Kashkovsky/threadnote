@@ -78,10 +78,9 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
     return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build ownership is required.'));
   }
   // Persistent full builds keep repository-sized facts in durable tables.
-  // Their connection-private tables are bounded to the current resolution page
-  // plus the immediately preceding page's lookup summaries. Retaining those
-  // small B-trees in memory avoids temp-file pager and journal I/O without
-  // risking repository-proportional RSS.
+  // Their connection-private tables are bounded to one resolution page, so
+  // retaining those small B-trees in memory avoids temp-file pager and journal
+  // I/O without risking repository-proportional RSS.
   yield* sql.unsafe('PRAGMA temp_store = MEMORY');
   yield* configureReconstructibleBuildDurability(sql);
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);

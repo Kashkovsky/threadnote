@@ -100,7 +100,6 @@ export {codeGraphWorktreeReconciliationCandidatePageStatement} from './store_rec
 export {
   codeGraphPersistentReferencePageStatement,
   codeGraphPersistedDeltaResolutionPageStatement,
-  codeGraphPruneLookupSummariesStatement,
 } from './store_resolution_core.js';
 export {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
 export {type CodeGraphPersistentReferencePageLimits} from './store_staging_core.js';

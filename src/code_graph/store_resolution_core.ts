@@ -487,16 +487,6 @@ function decodePersistedReferenceCandidateRows(
   });
 }
 
-/** Retain exactly the preceding lookup summaries requested by the current page. */
-export function codeGraphPruneLookupSummariesStatement(): string {
-  return `DELETE FROM activation_resolution_lookup_page
-    WHERE NOT EXISTS (
-      SELECT 1
-      FROM activation_resolution_candidate_page AS candidate
-      WHERE candidate.lookup_key = activation_resolution_lookup_page.lookup_key
-    )`;
-}
-
 /** @internal Exposed so regression tests can verify the SQLite access plan. */
 export function codeGraphPersistedDeltaResolutionPageStatement(
   baseSnapshotId: string,
