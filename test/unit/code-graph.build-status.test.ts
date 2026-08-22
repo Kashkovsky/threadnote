@@ -365,6 +365,13 @@ describe('code graph cross-process build status', () => {
     );
 
     expect(observations.second.resolution?.activity.pass).toBe(2);
+    expect(observations.second.resolution?.activity.transactionStageMilliseconds).toEqual({
+      preparingBatch: 5,
+      retiringReferences: 5,
+      updatingAnalysis: 10,
+      writingAliases: 0,
+      writingEdges: 30,
+    });
     expect(observations.second.resolution?.activity.startedAt).toBe(observations.first.resolution?.activity.startedAt);
     expect(observations.second.timestamps.phaseStartedAt).toBe(observations.first.timestamps.phaseStartedAt);
   });
@@ -954,6 +961,13 @@ function resolutionActivity(
     referencesTotal: 10_000,
     resolved: 3,
     transactionMilliseconds: 50,
+    transactionStageMilliseconds: {
+      preparingBatch: 5,
+      retiringReferences: 5,
+      updatingAnalysis: 10,
+      writingAliases: 0,
+      writingEdges: 30,
+    },
     ...overrides,
   };
 }

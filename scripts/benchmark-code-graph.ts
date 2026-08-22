@@ -299,6 +299,14 @@ const INCREMENTAL_STAGED_ACTIVATION_STAGES = [
 
 const ACTIVATION_COPY_STAGES = ACTIVATION_STAGES.filter(stage => stage.startsWith('copying-'));
 
+const RESOLUTION_TRANSACTION_STAGES = [
+  ['preparingBatch', 'preparing-batch'],
+  ['writingAliases', 'writing-aliases'],
+  ['writingEdges', 'writing-edges'],
+  ['updatingAnalysis', 'updating-analysis'],
+  ['retiringReferences', 'retiring-references'],
+] as const;
+
 const ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'one-file-reindex'] as const).flatMap(prefix => [
   {name: `${prefix}-activation-observed-stages-n1`, unit: 'count'} as const,
   {name: `${prefix}-activation-longest-transaction-n1`, unit: 'milliseconds'} as const,
@@ -1903,6 +1911,10 @@ export class IndexPhaseTimeline {
   #referenceResolutionPassesObserved = 0;
   #referenceResolutionReferencesExamined = 0;
   #referenceResolutionResolved = 0;
+  readonly #referenceResolutionTransactionStageMilliseconds = new Map<
+    (typeof RESOLUTION_TRANSACTION_STAGES)[number][0],
+    number
+  >();
   #referenceResolutionTransactionMilliseconds = 0;
   #sqliteDurableDatabaseHighWaterBytes = 0;
   #sqliteTemporaryDatabaseHighWaterBytes = 0;
@@ -2020,6 +2032,15 @@ export class IndexPhaseTimeline {
               this.#referenceResolutionTransactionMilliseconds,
               progress.activity.transactionMilliseconds,
             );
+            for (const [stage] of RESOLUTION_TRANSACTION_STAGES) {
+              const milliseconds = progress.activity.transactionStageMilliseconds?.[stage];
+              if (milliseconds !== undefined) {
+                this.#referenceResolutionTransactionStageMilliseconds.set(
+                  stage,
+                  Math.max(this.#referenceResolutionTransactionStageMilliseconds.get(stage) ?? 0, milliseconds),
+                );
+              }
+            }
           }
         } else this.#set('resolving:complete', at, telemetry);
         break;
@@ -2153,6 +2174,12 @@ export class IndexPhaseTimeline {
 
   referenceResolutionTransactionMilliseconds(): number {
     return this.#referenceResolutionTransactionMilliseconds;
+  }
+
+  referenceResolutionTransactionStageMilliseconds(
+    stage: (typeof RESOLUTION_TRANSACTION_STAGES)[number][0],
+  ): number | undefined {
+    return this.#referenceResolutionTransactionStageMilliseconds.get(stage);
   }
 
   sqliteTemporaryDatabaseHighWaterBytes(): number {
@@ -2302,6 +2329,11 @@ export function indexPhaseMeasurements(
     benchmarkMeasurement(`${prefix}-reference-resolution-transactions-n1`, 'milliseconds', [
       timeline.referenceResolutionTransactionMilliseconds(),
     ]),
+    ...RESOLUTION_TRANSACTION_STAGES.map(([stage, measurement]) =>
+      benchmarkMeasurement(`${prefix}-reference-resolution-transaction-stage-${measurement}-n1`, 'milliseconds', [
+        timeline.referenceResolutionTransactionStageMilliseconds(stage) ?? 0,
+      ]),
+    ),
     benchmarkMeasurement(`${prefix}-reference-resolution-pages-n1`, 'count', [
       timeline.referenceResolutionPagesCompleted(),
     ]),

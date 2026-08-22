@@ -155,7 +155,19 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   let passesCompleted = 0;
   let referencesExamined = 0;
   let resolved = 0;
+  let transactionPreparingBatchMilliseconds = 0;
+  let transactionRetiringReferencesMilliseconds = 0;
+  let transactionUpdatingAnalysisMilliseconds = 0;
   let transactionMilliseconds = 0;
+  let transactionWritingAliasesMilliseconds = 0;
+  let transactionWritingEdgesMilliseconds = 0;
+  const transactionStageMilliseconds = () => ({
+    preparingBatch: transactionPreparingBatchMilliseconds,
+    retiringReferences: transactionRetiringReferencesMilliseconds,
+    updatingAnalysis: transactionUpdatingAnalysisMilliseconds,
+    writingAliases: transactionWritingAliasesMilliseconds,
+    writingEdges: transactionWritingEdgesMilliseconds,
+  });
   const preparationCountStartedAt = yield* Clock.currentTimeMillis;
   const preparationCountRows = persistentFull
     ? yield* sql<PersistedFullReferenceTotalsRow>`
@@ -191,6 +203,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         referencesTotal: preparationReferencesTotal,
         resolved: 0,
         transactionMilliseconds: 0,
+        transactionStageMilliseconds: transactionStageMilliseconds(),
       });
     });
   // Report before any closure work, then once per bounded alias seed page. A
@@ -253,6 +266,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       referencesTotal,
       resolved,
       transactionMilliseconds,
+      transactionStageMilliseconds: transactionStageMilliseconds(),
     }) ?? Effect.void;
     yield* Effect.yieldNow;
     for (;;) {
@@ -359,6 +373,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             referencesTotal,
             resolved,
             transactionMilliseconds,
+            transactionStageMilliseconds: transactionStageMilliseconds(),
           }) ?? Effect.void;
           yield* Effect.yieldNow;
         }
@@ -522,6 +537,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         const transactionStartedAt = yield* Clock.currentTimeMillis;
         const transaction = sql.withTransaction(
           Effect.gen(function* () {
+            let transactionStageStartedAt = yield* Clock.currentTimeMillis;
             if (mode?.mode === 'persisted-full') {
               yield* assertPersistentBuildOwner(sql, mode.snapshotId, mode.ownerToken);
             }
@@ -545,6 +561,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             if (mode?.mode === 'persisted-full') {
               yield* capturePersistedAnalysisResolutionEdges(sql, mode.snapshotId);
             }
+            transactionPreparingBatchMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            transactionStageStartedAt = yield* Clock.currentTimeMillis;
             for (const batch of chunk(aliases, 500)) {
               if (persistentFull) {
                 yield* sql.unsafe(
@@ -564,6 +582,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                 );
               }
             }
+            transactionWritingAliasesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            transactionStageStartedAt = yield* Clock.currentTimeMillis;
             if (persistentFull) {
               yield* sql.unsafe(
                 `INSERT OR REPLACE INTO edges (
@@ -592,7 +612,11 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                    AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)`,
                 [persistentFull.snapshotId],
               );
+              transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+              transactionStageStartedAt = yield* Clock.currentTimeMillis;
               yield* adjustPersistedAnalysisResolutionEdges(sql, persistentFull.snapshotId);
+              transactionUpdatingAnalysisMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+              transactionStageStartedAt = yield* Clock.currentTimeMillis;
               // The compact candidate payload is owned by this reference row,
               // so one bounded delete retires both after a successful page.
               yield* sql.unsafe(
@@ -601,6 +625,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                    AND edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)`,
                 [persistentFull.snapshotId],
               );
+              transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
             } else {
               yield* sql.unsafe(`
                 INSERT OR REPLACE INTO activation_edges (
@@ -630,6 +655,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                 )
                   AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)
               `);
+              transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+              transactionStageStartedAt = yield* Clock.currentTimeMillis;
               yield* sql.unsafe(`
                 DELETE FROM activation_reference_candidates
                 WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
@@ -638,6 +665,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                 DELETE FROM activation_references
                 WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
               `);
+              transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
             }
           }),
         );
@@ -680,6 +708,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         referencesTotal,
         resolved,
         transactionMilliseconds,
+        transactionStageMilliseconds: transactionStageMilliseconds(),
       }) ?? Effect.void;
       // Reference resolution is synchronous SQLite work. Yield after every
       // bounded page so the independent build heartbeat and observers cannot

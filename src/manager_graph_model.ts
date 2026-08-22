@@ -309,6 +309,13 @@ export interface GraphBuildStatus {
       readonly resolved: number;
       readonly startedAt: string;
       readonly transactionMilliseconds: number;
+      readonly transactionStageMilliseconds?: {
+        readonly preparingBatch: number;
+        readonly retiringReferences: number;
+        readonly updatingAnalysis: number;
+        readonly writingAliases: number;
+        readonly writingEdges: number;
+      };
     };
   };
   readonly result?: {readonly snapshotId: string};

@@ -85,6 +85,13 @@ describe('code graph release evidence', () => {
           referencesTotal: 80,
           resolved: 61,
           transactionMilliseconds: 250,
+          transactionStageMilliseconds: {
+            preparingBatch: 20,
+            retiringReferences: 30,
+            updatingAnalysis: 40,
+            writingAliases: 10,
+            writingEdges: 150,
+          },
         },
         phase: 'resolving',
         subphase: 'references',
@@ -109,6 +116,11 @@ describe('code graph release evidence', () => {
       'cold-reference-resolution-references-examined-n1': 240,
       'cold-reference-resolution-resolved-n1': 61,
       'cold-reference-resolution-transactions-n1': 250,
+      'cold-reference-resolution-transaction-stage-preparing-batch-n1': 20,
+      'cold-reference-resolution-transaction-stage-retiring-references-n1': 30,
+      'cold-reference-resolution-transaction-stage-updating-analysis-n1': 40,
+      'cold-reference-resolution-transaction-stage-writing-aliases-n1': 10,
+      'cold-reference-resolution-transaction-stage-writing-edges-n1': 150,
     });
   });
 

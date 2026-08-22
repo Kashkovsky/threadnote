@@ -305,6 +305,15 @@ export interface CodeGraphResolutionActivity {
   readonly referencesTotal: number;
   readonly resolved: number;
   readonly transactionMilliseconds: number;
+  readonly transactionStageMilliseconds?: CodeGraphResolutionTransactionStageMilliseconds;
+}
+
+export interface CodeGraphResolutionTransactionStageMilliseconds {
+  readonly preparingBatch: number;
+  readonly retiringReferences: number;
+  readonly updatingAnalysis: number;
+  readonly writingAliases: number;
+  readonly writingEdges: number;
 }
 
 /** Privacy-safe progress for copying a staged graph into its durable snapshot. */

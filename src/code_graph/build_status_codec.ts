@@ -250,6 +250,8 @@ function parseResolution(value: unknown): CodeGraphBuildResolution | undefined {
 
 function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['activity'] | undefined {
   if (!isRecord(value) || !isTimestamp(value.startedAt)) return undefined;
+  const transactionStageMilliseconds = parseResolutionTransactionStageMilliseconds(value.transactionStageMilliseconds);
+  if (value.transactionStageMilliseconds !== undefined && transactionStageMilliseconds === undefined) return undefined;
   for (const key of [
     'aliasesDiscovered',
     'pageCompleted',
@@ -289,6 +291,27 @@ function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['acti
     resolved: Number(value.resolved),
     startedAt: value.startedAt,
     transactionMilliseconds: Number(value.transactionMilliseconds),
+    ...(transactionStageMilliseconds === undefined ? {} : {transactionStageMilliseconds}),
+  };
+}
+
+function parseResolutionTransactionStageMilliseconds(value: unknown) {
+  if (!isRecord(value)) return undefined;
+  for (const key of [
+    'preparingBatch',
+    'retiringReferences',
+    'updatingAnalysis',
+    'writingAliases',
+    'writingEdges',
+  ] as const) {
+    if (!isNonNegativeFinite(value[key])) return undefined;
+  }
+  return {
+    preparingBatch: Number(value.preparingBatch),
+    retiringReferences: Number(value.retiringReferences),
+    updatingAnalysis: Number(value.updatingAnalysis),
+    writingAliases: Number(value.writingAliases),
+    writingEdges: Number(value.writingEdges),
   };
 }
 
