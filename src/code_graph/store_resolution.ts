@@ -27,6 +27,7 @@ import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
+  codeGraphRetainRepeatedLookupKeysStatement,
   codeGraphPersistentReferencePageStatement,
   decodePersistedReferenceCandidateRows,
   persistentFullReferencePageTotal,
@@ -316,6 +317,13 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
                    ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
                   batch.flatMap(row => [persistentFull.snapshotId, ...row]),
                 );
+                // The bounded previous-page cache can be stale as soon as an
+                // alias publishes a new target for its lookup key.
+                yield* sql.unsafe(
+                  `DELETE FROM activation_resolution_lookup_page
+                   WHERE lookup_key IN (${batch.map(() => '?').join(', ')})`,
+                  batch.map(row => row[0]),
+                );
               } else {
                 yield* sql.unsafe(
                   `INSERT OR IGNORE INTO activation_symbol_lookup (
@@ -467,8 +475,19 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       const batchEnd = pending.at(-1)!.edge_id;
       if (persistentFull && Option.isSome(persistentPage)) {
         yield* sql.unsafe('DELETE FROM activation_resolution_reference_page');
+        // Keep summaries only for keys shared by distinct references in the
+        // immediately preceding page. During this page the peak is therefore
+        // bounded by that hot subset plus the current page's summaries.
+        yield* sql.unsafe(`
+          DELETE FROM activation_resolution_lookup_page
+          WHERE NOT EXISTS (
+            SELECT 1
+            FROM activation_resolution_retained_lookup_key AS retained
+            WHERE retained.lookup_key = activation_resolution_lookup_page.lookup_key
+          )
+        `);
         yield* sql.unsafe('DELETE FROM activation_resolution_candidate_page');
-        yield* sql.unsafe('DELETE FROM activation_resolution_lookup_page');
+        yield* sql.unsafe('DELETE FROM activation_resolution_retained_lookup_key');
         yield* sql.unsafe(
           `INSERT INTO activation_resolution_reference_page (
              edge_id, resolution_domain, exported_only, relation, source_id
@@ -493,6 +512,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             candidateBatch.flat(),
           );
         }
+        yield* sql.unsafe(codeGraphRetainRepeatedLookupKeysStatement());
         yield* Effect.yieldNow;
         // Aggregate each requested lookup set once. Joining the edge-ordered
         // candidate surface directly to snapshot_symbol_lookup multiplied hot
@@ -506,6 +526,11 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             `SELECT lookup_key
              FROM activation_resolution_candidate_page
              WHERE lookup_key > ?
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM activation_resolution_lookup_page AS cached
+                 WHERE cached.lookup_key = activation_resolution_candidate_page.lookup_key
+               )
              GROUP BY lookup_key
              ORDER BY lookup_key
              LIMIT ${PERSISTENT_FULL_LOOKUP_SUMMARY_BATCH_KEYS}`,
@@ -533,6 +558,17 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
              GROUP BY lookup.lookup_key, lookup.resolution_domain
              ORDER BY lookup.lookup_key, lookup.resolution_domain`,
             [...requestedLookupKeys.map(row => row.lookup_key), persistentFull.snapshotId],
+          );
+          // The empty-domain sentinel never joins a real reference, but lets a
+          // retained hot miss skip the durable lookup probe on the next page.
+          yield* sql.unsafe(
+            `INSERT OR IGNORE INTO activation_resolution_lookup_page (
+               lookup_key, resolution_domain, symbol_count,
+               minimum_symbol_id, maximum_symbol_id,
+               exported_symbol_count,
+               minimum_exported_symbol_id, maximum_exported_symbol_id
+             ) VALUES ${requestedLookupKeys.map(() => "(?, '', 0, NULL, NULL, 0, NULL, NULL)").join(', ')}`,
+            requestedLookupKeys.map(row => row.lookup_key),
           );
           lookupCursor = requestedLookupKeys.at(-1)!.lookup_key;
           yield* onProgress?.({

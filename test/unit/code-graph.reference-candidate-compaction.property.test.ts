@@ -1,7 +1,10 @@
 import {Database} from 'bun:sqlite';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {codeGraphPersistentReferencePageStatement} from '../../src/code_graph/store.js';
+import {
+  codeGraphPersistentReferencePageStatement,
+  codeGraphRetainRepeatedLookupKeysStatement,
+} from '../../src/code_graph/store.js';
 
 interface CandidateMetadata {
   readonly candidateCount: number;
@@ -86,7 +89,83 @@ describe('persistent reference candidate compaction', () => {
       database.close(false);
     }
   });
+
+  it('retains exactly keys shared by distinct references regardless of candidate order', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(
+          fc.record({
+            edgeId: fc.integer({max: 30, min: 0}).map(index => `edge-${index}`),
+            lookupKey: fc.stringMatching(/^[a-f]{1,5}$/u),
+            tier: fc.integer({max: 5, min: 0}),
+          }),
+          {
+            maxLength: 300,
+            selector: row => `${row.lookupKey}\0${row.edgeId}\0${row.tier}`,
+          },
+        ),
+        candidates => {
+          const expected = repeatedLookupKeys(candidates);
+          expect(retainedLookupKeys(candidates)).toEqual(expected);
+          expect(retainedLookupKeys([...candidates].reverse())).toEqual(expected);
+          expect(expected.length).toBeLessThanOrEqual(Math.floor(candidates.length / 2));
+        },
+      ),
+      {numRuns: 200},
+    );
+  });
 });
+
+interface LookupCandidate {
+  readonly edgeId: string;
+  readonly lookupKey: string;
+  readonly tier: number;
+}
+
+function retainedLookupKeys(candidates: readonly LookupCandidate[]): readonly string[] {
+  const database = new Database(':memory:', {strict: true});
+  try {
+    database.exec(`
+      CREATE TEMP TABLE activation_resolution_candidate_page (
+        lookup_key TEXT NOT NULL,
+        edge_id TEXT NOT NULL,
+        tier INTEGER NOT NULL,
+        PRIMARY KEY (lookup_key, edge_id, tier)
+      ) WITHOUT ROWID;
+      CREATE TEMP TABLE activation_resolution_retained_lookup_key (
+        lookup_key TEXT PRIMARY KEY
+      ) WITHOUT ROWID
+    `);
+    const insert = database.prepare(
+      'INSERT INTO activation_resolution_candidate_page (lookup_key, edge_id, tier) VALUES (?, ?, ?)',
+    );
+    database.transaction(() => {
+      for (const candidate of candidates) insert.run(candidate.lookupKey, candidate.edgeId, candidate.tier);
+    })();
+    database.exec(codeGraphRetainRepeatedLookupKeysStatement());
+    return database
+      .query<{readonly lookup_key: string}, []>(
+        'SELECT lookup_key FROM activation_resolution_retained_lookup_key ORDER BY lookup_key',
+      )
+      .all()
+      .map(row => row.lookup_key);
+  } finally {
+    database.close(false);
+  }
+}
+
+function repeatedLookupKeys(candidates: readonly LookupCandidate[]): readonly string[] {
+  const edgesByKey = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const edges = edgesByKey.get(candidate.lookupKey) ?? new Set<string>();
+    edges.add(candidate.edgeId);
+    edgesByKey.set(candidate.lookupKey, edges);
+  }
+  return [...edgesByKey]
+    .filter(([, edges]) => edges.size > 1)
+    .map(([key]) => key)
+    .sort();
+}
 
 function candidateDatabase(metadata: readonly CandidateMetadata[]): Database {
   const database = new Database(':memory:', {strict: true});
