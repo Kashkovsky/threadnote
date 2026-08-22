@@ -354,6 +354,12 @@ describe('code graph external benchmark harness', () => {
     const profiles = CODE_GRAPH_SQLITE_WRITER_PROFILES;
 
     expect(profiles.current.tuning).toEqual({mainCacheKiB: 64, walAutoCheckpointPages: 1_000});
+    for (const cacheMiB of [8, 32, 64, 128, 256] as const) {
+      expect(profiles[`cache-${cacheMiB}m`].tuning).toEqual({
+        mainCacheKiB: cacheMiB * 1_024,
+        walAutoCheckpointPages: 1_000,
+      });
+    }
     expect(profiles['mmap-256m'].tuning).toEqual({
       mainCacheKiB: 64,
       mmapSizeBytes: 256 * 1_024 * 1_024,

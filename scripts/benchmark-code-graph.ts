@@ -182,6 +182,22 @@ export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
     description: 'Current 64 KiB writer cache and 1,000-page WAL auto-checkpoint.',
     tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 1_000},
   },
+  'cache-8m': {
+    description: 'Isolates an 8 MiB writer page cache.',
+    tuning: {mainCacheKiB: 8 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-32m': {
+    description: 'Isolates a 32 MiB writer page cache.',
+    tuning: {mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-64m': {
+    description: 'Isolates a 64 MiB writer page cache.',
+    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-128m': {
+    description: 'Isolates a 128 MiB writer page cache.',
+    tuning: {mainCacheKiB: 128 * 1_024, walAutoCheckpointPages: 1_000},
+  },
   'cache-256m': {
     description: 'Isolates a 256 MiB writer page cache.',
     tuning: {mainCacheKiB: 256 * 1_024, walAutoCheckpointPages: 1_000},

@@ -9,6 +9,10 @@ Select one candidate with `--sqlite-writer-profile`:
 | Profile                            | Isolated variable                                                                                               |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `current`                          | Current cache/checkpoint settings; does not override the runtime synchronous mode                               |
+| `cache-8m`                         | 8 MiB writer cache                                                                                              |
+| `cache-32m`                        | 32 MiB writer cache                                                                                             |
+| `cache-64m`                        | 64 MiB writer cache                                                                                             |
+| `cache-128m`                       | 128 MiB writer cache                                                                                            |
 | `cache-256m`                       | 256 MiB writer cache                                                                                            |
 | `mmap-256m`                        | 256 MiB main-database mmap window                                                                               |
 | `wal-checkpoint-8192`              | 8,192-page passive auto-checkpoint cadence                                                                      |
@@ -37,7 +41,7 @@ bias. Treat each artifact's phase timings as one observation; repeat the control
 three times before selecting a default.
 
 Every isolated profile retains the production 64 KiB writer cache and 1,000-page checkpoint baseline except for the
-single setting named by that profile. The cache profile changes only cache size; the combined profile is intentionally
+single setting named by that profile. The cache profiles change only cache size; the combined profile is intentionally
 multi-variable. Verify this in each artifact's effective PRAGMA evidence before comparing timings.
 
 Compare at least:
