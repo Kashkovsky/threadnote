@@ -38,6 +38,7 @@ import {
   codeGraphReconciliationIndexState,
 } from './store_reconciliation_core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
+import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
 import {
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
   type CodeGraphRemovedViewCleanupSchemaAdmission,
@@ -206,6 +207,12 @@ const ensureCurrentCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureCurrentQue
     CREATE INDEX IF NOT EXISTS edges_evidence_path
     ON edges(snapshot_id, evidence_path)
   `);
+  // Cache admission runs before inventory and previously evaluated JSON
+  // authority from every fact payload in the selected extractor generation.
+  // A narrow trigger-maintained table materializes that authority at write
+  // time and serves every admission projection without reading fact payloads
+  // or weakening corrupt-row rejection.
+  yield* ensureCodeGraphFileBlobAuthority(sql);
 });
 
 const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentExtensionTables')(function* (
@@ -325,6 +332,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           recordedRevision === 8 ||
           recordedRevision === 9 ||
           recordedRevision === 10 ||
+          recordedRevision === 11 ||
           recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) &&
         extensionSchemaCompatible
       ) {

@@ -3,7 +3,7 @@ import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 11 as const;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 12 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
@@ -329,8 +329,17 @@ export interface CodeGraphActivationActivity {
   readonly transactionMilliseconds?: number;
 }
 
+/** Path-free observation of the cache-authority admission gate. */
+export interface CodeGraphRegistrationActivity {
+  readonly elapsedMilliseconds: number;
+  readonly generations: number;
+  readonly keys: number;
+  readonly stage: 'loading-cache';
+}
+
 export type CodeGraphProgress =
   | {
+      readonly activity?: CodeGraphRegistrationActivity;
       readonly phase: 'registering';
     }
   | {

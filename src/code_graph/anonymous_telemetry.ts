@@ -217,7 +217,15 @@ export function codeGraphAnonymousTelemetryFields(progress: CodeGraphProgress): 
   const phase = `graph.${progress.phase}` as AnonymousTelemetryFields['phase'];
   switch (progress.phase) {
     case 'registering':
-      return {phase};
+      return {
+        phase,
+        ...(progress.activity === undefined
+          ? {}
+          : {
+              elapsedMilliseconds: progress.activity.elapsedMilliseconds,
+              stage: progress.activity.stage,
+            }),
+      };
     case 'waiting':
       return {phase, ...(progress.reason === undefined ? {} : {waitingReason: progress.reason})};
     case 'reclaiming':

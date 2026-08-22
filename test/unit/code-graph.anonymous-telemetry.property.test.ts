@@ -29,6 +29,12 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 describe('code graph anonymous telemetry', () => {
   it('maps graph phases to the closed anonymous progress vocabulary', () => {
     expect(codeGraphAnonymousTelemetryFields({phase: 'registering'})).toEqual({phase: 'graph.registering'});
+    expect(
+      codeGraphAnonymousTelemetryFields({
+        activity: {elapsedMilliseconds: 250, generations: 2, keys: 400, stage: 'loading-cache'},
+        phase: 'registering',
+      }),
+    ).toEqual({elapsedMilliseconds: 250, phase: 'graph.registering', stage: 'loading-cache'});
     expect(codeGraphAnonymousTelemetryFields({phase: 'waiting', reason: 'database-writer'})).toEqual({
       phase: 'graph.waiting',
       waitingReason: 'database-writer',

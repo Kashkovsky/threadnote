@@ -5,6 +5,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {
   codeGraphAdjacencyQueryStatement,
+  codeGraphCachedCommittedFileKeysStatement,
   codeGraphCompactLexicalCleanupPageStatement,
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphExactSymbolQueryStatement,
@@ -13,9 +14,14 @@ import {
   codeGraphSymbolSearchScoreMultiplier,
   codeGraphSymbolsByIdsQueryStatement,
   codeGraphTermCandidateQueryStatement,
+  CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE,
   CodeGraphStore,
   isCanonicalAbsoluteBazelLabel,
 } from '../../src/code_graph/store.js';
+import {
+  CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE_SQL,
+  CODE_GRAPH_FILE_BLOB_AUTHORITY_TRIGGER_SQL,
+} from '../../src/code_graph/store_cache_authority.js';
 import type {CodeGraphEdge, CodeGraphProvenance} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
@@ -83,8 +89,114 @@ const symbolFileName = FC.constantFrom(
   'widget.spec.tsx',
 );
 const symbolQueryTerm = FC.constantFrom('docs', 'md', 'mcp', 'recall_context', 'spec', 'test');
+const cacheAuthorityKind = FC.constantFrom('invalid-json', 'match', 'mismatch', 'missing-path');
 
 describe('code graph indexed query properties', () => {
+  it('serves cache admission from the authority table without evaluating stored fact JSON', () => {
+    const database = cacheAuthorityDatabase();
+    try {
+      const statement = codeGraphCachedCommittedFileKeysStatement('extractor-current');
+      const plan = database.query(`EXPLAIN QUERY PLAN ${statement.text}`).all(...statement.parameters) as readonly {
+        readonly detail: string;
+      }[];
+      const bytecode = database.query(`EXPLAIN ${statement.text}`).all(...statement.parameters) as readonly {
+        readonly opcode: string;
+        readonly p4: unknown;
+      }[];
+
+      expect(plan.map(row => row.detail).join('\n')).toContain(
+        `SEARCH ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE} USING PRIMARY KEY (extractor_set=?)`,
+      );
+      expect(bytecode.filter(row => row.opcode === 'Function').map(row => row.p4)).not.toContainEqual(
+        expect.stringMatching(/^json_/u),
+      );
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it('revokes and restores cache authority atomically when a stored fact row changes', () => {
+    const database = cacheAuthorityDatabase();
+    try {
+      const path = 'src/authority.ts';
+      const insert = database.query(
+        `INSERT INTO file_blobs (
+           content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+         ) VALUES (?, 'extractor-current', ?, NULL, NULL, ?, '2026-08-22T00:00:00.000Z')`,
+      );
+      const statement = codeGraphCachedCommittedFileKeysStatement('extractor-current');
+      insert.run('a'.repeat(40), path, JSON.stringify({path}));
+      expect(database.query(statement.text).all(...statement.parameters)).toHaveLength(1);
+
+      database.query('UPDATE file_blobs SET facts_json = ?').run('{');
+      expect(database.query(statement.text).all(...statement.parameters)).toHaveLength(0);
+
+      database.query('UPDATE file_blobs SET facts_json = ?').run(JSON.stringify({path}));
+      expect(database.query(statement.text).all(...statement.parameters)).toHaveLength(1);
+
+      database.query('DELETE FROM file_blobs').run();
+      expect(database.query(statement.text).all(...statement.parameters)).toHaveLength(0);
+    } finally {
+      database.close(false);
+    }
+  });
+
+  it.prop(
+    'admits exactly current-generation rows whose stored fact path matches their authority path',
+    {
+      rows: FC.array(
+        FC.record({
+          authority: cacheAuthorityKind,
+          currentGeneration: FC.boolean(),
+        }),
+        {maxLength: 40},
+      ),
+    },
+    ({rows}) => {
+      const database = cacheAuthorityDatabase();
+      try {
+        const insert = database.query(
+          `INSERT INTO file_blobs (
+             content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, '2026-08-22T00:00:00.000Z')`,
+        );
+        const expectedPaths: string[] = [];
+        for (const [index, row] of rows.entries()) {
+          const path = `src/file-${index}.ts`;
+          const extractorSet = row.currentGeneration ? 'extractor-current' : 'extractor-old';
+          const factsJson =
+            row.authority === 'invalid-json'
+              ? '{'
+              : row.authority === 'match'
+                ? JSON.stringify({path})
+                : row.authority === 'mismatch'
+                  ? JSON.stringify({path: `${path}.other`})
+                  : JSON.stringify({diagnostics: []});
+          insert.run(
+            index.toString(16).padStart(40, '0'),
+            extractorSet,
+            path,
+            (index + 1).toString(16).padStart(40, '0'),
+            'structured-object-v1:json:full',
+            factsJson,
+          );
+          if (row.currentGeneration && row.authority === 'match') expectedPaths.push(path);
+        }
+
+        const statement = codeGraphCachedCommittedFileKeysStatement('extractor-current');
+        const actual = (
+          database.query(statement.text).all(...statement.parameters) as readonly {readonly path_hint: string}[]
+        )
+          .map(row => row.path_hint)
+          .sort();
+        expect(actual).toEqual(expectedPaths.sort());
+      } finally {
+        database.close(false);
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it.prop(
     'never scores a test or documentation symbol path above an implementation path',
     {
@@ -551,6 +663,25 @@ describe('code graph indexed query properties', () => {
     {fastCheck: {numRuns: 100}},
   );
 });
+
+function cacheAuthorityDatabase(): Database {
+  const database = new Database(':memory:', {strict: true});
+  database.exec(`
+    CREATE TABLE file_blobs (
+      content_hash TEXT NOT NULL,
+      extractor_set TEXT NOT NULL,
+      path_hint TEXT NOT NULL,
+      blob_id TEXT,
+      reuse_class TEXT,
+      facts_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (content_hash, extractor_set, path_hint)
+    ) WITHOUT ROWID;
+    ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE_SQL};
+    ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TRIGGER_SQL.join(';\n')};
+  `);
+  return database;
+}
 
 function lastEdgeById(values: readonly EdgeSpec[]): ReadonlyMap<string, CodeGraphEdge> {
   const output = new Map<string, CodeGraphEdge>();

@@ -93,7 +93,7 @@ function codeGraphJsonProgressSubstage(progress: CodeGraphProgress): string {
     case 'materializing':
       return `${progress.phase}/${progress.activity?.stage ?? 'facts'}`;
     case 'registering':
-      return `${progress.phase}/registration`;
+      return `${progress.phase}/${progress.activity?.stage ?? 'registration'}`;
     case 'reclaiming':
       return `${progress.phase}/superseded-snapshots`;
     case 'scanning':

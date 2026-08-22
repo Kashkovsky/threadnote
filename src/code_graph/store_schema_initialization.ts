@@ -15,6 +15,7 @@ import {
   ensureSnapshotLeaseSchema,
 } from './store_schema_core.js';
 import {ensureInitialReconciliationIndexes} from './store_reconciliation_core.js';
+import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
@@ -442,6 +443,7 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     ON file_blobs(blob_id, content_hash, extractor_set, reuse_class, path_hint)
     WHERE blob_id IS NOT NULL AND reuse_class IS NOT NULL
   `);
+  yield* ensureCodeGraphFileBlobAuthority(sql);
   // Routine cache reclamation resolves references from a disposable shard
   // back to snapshot-owned associations. Keep that reverse lookup indexed so
   // a bounded deletion page cannot hide a full association-table scan.

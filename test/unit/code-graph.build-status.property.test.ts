@@ -138,6 +138,33 @@ describe('code graph build-status properties', () => {
   });
 
   it.prop(
+    'round-trips bounded cache-admission observations and rejects invalid counters',
+    {
+      elapsedMilliseconds: FC.integer({max: 10_000_000, min: 0}),
+      generations: FC.integer({max: 100, min: 0}),
+      keys: FC.integer({max: 10_000_000, min: 0}),
+    },
+    activity => {
+      const status = buildStatus('running', true);
+      const registering: CodeGraphBuildStatus = {
+        ...status,
+        phase: 'registering',
+        registration: {activity: {...activity, stage: 'loading-cache'}},
+      };
+      expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(registering)))?.registration).toEqual(
+        registering.registration,
+      );
+      expect(
+        parseCodeGraphBuildStatus({
+          ...registering,
+          registration: {activity: {...registering.registration!.activity, keys: -1}},
+        }),
+      ).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
     'never throws while validating arbitrary JSON values and only returns bounded schema-v1 records',
     {value: FC.jsonValue()},
     ({value}) => {

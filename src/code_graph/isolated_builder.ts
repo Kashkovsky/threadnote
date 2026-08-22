@@ -139,13 +139,16 @@ export function codeGraphIsolatedBuilderSpawnPlan(
 export function codeGraphProgressFromBuildStatus(
   status: Pick<
     CodeGraphBuildStatus,
-    'activation' | 'counters' | 'materialization' | 'phase' | 'resolution' | 'subphase' | 'timings'
+    'activation' | 'counters' | 'materialization' | 'phase' | 'registration' | 'resolution' | 'subphase' | 'timings'
   >,
 ): CodeGraphProgress {
   const counters = status.counters;
   switch (status.phase) {
     case 'registering':
-      return {phase: 'registering'};
+      return {
+        ...(status.registration ? {activity: status.registration.activity} : {}),
+        phase: 'registering',
+      };
     case 'waiting':
       return {
         phase: 'waiting',

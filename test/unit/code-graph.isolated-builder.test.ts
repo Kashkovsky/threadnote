@@ -238,8 +238,17 @@ describe('codeGraphProgressFromBuildStatus', () => {
   const cases = [
     {
       description: 'registering',
-      input: {counters: {}, phase: 'registering' as const},
-      expected: {phase: 'registering'},
+      input: {
+        counters: {},
+        phase: 'registering' as const,
+        registration: {
+          activity: {elapsedMilliseconds: 250, generations: 2, keys: 400, stage: 'loading-cache' as const},
+        },
+      },
+      expected: {
+        activity: {elapsedMilliseconds: 250, generations: 2, keys: 400, stage: 'loading-cache'},
+        phase: 'registering',
+      },
     },
     {
       description: 'scanning counters',

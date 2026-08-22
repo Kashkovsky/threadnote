@@ -39,6 +39,10 @@ describe('code graph JSON progress coalescing', () => {
   it('preserves phase and substage transitions without waiting for the liveness interval', () => {
     const events: readonly CodeGraphProgress[] = [
       {phase: 'registering'},
+      {
+        activity: {elapsedMilliseconds: 250, generations: 2, keys: 400, stage: 'loading-cache'},
+        phase: 'registering',
+      },
       {phase: 'waiting', reason: 'repository-lock'},
       {phase: 'waiting', reason: 'database-writer'},
       scanning(0, 10),

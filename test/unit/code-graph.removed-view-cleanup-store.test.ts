@@ -137,7 +137,7 @@ describe('removed code graph view cleanup queue', () => {
           }
         });
 
-        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(11);
+        expect(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION).toBe(12);
         expect(observed.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
         expect(observed.ready).toEqual({state: 'ready'});
         expect(observed.building).toEqual({state: 'building'});
