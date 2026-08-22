@@ -1859,6 +1859,8 @@ export class IndexPhaseTimeline {
   #maximumProgressHeartbeatGapMilliseconds = 0;
   #materializationDeduplicatedEdges = 0;
   #materializationDeduplicatedReferences = 0;
+  #materializedLookupKeys = 0;
+  #materializedReferenceCandidates = 0;
   readonly #materializationStageMilliseconds = new Map<(typeof MATERIALIZATION_STAGES)[number], number>();
   #materializationStorage: IndexMaterializationStorageEvidence | undefined;
   #sqliteDurableDatabaseHighWaterBytes = 0;
@@ -1894,6 +1896,11 @@ export class IndexPhaseTimeline {
         this.#materializationDeduplicatedReferences = Math.max(
           this.#materializationDeduplicatedReferences,
           progress.metrics?.rows?.deduplicatedReferences ?? 0,
+        );
+        this.#materializedLookupKeys = Math.max(this.#materializedLookupKeys, progress.metrics?.rows?.lookupKeys ?? 0);
+        this.#materializedReferenceCandidates = Math.max(
+          this.#materializedReferenceCandidates,
+          progress.metrics?.rows?.referenceCandidates ?? 0,
         );
         for (const stage of MATERIALIZATION_STAGES) {
           const milliseconds = progress.metrics?.stageMilliseconds?.[stage];
@@ -2035,6 +2042,14 @@ export class IndexPhaseTimeline {
     return this.#materializationDeduplicatedReferences;
   }
 
+  materializedLookupKeys(): number {
+    return this.#materializedLookupKeys;
+  }
+
+  materializedReferenceCandidates(): number {
+    return this.#materializedReferenceCandidates;
+  }
+
   materializationStorage(): IndexMaterializationStorageEvidence | undefined {
     return this.#materializationStorage;
   }
@@ -2160,7 +2175,7 @@ function observeIndexProgress(timeline: IndexPhaseTimeline, progress: CodeGraphP
   );
 }
 
-function indexPhaseMeasurements(
+export function indexPhaseMeasurements(
   prefix: 'cold' | 'one-file-reindex' | 'same-overlay-reference',
   timeline: IndexPhaseTimeline,
   vectors: boolean,
@@ -2215,6 +2230,10 @@ function indexPhaseMeasurements(
     ]),
     benchmarkMeasurement(`${prefix}-materialization-deduplicated-reference-rows-n1`, 'count', [
       timeline.materializationDeduplicatedReferences(),
+    ]),
+    benchmarkMeasurement(`${prefix}-materialized-lookup-key-rows-n1`, 'count', [timeline.materializedLookupKeys()]),
+    benchmarkMeasurement(`${prefix}-materialized-reference-candidate-rows-n1`, 'count', [
+      timeline.materializedReferenceCandidates(),
     ]),
     ...MATERIALIZATION_STAGES.map(stage =>
       benchmarkMeasurement(`${prefix}-materialization-stage-${stage}-n1`, 'milliseconds', [

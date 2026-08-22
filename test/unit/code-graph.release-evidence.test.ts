@@ -11,12 +11,14 @@ import {
   assertProductionReleaseEvidence,
   enforceCodeGraphBenchmarkBudget,
   externalSamplerMeasurements,
+  indexPhaseMeasurements,
   materializationStorageMeasurements,
   parseCodeGraphBenchmarkArguments,
   performanceControlExpectedNodeLanguage,
   productionProfile,
   productionProfileArtifactMetadata,
   resolvedReleaseEvidenceSource,
+  IndexPhaseTimeline,
 } from '../../scripts/benchmark-code-graph.js';
 import {PRODUCTION_LARGE_CODE_GRAPH_PROFILE} from '../../scripts/code-graph-fixture.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
@@ -30,6 +32,41 @@ const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budge
 const BETA30_STAGING_EVIDENCE = 'test/evaluation/baselines/code-graph-v1/beta30-staging-development.json';
 
 describe('code graph release evidence', () => {
+  it('emits exact materialization row counts required by release-bound site evidence', () => {
+    const telemetry = {cpuSystemMicroseconds: 0, cpuUserMicroseconds: 0, peakRssBytes: 0, rssBytes: 0};
+    const timeline = new IndexPhaseTimeline(0n, telemetry);
+    timeline.observe(
+      {
+        completed: 1,
+        metrics: {
+          batchesCompleted: 1,
+          batchesTotal: 1,
+          rows: {lookupKeys: 7, referenceCandidates: 11},
+          sourceBytesCompleted: 1,
+          sourceBytesTotal: 1,
+        },
+        phase: 'materializing',
+        reused: 0,
+        total: 1,
+        unit: 'files',
+      },
+      1n,
+      telemetry,
+    );
+
+    const measurements = new Map(
+      indexPhaseMeasurements('cold', timeline, false).map(measurement => [measurement.name, measurement]),
+    );
+    expect(measurements.get('cold-materialized-lookup-key-rows-n1')).toMatchObject({
+      minimum: 7,
+      unit: 'count',
+    });
+    expect(measurements.get('cold-materialized-reference-candidate-rows-n1')).toMatchObject({
+      minimum: 11,
+      unit: 'count',
+    });
+  });
+
   it('maps the public Bazel control category to the graph node language', () => {
     expect(performanceControlExpectedNodeLanguage('bazel-build')).toBe('starlark');
     expect(performanceControlExpectedNodeLanguage('java')).toBe('java');
