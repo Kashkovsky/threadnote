@@ -615,6 +615,57 @@ describe('code graph query budgets', () => {
     }),
   );
 
+  it.effect('starts the ordinary traversal budget after lexical seed acquisition', () =>
+    Effect.gen(function* () {
+      const lexicalMatches = Array.from({length: 12}, (_, index) => ({
+        ...seed,
+        contentHash: `lexical-${index}-hash`,
+        id: `lexical-${index}`,
+        name: `lexical${index}`,
+        qualifiedName: `lexical${index}`,
+      }));
+      const calls: string[] = [];
+      const store = {
+        edgesForNodes: () =>
+          Effect.sync(() => {
+            calls.push('adjacency');
+            return [];
+          }),
+        searchSymbolsMany: () =>
+          Effect.gen(function* () {
+            calls.push('search');
+            yield* TestClock.adjust(2_001);
+            return [lexicalMatches];
+          }),
+        symbolsByIds: () =>
+          Effect.sync(() => {
+            calls.push('hydration');
+            return [];
+          }),
+      } as unknown as CodeGraphStoreShape;
+
+      const result = yield* traversalQuery(
+        store,
+        layout.databasePath,
+        'snapshot',
+        'high-cardinality exact identifier',
+        'both',
+        20,
+        40,
+        1,
+        ['resolved'],
+        embedding,
+        '/fixture/home',
+        layout,
+        false,
+      );
+
+      expect(result.nodes).toHaveLength(12);
+      expect(result.warnings).not.toContain('Graph traversal reached its elapsed-time budget; results are partial.');
+      expect(calls).toEqual(['search', 'adjacency', 'hydration']);
+    }),
+  );
+
   it.effect('returns an explicit bounded package-local match or honest absence hint', () =>
     Effect.gen(function* () {
       const mobile = {...seed, id: 'mobile', packageName: 'MobileApp'};
