@@ -4,7 +4,10 @@ import {access, mkdir, mkdtemp, readFile, rm, stat, writeFile} from '../helpers/
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
-import {assertPerformanceSourceClean} from '../../scripts/site-performance-evidence.js';
+import {
+  assertPerformanceSourceClean,
+  assertPerformanceSourcesMatchCommit,
+} from '../../scripts/site-performance-evidence.js';
 import {loadLatestMajorWebsiteReleases} from '../../scripts/site-release-notes.js';
 
 const root = process.cwd();
@@ -114,6 +117,7 @@ describe('website and standalone release boundary', () => {
     });
     expect(evidenceBuild).toContain('writePerformanceArtifactBinding');
     expect(evidenceBuild).toContain('assertPerformanceSourceClean');
+    expect(evidenceBuild).toContain("':(exclude)scripts/site-performance-evidence.ts'");
     expect(standaloneBuild).toContain(
       "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;",
     );
@@ -148,6 +152,36 @@ describe('website and standalone release boundary', () => {
 
       await writeFile(join(repository, 'src', 'ignored.ts'), 'export const ignored = true;\n');
       expect(() => assertPerformanceSourceClean(repository)).toThrow('untracked files');
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
+  });
+
+  it('accepts byte-identical governed sources after a squash merge and rejects source drift', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-performance-squash-'));
+    const git = (...arguments_: string[]) =>
+      execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+    const commit = (...arguments_: string[]) =>
+      git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', ...arguments_);
+    try {
+      await mkdir(join(repository, 'src'));
+      await writeFile(join(repository, 'src', 'governed.ts'), 'export const value = 1;\n');
+      git('init');
+      git('add', '.');
+      commit('commit', '-m', 'benchmark source');
+      const sourceCommit = git('rev-parse', 'HEAD');
+      const sourceTree = git('rev-parse', 'HEAD^{tree}');
+      const squashCommit = commit('commit-tree', sourceTree, '-m', 'squash merge');
+      git('switch', '--detach', squashCommit);
+
+      expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).not.toThrow();
+
+      await writeFile(join(repository, 'src', 'governed.ts'), 'export const value = 2;\n');
+      git('add', '.');
+      commit('commit', '-m', 'runtime drift');
+      expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).toThrow(
+        'runtime sources changed after the retained performance run',
+      );
     } finally {
       await rm(repository, {force: true, recursive: true});
     }

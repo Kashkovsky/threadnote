@@ -35,6 +35,11 @@ export const performanceSourcePathspecs = [
   'tsconfig.json',
 ] as const;
 
+export const measuredPerformanceSourcePathspecs = [
+  ...performanceSourcePathspecs,
+  ':(exclude)scripts/site-performance-evidence.ts',
+] as const;
+
 export type PerformanceArtifactBinding = Readonly<{
   schemaVersion: 1;
   artifactSha256: string;
@@ -165,37 +170,31 @@ function requireSuccessfulGit(result: ReturnType<typeof Bun.spawnSync>, operatio
 }
 
 export function assertPerformanceSourceClean(repositoryRoot: string): void {
-  const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...performanceSourcePathspecs]);
+  const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...measuredPerformanceSourcePathspecs]);
   if (unstaged.exitCode === 1) {
     throw new ScriptError('Performance-bound sources contain tracked working-tree modifications.');
   }
   requireSuccessfulGit(unstaged, 'inspect tracked performance-source modifications');
 
-  const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...performanceSourcePathspecs]);
+  const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...measuredPerformanceSourcePathspecs]);
   if (staged.exitCode === 1) {
     throw new ScriptError('Performance-bound sources contain staged modifications.');
   }
   requireSuccessfulGit(staged, 'inspect staged performance-source modifications');
 
-  const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...performanceSourcePathspecs]);
+  const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...measuredPerformanceSourcePathspecs]);
   requireSuccessfulGit(untracked, 'inspect untracked performance sources');
   if ((untracked.stdout?.byteLength ?? 0) > 0) {
     throw new ScriptError('Performance-bound sources contain untracked files.');
   }
 }
 
-function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void {
+export function assertPerformanceSourcesMatchCommit(repositoryRoot: string, sourceCommit: string): void {
   assertPerformanceSourceClean(repositoryRoot);
   const commit = runGit(repositoryRoot, ['cat-file', '-e', `${sourceCommit}^{commit}`]);
   if (commit.exitCode !== 0) {
     throw new ScriptError(
       `Retained performance source commit ${sourceCommit} is unavailable; use a full Git checkout for the website build.`,
-    );
-  }
-  const ancestor = runGit(repositoryRoot, ['merge-base', '--is-ancestor', sourceCommit, 'HEAD']);
-  if (ancestor.exitCode !== 0) {
-    throw new ScriptError(
-      `Retained performance source commit ${sourceCommit} is not an ancestor of the website build.`,
     );
   }
   const changed = runGit(repositoryRoot, [
@@ -204,7 +203,7 @@ function verifySourceCommit(repositoryRoot: string, sourceCommit: string): void 
     sourceCommit,
     'HEAD',
     '--',
-    ...performanceSourcePathspecs,
+    ...measuredPerformanceSourcePathspecs,
   ]);
   if (changed.exitCode !== 0) {
     throw new ScriptError(
@@ -265,7 +264,7 @@ function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPe
 
 export async function computePerformanceSourceTreeSha256(repositoryRoot: string): Promise<string> {
   assertPerformanceSourceClean(repositoryRoot);
-  const listed = runGit(repositoryRoot, ['ls-files', '--stage', '-z', '--', ...performanceSourcePathspecs]);
+  const listed = runGit(repositoryRoot, ['ls-files', '--stage', '-z', '--', ...measuredPerformanceSourcePathspecs]);
   if (listed.exitCode !== 0) {
     throw new ScriptError(`Could not inventory performance-bound sources: ${decodeOutput(listed.stderr)}.`);
   }
@@ -332,7 +331,7 @@ export async function loadRetainedPerformanceEvidence(
     throw new ScriptError('Retained performance binding is not valid JSON.');
   }
   const binding = validatePerformanceArtifactBinding(bindingInput);
-  verifySourceCommit(repositoryRoot, binding.sourceThreadnoteCommit);
+  assertPerformanceSourcesMatchCommit(repositoryRoot, binding.sourceThreadnoteCommit);
   const [artifactBuffer, currentSourceTreeSha256, dependencyHashes] = await Promise.all([
     artifactFile.arrayBuffer(),
     computePerformanceSourceTreeSha256(repositoryRoot),
@@ -360,7 +359,7 @@ export async function writePerformanceArtifactBinding(repositoryRoot: string): P
 
   const artifactBytes = new Uint8Array(await artifactFile.arrayBuffer());
   const payload = parseRetainedPerformanceArtifactBytes(artifactBytes);
-  verifySourceCommit(repositoryRoot, payload.environment.commit);
+  assertPerformanceSourcesMatchCommit(repositoryRoot, payload.environment.commit);
   verifyReleaseEvidenceSource(repositoryRoot, payload);
   const [sourceTreeSha256, dependencyHashes] = await Promise.all([
     computePerformanceSourceTreeSha256(repositoryRoot),
