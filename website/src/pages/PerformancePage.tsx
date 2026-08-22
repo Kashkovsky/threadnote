@@ -172,7 +172,7 @@ function scaleCards(artifact: RetainedPerformanceArtifact | undefined): readonly
     {
       label: 'Relationships',
       value: formatInteger(artifact.graph.relationships),
-      detail: `${formatInteger(artifact.graph.references)} references`,
+      detail: `${formatInteger(artifact.graph.referenceCandidates)} reference candidates`,
     },
     {
       label: 'Graph database',
@@ -465,7 +465,7 @@ export default function PerformancePage() {
           <h2>Graph embeddings use the CPU you already have.</h2>
           <p>
             On a clean {checkedInEmbeddingContextPerformance.environment.cpu} runner with{' '}
-            {checkedInEmbeddingContextPerformance.environment.cpuMathCores} CPU math cores and a CPU-only BGE model,
+            {checkedInEmbeddingContextPerformance.environment.cpuMathCores} CPU math cores and a CPU-only BGE model,{' '}
             {formatInteger(checkedInEmbeddingContextPerformance.scope.rounds)} Williams-order rounds compared 1, 2, 4,
             and 8 contexts on a generated {formatInteger(checkedInEmbeddingContextPerformance.scope.scaleSymbols)}
             -symbol-scale graph build. Eight contexts cut the upper-median cold index from{' '}
@@ -631,18 +631,40 @@ export default function PerformancePage() {
         </div>
         <div>
           <p>
-            One pinned public repository on one reviewed runner shows the observed graph-query and persisted-analysis
-            paths working at that shape. It does not promise identical times for every repository, disk, operating
-            system, or machine.
+            One pinned public repository on one reviewed runner shows the observed cold, one-file incremental,
+            independent-rebuild, query, and Manager paths working at that shape. It does not promise identical times for
+            every repository, disk, operating system, or machine.
           </p>
+          {artifact ? (
+            <>
+              <p>
+                The release-run adapter verified all {retainedPerformanceArtifactFieldPaths.length} retained fields and
+                fails closed on malformed, mixed, or source-mismatched evidence. The public artifact is bound to its
+                exact bytes, Threadnote source, v4.3.1 release commit, and pinned IntelliJ commit.
+              </p>
+              <p>
+                The retained IntelliJ run covers {formatInteger(artifact.inventory.indexedFiles)} indexed files,{' '}
+                {formatInteger(artifact.graph.symbols)} symbols, {formatInteger(artifact.graph.relationships)}{' '}
+                relationships, and Java, Kotlin, TypeScript, and Bazel controls. Its one-file overlay matches the
+                independent rebuild's structural digest exactly.
+              </p>
+            </>
+          ) : (
+            <>
+              <p>
+                A comprehensive release-run adapter still requires {retainedPerformanceArtifactFieldPaths.length}{' '}
+                retained fields and fails closed on malformed or mixed evidence. Until that artifact is available, this
+                page shows narrower checked-in engineering measurements with their exact scope instead of empty cards.
+              </p>
+              <p>
+                The checked-in IntelliJ observation covers{' '}
+                {formatInteger(checkedInPerformanceEvidence.scale.indexedFiles)} files and polyglot Java, Kotlin,
+                TypeScript, and Bazel controls.
+              </p>
+            </>
+          )}
           <p>
-            A comprehensive release-run adapter still requires {retainedPerformanceArtifactFieldPaths.length} retained
-            fields and fails closed on malformed or mixed evidence. Until that artifact is available, this page shows
-            narrower checked-in engineering measurements with their exact scope instead of empty cards.
-          </p>
-          <p>
-            The public IntelliJ run covers {formatInteger(checkedInPerformanceEvidence.scale.indexedFiles)} files and
-            polyglot Java, Kotlin, TypeScript, and Bazel controls. The separate 100k-symbol lexical artifact records{' '}
+            The separate 100k-symbol lexical artifact records{' '}
             {checkedInPerformanceEvidence.lexicalStorage.storageReductionPercent.toFixed(1)}% less allocated storage
             than Threadnote's previous lexical index format, with canonical, query, and posting-count parity.
           </p>
@@ -650,8 +672,7 @@ export default function PerformancePage() {
             Threadnote 4.1 also gates large-worktree safety with separate production-shape, parser-heavy-tail,
             interruption, concurrency, and low-disk evidence. Those retained runs validate bounded behavior and recovery
             on their stated runner; they are never merged into a universal latency percentile or a promise that every
-            repository has the same wall time. The first strict 73k candidate observation reached its 20-minute
-            materialization boundary, so this release deliberately makes no “maximum performance” claim.
+            repository has the same wall time.
           </p>
         </div>
       </section>

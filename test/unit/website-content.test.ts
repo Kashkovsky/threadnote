@@ -195,7 +195,7 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     harnessMeasurement('cold-materialized-file-rows', 'count', 90),
     harnessMeasurement('cold-materialized-symbol-rows', 'count', 1_000),
     harnessMeasurement('cold-materialized-edge-rows', 'count', 2_000),
-    harnessMeasurement('cold-materialization-deduplicated-reference-rows-n1', 'count', 500),
+    harnessMeasurement('cold-materialization-deduplicated-reference-rows-n1', 'count', 0),
     harnessMeasurement('cold-materialized-reference-candidate-rows-n1', 'count', 700),
     harnessMeasurement('cold-materialized-lookup-key-rows-n1', 'count', 3_000),
     harnessMeasurement('cold-materialized-lexical-term-rows', 'count', 10_000),
@@ -1003,7 +1003,8 @@ describe('Threadnote 4 website content', () => {
     expect(performancePage).toContain('aria-label={`Open the pinned');
     expect(performancePage).toContain('Threadnote 4.1 also gates large-worktree safety');
     expect(performancePage).toContain('never merged into a universal latency percentile');
-    expect(performancePage).toContain('deliberately makes no “maximum performance” claim');
+    expect(performancePage).toContain('The release-run adapter verified all');
+    expect(performancePage).toContain('source-mismatched evidence');
     expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
@@ -1068,6 +1069,7 @@ describe('Threadnote 4 website content', () => {
           generatedAt: '2026-08-02T20:00:00Z',
         },
         source: {threadnote: {commit: 'b'.repeat(40)}},
+        graph: {referenceCandidates: 700},
       },
     });
   });

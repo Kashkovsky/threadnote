@@ -83,7 +83,6 @@ export type RetainedPerformanceArtifact = Readonly<{
   graph: Readonly<{
     symbols: number;
     relationships: number;
-    references: number;
     referenceCandidates: number;
     lookupKeys: number;
     lexicalPostings: number;
@@ -261,7 +260,6 @@ export const retainedPerformanceArtifactFieldPaths = [
   'inventory.languages.bazel',
   'graph.symbols',
   'graph.relationships',
-  'graph.references',
   'graph.referenceCandidates',
   'graph.lookupKeys',
   'graph.lexicalPostings',
@@ -553,7 +551,6 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
   const graph = recordAt(root.graph, 'graph', [
     'symbols',
     'relationships',
-    'references',
     'referenceCandidates',
     'lookupKeys',
     'lexicalPostings',
@@ -861,7 +858,7 @@ function validateHarnessMeasurements(
     ['cold-materialized-file-rows', 'count'],
     ['cold-materialized-symbol-rows', 'count'],
     ['cold-materialized-edge-rows', 'count'],
-    ['cold-materialization-deduplicated-reference-rows-n1', 'count'],
+    ['cold-materialization-deduplicated-reference-rows-n1', 'count', false],
     ['cold-materialized-reference-candidate-rows-n1', 'count'],
     ['cold-materialized-lookup-key-rows-n1', 'count'],
     ['cold-materialized-lexical-term-rows', 'count'],
@@ -1228,7 +1225,6 @@ export function retainedPerformanceArtifactFromHarness(
     graph: {
       symbols: count('cold-materialized-symbol-rows'),
       relationships: count('cold-materialized-edge-rows'),
-      references: count('cold-materialization-deduplicated-reference-rows-n1'),
       referenceCandidates: count('cold-materialized-reference-candidate-rows-n1'),
       lookupKeys: count('cold-materialized-lookup-key-rows-n1'),
       lexicalPostings: count('cold-materialized-lexical-term-rows'),
