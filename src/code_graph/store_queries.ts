@@ -11,6 +11,7 @@ import {
   type CodeGraphEdgeCursor,
   type CodeGraphReusableBaseReceipt,
   type CodeGraphReusableCleanBase,
+  type CodeGraphReusableCleanBaseSlice,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
   type LoadedCodeGraphFacts,
@@ -294,6 +295,119 @@ const selectReusableCleanBaseForCommit = Effect.fn('codeGraph.selectReusableClea
     LIMIT 8
   `;
   return yield* loadFirstReusableCleanBase(candidates);
+});
+
+export function reusableCleanBaseSlicePaths(paths: readonly string[]): readonly string[] | undefined {
+  if (
+    paths.length === 0 ||
+    paths.length > 200 ||
+    paths.some(path => {
+      const segments = path.split('/');
+      return (
+        path.length === 0 ||
+        path.length > 4_096 ||
+        path.includes('\0') ||
+        path.includes('\\') ||
+        path.startsWith('/') ||
+        segments.some(segment => segment.length === 0 || segment === '.' || segment === '..')
+      );
+    })
+  ) {
+    return undefined;
+  }
+  const requestedPaths = [...new Set(paths)].sort(compareCodeUnits);
+  return requestedPaths.length === paths.length ? requestedPaths : undefined;
+}
+
+const selectReusableCleanBaseForCommitPaths = Effect.fn('codeGraph.selectReusableCleanBaseForCommitPaths')(function* (
+  repositoryId: string,
+  commit: string,
+  paths: readonly string[],
+) {
+  const requestedPaths = reusableCleanBaseSlicePaths(paths);
+  if (requestedPaths === undefined) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const candidates = yield* sql<SnapshotRow>`
+      SELECT snapshot.*
+      FROM snapshots AS snapshot
+      JOIN snapshot_reuse_receipts AS receipt ON receipt.snapshot_id = snapshot.id
+      WHERE snapshot.repository_id = ${repositoryId}
+        AND snapshot.commit_id = ${commit}
+        AND snapshot.state = 'ready'
+        AND snapshot.dirty = 0
+        AND snapshot.base_snapshot_id IS NULL
+        AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+        AND receipt.resolution_surface_version = 1
+        AND receipt.inventory_receipt_json IS NOT NULL
+      ORDER BY snapshot.completed_at DESC, snapshot.id
+      LIMIT 8
+    `;
+  const requested = JSON.stringify(requestedPaths);
+  for (const row of candidates) {
+    const receipt = yield* selectReusableBaseReceipt(row.id);
+    if (!receipt) continue;
+    const files = yield* sql<{
+      readonly content_hash: string;
+      readonly language: string;
+      readonly mode: string;
+      readonly path: string;
+      readonly size: number;
+      readonly source: string;
+    }>`
+        SELECT file.content_hash, file.language, file.mode, file.path, file.size, file.source
+        FROM json_each(${requested}) AS requested
+        JOIN snapshot_files AS file
+          ON file.snapshot_id = ${row.id}
+         AND file.path = CAST(requested.value AS TEXT)
+        ORDER BY file.path
+      `;
+    const filesByPath = new Map(files.map(file => [file.path, file]));
+    if (files.length !== requestedPaths.length || filesByPath.size !== requestedPaths.length) continue;
+    const orderedFiles: Array<(typeof files)[number]> = [];
+    for (const path of requestedPaths) {
+      const file = filesByPath.get(path);
+      if (file !== undefined) orderedFiles.push(file);
+    }
+    if (orderedFiles.length !== requestedPaths.length) continue;
+    if (files.some(file => file.source !== 'commit')) continue;
+    return {
+      files: orderedFiles.map(file => ({
+        blobId: `snapshot:${file.content_hash}`,
+        contentHash: file.content_hash,
+        language: file.language,
+        mode: file.mode,
+        path: file.path,
+        size: Number(file.size),
+        source: 'commit' as const,
+      })),
+      receipt,
+      snapshot: snapshotFromRow(row),
+    } satisfies CodeGraphReusableCleanBaseSlice;
+  }
+  return undefined;
+});
+
+const selectExistingSnapshotFilePaths = Effect.fn('codeGraph.selectExistingSnapshotFilePaths')(function* (
+  snapshotId: string,
+  paths: readonly string[],
+) {
+  if (paths.length > 4_096) return undefined;
+  if (paths.length === 0) return [];
+  const requestedPaths = [...new Set(paths)].sort(compareCodeUnits);
+  if (requestedPaths.length !== paths.length) return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const requested = JSON.stringify(requestedPaths);
+  const rows = yield* sql<{readonly path: string}>`
+    SELECT file.path
+    FROM json_each(${requested}) AS requested
+    JOIN snapshot_files AS file
+      ON file.snapshot_id = ${snapshotId}
+     AND file.path = CAST(requested.value AS TEXT)
+  `;
+  const found = new Set(rows.map(row => row.path));
+  return requestedPaths.filter(path => found.has(path));
 });
 
 const selectReusableOverlayBase = Effect.fn('codeGraph.selectReusableOverlayBase')(function* (
@@ -789,6 +903,66 @@ const selectMaterializedFileShards = Effect.fn('codeGraph.selectMaterializedFile
   } satisfies LoadedCodeGraphFacts;
 });
 
+const selectSnapshotMaterializedFileShards = Effect.fn('codeGraph.selectSnapshotMaterializedFileShards')(function* (
+  snapshotId: string,
+  files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+) {
+  const output = new Map<string, CodeGraphFileFacts>();
+  const bytesByPath = new Map<string, number>();
+  const keys = new Set<string>();
+  let bytes = 0;
+  if (files.length === 0 || new Set(files.map(file => file.path)).size !== files.length) {
+    return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
+  }
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  for (const batch of chunk(files, 200)) {
+    const requested = JSON.stringify(batch.map(file => ({contentHash: file.contentHash, path: file.path})));
+    const rows = yield* sql<{
+      readonly content_hash: string;
+      readonly derivation_identity: string;
+      readonly extractor_set: string;
+      readonly facts_json: string;
+      readonly id: string;
+      readonly path_hint: string;
+    }>`
+        SELECT shard.id, shard.content_hash, shard.extractor_set, shard.derivation_identity,
+               shard.path_hint, shard.facts_json
+        FROM json_each(${requested}) AS requested
+        JOIN snapshots AS snapshot
+          ON snapshot.id = ${snapshotId}
+         AND snapshot.state = 'ready'
+        JOIN snapshot_files AS file
+          ON file.snapshot_id = snapshot.id
+         AND file.path = json_extract(requested.value, '$.path')
+         AND file.content_hash = json_extract(requested.value, '$.contentHash')
+        JOIN snapshot_file_shards AS association
+          ON association.snapshot_id = file.snapshot_id
+         AND association.path = file.path
+        JOIN materialized_file_shards AS shard
+          ON shard.id = association.shard_id
+         AND shard.content_hash = file.content_hash
+         AND shard.path_hint = file.path
+         AND shard.extractor_set = snapshot.extractor_set
+      `;
+    for (const row of rows) {
+      const bounded = decodeStoredCodeGraphFactOption(row.facts_json, row.path_hint);
+      if (
+        bounded === undefined ||
+        row.id !==
+          materializedFileShardIdentity(row.content_hash, row.extractor_set, row.derivation_identity, row.path_hint)
+      ) {
+        continue;
+      }
+      output.set(row.path_hint, bounded.facts);
+      keys.add(row.path_hint);
+      bytes += bounded.bytes;
+      bytesByPath.set(row.path_hint, bounded.bytes);
+    }
+  }
+  return {bytes, bytesByPath, facts: output, keys} satisfies LoadedCodeGraphFacts;
+});
+
 function decodeStoredCodeGraphFactOption(json: string, path: string) {
   try {
     return decodeStoredCodeGraphFact(json, path);
@@ -1202,6 +1376,8 @@ function compareEdgeRowsByPriority(left: EdgeRow, right: EdgeRow): number {
 export {
   selectReusableBaseReceipt,
   selectReusableCleanBaseForCommit,
+  selectReusableCleanBaseForCommitPaths,
+  selectExistingSnapshotFilePaths,
   selectAllEffectiveSymbols,
   SearchSymbolRow,
   compactLexicalTermBranch,
@@ -1222,6 +1398,7 @@ export {
   selectReusableReexports,
   selectCachedFacts,
   selectMaterializedFileShards,
+  selectSnapshotMaterializedFileShards,
   selectStoredGraph,
   selectStoredSymbols,
   selectEdgePage,

@@ -19,6 +19,18 @@ describe('code graph inventory reuse receipts', () => {
     },
     ({diagnostics, skipped}) => {
       const receipt = {
+        attributionFiles: [
+          {
+            blobId: 'blob:package',
+            content: '{"name":"fixture"}',
+            contentHash: 'c'.repeat(64),
+            language: 'json',
+            mode: '100644',
+            path: 'package.json',
+            size: 18,
+            source: 'commit' as const,
+          },
+        ],
         contract: 'a'.repeat(64),
         diagnostics,
         environmentFingerprint: 'b'.repeat(64),

@@ -15,7 +15,35 @@ import {
   type CodeGraphInventoryReuseReceipt,
 } from './store_models.js';
 import {mergeCodeGraphWorkspaces} from './workspace.js';
-import type {RepositoryIdentity} from './types.js';
+import type {CodeGraphInventoryFile, RepositoryIdentity} from './types.js';
+import {codeGraphUtf8ByteLength} from './disk_capacity.js';
+import {compareCodeUnits} from './ordering.js';
+import type {CodeGraphAttributionContextFile} from './store_models.js';
+
+const ATTRIBUTION_CONTEXT_FILES_MAXIMUM = 10_000;
+const ATTRIBUTION_CONTEXT_BYTES_MAXIMUM = 16 * 1_048_576;
+
+export function codeGraphAttributionContextFilesForReceipt(
+  files: readonly CodeGraphInventoryFile[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): readonly CodeGraphAttributionContextFile[] | undefined {
+  const context: CodeGraphAttributionContextFile[] = [];
+  let contentBytes = 0;
+  for (const file of files) {
+    if (!languagePacks.isResolutionContext(file.path)) continue;
+    if (file.content === undefined || file.source !== 'commit') return undefined;
+    const bytes = codeGraphUtf8ByteLength(file.content);
+    if (
+      context.length >= ATTRIBUTION_CONTEXT_FILES_MAXIMUM ||
+      bytes > ATTRIBUTION_CONTEXT_BYTES_MAXIMUM - contentBytes
+    ) {
+      return undefined;
+    }
+    contentBytes += bytes;
+    context.push({...file, content: file.content, size: bytes, source: 'commit'});
+  }
+  return context.sort((left, right) => compareCodeUnits(left.path, right.path));
+}
 
 /**
  * Bump when admission behavior changes without a corresponding language-pack
@@ -110,7 +138,7 @@ export function encodeCodeGraphInventoryReuseReceipt(
 }
 
 export function decodeCodeGraphInventoryReuseReceipt(value: unknown): CodeGraphInventoryReuseReceipt | undefined {
-  if (typeof value !== 'string' || value.length === 0 || value.length > 1_000_000) return undefined;
+  if (typeof value !== 'string' || value.length === 0 || value.length > 24 * 1_048_576) return undefined;
   try {
     const parsed: unknown = JSON.parse(value);
     if (!isRecord(parsed)) return undefined;
@@ -120,12 +148,15 @@ export function decodeCodeGraphInventoryReuseReceipt(value: unknown): CodeGraphI
     if (!isNonNegativeSafeInteger(parsed.skipped)) return undefined;
     if (!isBoundedStringArray(parsed.diagnostics, 100, 2_000)) return undefined;
     if (!isPolicyExclusionSummary(parsed.policyExclusions)) return undefined;
+    const attributionFiles = normalizedAttributionFiles(parsed.attributionFiles);
+    if (attributionFiles === undefined) return undefined;
     const workspaceInput = parsed.workspace;
     const workspace = normalizedWorkspace(workspaceInput);
     if (!isRecord(workspaceInput) || workspace === undefined || workspace.fingerprint !== workspaceInput.fingerprint) {
       return undefined;
     }
     return {
+      attributionFiles,
       contract: parsed.contract,
       diagnostics: parsed.diagnostics,
       environmentFingerprint: parsed.environmentFingerprint,
@@ -138,6 +169,51 @@ export function decodeCodeGraphInventoryReuseReceipt(value: unknown): CodeGraphI
   } catch {
     return undefined;
   }
+}
+
+function normalizedAttributionFiles(value: unknown): readonly CodeGraphAttributionContextFile[] | undefined {
+  if (!Array.isArray(value) || value.length > ATTRIBUTION_CONTEXT_FILES_MAXIMUM) return undefined;
+  const files: CodeGraphAttributionContextFile[] = [];
+  const paths = new Set<string>();
+  let contentBytes = 0;
+  for (const input of value) {
+    if (
+      !isRecord(input) ||
+      typeof input.blobId !== 'string' ||
+      input.blobId.length === 0 ||
+      input.blobId.length > 4_096 ||
+      !isSha256(input.contentHash) ||
+      typeof input.content !== 'string' ||
+      typeof input.language !== 'string' ||
+      input.language.length === 0 ||
+      input.language.length > 128 ||
+      typeof input.mode !== 'string' ||
+      !/^\d{6}$/u.test(input.mode) ||
+      typeof input.path !== 'string' ||
+      input.path.length === 0 ||
+      input.path.length > 4_096 ||
+      paths.has(input.path) ||
+      !isNonNegativeSafeInteger(input.size) ||
+      input.source !== 'commit'
+    ) {
+      return undefined;
+    }
+    const bytes = codeGraphUtf8ByteLength(input.content);
+    if (bytes !== input.size || bytes > ATTRIBUTION_CONTEXT_BYTES_MAXIMUM - contentBytes) return undefined;
+    contentBytes += bytes;
+    paths.add(input.path);
+    files.push({
+      blobId: input.blobId,
+      content: input.content,
+      contentHash: input.contentHash,
+      language: input.language,
+      mode: input.mode,
+      path: input.path,
+      size: input.size,
+      source: 'commit',
+    });
+  }
+  return files.sort((left, right) => compareCodeUnits(left.path, right.path));
 }
 
 function normalizedWorkspace(value: unknown): CodeGraphWorkspace | undefined {

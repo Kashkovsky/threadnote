@@ -9,6 +9,8 @@ import {stageActivationFiles, activationMode, type CodeGraphWriterGate} from './
 import {
   selectReusableBaseReceipt,
   selectReusableCleanBaseForCommit,
+  selectReusableCleanBaseForCommitPaths,
+  selectExistingSnapshotFilePaths,
   selectReadySnapshot,
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
@@ -19,6 +21,7 @@ import {
   selectReusableReexports,
   selectCachedFacts,
   selectMaterializedFileShards,
+  selectSnapshotMaterializedFileShards,
   selectStoredGraph,
   selectStoredSymbols,
   selectEdgePage,
@@ -85,6 +88,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'findSymbolsByPathAndName'
   | 'loadCachedFacts'
   | 'loadMaterializedFileShards'
+  | 'loadSnapshotMaterializedFileShards'
   | 'loadGraph'
   | 'loadSymbols'
   | 'loadEdgePage'
@@ -117,6 +121,8 @@ type CodeGraphStoreDataMethods = Pick<
   | 'snapshotPackProvenance'
   | 'reusableCleanBase'
   | 'reusableCleanBaseForCommit'
+  | 'reusableCleanBaseForCommitPaths'
+  | 'existingSnapshotFilePaths'
   | 'reusableOverlayBase'
   | 'reusableReexports'
   | 'relationshipSummaryForNode'
@@ -297,6 +303,11 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           ),
         ),
         Effect.mapError(cause => storeError('load materialized code graph file shards', cause)),
+      ),
+    loadSnapshotMaterializedFileShards: (databasePath, snapshotId, files) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectSnapshotMaterializedFileShards(snapshotId, files))),
+        Effect.mapError(cause => storeError('load associated materialized code graph file shards', cause)),
       ),
     loadGraph: (databasePath, snapshotId) =>
       prepare(databasePath).pipe(
@@ -629,6 +640,24 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base for commit', cause)),
+      ),
+    reusableCleanBaseForCommitPaths: (databasePath, repositoryId, commit, paths) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommitPaths(repositoryId, commit, paths))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable clean code graph base paths for commit', cause)),
+      ),
+    existingSnapshotFilePaths: (databasePath, snapshotId, paths) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectExistingSnapshotFilePaths(snapshotId, paths))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('probe existing code graph snapshot file paths', cause)),
       ),
     reusableOverlayBase: (databasePath, repositoryId, extractorSet, overlayFingerprint) =>
       fs.exists(databasePath).pipe(

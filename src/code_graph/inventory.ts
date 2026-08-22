@@ -18,7 +18,11 @@ import {
   shouldOmitRepositoryContent,
 } from './inventory_content.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
-import {codeGraphInventoryReuseContract, readCodeGraphInventoryReuseEnvironment} from './inventory_reuse.js';
+import {
+  codeGraphAttributionContextFilesForReceipt,
+  codeGraphInventoryReuseContract,
+  readCodeGraphInventoryReuseEnvironment,
+} from './inventory_reuse.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT, isOpaqueCorpusMediaPath} from './languages/corpus/policy.js';
 import type {CodeGraphFileRole, CodeGraphWorkspace} from './languages/types.js';
@@ -50,14 +54,14 @@ export type {
   CodeGraphInventoryPolicyExclusionSummary,
 } from './store_models.js';
 
-interface GitTreeEntry {
+export interface GitTreeEntry {
   readonly blobId: string;
   readonly mode: string;
   readonly path: string;
   readonly size: number;
 }
 
-interface CompiledIgnoreRule {
+export interface CompiledIgnoreRule {
   readonly ignored: boolean;
   readonly pattern: RegExp;
 }
@@ -167,7 +171,7 @@ export interface CodeGraphInventoryPreviewOptions {
   readonly languagePacks?: CodeGraphLanguagePackRegistryShape;
 }
 
-interface PolicyExclusionEntry {
+export interface PolicyExclusionEntry {
   readonly reason: CodeGraphInventoryExclusionReason;
   readonly size: number;
 }
@@ -448,6 +452,7 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
       );
     }
   }
+  const attributionFiles = codeGraphAttributionContextFilesForReceipt(committed.files, languagePacks);
   return {
     committedFiles: [...committed.files].sort((left, right) => compareCodeUnits(left.path, right.path)),
     committedParsedFiles: committed.files.reduce(
@@ -460,10 +465,11 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
     overlayFingerprint: overlay.fingerprint,
     parsedFiles: files.reduce((total, file) => total + (parsedPaths.has(file.path) ? 1 : 0), 0),
     policyExclusions,
-    ...(overlay.dirty
+    ...(overlay.dirty || attributionFiles === undefined
       ? {}
       : {
           reuseReceipt: {
+            attributionFiles,
             contract: codeGraphInventoryReuseContract(languagePacks, includeOpaqueCorpusAssets),
             diagnostics: committedDiagnostics,
             environmentFingerprint: reuseEnvironment.fingerprint,
@@ -609,7 +615,7 @@ export const inventoryRepositoryFromReusableCleanBase = Effect.fn('codeGraph.inv
   },
 );
 
-function sameInventoryPathSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+export function sameInventoryPathSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   return left.size === right.size && [...left].every(value => right.has(value));
 }
 
@@ -1189,7 +1195,7 @@ function isInventoryPolicyExtension(repositoryPath: string): boolean {
   return /\.(?:jsonc?|svg)$/i.test(repositoryPath);
 }
 
-function isOverlayAdmissionControlPath(repositoryPath: string): boolean {
+export function isOverlayAdmissionControlPath(repositoryPath: string): boolean {
   return repositoryPath === '.threadnoteignore' || /(?:^|\/)\.gitignore$/.test(repositoryPath);
 }
 
@@ -1252,7 +1258,7 @@ function repositoryPathExclusionReason(
   return Option.isSome(languagePacks.match(path)) ? undefined : 'unsupported-language';
 }
 
-function compileThreadnoteIgnore(content: string): readonly CompiledIgnoreRule[] {
+export function compileThreadnoteIgnore(content: string): readonly CompiledIgnoreRule[] {
   const rules: CompiledIgnoreRule[] = [];
   for (const rawLine of content.split(/\r?\n/)) {
     const trimmed = rawLine.trim();
@@ -1564,7 +1570,7 @@ export function parseGitCatFileBatch(
   return output;
 }
 
-const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
+export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function* (
   identity: RepositoryIdentity,
   path: Path.Path,
   threadnoteIgnore: string,

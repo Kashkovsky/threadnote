@@ -10,6 +10,10 @@ import {
   extractRepositoryFacts,
   extractRepositoryFileFacts,
 } from '../../src/code_graph/extractor.js';
+import {
+  createRepositoryFactAttributorFromContext,
+  repositoryFactCandidatePaths,
+} from '../../src/code_graph/extractor_context.js';
 import {createCachedCodeGraphFactsAttributor, deriveCachedCodeGraphFacts} from '../../src/code_graph/indexer.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
 import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
@@ -195,6 +199,36 @@ describe('native code graph extraction', () => {
         .find(symbol => symbol.path === 'packages/application/src/unrelated.ts' && symbol.name === 'unrelated')
         ?.packageName,
     ).toBe('root-package');
+  });
+
+  it('replays repository attribution from bounded context plus exact path-membership probes', () => {
+    FC.assert(
+      FC.property(FC.integer({max: 100, min: 0}), packageIndex => {
+        const root = `packages/package-${packageIndex}`;
+        const contextFiles = [sourceFile(`${root}/package.json`, `{"name":"package-${packageIndex}"}\n`)];
+        const dependency = sourceFile(
+          `${root}/src/dependency.ts`,
+          'export function dependency(): number { return 1; }\n',
+        );
+        const consumer = sourceFile(
+          `${root}/src/consumer.ts`,
+          'import {dependency} from "./dependency.js";\n' +
+            'export function consumer(): number { return dependency(); }\n',
+        );
+        const repositoryFiles = [...contextFiles, dependency, consumer];
+        const rawConsumer = extractRepositoryFileFacts([consumer]);
+        const candidates = repositoryFactCandidatePaths(contextFiles, rawConsumer);
+        const repositoryPaths = new Set(repositoryFiles.map(file => file.path));
+        const existingCandidates = new Set(candidates.filter(path => repositoryPaths.has(path)));
+
+        expect(createRepositoryFactAttributorFromContext(contextFiles, existingCandidates)(rawConsumer)).toEqual(
+          createRepositoryFactAttributor(repositoryFiles)(rawConsumer),
+        );
+        expect(existingCandidates.has(dependency.path)).toBe(true);
+        expect(candidates.length).toBeLessThanOrEqual(16);
+      }),
+      {numRuns: 100},
+    );
   });
 
   it('indexes documentation without promoting prose similarity to a source dependency', () => {

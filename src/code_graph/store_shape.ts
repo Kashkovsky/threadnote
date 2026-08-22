@@ -28,6 +28,7 @@ import type {
   CodeGraphReusableBaseReceipt,
   CodeGraphReusableBaseReceiptInput,
   CodeGraphReusableCleanBase,
+  CodeGraphReusableCleanBaseSlice,
   CodeGraphReusableReexport,
   CodeGraphReusableReexportSeed,
   CodeGraphRoutineMaintenanceOptions,
@@ -265,6 +266,11 @@ export interface CodeGraphStoreShape {
       readonly snapshotIds: readonly string[];
     },
   ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
+  readonly loadSnapshotMaterializedFileShards?: (
+    databasePath: string,
+    snapshotId: string,
+    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
   readonly loadGraph: (databasePath: string, snapshotId: string) => Effect.Effect<StoredCodeGraph, CodeGraphStoreError>;
   readonly loadSymbols: (
     databasePath: string,
@@ -450,6 +456,17 @@ export interface CodeGraphStoreShape {
     repositoryId: string,
     commit: string,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
+  readonly reusableCleanBaseForCommitPaths?: (
+    databasePath: string,
+    repositoryId: string,
+    commit: string,
+    paths: readonly string[],
+  ) => Effect.Effect<CodeGraphReusableCleanBaseSlice | undefined, CodeGraphStoreError>;
+  readonly existingSnapshotFilePaths?: (
+    databasePath: string,
+    snapshotId: string,
+    paths: readonly string[],
+  ) => Effect.Effect<readonly string[] | undefined, CodeGraphStoreError>;
   readonly reusableOverlayBase?: (
     databasePath: string,
     repositoryId: string,

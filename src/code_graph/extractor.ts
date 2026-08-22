@@ -47,7 +47,7 @@ interface ResolvablePackageInfo extends PackageInfo {
   readonly entryPath: string;
 }
 
-interface PackageIndex {
+export interface PackageIndex {
   readonly all: readonly PackageInfo[];
   readonly nameByRoot: ReadonlyMap<string, string>;
   readonly uniqueByName: ReadonlyMap<string, ResolvablePackageInfo>;
@@ -132,7 +132,7 @@ export function createRepositoryFactAttributor(
   return facts => attributeResolution(attributePackages(facts));
 }
 
-function createPackageAttributorFromIndex(
+export function createPackageAttributorFromIndex(
   packages: PackageIndex,
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   return facts => facts.map(file => refreshFilePackageAttribution(file, packages));
@@ -156,16 +156,16 @@ export function createResolutionAttributor(
   return createResolutionAttributorFromIndex(files, packages);
 }
 
-function createResolutionAttributorFromIndex(
+export function createResolutionAttributorFromIndex(
   files: readonly CodeGraphInventoryFile[],
   packages: PackageIndex,
+  existingPaths: ReadonlySet<string> = new Set(files.map(file => file.path)),
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   const packageNameCounts = new Map<string, number>();
   for (const candidate of packages.all) {
     packageNameCounts.set(candidate.name, (packageNameCounts.get(candidate.name) ?? 0) + 1);
   }
   const duplicatePackages = new Set([...packageNameCounts].filter(([, count]) => count > 1).map(([name]) => name));
-  const existingPaths = new Set(files.map(file => file.path));
   const aliases = discoverResolutionAliases(files, {});
   const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
   return facts => {
@@ -1230,7 +1230,7 @@ function resolveModulePath(
   return undefined;
 }
 
-function discoverPackages(files: readonly CodeGraphInventoryFile[]): PackageIndex {
+export function discoverPackages(files: readonly CodeGraphInventoryFile[]): PackageIndex {
   const candidates = new Map<string, PackageCandidate[]>();
   for (const file of files) {
     if (!/package\.json$/i.test(file.path)) continue;
