@@ -933,8 +933,7 @@ export const CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS = 10 * 60_000;
 const FACT_MATERIALIZATION_BATCH_FILES = 128;
 const FACT_MATERIALIZATION_BATCH_SOURCE_BYTES = 16 * 1_048_576;
 const FACT_MATERIALIZATION_BATCH_CACHED_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
-const PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_DEFAULT = 4;
-const PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_MAXIMUM = 8;
+const PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES = 4;
 export const PERSISTENT_MATERIALIZATION_TRANSACTION_FILES = 512;
 export const PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES = 64 * 1_048_576;
 export const PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES = 32 * 1_048_576;
@@ -1183,20 +1182,6 @@ export interface PersistentMaterializationTransactionCandidate {
   readonly sourceBytes: number;
 }
 
-/** Benchmark candidate doubles every physical ceiling only for the explicit eight-receipt mode. */
-export function persistentMaterializationTransactionBounds(maximumBatches = 4) {
-  const batchLimit = Math.max(1, Math.min(PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_MAXIMUM, maximumBatches));
-  const scale = batchLimit > PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_DEFAULT ? 2 : 1;
-  return {
-    // Associations retain their independent 512-row cache transaction ceiling.
-    associationBatchLimit: Math.min(PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_DEFAULT, batchLimit),
-    batchLimit,
-    factBytes: PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES * scale,
-    fileCount: PERSISTENT_MATERIALIZATION_TRANSACTION_FILES * scale,
-    sourceBytes: PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES * scale,
-  } as const;
-}
-
 /**
  * Coalesces contiguous, already-bounded logical receipts into larger physical
  * SQLite transactions. Logical receipt identities stay unchanged so an
@@ -1205,9 +1190,9 @@ export function persistentMaterializationTransactionBounds(maximumBatches = 4) {
  */
 export function persistentMaterializationTransactionBatches<T extends PersistentMaterializationTransactionCandidate>(
   values: readonly T[],
-  maximumBatches = PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_DEFAULT,
+  maximumBatches = PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES,
 ): readonly (readonly T[])[] {
-  const bounds = persistentMaterializationTransactionBounds(maximumBatches);
+  const batchLimit = Math.max(1, Math.min(PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES, maximumBatches));
   const output: T[][] = [];
   let batch: T[] = [];
   let factBytes = 0;
@@ -1216,10 +1201,10 @@ export function persistentMaterializationTransactionBatches<T extends Persistent
   for (const value of values) {
     if (
       batch.length > 0 &&
-      (batch.length >= bounds.batchLimit ||
-        fileCount + value.fileCount > bounds.fileCount ||
-        sourceBytes + value.sourceBytes > bounds.sourceBytes ||
-        factBytes + value.factBytes > bounds.factBytes)
+      (batch.length >= batchLimit ||
+        fileCount + value.fileCount > PERSISTENT_MATERIALIZATION_TRANSACTION_FILES ||
+        sourceBytes + value.sourceBytes > PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES ||
+        factBytes + value.factBytes > PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES)
     ) {
       output.push(batch);
       batch = [];

@@ -5005,7 +5005,7 @@ export interface CodeGraphBenchmarkOptions {
   readonly fixture: string;
   readonly homePath?: string;
   readonly incrementalPath?: string;
-  readonly materializationTransactionBatchLimit?: 1 | 4 | 8;
+  readonly materializationTransactionBatchLimit?: 1 | 4;
   readonly minimumFreeGiB: number;
   readonly modelHome?: string;
   readonly outputPath?: string;
@@ -5034,7 +5034,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let fixture = 'code-graph-v1';
   let homePath: string | undefined;
   let incrementalPath: string | undefined;
-  let materializationTransactionBatchLimit: 1 | 4 | 8 | undefined;
+  let materializationTransactionBatchLimit: 1 | 4 | undefined;
   let minimumFreeGiB = 120;
   let modelHome: string | undefined;
   let outputPath: string | undefined;
@@ -5071,7 +5071,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     else if (argument === '--incremental-path') incrementalPath = required(args[++index], argument);
     else if (argument === '--materialization-transaction-batches') {
       const value = integer(args[++index], argument, 1);
-      if (value !== 1 && value !== 4 && value !== 8) throw new ScriptError(`${argument} must be 1, 4, or 8.`);
+      if (value !== 1 && value !== 4) throw new ScriptError(`${argument} must be 1 or 4.`);
       materializationTransactionBatchLimit = value;
     } else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
     else if (argument === '--model-home') modelHome = required(args[++index], argument);
