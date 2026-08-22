@@ -1,7 +1,10 @@
+import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Ref} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore, type CodeGraphResolutionProgressCallback} from '../../src/code_graph/store.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {
   CodeGraphEdge,
   CodeGraphInventoryFile,
@@ -12,6 +15,7 @@ import type {
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -92,73 +96,85 @@ describe('code graph reference-resolution progress', () => {
     expect(result.schedulerTurns).toBeGreaterThan(0);
   });
 
-  it('bulk-resolves a production-shaped persistent page with deterministic graph output', async () => {
-    const fixture = await resolutionFixture();
-    const target = symbol('bulk-target', 'bulkTarget');
-    const callers = Array.from({length: 5_001}, (_, index) => {
-      const suffix = String(index).padStart(4, '0');
-      return symbol(`bulk-caller-${suffix}`, `bulkCaller${suffix}`);
-    });
-    const unresolved = callers.map((caller, index) => resolvableReference(fixture.file, caller, target, index));
-    const snapshot = persistentSnapshot(fixture.identity, callers.length + 1, unresolved.length);
-    const observations: CodeGraphResolutionActivity[] = [];
-
-    const result = await runEffect(
+  effectIt.effect(
+    'groups production-shaped persistent pages under one bounded capacity reservation',
+    () =>
       Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(
-              fixture.databasePath,
-              [target, ...callers],
-              unresolved.map(entry => entry.edge),
-              unresolved.map(entry => entry.reference),
-              undefined,
-              0,
-            );
-            const resolution = yield* store.resolveStagedReferences(fixture.databasePath, progress =>
-              Effect.sync(() => observations.push(progress)),
-            );
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            return {
-              graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
-              resolution,
-            };
-          }),
-        );
-      }),
-    );
+        const fixture = yield* Effect.promise(() => resolutionFixture());
+        const target = symbol('bulk-target', 'bulkTarget');
+        const callers = Array.from({length: 5_001}, (_, index) => {
+          const suffix = String(index).padStart(4, '0');
+          return symbol(`bulk-caller-${suffix}`, `bulkCaller${suffix}`);
+        });
+        const unresolved = callers.map((caller, index) => resolvableReference(fixture.file, caller, target, index));
+        const snapshot = persistentSnapshot(fixture.identity, callers.length + 1, unresolved.length);
+        const observations: CodeGraphResolutionActivity[] = [];
+        const capacityBoundaries: Array<{readonly finalFactBytes: number; readonly rowCount: number}> = [];
 
-    expect(result.resolution).toMatchObject({
-      aliasesDiscovered: 5_001,
-      pagesCompleted: 2,
-      passesCompleted: 1,
-      referencesExamined: 5_001,
-      resolved: 5_001,
-    });
-    expect(result.resolution.elapsedMilliseconds).toBeLessThan(30_000);
-    expect(observations[0]).toMatchObject({
-      pageCompleted: 0,
-      pageTotal: 2,
-      referencesCompleted: 0,
-      referencesTotal: 5_001,
-    });
-    expect(observations.map(progress => progress.pageCompleted)).toEqual([0, 0, 0, 1, 1, 2]);
-    expect(result.graph.edges).toHaveLength(5_001);
-    expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
-    const semanticDigest = sha256HexSync(
-      JSON.stringify(
-        result.graph.edges.map(edge => [edge.id, edge.sourceId, edge.relation, edge.targetId, edge.provenance]),
-      ),
-    );
-    expect(semanticDigest).toBe('db81d8f0de093727cacb3d934d779743287400d78764fafd2386d029a0bafba4');
-  }, 30_000);
+        const result = yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(
+                fixture.databasePath,
+                [target, ...callers],
+                unresolved.map(entry => entry.edge),
+                unresolved.map(entry => entry.reference),
+                undefined,
+                0,
+              );
+              const resolution = yield* store.resolveStagedReferences(
+                fixture.databasePath,
+                progress => Effect.sync(() => observations.push(progress)),
+                (boundary, transaction) =>
+                  Effect.sync(() => capacityBoundaries.push(boundary)).pipe(Effect.andThen(transaction)),
+              );
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              return {
+                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+                resolution,
+              };
+            }),
+          );
+        });
+
+        expect(result.resolution).toMatchObject({
+          aliasesDiscovered: 5_001,
+          pagesCompleted: 2,
+          passesCompleted: 1,
+          referencesExamined: 5_001,
+          resolved: 5_001,
+        });
+        expect(result.resolution.elapsedMilliseconds).toBeLessThan(30_000);
+        expect(capacityBoundaries).toHaveLength(1);
+        expect(capacityBoundaries[0]).toMatchObject({rowCount: 55_011});
+        expect(capacityBoundaries[0]!.finalFactBytes).toBeGreaterThan(0);
+        expect(observations[0]).toMatchObject({
+          pageCompleted: 0,
+          pageTotal: 2,
+          referencesCompleted: 0,
+          referencesTotal: 5_001,
+        });
+        expect(observations.map(progress => progress.pageCompleted)).toEqual([0, 0, 0, 1, 1, 2, 2]);
+        expect(observations.at(-2)).toMatchObject({resolved: 0});
+        expect(observations.at(-1)).toMatchObject({resolved: 5_001});
+        expect(result.graph.edges).toHaveLength(5_001);
+        expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
+        const semanticDigest = sha256HexSync(
+          JSON.stringify(
+            result.graph.edges.map(edge => [edge.id, edge.sourceId, edge.relation, edge.targetId, edge.provenance]),
+          ),
+        );
+        expect(semanticDigest).toBe('db81d8f0de093727cacb3d934d779743287400d78764fafd2386d029a0bafba4');
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    30_000,
+  );
 
   it('keeps persistent lookup-summary work observable across many distinct keys', async () => {
     const fixture = await resolutionFixture();

@@ -43,6 +43,17 @@ import {lastStatementChangeCount} from './store_activation_core.js';
 
 export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
 
+// Matching pages retain the existing candidate-count and payload bounds. Only
+// their compact resolved rows are grouped, amortizing the durable reservation,
+// writer-lock, and commit cost without multiplying lookup-summary memory.
+const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
+
+interface ResolutionTransactionPage {
+  readonly aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[];
+  readonly resolutions: readonly ActivationResolutionRow[];
+  readonly rows: readonly ResolvableActivationReferenceRow[];
+}
+
 /** @internal Total-pass convergence fence; every admitted pass is independently page-bounded. */
 export function codeGraphResolutionPassAdmitted(passesCompleted: number): boolean {
   return (
@@ -253,6 +264,176 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     let referencesCompleted = 0;
     let resolvedInPass = 0;
     let aliasesInPass = 0;
+    const transactionPageLimit =
+      persistentFull && persistentCapacityProtector ? PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES : 1;
+    const transactionPages: ResolutionTransactionPage[] = [];
+    const flushTransactionPages = Effect.fn('codeGraph.flushResolutionTransactionPages')(function* () {
+      if (transactionPages.length === 0) return;
+      const rows: ResolvableActivationReferenceRow[] = [];
+      const resolutions: ActivationResolutionRow[] = [];
+      const aliases: Array<readonly [string, string, string, number, 'alias', string, string]> = [];
+      for (const page of transactionPages) {
+        for (const row of page.rows) rows.push(row);
+        for (const resolution of page.resolutions) resolutions.push(resolution);
+        for (const alias of page.aliases) aliases.push(alias);
+      }
+      if (rows.length > 0) {
+        const transactionStartedAt = yield* Clock.currentTimeMillis;
+        const transaction = sql.withTransaction(
+          Effect.gen(function* () {
+            let transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            if (mode?.mode === 'persisted-full') {
+              yield* assertPersistentBuildOwner(sql, mode.snapshotId, mode.ownerToken);
+            }
+            yield* sql.unsafe('DELETE FROM activation_resolved_reference_batch');
+            for (const batch of chunk(resolutions, 400)) {
+              yield* sql.unsafe(
+                `INSERT INTO activation_resolved_reference_batch (
+                old_edge_id, new_edge_id, relation, target_id, target_name, provenance, confidence
+              ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+                batch.flatMap(row => [
+                  row.oldEdgeId,
+                  row.newEdgeId,
+                  row.relation,
+                  row.targetId,
+                  row.targetName,
+                  row.provenance,
+                  row.confidence,
+                ]),
+              );
+            }
+            if (mode?.mode === 'persisted-full') {
+              yield* capturePersistedAnalysisResolutionEdges(sql, mode.snapshotId);
+            }
+            transactionPreparingBatchMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            for (const batch of chunk(aliases, 500)) {
+              if (persistentFull) {
+                yield* sql.unsafe(
+                  `INSERT OR IGNORE INTO snapshot_symbol_lookup (
+                     snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
+                     provenance, evidence_edge_id, evidence_path
+                   ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+                  batch.flatMap(row => [persistentFull.snapshotId, ...row]),
+                );
+              } else {
+                yield* sql.unsafe(
+                  `INSERT OR IGNORE INTO activation_symbol_lookup (
+                     lookup_key, symbol_id, resolution_domain, exported,
+                     provenance, evidence_edge_id, evidence_path
+                   ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+                  batch.flat(),
+                );
+              }
+            }
+            transactionWritingAliasesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            if (persistentFull) {
+              yield* sql.unsafe(
+                `INSERT OR REPLACE INTO edges (
+                   snapshot_id, id, source_id, source_name, relation, target_id, target_name,
+                   provenance, confidence, evidence_path, evidence_span_json
+                 )
+                 SELECT
+                   ?, resolution.new_edge_id, edge.source_id, edge.source_name,
+                   resolution.relation, resolution.target_id, resolution.target_name,
+                   resolution.provenance, resolution.confidence,
+                   edge.evidence_path, edge.evidence_span_json
+                 FROM activation_resolved_reference_batch AS resolution
+                 CROSS JOIN edges AS edge
+                   ON edge.snapshot_id = ? AND edge.id = resolution.old_edge_id
+                 ORDER BY resolution.new_edge_id, resolution.old_edge_id`,
+                [persistentFull.snapshotId, persistentFull.snapshotId],
+              );
+              yield* sql.unsafe(
+                `DELETE FROM edges
+                 WHERE snapshot_id = ?
+                   AND id IN (
+                     SELECT old_edge_id
+                     FROM activation_resolved_reference_batch
+                     WHERE old_edge_id <> new_edge_id
+                   )
+                   AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)`,
+                [persistentFull.snapshotId],
+              );
+              transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+              transactionStageStartedAt = yield* Clock.currentTimeMillis;
+              yield* adjustPersistedAnalysisResolutionEdges(sql, persistentFull.snapshotId);
+              transactionUpdatingAnalysisMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+              transactionStageStartedAt = yield* Clock.currentTimeMillis;
+              // The compact candidate payload is owned by this reference row,
+              // so one bounded delete retires the grouped pages after commit.
+              yield* sql.unsafe(
+                `DELETE FROM building_references
+                 WHERE snapshot_id = ?
+                   AND edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)`,
+                [persistentFull.snapshotId],
+              );
+              transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            } else {
+              yield* sql.unsafe(`
+                INSERT OR REPLACE INTO activation_edges (
+                  id, source_id, source_name, relation, target_id, target_name, provenance,
+                  confidence, evidence_path, evidence_span_json
+                )
+                SELECT
+                  resolution.new_edge_id,
+                  edge.source_id,
+                  edge.source_name,
+                  resolution.relation,
+                  resolution.target_id,
+                  resolution.target_name,
+                  resolution.provenance,
+                  resolution.confidence,
+                  edge.evidence_path,
+                  edge.evidence_span_json
+                FROM activation_resolved_reference_batch AS resolution
+                JOIN activation_edges AS edge ON edge.id = resolution.old_edge_id
+              `);
+              yield* sql.unsafe(`
+                DELETE FROM activation_edges
+                WHERE id IN (
+                  SELECT old_edge_id
+                  FROM activation_resolved_reference_batch
+                  WHERE old_edge_id <> new_edge_id
+                )
+                  AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)
+              `);
+              transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+              transactionStageStartedAt = yield* Clock.currentTimeMillis;
+              yield* sql.unsafe(`
+                DELETE FROM activation_reference_candidates
+                WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
+              `);
+              yield* sql.unsafe(`
+                DELETE FROM activation_references
+                WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
+              `);
+              transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            }
+          }),
+        );
+        const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
+        yield* persistentCapacityProtector
+          ? persistentCapacityProtector(
+              persistentReferenceResolutionCapacityBoundary(
+                mode?.mode === 'persisted-full' ? mode.snapshotId : (persistedBaseSnapshotId ?? 'temporary'),
+                rows,
+                resolutions,
+                aliases,
+                mode?.mode !== 'persisted-full',
+              ),
+              gatedTransaction,
+            )
+          : gatedTransaction;
+        transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
+      }
+      aliasesInPass += aliases.length;
+      aliasesDiscovered += aliases.length;
+      resolvedInPass += rows.length;
+      resolved += rows.length;
+      transactionPages.length = 0;
+    });
     yield* onProgress?.({
       aliasesDiscovered,
       elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
@@ -531,161 +712,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           ]);
         }
       }
-      aliasesInPass += aliases.length;
-      aliasesDiscovered += aliases.length;
-      if (rows.length > 0) {
-        const transactionStartedAt = yield* Clock.currentTimeMillis;
-        const transaction = sql.withTransaction(
-          Effect.gen(function* () {
-            let transactionStageStartedAt = yield* Clock.currentTimeMillis;
-            if (mode?.mode === 'persisted-full') {
-              yield* assertPersistentBuildOwner(sql, mode.snapshotId, mode.ownerToken);
-            }
-            yield* sql.unsafe('DELETE FROM activation_resolved_reference_batch');
-            for (const batch of chunk(resolutions, 400)) {
-              yield* sql.unsafe(
-                `INSERT INTO activation_resolved_reference_batch (
-                old_edge_id, new_edge_id, relation, target_id, target_name, provenance, confidence
-              ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-                batch.flatMap(row => [
-                  row.oldEdgeId,
-                  row.newEdgeId,
-                  row.relation,
-                  row.targetId,
-                  row.targetName,
-                  row.provenance,
-                  row.confidence,
-                ]),
-              );
-            }
-            if (mode?.mode === 'persisted-full') {
-              yield* capturePersistedAnalysisResolutionEdges(sql, mode.snapshotId);
-            }
-            transactionPreparingBatchMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-            transactionStageStartedAt = yield* Clock.currentTimeMillis;
-            for (const batch of chunk(aliases, 500)) {
-              if (persistentFull) {
-                yield* sql.unsafe(
-                  `INSERT OR IGNORE INTO snapshot_symbol_lookup (
-                     snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
-                     provenance, evidence_edge_id, evidence_path
-                   ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-                  batch.flatMap(row => [persistentFull.snapshotId, ...row]),
-                );
-              } else {
-                yield* sql.unsafe(
-                  `INSERT OR IGNORE INTO activation_symbol_lookup (
-                     lookup_key, symbol_id, resolution_domain, exported,
-                     provenance, evidence_edge_id, evidence_path
-                   ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-                  batch.flat(),
-                );
-              }
-            }
-            transactionWritingAliasesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-            transactionStageStartedAt = yield* Clock.currentTimeMillis;
-            if (persistentFull) {
-              yield* sql.unsafe(
-                `INSERT OR REPLACE INTO edges (
-                   snapshot_id, id, source_id, source_name, relation, target_id, target_name,
-                   provenance, confidence, evidence_path, evidence_span_json
-                 )
-                 SELECT
-                   ?, resolution.new_edge_id, edge.source_id, edge.source_name,
-                   resolution.relation, resolution.target_id, resolution.target_name,
-                   resolution.provenance, resolution.confidence,
-                   edge.evidence_path, edge.evidence_span_json
-                 FROM activation_resolved_reference_batch AS resolution
-                 CROSS JOIN edges AS edge
-                   ON edge.snapshot_id = ? AND edge.id = resolution.old_edge_id
-                 ORDER BY resolution.new_edge_id`,
-                [persistentFull.snapshotId, persistentFull.snapshotId],
-              );
-              yield* sql.unsafe(
-                `DELETE FROM edges
-                 WHERE snapshot_id = ?
-                   AND id IN (
-                     SELECT old_edge_id
-                     FROM activation_resolved_reference_batch
-                     WHERE old_edge_id <> new_edge_id
-                   )
-                   AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)`,
-                [persistentFull.snapshotId],
-              );
-              transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-              transactionStageStartedAt = yield* Clock.currentTimeMillis;
-              yield* adjustPersistedAnalysisResolutionEdges(sql, persistentFull.snapshotId);
-              transactionUpdatingAnalysisMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-              transactionStageStartedAt = yield* Clock.currentTimeMillis;
-              // The compact candidate payload is owned by this reference row,
-              // so one bounded delete retires both after a successful page.
-              yield* sql.unsafe(
-                `DELETE FROM building_references
-                 WHERE snapshot_id = ?
-                   AND edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)`,
-                [persistentFull.snapshotId],
-              );
-              transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-            } else {
-              yield* sql.unsafe(`
-                INSERT OR REPLACE INTO activation_edges (
-                  id, source_id, source_name, relation, target_id, target_name, provenance,
-                  confidence, evidence_path, evidence_span_json
-                )
-                SELECT
-                  resolution.new_edge_id,
-                  edge.source_id,
-                  edge.source_name,
-                  resolution.relation,
-                  resolution.target_id,
-                  resolution.target_name,
-                  resolution.provenance,
-                  resolution.confidence,
-                  edge.evidence_path,
-                  edge.evidence_span_json
-                FROM activation_resolved_reference_batch AS resolution
-                JOIN activation_edges AS edge ON edge.id = resolution.old_edge_id
-              `);
-              yield* sql.unsafe(`
-                DELETE FROM activation_edges
-                WHERE id IN (
-                  SELECT old_edge_id
-                  FROM activation_resolved_reference_batch
-                  WHERE old_edge_id <> new_edge_id
-                )
-                  AND id NOT IN (SELECT new_edge_id FROM activation_resolved_reference_batch)
-              `);
-              transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-              transactionStageStartedAt = yield* Clock.currentTimeMillis;
-              yield* sql.unsafe(`
-                DELETE FROM activation_reference_candidates
-                WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
-              `);
-              yield* sql.unsafe(`
-                DELETE FROM activation_references
-                WHERE edge_id IN (SELECT old_edge_id FROM activation_resolved_reference_batch)
-              `);
-              transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
-            }
-          }),
-        );
-        const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
-        yield* persistentCapacityProtector
-          ? persistentCapacityProtector(
-              persistentReferenceResolutionCapacityBoundary(
-                mode?.mode === 'persisted-full' ? mode.snapshotId : (persistedBaseSnapshotId ?? 'temporary'),
-                rows,
-                resolutions,
-                aliases,
-                mode?.mode !== 'persisted-full',
-              ),
-              gatedTransaction,
-            )
-          : gatedTransaction;
-        transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
-      }
-      resolvedInPass += rows.length;
-      resolved += rows.length;
+      transactionPages.push({aliases, resolutions, rows});
       pageCompleted += 1;
       // Aggregate candidate/byte ceilings normally predict the exact page
       // count. Pathological alternating payload shapes can require more pages;
@@ -695,6 +722,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       pagesCompleted += 1;
       referencesCompleted += pending.length;
       referencesExamined += pending.length;
+      if (transactionPages.length >= transactionPageLimit) yield* flushTransactionPages();
       yield* onProgress?.({
         aliasesDiscovered,
         elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
@@ -713,6 +741,26 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       // Reference resolution is synchronous SQLite work. Yield after every
       // bounded page so the independent build heartbeat and observers cannot
       // be starved for the duration of an entire repository-sized pass.
+      yield* Effect.yieldNow;
+    }
+    const hadTransactionRemainder = transactionPages.length > 0;
+    yield* flushTransactionPages();
+    if (hadTransactionRemainder) {
+      yield* onProgress?.({
+        aliasesDiscovered,
+        elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+        matchingMilliseconds,
+        pageCompleted,
+        pageTotal,
+        pagesCompleted,
+        pass,
+        referencesCompleted,
+        referencesExamined,
+        referencesTotal,
+        resolved,
+        transactionMilliseconds,
+        transactionStageMilliseconds: transactionStageMilliseconds(),
+      }) ?? Effect.void;
       yield* Effect.yieldNow;
     }
     passesCompleted += 1;
