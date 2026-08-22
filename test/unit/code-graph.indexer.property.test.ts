@@ -389,6 +389,12 @@ describe('code graph indexer properties', () => {
     );
   });
 
+  it('keeps materialized-shard associations within their independent cache-row bound', () => {
+    expect([1, 4, 8].map(limit => persistentMaterializationTransactionBounds(limit).associationBatchLimit)).toEqual([
+      1, 4, 4,
+    ]);
+  });
+
   it('keeps a non-empty batch estimate at a zero-row SQLite stage boundary', () => {
     const estimated = {lookupKeys: 111_666, symbols: 5_669};
 

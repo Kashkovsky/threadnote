@@ -1188,6 +1188,8 @@ export function persistentMaterializationTransactionBounds(maximumBatches = 4) {
   const batchLimit = Math.max(1, Math.min(PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_MAXIMUM, maximumBatches));
   const scale = batchLimit > PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_DEFAULT ? 2 : 1;
   return {
+    // Associations retain their independent 512-row cache transaction ceiling.
+    associationBatchLimit: Math.min(PERSISTENT_MATERIALIZATION_TRANSACTION_BATCHES_DEFAULT, batchLimit),
     batchLimit,
     factBytes: PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES * scale,
     fileCount: PERSISTENT_MATERIALIZATION_TRANSACTION_FILES * scale,

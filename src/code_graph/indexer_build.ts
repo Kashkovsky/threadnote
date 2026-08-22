@@ -1650,7 +1650,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           files,
           selectedShardIds,
         });
-        if (pendingShardAssociationBatches.length >= persistentTransactionBatchLimit) {
+        if (pendingShardAssociationBatches.length >= persistentTransactionBounds.associationBatchLimit) {
           yield* flushPendingShardAssociations();
         }
       }
