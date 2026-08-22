@@ -18,6 +18,8 @@ import {
   materializationStorageShortfalls,
   persistentMaterializationTransactionBatches,
   snapshotIdentity,
+  sparseOverlayGraphContentIdentity,
+  sparseOverlaySnapshotIdentity,
 } from '../../src/code_graph/indexer.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {
@@ -152,6 +154,38 @@ describe('code graph indexer properties', () => {
     ).slice(0, 40);
 
     expect(snapshotIdentity(identity, false, extractorSet, files)).toBe(`cgsn_${expected}`);
+  });
+
+  it('binds sparse overlay identity to every persisted-base observation without enumerating the base', () => {
+    fc.assert(
+      fc.property(fc.string(), fc.string(), fc.string(), fc.string(), (base, extractor, overlay, worktree) => {
+        const identity = {headCommit: 'head', repositoryId: 'repository', worktreeId: worktree};
+        const snapshot = sparseOverlaySnapshotIdentity(identity, base, extractor, overlay);
+
+        expect(sparseOverlaySnapshotIdentity(identity, base, extractor, overlay)).toBe(snapshot);
+        expect(sparseOverlaySnapshotIdentity(identity, `${base}\0changed`, extractor, overlay)).not.toBe(snapshot);
+        expect(sparseOverlaySnapshotIdentity(identity, base, `${extractor}\0changed`, overlay)).not.toBe(snapshot);
+        expect(sparseOverlaySnapshotIdentity(identity, base, extractor, `${overlay}\0changed`)).not.toBe(snapshot);
+        expect(
+          sparseOverlaySnapshotIdentity({...identity, worktreeId: `${worktree}\0changed`}, base, extractor, overlay),
+        ).not.toBe(snapshot);
+      }),
+      {numRuns: 250},
+    );
+  });
+
+  it('binds sparse graph content to base content and overlay without worktree identity', () => {
+    fc.assert(
+      fc.property(fc.string(), fc.string(), fc.string(), (base, extractor, overlay) => {
+        const content = sparseOverlayGraphContentIdentity(base, extractor, overlay);
+        expect(sparseOverlayGraphContentIdentity(base, extractor, overlay)).toBe(content);
+        expect(content).toMatch(/^cgc_[0-9a-f]{40}$/u);
+        expect(sparseOverlayGraphContentIdentity(`${base}\0changed`, extractor, overlay)).not.toBe(content);
+        expect(sparseOverlayGraphContentIdentity(base, `${extractor}\0changed`, overlay)).not.toBe(content);
+        expect(sparseOverlayGraphContentIdentity(base, extractor, `${overlay}\0changed`)).not.toBe(content);
+      }),
+      {numRuns: 250},
+    );
   });
 
   it('keeps graph content identity independent of commit order while detecting every eligible content change', () => {

@@ -46,6 +46,8 @@ export {
   persistentMaterializationTransactionBatches,
   shouldReuseReadySnapshotForCleanCommit,
   snapshotIdentity,
+  sparseOverlayGraphContentIdentity,
+  sparseOverlaySnapshotIdentity,
   type CodeGraphCacheContentCoalescer,
   type CodeGraphCacheExtractedRow,
   type DirectPersistentCapacityContext,

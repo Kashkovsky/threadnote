@@ -47,6 +47,7 @@ import {
   persistentMaterializationTransactionBatches,
   promoteReadySnapshotWithCapacity,
   reusableReadySnapshotForCleanCommit,
+  selectedDecodedFactBytes,
   snapshotIdentity,
   uniqueById,
   verifyIndexInput,
@@ -80,6 +81,7 @@ import {
   materializedShardRepositorySemanticEnvelope,
   shardDonorIds,
   type CodeGraphDirectPersistentCapacityProtector,
+  type CodeGraphLanguagePackProvenance,
   type CodeGraphMaterializedShardAssociationBatch,
   type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableCleanBase,
@@ -1081,21 +1083,6 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
   } satisfies CommittedBaseResult;
 });
 
-function selectedDecodedFactBytes(
-  bytesByPath: ReadonlyMap<string, number> | undefined,
-  paths: readonly string[],
-): number | undefined {
-  if (paths.length === 0) return 0;
-  if (bytesByPath === undefined) return undefined;
-  let total = 0;
-  for (const path of paths) {
-    const bytes = bytesByPath.get(path);
-    if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 0) return undefined;
-    total = Math.min(Number.MAX_SAFE_INTEGER, total + bytes);
-  }
-  return total;
-}
-
 export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function* (input: {
   readonly activatePointer: boolean;
   readonly building: CodeGraphSnapshot;
@@ -1117,6 +1104,10 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
   readonly persistentOwnerToken?: string;
   readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
+  readonly sparseProjection?: {
+    readonly packProvenance: readonly CodeGraphLanguagePackProvenance[];
+    readonly totalFiles: number;
+  };
   readonly startedAt: number;
   readonly store: CodeGraphStoreShape;
   readonly threadnoteHome: string;
@@ -1132,7 +1123,11 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
   let materializedShardFilesReused = 0;
-  const reusedFiles = input.inventory.files.length - input.inventory.parsedFiles;
+  const totalFiles = input.sparseProjection?.totalFiles ?? input.inventory.files.length;
+  const packProvenance =
+    input.sparseProjection?.packProvenance ??
+    input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path));
+  const reusedFiles = totalFiles - input.inventory.parsedFiles;
   const incrementalAssessment =
     input.incrementalAssessment ??
     (input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined);
@@ -1146,7 +1141,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         : undefined;
   let incrementalApplied = false;
   if (incrementalAssessment?.mode === 'eligible') {
-    const incrementalReusedFiles = input.inventory.files.length - incrementalAssessment.files.length;
+    const incrementalReusedFiles = totalFiles - incrementalAssessment.files.length;
     if (input.incrementalPrepared !== true) {
       yield* input.onProgress?.({
         completed: 0,
@@ -1366,7 +1361,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       metrics: metrics(),
       phase: 'materializing',
       reused: reusedFiles,
-      total: input.inventory.files.length,
+      total: totalFiles,
       unit: 'files',
     }) ?? Effect.void;
     yield* input.store.prepareActivation(
@@ -1443,7 +1438,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             metrics: metrics(),
             phase: 'materializing',
             reused: reusedFiles,
-            total: input.inventory.files.length,
+            total: totalFiles,
             unit: 'files',
           }) ?? Effect.void,
         ),
@@ -1512,7 +1507,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             metrics: metrics(),
             phase: 'materializing',
             reused: reusedFiles,
-            total: input.inventory.files.length,
+            total: totalFiles,
             unit: 'files',
           }) ?? Effect.void;
         }
@@ -1536,7 +1531,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         metrics: metrics(),
         phase: 'materializing',
         reused: reusedFiles,
-        total: input.inventory.files.length,
+        total: totalFiles,
         unit: 'files',
       }) ?? Effect.void;
       const loadingStartedAt = yield* Clock.currentTimeMillis;
@@ -1612,7 +1607,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         metrics: metrics(),
         phase: 'materializing',
         reused: reusedFiles,
-        total: input.inventory.files.length,
+        total: totalFiles,
         unit: 'files',
       }) ?? Effect.void;
       const attributionStartedAt = yield* Clock.currentTimeMillis;
@@ -1711,7 +1706,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           metrics: metrics(),
           phase: 'materializing',
           reused: reusedFiles,
-          total: input.inventory.files.length,
+          total: totalFiles,
           unit: 'files',
         }) ?? Effect.void;
         const candidate: PendingMaterializationBatch = {
@@ -1768,7 +1763,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       metrics: metrics(factsBytesCompleted),
       phase: 'materializing',
       reused: reusedFiles,
-      total: input.inventory.files.length,
+      total: totalFiles,
       unit: 'files',
     }) ?? Effect.void;
   }
@@ -1777,7 +1772,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     : {
         fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
         ...(input.inventory.reuseReceipt ? {inventory: {...input.inventory.reuseReceipt, workspace}} : {}),
-        packProvenance: input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path)),
+        packProvenance,
         workspaceFingerprint: workspace.fingerprint,
       };
   yield* input.onProgress?.({phase: 'resolving', subphase: 'references'}) ?? Effect.void;
@@ -1808,7 +1803,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   const ready: CodeGraphSnapshot = {
     ...input.building,
     edgeCount: stagedCounts.edges,
-    fileCount: input.inventory.files.length,
+    fileCount: totalFiles,
     state: 'ready',
     symbolCount: stagedCounts.symbols,
   };
@@ -1836,7 +1831,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             }) ?? Effect.void
           ).pipe(Effect.catch(() => Effect.void)),
         persistentCapacityGuard,
-        input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path)),
+        packProvenance,
         directPersistentMaterialization && !incrementalApplied,
       ),
       lease =>
@@ -1991,9 +1986,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         : {}),
       mode: incrementalApplied ? (input.inventory.dirty ? 'incremental-overlay' : 'incremental-clean') : 'full',
       stagedFiles: materializedFiles,
-      totalFiles: input.inventory.files.length,
+      totalFiles,
     },
-    reusedFiles: input.inventory.files.length - input.inventory.parsedFiles,
+    reusedFiles,
     skippedFiles: input.inventory.skipped,
     snapshot: activatedReady,
   } satisfies CodeGraphIndexSummary;

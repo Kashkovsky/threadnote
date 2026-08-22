@@ -363,6 +363,16 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'one-file-reindex-materialization-boundary-rss-n1', unit: 'bytes'},
   {name: 'one-file-reindex-materialization-staged-files', unit: 'count'},
   {name: 'one-file-reindex-materialization-total-files', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-attribution-context-files-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-base-facts-loaded-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-changed-files-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-deleted-files-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-fact-bytes-n1', unit: 'bytes'},
+  {name: 'one-file-reindex-incremental-work-inventory-files-inspected-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-planned-rows-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-probed-dependency-paths-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-source-bytes-n1', unit: 'bytes'},
+  {name: 'one-file-reindex-incremental-work-total-files-n1', unit: 'count'},
   {name: 'cold-primary-query-returned-nodes', unit: 'count'},
   {name: 'one-file-reindex-primary-query-returned-nodes', unit: 'count'},
   {name: 'same-overlay-full-rebuild-index', unit: 'milliseconds'},
@@ -1439,6 +1449,36 @@ const benchmarkCodeGraph = Effect.scoped(
         ]),
         benchmarkMeasurement('one-file-reindex-materialization-total-files', 'count', [
           incremental.materialization?.totalFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-attribution-context-files-n1', 'count', [
+          incremental.incrementalWork?.attributionContextFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-base-facts-loaded-n1', 'count', [
+          incremental.incrementalWork?.baseFactsLoaded ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-changed-files-n1', 'count', [
+          incremental.incrementalWork?.changedFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-deleted-files-n1', 'count', [
+          incremental.incrementalWork?.deletedFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-fact-bytes-n1', 'bytes', [
+          incremental.incrementalWork?.factBytes ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-inventory-files-inspected-n1', 'count', [
+          incremental.incrementalWork?.inventoryFilesInspected ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-planned-rows-n1', 'count', [
+          incremental.incrementalWork?.plannedRows ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-probed-dependency-paths-n1', 'count', [
+          incremental.incrementalWork?.probedDependencyPaths ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-source-bytes-n1', 'bytes', [
+          incremental.incrementalWork?.sourceBytes ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-total-files-n1', 'count', [
+          incremental.incrementalWork?.totalFiles ?? 0,
         ]),
         benchmarkMeasurement('cold-primary-query-returned-nodes', 'count', [coldPrimaryQueryEvidence.returnedNodes]),
         benchmarkMeasurement('one-file-reindex-primary-query-returned-nodes', 'count', [

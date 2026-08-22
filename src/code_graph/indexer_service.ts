@@ -19,6 +19,7 @@ import {
   writerSessionOptions,
 } from './indexer_build.js';
 import {assessIncrementalOverlay, assessIncrementalOverlayCompatibility} from './indexer_incremental.js';
+import {attemptSparseReusableOverlay} from './indexer_sparse.js';
 import {
   cacheContentBatch,
   cachedFileKeys,
@@ -295,6 +296,23 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         threadnoteHome: options.threadnoteHome,
                         treeSitter,
                       });
+                      const sparseOverlay = yield* attemptSparseReusableOverlay({
+                        anonymousTelemetry,
+                        cacheCoalescer,
+                        capacityProtection,
+                        embedding,
+                        ensureVectors,
+                        fs,
+                        identity,
+                        languagePacks,
+                        layout,
+                        observation: inventoryOverlayObservation,
+                        options,
+                        requestedOverlay,
+                        startedAt,
+                        store,
+                      }).pipe(Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))));
+                      if (Option.isSome(sparseOverlay)) return sparseOverlay.value;
                       const inventory = yield* Effect.gen(function* () {
                         const changedPathCount =
                           inventoryOverlayObservation.changedPaths.length +

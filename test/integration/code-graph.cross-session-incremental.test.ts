@@ -14,6 +14,7 @@ import {
   inventoryRepositoryFromReusableCleanBase,
   worktreeBuildRequestObservation,
 } from '../../src/code_graph/inventory.js';
+import {inventoryRepositoryFromReusableCleanBaseSlice} from '../../src/code_graph/inventory_sparse.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
@@ -85,6 +86,9 @@ describe('cross-session code graph increments', () => {
     let root: string | undefined;
     return Effect.gen(function* () {
       root = createRepository(32);
+      writeFileSync(join(root, 'package.json'), '{"name":"sparse-fixture","version":"1.0.0"}\n');
+      git(root, ['add', 'package.json']);
+      git(root, ['commit', '-qm', 'add attribution context']);
       incrementalHome = mkdtempSync(join(tmpdir(), 'threadnote-incremental-home-'));
       fullHome = mkdtempSync(join(tmpdir(), 'threadnote-full-home-'));
       const indexer = yield* CodeGraphIndexer;
@@ -104,6 +108,39 @@ describe('cross-session code graph increments', () => {
         identity.headCommit,
       );
       expect(base).toBeDefined();
+      const baseSlice = yield* store.reusableCleanBaseForCommitPaths!(
+        layout.databasePath,
+        identity.repositoryId,
+        identity.headCommit,
+        ['src/use.ts'],
+      );
+      expect(baseSlice).toMatchObject({
+        files: [{path: 'src/use.ts', source: 'commit'}],
+        snapshot: {fileCount: 35},
+      });
+      expect(
+        yield* store.existingSnapshotFilePaths!(layout.databasePath, baseSlice!.snapshot.id, [
+          'src/use.ts',
+          'src/missing.ts',
+        ]),
+      ).toEqual(['src/use.ts']);
+      const baseFacts = yield* store.loadSnapshotMaterializedFileShards!(
+        layout.databasePath,
+        baseSlice!.snapshot.id,
+        baseSlice!.files,
+      );
+      expect(baseFacts.facts.get('src/use.ts')?.path).toBe('src/use.ts');
+      expect(
+        yield* store.reusableCleanBaseForCommitPaths!(layout.databasePath, identity.repositoryId, identity.headCommit, [
+          'src/use.ts',
+          'src/use.ts',
+        ]),
+      ).toBeUndefined();
+      expect(
+        yield* store.reusableCleanBaseForCommitPaths!(layout.databasePath, identity.repositoryId, identity.headCommit, [
+          'src/missing.ts',
+        ]),
+      ).toBeUndefined();
       const command = yield* CommandExecutor;
       const gitCommands: string[] = [];
       const observedCommand = CommandExecutor.of({
@@ -113,6 +150,16 @@ describe('cross-session code graph increments', () => {
           return command.execute(executable, args, options);
         },
       });
+      const sparseInventory = yield* inventoryRepositoryFromReusableCleanBaseSlice(identity, baseSlice!, {
+        overlayObservation: observation.overlay,
+      }).pipe(Effect.provideService(CommandExecutor, observedCommand));
+      expect(Option.isSome(sparseInventory)).toBe(true);
+      if (Option.isSome(sparseInventory)) {
+        expect(sparseInventory.value).toMatchObject({
+          files: [{path: 'src/use.ts', source: 'worktree'}],
+          base: {files: [{path: 'src/use.ts', source: 'commit'}], snapshot: {fileCount: 35}},
+        });
+      }
       const fastInventory = yield* inventoryRepositoryFromReusableCleanBase(identity, base!, {
         overlayObservation: observation.overlay,
       }).pipe(Effect.provideService(CommandExecutor, observedCommand));
@@ -129,11 +176,21 @@ describe('cross-session code graph increments', () => {
 
       expect(incremental.summary.materialization).toEqual({
         mode: 'incremental-overlay',
-        resolutionLookupKeyForm: 'typescript-path-unscoped',
+        resolutionLookupKeyForm: 'typescript-path-scoped',
         resolutionPublicationGate: 'own-path-local',
         stagedFiles: 1,
-        totalFiles: 34,
+        totalFiles: 35,
       });
+      expect(incremental.summary.incrementalWork).toMatchObject({
+        attributionContextFiles: 1,
+        baseFactsLoaded: 1,
+        changedFiles: 1,
+        inventoryFilesInspected: 1,
+        probedDependencyPaths: expect.any(Number),
+        totalFiles: 35,
+      });
+      expect(incremental.summary.incrementalWork!.probedDependencyPaths).toBeLessThanOrEqual(16);
+      expect(incremental.summary.snapshot.graphContentId).toMatch(/^cgc_[0-9a-f]{40}$/u);
       expect(projectGraph(incremental.graph)).toEqual(projectGraph(rebuilt));
       expect(yield* analysisDigestEffect(incrementalHome, incremental.summary)).toBe(
         yield* analysisDigestEffect(fullHome, full),
@@ -158,7 +215,7 @@ describe('cross-session code graph increments', () => {
         'Dirty overlay reused persisted clean base for 1 modified file(s).',
       );
       expect(incremental.summary.diagnostics).toContain(
-        'Reused persisted clean inventory admission for 1 changed path(s).',
+        'Reused persisted clean inventory admission for 1 changed path(s) without hydrating the complete base.',
       );
     }).pipe(
       provideTestLayer(ApplicationLayer),
@@ -687,7 +744,13 @@ function materializedShardCount(databasePath: string, derivationIdentity: string
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {
   if (catalog === undefined) return undefined;
   const {activatedAt: _activatedAt, snapshot, ...stable} = catalog;
-  const {baseSnapshotId: _baseSnapshotId, completedAt: _completedAt, id: _id, ...stableSnapshot} = snapshot;
+  const {
+    baseSnapshotId: _baseSnapshotId,
+    completedAt: _completedAt,
+    graphContentId: _graphContentId,
+    id: _id,
+    ...stableSnapshot
+  } = snapshot;
   return {...stable, snapshot: stableSnapshot};
 }
 

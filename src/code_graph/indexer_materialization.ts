@@ -745,6 +745,36 @@ export function snapshotIdentity(
 }
 
 /**
+ * Deterministic dirty identity for a persisted-base delta. The base snapshot
+ * and exact overlay observation replace a repository-wide inventory replay.
+ */
+export function sparseOverlaySnapshotIdentity(
+  identity: {
+    readonly headCommit: string;
+    readonly repositoryId: string;
+    readonly worktreeId: string;
+  },
+  baseSnapshotId: string,
+  extractorSet: string,
+  overlayFingerprint: string,
+): string {
+  return `cgsn_${sha256HexSync(
+    `snapshot-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${baseSnapshotId}\n${extractorSet}\n${overlayFingerprint}`,
+  ).slice(0, 40)}`;
+}
+
+/** Content identity for a persisted-base delta without a flat full-inventory hash. */
+export function sparseOverlayGraphContentIdentity(
+  baseGraphContentId: string,
+  extractorSet: string,
+  overlayFingerprint: string,
+): string {
+  return `cgc_${sha256HexSync(
+    `graph-content-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${baseGraphContentId}\n${extractorSet}\n${overlayFingerprint}`,
+  ).slice(0, 40)}`;
+}
+
+/**
  * Identifies the graph-producing inputs without coupling them to a Git commit or
  * worktree. Commit observations remain snapshot rows and may safely alias this
  * identity when the eligible inventory and derivation identity are unchanged.
@@ -765,6 +795,21 @@ export function graphContentIdentity(
   return `cgc_${sha256HexSync(
     `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n${inventory}`,
   ).slice(0, 40)}`;
+}
+
+export function selectedDecodedFactBytes(
+  bytesByPath: ReadonlyMap<string, number> | undefined,
+  paths: readonly string[],
+): number | undefined {
+  if (paths.length === 0) return 0;
+  if (bytesByPath === undefined) return undefined;
+  let total = 0;
+  for (const path of paths) {
+    const bytes = bytesByPath.get(path);
+    if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 0) return undefined;
+    total = Math.min(Number.MAX_SAFE_INTEGER, total + bytes);
+  }
+  return total;
 }
 
 export function directFullSnapshotIdentity(logicalSnapshotId: string): string {
