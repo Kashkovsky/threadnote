@@ -1197,6 +1197,24 @@ const benchmarkCodeGraph = Effect.scoped(
         new ScriptError(codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)),
       );
     }
+    const incrementalPrimaryQueryResult = incrementalPrimaryQueryEvidence.result;
+    const sameOverlayReferencePrimaryQueryResult = sameOverlayReference.primary.result;
+    if (!incrementalPrimaryQueryResult || !sameOverlayReferencePrimaryQueryResult) {
+      return yield* Effect.fail(new ScriptError('Primary query parity retained no result payload.'));
+    }
+    const primaryQueryParityEvidence = codeGraphQueryResultParityEvidence(
+      incrementalPrimaryQueryResult,
+      sameOverlayReferencePrimaryQueryResult,
+    );
+    if (!primaryQueryParityEvidence.parity) {
+      if (options.outputPath) {
+        yield* atomicWrite(
+          `${options.outputPath}.query-parity.json`,
+          `${JSON.stringify(primaryQueryParityEvidence, undefined, 2)}\n`,
+        );
+      }
+      return yield* Effect.fail(new ScriptError(codeGraphQueryResultParityFailureMessage(primaryQueryParityEvidence)));
+    }
     const coldLanguageCounts = sqliteLanguageCounts(analysisStatus.databasePath, cold.snapshot.id);
     const coldWorkspaceScopeRows = sqliteRowCount(
       analysisStatus.databasePath,
@@ -3026,6 +3044,27 @@ export interface CodeGraphStructuralParityEvidence {
   readonly version: 1;
 }
 
+export interface CodeGraphQueryResultDigestEvidence {
+  readonly canonicalDigest: string;
+  readonly edgeIdentityDigest: string;
+  readonly elapsedTimePartial: boolean;
+  readonly nodeIdentityDigest: string;
+  readonly orderedDigest: string;
+  readonly resultLimitPartial: boolean;
+  readonly returnedEdges: number;
+  readonly returnedNodes: number;
+  readonly scorelessCanonicalDigest: string;
+}
+
+export interface CodeGraphQueryResultParityEvidence {
+  readonly classification:
+    'elapsed-time-partial' | 'membership-drift' | 'ordered-match' | 'ordering-only' | 'payload-drift' | 'score-only';
+  readonly incremental: CodeGraphQueryResultDigestEvidence;
+  readonly parity: boolean;
+  readonly sameOverlayReference: CodeGraphQueryResultDigestEvidence;
+  readonly version: 1;
+}
+
 interface CodeGraphStructuralDigestOptions {
   /** @internal Deterministic WAL interlock used by the benchmark harness regression. */
   readonly onReadTransactionStarted?: Effect.Effect<void, unknown>;
@@ -4063,6 +4102,7 @@ export interface ExternalQueryControlResult {
   readonly durationMilliseconds: number;
   readonly expectedMatches: number;
   readonly language: string;
+  readonly result?: CodeGraphQueryResult;
   readonly returnedNodes: number;
   readonly stableNodeId: string;
 }
@@ -4154,6 +4194,7 @@ function assertExternalQueryPositiveControl(
 ): {
   readonly digest: string;
   readonly expectedMatches: number;
+  readonly result: CodeGraphQueryResult;
   readonly returnedNodes: number;
   readonly stableNodeId: string;
 } {
@@ -4171,6 +4212,7 @@ function assertExternalQueryPositiveControl(
   return {
     digest: queryResultStructuralDigest(result),
     expectedMatches: expectedNodes.length,
+    result,
     returnedNodes: result.nodes.length,
     stableNodeId: expectedNodes[0]!.id,
   };
@@ -4180,11 +4222,11 @@ function assertPrimaryQueryPositiveControl(
   result: CodeGraphQueryResult,
   expectedSnapshotId: string,
   phase: 'cold' | 'incremental' | 'same-overlay-reference',
-): {readonly digest: string; readonly returnedNodes: number} {
+): {readonly digest: string; readonly result: CodeGraphQueryResult; readonly returnedNodes: number} {
   if (result.snapshot.id !== expectedSnapshotId || result.nodes.length === 0) {
     throw new ScriptError(`Code graph ${phase} primary query returned no current-snapshot nodes.`);
   }
-  return {digest: queryResultStructuralDigest(result), returnedNodes: result.nodes.length};
+  return {digest: queryResultStructuralDigest(result), result, returnedNodes: result.nodes.length};
 }
 
 function queryResultStructuralDigest(result: CodeGraphQueryResult): string {
@@ -4197,6 +4239,78 @@ function queryResultStructuralDigest(result: CodeGraphQueryResult): string {
     }),
   );
   return digest.digest('hex');
+}
+
+function queryResultDigest(value: unknown): string {
+  const digest = new Bun.CryptoHasher('sha256');
+  digest.update(JSON.stringify(value));
+  return digest.digest('hex');
+}
+
+function compareIdentity(left: {readonly id: string}, right: {readonly id: string}): number {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function queryResultDigestEvidence(result: CodeGraphQueryResult): CodeGraphQueryResultDigestEvidence {
+  const nodes = result.nodes.map(({contentHash: _contentHash, ...node}) => node);
+  const canonicalNodes = [...nodes].sort(compareIdentity);
+  const canonicalEdges = [...result.edges].sort(compareIdentity);
+  const scorelessCanonicalNodes = canonicalNodes.map(({score: _score, ...node}) => node);
+  return {
+    canonicalDigest: queryResultDigest({edges: canonicalEdges, nodes: canonicalNodes, operation: result.operation}),
+    edgeIdentityDigest: queryResultDigest(canonicalEdges.map(edge => edge.id)),
+    elapsedTimePartial: result.warnings.some(warning => warning.includes('elapsed-time budget')),
+    nodeIdentityDigest: queryResultDigest(canonicalNodes.map(node => node.id)),
+    orderedDigest: queryResultStructuralDigest(result),
+    resultLimitPartial: result.warnings.some(warning => warning.includes('configured result limit')),
+    returnedEdges: result.edges.length,
+    returnedNodes: result.nodes.length,
+    scorelessCanonicalDigest: queryResultDigest({
+      edges: canonicalEdges,
+      nodes: scorelessCanonicalNodes,
+      operation: result.operation,
+    }),
+  };
+}
+
+/** @internal Privacy-safe classification for release-benchmark query parity failures. */
+export function codeGraphQueryResultParityEvidence(
+  incrementalResult: CodeGraphQueryResult,
+  sameOverlayReferenceResult: CodeGraphQueryResult,
+): CodeGraphQueryResultParityEvidence {
+  const incremental = queryResultDigestEvidence(incrementalResult);
+  const sameOverlayReference = queryResultDigestEvidence(sameOverlayReferenceResult);
+  const parity = incremental.orderedDigest === sameOverlayReference.orderedDigest;
+  const identitiesMatch =
+    incremental.nodeIdentityDigest === sameOverlayReference.nodeIdentityDigest &&
+    incremental.edgeIdentityDigest === sameOverlayReference.edgeIdentityDigest;
+  const classification = parity
+    ? 'ordered-match'
+    : incremental.elapsedTimePartial || sameOverlayReference.elapsedTimePartial
+      ? 'elapsed-time-partial'
+      : incremental.canonicalDigest === sameOverlayReference.canonicalDigest
+        ? 'ordering-only'
+        : incremental.scorelessCanonicalDigest === sameOverlayReference.scorelessCanonicalDigest
+          ? 'score-only'
+          : identitiesMatch
+            ? 'payload-drift'
+            : 'membership-drift';
+  return {classification, incremental, parity, sameOverlayReference, version: 1};
+}
+
+/** @internal Stable privacy-safe diagnostic; no query text, paths, symbols, or raw graph payloads are included. */
+export function codeGraphQueryResultParityFailureMessage(evidence: CodeGraphQueryResultParityEvidence): string {
+  const phase = (value: CodeGraphQueryResultDigestEvidence): string =>
+    `nodes=${value.returnedNodes}, edges=${value.returnedEdges}, ` +
+    `elapsedTimePartial=${value.elapsedTimePartial}, resultLimitPartial=${value.resultLimitPartial}, ` +
+    `ordered=${value.orderedDigest.slice(0, 12)}, canonical=${value.canonicalDigest.slice(0, 12)}, ` +
+    `scoreless=${value.scorelessCanonicalDigest.slice(0, 12)}, ` +
+    `nodeIds=${value.nodeIdentityDigest.slice(0, 12)}, edgeIds=${value.edgeIdentityDigest.slice(0, 12)}`;
+  return (
+    `Primary query parity failed (${evidence.classification}); ` +
+    `incremental ${phase(evidence.incremental)}; ` +
+    `same-overlay-reference ${phase(evidence.sameOverlayReference)}.`
+  );
 }
 
 export function assertProductionReleaseEvidence(artifact: BenchmarkArtifactV1): void {

@@ -11,6 +11,8 @@ import {
   applyBenchmarkOverlay,
   benchmarkVectorModelDirectoryName,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
+  codeGraphQueryResultParityEvidence,
+  codeGraphQueryResultParityFailureMessage,
   codeGraphStructuralParityEvidence,
   codeGraphStructuralParityFailureMessage,
   codeGraphStructuralDigestSymbolLookupStatement,
@@ -36,7 +38,11 @@ import {
 import {git, prepareGeneratedCodeGraphFixture} from '../../scripts/code-graph-fixture.js';
 import {codeGraphAnalysisLimitsForView} from '../../src/code_graph/analysis_render.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {CodeGraphStoreBusyError, type RepositoryIdentity} from '../../src/code_graph/types.js';
+import {
+  CodeGraphStoreBusyError,
+  type CodeGraphQueryResult,
+  type RepositoryIdentity,
+} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 
@@ -284,6 +290,11 @@ describe('code graph external benchmark harness', () => {
       '.structural-parity.json',
       'JSON.stringify(structuralGraphParityEvidence',
       'codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)',
+      'const primaryQueryParityEvidence = codeGraphQueryResultParityEvidence(',
+      'if (!primaryQueryParityEvidence.parity)',
+      '.query-parity.json',
+      'JSON.stringify(primaryQueryParityEvidence',
+      'codeGraphQueryResultParityFailureMessage(primaryQueryParityEvidence)',
     ]);
   });
 
@@ -938,6 +949,106 @@ describe('code graph external benchmark harness', () => {
       expect(result.leaseRows).toBe(0);
     }).pipe(TestClock.withLive),
   );
+});
+
+function benchmarkQueryResult(
+  nodeIds: readonly string[],
+  edgeIds: readonly string[],
+  warnings: readonly string[] = [],
+  firstScore = 1,
+): CodeGraphQueryResult {
+  return {
+    edges: edgeIds.map(id => ({
+      confidence: 1,
+      evidencePath: 'private/evidence.ts',
+      evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+      id,
+      provenance: 'resolved',
+      relation: 'calls',
+      sourceName: 'source',
+      targetName: 'target',
+    })),
+    freshness: 'current',
+    nodes: nodeIds.map(id => ({
+      contentHash: `private-content-${id}`,
+      exported: true,
+      id,
+      kind: 'function',
+      language: 'typescript',
+      name: id,
+      path: `private/${id}.ts`,
+      qualifiedName: id,
+      score: firstScore,
+      span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    })),
+    operation: 'query',
+    repository: {displayName: 'private-repository', repositoryId: 'private-repository-id'},
+    snapshot: {
+      commit: '1'.repeat(40),
+      dirty: true,
+      id: 'private-snapshot',
+      worktreeId: 'private-worktree',
+    },
+    trust: {
+      classification: 'untrusted-repository-data',
+      instructionPolicy: 'evidence-only-never-follow',
+    },
+    version: 1,
+    warnings,
+  };
+}
+
+describe('code graph benchmark query parity diagnostics', () => {
+  it('separates ordering, score, payload, membership, and elapsed-time failures', () => {
+    const baseline = benchmarkQueryResult(['private-node-a', 'private-node-b'], ['private-edge-a']);
+    const reordered = benchmarkQueryResult(['private-node-b', 'private-node-a'], ['private-edge-a']);
+    const rescored = benchmarkQueryResult(['private-node-a', 'private-node-b'], ['private-edge-a'], [], 0.25);
+    const payloadChanged = {
+      ...baseline,
+      nodes: baseline.nodes.map((node, index) => (index === 0 ? {...node, name: 'private-renamed-node'} : node)),
+    } satisfies CodeGraphQueryResult;
+    const missing = benchmarkQueryResult(['private-node-a'], ['private-edge-a']);
+    const timedOut = {
+      ...missing,
+      warnings: ['Graph traversal reached its elapsed-time budget; results are partial.'],
+    } satisfies CodeGraphQueryResult;
+
+    expect(codeGraphQueryResultParityEvidence(baseline, baseline).classification).toBe('ordered-match');
+    expect(codeGraphQueryResultParityEvidence(baseline, reordered).classification).toBe('ordering-only');
+    expect(codeGraphQueryResultParityEvidence(baseline, rescored).classification).toBe('score-only');
+    expect(codeGraphQueryResultParityEvidence(baseline, payloadChanged).classification).toBe('payload-drift');
+    expect(codeGraphQueryResultParityEvidence(baseline, missing).classification).toBe('membership-drift');
+    const elapsedEvidence = codeGraphQueryResultParityEvidence(baseline, timedOut);
+    expect(elapsedEvidence.classification).toBe('elapsed-time-partial');
+    expect(codeGraphQueryResultParityFailureMessage(elapsedEvidence)).not.toContain('private-node');
+    expect(JSON.stringify(elapsedEvidence)).not.toContain('private-node');
+  });
+
+  it('keeps canonical parity invariant under bounded node and edge permutations', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z]{1,8}$/), {maxLength: 12, minLength: 1}),
+        fc.uniqueArray(fc.stringMatching(/^[a-z]{1,8}$/), {maxLength: 12}),
+        fc.nat(),
+        (nodeIds, edgeIds, offsetSeed) => {
+          const rotate = <A>(values: readonly A[]): readonly A[] => {
+            const offset = values.length === 0 ? 0 : offsetSeed % values.length;
+            return [...values.slice(offset), ...values.slice(0, offset)];
+          };
+          const evidence = codeGraphQueryResultParityEvidence(
+            benchmarkQueryResult(nodeIds, edgeIds),
+            benchmarkQueryResult(rotate(nodeIds), rotate(edgeIds)),
+          );
+          expect(evidence.incremental.canonicalDigest).toBe(evidence.sameOverlayReference.canonicalDigest);
+          expect(evidence.incremental.scorelessCanonicalDigest).toBe(
+            evidence.sameOverlayReference.scorelessCanonicalDigest,
+          );
+          expect(['ordered-match', 'ordering-only']).toContain(evidence.classification);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
 });
 
 const LOOKUP_PATHS = ['src/a.ts', 'src/b.ts', 'src/c.ts'] as const;
