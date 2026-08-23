@@ -521,30 +521,68 @@ const repairMaterializedShardCacheRow = Effect.fn('codeGraph.repairMaterializedS
 
 function storeNormalMaterializedShardRows(sql: SqlClient.SqlClient, rows: readonly PlannedMaterializedShardCacheRow[]) {
   return Effect.gen(function* () {
-    for (const row of rows) {
-      const stored = yield* sql<{readonly id: string}>`
-          INSERT INTO materialized_file_shards (
-            id, content_hash, extractor_set, derivation_identity, path_hint,
-            facts_json, created_at, last_used_at
-          ) VALUES (
-            ${row.id}, ${row.contentHash}, ${row.extractorSet}, ${row.derivationIdentity}, ${row.path},
-            ${row.factsJson}, ${row.createdAt}, ${row.lastUsedAt}
-          )
-          ON CONFLICT(id) DO UPDATE SET
-            facts_json = excluded.facts_json,
-            last_used_at = excluded.last_used_at
-          WHERE materialized_file_shards.content_hash = excluded.content_hash
-            AND materialized_file_shards.extractor_set = excluded.extractor_set
-            AND materialized_file_shards.derivation_identity = excluded.derivation_identity
-            AND materialized_file_shards.path_hint = excluded.path_hint
-          ON CONFLICT(content_hash, extractor_set, derivation_identity, path_hint) DO NOTHING
-          RETURNING id
-        `;
-      if (stored.length !== 1 || stored[0]?.id !== row.id) {
+    if (rows.length === 0) return;
+    // The cache capacity planner already bounds this physical transaction to
+    // 512 rows / 32 MiB. Bind bounded multi-row pages so cold builds do not
+    // prepare one SQLite statement per file. The existing 512-row physical
+    // transaction ceiling needs at most 4,096 binds for this eight-column
+    // statement; any omitted RETURNING row still fails the whole transaction
+    // through the unchanged collision-repair path.
+    for (const page of codeGraphCacheWritePages(rows)) {
+      const stored = yield* sql.unsafe<{readonly id: string}>(
+        `INSERT INTO materialized_file_shards (
+           id, content_hash, extractor_set, derivation_identity, path_hint,
+           facts_json, created_at, last_used_at
+         ) VALUES ${page.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}
+         ON CONFLICT(id) DO UPDATE SET
+           facts_json = excluded.facts_json,
+           last_used_at = excluded.last_used_at
+         WHERE materialized_file_shards.content_hash = excluded.content_hash
+           AND materialized_file_shards.extractor_set = excluded.extractor_set
+           AND materialized_file_shards.derivation_identity = excluded.derivation_identity
+           AND materialized_file_shards.path_hint = excluded.path_hint
+         ON CONFLICT(content_hash, extractor_set, derivation_identity, path_hint) DO NOTHING
+         RETURNING id`,
+        page.flatMap(row => [
+          row.id,
+          row.contentHash,
+          row.extractorSet,
+          row.derivationIdentity,
+          row.path,
+          row.factsJson,
+          row.createdAt,
+          row.lastUsedAt,
+        ]),
+      );
+      if (
+        !sameMaterializedShardWriteIds(
+          page.map(row => row.id),
+          stored.map(row => row.id),
+        )
+      ) {
         return yield* Effect.fail(new CodeGraphCacheCapacityPlanChanged());
       }
     }
   });
+}
+
+/** @internal Keeps guarded cache UPSERT bind counts conservatively bounded. */
+export function codeGraphCacheWritePages<A>(rows: readonly A[]): readonly (readonly A[])[] {
+  const pages: A[][] = [];
+  for (let offset = 0; offset < rows.length; offset += CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows) {
+    pages.push(rows.slice(offset, offset + CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows));
+  }
+  return pages;
+}
+
+/** @internal Accepts driver-independent RETURNING order while rejecting every partial or ambiguous write. */
+export function sameMaterializedShardWriteIds(expectedIds: readonly string[], storedIds: readonly string[]): boolean {
+  if (storedIds.length !== expectedIds.length) return false;
+  const expected = new Set(expectedIds);
+  const stored = new Set(storedIds);
+  return (
+    expected.size === expectedIds.length && stored.size === storedIds.length && expectedIds.every(id => stored.has(id))
+  );
 }
 
 const prepareMaterializedShardRepairPlan = Effect.fn('codeGraph.prepareMaterializedShardRepairPlan')(function* (

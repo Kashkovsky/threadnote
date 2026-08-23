@@ -7,6 +7,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
+import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS} from '../../src/code_graph/cache_capacity.js';
 import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
@@ -867,6 +868,118 @@ describe('code graph full-build materialization store', () => {
           expect(
             database.query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE id = ?').get(wrongId),
           ).toEqual({count: 0});
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rolls back a multi-row shard UPSERT when one row races with a tuple collision', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const extractorSet = 'materialized-shard-multi-row-race';
+      const derivationIdentity = 'materialized-shard-multi-row-race-v1';
+      const files = Array.from({length: CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows}, (_, index) => ({
+        ...fixture.file,
+        contentHash: index.toString(16).padStart(64, '0'),
+        path: `src/batched-${index.toString().padStart(3, '0')}.ts`,
+      }));
+      const facts = files.map(file => ({
+        diagnostics: [`canonical ${file.path}`],
+        edges: [],
+        path: file.path,
+        symbols: [],
+      })) satisfies readonly CodeGraphFileFacts[];
+      const raced = files.at(-1)!;
+      const wrongId = 'cgfs_multi-row-race-wrong-id';
+      yield* store.initialize(fixture.databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database.exec(`
+            CREATE TABLE materialized_shard_multi_row_audit (operation TEXT NOT NULL);
+            CREATE TRIGGER materialized_shard_multi_row_insert
+            AFTER INSERT ON materialized_file_shards
+            BEGIN INSERT INTO materialized_shard_multi_row_audit VALUES ('insert'); END;
+            CREATE TRIGGER materialized_shard_multi_row_update
+            AFTER UPDATE ON materialized_file_shards
+            BEGIN INSERT INTO materialized_shard_multi_row_audit VALUES ('update'); END;
+            CREATE TRIGGER materialized_shard_multi_row_delete
+            AFTER DELETE ON materialized_file_shards
+            BEGIN INSERT INTO materialized_shard_multi_row_audit VALUES ('delete'); END;
+          `);
+        } finally {
+          database.close(false);
+        }
+      });
+      let reservations = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) =>
+        Effect.gen(function* () {
+          reservations += 1;
+          if (reservations === 1) {
+            yield* Effect.sync(() => {
+              const database = new Database(fixture.databasePath, {strict: true});
+              try {
+                database
+                  .query(
+                    `INSERT INTO materialized_file_shards (
+                       id, content_hash, extractor_set, derivation_identity, path_hint,
+                       facts_json, created_at, last_used_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  )
+                  .run(
+                    wrongId,
+                    raced.contentHash,
+                    extractorSet,
+                    derivationIdentity,
+                    raced.path,
+                    JSON.stringify({...facts.at(-1)!, diagnostics: ['racing collision']}),
+                    '2026-08-23T00:00:00.000Z',
+                    '2026-08-23T00:00:00.000Z',
+                  );
+              } finally {
+                database.close(false);
+              }
+            });
+          }
+          return yield* transaction;
+        });
+
+      yield* store.cacheMaterializedFileShards(
+        fixture.databasePath,
+        files,
+        facts,
+        extractorSet,
+        derivationIdentity,
+        protector,
+      );
+
+      expect(reservations).toBe(3);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            database
+              .query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE derivation_identity = ?')
+              .get(derivationIdentity),
+          ).toEqual({count: files.length});
+          expect(
+            database.query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE id = ?').get(wrongId),
+          ).toEqual({count: 0});
+          expect(
+            database
+              .query<{readonly count: number; readonly operation: string}, []>(
+                `SELECT operation, COUNT(*) AS count
+                 FROM materialized_shard_multi_row_audit
+                 GROUP BY operation ORDER BY operation`,
+              )
+              .all(),
+          ).toEqual([
+            {count: 1, operation: 'delete'},
+            {count: files.length + 1, operation: 'insert'},
+          ]);
         } finally {
           database.close(false);
         }
