@@ -4,7 +4,12 @@ import {
   CODE_GRAPH_RESOLUTION_PASS_MAXIMUM,
   codeGraphResolutionPassAdmitted,
 } from '../../src/code_graph/store_resolution.js';
-import {aggregatePersistentReferenceResolutionCapacityBoundaries} from '../../src/code_graph/store_resolution_core.js';
+import {
+  aggregatePersistentReferenceResolutionCapacityBoundaries,
+  PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
+  PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
+  planPersistentReferenceResolutionPages,
+} from '../../src/code_graph/store_resolution_core.js';
 
 describe('code graph resolution pass bounds', () => {
   it('admits exactly the finite non-negative pass prefix', () => {
@@ -73,5 +78,37 @@ describe('code graph resolution pass bounds', () => {
         {finalFactBytes: Number.NaN, operation: 'resolve persistent code graph references', rowCount: 1},
       ]),
     ).toMatchObject({finalFactBytes: Number.NaN, rowCount: Number.NaN});
+  });
+
+  it('widens reservation windows without widening transactions or changing page order', () => {
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBe(2 * PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES);
+    fc.assert(
+      fc.property(fc.array(fc.integer(), {maxLength: 257}), pages => {
+        const reservations = planPersistentReferenceResolutionPages(pages);
+        expect(reservations.flatMap(reservation => reservation.pages)).toEqual(pages);
+        expect(reservations).toHaveLength(Math.ceil(pages.length / PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES));
+        for (const reservation of reservations) {
+          expect(reservation.pages.length).toBeGreaterThan(0);
+          expect(reservation.pages.length).toBeLessThanOrEqual(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES);
+          expect(reservation.transactions.flat()).toEqual(reservation.pages);
+          for (const transaction of reservation.transactions) {
+            expect(transaction.length).toBeGreaterThan(0);
+            expect(transaction.length).toBeLessThanOrEqual(PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES);
+          }
+        }
+        expect(reservations.flatMap(reservation => reservation.transactions)).toHaveLength(
+          Math.ceil(pages.length / PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES),
+        );
+      }),
+      {numRuns: 250},
+    );
+
+    const boundary = planPersistentReferenceResolutionPages(Array.from({length: 17}, (_, index) => index));
+    expect(boundary.map(reservation => reservation.pages.length)).toEqual([8, 8, 1]);
+    expect(boundary.map(reservation => reservation.transactions.map(transaction => transaction.length))).toEqual([
+      [4, 4],
+      [4, 4],
+      [1],
+    ]);
   });
 });
