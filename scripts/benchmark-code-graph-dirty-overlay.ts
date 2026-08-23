@@ -8,34 +8,61 @@ import type {
   CodeGraphProgress,
 } from '../src/code_graph/types.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
-import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
+import {SystemInfo, type SystemInfoShape} from '../src/effect/system.js';
+import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../src/evaluation/benchmark.js';
+import {
+  benchmarkStorageEnvironment,
+  enforceCodeGraphBenchmarkRatchet,
+  validateBenchmarkRuntimeProvenance,
+  validateCodeGraphBenchmarkRatchet,
+  type BenchmarkRuntimeProvenance,
+  type BenchmarkStorageEnvironment,
+} from './benchmark-code-graph.js';
+import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 import {generatedStaticReexportControlStatement, prepareGeneratedCodeGraphFixture} from './code-graph-fixture.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 
 interface DirtyOverlayBenchmarkOptions {
+  readonly governed: boolean;
+  readonly minimumFreeGiB: number;
   readonly outputPath?: string;
+  readonly ratchetPath?: string;
   readonly samples: number;
   readonly scenario: DirtyOverlayBenchmarkScenario;
   readonly scaleSymbols: number;
 }
 
-export type DirtyOverlayBenchmarkScenario = 'body-only' | 'unchanged-static-reexport';
+export type DirtyOverlayBenchmarkScenario = 'body-only' | 'changed-export' | 'unchanged-static-reexport';
 
 interface DirtyOverlayObservation {
+  readonly attributionContextFiles?: number;
+  readonly baseFactsLoaded?: number;
+  readonly changedFiles?: number;
+  readonly closureProjects?: number;
   readonly cpuMilliseconds: number;
   readonly durationMilliseconds: number;
   readonly edges: number;
   readonly factReplayAmplification?: number;
   readonly fallbackReason?: string;
+  readonly inventoryFilesInspected?: number;
   readonly materializationMilliseconds: number;
   readonly materializationMode: string;
+  readonly probedDependencyPaths?: number;
   readonly replay: DirtyOverlayReplayEvidence;
+  readonly resolutionClosure?: string;
   readonly rewriteAmplification?: number;
   readonly stagedFiles: number;
   readonly symbols: number;
   readonly totalFiles: number;
+}
+
+interface DirtyOverlayGovernanceEvidence {
+  readonly availableBytes: number;
+  readonly minimumFreeBytes: number;
+  readonly runtimeProvenance: BenchmarkRuntimeProvenance;
+  readonly storage: BenchmarkStorageEnvironment;
+  readonly tempFilesystemValidated: true;
 }
 
 export interface DirtyOverlayReplayEvidence {
@@ -54,6 +81,18 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
     const system = yield* SystemInfo;
     const hardware = yield* system.hardwareInfo;
     const indexer = yield* CodeGraphIndexer;
+    const path = yield* Path.Path;
+    const sourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
+    const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
+    if (ratchet !== undefined) {
+      yield* Effect.try({
+        catch: cause => new ScriptError(`Dirty-overlay performance ratchet is invalid: ${String(cause)}`),
+        try: () => validateCodeGraphBenchmarkRatchet(ratchet),
+      });
+    }
+    const governance = options.governed
+      ? yield* prepareDirtyOverlayGovernance(system, sourceRoot, options.minimumFreeGiB)
+      : undefined;
     const incremental: DirtyOverlayObservation[] = [];
     const full: DirtyOverlayObservation[] = [];
 
@@ -85,11 +124,38 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
     const fullDuration = summarize(full.map(sample => sample.durationMilliseconds));
     const incrementalMaterialization = summarize(incremental.map(sample => sample.materializationMilliseconds));
     const fullMaterialization = summarize(full.map(sample => sample.materializationMilliseconds));
+    const finalRuntimeProvenance = governance ? yield* validateBenchmarkRuntimeProvenance(sourceRoot) : undefined;
+    if (
+      governance !== undefined &&
+      JSON.stringify(finalRuntimeProvenance) !== JSON.stringify(governance.runtimeProvenance)
+    ) {
+      return yield* Effect.fail(
+        new ScriptError('Dirty-overlay benchmark source/runtime provenance changed during the run.'),
+      );
+    }
+    const ratchetArtifact = dirtyOverlayRatchetArtifact({
+      full,
+      governance,
+      hardware,
+      incremental,
+      options,
+      runtimeVersion: system.runtimeVersion,
+      runtimePlatform: system.platform,
+    });
     const artifact = {
       createdAt: new Date().toISOString(),
       environment: {
         architecture: system.architecture,
         cpu: hardware.cpuModel,
+        ...(governance === undefined
+          ? {provenance: 'unverified-development-run'}
+          : {
+              availableBytes: governance.availableBytes,
+              commit: governance.runtimeProvenance.sourceCommit,
+              minimumFreeBytes: governance.minimumFreeBytes,
+              provenance: governance.runtimeProvenance,
+              storage: governance.storage,
+            }),
         memoryBytes: hardware.memoryBytes,
         operatingSystem: hardware.operatingSystem,
         runtime: `bun/${system.runtimeVersion}`,
@@ -97,20 +163,28 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
       fixture: {
         ...(options.scenario === 'body-only'
           ? {bodyOnlyModifiedFiles: 1}
-          : {
-              scaleSemantics:
-                `target symbols; this run has ${incremental[0]?.totalFiles ?? 0} indexed files, ` +
-                `not ${options.scaleSymbols} files`,
-              scenario: options.scenario,
-              spanOnlyStaticReexportModifiedFiles: 1,
-            }),
+          : options.scenario === 'unchanged-static-reexport'
+            ? {
+                scaleSemantics:
+                  `target symbols; this run has ${incremental[0]?.totalFiles ?? 0} indexed files, ` +
+                  `not ${options.scaleSymbols} files`,
+                scenario: options.scenario,
+                spanOnlyStaticReexportModifiedFiles: 1,
+              }
+            : {
+                dependencySurfaceModifiedFiles: 1,
+                scaleSemantics:
+                  `target background symbols; this run has ${incremental[0]?.totalFiles ?? 0} indexed files, ` +
+                  `not ${options.scaleSymbols} files`,
+                scenario: options.scenario,
+              }),
         targetSymbols: options.scaleSymbols,
       },
       measurements: {
         full: {
           cpuMilliseconds: summarize(full.map(sample => sample.cpuMilliseconds)),
           durationMilliseconds: fullDuration,
-          ...(options.scenario === 'unchanged-static-reexport'
+          ...(options.scenario !== 'body-only'
             ? {
                 factReplayAmplification: full[0]?.factReplayAmplification ?? 0,
                 rewriteAmplification: full[0]?.rewriteAmplification ?? 0,
@@ -124,7 +198,7 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
         incremental: {
           cpuMilliseconds: summarize(incremental.map(sample => sample.cpuMilliseconds)),
           durationMilliseconds: incrementalDuration,
-          ...(options.scenario === 'unchanged-static-reexport'
+          ...(options.scenario !== 'body-only'
             ? {
                 factReplayAmplification: incremental[0]?.factReplayAmplification ?? 0,
                 rewriteAmplification: incremental[0]?.rewriteAmplification ?? 0,
@@ -141,13 +215,211 @@ const benchmarkCodeGraphDirtyOverlay = Effect.scoped(
         },
       },
       observations: {full, incremental},
+      ratchetArtifact,
       samples: options.samples,
-      version: 1,
+      version: 2,
     };
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
     yield* printJson(artifact);
+    if (ratchet !== undefined) {
+      return yield* Effect.try({
+        catch: cause =>
+          cause instanceof ScriptError
+            ? cause
+            : new ScriptError(`Dirty-overlay performance ratchet failed: ${String(cause)}`),
+        try: () => enforceCodeGraphBenchmarkRatchet(ratchetArtifact, ratchet),
+      });
+    }
   }),
 );
+
+const prepareDirtyOverlayGovernance = Effect.fn('benchmarkCodeGraphDirtyOverlay.prepareGovernance')(function* (
+  system: SystemInfoShape,
+  sourceRoot: string,
+  minimumFreeGiB: number,
+) {
+  const minimumFreeBytes = minimumFreeGiB * 1_073_741_824;
+  const [runtimeProvenance, storage, availableBytes] = yield* Effect.all(
+    [
+      validateBenchmarkRuntimeProvenance(sourceRoot),
+      benchmarkStorageEnvironment(system.tempDirectory),
+      system.availableDiskBytes(system.tempDirectory),
+    ],
+    {concurrency: 3},
+  );
+  if (availableBytes === undefined || availableBytes < minimumFreeBytes) {
+    return yield* Effect.fail(
+      new ScriptError(
+        `Governed dirty-overlay benchmark requires at least ${minimumFreeGiB} GiB free on its temporary filesystem.`,
+      ),
+    );
+  }
+  if (storage.medium !== 'solid-state') {
+    return yield* Effect.fail(
+      new ScriptError(`Governed dirty-overlay benchmark requires solid-state storage; detected ${storage.medium}.`),
+    );
+  }
+  if (system.platform === 'darwin' && storage.location !== 'internal') {
+    return yield* Effect.fail(
+      new ScriptError(
+        `Governed dirty-overlay benchmark requires the internal macOS device; detected ${storage.location}.`,
+      ),
+    );
+  }
+  return {
+    availableBytes,
+    minimumFreeBytes,
+    runtimeProvenance,
+    storage,
+    tempFilesystemValidated: true,
+  } satisfies DirtyOverlayGovernanceEvidence;
+});
+
+export function dirtyOverlayRatchetArtifact(input: {
+  readonly full: readonly DirtyOverlayObservation[];
+  readonly governance?: DirtyOverlayGovernanceEvidence;
+  readonly hardware: {
+    readonly cpuModel: string;
+    readonly memoryBytes: number;
+    readonly operatingSystem: string;
+  };
+  readonly incremental: readonly DirtyOverlayObservation[];
+  readonly options: DirtyOverlayBenchmarkOptions;
+  readonly runtimePlatform: string;
+  readonly runtimeVersion: string;
+}): BenchmarkArtifactV1 {
+  const fixtureHash = `generated-code-graph-dirty-overlay-v2:${input.options.scenario}:${input.options.scaleSymbols}`;
+  const runnerClass = process.env.THREADNOTE_BENCHMARK_RUNNER_CLASS?.trim() || 'local-unclassified';
+  const firstIncremental = input.incremental[0];
+  const firstFull = input.full[0];
+  const measurements = [
+    benchmarkMeasurement(
+      'incremental-duration',
+      'milliseconds',
+      input.incremental.map(sample => sample.durationMilliseconds),
+    ),
+    benchmarkMeasurement(
+      'incremental-cpu',
+      'milliseconds',
+      input.incremental.map(sample => sample.cpuMilliseconds),
+    ),
+    benchmarkMeasurement(
+      'incremental-materialization',
+      'milliseconds',
+      input.incremental.map(sample => sample.materializationMilliseconds),
+    ),
+    benchmarkMeasurement(
+      'full-duration',
+      'milliseconds',
+      input.full.map(sample => sample.durationMilliseconds),
+    ),
+    benchmarkMeasurement(
+      'full-cpu',
+      'milliseconds',
+      input.full.map(sample => sample.cpuMilliseconds),
+    ),
+    benchmarkMeasurement(
+      'full-materialization',
+      'milliseconds',
+      input.full.map(sample => sample.materializationMilliseconds),
+    ),
+    benchmarkMeasurement(
+      'incremental-duration-reduction',
+      'percent',
+      input.incremental.map((sample, index) =>
+        Math.max(0, percentReduction(input.full[index]!.durationMilliseconds, sample.durationMilliseconds)),
+      ),
+    ),
+    benchmarkMeasurement(
+      'incremental-materialization-reduction',
+      'percent',
+      input.incremental.map((sample, index) =>
+        Math.max(
+          0,
+          percentReduction(input.full[index]!.materializationMilliseconds, sample.materializationMilliseconds),
+        ),
+      ),
+    ),
+    ...dirtyOverlayObservationMeasurements('incremental', input.incremental),
+    ...dirtyOverlayObservationMeasurements('full', input.full),
+  ];
+  return {
+    createdAt: new Date().toISOString(),
+    environment: {
+      architecture: process.arch,
+      commit: input.governance?.runtimeProvenance.sourceCommit ?? 'unverified-development-run',
+      cpu: input.hardware.cpuModel,
+      dirty: input.governance === undefined,
+      fixtureHash,
+      memoryBytes: input.hardware.memoryBytes,
+      node: `bun/${input.runtimeVersion}`,
+      operatingSystem: input.hardware.operatingSystem,
+      packageManager: `bun/${input.runtimeVersion}`,
+      runner: 'threadnote-code-graph-dirty-overlay',
+      runnerVersion: '2',
+    },
+    measurements,
+    metadata: {
+      fullMaterializationMode: firstFull?.materializationMode ?? 'missing',
+      governed: input.governance !== undefined,
+      incrementalMaterializationMode: firstIncremental?.materializationMode ?? 'missing',
+      minimumFreeGiB: input.options.minimumFreeGiB,
+      resolutionClosure: firstIncremental?.resolutionClosure ?? 'none',
+      runnerClass,
+      runtimePlatform: input.runtimePlatform,
+      scenario: input.options.scenario,
+      storageLocation: input.governance?.storage.location ?? 'unverified',
+      storageMedium: input.governance?.storage.medium ?? 'unverified',
+      targetSymbols: input.options.scaleSymbols,
+      vectorEnabled: false,
+    },
+    suite: 'threadnote-code-graph-dirty-overlay',
+    version: 1,
+    warmups: 0,
+  };
+}
+
+function dirtyOverlayObservationMeasurements(
+  prefix: 'full' | 'incremental',
+  observations: readonly DirtyOverlayObservation[],
+): readonly ReturnType<typeof benchmarkMeasurement>[] {
+  const numericFields = [
+    ['attribution-context-files', 'attributionContextFiles', 'count'],
+    ['base-facts-loaded', 'baseFactsLoaded', 'count'],
+    ['changed-files', 'changedFiles', 'count'],
+    ['closure-projects', 'closureProjects', 'count'],
+    ['edges', 'edges', 'count'],
+    ['fact-replay-amplification', 'factReplayAmplification', 'count'],
+    ['inventory-files-inspected', 'inventoryFilesInspected', 'count'],
+    ['probed-dependency-paths', 'probedDependencyPaths', 'count'],
+    ['rewrite-amplification', 'rewriteAmplification', 'count'],
+    ['staged-files', 'stagedFiles', 'count'],
+    ['symbols', 'symbols', 'count'],
+    ['total-files', 'totalFiles', 'count'],
+  ] as const;
+  const replayFields = [
+    ['attributed-files', 'attributedFiles', 'count'],
+    ['cached-fact-replay-bytes', 'cachedFactReplayBytes', 'bytes'],
+    ['changed-fact-bytes', 'changedFactBytes', 'bytes'],
+    ['cross-generation-shard-files', 'crossGenerationShardFiles', 'count'],
+    ['exact-generation-shard-files', 'exactGenerationShardFiles', 'count'],
+    ['materialized-shard-replay-bytes', 'materializedShardReplayBytes', 'bytes'],
+    ['raw-fact-replay-bytes', 'rawFactReplayBytes', 'bytes'],
+  ] as const;
+  return [
+    ...numericFields.flatMap(([name, field, unit]) => {
+      const values = observations.map(observation => observation[field]).filter(value => value !== undefined);
+      return values.length === observations.length ? [benchmarkMeasurement(`${prefix}-${name}`, unit, values)] : [];
+    }),
+    ...replayFields.map(([name, field, unit]) =>
+      benchmarkMeasurement(
+        `${prefix}-${name}`,
+        unit,
+        observations.map(observation => observation.replay[field]),
+      ),
+    ),
+  ];
+}
 
 const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(function* (
   indexer: CodeGraphIndexerShape,
@@ -161,8 +433,10 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
     scaleSymbols,
     false,
     scenario === 'unchanged-static-reexport',
+    scenario === 'changed-export',
   );
-  const changedPath = path.join(prepared.repository, 'src/module-00000.ts');
+  yield* indexer.index({cwd: prepared.repository, incrementalOverlay: false, threadnoteHome: prepared.home});
+  const changedPath = path.join(prepared.repository, prepared.incrementalSourcePath ?? 'src/module-00000.ts');
   const committed = yield* fs.readFileString(changedPath);
   const changed = dirtyOverlayChangedSource(scenario, committed);
   yield* fs.writeFileString(changedPath, changed);
@@ -199,7 +473,7 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
   });
   const finished = yield* Clock.currentTimeNanos;
   if (materializationStarted !== undefined) materializationNanoseconds += finished - materializationStarted;
-  validateMaterialization(summary, incrementalOverlay);
+  validateMaterialization(summary, incrementalOverlay, scenario);
   const changedFactBytes =
     summary.incrementalWork?.factBytes ?? finalMaterializationMetrics?.changedFactBytesCompleted ?? 0;
   if (scenario === 'unchanged-static-reexport' && changedFactBytes <= 0) {
@@ -209,7 +483,7 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
     ? incrementalDirtyOverlayReplayEvidence(changedFactBytes)
     : dirtyOverlayReplayEvidence(finalMaterializationMetrics, changedFactBytes);
   const amplification =
-    scenario === 'unchanged-static-reexport'
+    scenario !== 'body-only'
       ? dirtyOverlayAmplificationEvidence({
           cachedFactReplayBytes: replay.cachedFactReplayBytes,
           changedFactBytes,
@@ -219,6 +493,18 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
       : undefined;
   const cpu = process.cpuUsage(cpuStarted);
   return {
+    ...(summary.incrementalWork?.attributionContextFiles === undefined
+      ? {}
+      : {attributionContextFiles: summary.incrementalWork.attributionContextFiles}),
+    ...(summary.incrementalWork?.baseFactsLoaded === undefined
+      ? {}
+      : {baseFactsLoaded: summary.incrementalWork.baseFactsLoaded}),
+    ...(summary.incrementalWork?.changedFiles === undefined
+      ? {}
+      : {changedFiles: summary.incrementalWork.changedFiles}),
+    ...(summary.materialization?.closureProjects === undefined
+      ? {}
+      : {closureProjects: summary.materialization.closureProjects}),
     cpuMilliseconds: (cpu.system + cpu.user) / 1_000,
     durationMilliseconds: Number(finished - started) / NANOSECONDS_PER_MILLISECOND,
     edges: summary.snapshot.edgeCount,
@@ -229,9 +515,18 @@ const runDirtyOverlayIndex = Effect.fn('benchmarkCodeGraphDirtyOverlay.run')(fun
           rewriteAmplification: amplification.rewriteAmplification,
         }),
     ...(summary.materialization?.fallbackReason ? {fallbackReason: summary.materialization.fallbackReason} : {}),
+    ...(summary.incrementalWork?.inventoryFilesInspected === undefined
+      ? {}
+      : {inventoryFilesInspected: summary.incrementalWork.inventoryFilesInspected}),
     materializationMilliseconds: Number(materializationNanoseconds) / NANOSECONDS_PER_MILLISECOND,
     materializationMode: summary.materialization?.mode ?? 'unreported',
+    ...(summary.incrementalWork?.probedDependencyPaths === undefined
+      ? {}
+      : {probedDependencyPaths: summary.incrementalWork.probedDependencyPaths}),
     replay,
+    ...(summary.materialization?.resolutionClosure === undefined
+      ? {}
+      : {resolutionClosure: summary.materialization.resolutionClosure}),
     stagedFiles: summary.materialization?.stagedFiles ?? -1,
     symbols: summary.snapshot.symbolCount,
     totalFiles: summary.materialization?.totalFiles ?? -1,
@@ -304,6 +599,12 @@ export function dirtyOverlayChangedSource(scenario: DirtyOverlayBenchmarkScenari
     }
     return committed.replace('return 0;', 'return 1000000;');
   }
+  if (scenario === 'changed-export') {
+    if (!committed.includes('export function dependencySurfaceControl()')) {
+      throw new ScriptError('Dirty-overlay benchmark fixture lost its dependency-surface edit marker.');
+    }
+    return `${committed}${committed.endsWith('\n') ? '' : '\n'}export function publishedDependencySurfaceControl(): number { return 2; }\n`;
+  }
   if (!committed.includes(generatedStaticReexportControlStatement())) {
     throw new ScriptError('Dirty-overlay benchmark fixture lost its static re-export control.');
   }
@@ -314,9 +615,25 @@ function integerAmplification(numerator: number, denominator: number): number {
   return numerator <= 0 ? 0 : Math.floor(numerator / Math.max(1, denominator));
 }
 
-function validateMaterialization(summary: CodeGraphIndexSummary, incrementalOverlay: boolean): void {
+function validateMaterialization(
+  summary: CodeGraphIndexSummary,
+  incrementalOverlay: boolean,
+  scenario: DirtyOverlayBenchmarkScenario,
+): void {
   if (incrementalOverlay) {
-    if (summary.materialization?.mode !== 'incremental-overlay' || summary.materialization.stagedFiles !== 1) {
+    const valid =
+      scenario === 'changed-export'
+        ? summary.materialization?.mode === 'incremental-overlay' &&
+          summary.materialization.closureProjects === 2 &&
+          summary.materialization.resolutionClosure === 'project' &&
+          summary.materialization.stagedFiles === 4 &&
+          summary.incrementalWork?.attributionContextFiles === 4 &&
+          summary.incrementalWork?.baseFactsLoaded === 4 &&
+          summary.incrementalWork.changedFiles === 4 &&
+          summary.incrementalWork.inventoryFilesInspected === 4 &&
+          summary.materialization.totalFiles > summary.materialization.stagedFiles
+        : summary.materialization?.mode === 'incremental-overlay' && summary.materialization.stagedFiles === 1;
+    if (!valid) {
       throw new ScriptError(
         `Incremental dirty-overlay benchmark fell back: ${JSON.stringify(summary.materialization)}.`,
       );
@@ -348,18 +665,24 @@ function percentReduction(baseline: number, improved: number): number {
 }
 
 export function parseDirtyOverlayBenchmarkArguments(args: readonly string[]): DirtyOverlayBenchmarkOptions {
+  let governed = false;
+  let minimumFreeGiB = 120;
   let outputPath: string | undefined;
+  let ratchetPath: string | undefined;
   let samples = 3;
   let scenario: DirtyOverlayBenchmarkScenario = 'body-only';
   let scaleSymbols = 10_000;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
-    if (argument === '--output') outputPath = required(args[++index], argument);
+    if (argument === '--governed') governed = true;
+    else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
+    else if (argument === '--output') outputPath = required(args[++index], argument);
+    else if (argument === '--ratchet') ratchetPath = required(args[++index], argument);
     else if (argument === '--samples') samples = integer(args[++index], argument, 1);
     else if (argument === '--scenario') {
       const value = required(args[++index], argument);
-      if (value !== 'body-only' && value !== 'unchanged-static-reexport') {
-        throw new ScriptError('--scenario must be body-only or unchanged-static-reexport.');
+      if (value !== 'body-only' && value !== 'changed-export' && value !== 'unchanged-static-reexport') {
+        throw new ScriptError('--scenario must be body-only, changed-export, or unchanged-static-reexport.');
       }
       scenario = value;
     } else if (argument === '--scale-symbols') scaleSymbols = integer(args[++index], argument, 1);
@@ -368,7 +691,24 @@ export function parseDirtyOverlayBenchmarkArguments(args: readonly string[]): Di
   if (scenario === 'unchanged-static-reexport' && scaleSymbols < 101) {
     throw new ScriptError('--scenario unchanged-static-reexport requires --scale-symbols at least 101.');
   }
-  return {outputPath, samples, scaleSymbols, scenario};
+  if (governed && minimumFreeGiB < 120) {
+    throw new ScriptError('--governed requires --minimum-free-gib of at least 120.');
+  }
+  if (governed && outputPath === undefined) {
+    throw new ScriptError('--governed requires --output so exact evidence is retained.');
+  }
+  if (ratchetPath !== undefined && (!governed || outputPath === undefined)) {
+    throw new ScriptError('--ratchet requires --governed and --output.');
+  }
+  return {
+    governed,
+    minimumFreeGiB,
+    ...(outputPath === undefined ? {} : {outputPath}),
+    ...(ratchetPath === undefined ? {} : {ratchetPath}),
+    samples,
+    scaleSymbols,
+    scenario,
+  };
 }
 
 function integer(value: string | undefined, option: string, minimum: number): number {

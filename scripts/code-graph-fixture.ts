@@ -162,6 +162,7 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
   targetSymbols: number,
   includeVectorControl = false,
   includeStaticReexportControl = false,
+  includeDependencySurfaceControl = false,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -176,7 +177,16 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
   yield* fs.makeDirectory(home, {recursive: true, mode: 0o700});
   yield* fs.writeFileString(
     path.join(repository, 'package.json'),
-    `${JSON.stringify({name: '@threadnote/code-graph-scale', private: true, version: '1.0.0'}, undefined, 2)}\n`,
+    `${JSON.stringify(
+      {
+        name: '@threadnote/code-graph-scale',
+        private: true,
+        version: '1.0.0',
+        ...(includeDependencySurfaceControl ? {workspaces: ['packages/*']} : {}),
+      },
+      undefined,
+      2,
+    )}\n`,
   );
   yield* fs.writeFileString(
     path.join(repository, 'tsconfig.json'),
@@ -189,6 +199,49 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
       '# Fixture architecture\n\n' +
         'The application calls the search package. Search serializes recall and vector-index activation through the core\n' +
         'exclusive file-lock contract. Lock recovery must preserve the previous ready index.\n',
+    );
+  }
+  const dependencySurfaceSourcePath = 'packages/surface-core/src/index.ts';
+  if (includeDependencySurfaceControl) {
+    yield* Effect.forEach(
+      ['packages/surface-core/src', 'packages/surface-app/src'],
+      directory => fs.makeDirectory(path.join(repository, directory), {recursive: true}),
+      {discard: true},
+    );
+    yield* Effect.all(
+      [
+        fs.writeFileString(
+          path.join(repository, 'packages/surface-core/package.json'),
+          `${JSON.stringify(
+            {exports: './src/index.ts', name: '@threadnote/surface-core', private: true, version: '1.0.0'},
+            undefined,
+            2,
+          )}\n`,
+        ),
+        fs.writeFileString(
+          path.join(repository, dependencySurfaceSourcePath),
+          'export function dependencySurfaceControl(): number { return 1; }\n',
+        ),
+        fs.writeFileString(
+          path.join(repository, 'packages/surface-app/package.json'),
+          `${JSON.stringify(
+            {
+              dependencies: {'@threadnote/surface-core': 'workspace:*'},
+              name: '@threadnote/surface-app',
+              private: true,
+              version: '1.0.0',
+            },
+            undefined,
+            2,
+          )}\n`,
+        ),
+        fs.writeFileString(
+          path.join(repository, 'packages/surface-app/src/index.ts'),
+          "import {dependencySurfaceControl} from '@threadnote/surface-core';\n" +
+            'export function consumeDependencySurface(): number { return dependencySurfaceControl(); }\n',
+        ),
+      ],
+      {concurrency: 4, discard: true},
     );
   }
   const symbolsPerFile = 100;
@@ -244,7 +297,12 @@ export const prepareGeneratedCodeGraphFixture = Effect.fn('codeGraphFixture.prep
       timeoutMs: 30_000,
     },
   );
-  return {home, repository, root} satisfies PreparedCodeGraphFixture;
+  return {
+    home,
+    ...(includeDependencySurfaceControl ? {incrementalSourcePath: dependencySurfaceSourcePath} : {}),
+    repository,
+    root,
+  } satisfies PreparedCodeGraphFixture;
 });
 
 export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.prepareProduction')(function* (

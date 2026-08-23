@@ -9,6 +9,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
+  benchmarkDarwinStorageClassification,
   benchmarkVectorModelDirectoryName,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
   codeGraphQueryResultParityEvidence,
@@ -53,6 +54,21 @@ const CONTROL = JSON.stringify({
 });
 
 describe('code graph external benchmark harness', () => {
+  it('classifies the backing macOS device without retaining device identity', () => {
+    expect(benchmarkDarwinStorageClassification('Device Location: Internal\nSolid State: Yes\n')).toEqual({
+      location: 'internal',
+      medium: 'solid-state',
+    });
+    expect(benchmarkDarwinStorageClassification('Internal: No\nSolid State: No\n')).toEqual({
+      location: 'external',
+      medium: 'rotational',
+    });
+    expect(benchmarkDarwinStorageClassification('Network: Yes\nSolid State: Yes\n')).toEqual({
+      location: 'unknown',
+      medium: 'virtual-or-network',
+    });
+  });
+
   it('ignores ordinary vector-maintenance metadata before filesystem inspection', () => {
     expect(benchmarkVectorModelDirectoryName('bge-small-en-v1.5-q8')).toBe(true);
     expect(benchmarkVectorModelDirectoryName('.ordinary-vector-retirement-v1.cursor')).toBe(false);
@@ -508,10 +524,24 @@ describe('code graph external benchmark harness', () => {
       Effect.gen(function* () {
         const first = yield* prepareGeneratedCodeGraphFixture(10, true);
         const second = yield* prepareGeneratedCodeGraphFixture(10, true);
+        const firstDependencySurface = yield* prepareGeneratedCodeGraphFixture(10, false, false, true);
+        const secondDependencySurface = yield* prepareGeneratedCodeGraphFixture(10, false, false, true);
         const firstCommit = (yield* git(first.repository, ['rev-parse', 'HEAD'])).stdout.trim();
         const secondCommit = (yield* git(second.repository, ['rev-parse', 'HEAD'])).stdout.trim();
+        const firstDependencySurfaceCommit = (yield* git(firstDependencySurface.repository, [
+          'rev-parse',
+          'HEAD',
+        ])).stdout.trim();
+        const secondDependencySurfaceCommit = (yield* git(secondDependencySurface.repository, [
+          'rev-parse',
+          'HEAD',
+        ])).stdout.trim();
         expect(firstCommit).toMatch(/^[0-9a-f]{40}$/);
         expect(secondCommit).toBe(firstCommit);
+        expect(firstDependencySurface.incrementalSourcePath).toBe('packages/surface-core/src/index.ts');
+        expect(secondDependencySurface.incrementalSourcePath).toBe(firstDependencySurface.incrementalSourcePath);
+        expect(firstDependencySurfaceCommit).toMatch(/^[0-9a-f]{40}$/);
+        expect(secondDependencySurfaceCommit).toBe(firstDependencySurfaceCommit);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

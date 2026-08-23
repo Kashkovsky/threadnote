@@ -449,6 +449,7 @@ export interface ConcurrentWorktreeEvidence {
 
 export interface BenchmarkStorageEnvironment {
   readonly filesystem: string;
+  readonly location: 'external' | 'internal' | 'unknown';
   readonly medium: 'rotational' | 'solid-state' | 'unknown' | 'virtual-or-network';
 }
 
@@ -1651,6 +1652,7 @@ const benchmarkCodeGraph = Effect.scoped(
         ...(prepared.externalCommit
           ? {
               benchmarkDiskFilesystem: storageEnvironment?.filesystem ?? 'unknown',
+              benchmarkDiskLocation: storageEnvironment?.location ?? 'unknown',
               benchmarkDiskMedium: storageEnvironment?.medium ?? 'unknown',
               benchmarkInventoryEligibleFiles: coldTimeline.inventoryEligibleFiles(),
               benchmarkInventoryExcludedFiles: coldTimeline.inventoryExcludedFiles(),
@@ -5767,15 +5769,20 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
     Effect.map(value => (/^[a-z0-9._+-]{1,64}$/.test(value) ? value : 'unknown')),
   );
   let medium: BenchmarkStorageEnvironment['medium'] = 'unknown';
+  let location: BenchmarkStorageEnvironment['location'] = 'unknown';
   if (process.platform === 'darwin') {
     const diskutil = Bun.which('diskutil') ?? '/usr/sbin/diskutil';
-    const info = yield* runCommandEffect(diskutil, ['info', target], {timeoutMs: 10_000}).pipe(
+    const backingDevice = yield* filesystemCapacity(target).pipe(
+      Effect.map(capacity => capacity.filesystem),
+      Effect.catch(() => Effect.succeed(target)),
+    );
+    const info = yield* runCommandEffect(diskutil, ['info', backingDevice], {timeoutMs: 10_000}).pipe(
       Effect.map(result => result.stdout),
       Effect.catch(() => Effect.succeed('')),
     );
-    if (/^\s*Solid State:\s+Yes\s*$/imu.test(info)) medium = 'solid-state';
-    else if (/^\s*Solid State:\s+No\s*$/imu.test(info)) medium = 'rotational';
-    else if (/^\s*(?:Virtual|Network):\s+Yes\s*$/imu.test(info)) medium = 'virtual-or-network';
+    const classification = benchmarkDarwinStorageClassification(info);
+    medium = classification.medium;
+    location = classification.location;
   } else if (process.platform === 'linux') {
     const source = yield* runCommandEffect('findmnt', ['-n', '-o', 'SOURCE', '--target', target], {
       timeoutMs: 10_000,
@@ -5793,8 +5800,28 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
       else if (rotational.includes('0')) medium = 'solid-state';
     }
   }
-  return {filesystem, medium} satisfies BenchmarkStorageEnvironment;
+  return {filesystem, location, medium} satisfies BenchmarkStorageEnvironment;
 });
+
+export function benchmarkDarwinStorageClassification(
+  info: string,
+): Pick<BenchmarkStorageEnvironment, 'location' | 'medium'> {
+  const virtualOrNetwork = /^\s*(?:Virtual|Network):\s+Yes\s*$/imu.test(info);
+  const medium: BenchmarkStorageEnvironment['medium'] = virtualOrNetwork
+    ? 'virtual-or-network'
+    : /^\s*Solid State:\s+Yes\s*$/imu.test(info)
+      ? 'solid-state'
+      : /^\s*Solid State:\s+No\s*$/imu.test(info)
+        ? 'rotational'
+        : 'unknown';
+  const location: BenchmarkStorageEnvironment['location'] =
+    /^\s*(?:Device Location:\s+Internal|Internal:\s+Yes)\s*$/imu.test(info)
+      ? 'internal'
+      : /^\s*(?:Device Location:\s+External|Internal:\s+No)\s*$/imu.test(info)
+        ? 'external'
+        : 'unknown';
+  return {location, medium};
+}
 
 export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGraph.concurrentWorktreeIsolation')(
   function* (threadnoteHome: string, options: Readonly<{failureInjection?: 'after-index'}> = {}) {
