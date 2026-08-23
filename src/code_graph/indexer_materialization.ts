@@ -33,6 +33,7 @@ import {
   type CodeGraphContentBatchContext,
   type CodeGraphInventoryOptions,
 } from './inventory.js';
+import {codeGraphInventorySha256Hex} from './inventory_identity.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {codeGraphDiskReservationLockPath, codeGraphDiskReservationRoot, type CodeGraphLayout} from './layout.js';
@@ -788,12 +789,14 @@ export function snapshotIdentity(
   extractorSet: string,
   files: readonly {readonly contentHash: string; readonly path: string; readonly source: string}[],
 ): string {
-  const inventory = files
-    .map(file => `${file.path}\0${file.contentHash}\0${file.source}`)
-    .sort()
-    .join('\n');
-  return `cgsn_${sha256HexSync(
-    `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n${extractorSet}\n${inventory}`,
+  const prefix =
+    `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n` +
+    `${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n` +
+    `${extractorSet}\n`;
+  return `cgsn_${codeGraphInventorySha256Hex(
+    prefix,
+    files,
+    file => `${file.path}\0${file.contentHash}\0${file.source}`,
   ).slice(0, 40)}`;
 }
 
@@ -841,12 +844,11 @@ export function graphContentIdentity(
     readonly path: string;
   }[],
 ): string {
-  const inventory = files
-    .map(file => `${file.path}\0${file.contentHash}\0${file.language ?? ''}\0${file.mode ?? ''}`)
-    .sort()
-    .join('\n');
-  return `cgc_${sha256HexSync(
-    `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n${inventory}`,
+  const prefix = `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n`;
+  return `cgc_${codeGraphInventorySha256Hex(
+    prefix,
+    files,
+    file => `${file.path}\0${file.contentHash}\0${file.language ?? ''}\0${file.mode ?? ''}`,
   ).slice(0, 40)}`;
 }
 

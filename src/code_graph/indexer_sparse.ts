@@ -258,6 +258,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         {
           building,
           committedBase,
+          committedBaseReceipt: base.receipt,
           force: false,
           incrementalOverlayEnabled: true,
           inventory,
