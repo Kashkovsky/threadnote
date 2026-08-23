@@ -33,6 +33,7 @@ import {
   promoteReadySnapshotWithCapacity,
   reusableReadySnapshotForCleanCommit,
   snapshotIdentity,
+  sparseOverlayGraphContentIdentity,
 } from './indexer_materialization.js';
 import {
   CodeGraphIndexOperationError,
@@ -52,6 +53,7 @@ import type {
 } from './indexer_types.js';
 import {codeGraphIndexEnsuresVectors} from './indexer_types.js';
 import {
+  type CodeGraphInventory,
   type CodeGraphOverlayObservation,
   inventoryRepository,
   inventoryRepositoryFromReusableCleanBase,
@@ -297,6 +299,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         treeSitter,
                       });
                       let bypassReusableInventoryBase = false;
+                      yield* cacheCoalescer.beginSparseExtractionTracking;
                       const sparseOverlay = yield* attemptSparseReusableOverlay({
                         anonymousTelemetry,
                         cacheCoalescer,
@@ -315,9 +318,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         requestedOverlay,
                         startedAt,
                         store,
-                      }).pipe(Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))));
+                      }).pipe(
+                        Effect.ensuring(
+                          cacheCoalescer.endSparseExtractionTracking.pipe(
+                            Effect.andThen(cacheCoalescer.discard),
+                            Effect.andThen(parserPool.trimIdle),
+                          ),
+                        ),
+                      );
                       if (Option.isSome(sparseOverlay)) return sparseOverlay.value;
-                      const inventory = yield* Effect.gen(function* () {
+                      const rawInventory = yield* Effect.gen(function* () {
                         const changedPathCount =
                           inventoryOverlayObservation.changedPaths.length +
                           inventoryOverlayObservation.deletedPaths.length;
@@ -372,6 +382,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
                       );
+                      const sparseExtractedFiles = yield* cacheCoalescer.sparseExtractedFiles;
+                      const inventory = {
+                        ...rawInventory,
+                        parsedFiles: Math.min(
+                          rawInventory.files.length,
+                          rawInventory.parsedFiles + sparseExtractedFiles,
+                        ),
+                      } satisfies CodeGraphInventory;
                       yield* anonymousTelemetry.observeInventory(inventory);
                       yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
                       // Inventory and extraction build large, short-lived maps and Git payloads. Reclaim them before
@@ -382,7 +400,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       });
                       yield* Effect.yieldNow;
                       const extractorSet = extractorSetIdentity(inventory.files, languagePacks);
-                      const graphContentId = graphContentIdentity(extractorSet, inventory.files);
+                      // Compose dirty graph content from the canonical committed graph plus the exact overlay.
+                      // Sparse admission already has those two inputs, so full and proportional routes publish
+                      // the same content identity without forcing the sparse route to hydrate every base row.
+                      const graphContentId =
+                        inventory.dirty && inventory.overlayFingerprint !== undefined
+                          ? sparseOverlayGraphContentIdentity(
+                              graphContentIdentity(extractorSet, inventory.committedFiles),
+                              extractorSet,
+                              inventory.overlayFingerprint,
+                            )
+                          : graphContentIdentity(extractorSet, inventory.files);
                       const logicalSnapshotId = snapshotIdentity(
                         identity,
                         inventory.dirty,

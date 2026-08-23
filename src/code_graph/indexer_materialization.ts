@@ -151,15 +151,21 @@ export interface CodeGraphCacheContentCoalescer {
     rows: readonly CodeGraphCacheExtractedRow[],
     context: CodeGraphContentBatchContext,
   ) => Effect.Effect<void, unknown>;
+  /** Starts exact path accounting for a bounded sparse-admission attempt. */
+  readonly beginSparseExtractionTracking: Effect.Effect<void>;
   /** Marks the committed-to-worktree extraction boundary, even for deletion-only overlays. */
   readonly beginOverlayExtraction: Effect.Effect<void>;
   /** Drops references only. This is safe in failure/cancellation cleanup because it never starts a write. */
   readonly discard: Effect.Effect<void>;
+  /** Stops sparse-attempt path accounting while retaining its terminal count. */
+  readonly endSparseExtractionTracking: Effect.Effect<void>;
   /** Exact serialized fact bytes extracted in the current inventory phase. */
   readonly extractedFactBytes: Effect.Effect<number>;
   /** Flushes pending rows and is called only after inventory succeeds. */
   readonly flush: Effect.Effect<void, unknown>;
   readonly onContentBatch: NonNullable<CodeGraphInventoryOptions['onContentBatch']>;
+  /** Unique paths extracted during the bounded sparse-admission attempt. */
+  readonly sparseExtractedFiles: Effect.Effect<number>;
 }
 
 const CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER = '1970-01-01T00:00:00.000Z';
@@ -195,6 +201,8 @@ export function cacheContentBatch(options: {
   let extractionWorkUnitsCompleted = 0;
   let extractionPlan = undefined as CodeGraphContentBatchContext['extractionPlan'];
   let extractionPhase: 'none' | 'planned' | 'unplanned' = 'none';
+  let sparseExtractionTracking = false;
+  const sparseExtractedPaths = new Set<string>();
   let terminalExtractedFactBytes = 0;
   let persistenceMilliseconds = 0;
   let readingMilliseconds = 0;
@@ -337,6 +345,7 @@ export function cacheContentBatch(options: {
     Effect.gen(function* () {
       latestContext = context;
       for (const {cacheFact, cacheIdentity: activeCacheIdentity, degraded, file} of rows) {
+        if (sparseExtractionTracking) sparseExtractedPaths.add(file.path);
         const cacheIdentity = degraded ? degradedParserCacheIdentity(activeCacheIdentity) : activeCacheIdentity;
         const key = `${degraded ? 'degraded' : 'durable'}\0${cacheIdentity}`;
         const reuseClass = degraded ? undefined : codeGraphBlobExtractionReuseClass(file);
@@ -537,6 +546,10 @@ export function cacheContentBatch(options: {
     });
   return {
     acceptExtracted,
+    beginSparseExtractionTracking: Effect.sync(() => {
+      sparseExtractedPaths.clear();
+      sparseExtractionTracking = true;
+    }),
     beginOverlayExtraction: Effect.sync(() => observeExtractionPlan(undefined)),
     discard: Effect.sync(() => {
       pendingGroups.clear();
@@ -546,6 +559,9 @@ export function cacheContentBatch(options: {
       reusableExtractions.clear();
       reusableExtractionUses.clear();
     }),
+    endSparseExtractionTracking: Effect.sync(() => {
+      sparseExtractionTracking = false;
+    }),
     extractedFactBytes: Effect.sync(() => terminalExtractedFactBytes),
     flush: Effect.gen(function* () {
       while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
@@ -553,6 +569,7 @@ export function cacheContentBatch(options: {
       reusableExtractionUses.clear();
     }),
     onContentBatch,
+    sparseExtractedFiles: Effect.sync(() => sparseExtractedPaths.size),
   };
 }
 

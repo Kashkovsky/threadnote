@@ -408,6 +408,7 @@ describe('code graph parser cache coalescer', () => {
       const secondOverlay = {...cacheFile(2, 'src/overlay'), source: 'worktree' as const};
 
       yield* harness.run([committed], plannedCacheContext(1));
+      yield* harness.beginSparseExtractionTracking;
       yield* harness.beginOverlayExtraction;
       expect(yield* harness.extractedFactBytes).toBe(0);
       yield* harness.run([firstOverlay], cacheContext(1));
@@ -420,6 +421,8 @@ describe('code graph parser cache coalescer', () => {
       expect(firstBytes).toBe(expectedFirst);
       expect(secondBytes).toBe(expectedFirst + expectedSecond);
       expect(secondBytes).toBeGreaterThan(0);
+      yield* harness.endSparseExtractionTracking;
+      expect(yield* harness.sparseExtractedFiles).toBe(2);
     }),
   );
 });

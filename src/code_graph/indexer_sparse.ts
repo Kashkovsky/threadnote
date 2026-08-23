@@ -144,6 +144,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   if (Option.isNone(admitted)) return Option.none<CodeGraphIndexSummary>();
   yield* input.cacheCoalescer.flush;
   const admission = admitted.value;
+  const extractedFiles = yield* input.cacheCoalescer.sparseExtractedFiles;
   const inventory: CodeGraphInventory = {
     committedFiles: base.files,
     committedParsedFiles: 0,
@@ -151,7 +152,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
     dirty: true,
     files: admission.files,
     overlayFingerprint: admission.overlayFingerprint,
-    parsedFiles: admission.parsedFiles,
+    parsedFiles: Math.min(base.snapshot.fileCount, Math.max(admission.parsedFiles, extractedFiles)),
     skipped: admission.skipped,
     workspace: admission.workspace,
   };
@@ -196,7 +197,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         identity: input.identity,
         layout: input.layout,
         onProgress: input.options.onProgress,
-        reusedFiles: base.snapshot.fileCount - admission.parsedFiles,
+        reusedFiles: base.snapshot.fileCount - inventory.parsedFiles,
         skippedFiles: admission.skipped,
         snapshot: reusableReady,
         startedAt: input.startedAt,
@@ -207,137 +208,145 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
     );
   }
 
-  const lease = yield* input.store
-    .acquireSnapshotLease(input.layout.databasePath, base.snapshot.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
-    .pipe(Effect.option);
-  if (Option.isNone(lease)) return Option.none<CodeGraphIndexSummary>();
-  const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
-    input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
-  );
-  const committedBase: CommittedBaseResult = {
-    diagnostics: [
-      `Dirty snapshot reused compatible persisted base ${base.snapshot.id} without hydrating the complete inventory.`,
-    ],
-    leaseToken: Option.some(leaseToken),
-    snapshot: base.snapshot,
-    stagingReusable: false,
-  };
-  const preassessment = yield* assessReusableOverlayAdmissionCompatibility({
-    admission,
-    languagePacks: input.languagePacks,
-    layout: input.layout,
-    store: input.store,
-  });
-  if (preassessment.mode === 'fallback') return Option.none<CodeGraphIndexSummary>();
-  const building = {
-    baseSnapshotId: base.snapshot.id,
-    commit: input.identity.headCommit,
-    dirty: true,
-    edgeCount: 0,
-    extractorSet: base.snapshot.extractorSet,
-    fileCount: 0,
-    graphContentId: sparseOverlayGraphContentIdentity(
-      base.snapshot.graphContentId ?? base.snapshot.id,
-      base.snapshot.extractorSet,
-      admission.overlayFingerprint,
-    ),
-    id: logicalSnapshotId,
-    overlayFingerprint: admission.overlayFingerprint,
-    repositoryId: input.identity.repositoryId,
-    state: 'building' as const,
-    symbolCount: 0,
-    worktreeId: input.identity.worktreeId,
-  };
-  const incrementalAssessment = yield* assessIncrementalOverlay(
-    {
-      building,
-      committedBase,
-      force: false,
-      incrementalOverlayEnabled: true,
-      inventory,
-      languagePacks: input.languagePacks,
-      layout: input.layout,
-      store: input.store,
-      totalFiles: base.snapshot.fileCount,
-    },
-    admission.workspace,
-    preassessment,
-  );
-  if (incrementalAssessment.mode === 'fallback') return Option.none<CodeGraphIndexSummary>();
-  yield* input.store.retireIncompleteWorktreeSnapshots(
-    input.layout.databasePath,
-    input.identity.repositoryId,
-    input.identity.worktreeId,
-    new Set([logicalSnapshotId]),
-    retiredSnapshotCleanupReporter(input.options.onProgress),
-    {cleanupMode: 'required'},
-  );
-  yield* input.options.onProgress?.({
-    completed: 0,
-    phase: 'materializing',
-    reused: base.snapshot.fileCount - incrementalAssessment.files.length,
-    total: incrementalAssessment.files.length,
-    unit: 'files',
-  }) ?? Effect.void;
-  const prepared = yield* input.store.preparePersistedIncrementalActivation(
-    input.layout.databasePath,
-    base.snapshot.id,
-    incrementalAssessment.files,
-    incrementalAssessment.facts,
-    {
-      deletedPaths: incrementalAssessment.deletedPaths,
-      resolutionClosure: incrementalAssessment.resolutionClosure,
-    },
-    codeGraphDirectPersistentCapacityProtector({
-      capacityProtection: input.capacityProtection,
-      fs: input.fs,
-      identity: input.identity,
-      layout: input.layout,
-      onProgress: input.options.onProgress,
-      threadnoteHome: input.options.threadnoteHome,
+  // Keep the base lease local to this attempt. An ordinary lease acquired for
+  // an active view inherits retirement responsibility; releasing it only when
+  // the caller's outer index scope closes would retire the detached warm base
+  // after an ordinary full fallback replaces that view.
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const lease = yield* input.store
+        .acquireSnapshotLease(input.layout.databasePath, base.snapshot.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
+        .pipe(Effect.option);
+      if (Option.isNone(lease)) return Option.none<CodeGraphIndexSummary>();
+      const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
+        input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+      );
+      const committedBase: CommittedBaseResult = {
+        diagnostics: [
+          `Dirty snapshot reused compatible persisted base ${base.snapshot.id} without hydrating the complete inventory.`,
+        ],
+        leaseToken: Option.some(leaseToken),
+        snapshot: base.snapshot,
+        stagingReusable: false,
+      };
+      const preassessment = yield* assessReusableOverlayAdmissionCompatibility({
+        admission,
+        languagePacks: input.languagePacks,
+        layout: input.layout,
+        store: input.store,
+      });
+      if (preassessment.mode === 'fallback') return Option.none<CodeGraphIndexSummary>();
+      const building = {
+        baseSnapshotId: base.snapshot.id,
+        commit: input.identity.headCommit,
+        dirty: true,
+        edgeCount: 0,
+        extractorSet: base.snapshot.extractorSet,
+        fileCount: 0,
+        graphContentId: sparseOverlayGraphContentIdentity(
+          base.snapshot.graphContentId ?? base.snapshot.id,
+          base.snapshot.extractorSet,
+          admission.overlayFingerprint,
+        ),
+        id: logicalSnapshotId,
+        overlayFingerprint: admission.overlayFingerprint,
+        repositoryId: input.identity.repositoryId,
+        state: 'building' as const,
+        symbolCount: 0,
+        worktreeId: input.identity.worktreeId,
+      };
+      const incrementalAssessment = yield* assessIncrementalOverlay(
+        {
+          building,
+          committedBase,
+          force: false,
+          incrementalOverlayEnabled: true,
+          inventory,
+          languagePacks: input.languagePacks,
+          layout: input.layout,
+          store: input.store,
+          totalFiles: base.snapshot.fileCount,
+        },
+        admission.workspace,
+        preassessment,
+      );
+      if (incrementalAssessment.mode === 'fallback') return Option.none<CodeGraphIndexSummary>();
+      yield* input.store.retireIncompleteWorktreeSnapshots(
+        input.layout.databasePath,
+        input.identity.repositoryId,
+        input.identity.worktreeId,
+        new Set([logicalSnapshotId]),
+        retiredSnapshotCleanupReporter(input.options.onProgress),
+        {cleanupMode: 'required'},
+      );
+      yield* input.options.onProgress?.({
+        completed: 0,
+        phase: 'materializing',
+        reused: base.snapshot.fileCount - incrementalAssessment.files.length,
+        total: incrementalAssessment.files.length,
+        unit: 'files',
+      }) ?? Effect.void;
+      const prepared = yield* input.store.preparePersistedIncrementalActivation(
+        input.layout.databasePath,
+        base.snapshot.id,
+        incrementalAssessment.files,
+        incrementalAssessment.facts,
+        {
+          deletedPaths: incrementalAssessment.deletedPaths,
+          resolutionClosure: incrementalAssessment.resolutionClosure,
+        },
+        codeGraphDirectPersistentCapacityProtector({
+          capacityProtection: input.capacityProtection,
+          fs: input.fs,
+          identity: input.identity,
+          layout: input.layout,
+          onProgress: input.options.onProgress,
+          threadnoteHome: input.options.threadnoteHome,
+        }),
+      );
+      if (!prepared) return Option.none<CodeGraphIndexSummary>();
+      yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
+      const workspace = {
+        diagnostics: admission.workspace.diagnostics,
+        fingerprint: admission.workspace.fingerprint,
+        projects: [],
+        workspaces: [],
+      };
+      return Option.some(
+        yield* buildAndActivate({
+          activatePointer: true,
+          building,
+          capacityProtection: input.capacityProtection,
+          committedBase,
+          embedding: input.embedding,
+          ensureVectors: input.ensureVectors,
+          existing,
+          force: false,
+          fs: input.fs,
+          identity: input.identity,
+          incrementalAssessment,
+          incrementalOverlayEnabled: true,
+          incrementalPrepared: true,
+          inventory,
+          languagePacks: input.languagePacks,
+          layout: input.layout,
+          onProgress: input.options.onProgress,
+          persistentMaterializationTransactionBatchLimit: input.options.persistentMaterializationTransactionBatchLimit,
+          requestedOverlay: input.requestedOverlay,
+          sparseProjection: {packProvenance, totalFiles: base.snapshot.fileCount},
+          startedAt: input.startedAt,
+          store: input.store,
+          threadnoteHome: input.options.threadnoteHome,
+          workspace,
+        }).pipe(
+          Effect.catch(cause =>
+            input.store
+              .markFailed(input.layout.databasePath, building.id, messageOf(cause))
+              .pipe(Effect.andThen(Effect.fail(cause))),
+          ),
+        ),
+      );
     }),
-  );
-  if (!prepared) return Option.none<CodeGraphIndexSummary>();
-  yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
-  const workspace = {
-    diagnostics: admission.workspace.diagnostics,
-    fingerprint: admission.workspace.fingerprint,
-    projects: [],
-    workspaces: [],
-  };
-  return Option.some(
-    yield* buildAndActivate({
-      activatePointer: true,
-      building,
-      capacityProtection: input.capacityProtection,
-      committedBase,
-      embedding: input.embedding,
-      ensureVectors: input.ensureVectors,
-      existing,
-      force: false,
-      fs: input.fs,
-      identity: input.identity,
-      incrementalAssessment,
-      incrementalOverlayEnabled: true,
-      incrementalPrepared: true,
-      inventory,
-      languagePacks: input.languagePacks,
-      layout: input.layout,
-      onProgress: input.options.onProgress,
-      persistentMaterializationTransactionBatchLimit: input.options.persistentMaterializationTransactionBatchLimit,
-      requestedOverlay: input.requestedOverlay,
-      sparseProjection: {packProvenance, totalFiles: base.snapshot.fileCount},
-      startedAt: input.startedAt,
-      store: input.store,
-      threadnoteHome: input.options.threadnoteHome,
-      workspace,
-    }).pipe(
-      Effect.catch(cause =>
-        input.store
-          .markFailed(input.layout.databasePath, building.id, messageOf(cause))
-          .pipe(Effect.andThen(Effect.fail(cause))),
-      ),
-    ),
   );
 });
 
