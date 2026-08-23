@@ -10,6 +10,7 @@ import {configureConnection} from './store_session.js';
 import {type CodeGraphProvenance, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
 import {
   activationMode,
+  ACTIVATION_EDGE_BATCH_ROWS,
   type ActivationResolutionRow,
   assertPersistentBuildOwner,
   assertPersistentMaterializationComplete,
@@ -31,6 +32,7 @@ import {
   planPersistentReferenceResolutionPages,
   persistentFullReferencePageTotal,
   persistentReferenceResolutionCapacityBoundary,
+  persistentUnresolvedReferenceCapacityBoundary,
 } from './store_resolution_core.js';
 import {resolvePersistedFullReferencePage} from './store_resolution_matching.js';
 import {expandTransitiveReexportAliases} from './store_persistent_build.js';
@@ -41,7 +43,7 @@ import {
   markSnapshotLeaseRetirementBaton,
 } from './store_reconciliation.js';
 import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconciliation_core.js';
-import {CodeGraphPromotionCapacityPlanChanged} from './store_internal_models.js';
+import {CodeGraphPromotionCapacityPlanChanged, type EdgeRow} from './store_internal_models.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 
 export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
@@ -352,20 +354,44 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             transactionStageStartedAt = yield* Clock.currentTimeMillis;
             if (persistentFull) {
               yield* sql.unsafe(
-                `INSERT OR REPLACE INTO edges (
+                `WITH edge_payloads AS MATERIALIZED (
+                   SELECT resolution.old_edge_id, resolution.new_edge_id,
+                     edge.source_id, edge.source_name, edge.evidence_path, edge.evidence_span_json
+                   FROM activation_resolved_reference_batch AS resolution
+                   CROSS JOIN edges AS edge
+                     ON edge.snapshot_id = ? AND edge.id = resolution.old_edge_id
+                   UNION ALL
+                   SELECT resolution.old_edge_id, resolution.new_edge_id,
+                     reference.source_id, reference.source_name,
+                     reference.evidence_path, reference.evidence_span_json
+                   FROM activation_resolved_reference_batch AS resolution
+                   CROSS JOIN building_references AS reference
+                     ON reference.snapshot_id = ? AND reference.edge_id = resolution.old_edge_id
+                   WHERE NOT EXISTS (
+                     SELECT 1 FROM edges AS current
+                     WHERE current.snapshot_id = ? AND current.id = resolution.old_edge_id
+                   )
+                 )
+                 INSERT OR REPLACE INTO edges (
                    snapshot_id, id, source_id, source_name, relation, target_id, target_name,
                    provenance, confidence, evidence_path, evidence_span_json
                  )
                  SELECT
-                   ?, resolution.new_edge_id, edge.source_id, edge.source_name,
+                   ?, resolution.new_edge_id, payload.source_id, payload.source_name,
                    resolution.relation, resolution.target_id, resolution.target_name,
                    resolution.provenance, resolution.confidence,
-                   edge.evidence_path, edge.evidence_span_json
+                   payload.evidence_path, payload.evidence_span_json
                  FROM activation_resolved_reference_batch AS resolution
-                 CROSS JOIN edges AS edge
-                   ON edge.snapshot_id = ? AND edge.id = resolution.old_edge_id
+                 CROSS JOIN edge_payloads AS payload
+                   ON payload.old_edge_id = resolution.old_edge_id
+                      AND payload.new_edge_id = resolution.new_edge_id
                  ORDER BY resolution.new_edge_id, resolution.old_edge_id`,
-                [persistentFull.snapshotId, persistentFull.snapshotId],
+                [
+                  persistentFull.snapshotId,
+                  persistentFull.snapshotId,
+                  persistentFull.snapshotId,
+                  persistentFull.snapshotId,
+                ],
               );
               yield* sql.unsafe(
                 `DELETE FROM edges
@@ -477,6 +503,66 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         }
       }
       reservationPages.length = 0;
+    });
+    const flushUnresolvedReferenceEdges = Effect.fn('codeGraph.flushUnresolvedReferenceEdges')(function* () {
+      if (!persistentFull) return;
+      let unresolvedCursor = '';
+      for (;;) {
+        const unresolved = yield* sql.unsafe<EdgeRow>(
+          `SELECT edge_id AS id, source_id, source_name, relation, NULL AS target_id,
+             target_name, provenance, confidence, evidence_path, evidence_span_json
+           FROM building_references
+           WHERE snapshot_id = ? AND edge_id > ?
+           ORDER BY edge_id
+           LIMIT ${ACTIVATION_EDGE_BATCH_ROWS}`,
+          [persistentFull.snapshotId, unresolvedCursor],
+        );
+        if (unresolved.length === 0) break;
+        const batchEnd = unresolved.at(-1)!.id;
+        const transaction = sql.withTransaction(
+          Effect.gen(function* () {
+            yield* assertPersistentBuildOwner(sql, persistentFull.snapshotId, persistentFull.ownerToken);
+            let transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            // A resolved edge can intentionally collide with the original ID
+            // of a still-unresolved reference. INSERT OR IGNORE preserves the
+            // already-established winner exactly as the former eager raw-edge
+            // insert followed by resolution replacement did.
+            yield* sql.unsafe(
+              `INSERT OR IGNORE INTO edges (
+                 snapshot_id, id, source_id, source_name, relation, target_id, target_name,
+                 provenance, confidence, evidence_path, evidence_span_json
+               )
+               SELECT snapshot_id, edge_id, source_id, source_name, relation, NULL, target_name,
+                 provenance, confidence, evidence_path, evidence_span_json
+               FROM building_references
+               WHERE snapshot_id = ? AND edge_id > ? AND edge_id <= ?
+               ORDER BY edge_id`,
+              [persistentFull.snapshotId, unresolvedCursor, batchEnd],
+            );
+            transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            yield* sql.unsafe(
+              `DELETE FROM building_references
+               WHERE snapshot_id = ? AND edge_id > ? AND edge_id <= ?`,
+              [persistentFull.snapshotId, unresolvedCursor, batchEnd],
+            );
+            transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+          }),
+        );
+        const gated = writerGate ? writerGate(transaction) : transaction;
+        const protectedTransaction = persistentCapacityProtector
+          ? persistentCapacityProtector(
+              persistentUnresolvedReferenceCapacityBoundary(persistentFull.snapshotId, unresolved),
+              gated,
+            )
+          : gated;
+        const transactionStartedAt = yield* Clock.currentTimeMillis;
+        yield* protectedTransaction;
+        transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
+        unresolvedCursor = batchEnd;
+        yield* reportResolutionProgress();
+        yield* Effect.yieldNow;
+      }
     });
     yield* reportResolutionProgress();
     yield* Effect.yieldNow;
@@ -654,7 +740,10 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       yield* Effect.yieldNow;
     }
     passesCompleted += 1;
-    if (resolvedInPass === 0 || aliasesInPass === 0) break;
+    if (resolvedInPass === 0 || aliasesInPass === 0) {
+      yield* flushUnresolvedReferenceEdges();
+      break;
+    }
   }
   return {
     aliasesDiscovered,

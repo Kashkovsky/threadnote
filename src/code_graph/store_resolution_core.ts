@@ -10,7 +10,7 @@ import {compareCodeUnits} from './ordering.js';
 import {configureConnection, tableExists} from './store_session.js';
 import {type CodeGraphEdge, type CodeGraphReference, type CodeGraphSymbol, CodeGraphStoreError} from './types.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
-import {type SnapshotRow} from './store_internal_models.js';
+import {type EdgeRow, type SnapshotRow} from './store_internal_models.js';
 import {snapshotFromRow} from './store_rows.js';
 import {
   ACTIVATION_EDGE_BATCH_ROWS,
@@ -75,6 +75,34 @@ const selectResumableBuildById = Effect.fn('codeGraph.selectResumableBuildById')
   `;
   return rows[0] ? snapshotFromRow(rows[0]) : undefined;
 });
+
+export interface PersistedReferenceEdgePartition {
+  readonly directEdges: readonly CodeGraphEdge[];
+  readonly referenceEdges: ReadonlyMap<string, CodeGraphEdge>;
+}
+
+/** @internal Pure partition used to keep deferred-reference staging deterministic and fail closed. */
+export function partitionPersistedReferenceEdges(
+  edges: readonly CodeGraphEdge[],
+  references: readonly CodeGraphReference[],
+): PersistedReferenceEdgePartition {
+  const edgesById = new Map(edges.map(edge => [edge.id, edge]));
+  if (edgesById.size !== edges.length) {
+    throw new CodeGraphStoreError('Persistent edge identities are duplicated.');
+  }
+  const referenceEdges = new Map<string, CodeGraphEdge>();
+  for (const reference of references) {
+    const edge = edgesById.get(reference.edgeId);
+    if (edge === undefined || edge.targetId !== undefined || referenceEdges.has(reference.edgeId)) {
+      throw new CodeGraphStoreError('Persistent reference edge payload is missing, resolved, or duplicated.');
+    }
+    referenceEdges.set(reference.edgeId, edge);
+  }
+  return {
+    directEdges: edges.filter(edge => !referenceEdges.has(edge.id)),
+    referenceEdges,
+  };
+}
 
 const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(function* (
   sql: SqlClient.SqlClient,
@@ -200,9 +228,21 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
       compactBatchCounts = yield* stageCompactLexicalFacts(sql, snapshotId, symbols, observer, prepared?.symbolTerms);
       termCount = compactBatchCounts.postingCount;
 
+      const edgePartition = yield* Effect.try({
+        try: () => partitionPersistedReferenceEdges(edges, boundedReferences),
+        catch: cause =>
+          cause instanceof CodeGraphStoreError
+            ? cause
+            : new CodeGraphStoreError('Persistent reference edges could not be partitioned.'),
+      });
+      const persistedReferenceEdges = edgePartition.referenceEdges;
+      // A resolvable raw edge used to enter every final edge index here, then
+      // resolution inserted its replacement and deleted the raw row. Keep its
+      // payload on the build-only primary-key reference row so each retained
+      // final edge reaches the indexed surface exactly once.
       yield* observer('edges', 0, true);
       for (const batch of chunk(
-        sortedBy(edges, edge => edge.id),
+        sortedBy(edgePartition.directEdges, edge => edge.id),
         ACTIVATION_EDGE_BATCH_ROWS,
       )) {
         yield* sql.unsafe(
@@ -226,6 +266,7 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         );
         yield* observer('edges', batch.length);
       }
+      yield* observer('edges', persistedReferenceEdges.size);
       yield* observer('edges', 0, true);
 
       yield* observer('references', 0, true);
@@ -239,14 +280,17 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
         const batch = referenceBatches[referenceBatchIndex]!;
         const compacted = batch.map(reference => ({
           candidates: compactReferenceLookupTiers(reference.lookupTiers),
+          edge: persistedReferenceEdges.get(reference.edgeId)!,
           reference,
         }));
         yield* sql.unsafe(
           `INSERT INTO building_references (
             snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
-            lookup_tiers_json, candidate_count, candidate_payload_bytes
-          ) VALUES ${compacted.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-          compacted.flatMap(({candidates, reference}) => [
+            lookup_tiers_json, candidate_count, candidate_payload_bytes,
+            source_id, source_name, relation, target_name, provenance, confidence,
+            evidence_path, evidence_span_json
+          ) VALUES ${compacted.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+          compacted.flatMap(({candidates, edge, reference}) => [
             snapshotId,
             reference.edgeId,
             reference.resolutionDomain,
@@ -255,6 +299,14 @@ const stagePersistedFullFacts = Effect.fn('codeGraph.stagePersistedFullFacts')(f
             candidates.json,
             candidates.candidateCount,
             candidates.payloadBytes,
+            edge.sourceId ?? null,
+            edge.sourceName,
+            edge.relation,
+            edge.targetName,
+            edge.provenance,
+            edge.confidence,
+            edge.evidencePath,
+            JSON.stringify(edge.evidenceSpan),
           ]),
         );
         yield* observer('references', batch.length);
@@ -619,8 +671,17 @@ const capturePersistedAnalysisResolutionEdges = Effect.fn('codeGraph.capturePers
       END
     FROM activation_analysis_edge_affected_ids AS affected
     CROSS JOIN edges AS edge ON edge.snapshot_id = ? AND edge.id = affected.id
+    UNION ALL
+    SELECT reference.edge_id, reference.provenance, reference.relation, reference.confidence, 1
+    FROM activation_analysis_edge_affected_ids AS affected
+    CROSS JOIN building_references AS reference
+      ON reference.snapshot_id = ? AND reference.edge_id = affected.id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM edges AS current
+      WHERE current.snapshot_id = ? AND current.id = affected.id
+    )
   `,
-      [snapshotId],
+      [snapshotId, snapshotId, snapshotId],
     );
   },
 );
@@ -733,6 +794,35 @@ function persistentReferenceResolutionCapacityBoundary(
   };
 }
 
+function persistentUnresolvedReferenceCapacityBoundary(
+  snapshotId: string,
+  rows: readonly EdgeRow[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  let finalFactBytes = 0;
+  for (const row of rows) {
+    finalFactBytes = persistentBoundTextBytes(finalFactBytes, [
+      snapshotId,
+      row.id,
+      typeof row.source_id === 'string' ? row.source_id : undefined,
+      row.source_name,
+      row.relation,
+      row.target_name,
+      row.provenance,
+      row.evidence_path,
+      row.evidence_span_json,
+    ]);
+  }
+  return {
+    finalFactBytes,
+    operation: 'resolve persistent code graph references',
+    // Each row inserts once into the multiply indexed final edge surface and
+    // retires once from the build-only primary-key surface. The direct-store
+    // calibration accounts for payload amplification; this row multiplier
+    // retains headroom for all final edge indexes and both table mutations.
+    rowCount: saturatingCapacityMultiply(rows.length, 8),
+  };
+}
+
 function aggregatePersistentReferenceResolutionCapacityBoundaries(
   boundaries: readonly CodeGraphDirectPersistentCapacityBoundary[],
 ): CodeGraphDirectPersistentCapacityBoundary {
@@ -829,6 +919,7 @@ export {
   capturePersistedAnalysisResolutionEdges,
   adjustPersistedAnalysisResolutionEdges,
   persistentReferenceResolutionCapacityBoundary,
+  persistentUnresolvedReferenceCapacityBoundary,
   aggregatePersistentReferenceResolutionCapacityBoundaries,
   identifyChangedSymbols,
   promotionRemovedSnapshotId,

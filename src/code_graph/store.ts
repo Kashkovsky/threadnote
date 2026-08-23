@@ -101,6 +101,8 @@ export {codeGraphWorktreeReconciliationCandidatePageStatement} from './store_rec
 export {
   codeGraphPersistentReferencePageStatement,
   codeGraphPersistedDeltaResolutionPageStatement,
+  partitionPersistedReferenceEdges,
+  type PersistedReferenceEdgePartition,
 } from './store_resolution_core.js';
 export {
   codeGraphPersistentLookupMatchStatement,

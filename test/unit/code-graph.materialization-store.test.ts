@@ -2126,97 +2126,117 @@ describe('code graph full-build materialization store', () => {
     ),
   );
 
-  it('resumes compacted reference payloads without durable candidate rows', async () => {
-    const fixture = await materializationFixture();
-    const caller = symbol('compacted-caller', 'compactedCaller', ['typescript:name:compactedCaller']);
-    const unresolved = edge('compacted-edge', caller, 'missingCompactedTarget');
-    const reference: CodeGraphReference = {
-      edgeId: unresolved.id,
-      evidencePath: fixture.file.path,
-      evidenceSpan: unresolved.evidenceSpan,
-      lookupTiers: [
-        ['typescript:name:żółw🙂zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
-        ['typescript:name:alpha'],
-      ],
-      provenance: 'syntactic',
-      relation: 'calls',
-      resolutionDomain: 'typescript',
-      sourceId: caller.id,
-      sourceName: caller.name,
-      targetName: unresolved.targetName,
-    };
-    const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'compacted-reference-resume'};
+  effectIt.effect('resumes compacted reference payloads without durable candidate rows', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => materializationFixture());
+      const caller = symbol('compacted-caller', 'compactedCaller', ['typescript:name:compactedCaller']);
+      const unresolved = edge('compacted-edge', caller, 'missingCompactedTarget');
+      const reference: CodeGraphReference = {
+        edgeId: unresolved.id,
+        evidencePath: fixture.file.path,
+        evidenceSpan: unresolved.evidenceSpan,
+        lookupTiers: [
+          ['typescript:name:żółw🙂zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
+          ['typescript:name:alpha'],
+        ],
+        provenance: 'syntactic',
+        relation: 'calls',
+        resolutionDomain: 'typescript',
+        sourceId: caller.id,
+        sourceName: caller.name,
+        targetName: unresolved.targetName,
+      };
+      const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'compacted-reference-resume'};
+      const store = yield* CodeGraphStore;
 
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
-          }),
-        );
-      }),
-    );
+      yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+          yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+        }),
+      );
 
-    const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:żółw🙂zeta'], ['typescript:name:alpha']];
-    const expectedPayload = JSON.stringify(expectedLookupTiers);
-    const interrupted = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const stored = interrupted
-      .query(
-        `SELECT lookup_tiers_json, candidate_count, candidate_payload_bytes
-         FROM building_references
-         WHERE snapshot_id = ? AND edge_id = ?`,
-      )
-      .get(snapshot.id, unresolved.id) as {
-      readonly candidate_count: number;
-      readonly candidate_payload_bytes: number;
-      readonly lookup_tiers_json: string;
-    };
-    const durableCandidates = interrupted
-      .query('SELECT COUNT(*) AS count FROM building_reference_candidates WHERE snapshot_id = ?')
-      .get(snapshot.id) as {readonly count: number};
-    const receipt = interrupted
-      .query('SELECT candidate_count FROM building_materialization_batches WHERE snapshot_id = ?')
-      .get(snapshot.id) as {readonly candidate_count: number};
-    interrupted.close(false);
+      const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:żółw🙂zeta'], ['typescript:name:alpha']];
+      const expectedPayload = JSON.stringify(expectedLookupTiers);
+      const interruptedEvidence = yield* Effect.acquireUseRelease(
+        Effect.sync(() => new Database(fixture.databasePath, {readonly: true, strict: true})),
+        interrupted =>
+          Effect.sync(() => ({
+            durableCandidates: interrupted
+              .query('SELECT COUNT(*) AS count FROM building_reference_candidates WHERE snapshot_id = ?')
+              .get(snapshot.id) as {readonly count: number},
+            receipt: interrupted
+              .query('SELECT candidate_count FROM building_materialization_batches WHERE snapshot_id = ?')
+              .get(snapshot.id) as {readonly candidate_count: number},
+            stagedEdge: interrupted
+              .query('SELECT id FROM edges WHERE snapshot_id = ? AND id = ?')
+              .get(snapshot.id, unresolved.id),
+            stored: interrupted
+              .query(
+                `SELECT lookup_tiers_json, candidate_count, candidate_payload_bytes,
+                   source_id, source_name, relation, target_name, provenance, confidence,
+                   evidence_path, evidence_span_json
+                 FROM building_references
+                 WHERE snapshot_id = ? AND edge_id = ?`,
+              )
+              .get(snapshot.id, unresolved.id) as {
+              readonly candidate_count: number;
+              readonly candidate_payload_bytes: number;
+              readonly confidence: number;
+              readonly evidence_path: string;
+              readonly evidence_span_json: string;
+              readonly lookup_tiers_json: string;
+              readonly provenance: string;
+              readonly relation: string;
+              readonly source_id: string | null;
+              readonly source_name: string;
+              readonly target_name: string;
+            },
+          })),
+        interrupted => Effect.sync(() => interrupted.close(false)),
+      );
 
-    expect(stored).toEqual({
-      candidate_count: 3,
-      candidate_payload_bytes: new TextEncoder().encode(expectedPayload).byteLength,
-      lookup_tiers_json: expectedPayload,
-    });
-    expect(durableCandidates.count).toBe(0);
-    expect(receipt.candidate_count).toBe(3);
+      expect(interruptedEvidence.stored).toEqual({
+        candidate_count: 3,
+        candidate_payload_bytes: new TextEncoder().encode(expectedPayload).byteLength,
+        confidence: unresolved.confidence,
+        evidence_path: unresolved.evidencePath,
+        evidence_span_json: JSON.stringify(unresolved.evidenceSpan),
+        lookup_tiers_json: expectedPayload,
+        provenance: unresolved.provenance,
+        relation: unresolved.relation,
+        source_id: unresolved.sourceId,
+        source_name: unresolved.sourceName,
+        target_name: unresolved.targetName,
+      });
+      expect(interruptedEvidence.stagedEdge).toBeNull();
+      expect(interruptedEvidence.durableCandidates.count).toBe(0);
+      expect(interruptedEvidence.receipt.candidate_count).toBe(3);
 
-    const resumed = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
-            const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            return {graph: yield* store.loadGraph(fixture.databasePath, snapshot.id), resolution};
-          }),
-        );
-      }),
-    );
+      const resumed = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+          yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+          const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+          return {graph: yield* store.loadGraph(fixture.databasePath, snapshot.id), resolution};
+        }),
+      );
 
-    expect(resumed.resolution.resolved).toBe(0);
-    expect(resumed.graph.edges).toEqual([unresolved]);
-  });
+      expect(resumed.resolution.resolved).toBe(0);
+      expect(resumed.graph.edges).toEqual([unresolved]);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   effectIt.effect('aggregates an overflowing lookup pair without truncating an exported-only match', () =>
     Effect.gen(function* () {
@@ -5676,7 +5696,9 @@ function readPersistentResolutionState(databasePath: string, snapshotId: string)
     references: database
       .query(
         `SELECT edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
-           lookup_tiers_json, candidate_count, candidate_payload_bytes
+           lookup_tiers_json, candidate_count, candidate_payload_bytes,
+           source_id, source_name, relation, target_name, provenance, confidence,
+           evidence_path, evidence_span_json
          FROM building_references
          WHERE snapshot_id = ?
          ORDER BY edge_id`,

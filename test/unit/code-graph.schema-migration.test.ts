@@ -3,6 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Exit, Fiber, Option} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
@@ -884,6 +885,14 @@ describe('code graph persistent schema migration', () => {
         'lookup_tiers_json',
         'candidate_count',
         'candidate_payload_bytes',
+        'source_id',
+        'source_name',
+        'relation',
+        'target_name',
+        'provenance',
+        'confidence',
+        'evidence_path',
+        'evidence_span_json',
       ]);
       expect(database.query('SELECT COUNT(*) AS count FROM building_reference_candidates').get()).toEqual({count: 1});
       expect(database.query('SELECT COUNT(*) AS count FROM legacy_building_references_v3').get()).toEqual({count: 1});
@@ -910,6 +919,60 @@ describe('code graph persistent schema migration', () => {
       cleaned.close(false);
     }
   });
+
+  effectIt.effect('retires revision 13 incomplete builds before deferring reference edge payloads', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => migrationFixture());
+      const ready = snapshot(fixture.identity, 'ready-before-deferred-reference-edges');
+      const interrupted = snapshot(fixture.identity, 'interrupted-before-deferred-reference-edges');
+      yield* Effect.promise(() => seedReadyAndInterruptedMigration(fixture, ready, interrupted));
+      yield* Effect.sync(() => downgradeReferencePayloadToRevision13(fixture.databasePath, interrupted.id));
+
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(fixture.databasePath);
+      const preserved = yield* store.loadGraph(fixture.databasePath, ready.id);
+      const evidence = yield* Effect.acquireUseRelease(
+        Effect.sync(() => new Database(fixture.databasePath, {readonly: true, strict: true})),
+        database =>
+          Effect.sync(() => ({
+            columns: (
+              database.query('PRAGMA table_info(building_references)').all() as readonly {
+                readonly name: string;
+              }[]
+            ).map(column => column.name),
+            interrupted: database.query('SELECT state FROM snapshots WHERE id = ?').get(interrupted.id),
+            references: database.query('SELECT COUNT(*) AS count FROM building_references').get(),
+            revision: database
+              .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+              .get(),
+          })),
+        database => Effect.sync(() => database.close(false)),
+      );
+
+      expect(preserved.symbols).toHaveLength(1);
+      expect(evidence.interrupted).toEqual({state: 'retired'});
+      expect(evidence.references).toEqual({count: 0});
+      expect(evidence.columns).toEqual([
+        'snapshot_id',
+        'edge_id',
+        'resolution_domain',
+        'exported_only',
+        'alias_lookup_keys_json',
+        'lookup_tiers_json',
+        'candidate_count',
+        'candidate_payload_bytes',
+        'source_id',
+        'source_name',
+        'relation',
+        'target_name',
+        'provenance',
+        'confidence',
+        'evidence_path',
+        'evidence_span_json',
+      ]);
+      expect(evidence.revision).toEqual({value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)});
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   it('rolls back the revision 3 candidate-table rename when schema publication faults', async () => {
     const fixture = await migrationFixture();
@@ -1749,8 +1812,14 @@ function downgradeBuildOwnerPlanColumnOnly(databasePath: string, interruptedSnap
       .query(
         `INSERT INTO building_references (
            snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
-           lookup_tiers_json, candidate_count, candidate_payload_bytes
-         ) VALUES (?, 'retained-edge', 'typescript', 0, '[]', '[["typescript:name:retained"]]', 1, 30)`,
+           lookup_tiers_json, candidate_count, candidate_payload_bytes,
+           source_id, source_name, relation, target_name, provenance, confidence,
+           evidence_path, evidence_span_json
+         ) VALUES (
+           ?, 'retained-edge', 'typescript', 0, '[]', '[["typescript:name:retained"]]', 1, 30,
+           NULL, 'retainedSource', 'calls', 'retainedTarget', 'syntactic', 0.5,
+           'src/retained.ts', '{"line":1,"column":1,"endLine":1,"endColumn":2}'
+         )`,
       )
       .run(interruptedSnapshotId);
     database
@@ -1799,6 +1868,43 @@ function downgradeReferenceCandidatesToRevision3(databasePath: string, interrupt
       )
       .run(interruptedSnapshotId);
     database.query("UPDATE schema_metadata SET value = '3' WHERE key = 'persistent_extension_schema_revision'").run();
+    database.exec('COMMIT');
+  } catch (error) {
+    if (database.inTransaction) database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeReferencePayloadToRevision13(databasePath: string, interruptedSnapshotId: string) {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.exec('PRAGMA foreign_keys = OFF');
+    database.exec('BEGIN IMMEDIATE');
+    database.exec(`
+      DROP TABLE building_references;
+      CREATE TABLE building_references (
+        snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+        edge_id TEXT NOT NULL,
+        resolution_domain TEXT NOT NULL,
+        exported_only INTEGER NOT NULL CHECK (exported_only IN (0, 1)),
+        alias_lookup_keys_json TEXT NOT NULL,
+        lookup_tiers_json TEXT NOT NULL,
+        candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+        candidate_payload_bytes INTEGER NOT NULL CHECK (candidate_payload_bytes >= 0),
+        PRIMARY KEY (snapshot_id, edge_id)
+      ) WITHOUT ROWID;
+    `);
+    database
+      .query(
+        `INSERT INTO building_references (
+           snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
+           lookup_tiers_json, candidate_count, candidate_payload_bytes
+         ) VALUES (?, 'revision-13-edge', 'typescript', 0, '[]', '[]', 0, 2)`,
+      )
+      .run(interruptedSnapshotId);
+    database.query("UPDATE schema_metadata SET value = '13' WHERE key = 'persistent_extension_schema_revision'").run();
     database.exec('COMMIT');
   } catch (error) {
     if (database.inTransaction) database.exec('ROLLBACK');

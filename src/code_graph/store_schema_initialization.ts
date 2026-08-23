@@ -401,10 +401,11 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       PRIMARY KEY (snapshot_id, source_path, local_name, target_path, imported_name)
     ) WITHOUT ROWID
   `);
-  // Clean full builds write directly into the final snapshot tables while the
-  // snapshot remains `building`. Reference lookup tiers live as one compact
-  // payload per reference, while the legacy candidate table remains available
-  // only for bounded cleanup of pre-compaction databases. Batch receipts make
+  // Clean full builds write symbols and already-final edges directly while the
+  // snapshot remains `building`. Each unresolved edge and its compact lookup
+  // tiers share one build-only primary-key row until resolution publishes the
+  // retained final edge exactly once. The legacy candidate table remains only
+  // for bounded cleanup of pre-compaction databases; batch receipts make
   // interrupted builds resumable without replaying committed fact batches.
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS building_references (
@@ -416,6 +417,14 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       lookup_tiers_json TEXT NOT NULL,
       candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
       candidate_payload_bytes INTEGER NOT NULL CHECK (candidate_payload_bytes >= 0),
+      source_id TEXT,
+      source_name TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      target_name TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence_path TEXT NOT NULL,
+      evidence_span_json TEXT NOT NULL,
       PRIMARY KEY (snapshot_id, edge_id)
     ) WITHOUT ROWID
   `);

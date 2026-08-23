@@ -4,6 +4,7 @@ import {describe, expect, it} from 'vitest';
 import {
   codeGraphPersistentLookupMatchStatement,
   codeGraphPersistentReferencePageStatement,
+  partitionPersistedReferenceEdges,
   type PersistedLookupSummary,
   type PersistedReferenceResolutionInput,
   resolvePersistedReferenceSelections,
@@ -133,6 +134,91 @@ describe('persistent reference candidate compaction', () => {
         expect(normalizedSelections(reversed)).toEqual(expected);
       }),
       {numRuns: 300},
+    );
+  });
+
+  it('partitions deferred reference payloads exactly without mutation or order dependence', () => {
+    fc.assert(
+      fc.property(
+        fc
+          .uniqueArray(fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/), {maxLength: 80})
+          .chain(edgeIds => fc.subarray(edgeIds).map(referenceIds => ({edgeIds, referenceIds}))),
+        ({edgeIds, referenceIds}) => {
+          const edges = edgeIds.map(id => ({
+            confidence: 0.5,
+            evidencePath: `src/${id}.ts`,
+            evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+            id,
+            provenance: 'syntactic' as const,
+            relation: 'calls' as const,
+            sourceId: `source-${id}`,
+            sourceName: `source${id}`,
+            targetName: `target${id}`,
+          }));
+          const references = referenceIds.map(edgeId => {
+            const edge = edges.find(candidate => candidate.id === edgeId)!;
+            return {
+              edgeId,
+              evidencePath: edge.evidencePath,
+              evidenceSpan: edge.evidenceSpan,
+              lookupTiers: [[`typescript:name:${edge.targetName}`]],
+              provenance: edge.provenance,
+              relation: edge.relation,
+              resolutionDomain: 'typescript',
+              sourceId: edge.sourceId,
+              sourceName: edge.sourceName,
+              targetName: edge.targetName,
+            };
+          });
+          const before = JSON.stringify({edges, references});
+          const partition = partitionPersistedReferenceEdges(edges, references);
+          const reversed = partitionPersistedReferenceEdges([...edges].reverse(), [...references].reverse());
+          const expectedReferenceIds = [...referenceIds].sort();
+          const expectedDirectIds = edgeIds.filter(id => !referenceIds.includes(id)).sort();
+
+          expect([...partition.referenceEdges.keys()].sort()).toEqual(expectedReferenceIds);
+          expect(partition.directEdges.map(edge => edge.id).sort()).toEqual(expectedDirectIds);
+          expect([...partition.directEdges, ...partition.referenceEdges.values()].map(edge => edge.id).sort()).toEqual(
+            [...edgeIds].sort(),
+          );
+          expect([...reversed.referenceEdges.keys()].sort()).toEqual(expectedReferenceIds);
+          expect(reversed.directEdges.map(edge => edge.id).sort()).toEqual(expectedDirectIds);
+          expect(JSON.stringify({edges, references})).toBe(before);
+        },
+      ),
+      {numRuns: 300},
+    );
+  });
+
+  it('fails closed when a deferred reference does not own one unique unresolved edge', () => {
+    const unresolved = {
+      confidence: 0.5,
+      evidencePath: 'src/caller.ts',
+      evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+      id: 'edge',
+      provenance: 'syntactic' as const,
+      relation: 'calls' as const,
+      sourceId: 'caller',
+      sourceName: 'caller',
+      targetName: 'target',
+    };
+    const reference = {
+      edgeId: unresolved.id,
+      evidencePath: unresolved.evidencePath,
+      evidenceSpan: unresolved.evidenceSpan,
+      lookupTiers: [['typescript:name:target']],
+      provenance: unresolved.provenance,
+      relation: unresolved.relation,
+      resolutionDomain: 'typescript',
+      sourceId: unresolved.sourceId,
+      sourceName: unresolved.sourceName,
+      targetName: unresolved.targetName,
+    };
+
+    expect(() => partitionPersistedReferenceEdges([unresolved], [reference, reference])).toThrow('duplicated');
+    expect(() => partitionPersistedReferenceEdges([], [reference])).toThrow('missing');
+    expect(() => partitionPersistedReferenceEdges([{...unresolved, targetId: 'resolved-target'}], [reference])).toThrow(
+      'resolved',
     );
   });
 });
