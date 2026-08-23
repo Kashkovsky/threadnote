@@ -406,16 +406,48 @@ function positivePageLimit(value: number, fallback: number): number {
   return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-function persistentFullReferencePageTotal(row: PersistedFullReferenceTotalsRow): number {
+function persistentFullReferencePageTotal(
+  row: PersistedFullReferenceTotalsRow,
+  limits: CodeGraphPersistentReferencePageLimits = {
+    candidateCount: PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
+    payloadBytes: PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
+    references: PERSISTENT_FULL_RESOLUTION_PAGE_ROWS,
+  },
+): number {
   const references = Number(row.count);
   if (!Number.isSafeInteger(references) || references <= 0) return 0;
   const candidates = Math.max(0, Number(row.candidate_count));
   const payloadBytes = Math.max(0, Number(row.payload_bytes));
+  const referenceLimit = positivePageLimit(limits.references, PERSISTENT_FULL_RESOLUTION_PAGE_ROWS);
+  const candidateLimit = positivePageLimit(limits.candidateCount, PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES);
+  const payloadLimit = positivePageLimit(limits.payloadBytes, PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES);
   return Math.max(
-    Math.ceil(references / PERSISTENT_FULL_RESOLUTION_PAGE_ROWS),
-    Math.ceil(candidates / PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES),
-    Math.ceil(payloadBytes / PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES),
+    Math.ceil(references / referenceLimit),
+    Math.ceil(candidates / candidateLimit),
+    Math.ceil(payloadBytes / payloadLimit),
   );
+}
+
+export const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
+export const PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES = 8;
+
+export interface PersistentReferenceResolutionReservation<Value> {
+  readonly pages: readonly Value[];
+  readonly transactions: readonly (readonly Value[])[];
+}
+
+/**
+ * Reserve capacity across a wider page window without increasing the SQLite
+ * transaction size. The two independent bounds make durable receipt/fsync work
+ * less frequent while keeping WAL, rollback, and writer-lock exposure fixed.
+ */
+export function planPersistentReferenceResolutionPages<const Value>(
+  pages: readonly Value[],
+): readonly PersistentReferenceResolutionReservation<Value>[] {
+  return [...chunk(pages, PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES)].map(reservationPages => ({
+    pages: reservationPages,
+    transactions: [...chunk(reservationPages, PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES)],
+  }));
 }
 
 /** @internal Exposed so regression tests can verify the SQLite access plan. */

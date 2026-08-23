@@ -1,18 +1,26 @@
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Ref} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore, type CodeGraphResolutionProgressCallback} from '../../src/code_graph/store.js';
+import {
+  type CodeGraphWriterGate,
+  PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
+  PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
+} from '../../src/code_graph/store_build_core.js';
+import {resolveActivationReferences} from '../../src/code_graph/store_resolution.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import type {
-  CodeGraphEdge,
-  CodeGraphInventoryFile,
-  CodeGraphReference,
-  CodeGraphResolutionActivity,
-  CodeGraphSnapshot,
-  CodeGraphSymbol,
-  RepositoryIdentity,
+import {
+  type CodeGraphEdge,
+  type CodeGraphInventoryFile,
+  type CodeGraphReference,
+  type CodeGraphResolutionActivity,
+  type CodeGraphSnapshot,
+  CodeGraphStoreError,
+  type CodeGraphSymbol,
+  type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -172,6 +180,111 @@ describe('code graph reference-resolution progress', () => {
           ),
         );
         expect(semanticDigest).toBe('db81d8f0de093727cacb3d934d779743287400d78764fafd2386d029a0bafba4');
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    30_000,
+  );
+
+  effectIt.effect(
+    'resumes a committed transaction prefix inside a wider capacity reservation',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(() => resolutionFixture());
+        const target = symbol('window-target', 'windowTarget');
+        const callers = Array.from({length: 9}, (_, index) => symbol(`window-caller-${index}`, `windowCaller${index}`));
+        const unresolved = callers.map((caller, index) => resolvableReference(fixture.file, caller, target, index));
+        const snapshot = persistentSnapshot(fixture.identity, callers.length + 1, unresolved.length);
+        const firstCapacityRows: number[] = [];
+        const firstProgress: CodeGraphResolutionActivity[] = [];
+        const resumedCapacityRows: number[] = [];
+        let firstTransactionAttempts = 0;
+        let resumedTransactions = 0;
+
+        const result = yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(
+                fixture.databasePath,
+                [target, ...callers],
+                unresolved.map(entry => entry.edge),
+                unresolved.map(entry => entry.reference),
+                undefined,
+                0,
+              );
+              const failSecondTransaction: CodeGraphWriterGate = transaction =>
+                Effect.gen(function* () {
+                  firstTransactionAttempts += 1;
+                  if (firstTransactionAttempts === 2) {
+                    return yield* Effect.fail(
+                      new CodeGraphStoreError('Injected second resolution transaction failure.'),
+                    );
+                  }
+                  return yield* transaction;
+                });
+              const pageLimits = {
+                candidateCount: PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
+                payloadBytes: PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
+                references: 1,
+              };
+              const firstFailure = yield* resolveActivationReferences(
+                progress => Effect.sync(() => firstProgress.push(progress)),
+                failSecondTransaction,
+                (boundary, transactions) =>
+                  Effect.sync(() => firstCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transactions)),
+                pageLimits,
+              ).pipe(Effect.flip);
+              const sql = yield* SqlClient.SqlClient;
+              const afterFailure = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+                SELECT
+                  (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
+                  (SELECT COUNT(*) FROM edges
+                   WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolved
+              `;
+              const resumed = yield* resolveActivationReferences(
+                undefined,
+                transaction =>
+                  Effect.sync(() => {
+                    resumedTransactions += 1;
+                  }).pipe(Effect.andThen(transaction)),
+                (boundary, transactions) =>
+                  Effect.sync(() => resumedCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transactions)),
+                pageLimits,
+              );
+              const afterResume = yield* sql<{readonly remaining: number; readonly resolved: number}>`
+                SELECT
+                  (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
+                  (SELECT COUNT(*) FROM edges
+                   WHERE snapshot_id = ${snapshot.id} AND target_id IS NOT NULL) AS resolved
+              `;
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              return {
+                afterFailure: afterFailure[0]!,
+                afterResume: afterResume[0]!,
+                firstFailure,
+                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+                resumed,
+              };
+            }),
+          );
+        });
+
+        expect(result.firstFailure).toBeInstanceOf(CodeGraphStoreError);
+        expect(firstCapacityRows).toEqual([88]);
+        expect(firstTransactionAttempts).toBe(2);
+        expect(result.afterFailure).toEqual({remaining: 5, resolved: 4});
+        expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 8, resolved: 4});
+        expect(resumedCapacityRows).toEqual([55]);
+        expect(resumedTransactions).toBe(2);
+        expect(result.resumed).toMatchObject({pagesCompleted: 5, referencesExamined: 5, resolved: 5});
+        expect(result.afterResume).toEqual({remaining: 0, resolved: 9});
+        expect(result.graph.edges).toHaveLength(9);
+        expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
       }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     30_000,
   );

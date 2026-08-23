@@ -27,13 +27,15 @@ import {
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
   codeGraphPersistentReferencePageStatement,
+  PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
+  planPersistentReferenceResolutionPages,
   persistentFullReferencePageTotal,
   persistentReferenceResolutionCapacityBoundary,
 } from './store_resolution_core.js';
 import {resolvePersistedFullReferencePage} from './store_resolution_matching.js';
 import {expandTransitiveReexportAliases} from './store_persistent_build.js';
 import {activationEdgeId, chunk, lookupDomain, parseLookupKeys, sqlTextOption} from './store_utilities.js';
-import {snapshotPromotionLeaseCapacity} from './store_staging_core.js';
+import {type CodeGraphPersistentReferencePageLimits, snapshotPromotionLeaseCapacity} from './store_staging_core.js';
 import {
   codeGraphWorktreeReconciliationSchemaCompatible,
   markSnapshotLeaseRetirementBaton,
@@ -43,11 +45,6 @@ import {CodeGraphPromotionCapacityPlanChanged} from './store_internal_models.js'
 import {lastStatementChangeCount} from './store_activation_core.js';
 
 export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
-
-// Matching pages retain the existing candidate-count and payload bounds. Only
-// their compact resolved rows are grouped, amortizing the durable reservation,
-// writer-lock, and commit cost without multiplying lookup-summary memory.
-const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
 
 interface ResolutionTransactionPage {
   readonly aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[];
@@ -150,6 +147,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   onProgress?: CodeGraphResolutionProgressCallback,
   writerGate?: CodeGraphWriterGate,
   persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+  persistentPageLimits?: CodeGraphPersistentReferencePageLimits,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const startedAt = yield* Clock.currentTimeMillis;
@@ -195,7 +193,10 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       `;
   const preparationReferencesTotal = Number(preparationCountRows[0]?.count ?? 0);
   const preparationPageTotal = persistentFull
-    ? persistentFullReferencePageTotal(preparationCountRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0})
+    ? persistentFullReferencePageTotal(
+        preparationCountRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0},
+        persistentPageLimits,
+      )
     : Math.ceil(preparationReferencesTotal / pageRows);
   matchingMilliseconds += (yield* Clock.currentTimeMillis) - preparationCountStartedAt;
   const reportPreparation = (aliases: number) =>
@@ -258,18 +259,41 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     }
     const pass = passesCompleted + 1;
     let pageTotal = persistentFull
-      ? persistentFullReferencePageTotal(countRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0})
+      ? persistentFullReferencePageTotal(
+          countRows[0] ?? {candidate_count: 0, count: 0, payload_bytes: 0},
+          persistentPageLimits,
+        )
       : Math.ceil(referencesTotal / pageRows);
     let cursor = '';
     let pageCompleted = 0;
     let referencesCompleted = 0;
     let resolvedInPass = 0;
     let aliasesInPass = 0;
-    const transactionPageLimit =
-      persistentFull && persistentCapacityProtector ? PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES : 1;
-    const transactionPages: ResolutionTransactionPage[] = [];
-    const flushTransactionPages = Effect.fn('codeGraph.flushResolutionTransactionPages')(function* () {
-      if (transactionPages.length === 0) return;
+    const reservationPageLimit =
+      persistentFull && persistentCapacityProtector ? PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES : 1;
+    const reservationPages: ResolutionTransactionPage[] = [];
+    const reportResolutionProgress = (reportedMatchingMilliseconds = matchingMilliseconds) =>
+      Effect.gen(function* () {
+        if (onProgress === undefined) return;
+        yield* onProgress({
+          aliasesDiscovered,
+          elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+          matchingMilliseconds: reportedMatchingMilliseconds,
+          pageCompleted,
+          pageTotal,
+          pagesCompleted,
+          pass,
+          referencesCompleted,
+          referencesExamined,
+          referencesTotal,
+          resolved,
+          transactionMilliseconds,
+          transactionStageMilliseconds: transactionStageMilliseconds(),
+        });
+      });
+    const commitTransactionPages = Effect.fn('codeGraph.commitResolutionTransactionPages')(function* (
+      transactionPages: readonly ResolutionTransactionPage[],
+    ) {
       const resolutions: ActivationResolutionRow[] = [];
       const aliases: Array<readonly [string, string, string, number, 'alias', string, string]> = [];
       for (const page of transactionPages) {
@@ -277,7 +301,6 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         for (const alias of page.aliases) aliases.push(alias);
       }
       if (resolutions.length > 0) {
-        const transactionStartedAt = yield* Clock.currentTimeMillis;
         const transaction = sql.withTransaction(
           Effect.gen(function* () {
             let transactionStageStartedAt = yield* Clock.currentTimeMillis;
@@ -413,41 +436,59 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           }),
         );
         const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
-        yield* persistentCapacityProtector
-          ? persistentCapacityProtector(
-              aggregatePersistentReferenceResolutionCapacityBoundaries(transactionPages.map(page => page.capacity)),
-              gatedTransaction,
-            )
-          : gatedTransaction;
-        transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
+        yield* gatedTransaction;
       }
+      // A later transaction in the same reservation can fail after this group
+      // commits. Advance counters per committed group so a resumed pass never
+      // pretends the durable prefix was rolled back.
       aliasesInPass += aliases.length;
       aliasesDiscovered += aliases.length;
       resolvedInPass += resolutions.length;
       resolved += resolutions.length;
-      transactionPages.length = 0;
     });
-    yield* onProgress?.({
-      aliasesDiscovered,
-      elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
-      matchingMilliseconds,
-      pageCompleted,
-      pageTotal,
-      pagesCompleted,
-      pass,
-      referencesCompleted,
-      referencesExamined,
-      referencesTotal,
-      resolved,
-      transactionMilliseconds,
-      transactionStageMilliseconds: transactionStageMilliseconds(),
-    }) ?? Effect.void;
+    const flushReservationPages = Effect.fn('codeGraph.flushResolutionReservationPages')(function* () {
+      if (reservationPages.length === 0) return;
+      const reservations = planPersistentReferenceResolutionPages(reservationPages);
+      for (const reservation of reservations) {
+        const transactions = Effect.gen(function* () {
+          for (let index = 0; index < reservation.transactions.length; index += 1) {
+            yield* commitTransactionPages(reservation.transactions[index]!);
+            if (index + 1 < reservation.transactions.length) {
+              // The writer lock is released at this boundary. Preserve the
+              // established four-page progress cadence without reacquiring the
+              // wider disk-capacity reservation for the next transaction.
+              yield* reportResolutionProgress();
+              yield* Effect.yieldNow;
+            }
+          }
+        });
+        const hasResolutions = reservation.pages.some(page => page.resolutions.length > 0);
+        if (hasResolutions) {
+          const transactionStartedAt = yield* Clock.currentTimeMillis;
+          yield* persistentCapacityProtector
+            ? persistentCapacityProtector(
+                aggregatePersistentReferenceResolutionCapacityBoundaries(reservation.pages.map(page => page.capacity)),
+                transactions,
+              )
+            : transactions;
+          transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
+        } else {
+          yield* transactions;
+        }
+      }
+      reservationPages.length = 0;
+    });
+    yield* reportResolutionProgress();
     yield* Effect.yieldNow;
     for (;;) {
       const pageStartedAt = yield* Clock.currentTimeMillis;
       let persistentPage = Option.none<readonly PersistedFullReferencePageRow[]>();
       if (persistentFull) {
-        const statement = codeGraphPersistentReferencePageStatement(persistentFull.snapshotId, cursor);
+        const statement = codeGraphPersistentReferencePageStatement(
+          persistentFull.snapshotId,
+          cursor,
+          persistentPageLimits,
+        );
         persistentPage = Option.some(
           yield* sql.unsafe<PersistedFullReferencePageRow>(statement.text, statement.parameters),
         );
@@ -474,21 +515,9 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
               batchEnd,
               () =>
                 Effect.gen(function* () {
-                  yield* onProgress?.({
-                    aliasesDiscovered,
-                    elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
-                    matchingMilliseconds: matchingMilliseconds + (yield* Clock.currentTimeMillis) - pageStartedAt,
-                    pageCompleted,
-                    pageTotal,
-                    pagesCompleted,
-                    pass,
-                    referencesCompleted,
-                    referencesExamined,
-                    referencesTotal,
-                    resolved,
-                    transactionMilliseconds,
-                    transactionStageMilliseconds: transactionStageMilliseconds(),
-                  }) ?? Effect.void;
+                  yield* reportResolutionProgress(
+                    matchingMilliseconds + (yield* Clock.currentTimeMillis) - pageStartedAt,
+                  );
                 }),
             )
           : persistedBaseSnapshotId
@@ -591,7 +620,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
           ]);
         }
       }
-      transactionPages.push({
+      reservationPages.push({
         aliases,
         capacity: persistentReferenceResolutionCapacityBoundary(
           mode?.mode === 'persisted-full' ? mode.snapshotId : (persistedBaseSnapshotId ?? 'temporary'),
@@ -611,45 +640,17 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       pagesCompleted += 1;
       referencesCompleted += pending.length;
       referencesExamined += pending.length;
-      if (transactionPages.length >= transactionPageLimit) yield* flushTransactionPages();
-      yield* onProgress?.({
-        aliasesDiscovered,
-        elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
-        matchingMilliseconds,
-        pageCompleted,
-        pageTotal,
-        pagesCompleted,
-        pass,
-        referencesCompleted,
-        referencesExamined,
-        referencesTotal,
-        resolved,
-        transactionMilliseconds,
-        transactionStageMilliseconds: transactionStageMilliseconds(),
-      }) ?? Effect.void;
+      if (reservationPages.length >= reservationPageLimit) yield* flushReservationPages();
+      yield* reportResolutionProgress();
       // Reference resolution is synchronous SQLite work. Yield after every
       // bounded page so the independent build heartbeat and observers cannot
       // be starved for the duration of an entire repository-sized pass.
       yield* Effect.yieldNow;
     }
-    const hadTransactionRemainder = transactionPages.length > 0;
-    yield* flushTransactionPages();
-    if (hadTransactionRemainder) {
-      yield* onProgress?.({
-        aliasesDiscovered,
-        elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
-        matchingMilliseconds,
-        pageCompleted,
-        pageTotal,
-        pagesCompleted,
-        pass,
-        referencesCompleted,
-        referencesExamined,
-        referencesTotal,
-        resolved,
-        transactionMilliseconds,
-        transactionStageMilliseconds: transactionStageMilliseconds(),
-      }) ?? Effect.void;
+    const hadReservationRemainder = reservationPages.length > 0;
+    yield* flushReservationPages();
+    if (hadReservationRemainder) {
+      yield* reportResolutionProgress();
       yield* Effect.yieldNow;
     }
     passesCompleted += 1;
