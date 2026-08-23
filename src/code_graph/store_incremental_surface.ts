@@ -67,11 +67,39 @@ const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncreme
   }
   const currentSymbols = decodePersistedIncrementalSurfaceSymbols(currentRows);
   const baseSymbols = decodePersistedIncrementalSurfaceSymbols(baseRows);
-  return (
-    currentSymbols !== undefined &&
-    baseSymbols !== undefined &&
-    hasSameCodeGraphResolutionSurface(baseSymbols, currentSymbols)
-  );
+  if (
+    currentSymbols === undefined ||
+    baseSymbols === undefined ||
+    !hasSameCodeGraphResolutionSurface(baseSymbols, currentSymbols)
+  ) {
+    return false;
+  }
+  // Sparse raw-fact attribution can be more conservative than the original
+  // full batch. Require exact changed-path re-export publication in SQLite so
+  // an optimistic preassessment falls closed before persisted-delta reuse.
+  const reexportMismatch = yield* sql<{readonly mismatch: number}>`
+    SELECT (
+      EXISTS (
+        SELECT source_path, local_name, target_path, imported_name
+        FROM activation_reexport_provenance
+        EXCEPT
+        SELECT base.source_path, base.local_name, base.target_path, base.imported_name
+        FROM snapshot_reexport_provenance AS base
+        JOIN activation_files AS changed ON changed.path = base.source_path
+        WHERE base.snapshot_id = ${baseSnapshotId}
+      )
+      OR EXISTS (
+        SELECT base.source_path, base.local_name, base.target_path, base.imported_name
+        FROM snapshot_reexport_provenance AS base
+        JOIN activation_files AS changed ON changed.path = base.source_path
+        WHERE base.snapshot_id = ${baseSnapshotId}
+        EXCEPT
+        SELECT source_path, local_name, target_path, imported_name
+        FROM activation_reexport_provenance
+      )
+    ) AS mismatch
+  `;
+  return Number(reexportMismatch[0]?.mismatch ?? 1) === 0;
 });
 
 function decodePersistedIncrementalSurfaceSymbols(

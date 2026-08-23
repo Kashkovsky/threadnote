@@ -101,6 +101,7 @@ describe('cross-session code graph increments', () => {
       const path = yield* Path.Path;
       const store = yield* CodeGraphStore;
       const layout = codeGraphLayout(path, incrementalHome, identity.checkoutId, identity.worktreeId);
+      deleteMaterializedShardCache(layout.databasePath);
       const observation = yield* worktreeBuildRequestObservation(identity, incrementalHome);
       const base = yield* store.reusableCleanBaseForCommit(
         layout.databasePath,
@@ -135,7 +136,7 @@ describe('cross-session code graph increments', () => {
         baseSlice!.snapshot.id,
         baseSlice!.files,
       );
-      expect(baseFacts.facts.get('src/use.ts')?.path).toBe('src/use.ts');
+      expect(baseFacts.facts.size).toBe(0);
       expect(
         yield* store.reusableCleanBaseForCommitPaths!(layout.databasePath, identity.repositoryId, identity.headCommit, [
           'src/use.ts',
@@ -409,6 +410,7 @@ describe('cross-session code graph increments', () => {
         reexports: 2,
       });
       expect(reusableReceiptStats(clean.databasePath, clean.summary.snapshot.id).aliases).toBeGreaterThan(0);
+      deleteMaterializedShardCache(clean.databasePath);
       writeBarrelConsumer(root, 'dirty');
       const incremental = yield* indexAndLoadEffect(root, incrementalHome);
       const indexer = yield* CodeGraphIndexer;
@@ -416,6 +418,12 @@ describe('cross-session code graph increments', () => {
       const full = yield* loadGraphEffect(root, fullHome, fullSummary);
 
       expect(incremental.summary.materialization?.mode).toBe('incremental-overlay');
+      expect(incremental.summary.incrementalWork).toMatchObject({
+        baseFactsLoaded: 1,
+        changedFiles: 1,
+        inventoryFilesInspected: 1,
+        totalFiles: 3,
+      });
       expect(projectGraph(incremental.graph)).toEqual(projectGraph(full));
       const implementation = incremental.graph.symbols.find(
         symbol => symbol.name === 'helper' && symbol.signature?.includes('string | number'),
@@ -953,6 +961,15 @@ function deleteReusableReceipt(databasePath: string, snapshotId: string): void {
   const database = new Database(databasePath);
   try {
     database.query('DELETE FROM snapshot_reuse_receipts WHERE snapshot_id = ?').run(snapshotId);
+  } finally {
+    database.close();
+  }
+}
+
+function deleteMaterializedShardCache(databasePath: string): void {
+  const database = new Database(databasePath);
+  try {
+    database.exec('DELETE FROM snapshot_file_shards; DELETE FROM materialized_file_shards');
   } finally {
     database.close();
   }

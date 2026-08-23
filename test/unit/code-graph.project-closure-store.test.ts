@@ -5,8 +5,10 @@ import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {Effect} from 'effect';
+import * as FC from 'effect/testing/FastCheck';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
+import {persistedIncrementalSurfaceMatches} from '../../src/code_graph/store_incremental_surface.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,
@@ -197,6 +199,68 @@ describe('project-closure persisted store', () => {
         expect((yield* Effect.exit(store.activateStaged(databasePath, identity, ready)))._tag).toBe('Failure');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('requires exact changed-path re-export provenance in both directions', () =>
+    withStoreFixture(({databasePath, file, identity, sql, store}) =>
+      Effect.gen(function* () {
+        const published = symbol(1);
+        const base = snapshot(identity, 'base', 1);
+        yield* store.prepareActivation(databasePath, [file]);
+        yield* store.stageActivationFacts(databasePath, [published], []);
+        yield* store.activateStaged(databasePath, identity, base, {
+          fileSetFingerprint: 'same-files',
+          packProvenance: [],
+          workspaceFingerprint: 'same-workspace',
+        });
+        yield* store.prepareActivation(databasePath, [file]);
+        yield* store.stageActivationFacts(databasePath, [published], []);
+        yield* sql`INSERT INTO activation_incremental_paths (path) VALUES (${file.path})`;
+
+        expect(yield* persistedIncrementalSurfaceMatches(sql, base.id)).toBe(true);
+        yield* insertSnapshotSurfaceReexports(sql, base.id, [surfaceReexport(1)]);
+        expect(yield* persistedIncrementalSurfaceMatches(sql, base.id)).toBe(false);
+        yield* insertActivationSurfaceReexports(sql, [surfaceReexport(1)]);
+        expect(yield* persistedIncrementalSurfaceMatches(sql, base.id)).toBe(true);
+        yield* sql`DELETE FROM activation_reexport_provenance`;
+        yield* insertActivationSurfaceReexports(sql, [surfaceReexport(2)]);
+        expect(yield* persistedIncrementalSurfaceMatches(sql, base.id)).toBe(false);
+        yield* sql`DELETE FROM snapshot_reexport_provenance WHERE snapshot_id = ${base.id}`;
+        expect(yield* persistedIncrementalSurfaceMatches(sql, base.id)).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect.prop(
+    'matches exactly when arbitrary changed-path re-export sets are equal',
+    {
+      base: FC.uniqueArray(FC.integer({max: 12, min: 0}), {maxLength: 6}),
+      current: FC.uniqueArray(FC.integer({max: 12, min: 0}), {maxLength: 6}),
+    },
+    ({base: baseValues, current: currentValues}) =>
+      withStoreFixture(({databasePath, file, identity, sql, store}) =>
+        Effect.gen(function* () {
+          const published = symbol(1);
+          const base = snapshot(identity, 'base', 1);
+          yield* store.prepareActivation(databasePath, [file]);
+          yield* store.stageActivationFacts(databasePath, [published], []);
+          yield* store.activateStaged(databasePath, identity, base, {
+            fileSetFingerprint: 'same-files',
+            packProvenance: [],
+            workspaceFingerprint: 'same-workspace',
+          });
+          yield* store.prepareActivation(databasePath, [file]);
+          yield* store.stageActivationFacts(databasePath, [published], []);
+          yield* sql`INSERT INTO activation_incremental_paths (path) VALUES (${file.path})`;
+          yield* insertSnapshotSurfaceReexports(sql, base.id, baseValues.map(surfaceReexport));
+          yield* insertActivationSurfaceReexports(sql, currentValues.map(surfaceReexport));
+
+          const expected = [...baseValues].sort((left, right) => left - right).join(',');
+          const actual = [...currentValues].sort((left, right) => left - right).join(',');
+          expect(yield* persistedIncrementalSurfaceMatches(sql, base.id)).toBe(expected === actual);
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 20}, timeout: 60_000},
   );
 
   it.effect('rejects a changed-file persisted overlay that contains a deletion-only path', () =>
@@ -461,6 +525,57 @@ function fileFacts(path: string, value: CodeGraphSymbol): CodeGraphFileFacts {
 
 function fileFactsWithSymbols(path: string, symbols: readonly CodeGraphSymbol[]): CodeGraphFileFacts {
   return {diagnostics: [], edges: [], path, references: [], symbols};
+}
+
+interface SurfaceReexport {
+  readonly importedName: string;
+  readonly localName: string;
+  readonly sourcePath: string;
+  readonly targetPath: string;
+}
+
+function surfaceReexport(value: number): SurfaceReexport {
+  return {
+    importedName: `imported-${value}`,
+    localName: `local-${value}`,
+    sourcePath: 'packages/barrel/index.ts',
+    targetPath: `packages/target-${value}/index.ts`,
+  };
+}
+
+function insertSnapshotSurfaceReexports(
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  reexports: readonly SurfaceReexport[],
+) {
+  return Effect.forEach(
+    reexports,
+    reexport =>
+      sql`
+        INSERT INTO snapshot_reexport_provenance (
+          snapshot_id, source_path, local_name, target_path, imported_name
+        ) VALUES (
+          ${snapshotId}, ${reexport.sourcePath}, ${reexport.localName},
+          ${reexport.targetPath}, ${reexport.importedName}
+        )
+      `,
+    {discard: true},
+  );
+}
+
+function insertActivationSurfaceReexports(sql: SqlClient.SqlClient, reexports: readonly SurfaceReexport[]) {
+  return Effect.forEach(
+    reexports,
+    reexport =>
+      sql`
+        INSERT INTO activation_reexport_provenance (
+          source_path, local_name, target_path, imported_name
+        ) VALUES (
+          ${reexport.sourcePath}, ${reexport.localName}, ${reexport.targetPath}, ${reexport.importedName}
+        )
+      `,
+    {discard: true},
+  );
 }
 
 function snapshot(identity: RepositoryIdentity, suffix: string, symbolCount: number): CodeGraphSnapshot {
