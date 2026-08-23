@@ -80,23 +80,37 @@ function prepareFreshFactCacheChunks(
 
 function storeFreshFactRows(sql: SqlClient.SqlClient, rows: readonly PlannedFreshFactCacheRow[]) {
   return Effect.gen(function* () {
-    for (const row of rows) {
-      yield* sql`
-        INSERT INTO file_blobs (
-          content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
-        )
-        VALUES (
-          ${row.contentHash}, ${row.extractorSet}, ${row.path},
-          ${row.blobId ?? null}, ${row.reuseClass ?? null}, ${row.factsJson}, ${row.createdAt}
-        )
-        ON CONFLICT(content_hash, extractor_set, path_hint) DO UPDATE SET
-          blob_id = excluded.blob_id,
-          reuse_class = excluded.reuse_class,
-          facts_json = excluded.facts_json,
-          created_at = excluded.created_at
-      `;
+    for (const page of codeGraphCacheWritePages(rows)) {
+      yield* sql.unsafe(
+        `INSERT INTO file_blobs (
+           content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+         ) VALUES ${page.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}
+         ON CONFLICT(content_hash, extractor_set, path_hint) DO UPDATE SET
+           blob_id = excluded.blob_id,
+           reuse_class = excluded.reuse_class,
+           facts_json = excluded.facts_json,
+           created_at = excluded.created_at`,
+        page.flatMap(row => [
+          row.contentHash,
+          row.extractorSet,
+          row.path,
+          row.blobId ?? null,
+          row.reuseClass ?? null,
+          row.factsJson,
+          row.createdAt,
+        ]),
+      );
     }
   });
+}
+
+/** @internal Keeps cache UPSERT bind counts within the existing physical transaction row ceiling. */
+export function codeGraphCacheWritePages<A>(rows: readonly A[]): readonly (readonly A[])[] {
+  const pages: A[][] = [];
+  for (let offset = 0; offset < rows.length; offset += CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows) {
+    pages.push(rows.slice(offset, offset + CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows));
+  }
+  return pages;
 }
 
 export function materializedShardDerivationIdentity(
