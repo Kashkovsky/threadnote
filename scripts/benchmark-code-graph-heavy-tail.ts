@@ -27,9 +27,11 @@ const CHILD_OUTPUT_LIMIT_BYTES = 1_048_576;
 
 interface HeavyTailLanguageTelemetry {
   readonly degradedFiles: number;
+  readonly factsBytes: number;
   readonly files: number;
   readonly parseMilliseconds: number;
   readonly persistenceMilliseconds: number;
+  readonly requestMilliseconds: number;
   readonly relations: number;
   readonly sourceBytes: number;
   readonly symbols: number;
@@ -37,9 +39,21 @@ interface HeavyTailLanguageTelemetry {
 
 interface HeavyTailSlowFile {
   readonly bytes: number;
+  readonly factsBytes: number;
   readonly language: string;
   readonly parseMilliseconds: number;
   readonly path: string;
+  readonly requestMilliseconds: number;
+}
+
+interface HeavyTailExtractionUtilization {
+  /** Wall time during which at least one parser request was active. */
+  readonly activeWallMilliseconds: number;
+  /** Sum of parent-observed request durations divided by active wall time. */
+  readonly averageConcurrency: number;
+  readonly peakConcurrency: number;
+  /** Sum of parent-observed request durations, including worker and JSON-line IPC. */
+  readonly requestMilliseconds: number;
 }
 
 interface HeavyTailChildRun {
@@ -50,6 +64,7 @@ interface HeavyTailChildRun {
   };
   readonly cpuMilliseconds: number;
   readonly durationMilliseconds: number;
+  readonly extraction: HeavyTailExtractionUtilization;
   readonly graph?: {
     readonly digest: string;
     readonly edges: number;
@@ -67,7 +82,7 @@ interface HeavyTailChildRun {
   readonly reusedFiles?: number;
   readonly slowFiles: readonly HeavyTailSlowFile[];
   readonly state: 'complete' | 'interrupted';
-  readonly version: 1;
+  readonly version: 2;
   readonly workerCount: number;
 }
 
@@ -76,10 +91,12 @@ interface CodeGraphHeavyTailBenchmarkArtifact {
     readonly interruptionRetainedCache: true;
     readonly lowSignalJsonExcluded: true;
     readonly parallelMatchesSingle: true;
+    readonly sixWorkersMatchSingle: true;
     readonly pathologicalTypeScriptSurfacePreserved: true;
     readonly resumeMatchesClean: true;
     readonly resumeReusedCache: true;
     readonly textlessSvgExcluded: true;
+    readonly eightWorkersMatchSingle: true;
   };
   readonly createdAt: string;
   readonly environment: {
@@ -95,13 +112,15 @@ interface CodeGraphHeavyTailBenchmarkArtifact {
   };
   readonly profile: CodeGraphHeavyTailProfile;
   readonly runs: {
+    readonly eightWorkers: HeavyTailChildRun;
     readonly interrupted: HeavyTailChildRun;
     readonly parallel: HeavyTailChildRun;
     readonly resumed: HeavyTailChildRun;
+    readonly sixWorkers: HeavyTailChildRun;
     readonly single: HeavyTailChildRun;
   };
-  readonly suite: 'code-graph-large-monorepo-heavy-tail-v1';
-  readonly version: 1;
+  readonly suite: 'code-graph-large-monorepo-heavy-tail-v2';
+  readonly version: 2;
 }
 
 interface BenchmarkArguments {
@@ -151,6 +170,24 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
     root: fixture.root,
     workers: profile.parallelWorkers,
   });
+  const sixWorkers = yield* spawnChild({
+    childScript,
+    home: path.join(fixture.root, 'home-six-workers'),
+    name: 'six-workers',
+    profilePath,
+    repository: fixture.repository,
+    root: fixture.root,
+    workers: 6,
+  });
+  const eightWorkers = yield* spawnChild({
+    childScript,
+    home: path.join(fixture.root, 'home-eight-workers'),
+    name: 'eight-workers',
+    profilePath,
+    repository: fixture.repository,
+    root: fixture.root,
+    workers: 8,
+  });
   const resumeHome = path.join(fixture.root, 'home-resume');
   const interrupted = yield* spawnChild({
     childScript,
@@ -174,6 +211,8 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
 
   validateCompletedRun('single-worker', single, profile);
   validateCompletedRun('parallel-worker', parallel, profile);
+  validateCompletedRun('six-worker', sixWorkers, profile);
+  validateCompletedRun('eight-worker', eightWorkers, profile);
   validateCompletedRun('resumed', resumed, profile);
   if (interrupted.state !== 'interrupted' || interrupted.cache.files < 1) {
     return yield* Effect.fail(new ScriptError('The interruption run did not retain any durable parser cache rows.'));
@@ -183,6 +222,12 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
   }
   if (single.graph!.digest !== parallel.graph!.digest) {
     return yield* Effect.fail(new ScriptError('Single-worker and parallel code graphs differ.'));
+  }
+  if (single.graph!.digest !== sixWorkers.graph!.digest) {
+    return yield* Effect.fail(new ScriptError('Single-worker and six-worker code graphs differ.'));
+  }
+  if (single.graph!.digest !== eightWorkers.graph!.digest) {
+    return yield* Effect.fail(new ScriptError('Single-worker and eight-worker code graphs differ.'));
   }
   if (single.graph!.digest !== resumed.graph!.digest) {
     return yield* Effect.fail(new ScriptError('Interrupted/resumed and clean code graphs differ.'));
@@ -198,10 +243,12 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
       interruptionRetainedCache: true,
       lowSignalJsonExcluded: true,
       parallelMatchesSingle: true,
+      sixWorkersMatchSingle: true,
       pathologicalTypeScriptSurfacePreserved: true,
       resumeMatchesClean: true,
       resumeReusedCache: true,
       textlessSvgExcluded: true,
+      eightWorkersMatchSingle: true,
     },
     createdAt: new Date().toISOString(),
     environment: {
@@ -216,9 +263,9 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
       runnerIdentity: process.env.THREADNOTE_BENCHMARK_RUNNER_ID?.trim() || 'local',
     },
     profile,
-    runs: {interrupted, parallel, resumed, single},
-    suite: 'code-graph-large-monorepo-heavy-tail-v1',
-    version: 1,
+    runs: {eightWorkers, interrupted, parallel, resumed, sixWorkers, single},
+    suite: 'code-graph-large-monorepo-heavy-tail-v2',
+    version: 2,
   };
   parseCodeGraphHeavyTailBenchmarkArtifact(artifact);
   if (args.outputPath) yield* atomicWrite(args.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
@@ -253,7 +300,7 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
             event.activity?.stage === 'persisting' &&
             event.activity.persistMilliseconds !== undefined
           ) {
-            const persisted = event.completed + event.activity.batchCompleted;
+            const persisted = progress.persistedFiles;
             if (persisted >= args.interruptAfterPersistedFiles) {
               interruptedAfterPersistedFiles = persisted;
               return true;
@@ -278,13 +325,14 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
       cache,
       cpuMilliseconds: (cpu.user + cpu.system) / 1_000,
       durationMilliseconds,
+      extraction: progress.extraction(),
       interruptedAfterPersistedFiles,
       languages: progress.languages(),
       peakRssBytes: processPeakRssBytes(),
       readingMilliseconds: progress.readingMilliseconds,
       slowFiles: progress.slowFiles(),
       state: 'interrupted',
-      version: 1,
+      version: 2,
       workerCount,
     };
     parseHeavyTailChildRun(artifact);
@@ -301,6 +349,7 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
     cache,
     cpuMilliseconds: (cpu.user + cpu.system) / 1_000,
     durationMilliseconds,
+    extraction: progress.extraction(),
     graph: {
       ...graphShape,
       files: summary.snapshot.fileCount,
@@ -311,7 +360,7 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
     reusedFiles: summary.reusedFiles,
     slowFiles: progress.slowFiles(),
     state: 'complete',
-    version: 1,
+    version: 2,
     workerCount,
   };
   parseHeavyTailChildRun(artifact);
@@ -319,8 +368,12 @@ const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args:
 });
 
 class HeavyTailProgressTelemetry {
+  readonly #activeExtractions = new Map<string, number>();
+  readonly #extractionIntervals: Array<{readonly end: number; readonly start: number}> = [];
   readonly #languages = new Map<string, MutableLanguageTelemetry>();
   readonly #slowFiles: HeavyTailSlowFile[] = [];
+  #peakExtractionConcurrency = 0;
+  persistedFiles = 0;
   readingMilliseconds = 0;
 
   observe(progress: CodeGraphProgress): void {
@@ -328,37 +381,83 @@ class HeavyTailProgressTelemetry {
     this.readingMilliseconds = Math.max(this.readingMilliseconds, progress.timings?.readingMilliseconds ?? 0);
     const activity = progress.activity;
     if (!activity) return;
+    const now = performance.now();
+    if (activity.stage === 'extracting' && activity.parseMilliseconds === undefined) {
+      if (!this.#activeExtractions.has(activity.path)) this.#activeExtractions.set(activity.path, now);
+      this.#peakExtractionConcurrency = Math.max(this.#peakExtractionConcurrency, this.#activeExtractions.size);
+      return;
+    }
     const language = this.#languages.get(activity.language) ?? {
       degradedFiles: 0,
+      factsBytes: 0,
       files: 0,
       parseMilliseconds: 0,
       persistenceMilliseconds: 0,
+      requestMilliseconds: 0,
       relations: 0,
       sourceBytes: 0,
       symbols: 0,
     };
     this.#languages.set(activity.language, language);
     if (activity.stage === 'extracting' && activity.parseMilliseconds !== undefined) {
+      const startedAt = this.#activeExtractions.get(activity.path) ?? now;
+      this.#activeExtractions.delete(activity.path);
+      const requestMilliseconds = Math.max(0, now - startedAt);
+      this.#extractionIntervals.push({end: now, start: startedAt});
       language.files += 1;
+      language.factsBytes += activity.factsBytes ?? 0;
       language.sourceBytes += activity.bytes;
       language.parseMilliseconds += activity.parseMilliseconds;
+      language.requestMilliseconds += requestMilliseconds;
       language.symbols += activity.symbols ?? 0;
       language.relations += activity.relations ?? 0;
       if (activity.degraded) language.degradedFiles += 1;
       this.#slowFiles.push({
         bytes: activity.bytes,
+        factsBytes: activity.factsBytes ?? 0,
         language: activity.language,
         parseMilliseconds: activity.parseMilliseconds,
         path: activity.path,
+        requestMilliseconds,
       });
     }
     if (activity.stage === 'persisting' && activity.persistMilliseconds !== undefined) {
       language.persistenceMilliseconds += activity.persistMilliseconds;
+      this.persistedFiles += activity.batchCompleted;
     }
   }
 
   languages(): Readonly<Record<string, HeavyTailLanguageTelemetry>> {
     return Object.fromEntries([...this.#languages.entries()].sort(([left], [right]) => left.localeCompare(right)));
+  }
+
+  extraction(): HeavyTailExtractionUtilization {
+    const intervals = [...this.#extractionIntervals].sort(
+      (left, right) => left.start - right.start || left.end - right.end,
+    );
+    let activeWallMilliseconds = 0;
+    let currentStart: number | undefined;
+    let currentEnd: number | undefined;
+    for (const interval of intervals) {
+      if (currentStart === undefined || currentEnd === undefined) {
+        currentStart = interval.start;
+        currentEnd = interval.end;
+      } else if (interval.start <= currentEnd) {
+        currentEnd = Math.max(currentEnd, interval.end);
+      } else {
+        activeWallMilliseconds += currentEnd - currentStart;
+        currentStart = interval.start;
+        currentEnd = interval.end;
+      }
+    }
+    if (currentStart !== undefined && currentEnd !== undefined) activeWallMilliseconds += currentEnd - currentStart;
+    const requestMilliseconds = intervals.reduce((total, interval) => total + interval.end - interval.start, 0);
+    return {
+      activeWallMilliseconds,
+      averageConcurrency: activeWallMilliseconds === 0 ? 0 : requestMilliseconds / activeWallMilliseconds,
+      peakConcurrency: this.#peakExtractionConcurrency,
+      requestMilliseconds,
+    };
   }
 
   slowFiles(): readonly HeavyTailSlowFile[] {
@@ -370,9 +469,11 @@ class HeavyTailProgressTelemetry {
 
 interface MutableLanguageTelemetry {
   degradedFiles: number;
+  factsBytes: number;
   files: number;
   parseMilliseconds: number;
   persistenceMilliseconds: number;
+  requestMilliseconds: number;
   relations: number;
   sourceBytes: number;
   symbols: number;
@@ -499,7 +600,7 @@ export function parseHeavyTailChildRun(value: unknown): HeavyTailChildRun {
     throw new ScriptError('Heavy-tail child artifact must be an object.');
   const artifact = value as Partial<HeavyTailChildRun>;
   if (
-    artifact.version !== 1 ||
+    artifact.version !== 2 ||
     !['complete', 'interrupted'].includes(artifact.state ?? '') ||
     !positiveInteger(artifact.workerCount) ||
     !nonNegativeNumber(artifact.durationMilliseconds) ||
@@ -511,9 +612,12 @@ export function parseHeavyTailChildRun(value: unknown): HeavyTailChildRun {
     !nonNegativeInteger(artifact.cache.files) ||
     !nonNegativeInteger(artifact.cache.factsBytes) ||
     !nonNegativeInteger(artifact.cache.lowSignalJsonFactsBytes) ||
+    !validExtractionUtilization(artifact.extraction, Number(artifact.workerCount)) ||
     typeof artifact.languages !== 'object' ||
     artifact.languages === null ||
-    !Array.isArray(artifact.slowFiles)
+    Object.values(artifact.languages).some(language => !validLanguageTelemetry(language)) ||
+    !Array.isArray(artifact.slowFiles) ||
+    artifact.slowFiles.some(file => !validSlowFile(file))
   ) {
     throw new ScriptError('Heavy-tail child artifact is invalid.');
   }
@@ -523,6 +627,9 @@ export function parseHeavyTailChildRun(value: unknown): HeavyTailChildRun {
   if (artifact.state === 'interrupted' && !positiveInteger(artifact.interruptedAfterPersistedFiles)) {
     throw new ScriptError('Interrupted heavy-tail child artifact must include its durable interruption point.');
   }
+  if (artifact.state === 'interrupted' && artifact.interruptedAfterPersistedFiles !== artifact.cache.files) {
+    throw new ScriptError('Interrupted heavy-tail child artifact has inconsistent durable cache accounting.');
+  }
   return artifact as HeavyTailChildRun;
 }
 
@@ -531,8 +638,8 @@ export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): CodeGr
     throw new ScriptError('Heavy-tail benchmark artifact must be an object.');
   const artifact = value as Partial<CodeGraphHeavyTailBenchmarkArtifact>;
   if (
-    artifact.version !== 1 ||
-    artifact.suite !== 'code-graph-large-monorepo-heavy-tail-v1' ||
+    artifact.version !== 2 ||
+    artifact.suite !== 'code-graph-large-monorepo-heavy-tail-v2' ||
     typeof artifact.createdAt !== 'string' ||
     !Number.isFinite(Date.parse(artifact.createdAt)) ||
     typeof artifact.runs !== 'object' ||
@@ -543,6 +650,8 @@ export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): CodeGr
   parseCodeGraphHeavyTailProfile(artifact.profile);
   parseHeavyTailChildRun(artifact.runs.single);
   parseHeavyTailChildRun(artifact.runs.parallel);
+  parseHeavyTailChildRun(artifact.runs.sixWorkers);
+  parseHeavyTailChildRun(artifact.runs.eightWorkers);
   parseHeavyTailChildRun(artifact.runs.interrupted);
   parseHeavyTailChildRun(artifact.runs.resumed);
   return artifact as CodeGraphHeavyTailBenchmarkArtifact;
@@ -608,6 +717,52 @@ function nonNegativeInteger(value: unknown): value is number {
 
 function nonNegativeNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function validExtractionUtilization(value: unknown, workerCount: number): value is HeavyTailExtractionUtilization {
+  if (typeof value !== 'object' || value === null) return false;
+  const extraction = value as Partial<HeavyTailExtractionUtilization>;
+  return (
+    nonNegativeNumber(extraction.activeWallMilliseconds) &&
+    nonNegativeNumber(extraction.averageConcurrency) &&
+    nonNegativeInteger(extraction.peakConcurrency) &&
+    nonNegativeNumber(extraction.requestMilliseconds) &&
+    extraction.averageConcurrency <= workerCount + 1e-6 &&
+    extraction.peakConcurrency! <= workerCount &&
+    extraction.requestMilliseconds + 1e-6 >= extraction.activeWallMilliseconds!
+  );
+}
+
+function validLanguageTelemetry(value: unknown): value is HeavyTailLanguageTelemetry {
+  if (typeof value !== 'object' || value === null) return false;
+  const language = value as Partial<HeavyTailLanguageTelemetry>;
+  return (
+    nonNegativeInteger(language.degradedFiles) &&
+    nonNegativeInteger(language.factsBytes) &&
+    nonNegativeInteger(language.files) &&
+    nonNegativeNumber(language.parseMilliseconds) &&
+    nonNegativeNumber(language.persistenceMilliseconds) &&
+    nonNegativeNumber(language.requestMilliseconds) &&
+    nonNegativeInteger(language.relations) &&
+    nonNegativeInteger(language.sourceBytes) &&
+    nonNegativeInteger(language.symbols) &&
+    language.degradedFiles! <= language.files! &&
+    language.requestMilliseconds! + 1e-6 >= language.parseMilliseconds!
+  );
+}
+
+function validSlowFile(value: unknown): value is HeavyTailSlowFile {
+  if (typeof value !== 'object' || value === null) return false;
+  const file = value as Partial<HeavyTailSlowFile>;
+  return (
+    nonNegativeInteger(file.bytes) &&
+    nonNegativeInteger(file.factsBytes) &&
+    typeof file.language === 'string' &&
+    nonNegativeNumber(file.parseMilliseconds) &&
+    typeof file.path === 'string' &&
+    nonNegativeNumber(file.requestMilliseconds) &&
+    file.requestMilliseconds! + 1e-6 >= file.parseMilliseconds!
+  );
 }
 
 function boundedOutput(label: string, output: string): string {

@@ -150,22 +150,39 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
         cache: {factsBytes: 1, files: 1, lowSignalJsonFactsBytes: 0},
         cpuMilliseconds: 1,
         durationMilliseconds: 1,
+        extraction: {activeWallMilliseconds: 1, averageConcurrency: 1, peakConcurrency: 1, requestMilliseconds: 1},
         languages: {},
         peakRssBytes: 1,
         readingMilliseconds: 1,
         slowFiles: [],
         state: 'interrupted',
-        version: 1,
+        version: 2,
         workerCount: 1,
       }),
     ).toThrow(/interruption point/i);
+    expect(() =>
+      parseHeavyTailChildRun({
+        cache: {factsBytes: 1, files: 1, lowSignalJsonFactsBytes: 0},
+        cpuMilliseconds: 1,
+        durationMilliseconds: 1,
+        extraction: {activeWallMilliseconds: 1, averageConcurrency: 1, peakConcurrency: 1, requestMilliseconds: 1},
+        interruptedAfterPersistedFiles: 2,
+        languages: {},
+        peakRssBytes: 1,
+        readingMilliseconds: 1,
+        slowFiles: [],
+        state: 'interrupted',
+        version: 2,
+        workerCount: 1,
+      }),
+    ).toThrow(/cache accounting/i);
     expect(() =>
       parseCodeGraphHeavyTailBenchmarkArtifact({
         createdAt: new Date(0).toISOString(),
         profile: CODE_GRAPH_HEAVY_TAIL_PROFILE,
         runs: {},
-        suite: 'code-graph-large-monorepo-heavy-tail-v1',
-        version: 1,
+        suite: 'code-graph-large-monorepo-heavy-tail-v2',
+        version: 2,
       }),
     ).toThrow(/child artifact/i);
   });
