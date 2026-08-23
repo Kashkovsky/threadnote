@@ -253,7 +253,7 @@ describe('code graph external benchmark harness', () => {
   it('wires all three index phases through the phase-pure sampler boundary', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     const cold = sourceSlice(source, 'const coldStoragePeak', 'const changedPath');
-    const incremental = sourceSlice(source, 'const incrementalStoragePeak', 'const sameOverlayReferenceHome');
+    const incremental = sourceSlice(source, 'const incrementalStoragePeak', 'const sameOverlayReferenceIdentity');
     const sameOverlay = sourceSlice(source, 'const sameOverlayReferenceStoragePeak', 'const coldStatusStarted');
 
     expectInOrder(cold, [
@@ -370,6 +370,9 @@ describe('code graph external benchmark harness', () => {
       'cannot be combined with --preflight',
     );
     expect(() => parseCodeGraphBenchmarkArguments(['--ratchet', '/tmp/ratchet.json'])).toThrow('requires --output');
+    expect(() =>
+      parseCodeGraphBenchmarkArguments(['--profile', 'production-large', '--minimum-free-gib', '119']),
+    ).toThrow('at least 120');
   });
 
   it('selects explicit SQLite writer candidates without exposing production environment knobs', () => {
@@ -393,6 +396,16 @@ describe('code graph external benchmark harness', () => {
     expect(() => parseCodeGraphBenchmarkArguments(['--materialization-transaction-batches', '2'])).toThrow(
       'must be 1 or 4',
     );
+  });
+
+  it('governs both generated production homes before preparing the measured runtime', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    expect(source.match(/const sameOverlayReferenceHome/g)).toHaveLength(1);
+    expectInOrder(source, [
+      'const sameOverlayReferenceHome',
+      'productionBenchmarkGovernance(',
+      "runCheckpoint?.mark('preparing-runtime')",
+    ]);
   });
 
   it('keeps isolated SQLite writer candidates on the production page-cache and WAL baseline', () => {

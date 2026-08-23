@@ -362,6 +362,12 @@ const MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'same-ove
   ],
 );
 
+const MATERIALIZATION_QUERY_INDEX_RESTORATION_RELEASE_EVIDENCE_MEASUREMENTS = [
+  {name: 'cold-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
+  {name: 'same-overlay-reference-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
+  {name: 'one-file-reindex-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
+] as const;
+
 export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'cold-materialization', unit: 'milliseconds'},
   {name: 'cold-materialization-process-cpu-n1', unit: 'milliseconds'},
@@ -413,6 +419,7 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   ...INVENTORY_TIMING_REQUIRED_MEASUREMENTS,
   ...MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS,
   ...MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS,
+  ...MATERIALIZATION_QUERY_INDEX_RESTORATION_RELEASE_EVIDENCE_MEASUREMENTS,
   ...SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS,
   ...ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS,
 ] as const;
@@ -465,6 +472,15 @@ export interface BenchmarkStorageEnvironment {
   readonly filesystem: string;
   readonly location: 'external' | 'internal' | 'unknown';
   readonly medium: 'rotational' | 'solid-state' | 'unknown' | 'virtual-or-network';
+}
+
+interface ProductionBenchmarkGovernanceEvidence {
+  readonly filesystemsShared: true;
+  readonly minimumFreeBytes: number;
+  readonly primaryAvailableBytes: number;
+  readonly primaryStorage: BenchmarkStorageEnvironment;
+  readonly referenceAvailableBytes: number;
+  readonly referenceStorage: BenchmarkStorageEnvironment;
 }
 
 export type BenchmarkRuntimeProvenance =
@@ -615,6 +631,16 @@ const benchmarkCodeGraph = Effect.scoped(
           : options.scaleSymbols === undefined
             ? yield* prepareCodeGraphFixture(options.fixture)
             : yield* prepareGeneratedCodeGraphFixture(options.scaleSymbols, options.vectors);
+    const sameOverlayReferenceHome =
+      prepared.referenceHome ?? (yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-same-overlay-reference-'));
+    let productionGovernance: ProductionBenchmarkGovernanceEvidence | undefined;
+    if (prepared.profile) {
+      productionGovernance = yield* productionBenchmarkGovernance(
+        prepared.home,
+        sameOverlayReferenceHome,
+        options.minimumFreeGiB,
+      );
+    }
     yield* runCheckpoint?.mark('preparing-runtime') ?? Effect.void;
     yield* bootstrapSampler?.markPhase('preparing-runtime') ?? Effect.void;
     const embeddingModelId = options.vectors
@@ -1003,8 +1029,6 @@ const benchmarkCodeGraph = Effect.scoped(
       ? yield* benchmarkMcpOperationMatrix(query, prepared.repository, prepared.home, queryText)
       : [];
 
-    const sameOverlayReferenceHome =
-      prepared.referenceHome ?? (yield* makeOwnedTempDirectoryScoped('threadnote-code-graph-same-overlay-reference-'));
     if (options.vectors) {
       yield* prepareBenchmarkEmbedding(sameOverlayReferenceHome, options.modelHome);
     }
@@ -1148,7 +1172,9 @@ const benchmarkCodeGraph = Effect.scoped(
           options.warmups,
         )
       : undefined;
-    const storageEnvironment = prepared.externalCommit ? yield* benchmarkStorageEnvironment(prepared.home) : undefined;
+    const storageEnvironment =
+      productionGovernance?.primaryStorage ??
+      (prepared.externalCommit ? yield* benchmarkStorageEnvironment(prepared.home) : undefined);
     const analysisOptions = {
       databasePath: analysisStatus.databasePath,
       limits: codeGraphAnalysisLimitsForView('stats'),
@@ -1722,6 +1748,21 @@ const benchmarkCodeGraph = Effect.scoped(
             }
           : {}),
         ...(prepared.profile ? productionProfileArtifactMetadata(prepared.profile) : {}),
+        ...(productionGovernance
+          ? {
+              benchmarkDiskFilesystem: productionGovernance.primaryStorage.filesystem,
+              benchmarkDiskLocation: productionGovernance.primaryStorage.location,
+              benchmarkDiskMedium: productionGovernance.primaryStorage.medium,
+              benchmarkFilesystemsShared: productionGovernance.filesystemsShared,
+              benchmarkGoverned: true,
+              benchmarkMinimumFreeBytes: productionGovernance.minimumFreeBytes,
+              benchmarkPrimaryAvailableBytesAtStart: productionGovernance.primaryAvailableBytes,
+              benchmarkReferenceAvailableBytesAtStart: productionGovernance.referenceAvailableBytes,
+              benchmarkReferenceDiskFilesystem: productionGovernance.referenceStorage.filesystem,
+              benchmarkReferenceDiskLocation: productionGovernance.referenceStorage.location,
+              benchmarkReferenceDiskMedium: productionGovernance.referenceStorage.medium,
+            }
+          : {}),
       },
       suite: prepared.externalCommit
         ? 'code-graph-external-repository-v1'
@@ -4624,6 +4665,7 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
     return measurement?.unit === required.unit ? [] : [`${required.name} (${required.unit})`];
   });
   missing.push(...missingMaterializationReplayEquations(measurements));
+  missing.push(...missingMaterializationQueryIndexRestorationEvidence(measurements));
   if (artifact.metadata.oneFileReindexMaterializationMode !== 'incremental-overlay') {
     missing.push('one-file reindex incremental-overlay materialization mode');
   }
@@ -4648,6 +4690,20 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
   if (missing.length > 0) {
     throw new ScriptError(`Production release evidence is incomplete: ${missing.join(', ')}.`);
   }
+}
+
+function missingMaterializationQueryIndexRestorationEvidence(
+  measurements: ReadonlyMap<string, BenchmarkArtifactV1['measurements'][number]>,
+): readonly string[] {
+  const missing = (['cold', 'same-overlay-reference'] as const).flatMap(prefix => {
+    const measurement = measurements.get(`${prefix}-materialization-stage-restoring-indexes-n1`);
+    const duration = measurement === undefined ? undefined : exactSingleSampleCount(measurement);
+    return duration !== undefined && duration > 0 ? [] : [`${prefix} full-build query-index restoration`];
+  });
+  const incremental = measurements.get('one-file-reindex-materialization-stage-restoring-indexes-n1');
+  const incrementalDuration = incremental === undefined ? undefined : exactSingleSampleCount(incremental);
+  if (incrementalDuration !== 0) missing.push('one-file reindex query-index restoration exclusion');
+  return missing;
 }
 
 function missingMaterializationReplayEquations(
@@ -5278,6 +5334,9 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   if ((profileFiles !== undefined || profileSymbols !== undefined) && profile !== 'production-large') {
     throw new ScriptError('--profile-files and --profile-symbols require --profile production-large.');
   }
+  if (profile === 'production-large' && minimumFreeGiB < 120) {
+    throw new ScriptError('The production-large profile requires --minimum-free-gib of at least 120.');
+  }
   if (profile === 'production-large' && fixture !== 'code-graph-v1') {
     throw new ScriptError('The production-large profile uses the code-graph-v1 query contract.');
   }
@@ -5833,6 +5892,51 @@ const externalBenchmarkPreflight = Effect.fn('benchmarkCodeGraph.externalPreflig
     tree,
     version: 1,
   } as const;
+});
+
+const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGovernance')(function* (
+  primaryHome: string,
+  referenceHome: string,
+  minimumFreeGiB: number,
+) {
+  const system = yield* SystemInfo;
+  const [primaryCapacity, referenceCapacity, primaryStorage, referenceStorage] = yield* Effect.all(
+    [
+      filesystemCapacity(primaryHome),
+      filesystemCapacity(referenceHome),
+      benchmarkStorageEnvironment(primaryHome),
+      benchmarkStorageEnvironment(referenceHome),
+    ],
+    {concurrency: 4},
+  );
+  const minimumFreeBytes = minimumFreeGiB * 1_073_741_824;
+  if (primaryCapacity.availableBytes < minimumFreeBytes || referenceCapacity.availableBytes < minimumFreeBytes) {
+    return yield* Effect.fail(
+      new ScriptError(
+        `Production-large benchmark requires at least ${minimumFreeGiB} GiB free on every benchmark-home filesystem.`,
+      ),
+    );
+  }
+  if (primaryCapacity.filesystem !== referenceCapacity.filesystem) {
+    return yield* Effect.fail(
+      new ScriptError('Production-large benchmark requires primary and reference homes on one filesystem.'),
+    );
+  }
+  const storageEnvironments = [primaryStorage, referenceStorage];
+  if (storageEnvironments.some(storage => storage.medium !== 'solid-state')) {
+    return yield* Effect.fail(new ScriptError('Production-large benchmark requires solid-state storage.'));
+  }
+  if (system.platform === 'darwin' && storageEnvironments.some(storage => storage.location !== 'internal')) {
+    return yield* Effect.fail(new ScriptError('Production-large benchmark requires internal storage on macOS.'));
+  }
+  return {
+    filesystemsShared: true,
+    minimumFreeBytes,
+    primaryAvailableBytes: primaryCapacity.availableBytes,
+    primaryStorage,
+    referenceAvailableBytes: referenceCapacity.availableBytes,
+    referenceStorage,
+  } satisfies ProductionBenchmarkGovernanceEvidence;
 });
 
 const verifyPublicRepositoryOrigin = Effect.fn('benchmarkCodeGraph.verifyPublicRepositoryOrigin')(function* (
@@ -6451,7 +6555,7 @@ function benchmarkComparisonKey(input: {
 type BenchmarkRatchetPrimitive = boolean | number | string;
 type BenchmarkMeasurementUnit = BenchmarkArtifactV1['measurements'][number]['unit'];
 
-interface CodeGraphBenchmarkMeasurementRatchetV1 {
+export interface CodeGraphBenchmarkMeasurementRatchetV1 {
   readonly meanMaximum?: number;
   readonly maximum?: number;
   readonly minimum?: number;
@@ -6462,7 +6566,7 @@ interface CodeGraphBenchmarkMeasurementRatchetV1 {
   readonly unit: BenchmarkMeasurementUnit;
 }
 
-interface CodeGraphBenchmarkRatchetV1 {
+export interface CodeGraphBenchmarkRatchetV1 {
   readonly environment: Readonly<Record<string, BenchmarkRatchetPrimitive>>;
   readonly measurements: Readonly<Record<string, CodeGraphBenchmarkMeasurementRatchetV1>>;
   readonly metadata: Readonly<Record<string, BenchmarkRatchetPrimitive>>;
@@ -6477,6 +6581,266 @@ const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
   'operations_per_second',
   'percent',
 ]);
+
+const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.15;
+const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 5;
+const PRODUCTION_RATCHET_MINIMUM_FREE_BYTES = 120 * 1_073_741_824;
+const PRODUCTION_RATCHET_MILLISECOND_TARGETS = new Map<string, number>([
+  ['cold-index', 60 * 60_000 - 1],
+  ['one-file-reindex-index', 30_000 - 1],
+  ['one-file-reindex-post-committed-scan-overlay-and-workspace', 5_000 - 1],
+  ['one-file-reindex-registration-lock-and-database-setup', 5_000 - 1],
+]);
+
+/**
+ * Generates independent reviewed limits from repeated, exact-commit governed
+ * production observations. Transient sampler phase names are diagnostic rather
+ * than assessed metrics; their stable operation-wide CPU, RSS, SQLite, and TEMP
+ * aggregates remain independently ratcheted.
+ */
+export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtifactV1[]): CodeGraphBenchmarkRatchetV1 {
+  if (values.length < 3) throw new ScriptError('Production ratchet generation requires at least three artifacts.');
+  const artifacts = values.map(parseBenchmarkArtifactV1);
+  for (const artifact of artifacts) assertProductionLargeEvidence(artifact);
+  const first = artifacts[0]!;
+  const names = productionRatchetMeasurements(first)
+    .map(measurement => measurement.name)
+    .sort();
+  const generationIdentity = productionRatchetGenerationIdentity(first);
+  const metadata = productionRatchetMetadata(first);
+  for (const artifact of artifacts.slice(1)) {
+    const candidateNames = productionRatchetMeasurements(artifact)
+      .map(measurement => measurement.name)
+      .sort();
+    if (
+      artifact.suite !== first.suite ||
+      JSON.stringify(candidateNames) !== JSON.stringify(names) ||
+      artifact.environment.architecture !== first.environment.architecture ||
+      artifact.environment.cpu !== first.environment.cpu ||
+      artifact.environment.fixtureHash !== first.environment.fixtureHash ||
+      artifact.environment.memoryBytes !== first.environment.memoryBytes ||
+      artifact.environment.node !== first.environment.node ||
+      artifact.environment.operatingSystem !== first.environment.operatingSystem ||
+      artifact.environment.packageManager !== first.environment.packageManager ||
+      artifact.environment.runner !== first.environment.runner ||
+      artifact.environment.runnerVersion !== first.environment.runnerVersion ||
+      JSON.stringify(productionRatchetMetadata(artifact)) !== JSON.stringify(metadata)
+    ) {
+      throw new ScriptError('Production ratchet artifacts do not share one governed runner and fixture contract.');
+    }
+    if (productionRatchetGenerationIdentity(artifact) !== generationIdentity) {
+      throw new ScriptError('Production ratchet artifacts do not share one exact source/runtime/storage contract.');
+    }
+  }
+  const measurements: Record<string, CodeGraphBenchmarkMeasurementRatchetV1> = {};
+  for (const name of names) {
+    const samples = artifacts.map(artifact =>
+      productionRatchetMeasurements(artifact).find(measurement => measurement.name === name),
+    );
+    if (samples.some(sample => sample === undefined)) {
+      throw new ScriptError(`Production ratchet measurement ${name} is missing.`);
+    }
+    const complete = samples as readonly BenchmarkArtifactV1['measurements'][number][];
+    const unit = complete[0]!.unit;
+    if (complete.some(sample => sample.unit !== unit || sample.samples !== 1)) {
+      throw new ScriptError(`Production ratchet measurement ${name} has inconsistent samples or units.`);
+    }
+    measurements[name] = productionMeasurementRatchet(
+      name,
+      unit,
+      complete.map(sample => sample.p50),
+    );
+  }
+  return {
+    environment: {
+      architecture: first.environment.architecture,
+      cpu: first.environment.cpu,
+      dirty: false,
+      fixtureHash: first.environment.fixtureHash,
+      memoryBytes: first.environment.memoryBytes,
+      node: first.environment.node,
+      operatingSystem: first.environment.operatingSystem,
+      packageManager: first.environment.packageManager,
+      runner: first.environment.runner,
+      runnerVersion: first.environment.runnerVersion,
+    },
+    measurements,
+    metadata,
+    suite: first.suite,
+    version: 1,
+  };
+}
+
+function productionRatchetMeasurements(
+  artifact: BenchmarkArtifactV1,
+): readonly BenchmarkArtifactV1['measurements'][number][] {
+  const retained = artifact.measurements.filter(
+    measurement => !dynamicExternalSamplerPhaseMeasurement(measurement.name),
+  );
+  const names = retained.map(measurement => measurement.name);
+  if (new Set(names).size !== names.length) {
+    throw new ScriptError('Production ratchet artifacts require unique assessed measurement names.');
+  }
+  return retained;
+}
+
+function dynamicExternalSamplerPhaseMeasurement(name: string): boolean {
+  const prefix = ['bootstrap', 'cold', 'one-file-reindex', 'same-overlay-reference'].find(candidate =>
+    name.startsWith(`${candidate}-`),
+  );
+  if (prefix === undefined) return false;
+  const suffix = name.slice(prefix.length + 1);
+  if (suffix.startsWith('external-')) return false;
+  return (
+    /-external-(?:process|rss)-.+-n1$/u.test(suffix) ||
+    /-sqlite-(?:main|shm|temp|wal)(?:-[a-z0-9-]+)?-peak-observed-n1$/u.test(suffix)
+  );
+}
+
+function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Record<string, BenchmarkRatchetPrimitive>> {
+  const profile = productionProfileArtifactMetadata(PRODUCTION_LARGE_CODE_GRAPH_PROFILE);
+  const selected = {
+    ...profile,
+    benchmarkDiskFilesystem: artifact.metadata.benchmarkDiskFilesystem,
+    benchmarkDiskLocation: artifact.metadata.benchmarkDiskLocation,
+    benchmarkDiskMedium: artifact.metadata.benchmarkDiskMedium,
+    benchmarkFilesystemsShared: artifact.metadata.benchmarkFilesystemsShared,
+    benchmarkGoverned: artifact.metadata.benchmarkGoverned,
+    benchmarkMinimumFreeBytes: artifact.metadata.benchmarkMinimumFreeBytes,
+    benchmarkReferenceDiskFilesystem: artifact.metadata.benchmarkReferenceDiskFilesystem,
+    benchmarkReferenceDiskLocation: artifact.metadata.benchmarkReferenceDiskLocation,
+    benchmarkReferenceDiskMedium: artifact.metadata.benchmarkReferenceDiskMedium,
+    coldEdges: artifact.metadata.coldEdges,
+    coldFiles: artifact.metadata.coldFiles,
+    coldMaterializationStorageMode: artifact.metadata.coldMaterializationStorageMode,
+    coldSymbols: artifact.metadata.coldSymbols,
+    effectiveParserMemoryBytes: artifact.metadata.effectiveParserMemoryBytes,
+    effectiveParserWorkers: artifact.metadata.effectiveParserWorkers,
+    oneFileReindexMaterializationMode: artifact.metadata.oneFileReindexMaterializationMode,
+    oneFileReindexMaterializationStorageMode: artifact.metadata.oneFileReindexMaterializationStorageMode,
+    primaryQueryStructuralDigestCold: artifact.metadata.primaryQueryStructuralDigestCold,
+    primaryQueryStructuralDigestIncremental: artifact.metadata.primaryQueryStructuralDigestIncremental,
+    primaryQueryStructuralDigestSameOverlayReference:
+      artifact.metadata.primaryQueryStructuralDigestSameOverlayReference,
+    retrievalMode: artifact.metadata.retrievalMode,
+    runnerClass: artifact.metadata.runnerClass,
+    runtimePlatform: artifact.metadata.runtimePlatform,
+    sameOverlayReferenceMaterializationMode: artifact.metadata.sameOverlayReferenceMaterializationMode,
+    sameOverlayReferenceMaterializationStorageMode: artifact.metadata.sameOverlayReferenceMaterializationStorageMode,
+    sqlitePageSizeBytes: artifact.metadata.sqlitePageSizeBytes,
+    sqliteVersion: artifact.metadata.sqliteVersion,
+    structuralGraphDigestCold: artifact.metadata.structuralGraphDigestCold,
+    structuralGraphDigestIncremental: artifact.metadata.structuralGraphDigestIncremental,
+    structuralGraphDigestSameOverlayReference: artifact.metadata.structuralGraphDigestSameOverlayReference,
+    vectorEnabled: artifact.metadata.vectorEnabled,
+  };
+  if (Object.values(selected).some(value => !['boolean', 'number', 'string'].includes(typeof value))) {
+    throw new ScriptError('Production ratchet artifact metadata is incomplete.');
+  }
+  return selected as Readonly<Record<string, BenchmarkRatchetPrimitive>>;
+}
+
+function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): string {
+  const metadata = artifact.metadata;
+  const minimumFreeBytes = metadata.benchmarkMinimumFreeBytes;
+  const primaryAvailableBytes = metadata.benchmarkPrimaryAvailableBytesAtStart;
+  const referenceAvailableBytes = metadata.benchmarkReferenceAvailableBytesAtStart;
+  if (
+    artifact.suite !== 'code-graph-production-large-v2' ||
+    artifact.environment.dirty ||
+    metadata.benchmarkGoverned !== true ||
+    metadata.benchmarkFilesystemsShared !== true ||
+    typeof minimumFreeBytes !== 'number' ||
+    minimumFreeBytes < PRODUCTION_RATCHET_MINIMUM_FREE_BYTES ||
+    typeof primaryAvailableBytes !== 'number' ||
+    primaryAvailableBytes < minimumFreeBytes ||
+    typeof referenceAvailableBytes !== 'number' ||
+    referenceAvailableBytes < minimumFreeBytes ||
+    metadata.benchmarkDiskMedium !== 'solid-state' ||
+    metadata.benchmarkReferenceDiskMedium !== 'solid-state' ||
+    (metadata.runtimePlatform === 'darwin' &&
+      (metadata.benchmarkDiskLocation !== 'internal' || metadata.benchmarkReferenceDiskLocation !== 'internal')) ||
+    metadata.benchmarkDiskFilesystem !== metadata.benchmarkReferenceDiskFilesystem
+  ) {
+    throw new ScriptError('Production ratchet generation requires complete governed storage evidence.');
+  }
+  return JSON.stringify({
+    commit: artifact.environment.commit,
+    executableSha256: metadata.benchmarkValidatedManagedExecutableSha256,
+    filesystem: metadata.benchmarkDiskFilesystem,
+    lockfileSha256: metadata.benchmarkMeasuredSourceLockfileSha256,
+    minimumFreeBytes,
+    packageManifestSha256: metadata.benchmarkMeasuredSourcePackageManifestSha256,
+    payloadManifestSha256: metadata.benchmarkValidatedManagedPayloadManifestSha256,
+    releaseMetadataSha256: metadata.benchmarkValidatedManagedReleaseMetadataSha256,
+    runtime: metadata.benchmarkValidatedManagedRuntime,
+    sourceCommit: metadata.benchmarkMeasuredSourceCommit,
+    target: metadata.benchmarkValidatedManagedTarget,
+    version: metadata.benchmarkValidatedManagedVersion,
+  });
+}
+
+function productionMeasurementRatchet(
+  name: string,
+  unit: BenchmarkMeasurementUnit,
+  values: readonly number[],
+): CodeGraphBenchmarkMeasurementRatchetV1 {
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const base = {samplesMinimum: 1, unit} as const;
+  if (productionDeterministicMeasurement(name, unit)) {
+    if (minimum !== maximum) {
+      throw new ScriptError(
+        `Production ratchet deterministic measurement ${name} disagrees across governed observations.`,
+      );
+    }
+    return {...base, maximum, minimum};
+  }
+  if (unit === 'milliseconds') {
+    const observedLimit =
+      maximum === 0
+        ? 0
+        : Math.ceil(
+            Math.max(
+              maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM),
+              maximum + PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM,
+            ),
+          );
+    const objective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
+    if (objective !== undefined && maximum > objective) {
+      throw new ScriptError(`Production ratchet objective ${name} has not been attained.`);
+    }
+    return {
+      ...base,
+      p95Maximum: Math.min(observedLimit, objective ?? Number.MAX_SAFE_INTEGER),
+    };
+  }
+  if (unit === 'bytes') {
+    return {...base, p95Maximum: maximum === 0 ? 0 : Math.ceil(maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM))};
+  }
+  if (unit === 'operations_per_second') {
+    return {...base, minimum: Math.floor(minimum * (1 - PRODUCTION_RATCHET_RELATIVE_HEADROOM) * 1_000) / 1_000};
+  }
+  if (unit === 'percent') return {...base, minimum};
+  return {...base, maximum: Math.ceil(maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM))};
+}
+
+function productionDeterministicMeasurement(name: string, unit: BenchmarkMeasurementUnit): boolean {
+  if (unit !== 'count') return false;
+  return (
+    name.includes('-parity') ||
+    name.includes('-returned-') ||
+    name.includes('-incremental-work-') ||
+    name.includes('-materialized-') ||
+    name.includes('-rows') ||
+    (name.includes('-activation-') && name.endsWith('-observed-n1')) ||
+    name.endsWith('-sampler-version-n1') ||
+    name.endsWith('-staged-files') ||
+    name.endsWith('-total-files') ||
+    name.endsWith('-vector-enabled') ||
+    /-(?:edges|files|packages|relations|symbols|terms|workspaces)(?:-n1)?$/u.test(name)
+  );
+}
 
 /**
  * Enforces independent bounds for every measurement named by a reviewed
