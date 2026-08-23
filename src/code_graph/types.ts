@@ -212,6 +212,7 @@ export interface CodeGraphMaterializationActivity {
     | 'committing'
     | 'loading-cache'
     | 'preparing-rows'
+    | 'restoring-indexes'
     | 'writing-analysis'
     | 'writing-candidates'
     | 'writing-edges'

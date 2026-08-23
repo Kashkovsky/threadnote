@@ -330,6 +330,16 @@ export type CodeGraphStagingBatchProgressCallback = (
   progress: CodeGraphStagingProgress,
 ) => Effect.Effect<void, never>;
 
+export interface CodeGraphSecondaryIndexRestorationProgress {
+  readonly completed: number;
+  readonly elapsedMilliseconds: number;
+  readonly total: number;
+}
+
+export type CodeGraphSecondaryIndexRestorationProgressCallback = (
+  progress: CodeGraphSecondaryIndexRestorationProgress,
+) => Effect.Effect<void, never>;
+
 export type CodeGraphActivationStage =
   | 'checkpointing-snapshot'
   | 'committing-snapshot'

@@ -101,6 +101,7 @@ describe('code graph disk reservation ledger', () => {
         'promote ready code graph snapshot' as const,
         'publish persistent code graph snapshot' as const,
         'register persistent code graph materialization plan' as const,
+        'restore persistent code graph query indexes' as const,
         'resolve persistent code graph reexport aliases' as const,
         'resolve persistent code graph references' as const,
         'stage persistent code graph facts' as const,

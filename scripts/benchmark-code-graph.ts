@@ -167,6 +167,7 @@ const MATERIALIZATION_STAGES = [
   'loading-cache',
   'attributing',
   'preparing-rows',
+  'restoring-indexes',
   'writing-symbols',
   'writing-lookups',
   'writing-terms',

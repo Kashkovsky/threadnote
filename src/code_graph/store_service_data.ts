@@ -76,6 +76,7 @@ import {
   temporaryActivationInventoryCapacity,
   temporaryIncrementalActivationCapacity,
 } from './store_temporary_capacity.js';
+import {restoreCodeGraphQueryIndexesAfterColdBuild} from './store_cold_index_deferral.js';
 
 type CodeGraphStoreDataMethods = Pick<
   CodeGraphStoreShape,
@@ -191,7 +192,12 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('prepare staged code graph activation', cause)),
       ),
-    finalizePersistentMaterializationPlan: (databasePath, expectedBatchCount, persistentCapacityProtector) =>
+    finalizePersistentMaterializationPlan: (
+      databasePath,
+      expectedBatchCount,
+      persistentCapacityProtector,
+      onSecondaryIndexProgress,
+    ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
@@ -215,6 +221,14 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 finalizePersistentMaterializationPlan(sql, mode.snapshotId, mode.ownerToken, expectedBatchCount),
               );
               yield* persistentCapacityProtector ? persistentCapacityProtector(boundary, transaction) : transaction;
+              yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+                onProgress: onSecondaryIndexProgress,
+                ownerToken: mode.ownerToken,
+                persistentCapacityProtector,
+                snapshotId: mode.snapshotId,
+                sql,
+                writerGate: effect => withWriterGate(databasePath, effect),
+              });
             }),
           ),
         ),

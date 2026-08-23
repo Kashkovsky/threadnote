@@ -32,6 +32,7 @@ import type {
   CodeGraphReusableCleanBaseSlice,
   CodeGraphReusableReexport,
   CodeGraphReusableReexportSeed,
+  CodeGraphSecondaryIndexRestorationProgressCallback,
   CodeGraphRoutineMaintenanceOptions,
   CodeGraphRoutineMaintenanceResult,
   CodeGraphSnapshotLeaseAcquireOptions,
@@ -231,6 +232,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     expectedBatchCount: number,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+    onSecondaryIndexProgress?: CodeGraphSecondaryIndexRestorationProgressCallback,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly preparePersistedIncrementalActivation: (
     databasePath: string,

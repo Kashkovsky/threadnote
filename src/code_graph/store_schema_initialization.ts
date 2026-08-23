@@ -20,6 +20,7 @@ import {
   codeGraphSchemaInitializationReceiptCurrent,
   recordCodeGraphSchemaInitializationReceipt,
 } from './store_schema_receipt.js';
+import {ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
@@ -528,50 +529,10 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   // the same rows. Query-required index changes are shared with the atomic
   // persistent-extension upgrade path.
   yield* ensureCurrentCodeGraphQueryIndexes(sql);
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path ON symbols(snapshot_id, path)');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_scope');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_package');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_path');
-  const visualizationKindOrder = `CASE kind
-    WHEN 'package' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3
-    WHEN 'function' THEN 4 WHEN 'method' THEN 5 ELSE 6 END`;
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS symbols_visualization_scope_v2
-    ON symbols(snapshot_id, resolution_scope_id, exported DESC, (${visualizationKindOrder}), id)
-  `);
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS symbols_visualization_package_v2
-    ON symbols(
-      snapshot_id, resolution_scope_id, package_name, exported DESC,
-      (${visualizationKindOrder}), id
-    )
-    WHERE resolution_scope_id IS NULL
-  `);
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS symbols_visualization_path_v2
-    ON symbols(
-      snapshot_id,
-      resolution_scope_id,
-      (CASE WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1) ELSE '(root)' END),
-      exported DESC,
-      (${visualizationKindOrder}),
-      id
-    )
-    WHERE resolution_scope_id IS NULL AND (package_name IS NULL OR trim(package_name) = '')
-  `);
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(snapshot_id, name COLLATE NOCASE)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS symbols_qualified_nocase ON symbols(snapshot_id, qualified_name COLLATE NOCASE)',
-  );
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path_nocase ON symbols(snapshot_id, path COLLATE NOCASE)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS symbols_export_order ON symbols(snapshot_id, path, qualified_name, id)',
-  );
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_source ON edges(snapshot_id, source_id, relation)');
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_evidence_path ON edges(snapshot_id, evidence_path)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS edges_export_order ON edges(snapshot_id, source_name, relation, target_name, id)',
-  );
+  yield* ensureCodeGraphQueryIndexes(sql);
   // The WITHOUT ROWID primary key already serves `(snapshot_id, term)` lexical
   // lookups. Snapshot-owned postings are purged before snapshot/symbol rows, so
   // a second `(snapshot_id, symbol_id)` ordering is unnecessary for cascades.

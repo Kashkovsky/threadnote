@@ -53,6 +53,7 @@ import {
 } from './store_staging_core.js';
 import {promotionRemovedSnapshotId, stagePersistedFullFacts} from './store_resolution_core.js';
 import {selectReusableBaseReceipt} from './store_queries.js';
+import {deferCodeGraphQueryIndexesForColdBuild} from './store_cold_index_deferral.js';
 
 /** @internal Exposed for deterministic SQLite snapshot-contract tests. */
 
@@ -236,6 +237,12 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
     VALUES ('mode', 'persisted-full'), ('snapshot_id', ${snapshotId}), ('owner_token', ${ownerToken})
   `;
   yield* preparePersistedFullResolutionViews(sql);
+  // Production full builds discover their final batch count while attributed
+  // facts are decoded. Known-count callers retain the existing eager-index
+  // contract; only the dynamically finalized path enters cold deferral.
+  if (expectedBatchCount === undefined) {
+    yield* deferCodeGraphQueryIndexesForColdBuild(sql, snapshotId, ownerToken, runWrite);
+  }
 });
 
 // Stay comfortably below SQLite's cross-platform parameter ceiling while

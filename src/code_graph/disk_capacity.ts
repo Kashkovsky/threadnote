@@ -20,6 +20,7 @@ export type CodeGraphDirectPersistentCapacityOperation =
   | 'publish persistent code graph snapshot'
   | 'promote ready code graph snapshot'
   | 'register persistent code graph materialization plan'
+  | 'restore persistent code graph query indexes'
   | 'resolve persistent code graph reexport aliases'
   | 'resolve persistent code graph references'
   | 'retire code graph vector generation'
@@ -44,6 +45,7 @@ export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS = [
   'publish persistent code graph snapshot',
   'promote ready code graph snapshot',
   'register persistent code graph materialization plan',
+  'restore persistent code graph query indexes',
   'resolve persistent code graph reexport aliases',
   'resolve persistent code graph references',
   'retire code graph vector generation',
@@ -613,6 +615,7 @@ function capacityOperation(operation: string): CodeGraphCapacityFailureOperation
     case 'publish persistent code graph snapshot':
     case 'promote ready code graph snapshot':
     case 'register persistent code graph materialization plan':
+    case 'restore persistent code graph query indexes':
     case 'resolve persistent code graph reexport aliases':
     case 'resolve persistent code graph references':
     case 'retire code graph vector generation':

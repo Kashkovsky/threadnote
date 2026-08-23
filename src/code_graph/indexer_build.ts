@@ -51,7 +51,7 @@ import {
   uniqueById,
   verifyIndexInput,
 } from './indexer_materialization.js';
-import type {PendingMaterializationBatch} from './indexer_materialization_batch.js';
+import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
 import {
   CodeGraphIndexOperationError,
   codeGraphInventoryFileChanged,
@@ -1250,9 +1250,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       temporaryAvailableBytes,
     });
     let batchesCompleted = 0;
-    // Final attribution may expand one cached-fact batch into multiple bounded
-    // write transactions. Until each source batch is decoded, this is a lower
-    // bound that converges monotonically to the exact finalized receipt count.
+    // Attribution can split a cached-fact batch, so this lower bound converges as batches decode.
     let batchesTotal = batches.length;
     let sourceBytesCompleted = 0;
     let loadingMilliseconds = 0;
@@ -1305,9 +1303,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       sourceBytesCompleted,
       sourceBytesTotal,
       stageMilliseconds: {...stageMilliseconds},
-      // Subphase totals are cumulative terminal evidence. Publishing a fresh
-      // snapshot on every staging callback turns five counters into sustained
-      // allocator/RSS pressure on large builds without adding information.
+      // Only publish cumulative subphase evidence at the terminal update to avoid sustained allocator pressure.
       ...(finalFactsBytesTotal === undefined ? {} : {subphaseMilliseconds: materializationSubphases.snapshot()}),
       storage: {
         ...storagePlan,
@@ -1526,11 +1522,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
       const loadingStartedAt = yield* Clock.currentTimeMillis;
-      // Final attribution can inspect peer raw facts in this deterministic,
-      // bounded source batch (for example while flattening TypeScript barrel
-      // reexports). Reuse the batch only as a complete unit; otherwise replay
-      // and reattribute every raw peer so a hit/miss partition cannot become a
-      // persisted derivation input.
+      // Attribution may inspect peer facts in this deterministic source batch (for example, TypeScript barrels).
+      // Reuse only a complete batch so a hit/miss partition cannot become a persisted derivation input.
       const materializedShards = directPersistentMaterialization
         ? yield* input.store.loadMaterializedFileShards(
             input.layout.databasePath,
@@ -1565,8 +1558,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         materializedShardReplayBytes: materializedShards.bytes,
         rawFactReplayBytes: cached.bytes,
       });
-      // Changed-fact bytes are the logical selected representation used as the
-      // replay-amplification denominator, not every physical cache decode.
+      // Changed-fact bytes measure the selected representation, not every physical cache decode.
       const batchChangedFactBytes = selectedDecodedFactBytes(
         materializedShardBatchComplete ? materializedShards.bytesByPath : cached.bytesByPath,
         files.filter(file => changedCurrentPaths.has(file.path)).map(file => file.path),
@@ -1641,8 +1633,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           selectedShardIds,
         });
         if (flushShardAssociations) {
-          // This physical work is already captured by the batch-local
-          // attribution timer below.
+          // This physical work is already captured by the batch-local attribution timer.
           yield* shardWrites.flushAssociations(false);
         }
       }
@@ -1759,6 +1750,17 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         input.layout.databasePath,
         persistentBatchCursor,
         persistentCapacityGuard,
+        secondaryIndexRestorationReporter({
+          batchCompleted: batchesCompleted,
+          batchTotal: batchesTotal,
+          completed: materializedFiles,
+          metrics,
+          onProgress: input.onProgress,
+          refreshStorageFiles: () => refreshStorageFiles(true),
+          reused: reusedFiles,
+          stageMilliseconds,
+          total: totalFiles,
+        }),
       );
     }
     yield* input.onProgress?.({
@@ -1853,9 +1855,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     yield* input.store.shrinkMemory(input.layout.databasePath);
     if (input.activatePointer) {
       yield* input.onProgress?.({phase: 'activating', snapshotId: activated.id, subphase: 'promoting'}) ?? Effect.void;
-      // Progress callbacks are user-controlled effects and may yield long enough for
-      // the worktree to change. Revalidate on both sides of pointer promotion so a
-      // mutation observed in this window triggers the bounded retry.
+      // Progress callbacks may yield long enough for the worktree to change. Revalidate on both sides of
+      // pointer promotion so a mutation in this window triggers the bounded retry.
       yield* verifyCommittedIndexInput({
         databasePath: input.layout.databasePath,
         identity: input.identity,
