@@ -6759,7 +6759,12 @@ function dynamicExternalSamplerPhaseMeasurement(name: string): boolean {
 }
 
 function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Record<string, BenchmarkRatchetPrimitive>> {
-  const profile = productionProfileArtifactMetadata(PRODUCTION_LARGE_CODE_GRAPH_PROFILE);
+  const profile = Object.fromEntries(
+    Object.keys(productionProfileArtifactMetadata(PRODUCTION_LARGE_CODE_GRAPH_PROFILE)).map(name => [
+      name,
+      artifact.metadata[name],
+    ]),
+  );
   const selected = {
     ...profile,
     benchmarkDiskFilesystem: artifact.metadata.benchmarkDiskFilesystem,

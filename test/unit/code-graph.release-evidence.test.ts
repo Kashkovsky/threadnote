@@ -1028,6 +1028,24 @@ describe('code graph release evidence', () => {
     expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 1);
     expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
     expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
+    const scaledArtifacts = artifacts.map(artifact => ({
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        profileSourceFiles: 3_000,
+        profileTargetEligibleFiles: 4_926,
+        profileTargetSymbols: 110_000,
+      },
+    }));
+    const scaledRatchet = createCodeGraphProductionRatchet(scaledArtifacts);
+    expect(scaledRatchet.metadata).toMatchObject({
+      profileSourceFiles: 3_000,
+      profileTargetEligibleFiles: 4_926,
+      profileTargetSymbols: 110_000,
+    });
+    for (const artifact of scaledArtifacts) {
+      expect(() => enforceCodeGraphBenchmarkRatchet(artifact, scaledRatchet)).not.toThrow();
+    }
 
     const limit = ratchet.measurements['cold-index']!.p95Maximum!;
     const regressed = {
