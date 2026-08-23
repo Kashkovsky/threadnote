@@ -1188,6 +1188,8 @@ export interface CodeGraphMaterializationReplayMetrics {
   readonly cachedFactReplayBytesCompleted: number;
   readonly crossGenerationShardFilesCompleted: number;
   readonly exactGenerationShardFilesCompleted: number;
+  readonly materializedShardCacheDeferredFilesCompleted: number;
+  readonly materializedShardCacheDeferredRawFactBytesCompleted: number;
   readonly materializedShardReplayBytesCompleted: number;
   readonly rawFactReplayBytesCompleted: number;
 }
@@ -1196,6 +1198,8 @@ export interface CodeGraphMaterializationReplayObservation {
   readonly attributedFiles?: number;
   readonly crossGenerationShardFiles?: number;
   readonly exactGenerationShardFiles?: number;
+  readonly materializedShardCacheDeferredFiles?: number;
+  readonly materializedShardCacheDeferredRawFactBytes?: number;
   readonly materializedShardReplayBytes?: number;
   readonly rawFactReplayBytes?: number;
 }
@@ -1206,6 +1210,8 @@ export function emptyMaterializationReplayMetrics(): CodeGraphMaterializationRep
     cachedFactReplayBytesCompleted: 0,
     crossGenerationShardFilesCompleted: 0,
     exactGenerationShardFilesCompleted: 0,
+    materializedShardCacheDeferredFilesCompleted: 0,
+    materializedShardCacheDeferredRawFactBytesCompleted: 0,
     materializedShardReplayBytesCompleted: 0,
     rawFactReplayBytesCompleted: 0,
   };
@@ -1234,6 +1240,14 @@ export function addMaterializationReplayMetrics(
     exactGenerationShardFilesCompleted: saturatingAdd(
       current.exactGenerationShardFilesCompleted,
       observation.exactGenerationShardFiles ?? 0,
+    ),
+    materializedShardCacheDeferredFilesCompleted: saturatingAdd(
+      current.materializedShardCacheDeferredFilesCompleted,
+      observation.materializedShardCacheDeferredFiles ?? 0,
+    ),
+    materializedShardCacheDeferredRawFactBytesCompleted: saturatingAdd(
+      current.materializedShardCacheDeferredRawFactBytesCompleted,
+      observation.materializedShardCacheDeferredRawFactBytes ?? 0,
     ),
     materializedShardReplayBytesCompleted,
     rawFactReplayBytesCompleted,

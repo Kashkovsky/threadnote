@@ -4,6 +4,7 @@ import {Database} from 'bun:sqlite';
 import {Clock, Deferred, Effect, Exit, FileSystem, Option, Path, PlatformError} from 'effect';
 import {readCodeGraphBuildStatuses} from '../src/code_graph/build_status.js';
 import {CodeGraphIndexer} from '../src/code_graph/indexer.js';
+import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../src/code_graph/materialized_shard_cache_admission.js';
 import {
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphSymbolPathScoreMultiplier,
@@ -353,10 +354,16 @@ const SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'one-file-reindex', 'sam
 const MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'same-overlay-reference'] as const).flatMap(
   prefix => [
     {name: `${prefix}-materialization-attributed-files-n1`, unit: 'count'} as const,
+    {name: `${prefix}-materialization-cached-fact-bytes-total-n1`, unit: 'bytes'} as const,
     {name: `${prefix}-materialization-cached-fact-replay-bytes-n1`, unit: 'bytes'} as const,
     {name: `${prefix}-materialization-changed-fact-bytes-n1`, unit: 'bytes'} as const,
     {name: `${prefix}-materialization-cross-generation-shard-files-n1`, unit: 'count'} as const,
     {name: `${prefix}-materialization-exact-generation-shard-files-n1`, unit: 'count'} as const,
+    {name: `${prefix}-materialization-materialized-shard-cache-deferred-files-n1`, unit: 'count'} as const,
+    {
+      name: `${prefix}-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1`,
+      unit: 'bytes',
+    } as const,
     {name: `${prefix}-materialization-materialized-shard-replay-bytes-n1`, unit: 'bytes'} as const,
     {name: `${prefix}-materialization-raw-fact-replay-bytes-n1`, unit: 'bytes'} as const,
   ],
@@ -399,7 +406,6 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'structural-graph-digest-parity', unit: 'count'},
   {name: 'cold-sqlite-temp-database-pages-high-water-n1', unit: 'bytes'},
   {name: 'cold-sqlite-durable-database-pages-high-water-n1', unit: 'bytes'},
-  {name: 'cold-materialization-cached-fact-bytes-total-n1', unit: 'bytes'},
   {name: 'cold-materialization-estimated-temp-filesystem-required-n1', unit: 'bytes'},
   {name: 'cold-materialization-estimated-durable-filesystem-required-n1', unit: 'bytes'},
   {name: 'cold-materialization-temp-filesystem-available-n1', unit: 'bytes'},
@@ -2122,6 +2128,9 @@ export class IndexPhaseTimeline {
             changedFactBytesCompleted: progress.metrics.changedFactBytesCompleted,
             crossGenerationShardFilesCompleted: progress.metrics.crossGenerationShardFilesCompleted,
             exactGenerationShardFilesCompleted: progress.metrics.exactGenerationShardFilesCompleted,
+            materializedShardCacheDeferredFilesCompleted: progress.metrics.materializedShardCacheDeferredFilesCompleted,
+            materializedShardCacheDeferredRawFactBytesCompleted:
+              progress.metrics.materializedShardCacheDeferredRawFactBytesCompleted,
             ...(progress.metrics.factsBytesTotal === undefined
               ? {}
               : {finalFactBytesTotal: progress.metrics.factsBytesTotal}),
@@ -2458,6 +2467,8 @@ export interface IndexMaterializationStorageEvidence {
   readonly estimatedTemporaryFilesystemRequiredBytes?: number;
   readonly filesystemsShared?: boolean;
   readonly materializedShardReplayBytesCompleted?: number;
+  readonly materializedShardCacheDeferredFilesCompleted?: number;
+  readonly materializedShardCacheDeferredRawFactBytesCompleted?: number;
   readonly materializationMode?: 'direct-persistent' | 'temporary-staged';
   readonly rawFactReplayBytesCompleted?: number;
   readonly temporaryAvailableBytes?: number;
@@ -2603,6 +2614,16 @@ export function materializationStorageMeasurements(
   add('materialization-cross-generation-shard-files-n1', 'count', storage.crossGenerationShardFilesCompleted);
   add('materialization-exact-generation-shard-files-n1', 'count', storage.exactGenerationShardFilesCompleted);
   add('materialization-final-fact-bytes-total-n1', 'bytes', storage.finalFactBytesTotal);
+  add(
+    'materialization-materialized-shard-cache-deferred-files-n1',
+    'count',
+    storage.materializedShardCacheDeferredFilesCompleted,
+  );
+  add(
+    'materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1',
+    'bytes',
+    storage.materializedShardCacheDeferredRawFactBytesCompleted,
+  );
   add('materialization-materialized-shard-replay-bytes-n1', 'bytes', storage.materializedShardReplayBytesCompleted);
   add('materialization-raw-fact-replay-bytes-n1', 'bytes', storage.rawFactReplayBytesCompleted);
   add(
@@ -4710,19 +4731,59 @@ function missingMaterializationReplayEquations(
   measurements: ReadonlyMap<string, BenchmarkArtifactV1['measurements'][number]>,
 ): readonly string[] {
   return (['cold', 'same-overlay-reference'] as const).flatMap(prefix => {
+    const attributed = measurements.get(`${prefix}-materialization-attributed-files-n1`);
+    const cachedTotal = measurements.get(`${prefix}-materialization-cached-fact-bytes-total-n1`);
     const cached = measurements.get(`${prefix}-materialization-cached-fact-replay-bytes-n1`);
+    const deferredFiles = measurements.get(`${prefix}-materialization-materialized-shard-cache-deferred-files-n1`);
+    const deferredRawBytes = measurements.get(
+      `${prefix}-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1`,
+    );
     const materialized = measurements.get(`${prefix}-materialization-materialized-shard-replay-bytes-n1`);
     const raw = measurements.get(`${prefix}-materialization-raw-fact-replay-bytes-n1`);
-    if (!cached || !materialized || !raw) return [];
+    if (!attributed || !cachedTotal || !cached || !deferredFiles || !deferredRawBytes || !materialized || !raw) {
+      return [];
+    }
+    const attributedFiles = exactSingleSampleCount(attributed);
+    const cachedFactBytesTotal = exactSingleSampleCount(cachedTotal);
     const cachedBytes = exactSingleSampleCount(cached);
+    const deferredFileCount = exactSingleSampleCount(deferredFiles);
+    const deferredBytes = exactSingleSampleCount(deferredRawBytes);
     const materializedBytes = exactSingleSampleCount(materialized);
     const rawBytes = exactSingleSampleCount(raw);
-    return cachedBytes !== undefined &&
-      materializedBytes !== undefined &&
-      rawBytes !== undefined &&
-      cachedBytes === Math.min(Number.MAX_SAFE_INTEGER, materializedBytes + rawBytes)
-      ? []
-      : [`${prefix} materialization replay-byte equation`];
+    const missing: string[] = [];
+    if (
+      cachedBytes === undefined ||
+      materializedBytes === undefined ||
+      rawBytes === undefined ||
+      cachedBytes !== Math.min(Number.MAX_SAFE_INTEGER, materializedBytes + rawBytes)
+    ) {
+      missing.push(`${prefix} materialization replay-byte equation`);
+    }
+    const deferredWriteSubphases = ['persistence', 'serialization'].map(subphase =>
+      measurements.get(`${prefix}-materialization-subphase-shard-${subphase}-n1`),
+    );
+    if (
+      cachedFactBytesTotal === undefined ||
+      rawBytes === undefined ||
+      deferredFileCount === undefined ||
+      deferredBytes === undefined
+    ) {
+      missing.push(`${prefix} materialized-shard cache admission`);
+    } else if (cachedFactBytesTotal > CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM) {
+      if (attributedFiles === undefined || deferredFileCount !== attributedFiles || deferredBytes !== rawBytes) {
+        missing.push(`${prefix} large-build materialized-shard cache deferral`);
+      }
+      if (
+        deferredWriteSubphases.some(
+          measurement => measurement === undefined || exactSingleSampleCount(measurement) !== 0,
+        )
+      ) {
+        missing.push(`${prefix} deferred materialized-shard physical-write exclusion`);
+      }
+    } else if (deferredFileCount !== 0 || deferredBytes !== 0) {
+      missing.push(`${prefix} bounded-build materialized-shard cache persistence`);
+    }
+    return missing;
   });
 }
 
@@ -6729,9 +6790,6 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
     sameOverlayReferenceMaterializationStorageMode: artifact.metadata.sameOverlayReferenceMaterializationStorageMode,
     sqlitePageSizeBytes: artifact.metadata.sqlitePageSizeBytes,
     sqliteVersion: artifact.metadata.sqliteVersion,
-    structuralGraphDigestCold: artifact.metadata.structuralGraphDigestCold,
-    structuralGraphDigestIncremental: artifact.metadata.structuralGraphDigestIncremental,
-    structuralGraphDigestSameOverlayReference: artifact.metadata.structuralGraphDigestSameOverlayReference,
     vectorEnabled: artifact.metadata.vectorEnabled,
   };
   if (Object.values(selected).some(value => !['boolean', 'number', 'string'].includes(typeof value))) {

@@ -24,6 +24,7 @@ import {
 } from '../../scripts/benchmark-code-graph.js';
 import {PRODUCTION_LARGE_CODE_GRAPH_PROFILE} from '../../scripts/code-graph-fixture.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
+import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../../src/code_graph/materialized_shard_cache_admission.js';
 import {
   retainedPerformanceArtifactFromHarness,
   validateRetainedPerformancePayload,
@@ -716,6 +717,8 @@ describe('code graph release evidence', () => {
         {name: 'cold-materialization-temp-filesystem-available-n1', unit: 'bytes'},
         {name: 'cold-materialization-durable-filesystem-available-n1', unit: 'bytes'},
         {name: 'cold-materialization-filesystems-shared-n1', unit: 'count'},
+        {name: 'cold-materialization-materialized-shard-cache-deferred-files-n1', unit: 'count'},
+        {name: 'cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-materialized-shard-replay-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-deduplicated-edge-rows-n1', unit: 'count'},
@@ -726,10 +729,19 @@ describe('code graph release evidence', () => {
         {name: 'same-overlay-reference-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
         {name: 'one-file-reindex-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
         {name: 'same-overlay-reference-materialization-attributed-files-n1', unit: 'count'},
+        {name: 'same-overlay-reference-materialization-cached-fact-bytes-total-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-cached-fact-replay-bytes-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-changed-fact-bytes-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-cross-generation-shard-files-n1', unit: 'count'},
         {name: 'same-overlay-reference-materialization-exact-generation-shard-files-n1', unit: 'count'},
+        {
+          name: 'same-overlay-reference-materialization-materialized-shard-cache-deferred-files-n1',
+          unit: 'count',
+        },
+        {
+          name: 'same-overlay-reference-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1',
+          unit: 'bytes',
+        },
         {name: 'same-overlay-reference-materialization-materialized-shard-replay-bytes-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
       ]),
@@ -747,6 +759,8 @@ describe('code graph release evidence', () => {
         estimatedTemporaryFilesystemRequiredBytes: 40,
         filesystemsShared: false,
         exactGenerationShardFilesCompleted: 3,
+        materializedShardCacheDeferredFilesCompleted: 2,
+        materializedShardCacheDeferredRawFactBytesCompleted: 4,
         materializedShardReplayBytesCompleted: 8,
         rawFactReplayBytesCompleted: 4,
         temporaryAvailableBytes: 50,
@@ -760,6 +774,8 @@ describe('code graph release evidence', () => {
         ['cold-materialization-changed-fact-bytes-n1', 2],
         ['cold-materialization-cross-generation-shard-files-n1', 0],
         ['cold-materialization-exact-generation-shard-files-n1', 3],
+        ['cold-materialization-materialized-shard-cache-deferred-files-n1', 2],
+        ['cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1', 4],
         ['cold-materialization-materialized-shard-replay-bytes-n1', 8],
         ['cold-materialization-raw-fact-replay-bytes-n1', 4],
         ['cold-materialization-estimated-temp-filesystem-required-n1', 40],
@@ -861,6 +877,66 @@ describe('code graph release evidence', () => {
     );
   });
 
+  it('requires large full builds to defer the complete duplicate materialized-shard cache', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v2',
+    );
+    const withValues = (values: Readonly<Record<string, number>>): BenchmarkArtifactV1 => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        values[measurement.name] === undefined
+          ? measurement
+          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]!]),
+      ),
+    });
+
+    expect(() => assertProductionReleaseEvidence(artifact)).not.toThrow();
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withValues({'cold-materialization-materialized-shard-cache-deferred-files-n1': 0}),
+      ),
+    ).toThrow(/cold large-build materialized-shard cache deferral/);
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withValues({
+          'cold-materialization-cached-fact-replay-bytes-n1':
+            CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 1,
+          'cold-materialization-cached-fact-bytes-total-n1':
+            CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM,
+          'cold-materialization-materialized-shard-cache-deferred-files-n1': 0,
+          'cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1': 0,
+          'cold-materialization-raw-fact-replay-bytes-n1':
+            CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM,
+        }),
+      ),
+    ).not.toThrow();
+    fc.assert(
+      fc.property(
+        fc.integer({max: CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM, min: 0}),
+        deferredRawFactBytes => {
+          expect(() =>
+            assertProductionReleaseEvidence(
+              withValues({
+                'cold-materialization-cached-fact-bytes-total-n1': deferredRawFactBytes,
+                'cold-materialization-cached-fact-replay-bytes-n1': deferredRawFactBytes + 1,
+                'cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1': deferredRawFactBytes,
+                'cold-materialization-raw-fact-replay-bytes-n1': deferredRawFactBytes,
+              }),
+            ),
+          ).toThrow(/cold bounded-build materialized-shard cache persistence/);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
   it('generates exhaustive independent ratchets from governed production observations', () => {
     const governed = (coldIndexMilliseconds: number, sampledPhase: string): BenchmarkArtifactV1 =>
       benchmarkArtifact(
@@ -903,9 +979,9 @@ describe('code graph release evidence', () => {
           sameOverlayReferenceMaterializationStorageMode: 'direct-persistent',
           sqlitePageSizeBytes: 8192,
           sqliteVersion: '3.49.1',
-          structuralGraphDigestCold: '3'.repeat(64),
-          structuralGraphDigestIncremental: '4'.repeat(64),
-          structuralGraphDigestSameOverlayReference: '4'.repeat(64),
+          structuralGraphDigestCold: coldIndexMilliseconds.toString(16).padStart(64, '0'),
+          structuralGraphDigestIncremental: (coldIndexMilliseconds + 1).toString(16).padStart(64, '0'),
+          structuralGraphDigestSameOverlayReference: (coldIndexMilliseconds + 1).toString(16).padStart(64, '0'),
           vectorEnabled: false,
         },
         'code-graph-production-large-v2',
@@ -937,6 +1013,7 @@ describe('code graph release evidence', () => {
       benchmarkDiskLocation: 'internal',
       benchmarkReferenceDiskLocation: 'internal',
     });
+    expect(ratchet.metadata).not.toHaveProperty('structuralGraphDigestCold');
     const overTarget = artifacts.map(artifact => ({
       ...artifact,
       measurements: artifact.measurements.map(measurement =>
@@ -2062,21 +2139,28 @@ function requiredReleaseMeasurements(
       measurement.name === 'cold-activation-observed-stages-n1'
         ? 3
         : measurement.name.endsWith('-materialization-cached-fact-replay-bytes-n1')
-          ? 2
-          : measurement.name.startsWith('production-shape-')
-            ? 100
-            : measurement.name.startsWith('cold-activation-copying-') && measurement.name.endsWith('-observed-n1')
-              ? 0
-              : measurement.name.endsWith('-activation-observed-stages-n1')
-                ? 32
-                : measurement.name.endsWith('-external-sampler-version-n1')
-                  ? 4
-                  : measurement.name.endsWith('-external-process-tree-failures-n1') ||
-                      measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+          ? CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 2
+          : measurement.name.endsWith('-materialization-cached-fact-bytes-total-n1')
+            ? CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 1
+            : measurement.name.endsWith('-materialization-raw-fact-replay-bytes-n1') ||
+                measurement.name.endsWith('-materialized-shard-cache-deferred-raw-fact-bytes-n1')
+              ? CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 1
+              : /-materialization-subphase-shard-(?:association|persistence|serialization)-n1$/u.test(measurement.name)
+                ? 0
+                : measurement.name.startsWith('production-shape-')
+                  ? 100
+                  : measurement.name.startsWith('cold-activation-copying-') && measurement.name.endsWith('-observed-n1')
                     ? 0
-                    : measurement.name === 'one-file-reindex-materialization-stage-restoring-indexes-n1'
-                      ? 0
-                      : 1,
+                    : measurement.name.endsWith('-activation-observed-stages-n1')
+                      ? 32
+                      : measurement.name.endsWith('-external-sampler-version-n1')
+                        ? 4
+                        : measurement.name.endsWith('-external-process-tree-failures-n1') ||
+                            measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+                          ? 0
+                          : measurement.name === 'one-file-reindex-materialization-stage-restoring-indexes-n1'
+                            ? 0
+                            : 1,
     ]),
   );
 }

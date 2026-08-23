@@ -52,12 +52,8 @@ import {
   verifyIndexInput,
 } from './indexer_materialization.js';
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
-import {
-  CodeGraphIndexOperationError,
-  codeGraphInventoryFileChanged,
-  sameInventoryPaths,
-  WorktreeChangedDuringIndex,
-} from './indexer_shared.js';
+import {verifyCommittedIndexInput} from './indexer_input_verification.js';
+import {CodeGraphIndexOperationError, codeGraphInventoryFileChanged, sameInventoryPaths} from './indexer_shared.js';
 import type {
   CodeGraphIndexOptions,
   CommittedBaseResult,
@@ -69,6 +65,10 @@ import type {
 import {preferredIncrementalBaseCommitGroups} from './incremental_base_selection.js';
 import type {CodeGraphInventory} from './inventory.js';
 import {makeCodeGraphMaterializedShardWriteQueue} from './indexer_materialized_shard_writes.js';
+import {
+  codeGraphMaterializedShardCacheBatchPlan,
+  codeGraphMaterializedShardCacheWriteAdmission,
+} from './materialized_shard_cache_admission.js';
 import {assessCodeGraphLanguagePackDelta} from './languages/provenance.js';
 import {packDerivationIdentity, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
@@ -99,43 +99,6 @@ import {
   type CodeGraphSnapshot,
   type RepositoryIdentity,
 } from './types.js';
-import {reserveCodeGraphRetainedBase} from './retained_base_reservation.js';
-
-export const CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS = 45 * 60_000;
-
-const verifyCommittedIndexInput = Effect.fn('codeGraph.verifyCommittedIndexInput')(function* (input: {
-  readonly databasePath: string;
-  readonly identity: RepositoryIdentity;
-  readonly physicalSnapshotId?: string;
-  readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
-  readonly snapshotId: string;
-  readonly store: CodeGraphStoreShape;
-  readonly threadnoteHome: string;
-}) {
-  return yield* verifyIndexInput(input.identity, true, input.threadnoteHome, input.requestedOverlay).pipe(
-    Effect.catchIf(
-      cause => cause instanceof WorktreeChangedDuringIndex,
-      cause =>
-        Effect.gen(function* () {
-          const lease = yield* input.store
-            .acquireSnapshotLease(input.databasePath, input.snapshotId, CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS, {
-              retainedBase: true,
-            })
-            .pipe(Effect.option);
-          if (Option.isNone(lease)) return yield* Effect.fail(cause);
-          const reserved = yield* reserveCodeGraphRetainedBase({
-            durationMilliseconds: CODE_GRAPH_RETAINED_BASE_LEASE_MILLISECONDS,
-            physicalSnapshotId: input.physicalSnapshotId ?? input.snapshotId,
-            threadnoteHome: input.threadnoteHome,
-          }).pipe(Effect.catch(() => Effect.succeed(false)));
-          if (!reserved) {
-            yield* input.store.releaseSnapshotLease(input.databasePath, lease.value).pipe(Effect.ignore);
-          }
-          return yield* Effect.fail(cause);
-        }),
-    ),
-  );
-});
 
 export function withCodeGraphProcessLock<A, E, R>(
   fs: FileSystem.FileSystem,
@@ -1119,6 +1082,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
   let materializedFiles = 0;
   let materializedShardFilesReused = 0;
+  let materializedShardCacheDeferredFiles = 0;
+  let materializedShardCacheDeferredRawFactBytes = 0;
+  let materializedShardAssociationsComplete = directPersistentMaterialization;
   const totalFiles = input.sparseProjection?.totalFiles ?? input.inventory.files.length;
   const packProvenance =
     input.sparseProjection?.packProvenance ??
@@ -1210,6 +1176,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     }
     const batches = factMaterializationBatches(input.inventory.files, cachedMetadata.bytesByPath);
     const cachedFactBytesTotal = cachedMetadata.bytes;
+    const materializedShardCacheWriteAdmission = codeGraphMaterializedShardCacheWriteAdmission(cachedFactBytesTotal);
     const committedHashesByPath = new Map(input.inventory.committedFiles.map(file => [file.path, file.contentHash]));
     const changedCurrentPaths = new Set(
       input.inventory.files
@@ -1550,6 +1517,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         materializedShards.materializedShardIdsByPath?.size === files.length;
       const fallbackFiles = materializedShardBatchComplete ? [] : files;
       const cached = yield* loadCachedFacts(input.store, input.layout.databasePath, fallbackFiles, input.languagePacks);
+      const materializedShardCacheBatchPlan = codeGraphMaterializedShardCacheBatchPlan(
+        materializedShardCacheWriteAdmission,
+        materializedShardBatchComplete,
+      );
+      const deferMaterializedShardCache =
+        directPersistentMaterialization && !materializedShardCacheBatchPlan.associationsComplete;
       // Count valid final-shard decodes even when an incomplete batch falls back to raw facts.
       const batchReplayBytes = Math.min(Number.MAX_SAFE_INTEGER, materializedShards.bytes + cached.bytes);
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {
@@ -1600,8 +1573,18 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
         ),
       );
-      replayMetrics = addMaterializationReplayMetrics(replayMetrics, {attributedFiles: fallbackFiles.length});
-      if (fallbackFiles.length > 0 && directPersistentMaterialization) {
+      replayMetrics = addMaterializationReplayMetrics(replayMetrics, {
+        attributedFiles: fallbackFiles.length,
+        materializedShardCacheDeferredFiles: deferMaterializedShardCache ? fallbackFiles.length : 0,
+        materializedShardCacheDeferredRawFactBytes: deferMaterializedShardCache ? cached.bytes : 0,
+      });
+      materializedShardCacheDeferredFiles = replayMetrics.materializedShardCacheDeferredFilesCompleted;
+      materializedShardCacheDeferredRawFactBytes = replayMetrics.materializedShardCacheDeferredRawFactBytesCompleted;
+      if (
+        fallbackFiles.length > 0 &&
+        directPersistentMaterialization &&
+        materializedShardCacheBatchPlan.cacheFallback
+      ) {
         const serializedFallbackFacts = materializationSubphases.measure('shardSerialization', () =>
           attributedFallbackFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
         );
@@ -1612,7 +1595,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           files: fallbackFiles,
         });
       }
-      if (directPersistentMaterialization) {
+      if (directPersistentMaterialization && materializedShardCacheBatchPlan.associate) {
         const selectedShardIds = materializedShardBatchComplete
           ? materializedShards.materializedShardIdsByPath!
           : new Map(
@@ -1636,6 +1619,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           // This physical work is already captured by the batch-local attribution timer.
           yield* shardWrites.flushAssociations(false);
         }
+      } else if (directPersistentMaterialization && !materializedShardCacheBatchPlan.associationsComplete) {
+        materializedShardAssociationsComplete = false;
       }
       const attributedFallbackByPath = new Map(attributedFallbackFacts.map(fact => [fact.path, fact]));
       const facts = files.map(file =>
@@ -1837,7 +1822,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           ).pipe(Effect.catch(() => Effect.void)),
         persistentCapacityGuard,
         packProvenance,
-        directPersistentMaterialization && !incrementalApplied,
+        directPersistentMaterialization && !incrementalApplied && materializedShardAssociationsComplete,
       ),
       lease =>
         Option.match(lease, {
@@ -1958,6 +1943,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           : []),
       ...(materializedShardFilesReused > 0
         ? [`Reused content-addressed materialized shards for ${materializedShardFilesReused.toLocaleString()} file(s).`]
+        : []),
+      ...(materializedShardCacheDeferredFiles > 0
+        ? [
+            `Deferred derived materialized-shard caching for ${materializedShardCacheDeferredFiles.toLocaleString()} ` +
+              `file(s) covering ${materializedShardCacheDeferredRawFactBytes.toLocaleString()} raw fact byte(s).`,
+          ]
         : []),
       ...(analysisSummaryBackfilled ? ['Built the persisted whole-graph analysis summary after promotion.'] : []),
       ...(analysisSummaryFailure

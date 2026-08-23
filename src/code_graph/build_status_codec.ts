@@ -431,6 +431,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     'exactGenerationShardFilesCompleted',
     'factsBytesCompleted',
     'factsBytesTotal',
+    'materializedShardCacheDeferredFilesCompleted',
+    'materializedShardCacheDeferredRawFactBytesCompleted',
     'materializedShardReplayBytesCompleted',
     'rawFactReplayBytesCompleted',
   ] as const) {
@@ -462,6 +464,20 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     value.factsBytesCompleted !== undefined &&
     value.factsBytesTotal !== undefined &&
     Number(value.factsBytesCompleted) > Number(value.factsBytesTotal)
+  ) {
+    return undefined;
+  }
+  const hasDeferredShardCache =
+    value.materializedShardCacheDeferredFilesCompleted !== undefined ||
+    value.materializedShardCacheDeferredRawFactBytesCompleted !== undefined;
+  if (
+    hasDeferredShardCache &&
+    (value.materializedShardCacheDeferredFilesCompleted === undefined ||
+      value.materializedShardCacheDeferredRawFactBytesCompleted === undefined ||
+      value.attributedFilesCompleted === undefined ||
+      value.rawFactReplayBytesCompleted === undefined ||
+      Number(value.materializedShardCacheDeferredFilesCompleted) > Number(value.attributedFilesCompleted) ||
+      Number(value.materializedShardCacheDeferredRawFactBytesCompleted) > Number(value.rawFactReplayBytesCompleted))
   ) {
     return undefined;
   }
@@ -524,6 +540,16 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.materializedShardReplayBytesCompleted === undefined
       ? {}
       : {materializedShardReplayBytesCompleted: Number(value.materializedShardReplayBytesCompleted)}),
+    ...(value.materializedShardCacheDeferredFilesCompleted === undefined
+      ? {}
+      : {materializedShardCacheDeferredFilesCompleted: Number(value.materializedShardCacheDeferredFilesCompleted)}),
+    ...(value.materializedShardCacheDeferredRawFactBytesCompleted === undefined
+      ? {}
+      : {
+          materializedShardCacheDeferredRawFactBytesCompleted: Number(
+            value.materializedShardCacheDeferredRawFactBytesCompleted,
+          ),
+        }),
     ...(value.mode === undefined ? {} : {mode: value.mode as CodeGraphMaterializationMetrics['mode']}),
     ...(value.rawFactReplayBytesCompleted === undefined
       ? {}

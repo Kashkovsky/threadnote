@@ -225,6 +225,8 @@ describe('code graph build-status properties', () => {
             changedFactBytesCompleted: sample.cachedFactBytes,
             crossGenerationShardFilesCompleted: 0,
             exactGenerationShardFilesCompleted: sample.exactGenerationShardFiles,
+            materializedShardCacheDeferredFilesCompleted: 0,
+            materializedShardCacheDeferredRawFactBytesCompleted: 0,
             materializedShardReplayBytesCompleted: sample.materializedShardReplayBytes,
             rawFactReplayBytesCompleted: sample.rawFactReplayBytes,
             rows: {
@@ -274,6 +276,19 @@ describe('code graph build-status properties', () => {
               ...materializing.materialization!.metrics!,
               cachedFactReplayBytesCompleted:
                 materializing.materialization!.metrics!.cachedFactReplayBytesCompleted! + 1,
+            },
+          },
+        }),
+      ).toBeUndefined();
+      expect(
+        parseCodeGraphBuildStatus({
+          ...materializing,
+          materialization: {
+            ...materializing.materialization,
+            metrics: {
+              ...materializing.materialization!.metrics!,
+              materializedShardCacheDeferredRawFactBytesCompleted:
+                materializing.materialization!.metrics!.rawFactReplayBytesCompleted! + 1,
             },
           },
         }),

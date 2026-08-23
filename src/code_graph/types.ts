@@ -250,6 +250,10 @@ export interface CodeGraphMaterializationMetrics {
   readonly loadingMilliseconds?: number;
   /** Exact UTF-8 bytes decoded from materialized shards, including inspected shards later discarded by batch fallback. */
   readonly materializedShardReplayBytesCompleted?: number;
+  /** Files intentionally kept on raw-fact replay instead of duplicating a large derived shard cache. */
+  readonly materializedShardCacheDeferredFilesCompleted?: number;
+  /** Raw-fact bytes covered by the intentional derived-shard cache deferral. */
+  readonly materializedShardCacheDeferredRawFactBytesCompleted?: number;
   readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
   /** Exact UTF-8 bytes decoded from raw parser-fact cache rows for attribution. */
   readonly rawFactReplayBytesCompleted?: number;
