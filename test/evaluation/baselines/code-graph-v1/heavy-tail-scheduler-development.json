@@ -104,6 +104,7 @@
   },
   "profile": "large-monorepo-heavy-tail-v1",
   "ratchet": {
+    "absoluteNonzeroTimingNoiseHeadroomMilliseconds": 5,
     "latencyAndResourceCeilingHeadroomPercent": 15,
     "measurementCount": 254,
     "path": "test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json",

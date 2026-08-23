@@ -274,6 +274,38 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(/parallel-duration/u);
   });
 
+  it('gives nonzero sub-10ms timers bounded absolute noise headroom without relaxing exact zero timers', () => {
+    const timer = 'parallel-language-typescript-config-request';
+    const zeroTimer = 'parallel-language-mixed-request';
+    const artifacts = [
+      heavyTailArtifactWithMeasurement(2.884, timer, 0, zeroTimer),
+      heavyTailArtifactWithMeasurement(3.246, timer, 0, zeroTimer),
+      heavyTailArtifactWithMeasurement(3.124, timer, 0, zeroTimer),
+    ];
+    const ratchet = createCodeGraphHeavyTailRatchet(artifacts);
+
+    expect(ratchet.measurements[timer]).toMatchObject({p95Maximum: 9});
+    expect(ratchet.measurements[zeroTimer]).toMatchObject({p95Maximum: 0});
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        heavyTailArtifactWithMeasurement(9, timer, 0, zeroTimer).ratchetArtifact,
+        ratchet,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        heavyTailArtifactWithMeasurement(9.001, timer, 0, zeroTimer).ratchetArtifact,
+        ratchet,
+      ),
+    ).toThrow(timer);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        heavyTailArtifactWithMeasurement(3, timer, 0.001, zeroTimer).ratchetArtifact,
+        ratchet,
+      ),
+    ).toThrow(zeroTimer);
+  });
+
   it('keeps the checked scheduler ratchet and governed development evidence synchronized', async () => {
     const ratchet = JSON.parse(
       await readFile('test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json', 'utf8'),
@@ -447,6 +479,39 @@ function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact 
     version: 3 as const,
   };
   return {...base, ratchetArtifact: codeGraphHeavyTailRatchetArtifact(base, 'darwin', governance)};
+}
+
+function heavyTailArtifactWithMeasurement(
+  value: number,
+  name: string,
+  secondValue: number,
+  secondName: string,
+): CodeGraphHeavyTailBenchmarkArtifact {
+  const artifact = heavyTailArtifact(0);
+  const values = new Map([
+    [name, value],
+    [secondName, secondValue],
+  ]);
+  return {
+    ...artifact,
+    ratchetArtifact: {
+      ...artifact.ratchetArtifact,
+      measurements: artifact.ratchetArtifact.measurements.map(measurement => {
+        const replacement = values.get(measurement.name);
+        return replacement === undefined
+          ? measurement
+          : {
+              ...measurement,
+              maximum: replacement,
+              mean: replacement,
+              minimum: replacement,
+              p50: replacement,
+              p95: replacement,
+              p99: replacement,
+            };
+      }),
+    },
+  };
 }
 
 function completeRun(workerCount: number, durationMilliseconds: number, concurrency: number, offset: number) {

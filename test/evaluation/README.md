@@ -204,6 +204,9 @@ provenance, internal solid-state storage and filesystem, at least 120 GiB free, 
 checked `heavy-tail-scheduler-ratchet.json` is generated from three same-commit governed artifacts and independently
 binds all 254 scheduler, resource, language, resume, cache, and graph metrics. `heavy-tail-scheduler-development.json`
 retains the controlled scheduler comparison and the exact APFS/internal-SSD baseline used to generate that ratchet.
+Nonzero millisecond metrics use the larger of 15% relative headroom and 5 ms absolute scheduler-noise headroom; exact
+zero timers remain exact-zero gates. Counts, graph shape, cache reuse, and source-byte metrics retain their stricter
+independent bounds.
 The automatic four-worker choice wins on wall time for this reviewed fixture; six and eight workers raise CPU, RSS,
 and summed request time without a wall-time gain. This is reduced-fixture extraction-scheduler evidence, not the final
 pinned-IntelliJ cold-build or one-file release gate. The checked profile is a reviewed workload contract, not a

@@ -468,6 +468,9 @@ interface HeavyTailMeasurementRatchet {
   readonly unit: BenchmarkArtifactV1['measurements'][number]['unit'];
 }
 
+const HEAVY_TAIL_RATCHET_RELATIVE_HEADROOM = 0.15;
+const HEAVY_TAIL_RATCHET_MILLISECOND_NOISE_HEADROOM = 5;
+
 export interface CodeGraphHeavyTailRatchet {
   readonly environment: Readonly<Record<string, boolean | number | string>>;
   readonly measurements: Readonly<Record<string, HeavyTailMeasurementRatchet>>;
@@ -618,8 +621,22 @@ function heavyTailMeasurementRatchet(
     return {...base, maximum, minimum};
   }
   if (unit === 'bytes' && name.endsWith('-source-bytes')) return {...base, maximum, minimum};
-  if (unit === 'bytes' || unit === 'milliseconds') {
-    return {...base, p95Maximum: Math.ceil(maximum * 1.15)};
+  if (unit === 'milliseconds') {
+    return {
+      ...base,
+      p95Maximum:
+        maximum === 0
+          ? 0
+          : Math.ceil(
+              Math.max(
+                maximum * (1 + HEAVY_TAIL_RATCHET_RELATIVE_HEADROOM),
+                maximum + HEAVY_TAIL_RATCHET_MILLISECOND_NOISE_HEADROOM,
+              ),
+            ),
+    };
+  }
+  if (unit === 'bytes') {
+    return {...base, p95Maximum: Math.ceil(maximum * (1 + HEAVY_TAIL_RATCHET_RELATIVE_HEADROOM))};
   }
   return {...base, maximum: Math.ceil(maximum * 1.05)};
 }
