@@ -16,7 +16,7 @@ import {
 } from '../../src/code_graph/extractor_context.js';
 import {createCachedCodeGraphFactsAttributor, deriveCachedCodeGraphFacts} from '../../src/code_graph/indexer.js';
 import {discoverManifestWorkspace} from '../../src/code_graph/workspace.js';
-import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import type {CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 const REPOSITORY = join(import.meta.dirname, '../evaluation/fixtures/code-graph-v1/repository');
 
@@ -199,29 +199,6 @@ describe('native code graph extraction', () => {
         .find(symbol => symbol.path === 'packages/application/src/unrelated.ts' && symbol.name === 'unrelated')
         ?.packageName,
     ).toBe('root-package');
-  });
-
-  it('keeps already-current package attribution referentially idempotent', () => {
-    FC.assert(
-      FC.property(FC.integer({max: 8, min: 0}), FC.integer({max: 64, min: 1}), (depth, symbolCount) => {
-        const root = Array.from({length: depth}, (_, index) => `level-${index}`).join('/');
-        const sourcePath = `${root ? `${root}/` : ''}src/index.ts`;
-        const packagePath = `${root ? `${root}/` : ''}package.json`;
-        const files = [sourceFile(packagePath, '{"name":"memoized-package"}\n'), sourceFile(sourcePath, '')];
-        const symbols = Array.from({length: symbolCount}, (_, index) => packageSymbol(sourcePath, index));
-        const facts = [{diagnostics: [], edges: [], path: sourcePath, symbols}] satisfies readonly CodeGraphFileFacts[];
-        const attribute = createPackageAttributor(files);
-        const first = attribute(facts);
-        const second = attribute(first);
-
-        expect(first.flatMap(file => file.symbols).every(symbol => symbol.packageName === 'memoized-package')).toBe(
-          true,
-        );
-        expect(second).toEqual(first);
-        expect(second[0]!.symbols.every((symbol, index) => symbol === first[0]!.symbols[index])).toBe(true);
-      }),
-      {numRuns: 100},
-    );
   });
 
   it('replays repository attribution from bounded context plus exact path-membership probes', () => {
@@ -739,21 +716,6 @@ function sourceFile(path: string, content: string): CodeGraphInventoryFile {
     path,
     size: new TextEncoder().encode(content).byteLength,
     source: 'commit',
-  };
-}
-
-function packageSymbol(path: string, index: number): CodeGraphSymbol {
-  return {
-    contentHash: `hash-${index}`,
-    exported: true,
-    id: `symbol-${index}`,
-    kind: 'function',
-    language: 'typescript',
-    name: `symbol${index}`,
-    path,
-    qualifiedName: `symbol${index}`,
-    resolutionDomain: 'typescript',
-    span: {column: 1, endColumn: 1, endLine: 1, line: 1},
   };
 }
 

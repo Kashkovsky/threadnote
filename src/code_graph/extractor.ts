@@ -1,7 +1,6 @@
 import ts from 'typescript-compiler';
 import {Option} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {attributeFactPackages} from './fact_package_attribution.js';
 import {compareCodeUnits} from './ordering.js';
 import {documentLookupTiers, resolveLegacyDocumentReference, resolveLookupTiers} from './resolution_lookup.js';
 import type {
@@ -115,7 +114,7 @@ export function refreshPackageAttribution(
   files: readonly CodeGraphInventoryFile[],
 ): readonly CodeGraphFileFacts[] {
   const packages = discoverPackages(files);
-  return attributeFactPackages(facts, path => packageForPath(path, packages));
+  return facts.map(file => refreshFilePackageAttribution(file, packages));
 }
 
 export function createPackageAttributor(
@@ -136,7 +135,18 @@ export function createRepositoryFactAttributor(
 export function createPackageAttributorFromIndex(
   packages: PackageIndex,
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
-  return facts => attributeFactPackages(facts, path => packageForPath(path, packages));
+  return facts => facts.map(file => refreshFilePackageAttribution(file, packages));
+}
+
+function refreshFilePackageAttribution(file: CodeGraphFileFacts, packages: PackageIndex): CodeGraphFileFacts {
+  return {
+    ...file,
+    symbols: file.symbols.map(symbol => {
+      const {packageName: _stalePackageName, ...withoutPackage} = symbol;
+      const packageName = packageForPath(symbol.path, packages);
+      return packageName ? {...withoutPackage, packageName} : withoutPackage;
+    }),
+  };
 }
 
 export function createResolutionAttributor(

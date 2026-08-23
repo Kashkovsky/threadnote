@@ -110,55 +110,18 @@ export function finalCodeGraphFactBatches(
   facts: readonly CodeGraphFileFacts[],
   maximumBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
 ): readonly (readonly MeasuredCodeGraphFact[])[] {
-  return finalSerializedCodeGraphFactBatches(facts, {maximumBytes}).map(batch =>
-    batch.map(value => ({bytes: value.bytes, facts: value.facts})),
-  );
-}
-
-/**
- * Canonicalizes, bounds, and serializes final per-file facts exactly once so a
- * caller can reuse the same trusted JSON for cache persistence and staging.
- */
-export function finalSerializedCodeGraphFactBatches(
-  facts: readonly CodeGraphFileFacts[],
-  options: {
-    readonly maximumBytes?: number;
-    readonly serialize?: (fact: CodeGraphFileFacts, maximumBytes: number) => BoundedCodeGraphFact;
-  } = {},
-): readonly (readonly BoundedCodeGraphFact[])[] {
-  const maximumBytes = options.maximumBytes ?? CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
-  const serialize = options.serialize ?? serializeBoundedCodeGraphFact;
   const canonical = canonicalMaterializationFacts(facts);
-  const measured = canonical.map(fact => serialize(fact, maximumBytes));
+  const measured = canonical.map(fact => measureBoundedCodeGraphFact(fact, maximumBytes));
   const closed = closeMaterializationFacts(
     canonical,
     measured.map(value => value.facts),
   );
-  return boundedSerializedCodeGraphFactBatches(
-    closed.map((fact, index) => (fact === measured[index]!.facts ? measured[index]! : serialize(fact, maximumBytes))),
+  return boundedCodeGraphFactBatches(
+    closed.map((fact, index) =>
+      fact === measured[index]!.facts ? measured[index]! : measureBoundedCodeGraphFact(fact, maximumBytes),
+    ),
     maximumBytes,
   );
-}
-
-function boundedSerializedCodeGraphFactBatches(
-  values: readonly BoundedCodeGraphFact[],
-  maximumBytes: number,
-): readonly (readonly BoundedCodeGraphFact[])[] {
-  const output: BoundedCodeGraphFact[][] = [];
-  let batch: BoundedCodeGraphFact[] = [];
-  let bytes = 0;
-  for (const value of values) {
-    if (value.bytes > maximumBytes) throw new Error('Serialized code graph fact exceeds its batch ceiling.');
-    if (batch.length > 0 && bytes + value.bytes > maximumBytes) {
-      output.push(batch);
-      batch = [];
-      bytes = 0;
-    }
-    batch.push(value);
-    bytes += value.bytes;
-  }
-  if (batch.length > 0) output.push(batch);
-  return output;
 }
 
 /**

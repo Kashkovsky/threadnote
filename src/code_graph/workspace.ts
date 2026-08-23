@@ -260,20 +260,10 @@ export function createWorkspaceAttributor(
   );
   return facts =>
     facts.map(file => {
-      const projectsByDomain = new Map<string | undefined, Option.Option<CodeGraphWorkspaceProject>>();
-      const projectForDomain = (resolutionDomain: string | undefined) => {
-        const cached = projectsByDomain.get(resolutionDomain);
-        if (cached !== undefined) return cached;
-        const project = findProject(file.path, resolutionDomain);
-        projectsByDomain.set(resolutionDomain, project);
-        return project;
-      };
-      let packageProject: Option.Option<CodeGraphWorkspaceProject> | undefined;
-      const projectForPackage = () => (packageProject ??= findPackageProject(file.path));
       return {
         ...file,
         references: file.references?.map(reference =>
-          Option.match(projectForDomain(reference.resolutionDomain), {
+          Option.match(findProject(file.path, reference.resolutionDomain), {
             onNone: () => reference,
             onSome: project => attributeReference(reference, project, projectsById),
           }),
@@ -281,8 +271,8 @@ export function createWorkspaceAttributor(
         symbols: file.symbols.map(symbol =>
           Option.match(
             symbol.kind === 'package' && symbol.resolutionDomain === 'workspace'
-              ? projectForPackage()
-              : projectForDomain(symbol.resolutionDomain),
+              ? findPackageProject(file.path)
+              : findProject(file.path, symbol.resolutionDomain),
             {
               onNone: () => symbol,
               onSome: project => attributeSymbol(symbol, project),
