@@ -16,6 +16,7 @@ import {
   withStandaloneInstallationLock,
 } from '../src/installations.js';
 import {
+  explicitlyPreservedStandaloneProcessIds,
   preservedStandaloneProcessIds,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
@@ -487,7 +488,9 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
       const superseded = [...live.value.verified, ...live.value.unverified].filter(
         lease => lease.version !== input.version,
       );
-      const preservedProcessIds = preservedStandaloneProcessIds(superseded);
+      const preservedProcessIds = input.terminateSuperseded
+        ? explicitlyPreservedStandaloneProcessIds(superseded)
+        : preservedStandaloneProcessIds(superseded);
       for (const lease of superseded) {
         if (preservedMcpSessionProcessIds.has(lease.processId)) continue;
         if (preservedProcessIds.has(lease.processId)) {

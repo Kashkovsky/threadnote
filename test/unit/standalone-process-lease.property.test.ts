@@ -1,7 +1,11 @@
 import {Option} from 'effect';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {preservedStandaloneProcessIds, type StandaloneProcessLease} from '../../src/standalone_process_lease.js';
+import {
+  explicitlyPreservedStandaloneProcessIds,
+  preservedStandaloneProcessIds,
+  type StandaloneProcessLease,
+} from '../../src/standalone_process_lease.js';
 
 describe('standalone process retirement properties', () => {
   it('preserves exactly the processes rooted beneath preserve-session leases', () => {
@@ -40,6 +44,22 @@ describe('standalone process retirement properties', () => {
           );
         },
       ),
+      {numRuns: 200},
+    );
+  });
+
+  it('explicit retirement preserves exactly the leases that opt into session preservation', () => {
+    fc.assert(
+      fc.property(fc.array(fc.boolean(), {minLength: 1, maxLength: 40}), preserveFlags => {
+        const leases = preserveFlags.map((preserve, index) => ({
+          processId: index + 1,
+          retirementPolicy: preserve ? ('preserve-session' as const) : ('terminate' as const),
+        }));
+
+        expect([...explicitlyPreservedStandaloneProcessIds(leases)]).toEqual(
+          leases.filter(lease => lease.retirementPolicy === 'preserve-session').map(lease => lease.processId),
+        );
+      }),
       {numRuns: 200},
     );
   });
