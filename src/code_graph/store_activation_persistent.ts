@@ -12,6 +12,7 @@ import {
   type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
+import {encodeCodeGraphInventoryReuseReceipt} from './inventory_reuse.js';
 import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './store_schema_contracts.js';
 import {configureConnection, configurePublicationDurability, tableExists} from './store_session.js';
 import {type CodeGraphSnapshot, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
@@ -344,12 +345,13 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
           INSERT INTO snapshot_reuse_receipts (
             snapshot_id, format_version, resolution_surface_version, extractor_set,
             workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
-            reexport_count, created_at
+            reexport_count, inventory_receipt_json, created_at
           )
           VALUES (
             ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             ${copiedLookupKeys.rows}, ${copiedLookupKeys.talliedRows}, ${copiedReexports.rows},
+            ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
             ${new Date().toISOString()}
           )
         `;
@@ -736,11 +738,12 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
           INSERT INTO snapshot_reuse_receipts (
             snapshot_id, format_version, resolution_surface_version, extractor_set,
             workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
-            reexport_count, created_at
+            reexport_count, inventory_receipt_json, created_at
           ) VALUES (
             ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             ${reuseRows.lookupCount}, ${reuseRows.aliasCount}, ${reuseRows.reexportCount},
+            ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
             ${new Date().toISOString()}
           )
         `;

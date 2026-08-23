@@ -367,7 +367,7 @@ function validArtifact(): MutableReadyQueryEvidence {
     runtime: {
       compatible: true,
       extractorSet: 'native-code-graph-13',
-      persistentExtensionRevision: 12,
+      persistentExtensionRevision: 13,
       resultVersion: 1,
       schemaVersion: 3,
     },

@@ -29,6 +29,10 @@ bun run bench:code-graph:dirty-overlay -- --scale-symbols 10000 --samples 3 \
 bun run bench:code-graph:dirty-overlay -- --scenario unchanged-static-reexport \
   --scale-symbols 10000 --samples 3 \
   --output artifacts/code-graph-dirty-overlay-static-reexport.json
+bun run bench:code-graph:dirty-overlay -- --scenario changed-export \
+  --scale-symbols 300000 --samples 1 --governed --minimum-free-gib 120 \
+  --ratchet test/evaluation/baselines/code-graph-v1/dirty-overlay-dependency-surface-ratchet.json \
+  --output artifacts/code-graph-dirty-overlay-dependency-surface.json
 bun run bench:worktree-readiness -- --candidate-ref v4.0.1 --samples 5 --warmups 1 \
   --output artifacts/code-graph-worktree-readiness-v4.0.1.json
 
@@ -45,6 +49,18 @@ bun run bench:code-graph:heavy-tail -- \
 bun run bench:code-graph:heavy-tail -- --smoke \
   --output artifacts/code-graph-heavy-tail-smoke.json
 ```
+
+`--ratchet <path>` applies a reviewed, versioned JSON ratchet to the completed artifact. It is independent of the
+portable `--fail-on-budget` fixture gate and is therefore available to production-large and external-repository runs.
+A ratchet binds exact primitive `environment` and `metadata` conditions plus `suite`, then names every independently
+guarded measurement with its unit and one or more bounds. Environment conditions must include `fixtureHash`, `node`,
+`runner`, and `runnerVersion`; metadata conditions must include `runnerClass`, `runtimePlatform`, and `vectorEnabled`.
+Supported bounds are `maximum`, `minimum`, `meanMaximum`, `p50Maximum`,
+`p95Maximum`, or `p99Maximum`. `samplesMinimum` can require distributional support. Missing or duplicate measurements,
+unit drift, condition mismatches, unknown fields, and every exceeded bound fail closed. Ratchet updates require
+reviewed repeated before/after evidence and rationale; do not widen a limit to make a regression pass. `--output` is
+required with `--ratchet`; a provenance-valid artifact is written before a ratchet failure is reported so the
+regression remains reviewable.
 
 ### Cross-repository workset contract
 
@@ -188,17 +204,28 @@ per-language parse/persist timing, RSS, and cache bytes only within the same art
 is evidence that the harness and contracts passed, not an absolute release threshold for other machines or evidence
 that production-scale materialization was exercised.
 
-`bench:code-graph:dirty-overlay` isolates the first dirty build where Threadnote must materialize a clean commit and a
-one-file worktree overlay in the same SQLite session. It alternates the safe staging-reuse path with an explicitly
-disabled full-materialization control, requires identical graph shape, and records both total and materialization
-time. The reviewed local 10k-symbol result is stored as `dirty-overlay-development.json`; it is comparative evidence
-on one hardware class, not a portable latency gate.
+`bench:code-graph:dirty-overlay` first prepares an unmeasured clean base, then alternates a measured safe staging-reuse
+path with an explicitly disabled full-materialization control. It requires identical graph shape and records total,
+CPU, materialization, proportional-work, and physical-replay evidence. `--governed` requires a clean exact-HEAD managed
+runtime, retained output, at least 120 GiB free by default, solid-state temporary storage, and the internal device on
+macOS; source/runtime provenance is revalidated after the run. `--ratchet <path>` applies independent reviewed bounds
+to the standard `ratchetArtifact` embedded in the output. The checked dependency-surface ratchet binds every emitted
+measurement to the reviewed 300k-symbol/3,006-file Apple M1 Max runner class. The reviewed local 10k-symbol result is stored as
+`dirty-overlay-development.json`; it predates the governed format and remains comparative evidence, not a portable
+latency gate.
 
 The opt-in `unchanged-static-reexport` scenario shifts only the evidence span above a byte-identical named TypeScript
 re-export. It retains staged/total files plus exact integer rewrite and cached-fact replay amplification for both the
 incremental path and forced-full control; those structural observations are not wall-clock assertions. The generated
 10k-symbol fixture contains 102 indexed files, so this is not evidence for a 10k-file repository or production-large.
 The existing body-only scenario and checked baseline remain unchanged.
+
+The opt-in `changed-export` scenario adds one published symbol in a two-project workspace dependency surface. Its
+background generator uses 100 declarations per source file, so `--scale-symbols 300000` produces about 3,000 indexed
+background files. The harness requires the incremental run to use the bounded two-project closure, stage exactly four
+files, and report four attribution, base-fact, changed-file, and inventory-file units instead of silently falling back
+to repository-wide work. `dirty-overlay-dependency-surface-development.json` retains the first governed observation;
+it is exact local runner evidence, while `dirty-overlay-dependency-surface-ratchet.json` is the reviewed regression gate.
 
 `bench:worktree-readiness` compares an exact candidate ref with its immediate parent on one machine and one pinned
 public checkout. Each runtime gets an independent frozen dependency installation, Threadnote home, and fixture clone.

@@ -256,6 +256,100 @@ describe('exact-head development runtime', () => {
     }),
   );
 
+  effectIt.effect('allows a superseded stable transport only after its executable child promotes', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-runtime-transport-'});
+          const sourceCommit = 'd'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const supersededVersion = '4.0.0-beta.29';
+          const installRoot = path.join(root, 'install');
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'exact executable bytes',
+          );
+          yield* fs.writeFileString(
+            path.join(installRoot, 'active-release.json'),
+            `${JSON.stringify({releaseRoot, version})}\n`,
+          );
+          const brokerProcessId = 46_001;
+          const childProcessId = 46_002;
+          for (const lease of [
+            {
+              processId: brokerProcessId,
+              processStartIdentity: 'broker-process',
+              retirementPolicy: 'preserve-session',
+              version: supersededVersion,
+            },
+            {
+              parentProcessId: brokerProcessId,
+              processId: childProcessId,
+              processStartIdentity: 'mcp-process',
+              retirementPolicy: 'terminate',
+              version,
+            },
+          ] as const) {
+            const leaseRoot = path.join(installRoot, 'leases', lease.version);
+            yield* fs.makeDirectory(leaseRoot, {recursive: true});
+            yield* fs.writeFileString(
+              path.join(leaseRoot, `${lease.processId}.json`),
+              `${JSON.stringify({...lease, token: `lease-${lease.processId}`})}\n`,
+            );
+          }
+          const identities = new Map([
+            [brokerProcessId, 'broker-process'],
+            [childProcessId, 'mcp-process'],
+          ]);
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({...baseSystem.environment(), THREADNOTE_INSTALL_ROOT: installRoot}),
+            isProcessRunning: processId => identities.has(processId),
+            processStartIdentity: processId => Effect.succeed(identities.get(processId)),
+          });
+          const commandExecutor = versionCommandExecutor(version);
+          const accepted = yield* verifyManagedDevelopmentRuntimeForSource(sourceCommit).pipe(
+            Effect.provideService(CommandExecutor, commandExecutor),
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          const childLeasePath = path.join(installRoot, 'leases', version, `${childProcessId}.json`);
+          const supersededChildLeaseRoot = path.join(installRoot, 'leases', supersededVersion);
+          yield* fs.remove(childLeasePath, {force: true});
+          yield* fs.writeFileString(
+            path.join(supersededChildLeaseRoot, `${childProcessId}.json`),
+            `${JSON.stringify({
+              parentProcessId: brokerProcessId,
+              processId: childProcessId,
+              processStartIdentity: 'mcp-process',
+              retirementPolicy: 'terminate',
+              token: `lease-${childProcessId}`,
+              version: supersededVersion,
+            })}\n`,
+          );
+          const rejected = yield* verifyManagedDevelopmentRuntimeForSource(sourceCommit).pipe(
+            Effect.provideService(CommandExecutor, commandExecutor),
+            Effect.provideService(SystemInfo, testSystem),
+            Effect.flip,
+          );
+          return {accepted, rejected: String(rejected)};
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.accepted.sourceCommit).toBe('d'.repeat(40));
+      expect(result.rejected).toContain('process pinned to a superseded release');
+    }),
+  );
+
   effectIt.effect.skipIf(process.platform === 'win32')(
     'rejects payload content, membership, mode, link, and receipt-permission changes',
     () =>

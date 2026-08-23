@@ -50,8 +50,12 @@ describe('incremental rewrite work', () => {
     });
 
     expect(measured).toMatchObject({
+      attributionContextFiles: 0,
+      baseFactsLoaded: 1,
       changedFiles: 1,
       deletedFiles: 1,
+      inventoryFilesInspected: 10_000,
+      probedDependencyPaths: 0,
       sourceBytes: 123,
       totalFiles: 10_000,
     });
@@ -70,12 +74,16 @@ describe('incremental rewrite work', () => {
         fc.integer({max: 1_000_000, min: 0}),
         (changedFiles, sourceBytes, factBytes, plannedRows, unrelatedFiles) => {
           const work = {
+            attributionContextFiles: 0,
+            baseFactsLoaded: changedFiles,
             changedFiles,
             deletedFiles: 0,
             factBytes,
             plannedRows,
+            probedDependencyPaths: 0,
             sourceBytes,
             totalFiles: changedFiles + unrelatedFiles,
+            inventoryFilesInspected: changedFiles + unrelatedFiles,
           };
           expect(codeGraphIncrementalWorkFitsBudget(work)).toBe(true);
           expect(codeGraphIncrementalWorkFitsBudget({...work, totalFiles: work.totalFiles + 10_000_000})).toBe(true);
@@ -94,16 +102,31 @@ describe('incremental rewrite work', () => {
     );
 
     const boundary = {
+      attributionContextFiles: 10_000,
+      baseFactsLoaded: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES,
       changedFiles: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES,
       deletedFiles: 0,
       factBytes: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
       plannedRows: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS,
+      probedDependencyPaths: 4_096,
       sourceBytes: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES,
       totalFiles: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES,
+      inventoryFilesInspected: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES,
     };
     expect(codeGraphIncrementalWorkFitsBudget({...boundary, changedFiles: boundary.changedFiles + 1})).toBe(false);
     expect(codeGraphIncrementalWorkFitsBudget({...boundary, factBytes: boundary.factBytes + 1})).toBe(false);
     expect(codeGraphIncrementalWorkFitsBudget({...boundary, plannedRows: boundary.plannedRows + 1})).toBe(false);
     expect(codeGraphIncrementalWorkFitsBudget({...boundary, sourceBytes: boundary.sourceBytes + 1})).toBe(false);
+    expect(codeGraphIncrementalWorkFitsBudget({...boundary, attributionContextFiles: 10_001})).toBe(false);
+    expect(
+      codeGraphIncrementalWorkFitsBudget({
+        ...boundary,
+        baseFactsLoaded: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES + 1,
+      }),
+    ).toBe(false);
+    expect(codeGraphIncrementalWorkFitsBudget({...boundary, probedDependencyPaths: 4_097})).toBe(false);
+    expect(codeGraphIncrementalWorkFitsBudget({...boundary, inventoryFilesInspected: boundary.totalFiles + 1})).toBe(
+      false,
+    );
   });
 });

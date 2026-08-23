@@ -1,4 +1,5 @@
 import fc from 'fast-check';
+import {unzlibSync, zlibSync} from 'fflate';
 import {describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_STORED_FACT_CODEC,
@@ -6,7 +7,11 @@ import {
   encodeStoredCodeGraphFact,
 } from '../../src/code_graph/fact_storage.js';
 import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import type {CodeGraphFileFacts} from '../../src/code_graph/types.js';
+
+const factEncoder = new TextEncoder();
+const factDecoder = new TextDecoder();
 
 const pathArbitrary = fc
   .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789_-'.split('')), {maxLength: 30, minLength: 1})
@@ -59,6 +64,38 @@ describe('compact code graph fact storage', () => {
     expect(decodeStoredCodeGraphFact(stored.json, facts.path).facts).toEqual(facts);
   });
 
+  it('preserves the zlib-base64-v1 format across legacy and native codec implementations', () => {
+    const facts: CodeGraphFileFacts = {
+      diagnostics: Array.from({length: 400}, () => 'repetitive compatibility diagnostic'),
+      edges: [],
+      path: 'src/compatibility.ts',
+      symbols: [],
+    };
+    const bounded = serializeBoundedCodeGraphFact(facts);
+    const stored = encodeStoredCodeGraphFact(bounded);
+    const nativeEnvelope = JSON.parse(stored.json) as {
+      readonly codec: string;
+      readonly path: string;
+      readonly pathOccurrences: number;
+      readonly payload: string;
+      readonly rawBytes: number;
+      readonly sha256: string;
+    };
+    const legacyDecoded = unzlibSync(Buffer.from(nativeEnvelope.payload, 'base64'), {
+      out: new Uint8Array(bounded.bytes),
+    });
+    expect(factDecoder.decode(legacyDecoded)).toBe(bounded.json);
+
+    const raw = factEncoder.encode(bounded.json);
+    const legacyEnvelope = {
+      ...nativeEnvelope,
+      payload: Buffer.from(zlibSync(raw, {level: 3})).toString('base64'),
+      rawBytes: raw.byteLength,
+      sha256: sha256HexSync(raw),
+    };
+    expect(decodeStoredCodeGraphFact(JSON.stringify(legacyEnvelope), facts.path).facts).toEqual(facts);
+  });
+
   it('rejects corrupt, non-canonical, or path-mismatched envelopes', () => {
     const facts = serializeBoundedCodeGraphFact({
       diagnostics: Array.from({length: 200}, () => 'compress me'),
@@ -71,6 +108,7 @@ describe('compact code graph fact storage', () => {
     expect(stored.codec).toBe(CODE_GRAPH_STORED_FACT_CODEC);
     expect(() => decodeStoredCodeGraphFact(stored.json, 'src/other.ts')).toThrow(/path/);
     expect(() => decodeStoredCodeGraphFact(JSON.stringify({...envelope, sha256: '0'.repeat(64)}))).toThrow(/integrity/);
+    expect(() => decodeStoredCodeGraphFact(JSON.stringify({...envelope, rawBytes: 1_024}))).toThrow();
     expect(() =>
       decodeStoredCodeGraphFact(JSON.stringify({...envelope, payload: `${envelope.payload as string}\n`})),
     ).toThrow(/malformed|base64/);

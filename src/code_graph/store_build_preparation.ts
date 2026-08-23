@@ -229,43 +229,6 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
       confidence REAL NOT NULL
     ) WITHOUT ROWID
   `);
-  // Durable lookup rows are keyed by lookup key, while references are paged by
-  // edge id. Materialize both bounded page views so resolution can scan lookup
-  // keys in index order instead of issuing tens of thousands of effectively
-  // random probes into a multi-gigabyte lookup B-tree.
-  yield* sql.unsafe(`
-    CREATE TEMP TABLE IF NOT EXISTS activation_resolution_reference_page (
-      edge_id TEXT PRIMARY KEY,
-      resolution_domain TEXT NOT NULL,
-      exported_only INTEGER NOT NULL,
-      relation TEXT NOT NULL,
-      source_id TEXT
-    ) WITHOUT ROWID
-  `);
-  yield* sql.unsafe(`
-    CREATE TEMP TABLE IF NOT EXISTS activation_resolution_candidate_page (
-      lookup_key TEXT NOT NULL,
-      edge_id TEXT NOT NULL,
-      tier INTEGER NOT NULL,
-      PRIMARY KEY (lookup_key, edge_id, tier)
-    ) WITHOUT ROWID
-  `);
-  yield* sql.unsafe(`
-    CREATE TEMP TABLE IF NOT EXISTS activation_resolution_lookup_page (
-      lookup_key TEXT NOT NULL,
-      resolution_domain TEXT NOT NULL,
-      symbol_count INTEGER NOT NULL,
-      minimum_symbol_id TEXT,
-      maximum_symbol_id TEXT,
-      exported_symbol_count INTEGER NOT NULL,
-      minimum_exported_symbol_id TEXT,
-      maximum_exported_symbol_id TEXT,
-      PRIMARY KEY (lookup_key, resolution_domain)
-    ) WITHOUT ROWID
-  `);
-  yield* sql.unsafe('DELETE FROM activation_resolution_reference_page');
-  yield* sql.unsafe('DELETE FROM activation_resolution_candidate_page');
-  yield* sql.unsafe('DELETE FROM activation_resolution_lookup_page');
   yield* prepareAnalysisResolutionTables(sql);
   yield* sql.unsafe('DELETE FROM activation_state');
   yield* sql`

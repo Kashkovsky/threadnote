@@ -715,6 +715,11 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     impact && seedQueries?.length
       ? yield* store.searchSymbolsByPaths(databasePath, snapshotId, requestedSeedQueries, lexicalCandidateLimit)
       : yield* store.searchSymbolsMany(databasePath, snapshotId, requestedSeedQueries, lexicalCandidateLimit);
+  // The elapsed budget governs graph traversal, not an already-completed
+  // lexical seed lookup that SQLite cannot interrupt. Impact keeps one
+  // absolute budget across path recovery and traversal; ordinary queries get
+  // the same complete traversal window regardless of snapshot representation.
+  if (!impact) deadline = (yield* Clock.currentTimeMillis) + traversalTimeBudgetMilliseconds;
   const lexicalGroups = lexicalCandidateGroups.map(group =>
     (normalizedPackageName
       ? group.filter(node => node.packageName?.toLocaleLowerCase('en-US') === normalizedPackageName)

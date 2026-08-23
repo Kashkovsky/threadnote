@@ -151,15 +151,21 @@ export interface CodeGraphCacheContentCoalescer {
     rows: readonly CodeGraphCacheExtractedRow[],
     context: CodeGraphContentBatchContext,
   ) => Effect.Effect<void, unknown>;
+  /** Starts exact path accounting for a bounded sparse-admission attempt. */
+  readonly beginSparseExtractionTracking: Effect.Effect<void>;
   /** Marks the committed-to-worktree extraction boundary, even for deletion-only overlays. */
   readonly beginOverlayExtraction: Effect.Effect<void>;
   /** Drops references only. This is safe in failure/cancellation cleanup because it never starts a write. */
   readonly discard: Effect.Effect<void>;
+  /** Stops sparse-attempt path accounting while retaining its terminal count. */
+  readonly endSparseExtractionTracking: Effect.Effect<void>;
   /** Exact serialized fact bytes extracted in the current inventory phase. */
   readonly extractedFactBytes: Effect.Effect<number>;
   /** Flushes pending rows and is called only after inventory succeeds. */
   readonly flush: Effect.Effect<void, unknown>;
   readonly onContentBatch: NonNullable<CodeGraphInventoryOptions['onContentBatch']>;
+  /** Unique paths extracted during the bounded sparse-admission attempt. */
+  readonly sparseExtractedFiles: Effect.Effect<number>;
 }
 
 const CODE_GRAPH_CACHE_TIMESTAMP_CAPACITY_PLACEHOLDER = '1970-01-01T00:00:00.000Z';
@@ -195,6 +201,8 @@ export function cacheContentBatch(options: {
   let extractionWorkUnitsCompleted = 0;
   let extractionPlan = undefined as CodeGraphContentBatchContext['extractionPlan'];
   let extractionPhase: 'none' | 'planned' | 'unplanned' = 'none';
+  let sparseExtractionTracking = false;
+  const sparseExtractedPaths = new Set<string>();
   let terminalExtractedFactBytes = 0;
   let persistenceMilliseconds = 0;
   let readingMilliseconds = 0;
@@ -337,6 +345,7 @@ export function cacheContentBatch(options: {
     Effect.gen(function* () {
       latestContext = context;
       for (const {cacheFact, cacheIdentity: activeCacheIdentity, degraded, file} of rows) {
+        if (sparseExtractionTracking) sparseExtractedPaths.add(file.path);
         const cacheIdentity = degraded ? degradedParserCacheIdentity(activeCacheIdentity) : activeCacheIdentity;
         const key = `${degraded ? 'degraded' : 'durable'}\0${cacheIdentity}`;
         const reuseClass = degraded ? undefined : codeGraphBlobExtractionReuseClass(file);
@@ -537,6 +546,10 @@ export function cacheContentBatch(options: {
     });
   return {
     acceptExtracted,
+    beginSparseExtractionTracking: Effect.sync(() => {
+      sparseExtractedPaths.clear();
+      sparseExtractionTracking = true;
+    }),
     beginOverlayExtraction: Effect.sync(() => observeExtractionPlan(undefined)),
     discard: Effect.sync(() => {
       pendingGroups.clear();
@@ -546,6 +559,9 @@ export function cacheContentBatch(options: {
       reusableExtractions.clear();
       reusableExtractionUses.clear();
     }),
+    endSparseExtractionTracking: Effect.sync(() => {
+      sparseExtractionTracking = false;
+    }),
     extractedFactBytes: Effect.sync(() => terminalExtractedFactBytes),
     flush: Effect.gen(function* () {
       while (pendingGroups.size > 0) yield* flushOldestPendingGroup();
@@ -553,6 +569,7 @@ export function cacheContentBatch(options: {
       reusableExtractionUses.clear();
     }),
     onContentBatch,
+    sparseExtractedFiles: Effect.sync(() => sparseExtractedPaths.size),
   };
 }
 
@@ -745,6 +762,36 @@ export function snapshotIdentity(
 }
 
 /**
+ * Deterministic dirty identity for a persisted-base delta. The base snapshot
+ * and exact overlay observation replace a repository-wide inventory replay.
+ */
+export function sparseOverlaySnapshotIdentity(
+  identity: {
+    readonly headCommit: string;
+    readonly repositoryId: string;
+    readonly worktreeId: string;
+  },
+  baseSnapshotId: string,
+  extractorSet: string,
+  overlayFingerprint: string,
+): string {
+  return `cgsn_${sha256HexSync(
+    `snapshot-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${baseSnapshotId}\n${extractorSet}\n${overlayFingerprint}`,
+  ).slice(0, 40)}`;
+}
+
+/** Content identity for a persisted-base delta without a flat full-inventory hash. */
+export function sparseOverlayGraphContentIdentity(
+  baseGraphContentId: string,
+  extractorSet: string,
+  overlayFingerprint: string,
+): string {
+  return `cgc_${sha256HexSync(
+    `graph-content-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${baseGraphContentId}\n${extractorSet}\n${overlayFingerprint}`,
+  ).slice(0, 40)}`;
+}
+
+/**
  * Identifies the graph-producing inputs without coupling them to a Git commit or
  * worktree. Commit observations remain snapshot rows and may safely alias this
  * identity when the eligible inventory and derivation identity are unchanged.
@@ -765,6 +812,21 @@ export function graphContentIdentity(
   return `cgc_${sha256HexSync(
     `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n${inventory}`,
   ).slice(0, 40)}`;
+}
+
+export function selectedDecodedFactBytes(
+  bytesByPath: ReadonlyMap<string, number> | undefined,
+  paths: readonly string[],
+): number | undefined {
+  if (paths.length === 0) return 0;
+  if (bytesByPath === undefined) return undefined;
+  let total = 0;
+  for (const path of paths) {
+    const bytes = bytesByPath.get(path);
+    if (bytes === undefined || !Number.isSafeInteger(bytes) || bytes < 0) return undefined;
+    total = Math.min(Number.MAX_SAFE_INTEGER, total + bytes);
+  }
+  return total;
 }
 
 export function directFullSnapshotIdentity(logicalSnapshotId: string): string {
@@ -1399,15 +1461,20 @@ export function cachedFileKeys(
   databasePath: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
   onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>,
+  files?: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
 ): Effect.Effect<ReadonlySet<string>, unknown> {
   return Effect.gen(function* () {
     const startedAt = yield* Clock.currentTimeMillis;
-    const generations = codeGraphParserCacheLookupGenerations(languagePacks.cacheIdentities);
+    const cacheIdentities =
+      files === undefined
+        ? languagePacks.cacheIdentities
+        : languagePacks.activeCacheIdentities(files.map(file => file.path));
+    const generations = codeGraphParserCacheLookupGenerations(cacheIdentities);
     const sets = yield* Effect.forEach(
       generations,
       generation =>
         store
-          .cachedCommittedFileKeys(databasePath, generation.storedIdentity)
+          .cachedCommittedFileKeys(databasePath, generation.storedIdentity, files)
           .pipe(
             Effect.map(
               keys =>

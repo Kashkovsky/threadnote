@@ -5,9 +5,13 @@ import {configureConnection, useDatabase, useReadOnlyDatabase} from './store_ses
 import {CodeGraphStoreError} from './types.js';
 import {upsertRepository, storeError} from './store_utilities.js';
 import {selectCachedCommittedFileKeys} from './store_query_core.js';
+import {discardInvalidCachedFacts} from './store_cache_repair.js';
 import {stageActivationFiles, activationMode, type CodeGraphWriterGate} from './store_build_core.js';
 import {
   selectReusableBaseReceipt,
+  selectReusableCleanBaseForCommit,
+  selectReusableCleanBaseForCommitPaths,
+  selectExistingSnapshotFilePaths,
   selectReadySnapshot,
   selectReadySnapshotById,
   selectCurrentLexicalReadySnapshotById,
@@ -18,6 +22,7 @@ import {
   selectReusableReexports,
   selectCachedFacts,
   selectMaterializedFileShards,
+  selectSnapshotMaterializedFileShards,
   selectStoredGraph,
   selectStoredSymbols,
   selectEdgePage,
@@ -66,6 +71,7 @@ import {
 } from './store_relationship_queries.js';
 import {type CodeGraphStoreRuntime} from './store_runtime.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
+import {selectSnapshotProjectClosureFiles} from './store_project_closure.js';
 import {
   temporaryActivationInventoryCapacity,
   temporaryIncrementalActivationCapacity,
@@ -80,10 +86,12 @@ type CodeGraphStoreDataMethods = Pick<
   | 'replaceStagedModifiedFiles'
   | 'diagnose'
   | 'cachedCommittedFileKeys'
+  | 'discardInvalidCachedFacts'
   | 'edgesForNodes'
   | 'findSymbolsByPathAndName'
   | 'loadCachedFacts'
   | 'loadMaterializedFileShards'
+  | 'loadSnapshotMaterializedFileShards'
   | 'loadGraph'
   | 'loadSymbols'
   | 'loadEdgePage'
@@ -115,6 +123,10 @@ type CodeGraphStoreDataMethods = Pick<
   | 'reusableBaseReceipt'
   | 'snapshotPackProvenance'
   | 'reusableCleanBase'
+  | 'reusableCleanBaseForCommit'
+  | 'reusableCleanBaseForCommitPaths'
+  | 'existingSnapshotFilePaths'
+  | 'snapshotProjectClosureFiles'
   | 'reusableOverlayBase'
   | 'reusableReexports'
   | 'relationshipSummaryForNode'
@@ -255,14 +267,30 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         Effect.flatMap(exists => (exists ? useDatabase(databasePath, diagnoseDatabase()) : Effect.succeed(undefined))),
         Effect.mapError(cause => storeError('diagnose code graph database', cause)),
       ),
-    cachedCommittedFileKeys: (databasePath, extractorSet) =>
+    cachedCommittedFileKeys: (databasePath, extractorSet, files) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet))
+            ? useReadOnlyDatabase(databasePath, selectCachedCommittedFileKeys(extractorSet, files))
             : Effect.succeed(new Set<string>()),
         ),
         Effect.mapError(cause => storeError('load cached code graph file keys', cause)),
+      ),
+    discardInvalidCachedFacts: (databasePath, files) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* configureConnection(sql);
+                  yield* sql.withTransaction(discardInvalidCachedFacts(files));
+                }),
+              )
+            : Effect.void,
+        ),
+        Effect.mapError(cause => storeError('discard invalid cached code graph facts', cause)),
       ),
     edgesForNodes: (databasePath, snapshotId, nodeIds, direction, limit, allowedProvenances) =>
       prepare(databasePath).pipe(
@@ -295,6 +323,11 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
           ),
         ),
         Effect.mapError(cause => storeError('load materialized code graph file shards', cause)),
+      ),
+    loadSnapshotMaterializedFileShards: (databasePath, snapshotId, files) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectSnapshotMaterializedFileShards(snapshotId, files))),
+        Effect.mapError(cause => storeError('load associated materialized code graph file shards', cause)),
       ),
     loadGraph: (databasePath, snapshotId) =>
       prepare(databasePath).pipe(
@@ -618,6 +651,42 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable clean code graph base', cause)),
+      ),
+    reusableCleanBaseForCommit: (databasePath, repositoryId, commit) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommit(repositoryId, commit))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable clean code graph base for commit', cause)),
+      ),
+    reusableCleanBaseForCommitPaths: (databasePath, repositoryId, commit, paths) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableCleanBaseForCommitPaths(repositoryId, commit, paths))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable clean code graph base paths for commit', cause)),
+      ),
+    existingSnapshotFilePaths: (databasePath, snapshotId, paths) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectExistingSnapshotFilePaths(snapshotId, paths))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('probe existing code graph snapshot file paths', cause)),
+      ),
+    snapshotProjectClosureFiles: (databasePath, snapshotId, prefixes) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectSnapshotProjectClosureFiles(snapshotId, prefixes))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load bounded code graph project closure files', cause)),
       ),
     reusableOverlayBase: (databasePath, repositoryId, extractorSet, overlayFingerprint) =>
       fs.exists(databasePath).pipe(

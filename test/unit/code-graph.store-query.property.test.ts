@@ -115,6 +115,39 @@ describe('code graph indexed query properties', () => {
     }
   });
 
+  it('narrows cache admission to the requested changed path and content hash', () => {
+    const database = cacheAuthorityDatabase();
+    try {
+      const insert = database.query(
+        `INSERT INTO file_blobs (
+           content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+         ) VALUES (?, 'extractor-current', ?, NULL, NULL, ?, '2026-08-22T00:00:00.000Z')`,
+      );
+      for (const [path, contentHash] of [
+        ['src/changed.ts', 'a'.repeat(40)],
+        ['src/unchanged.ts', 'b'.repeat(40)],
+      ] as const) {
+        insert.run(contentHash, path, JSON.stringify({path}));
+      }
+      const statement = codeGraphCachedCommittedFileKeysStatement('extractor-current', [
+        {contentHash: 'a'.repeat(40), path: 'src/changed.ts'},
+      ]);
+      const rows = database.query(statement.text).all(...statement.parameters) as readonly {
+        readonly content_hash: string;
+        readonly path_hint: string;
+      }[];
+
+      expect(rows).toEqual([
+        {content_hash: 'a'.repeat(40), path_hint: 'src/changed.ts', blob_id: null, reuse_class: null},
+      ]);
+      expect(database.query(`EXPLAIN ${statement.text}`).all(...statement.parameters)).not.toContainEqual(
+        expect.objectContaining({p4: expect.stringMatching(/^json_/u)}),
+      );
+    } finally {
+      database.close(false);
+    }
+  });
+
   it('revokes and restores cache authority atomically when a stored fact row changes', () => {
     const database = cacheAuthorityDatabase();
     try {

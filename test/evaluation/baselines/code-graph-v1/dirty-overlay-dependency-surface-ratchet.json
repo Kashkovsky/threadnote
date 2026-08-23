@@ -1,0 +1,243 @@
+{
+  "environment": {
+    "architecture": "arm64",
+    "cpu": "Apple M1 Max",
+    "dirty": false,
+    "fixtureHash": "generated-code-graph-dirty-overlay-v2:changed-export:300000",
+    "memoryBytes": 68719476736,
+    "node": "bun/1.3.14",
+    "operatingSystem": "macOS 27.0",
+    "packageManager": "bun/1.3.14",
+    "runner": "threadnote-code-graph-dirty-overlay",
+    "runnerVersion": "2"
+  },
+  "measurements": {
+    "full-attributed-files": {
+      "maximum": 50,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-cached-fact-replay-bytes": {
+      "maximum": 850000000,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "full-changed-fact-bytes": {
+      "maximum": 5000,
+      "minimum": 1,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "full-cpu": {
+      "maximum": 325000,
+      "samplesMinimum": 1,
+      "unit": "milliseconds"
+    },
+    "full-cross-generation-shard-files": {
+      "maximum": 3006,
+      "minimum": 1,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-duration": {
+      "maximum": 330000,
+      "samplesMinimum": 1,
+      "unit": "milliseconds"
+    },
+    "full-edges": {
+      "maximum": 600006,
+      "minimum": 600006,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-exact-generation-shard-files": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-fact-replay-amplification": {
+      "maximum": 220000,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-materialization": {
+      "maximum": 250000,
+      "samplesMinimum": 1,
+      "unit": "milliseconds"
+    },
+    "full-materialized-shard-replay-bytes": {
+      "maximum": 850000000,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "full-raw-fact-replay-bytes": {
+      "maximum": 10000000,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "full-rewrite-amplification": {
+      "maximum": 3006,
+      "minimum": 3006,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-staged-files": {
+      "maximum": 3006,
+      "minimum": 3006,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-symbols": {
+      "maximum": 303008,
+      "minimum": 303008,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "full-total-files": {
+      "maximum": 3006,
+      "minimum": 3006,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-attributed-files": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-attribution-context-files": {
+      "maximum": 4,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-base-facts-loaded": {
+      "maximum": 4,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-cached-fact-replay-bytes": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "incremental-changed-fact-bytes": {
+      "maximum": 15000,
+      "minimum": 1,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "incremental-changed-files": {
+      "maximum": 4,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-closure-projects": {
+      "maximum": 2,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-cpu": {
+      "maximum": 2000,
+      "samplesMinimum": 1,
+      "unit": "milliseconds"
+    },
+    "incremental-cross-generation-shard-files": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-duration": {
+      "maximum": 2500,
+      "samplesMinimum": 1,
+      "unit": "milliseconds"
+    },
+    "incremental-duration-reduction": {
+      "minimum": 99,
+      "samplesMinimum": 1,
+      "unit": "percent"
+    },
+    "incremental-edges": {
+      "maximum": 600006,
+      "minimum": 600006,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-exact-generation-shard-files": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-fact-replay-amplification": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-inventory-files-inspected": {
+      "maximum": 4,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-materialization": {
+      "maximum": 150,
+      "samplesMinimum": 1,
+      "unit": "milliseconds"
+    },
+    "incremental-materialization-reduction": {
+      "minimum": 99.9,
+      "samplesMinimum": 1,
+      "unit": "percent"
+    },
+    "incremental-materialized-shard-replay-bytes": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "incremental-probed-dependency-paths": {
+      "maximum": 10,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-raw-fact-replay-bytes": {
+      "maximum": 0,
+      "samplesMinimum": 1,
+      "unit": "bytes"
+    },
+    "incremental-rewrite-amplification": {
+      "maximum": 4,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-staged-files": {
+      "maximum": 4,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-symbols": {
+      "maximum": 303008,
+      "minimum": 303008,
+      "samplesMinimum": 1,
+      "unit": "count"
+    },
+    "incremental-total-files": {
+      "maximum": 3006,
+      "minimum": 3006,
+      "samplesMinimum": 1,
+      "unit": "count"
+    }
+  },
+  "metadata": {
+    "fullMaterializationMode": "full",
+    "governed": true,
+    "incrementalMaterializationMode": "incremental-overlay",
+    "minimumFreeGiB": 120,
+    "resolutionClosure": "project",
+    "runnerClass": "local-unclassified",
+    "runtimePlatform": "darwin",
+    "scenario": "changed-export",
+    "storageLocation": "internal",
+    "storageMedium": "solid-state",
+    "targetSymbols": 300000,
+    "vectorEnabled": false
+  },
+  "suite": "threadnote-code-graph-dirty-overlay",
+  "version": 1
+}

@@ -3,7 +3,7 @@ import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 12 as const;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 13 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
@@ -305,6 +305,15 @@ export interface CodeGraphResolutionActivity {
   readonly referencesTotal: number;
   readonly resolved: number;
   readonly transactionMilliseconds: number;
+  readonly transactionStageMilliseconds?: CodeGraphResolutionTransactionStageMilliseconds;
+}
+
+export interface CodeGraphResolutionTransactionStageMilliseconds {
+  readonly preparingBatch: number;
+  readonly retiringReferences: number;
+  readonly updatingAnalysis: number;
+  readonly writingAliases: number;
+  readonly writingEdges: number;
 }
 
 /** Privacy-safe progress for copying a staged graph into its durable snapshot. */

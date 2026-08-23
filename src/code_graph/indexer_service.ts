@@ -19,6 +19,7 @@ import {
   writerSessionOptions,
 } from './indexer_build.js';
 import {assessIncrementalOverlay, assessIncrementalOverlayCompatibility} from './indexer_incremental.js';
+import {attemptSparseReusableOverlay} from './indexer_sparse.js';
 import {
   cacheContentBatch,
   cachedFileKeys,
@@ -32,6 +33,7 @@ import {
   promoteReadySnapshotWithCapacity,
   reusableReadySnapshotForCleanCommit,
   snapshotIdentity,
+  sparseOverlayGraphContentIdentity,
 } from './indexer_materialization.js';
 import {
   CodeGraphIndexOperationError,
@@ -50,7 +52,13 @@ import type {
   IncrementalOverlayPreassessment,
 } from './indexer_types.js';
 import {codeGraphIndexEnsuresVectors} from './indexer_types.js';
-import {inventoryRepository, worktreeBuildRequestState} from './inventory.js';
+import {
+  type CodeGraphInventory,
+  type CodeGraphOverlayObservation,
+  inventoryRepository,
+  inventoryRepositoryFromReusableCleanBase,
+  worktreeBuildRequestObservation,
+} from './inventory.js';
 import {CodeGraphLanguagePackRegistry} from './languages/registry.js';
 import {codeGraphLayout} from './layout.js';
 import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
@@ -107,7 +115,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               initialIdentity.checkoutId,
               initialIdentity.worktreeId,
             );
-            const requestedOverlay = yield* worktreeBuildRequestState(initialIdentity, request.threadnoteHome);
+            const requestedBuildRequest = yield* worktreeBuildRequestObservation(
+              initialIdentity,
+              request.threadnoteHome,
+            );
+            const requestedOverlay = requestedBuildRequest.state;
             yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
             const requestKey = request.force
               ? undefined
@@ -208,11 +220,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         },
                       );
                       yield* store.initialize(layout.databasePath);
+                      let inventoryOverlayObservation: CodeGraphOverlayObservation;
                       {
-                        const currentOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome);
+                        const currentBuildRequest = yield* worktreeBuildRequestObservation(
+                          identity,
+                          options.threadnoteHome,
+                        );
+                        const currentOverlay = currentBuildRequest.state;
                         if (!sameOverlayState(currentOverlay, requestedOverlay)) {
                           return yield* Effect.fail(new WorktreeChangedDuringIndex());
                         }
+                        inventoryOverlayObservation = currentBuildRequest.overlay;
                         if (requestKey) {
                           const completedByOwner = yield* completedConcurrentSnapshot(
                             store,
@@ -263,9 +281,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           }
                         }
                       }
-                      const cachedCommittedFileKeys = options.force
-                        ? new Set<string>()
-                        : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
@@ -283,17 +298,98 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         threadnoteHome: options.threadnoteHome,
                         treeSitter,
                       });
-                      const inventory = yield* inventoryRepository(identity, {
-                        ...options,
-                        cachedCommittedFileKeys,
-                        includeOpaqueCorpusAssets: ensureVectors,
+                      let bypassReusableInventoryBase = false;
+                      yield* cacheCoalescer.beginSparseExtractionTracking;
+                      const sparseOverlay = yield* attemptSparseReusableOverlay({
+                        anonymousTelemetry,
+                        cacheCoalescer,
+                        capacityProtection,
+                        embedding,
+                        ensureVectors,
+                        fs,
+                        identity,
                         languagePacks,
-                        onContentBatch: cacheCoalescer.onContentBatch,
-                        onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                        layout,
+                        observation: inventoryOverlayObservation,
+                        onInvalidBaseCache: Effect.sync(() => {
+                          bypassReusableInventoryBase = true;
+                        }),
+                        options,
+                        requestedOverlay,
+                        startedAt,
+                        store,
+                      }).pipe(
+                        Effect.ensuring(
+                          cacheCoalescer.endSparseExtractionTracking.pipe(
+                            Effect.andThen(cacheCoalescer.discard),
+                            Effect.andThen(parserPool.trimIdle),
+                          ),
+                        ),
+                      );
+                      if (Option.isSome(sparseOverlay)) return sparseOverlay.value;
+                      const rawInventory = yield* Effect.gen(function* () {
+                        const changedPathCount =
+                          inventoryOverlayObservation.changedPaths.length +
+                          inventoryOverlayObservation.deletedPaths.length;
+                        const reusableInventoryBase =
+                          !bypassReusableInventoryBase &&
+                          !options.force &&
+                          options.incrementalOverlay !== false &&
+                          changedPathCount > 0 &&
+                          changedPathCount <= 200
+                            ? yield* store.reusableCleanBaseForCommit(
+                                layout.databasePath,
+                                identity.repositoryId,
+                                identity.headCommit,
+                              )
+                            : undefined;
+                        if (reusableInventoryBase !== undefined) {
+                          const targetedCachedFileKeys = yield* cachedFileKeys(
+                            store,
+                            layout.databasePath,
+                            languagePacks,
+                            options.onProgress,
+                            inventoryOverlayObservation.files,
+                          );
+                          const reusedInventory = yield* inventoryRepositoryFromReusableCleanBase(
+                            identity,
+                            reusableInventoryBase,
+                            {
+                              ...options,
+                              cachedCommittedFileKeys: targetedCachedFileKeys,
+                              includeOpaqueCorpusAssets: ensureVectors,
+                              languagePacks,
+                              overlayObservation: inventoryOverlayObservation,
+                              onContentBatch: cacheCoalescer.onContentBatch,
+                              onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                            },
+                          );
+                          if (Option.isSome(reusedInventory)) return reusedInventory.value;
+                        }
+                        const cachedCommittedFileKeys = options.force
+                          ? new Set<string>()
+                          : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
+                        return yield* inventoryRepository(identity, {
+                          ...options,
+                          cachedCommittedFileKeys,
+                          includeOpaqueCorpusAssets: ensureVectors,
+                          languagePacks,
+                          overlayObservation: inventoryOverlayObservation,
+                          onContentBatch: cacheCoalescer.onContentBatch,
+                          onOverlayStart: () => cacheCoalescer.beginOverlayExtraction,
+                        });
                       }).pipe(
                         Effect.tap(() => cacheCoalescer.flush),
                         Effect.ensuring(cacheCoalescer.discard.pipe(Effect.andThen(parserPool.trimIdle))),
                       );
+                      const sparseExtractedFiles = yield* cacheCoalescer.sparseExtractedFiles;
+                      const inventory = {
+                        ...rawInventory,
+                        parsedFiles: Math.min(
+                          rawInventory.files.length,
+                          rawInventory.parsedFiles + sparseExtractedFiles,
+                        ),
+                      } satisfies CodeGraphInventory;
                       yield* anonymousTelemetry.observeInventory(inventory);
                       yield* anonymousTelemetry.observeExtractedFactBytes(yield* cacheCoalescer.extractedFactBytes);
                       // Inventory and extraction build large, short-lived maps and Git payloads. Reclaim them before
@@ -304,7 +400,17 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       });
                       yield* Effect.yieldNow;
                       const extractorSet = extractorSetIdentity(inventory.files, languagePacks);
-                      const graphContentId = graphContentIdentity(extractorSet, inventory.files);
+                      // Compose dirty graph content from the canonical committed graph plus the exact overlay.
+                      // Sparse admission already has those two inputs, so full and proportional routes publish
+                      // the same content identity without forcing the sparse route to hydrate every base row.
+                      const graphContentId =
+                        inventory.dirty && inventory.overlayFingerprint !== undefined
+                          ? sparseOverlayGraphContentIdentity(
+                              graphContentIdentity(extractorSet, inventory.committedFiles),
+                              extractorSet,
+                              inventory.overlayFingerprint,
+                            )
+                          : graphContentIdentity(extractorSet, inventory.files);
                       const logicalSnapshotId = snapshotIdentity(
                         identity,
                         inventory.dirty,

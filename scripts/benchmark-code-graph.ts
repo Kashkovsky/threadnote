@@ -182,22 +182,38 @@ export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
     description: 'Current 64 KiB writer cache and 1,000-page WAL auto-checkpoint.',
     tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 1_000},
   },
+  'cache-8m': {
+    description: 'Isolates an 8 MiB writer page cache.',
+    tuning: {mainCacheKiB: 8 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-32m': {
+    description: 'Isolates a 32 MiB writer page cache.',
+    tuning: {mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-64m': {
+    description: 'Isolates a 64 MiB writer page cache.',
+    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 1_000},
+  },
+  'cache-128m': {
+    description: 'Isolates a 128 MiB writer page cache.',
+    tuning: {mainCacheKiB: 128 * 1_024, walAutoCheckpointPages: 1_000},
+  },
   'cache-256m': {
     description: 'Isolates a 256 MiB writer page cache.',
     tuning: {mainCacheKiB: 256 * 1_024, walAutoCheckpointPages: 1_000},
   },
   'mmap-256m': {
     description: 'Isolates a 256 MiB main-database mmap window.',
-    tuning: {mainCacheKiB: 64 * 1_024, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 64, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 1_000},
   },
   'wal-checkpoint-8192': {
     description: 'Isolates an 8,192-page passive WAL auto-checkpoint cadence.',
-    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 8_192},
+    tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 8_192},
   },
   'building-normal-full-publication': {
     description: 'Uses NORMAL only for reconstructible full-build rows and restores FULL before publication.',
     tuning: {
-      mainCacheKiB: 64 * 1_024,
+      mainCacheKiB: 64,
       reconstructibleBuildSynchronous: 'normal',
       walAutoCheckpointPages: 1_000,
     },
@@ -283,6 +299,14 @@ const INCREMENTAL_STAGED_ACTIVATION_STAGES = [
 
 const ACTIVATION_COPY_STAGES = ACTIVATION_STAGES.filter(stage => stage.startsWith('copying-'));
 
+const RESOLUTION_TRANSACTION_STAGES = [
+  ['preparingBatch', 'preparing-batch'],
+  ['writingAliases', 'writing-aliases'],
+  ['writingEdges', 'writing-edges'],
+  ['updatingAnalysis', 'updating-analysis'],
+  ['retiringReferences', 'retiring-references'],
+] as const;
+
 const ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS = (['cold', 'one-file-reindex'] as const).flatMap(prefix => [
   {name: `${prefix}-activation-observed-stages-n1`, unit: 'count'} as const,
   {name: `${prefix}-activation-longest-transaction-n1`, unit: 'milliseconds'} as const,
@@ -339,6 +363,16 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'one-file-reindex-materialization-boundary-rss-n1', unit: 'bytes'},
   {name: 'one-file-reindex-materialization-staged-files', unit: 'count'},
   {name: 'one-file-reindex-materialization-total-files', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-attribution-context-files-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-base-facts-loaded-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-changed-files-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-deleted-files-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-fact-bytes-n1', unit: 'bytes'},
+  {name: 'one-file-reindex-incremental-work-inventory-files-inspected-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-planned-rows-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-probed-dependency-paths-n1', unit: 'count'},
+  {name: 'one-file-reindex-incremental-work-source-bytes-n1', unit: 'bytes'},
+  {name: 'one-file-reindex-incremental-work-total-files-n1', unit: 'count'},
   {name: 'cold-primary-query-returned-nodes', unit: 'count'},
   {name: 'one-file-reindex-primary-query-returned-nodes', unit: 'count'},
   {name: 'same-overlay-full-rebuild-index', unit: 'milliseconds'},
@@ -415,6 +449,7 @@ export interface ConcurrentWorktreeEvidence {
 
 export interface BenchmarkStorageEnvironment {
   readonly filesystem: string;
+  readonly location: 'external' | 'internal' | 'unknown';
   readonly medium: 'rotational' | 'solid-state' | 'unknown' | 'virtual-or-network';
 }
 
@@ -464,6 +499,8 @@ const benchmarkCodeGraph = Effect.scoped(
       process.env[THREADNOTE_EMBEDDING_CONTEXTS_ENV] = String(options.embeddingContexts);
     }
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
+    const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
+    if (ratchet !== undefined) validateCodeGraphBenchmarkRatchet(ratchet);
     const runtimeProvenanceRequired =
       options.profile === 'production-large' ||
       options.repository !== undefined ||
@@ -1197,6 +1234,24 @@ const benchmarkCodeGraph = Effect.scoped(
         new ScriptError(codeGraphStructuralParityFailureMessage(structuralGraphParityEvidence)),
       );
     }
+    const incrementalPrimaryQueryResult = incrementalPrimaryQueryEvidence.result;
+    const sameOverlayReferencePrimaryQueryResult = sameOverlayReference.primary.result;
+    if (!incrementalPrimaryQueryResult || !sameOverlayReferencePrimaryQueryResult) {
+      return yield* Effect.fail(new ScriptError('Primary query parity retained no result payload.'));
+    }
+    const primaryQueryParityEvidence = codeGraphQueryResultParityEvidence(
+      incrementalPrimaryQueryResult,
+      sameOverlayReferencePrimaryQueryResult,
+    );
+    if (!primaryQueryParityEvidence.parity) {
+      if (options.outputPath) {
+        yield* atomicWrite(
+          `${options.outputPath}.query-parity.json`,
+          `${JSON.stringify(primaryQueryParityEvidence, undefined, 2)}\n`,
+        );
+      }
+      return yield* Effect.fail(new ScriptError(codeGraphQueryResultParityFailureMessage(primaryQueryParityEvidence)));
+    }
     const coldLanguageCounts = sqliteLanguageCounts(analysisStatus.databasePath, cold.snapshot.id);
     const coldWorkspaceScopeRows = sqliteRowCount(
       analysisStatus.databasePath,
@@ -1398,6 +1453,36 @@ const benchmarkCodeGraph = Effect.scoped(
         benchmarkMeasurement('one-file-reindex-materialization-total-files', 'count', [
           incremental.materialization?.totalFiles ?? 0,
         ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-attribution-context-files-n1', 'count', [
+          incremental.incrementalWork?.attributionContextFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-base-facts-loaded-n1', 'count', [
+          incremental.incrementalWork?.baseFactsLoaded ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-changed-files-n1', 'count', [
+          incremental.incrementalWork?.changedFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-deleted-files-n1', 'count', [
+          incremental.incrementalWork?.deletedFiles ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-fact-bytes-n1', 'bytes', [
+          incremental.incrementalWork?.factBytes ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-inventory-files-inspected-n1', 'count', [
+          incremental.incrementalWork?.inventoryFilesInspected ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-planned-rows-n1', 'count', [
+          incremental.incrementalWork?.plannedRows ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-probed-dependency-paths-n1', 'count', [
+          incremental.incrementalWork?.probedDependencyPaths ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-source-bytes-n1', 'bytes', [
+          incremental.incrementalWork?.sourceBytes ?? 0,
+        ]),
+        benchmarkMeasurement('one-file-reindex-incremental-work-total-files-n1', 'count', [
+          incremental.incrementalWork?.totalFiles ?? 0,
+        ]),
         benchmarkMeasurement('cold-primary-query-returned-nodes', 'count', [coldPrimaryQueryEvidence.returnedNodes]),
         benchmarkMeasurement('one-file-reindex-primary-query-returned-nodes', 'count', [
           incrementalPrimaryQueryEvidence.returnedNodes,
@@ -1567,6 +1652,7 @@ const benchmarkCodeGraph = Effect.scoped(
         ...(prepared.externalCommit
           ? {
               benchmarkDiskFilesystem: storageEnvironment?.filesystem ?? 'unknown',
+              benchmarkDiskLocation: storageEnvironment?.location ?? 'unknown',
               benchmarkDiskMedium: storageEnvironment?.medium ?? 'unknown',
               benchmarkInventoryEligibleFiles: coldTimeline.inventoryEligibleFiles(),
               benchmarkInventoryExcludedFiles: coldTimeline.inventoryExcludedFiles(),
@@ -1652,6 +1738,18 @@ const benchmarkCodeGraph = Effect.scoped(
       );
       enforceCodeGraphBenchmarkBudget(artifact, yield* readJsonFile(budgetPath), options.scaleSymbols);
     }
+    const ratchetFailure =
+      ratchet === undefined
+        ? undefined
+        : yield* Effect.try({
+            catch: cause => scriptError(cause, 'Code graph performance ratchet failed.'),
+            try: () => enforceCodeGraphBenchmarkRatchet(artifact, ratchet),
+          }).pipe(
+            Effect.match({
+              onFailure: failure => failure,
+              onSuccess: () => undefined,
+            }),
+          );
     if (runtimeProvenanceRequired) {
       const finalRuntimeProvenance = yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot);
       if (JSON.stringify(finalRuntimeProvenance) !== JSON.stringify(runtimeProvenance)) {
@@ -1673,6 +1771,7 @@ const benchmarkCodeGraph = Effect.scoped(
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
+    if (ratchetFailure) return yield* Effect.fail(ratchetFailure);
     if (!options.quiet) yield* printJson(artifact);
   }),
 );
@@ -1863,6 +1962,17 @@ export class IndexPhaseTimeline {
   #materializedReferenceCandidates = 0;
   readonly #materializationStageMilliseconds = new Map<(typeof MATERIALIZATION_STAGES)[number], number>();
   #materializationStorage: IndexMaterializationStorageEvidence | undefined;
+  #referenceResolutionAliasesDiscovered = 0;
+  #referenceResolutionMatchingMilliseconds = 0;
+  #referenceResolutionPagesCompleted = 0;
+  #referenceResolutionPassesObserved = 0;
+  #referenceResolutionReferencesExamined = 0;
+  #referenceResolutionResolved = 0;
+  readonly #referenceResolutionTransactionStageMilliseconds = new Map<
+    (typeof RESOLUTION_TRANSACTION_STAGES)[number][0],
+    number
+  >();
+  #referenceResolutionTransactionMilliseconds = 0;
   #sqliteDurableDatabaseHighWaterBytes = 0;
   #sqliteTemporaryDatabaseHighWaterBytes = 0;
 
@@ -1951,8 +2061,45 @@ export class IndexPhaseTimeline {
         if (progress.completed >= progress.total) this.#set('materializing:complete', at, telemetry);
         break;
       case 'resolving':
-        if (progress.subphase === 'references') this.#first('resolving:references', at, telemetry);
-        else this.#set('resolving:complete', at, telemetry);
+        if (progress.subphase === 'references') {
+          this.#first('resolving:references', at, telemetry);
+          if (progress.activity) {
+            this.#referenceResolutionAliasesDiscovered = Math.max(
+              this.#referenceResolutionAliasesDiscovered,
+              progress.activity.aliasesDiscovered,
+            );
+            this.#referenceResolutionMatchingMilliseconds = Math.max(
+              this.#referenceResolutionMatchingMilliseconds,
+              progress.activity.matchingMilliseconds,
+            );
+            this.#referenceResolutionPagesCompleted = Math.max(
+              this.#referenceResolutionPagesCompleted,
+              progress.activity.pagesCompleted,
+            );
+            this.#referenceResolutionPassesObserved = Math.max(
+              this.#referenceResolutionPassesObserved,
+              progress.activity.pass,
+            );
+            this.#referenceResolutionReferencesExamined = Math.max(
+              this.#referenceResolutionReferencesExamined,
+              progress.activity.referencesExamined,
+            );
+            this.#referenceResolutionResolved = Math.max(this.#referenceResolutionResolved, progress.activity.resolved);
+            this.#referenceResolutionTransactionMilliseconds = Math.max(
+              this.#referenceResolutionTransactionMilliseconds,
+              progress.activity.transactionMilliseconds,
+            );
+            for (const [stage] of RESOLUTION_TRANSACTION_STAGES) {
+              const milliseconds = progress.activity.transactionStageMilliseconds?.[stage];
+              if (milliseconds !== undefined) {
+                this.#referenceResolutionTransactionStageMilliseconds.set(
+                  stage,
+                  Math.max(this.#referenceResolutionTransactionStageMilliseconds.get(stage) ?? 0, milliseconds),
+                );
+              }
+            }
+          }
+        } else this.#set('resolving:complete', at, telemetry);
         break;
       case 'activating':
         this.#maximumActivationTransactionMilliseconds = Math.max(
@@ -2056,6 +2203,40 @@ export class IndexPhaseTimeline {
 
   materializationStageMilliseconds(stage: (typeof MATERIALIZATION_STAGES)[number]): number | undefined {
     return this.#materializationStageMilliseconds.get(stage);
+  }
+
+  referenceResolutionAliasesDiscovered(): number {
+    return this.#referenceResolutionAliasesDiscovered;
+  }
+
+  referenceResolutionMatchingMilliseconds(): number {
+    return this.#referenceResolutionMatchingMilliseconds;
+  }
+
+  referenceResolutionPagesCompleted(): number {
+    return this.#referenceResolutionPagesCompleted;
+  }
+
+  referenceResolutionPassesObserved(): number {
+    return this.#referenceResolutionPassesObserved;
+  }
+
+  referenceResolutionReferencesExamined(): number {
+    return this.#referenceResolutionReferencesExamined;
+  }
+
+  referenceResolutionResolved(): number {
+    return this.#referenceResolutionResolved;
+  }
+
+  referenceResolutionTransactionMilliseconds(): number {
+    return this.#referenceResolutionTransactionMilliseconds;
+  }
+
+  referenceResolutionTransactionStageMilliseconds(
+    stage: (typeof RESOLUTION_TRANSACTION_STAGES)[number][0],
+  ): number | undefined {
+    return this.#referenceResolutionTransactionStageMilliseconds.get(stage);
   }
 
   sqliteTemporaryDatabaseHighWaterBytes(): number {
@@ -2198,6 +2379,32 @@ export function indexPhaseMeasurements(
     ]),
     benchmarkMeasurement(`${prefix}-reference-resolution`, 'milliseconds', [
       timeline.duration('resolving:references', 'resolving:complete'),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-matching-n1`, 'milliseconds', [
+      timeline.referenceResolutionMatchingMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-transactions-n1`, 'milliseconds', [
+      timeline.referenceResolutionTransactionMilliseconds(),
+    ]),
+    ...RESOLUTION_TRANSACTION_STAGES.map(([stage, measurement]) =>
+      benchmarkMeasurement(`${prefix}-reference-resolution-transaction-stage-${measurement}-n1`, 'milliseconds', [
+        timeline.referenceResolutionTransactionStageMilliseconds(stage) ?? 0,
+      ]),
+    ),
+    benchmarkMeasurement(`${prefix}-reference-resolution-pages-n1`, 'count', [
+      timeline.referenceResolutionPagesCompleted(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-passes-n1`, 'count', [
+      timeline.referenceResolutionPassesObserved(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-references-examined-n1`, 'count', [
+      timeline.referenceResolutionReferencesExamined(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-resolved-n1`, 'count', [
+      timeline.referenceResolutionResolved(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-aliases-discovered-n1`, 'count', [
+      timeline.referenceResolutionAliasesDiscovered(),
     ]),
     benchmarkMeasurement(`${prefix}-resolved-fact-accounting`, 'milliseconds', [
       timeline.duration('resolving:complete', 'activating:validating-input'),
@@ -3023,6 +3230,27 @@ export interface CodeGraphStructuralParityEvidence {
   readonly mismatchedStreams: readonly CodeGraphStructuralParityMismatch[];
   readonly parity: boolean;
   readonly sameOverlayReference: CodeGraphStructuralGraphEvidence;
+  readonly version: 1;
+}
+
+export interface CodeGraphQueryResultDigestEvidence {
+  readonly canonicalDigest: string;
+  readonly edgeIdentityDigest: string;
+  readonly elapsedTimePartial: boolean;
+  readonly nodeIdentityDigest: string;
+  readonly orderedDigest: string;
+  readonly resultLimitPartial: boolean;
+  readonly returnedEdges: number;
+  readonly returnedNodes: number;
+  readonly scorelessCanonicalDigest: string;
+}
+
+export interface CodeGraphQueryResultParityEvidence {
+  readonly classification:
+    'elapsed-time-partial' | 'membership-drift' | 'ordered-match' | 'ordering-only' | 'payload-drift' | 'score-only';
+  readonly incremental: CodeGraphQueryResultDigestEvidence;
+  readonly parity: boolean;
+  readonly sameOverlayReference: CodeGraphQueryResultDigestEvidence;
   readonly version: 1;
 }
 
@@ -4063,6 +4291,7 @@ export interface ExternalQueryControlResult {
   readonly durationMilliseconds: number;
   readonly expectedMatches: number;
   readonly language: string;
+  readonly result?: CodeGraphQueryResult;
   readonly returnedNodes: number;
   readonly stableNodeId: string;
 }
@@ -4154,6 +4383,7 @@ function assertExternalQueryPositiveControl(
 ): {
   readonly digest: string;
   readonly expectedMatches: number;
+  readonly result: CodeGraphQueryResult;
   readonly returnedNodes: number;
   readonly stableNodeId: string;
 } {
@@ -4171,6 +4401,7 @@ function assertExternalQueryPositiveControl(
   return {
     digest: queryResultStructuralDigest(result),
     expectedMatches: expectedNodes.length,
+    result,
     returnedNodes: result.nodes.length,
     stableNodeId: expectedNodes[0]!.id,
   };
@@ -4180,11 +4411,11 @@ function assertPrimaryQueryPositiveControl(
   result: CodeGraphQueryResult,
   expectedSnapshotId: string,
   phase: 'cold' | 'incremental' | 'same-overlay-reference',
-): {readonly digest: string; readonly returnedNodes: number} {
+): {readonly digest: string; readonly result: CodeGraphQueryResult; readonly returnedNodes: number} {
   if (result.snapshot.id !== expectedSnapshotId || result.nodes.length === 0) {
     throw new ScriptError(`Code graph ${phase} primary query returned no current-snapshot nodes.`);
   }
-  return {digest: queryResultStructuralDigest(result), returnedNodes: result.nodes.length};
+  return {digest: queryResultStructuralDigest(result), result, returnedNodes: result.nodes.length};
 }
 
 function queryResultStructuralDigest(result: CodeGraphQueryResult): string {
@@ -4197,6 +4428,78 @@ function queryResultStructuralDigest(result: CodeGraphQueryResult): string {
     }),
   );
   return digest.digest('hex');
+}
+
+function queryResultDigest(value: unknown): string {
+  const digest = new Bun.CryptoHasher('sha256');
+  digest.update(JSON.stringify(value));
+  return digest.digest('hex');
+}
+
+function compareIdentity(left: {readonly id: string}, right: {readonly id: string}): number {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+function queryResultDigestEvidence(result: CodeGraphQueryResult): CodeGraphQueryResultDigestEvidence {
+  const nodes = result.nodes.map(({contentHash: _contentHash, ...node}) => node);
+  const canonicalNodes = [...nodes].sort(compareIdentity);
+  const canonicalEdges = [...result.edges].sort(compareIdentity);
+  const scorelessCanonicalNodes = canonicalNodes.map(({score: _score, ...node}) => node);
+  return {
+    canonicalDigest: queryResultDigest({edges: canonicalEdges, nodes: canonicalNodes, operation: result.operation}),
+    edgeIdentityDigest: queryResultDigest(canonicalEdges.map(edge => edge.id)),
+    elapsedTimePartial: result.warnings.some(warning => warning.includes('elapsed-time budget')),
+    nodeIdentityDigest: queryResultDigest(canonicalNodes.map(node => node.id)),
+    orderedDigest: queryResultStructuralDigest(result),
+    resultLimitPartial: result.warnings.some(warning => warning.includes('configured result limit')),
+    returnedEdges: result.edges.length,
+    returnedNodes: result.nodes.length,
+    scorelessCanonicalDigest: queryResultDigest({
+      edges: canonicalEdges,
+      nodes: scorelessCanonicalNodes,
+      operation: result.operation,
+    }),
+  };
+}
+
+/** @internal Privacy-safe classification for release-benchmark query parity failures. */
+export function codeGraphQueryResultParityEvidence(
+  incrementalResult: CodeGraphQueryResult,
+  sameOverlayReferenceResult: CodeGraphQueryResult,
+): CodeGraphQueryResultParityEvidence {
+  const incremental = queryResultDigestEvidence(incrementalResult);
+  const sameOverlayReference = queryResultDigestEvidence(sameOverlayReferenceResult);
+  const parity = incremental.orderedDigest === sameOverlayReference.orderedDigest;
+  const identitiesMatch =
+    incremental.nodeIdentityDigest === sameOverlayReference.nodeIdentityDigest &&
+    incremental.edgeIdentityDigest === sameOverlayReference.edgeIdentityDigest;
+  const classification = parity
+    ? 'ordered-match'
+    : incremental.elapsedTimePartial || sameOverlayReference.elapsedTimePartial
+      ? 'elapsed-time-partial'
+      : incremental.canonicalDigest === sameOverlayReference.canonicalDigest
+        ? 'ordering-only'
+        : incremental.scorelessCanonicalDigest === sameOverlayReference.scorelessCanonicalDigest
+          ? 'score-only'
+          : identitiesMatch
+            ? 'payload-drift'
+            : 'membership-drift';
+  return {classification, incremental, parity, sameOverlayReference, version: 1};
+}
+
+/** @internal Stable privacy-safe diagnostic; no query text, paths, symbols, or raw graph payloads are included. */
+export function codeGraphQueryResultParityFailureMessage(evidence: CodeGraphQueryResultParityEvidence): string {
+  const phase = (value: CodeGraphQueryResultDigestEvidence): string =>
+    `nodes=${value.returnedNodes}, edges=${value.returnedEdges}, ` +
+    `elapsedTimePartial=${value.elapsedTimePartial}, resultLimitPartial=${value.resultLimitPartial}, ` +
+    `ordered=${value.orderedDigest.slice(0, 12)}, canonical=${value.canonicalDigest.slice(0, 12)}, ` +
+    `scoreless=${value.scorelessCanonicalDigest.slice(0, 12)}, ` +
+    `nodeIds=${value.nodeIdentityDigest.slice(0, 12)}, edgeIds=${value.edgeIdentityDigest.slice(0, 12)}`;
+  return (
+    `Primary query parity failed (${evidence.classification}); ` +
+    `incremental ${phase(evidence.incremental)}; ` +
+    `same-overlay-reference ${phase(evidence.sameOverlayReference)}.`
+  );
 }
 
 export function assertProductionReleaseEvidence(artifact: BenchmarkArtifactV1): void {
@@ -4769,6 +5072,7 @@ export interface CodeGraphBenchmarkOptions {
   readonly profileSymbols?: number;
   readonly queryText?: string;
   readonly quiet: boolean;
+  readonly ratchetPath?: string;
   readonly referenceHomePath?: string;
   readonly repository?: string;
   readonly retainHomes: boolean;
@@ -4798,6 +5102,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let profileSymbols: number | undefined;
   let queryText: string | undefined;
   let quiet = false;
+  let ratchetPath: string | undefined;
   let referenceHomePath: string | undefined;
   let repository: string | undefined;
   let retainHomes = false;
@@ -4849,6 +5154,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
       sqliteWriterProfile = value as CodeGraphSqliteWriterProfile;
     } else if (argument === '--warmups') warmups = integer(args[++index], argument, 0);
     else if (argument === '--fail-on-budget') failOnBudget = true;
+    else if (argument === '--ratchet') ratchetPath = required(args[++index], argument);
     else if (argument === '--preflight') preflight = true;
     else if (argument === '--retain-homes') retainHomes = true;
     else if (argument === '--vectors') vectors = true;
@@ -4883,6 +5189,12 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   }
   if (embeddingContexts !== undefined && failOnBudget) {
     throw new ScriptError('Embedding-context candidates retain comparison evidence and cannot use production budgets.');
+  }
+  if (preflight && ratchetPath !== undefined) {
+    throw new ScriptError('--ratchet evaluates a completed artifact and cannot be combined with --preflight.');
+  }
+  if (ratchetPath !== undefined && outputPath === undefined) {
+    throw new ScriptError('--ratchet requires --output so failed evidence remains reviewable.');
   }
   const legacyControlValues = [queryText, expectedPath, expectedLanguage].filter(value => value !== undefined).length;
   if (structuredControls.length > 0 && legacyControlValues > 0) {
@@ -4951,6 +5263,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
     profileSymbols,
     queryText: externalControls[0]?.query,
     quiet,
+    ratchetPath,
     referenceHomePath,
     repository,
     retainHomes,
@@ -5456,15 +5769,20 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
     Effect.map(value => (/^[a-z0-9._+-]{1,64}$/.test(value) ? value : 'unknown')),
   );
   let medium: BenchmarkStorageEnvironment['medium'] = 'unknown';
+  let location: BenchmarkStorageEnvironment['location'] = 'unknown';
   if (process.platform === 'darwin') {
     const diskutil = Bun.which('diskutil') ?? '/usr/sbin/diskutil';
-    const info = yield* runCommandEffect(diskutil, ['info', target], {timeoutMs: 10_000}).pipe(
+    const backingDevice = yield* filesystemCapacity(target).pipe(
+      Effect.map(capacity => capacity.filesystem),
+      Effect.catch(() => Effect.succeed(target)),
+    );
+    const info = yield* runCommandEffect(diskutil, ['info', backingDevice], {timeoutMs: 10_000}).pipe(
       Effect.map(result => result.stdout),
       Effect.catch(() => Effect.succeed('')),
     );
-    if (/^\s*Solid State:\s+Yes\s*$/imu.test(info)) medium = 'solid-state';
-    else if (/^\s*Solid State:\s+No\s*$/imu.test(info)) medium = 'rotational';
-    else if (/^\s*(?:Virtual|Network):\s+Yes\s*$/imu.test(info)) medium = 'virtual-or-network';
+    const classification = benchmarkDarwinStorageClassification(info);
+    medium = classification.medium;
+    location = classification.location;
   } else if (process.platform === 'linux') {
     const source = yield* runCommandEffect('findmnt', ['-n', '-o', 'SOURCE', '--target', target], {
       timeoutMs: 10_000,
@@ -5482,8 +5800,28 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
       else if (rotational.includes('0')) medium = 'solid-state';
     }
   }
-  return {filesystem, medium} satisfies BenchmarkStorageEnvironment;
+  return {filesystem, location, medium} satisfies BenchmarkStorageEnvironment;
 });
+
+export function benchmarkDarwinStorageClassification(
+  info: string,
+): Pick<BenchmarkStorageEnvironment, 'location' | 'medium'> {
+  const virtualOrNetwork = /^\s*(?:Virtual|Network):\s+Yes\s*$/imu.test(info);
+  const medium: BenchmarkStorageEnvironment['medium'] = virtualOrNetwork
+    ? 'virtual-or-network'
+    : /^\s*Solid State:\s+Yes\s*$/imu.test(info)
+      ? 'solid-state'
+      : /^\s*Solid State:\s+No\s*$/imu.test(info)
+        ? 'rotational'
+        : 'unknown';
+  const location: BenchmarkStorageEnvironment['location'] =
+    /^\s*(?:Device Location:\s+Internal|Internal:\s+Yes)\s*$/imu.test(info)
+      ? 'internal'
+      : /^\s*(?:Device Location:\s+External|Internal:\s+No)\s*$/imu.test(info)
+        ? 'external'
+        : 'unknown';
+  return {location, medium};
+}
 
 export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGraph.concurrentWorktreeIsolation')(
   function* (threadnoteHome: string, options: Readonly<{failureInjection?: 'after-index'}> = {}) {
@@ -5997,6 +6335,263 @@ function benchmarkComparisonKey(input: {
   return [input.runnerClass, input.operatingSystem, input.architecture, input.cpu, input.memoryBytes]
     .map(value => String(value).trim().replace(/\s+/g, ' '))
     .join('|');
+}
+
+type BenchmarkRatchetPrimitive = boolean | number | string;
+type BenchmarkMeasurementUnit = BenchmarkArtifactV1['measurements'][number]['unit'];
+
+interface CodeGraphBenchmarkMeasurementRatchetV1 {
+  readonly meanMaximum?: number;
+  readonly maximum?: number;
+  readonly minimum?: number;
+  readonly p50Maximum?: number;
+  readonly p95Maximum?: number;
+  readonly p99Maximum?: number;
+  readonly samplesMinimum?: number;
+  readonly unit: BenchmarkMeasurementUnit;
+}
+
+interface CodeGraphBenchmarkRatchetV1 {
+  readonly environment: Readonly<Record<string, BenchmarkRatchetPrimitive>>;
+  readonly measurements: Readonly<Record<string, CodeGraphBenchmarkMeasurementRatchetV1>>;
+  readonly metadata: Readonly<Record<string, BenchmarkRatchetPrimitive>>;
+  readonly suite: string;
+  readonly version: 1;
+}
+
+const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
+  'bytes',
+  'count',
+  'milliseconds',
+  'operations_per_second',
+  'percent',
+]);
+
+/**
+ * Enforces independent bounds for every measurement named by a reviewed
+ * ratchet. Conditions bind the limits to one suite, fixture, and runner class;
+ * unrelated or partial artifacts fail closed instead of silently skipping a
+ * threshold.
+ */
+export function enforceCodeGraphBenchmarkRatchet(artifact: BenchmarkArtifactV1, value: unknown): void {
+  const ratchet = parseCodeGraphBenchmarkRatchet(value);
+  const failures: string[] = [];
+  if (artifact.suite !== ratchet.suite) {
+    failures.push(`suite ${JSON.stringify(artifact.suite)} does not match ${JSON.stringify(ratchet.suite)}`);
+  }
+  for (const [name, expected] of Object.entries(ratchet.environment).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const actual = artifact.environment[name as keyof BenchmarkArtifactV1['environment']];
+    if (actual !== expected) {
+      failures.push(`environment.${name} ${formatRatchetValue(actual)} does not match ${formatRatchetValue(expected)}`);
+    }
+  }
+  for (const [name, expected] of Object.entries(ratchet.metadata).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const actual = artifact.metadata[name];
+    if (actual !== expected) {
+      failures.push(`metadata.${name} ${formatRatchetValue(actual)} does not match ${formatRatchetValue(expected)}`);
+    }
+  }
+  const measurementsByName = new Map<string, BenchmarkArtifactV1['measurements'][number][]>();
+  for (const measurement of artifact.measurements) {
+    const matches = measurementsByName.get(measurement.name) ?? [];
+    matches.push(measurement);
+    measurementsByName.set(measurement.name, matches);
+  }
+  for (const [name, limit] of Object.entries(ratchet.measurements).sort(([left], [right]) =>
+    left.localeCompare(right),
+  )) {
+    const matches = measurementsByName.get(name) ?? [];
+    if (matches.length === 0) {
+      failures.push(`${name} measurement is missing`);
+      continue;
+    }
+    if (matches.length !== 1) {
+      failures.push(`${name} measurement occurs ${matches.length} times instead of exactly once`);
+      continue;
+    }
+    const measurement = matches[0]!;
+    if (measurement.unit !== limit.unit) {
+      failures.push(`${name} unit ${measurement.unit} does not match ${limit.unit}`);
+      continue;
+    }
+    if (limit.samplesMinimum !== undefined && measurement.samples < limit.samplesMinimum) {
+      failures.push(`${name} has ${measurement.samples} samples, below ${limit.samplesMinimum}`);
+    }
+    if (limit.maximum !== undefined && measurement.maximum > limit.maximum) {
+      failures.push(`${name} maximum ${measurement.maximum} exceeds ${limit.maximum}`);
+    }
+    if (limit.meanMaximum !== undefined && measurement.mean > limit.meanMaximum) {
+      failures.push(`${name} mean ${measurement.mean} exceeds ${limit.meanMaximum}`);
+    }
+    if (limit.p50Maximum !== undefined && measurement.p50 > limit.p50Maximum) {
+      failures.push(`${name} p50 ${measurement.p50} exceeds ${limit.p50Maximum}`);
+    }
+    if (limit.p95Maximum !== undefined && measurement.p95 > limit.p95Maximum) {
+      failures.push(`${name} p95 ${measurement.p95} exceeds ${limit.p95Maximum}`);
+    }
+    if (limit.p99Maximum !== undefined && measurement.p99 > limit.p99Maximum) {
+      failures.push(`${name} p99 ${measurement.p99} exceeds ${limit.p99Maximum}`);
+    }
+    if (limit.minimum !== undefined && measurement.minimum < limit.minimum) {
+      failures.push(`${name} minimum ${measurement.minimum} is below ${limit.minimum}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new ScriptError(`Code graph performance ratchet failed: ${failures.join('; ')}`);
+  }
+}
+
+export function validateCodeGraphBenchmarkRatchet(value: unknown): void {
+  parseCodeGraphBenchmarkRatchet(value);
+}
+
+function parseCodeGraphBenchmarkRatchet(value: unknown): CodeGraphBenchmarkRatchetV1 {
+  const ratchet = ratchetRecord(value, 'Code graph performance ratchet');
+  rejectRatchetUnknownKeys(ratchet, ['environment', 'measurements', 'metadata', 'suite', 'version'], 'ratchet');
+  if (ratchet.version !== 1) throw new ScriptError('Code graph performance ratchet version must be 1.');
+  if (typeof ratchet.suite !== 'string' || ratchet.suite.trim().length === 0) {
+    throw new ScriptError('Code graph performance ratchet suite must be a non-empty string.');
+  }
+  const measurements = ratchetRecord(ratchet.measurements, 'Code graph performance ratchet measurements');
+  const measurementEntries = Object.entries(measurements);
+  if (measurementEntries.length === 0) {
+    throw new ScriptError('Code graph performance ratchet must constrain at least one measurement.');
+  }
+  const parsedMeasurements = Object.create(null) as Record<string, CodeGraphBenchmarkMeasurementRatchetV1>;
+  for (const [name, rawLimit] of measurementEntries.sort(([left], [right]) => left.localeCompare(right))) {
+    if (name.trim().length === 0) {
+      throw new ScriptError('Code graph performance ratchet measurement names must be non-empty.');
+    }
+    const limit = ratchetRecord(rawLimit, `Code graph performance ratchet measurement ${name}`);
+    rejectRatchetUnknownKeys(
+      limit,
+      ['maximum', 'meanMaximum', 'minimum', 'p50Maximum', 'p95Maximum', 'p99Maximum', 'samplesMinimum', 'unit'],
+      `measurement ${name}`,
+    );
+    if (typeof limit.unit !== 'string' || !BENCHMARK_RATCHET_UNITS.has(limit.unit as BenchmarkMeasurementUnit)) {
+      throw new ScriptError(`Code graph performance ratchet measurement ${name} has an invalid unit.`);
+    }
+    const minimum = optionalRatchetThreshold(limit.minimum, name, 'minimum');
+    const maximum = optionalRatchetThreshold(limit.maximum, name, 'maximum');
+    const meanMaximum = optionalRatchetThreshold(limit.meanMaximum, name, 'meanMaximum');
+    const p50Maximum = optionalRatchetThreshold(limit.p50Maximum, name, 'p50Maximum');
+    const p95Maximum = optionalRatchetThreshold(limit.p95Maximum, name, 'p95Maximum');
+    const p99Maximum = optionalRatchetThreshold(limit.p99Maximum, name, 'p99Maximum');
+    if (
+      minimum === undefined &&
+      maximum === undefined &&
+      meanMaximum === undefined &&
+      p50Maximum === undefined &&
+      p95Maximum === undefined &&
+      p99Maximum === undefined
+    ) {
+      throw new ScriptError(`Code graph performance ratchet measurement ${name} requires at least one bound.`);
+    }
+    if (minimum !== undefined && maximum !== undefined && minimum > maximum) {
+      throw new ScriptError(`Code graph performance ratchet measurement ${name} has minimum above maximum.`);
+    }
+    const samplesMinimum = limit.samplesMinimum;
+    if (
+      samplesMinimum !== undefined &&
+      (typeof samplesMinimum !== 'number' || !Number.isSafeInteger(samplesMinimum) || samplesMinimum < 1)
+    ) {
+      throw new ScriptError(
+        `Code graph performance ratchet measurement ${name} samplesMinimum must be a positive integer.`,
+      );
+    }
+    parsedMeasurements[name] = {
+      ...(maximum === undefined ? {} : {maximum}),
+      ...(meanMaximum === undefined ? {} : {meanMaximum}),
+      ...(minimum === undefined ? {} : {minimum}),
+      ...(p50Maximum === undefined ? {} : {p50Maximum}),
+      ...(p95Maximum === undefined ? {} : {p95Maximum}),
+      ...(p99Maximum === undefined ? {} : {p99Maximum}),
+      ...(samplesMinimum === undefined ? {} : {samplesMinimum}),
+      unit: limit.unit as BenchmarkMeasurementUnit,
+    };
+  }
+  const environment = parseRatchetConditions(ratchet.environment, 'environment');
+  const metadata = parseRatchetConditions(ratchet.metadata, 'metadata');
+  requireRatchetConditionKeys(environment, ['fixtureHash', 'node', 'runner', 'runnerVersion'], 'environment');
+  requireRatchetConditionKeys(metadata, ['runnerClass', 'runtimePlatform', 'vectorEnabled'], 'metadata');
+  return {
+    environment,
+    measurements: parsedMeasurements,
+    metadata,
+    suite: ratchet.suite,
+    version: 1,
+  };
+}
+
+function parseRatchetConditions(
+  value: unknown,
+  label: 'environment' | 'metadata',
+): Readonly<Record<string, BenchmarkRatchetPrimitive>> {
+  if (value === undefined) return {};
+  const conditions = ratchetRecord(value, `Code graph performance ratchet ${label}`);
+  const parsed = Object.create(null) as Record<string, BenchmarkRatchetPrimitive>;
+  for (const [name, expected] of Object.entries(conditions).sort(([left], [right]) => left.localeCompare(right))) {
+    if (
+      name.trim().length === 0 ||
+      (typeof expected !== 'boolean' && typeof expected !== 'string' && typeof expected !== 'number') ||
+      (typeof expected === 'number' && !Number.isFinite(expected))
+    ) {
+      throw new ScriptError(`Code graph performance ratchet ${label}.${name || '<empty>'} must be a finite primitive.`);
+    }
+    parsed[name] = expected;
+  }
+  return parsed;
+}
+
+function ratchetRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ScriptError(`${label} must be an object.`);
+  }
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function requireRatchetConditionKeys(
+  conditions: Readonly<Record<string, BenchmarkRatchetPrimitive>>,
+  required: readonly string[],
+  label: 'environment' | 'metadata',
+): void {
+  const missing = required.filter(name => !(name in conditions));
+  if (missing.length > 0) {
+    throw new ScriptError(`Code graph performance ratchet ${label} is missing condition(s): ${missing.join(', ')}.`);
+  }
+}
+
+function rejectRatchetUnknownKeys(
+  value: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const unknown = Object.keys(value)
+    .filter(key => !allowed.includes(key))
+    .sort();
+  if (unknown.length > 0) {
+    throw new ScriptError(`Code graph performance ${label} has unknown field(s): ${unknown.join(', ')}.`);
+  }
+}
+
+function optionalRatchetThreshold(
+  value: unknown,
+  name: string,
+  bound: 'maximum' | 'meanMaximum' | 'minimum' | 'p50Maximum' | 'p95Maximum' | 'p99Maximum',
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new ScriptError(`Code graph performance ratchet measurement ${name} ${bound} must be non-negative finite.`);
+  }
+  return value;
+}
+
+function formatRatchetValue(value: unknown): string {
+  return value === undefined ? '<missing>' : JSON.stringify(value);
 }
 
 export function enforceCodeGraphBenchmarkBudget(

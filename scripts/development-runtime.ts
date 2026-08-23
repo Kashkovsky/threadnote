@@ -308,7 +308,9 @@ export const readManagedDevelopmentRuntimeEvidence = Effect.fn('developmentRunti
 /**
  * Fail-closed preflight for local benchmark and host-integration harnesses.
  * It proves the active bytes came from the exact source commit and that no
- * identity-verified process remains pinned to another managed release.
+ * identity-verified executable process remains pinned to another managed
+ * release. A stable preserve-session transport may outlive the release it was
+ * launched from; its executable descendants must still use the active release.
  */
 export const verifyManagedDevelopmentRuntimeForSource = Effect.fn('developmentRuntime.verifyForSource')(function* (
   expectedSourceCommit: string,
@@ -325,7 +327,9 @@ export const verifyManagedDevelopmentRuntimeForSource = Effect.fn('developmentRu
       new ScriptError('Managed development runtime verification found live process leases with unverified identity.'),
     );
   }
-  if (live.verified.some(lease => lease.version !== evidence.version)) {
+  if (
+    live.verified.some(lease => lease.version !== evidence.version && lease.retirementPolicy !== 'preserve-session')
+  ) {
     return yield* Effect.fail(
       new ScriptError('Managed development runtime verification found a process pinned to a superseded release.'),
     );

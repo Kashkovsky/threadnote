@@ -56,6 +56,14 @@ const activationCase = FC.record({
   transactionMilliseconds: FC.integer({max: 100_000, min: 0}),
 });
 
+const resolutionTransactionCase = FC.record({
+  preparingBatch: FC.integer({max: 100_000, min: 0}),
+  retiringReferences: FC.integer({max: 100_000, min: 0}),
+  updatingAnalysis: FC.integer({max: 100_000, min: 0}),
+  writingAliases: FC.integer({max: 100_000, min: 0}),
+  writingEdges: FC.integer({max: 100_000, min: 0}),
+});
+
 describe('code graph build-status properties', () => {
   it.prop(
     'classifies terminal, exited, reused, stale, and active owners in fail-closed precedence order',
@@ -273,6 +281,47 @@ describe('code graph build-status properties', () => {
                 temporaryDatabaseBytes: stagingHighWaterBytes + 1,
                 temporaryDatabaseHighWaterBytes: stagingHighWaterBytes,
               },
+            },
+          },
+        }),
+      ).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 150}},
+  );
+
+  it.prop(
+    'round-trips bounded resolution transaction stages and rejects negative timings',
+    {sample: resolutionTransactionCase},
+    ({sample}) => {
+      const status = buildStatus('running', true);
+      const activity = {
+        aliasesDiscovered: 0,
+        elapsedMilliseconds: 500_000,
+        matchingMilliseconds: 100_000,
+        pageCompleted: 1,
+        pageTotal: 2,
+        pagesCompleted: 1,
+        pass: 1,
+        referencesCompleted: 5_000,
+        referencesExamined: 5_000,
+        referencesTotal: 10_000,
+        resolved: 4_000,
+        startedAt: status.timestamps.phaseStartedAt,
+        transactionMilliseconds: 400_000,
+        transactionStageMilliseconds: sample,
+      };
+      const resolving: CodeGraphBuildStatus = {...status, phase: 'resolving', resolution: {activity}};
+
+      expect(parseCodeGraphBuildStatus(JSON.parse(JSON.stringify(resolving)))?.resolution).toEqual(
+        resolving.resolution,
+      );
+      expect(
+        parseCodeGraphBuildStatus({
+          ...resolving,
+          resolution: {
+            activity: {
+              ...activity,
+              transactionStageMilliseconds: {...sample, writingEdges: -1},
             },
           },
         }),

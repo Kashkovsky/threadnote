@@ -359,6 +359,7 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
     ) WITHOUT ROWID
   `);
   yield* ensureColumn(sql, 'snapshot_reuse_receipts', 'reexport_count', 'INTEGER NOT NULL DEFAULT 0');
+  yield* ensureColumn(sql, 'snapshot_reuse_receipts', 'inventory_receipt_json', 'TEXT');
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_pack_provenance (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,

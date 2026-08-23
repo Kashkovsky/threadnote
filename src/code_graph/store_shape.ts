@@ -28,6 +28,7 @@ import type {
   CodeGraphReusableBaseReceipt,
   CodeGraphReusableBaseReceiptInput,
   CodeGraphReusableCleanBase,
+  CodeGraphReusableCleanBaseSlice,
   CodeGraphReusableReexport,
   CodeGraphReusableReexportSeed,
   CodeGraphRoutineMaintenanceOptions,
@@ -247,7 +248,12 @@ export interface CodeGraphStoreShape {
   readonly cachedCommittedFileKeys: (
     databasePath: string,
     extractorSet: string,
+    files?: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
   ) => Effect.Effect<ReadonlySet<string>, CodeGraphStoreError>;
+  readonly discardInvalidCachedFacts?: (
+    databasePath: string,
+    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly loadCachedFacts: (
     databasePath: string,
     files: readonly CodeGraphBlobReuseFile[],
@@ -263,6 +269,11 @@ export interface CodeGraphStoreShape {
       readonly currentGraphContentId: string;
       readonly snapshotIds: readonly string[];
     },
+  ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
+  readonly loadSnapshotMaterializedFileShards?: (
+    databasePath: string,
+    snapshotId: string,
+    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
   ) => Effect.Effect<LoadedCodeGraphFacts, CodeGraphStoreError>;
   readonly loadGraph: (databasePath: string, snapshotId: string) => Effect.Effect<StoredCodeGraph, CodeGraphStoreError>;
   readonly loadSymbols: (
@@ -444,6 +455,27 @@ export interface CodeGraphStoreShape {
     preferredCommitGroups?: readonly (readonly string[])[],
     allowExtractorMismatch?: boolean,
   ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
+  readonly reusableCleanBaseForCommit: (
+    databasePath: string,
+    repositoryId: string,
+    commit: string,
+  ) => Effect.Effect<CodeGraphReusableCleanBase | undefined, CodeGraphStoreError>;
+  readonly reusableCleanBaseForCommitPaths?: (
+    databasePath: string,
+    repositoryId: string,
+    commit: string,
+    paths: readonly string[],
+  ) => Effect.Effect<CodeGraphReusableCleanBaseSlice | undefined, CodeGraphStoreError>;
+  readonly existingSnapshotFilePaths?: (
+    databasePath: string,
+    snapshotId: string,
+    paths: readonly string[],
+  ) => Effect.Effect<readonly string[] | undefined, CodeGraphStoreError>;
+  readonly snapshotProjectClosureFiles?: (
+    databasePath: string,
+    snapshotId: string,
+    prefixes: readonly string[],
+  ) => Effect.Effect<readonly CodeGraphInventoryFile[] | undefined, CodeGraphStoreError>;
   readonly reusableOverlayBase?: (
     databasePath: string,
     repositoryId: string,

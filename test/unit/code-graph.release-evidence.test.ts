@@ -10,6 +10,7 @@ import {
   assertExternalRepositoryEvidence,
   assertProductionReleaseEvidence,
   enforceCodeGraphBenchmarkBudget,
+  enforceCodeGraphBenchmarkRatchet,
   externalSamplerMeasurements,
   indexPhaseMeasurements,
   materializationStorageMeasurements,
@@ -64,6 +65,63 @@ describe('code graph release evidence', () => {
     expect(measurements.get('cold-materialized-reference-candidate-rows-n1')).toMatchObject({
       minimum: 11,
       unit: 'count',
+    });
+  });
+
+  it('emits the resolver work split and cumulative cardinalities', () => {
+    const telemetry = {cpuSystemMicroseconds: 0, cpuUserMicroseconds: 0, peakRssBytes: 0, rssBytes: 0};
+    const timeline = new IndexPhaseTimeline(0n, telemetry);
+    timeline.observe(
+      {
+        activity: {
+          aliasesDiscovered: 13,
+          elapsedMilliseconds: 1_000,
+          matchingMilliseconds: 700,
+          pageCompleted: 2,
+          pageTotal: 2,
+          pagesCompleted: 5,
+          pass: 3,
+          referencesCompleted: 80,
+          referencesExamined: 240,
+          referencesTotal: 80,
+          resolved: 61,
+          transactionMilliseconds: 250,
+          transactionStageMilliseconds: {
+            preparingBatch: 20,
+            retiringReferences: 30,
+            updatingAnalysis: 40,
+            writingAliases: 10,
+            writingEdges: 150,
+          },
+        },
+        phase: 'resolving',
+        subphase: 'references',
+      },
+      1_000_000_000n,
+      telemetry,
+    );
+    timeline.observe(
+      {edges: 240, phase: 'resolving', resolved: 61, subphase: 'complete', symbols: 179},
+      1_100_000_000n,
+      telemetry,
+    );
+
+    const measurements = new Map(
+      indexPhaseMeasurements('cold', timeline, false).map(measurement => [measurement.name, measurement.minimum]),
+    );
+    expect(Object.fromEntries([...measurements].filter(([name]) => name.includes('reference-resolution-')))).toEqual({
+      'cold-reference-resolution-aliases-discovered-n1': 13,
+      'cold-reference-resolution-matching-n1': 700,
+      'cold-reference-resolution-pages-n1': 5,
+      'cold-reference-resolution-passes-n1': 3,
+      'cold-reference-resolution-references-examined-n1': 240,
+      'cold-reference-resolution-resolved-n1': 61,
+      'cold-reference-resolution-transactions-n1': 250,
+      'cold-reference-resolution-transaction-stage-preparing-batch-n1': 20,
+      'cold-reference-resolution-transaction-stage-retiring-references-n1': 30,
+      'cold-reference-resolution-transaction-stage-updating-analysis-n1': 40,
+      'cold-reference-resolution-transaction-stage-writing-aliases-n1': 10,
+      'cold-reference-resolution-transaction-stage-writing-edges-n1': 150,
     });
   });
 
@@ -905,6 +963,133 @@ describe('code graph release evidence', () => {
     };
     expect(() => enforceCodeGraphBenchmarkBudget(regressed, budget, undefined)).toThrow(
       /one-file-reindex-materialization/,
+    );
+  });
+
+  it('ratchets every named metric independently and binds it to exact evidence conditions', () => {
+    const artifact = benchmarkArtifact(
+      [
+        benchmarkMeasurement('cold-index', 'milliseconds', [10]),
+        benchmarkMeasurement('one-file-reindex-index', 'milliseconds', [5]),
+        benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', [1, 2, 3, 4]),
+        benchmarkMeasurement('structural-graph-digest-parity', 'count', [0]),
+        benchmarkMeasurement('incremental-process-peak-rss', 'bytes', [100]),
+      ],
+      {runnerClass: 'pinned-test', runtimePlatform: 'linux', vectorEnabled: false},
+      'code-graph-production-large-v2',
+    );
+    const ratchet = {
+      environment: {
+        architecture: 'arm64',
+        fixtureHash: 'fixture',
+        node: 'bun/test',
+        runner: 'threadnote-code-graph-e2e',
+        runnerVersion: '1',
+      },
+      measurements: {
+        'cold-index': {maximum: 9, unit: 'milliseconds'},
+        'hot-exact-lexical-query': {p50Maximum: 2, p95Maximum: 3, unit: 'milliseconds'},
+        'incremental-process-peak-rss': {maximum: 110, unit: 'count'},
+        'one-file-reindex-index': {maximum: 5, samplesMinimum: 2, unit: 'milliseconds'},
+        'primary-query-structural-parity': {minimum: 1, unit: 'count'},
+        'structural-graph-digest-parity': {minimum: 1, unit: 'count'},
+      },
+      metadata: {runnerClass: 'different-runner', runtimePlatform: 'linux', vectorEnabled: false},
+      suite: 'code-graph-production-large-v2',
+      version: 1,
+    };
+
+    let message = '';
+    try {
+      enforceCodeGraphBenchmarkRatchet(artifact, ratchet);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toContain('environment.architecture "x64" does not match "arm64"');
+    expect(message).toContain('metadata.runnerClass "pinned-test" does not match "different-runner"');
+    expect(message).toContain('cold-index maximum 10 exceeds 9');
+    expect(message).toContain('hot-exact-lexical-query p50 3 exceeds 2');
+    expect(message).toContain('hot-exact-lexical-query p95 4 exceeds 3');
+    expect(message).toContain('incremental-process-peak-rss unit bytes does not match count');
+    expect(message).toContain('one-file-reindex-index has 1 samples, below 2');
+    expect(message).toContain('primary-query-structural-parity measurement is missing');
+    expect(message).toContain('structural-graph-digest-parity minimum 0 is below 1');
+  });
+
+  it('rejects incomplete or ambiguous ratchet configurations before comparing evidence', () => {
+    const artifact = benchmarkArtifact([benchmarkMeasurement('cold-index', 'milliseconds', [10])]);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(artifact, {
+        measurements: {'cold-index': {unit: 'milliseconds'}},
+        suite: 'code-graph-v1',
+        version: 1,
+      }),
+    ).toThrow(/requires at least one bound/);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(artifact, {
+        measurements: {'cold-index': {maximum: 20, typoMaximum: 30, unit: 'milliseconds'}},
+        suite: 'code-graph-v1',
+        version: 1,
+      }),
+    ).toThrow(/unknown field.*typoMaximum/);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        {...artifact, measurements: [...artifact.measurements, ...artifact.measurements]},
+        {
+          environment: {
+            fixtureHash: 'fixture',
+            node: 'bun/test',
+            runner: 'threadnote-code-graph-e2e',
+            runnerVersion: '1',
+          },
+          measurements: {'cold-index': {maximum: 20, unit: 'milliseconds'}},
+          metadata: {runnerClass: 'test', runtimePlatform: 'linux', vectorEnabled: false},
+          suite: 'code-graph-v1',
+          version: 1,
+        },
+      ),
+    ).toThrow(/occurs 2 times instead of exactly once/);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(artifact, {
+        measurements: {'cold-index': {maximum: 20, unit: 'milliseconds'}},
+        suite: 'code-graph-v1',
+        version: 1,
+      }),
+    ).toThrow(/environment is missing condition/);
+  });
+
+  it('is invariant to artifact measurement order for arbitrary bounded exact ratchets', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({max: 1_000_000, min: 0}), {maxLength: 30, minLength: 1}), values => {
+        const measurements = values.map((value, index) =>
+          benchmarkMeasurement(`metric-${index}`, index % 2 === 0 ? 'milliseconds' : 'bytes', [value]),
+        );
+        const ratchet = {
+          environment: {
+            fixtureHash: 'fixture',
+            node: 'bun/test',
+            runner: 'threadnote-code-graph-e2e',
+            runnerVersion: '1',
+          },
+          measurements: Object.fromEntries(
+            measurements.map(measurement => [
+              measurement.name,
+              {maximum: measurement.maximum, minimum: measurement.minimum, unit: measurement.unit},
+            ]),
+          ),
+          metadata: {runnerClass: 'test', runtimePlatform: 'linux', vectorEnabled: false},
+          suite: 'code-graph-v1',
+          version: 1,
+        };
+        const metadata = {runnerClass: 'test', runtimePlatform: 'linux', vectorEnabled: false};
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(benchmarkArtifact(measurements, metadata), ratchet),
+        ).not.toThrow();
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(benchmarkArtifact([...measurements].reverse(), metadata), ratchet),
+        ).not.toThrow();
+      }),
+      {numRuns: 100},
     );
   });
 

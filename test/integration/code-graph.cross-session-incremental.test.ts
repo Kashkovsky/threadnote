@@ -5,10 +5,16 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
-import {Context, Effect, Layer, Path} from 'effect';
+import {Context, Effect, Layer, Option, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {CommandExecutor} from '../../src/effect/command.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {
+  inventoryRepositoryFromReusableCleanBase,
+  worktreeBuildRequestObservation,
+} from '../../src/code_graph/inventory.js';
+import {inventoryRepositoryFromReusableCleanBaseSlice} from '../../src/code_graph/inventory_sparse.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {
   BUILTIN_LANGUAGE_PACK_REGISTRY,
@@ -17,6 +23,7 @@ import {
   type CodeGraphLanguagePackRegistryShape,
 } from '../../src/code_graph/languages/registry.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {
   CodeGraphStore,
   materializedShardDerivationIdentity,
@@ -79,6 +86,9 @@ describe('cross-session code graph increments', () => {
     let root: string | undefined;
     return Effect.gen(function* () {
       root = createRepository(32);
+      writeFileSync(join(root, 'package.json'), '{"name":"sparse-fixture","version":"1.0.0"}\n');
+      git(root, ['add', 'package.json']);
+      git(root, ['commit', '-qm', 'add attribution context']);
       incrementalHome = mkdtempSync(join(tmpdir(), 'threadnote-incremental-home-'));
       fullHome = mkdtempSync(join(tmpdir(), 'threadnote-full-home-'));
       const indexer = yield* CodeGraphIndexer;
@@ -86,6 +96,81 @@ describe('cross-session code graph increments', () => {
       expect(clean.materialization?.mode).toBe('full');
 
       writeUseFile(root, 'second body-only revision');
+
+      const identity = yield* resolveRepositoryIdentity(root);
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      const layout = codeGraphLayout(path, incrementalHome, identity.checkoutId, identity.worktreeId);
+      const observation = yield* worktreeBuildRequestObservation(identity, incrementalHome);
+      const base = yield* store.reusableCleanBaseForCommit(
+        layout.databasePath,
+        identity.repositoryId,
+        identity.headCommit,
+      );
+      expect(base).toBeDefined();
+      const baseSlice = yield* store.reusableCleanBaseForCommitPaths!(
+        layout.databasePath,
+        identity.repositoryId,
+        identity.headCommit,
+        ['src/use.ts'],
+      );
+      expect(baseSlice).toMatchObject({
+        files: [{path: 'src/use.ts', source: 'commit'}],
+        snapshot: {fileCount: 35},
+      });
+      expect(
+        yield* store.existingSnapshotFilePaths!(layout.databasePath, baseSlice!.snapshot.id, [
+          'src/use.ts',
+          'src/missing.ts',
+        ]),
+      ).toEqual(['src/use.ts']);
+      expect(
+        yield* store.snapshotProjectClosureFiles!(layout.databasePath, baseSlice!.snapshot.id, ['src']),
+      ).toHaveLength(34);
+      expect(
+        yield* store.snapshotProjectClosureFiles!(layout.databasePath, baseSlice!.snapshot.id, ['']),
+      ).toBeUndefined();
+      const baseFacts = yield* store.loadSnapshotMaterializedFileShards!(
+        layout.databasePath,
+        baseSlice!.snapshot.id,
+        baseSlice!.files,
+      );
+      expect(baseFacts.facts.get('src/use.ts')?.path).toBe('src/use.ts');
+      expect(
+        yield* store.reusableCleanBaseForCommitPaths!(layout.databasePath, identity.repositoryId, identity.headCommit, [
+          'src/use.ts',
+          'src/use.ts',
+        ]),
+      ).toBeUndefined();
+      expect(
+        yield* store.reusableCleanBaseForCommitPaths!(layout.databasePath, identity.repositoryId, identity.headCommit, [
+          'src/missing.ts',
+        ]),
+      ).toBeUndefined();
+      const command = yield* CommandExecutor;
+      const gitCommands: string[] = [];
+      const observedCommand = CommandExecutor.of({
+        ...command,
+        execute: (executable, args, options) => {
+          if (executable === 'git') gitCommands.push(args.join(' '));
+          return command.execute(executable, args, options);
+        },
+      });
+      const sparseInventory = yield* inventoryRepositoryFromReusableCleanBaseSlice(identity, baseSlice!, {
+        overlayObservation: observation.overlay,
+      }).pipe(Effect.provideService(CommandExecutor, observedCommand));
+      expect(Option.isSome(sparseInventory)).toBe(true);
+      if (Option.isSome(sparseInventory)) {
+        expect(sparseInventory.value).toMatchObject({
+          files: [{path: 'src/use.ts', source: 'worktree'}],
+          base: {files: [{path: 'src/use.ts', source: 'commit'}], snapshot: {fileCount: 35}},
+        });
+      }
+      const fastInventory = yield* inventoryRepositoryFromReusableCleanBase(identity, base!, {
+        overlayObservation: observation.overlay,
+      }).pipe(Effect.provideService(CommandExecutor, observedCommand));
+      expect(Option.isSome(fastInventory)).toBe(true);
+      expect(gitCommands.some(command => command.includes(' ls-tree '))).toBe(false);
 
       const incremental = yield* indexAndLoadEffect(root, incrementalHome);
       const full = yield* indexer.index({
@@ -97,12 +182,25 @@ describe('cross-session code graph increments', () => {
 
       expect(incremental.summary.materialization).toEqual({
         mode: 'incremental-overlay',
-        resolutionLookupKeyForm: 'typescript-path-unscoped',
+        resolutionLookupKeyForm: 'typescript-path-scoped',
         resolutionPublicationGate: 'own-path-local',
         stagedFiles: 1,
-        totalFiles: 34,
+        totalFiles: 35,
       });
+      expect(incremental.summary.incrementalWork).toMatchObject({
+        attributionContextFiles: 1,
+        baseFactsLoaded: 1,
+        changedFiles: 1,
+        inventoryFilesInspected: 1,
+        probedDependencyPaths: expect.any(Number),
+        totalFiles: 35,
+      });
+      expect(incremental.summary.incrementalWork!.probedDependencyPaths).toBeLessThanOrEqual(16);
+      expect(incremental.summary.snapshot.graphContentId).toMatch(/^cgc_[0-9a-f]{40}$/u);
       expect(projectGraph(incremental.graph)).toEqual(projectGraph(rebuilt));
+      expect(yield* analysisDigestEffect(incrementalHome, incremental.summary)).toBe(
+        yield* analysisDigestEffect(fullHome, full),
+      );
       expect(normalizeCatalog(incremental.catalog)).toEqual(
         normalizeCatalog(yield* loadVisualizationCatalogEffect(fullHome, full)),
       );
@@ -122,10 +220,92 @@ describe('cross-session code graph increments', () => {
       expect(incremental.summary.diagnostics).toContain(
         'Dirty overlay reused persisted clean base for 1 modified file(s).',
       );
+      expect(incremental.summary.diagnostics).toContain(
+        'Reused persisted clean inventory admission for 1 changed path(s) without hydrating the complete base.',
+      );
     }).pipe(
       provideTestLayer(ApplicationLayer),
       TestClock.withLive,
       Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
+    );
+  });
+
+  it.effect('reuses persisted admission for a deleted source and matches a full rebuild', () => {
+    let fullHome: string | undefined;
+    let incrementalHome: string | undefined;
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(8);
+      incrementalHome = mkdtempSync(join(tmpdir(), 'threadnote-deleted-admission-home-'));
+      fullHome = mkdtempSync(join(tmpdir(), 'threadnote-deleted-admission-full-home-'));
+      yield* indexAndLoadEffect(root, incrementalHome);
+      rmSync(join(root, 'src', 'passive-0.ts'));
+
+      const incremental = yield* indexAndLoadEffect(root, incrementalHome);
+      const indexer = yield* CodeGraphIndexer;
+      const rebuiltSummary = yield* indexer.index({
+        cwd: root,
+        incrementalOverlay: false,
+        threadnoteHome: fullHome,
+      });
+      const rebuilt = yield* loadGraphEffect(root, fullHome, rebuiltSummary);
+
+      expect(incremental.summary.diagnostics).toContain(
+        'Reused persisted clean inventory admission for 1 changed path(s).',
+      );
+      expect(projectGraph(incremental.graph)).toEqual(projectGraph(rebuilt));
+    }).pipe(
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
+    );
+  });
+
+  it.effect('falls back to full admission when the inventory receipt is absent', () => {
+    let home: string | undefined;
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(8);
+      home = mkdtempSync(join(tmpdir(), 'threadnote-missing-inventory-receipt-home-'));
+      const clean = yield* indexAndLoadEffect(root, home);
+      clearInventoryReuseReceipt(clean.databasePath, clean.summary.snapshot.id);
+      writeUseFile(root, 'dirty without inventory receipt');
+
+      const dirty = yield* indexAndLoadEffect(root, home);
+      expect(dirty.summary.materialization?.mode).toBe('incremental-overlay');
+      expect(dirty.summary.diagnostics).not.toContain(
+        'Reused persisted clean inventory admission for 1 changed path(s).',
+      );
+    }).pipe(
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, home])),
+    );
+  });
+
+  it.effect('falls back to full admission when ignore controls change', () => {
+    let home: string | undefined;
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = createRepository(8);
+      writeFileSync(join(root, '.gitignore'), '# initial\n');
+      git(root, ['add', '.gitignore']);
+      git(root, ['commit', '--amend', '-qm', 'fixture with ignore policy']);
+      home = mkdtempSync(join(tmpdir(), 'threadnote-changed-ignore-admission-home-'));
+      yield* indexAndLoadEffect(root, home);
+      writeFileSync(join(root, '.gitignore'), '# changed\n');
+      writeUseFile(root, 'dirty with changed ignore policy');
+
+      const dirty = yield* indexAndLoadEffect(root, home);
+      expect(
+        dirty.summary.diagnostics.some(diagnostic =>
+          diagnostic.startsWith('Reused persisted clean inventory admission for '),
+        ),
+      ).toBe(false);
+    }).pipe(
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+      Effect.ensuring(removeTemporaryPaths(() => [root, home])),
     );
   });
 
@@ -225,6 +405,7 @@ describe('cross-session code graph increments', () => {
       const clean = yield* indexAndLoadEffect(root, incrementalHome);
       expect(reusableReceiptStats(clean.databasePath, clean.summary.snapshot.id)).toMatchObject({
         formatVersion: 2,
+        inventoryReceipt: true,
         reexports: 2,
       });
       expect(reusableReceiptStats(clean.databasePath, clean.summary.snapshot.id).aliases).toBeGreaterThan(0);
@@ -504,6 +685,17 @@ const loadGraphEffect = Effect.fn('test.loadGraph')(function* (
   return yield* store.loadGraph(layout.databasePath, summary.snapshot.id);
 });
 
+const analysisDigestEffect = Effect.fn('test.analysisDigest')(function* (home: string, summary: CodeGraphIndexSummary) {
+  const path = yield* Path.Path;
+  const store = yield* CodeGraphStore;
+  const layout = codeGraphLayout(path, home, summary.identity.checkoutId, summary.identity.worktreeId);
+  yield* store.ensureAnalysisSummary(layout.databasePath, summary.snapshot.id);
+  return Option.map(
+    yield* store.loadAnalysisSummary(layout.databasePath, summary.snapshot.id),
+    value => value.digest,
+  ).pipe(Option.getOrThrow);
+});
+
 const indexWithRegistry = Effect.fn('test.indexWithRegistry')(function* (
   root: string,
   home: string,
@@ -558,7 +750,13 @@ function materializedShardCount(databasePath: string, derivationIdentity: string
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {
   if (catalog === undefined) return undefined;
   const {activatedAt: _activatedAt, snapshot, ...stable} = catalog;
-  const {baseSnapshotId: _baseSnapshotId, completedAt: _completedAt, id: _id, ...stableSnapshot} = snapshot;
+  const {
+    baseSnapshotId: _baseSnapshotId,
+    completedAt: _completedAt,
+    graphContentId: _graphContentId,
+    id: _id,
+    ...stableSnapshot
+  } = snapshot;
   return {...stable, snapshot: stableSnapshot};
 }
 
@@ -716,7 +914,12 @@ function persistedDeltaStats(databasePath: string, snapshotId: string) {
 function reusableReceiptStats(
   databasePath: string,
   snapshotId: string,
-): {readonly aliases: number; readonly formatVersion: number; readonly reexports: number} {
+): {
+  readonly aliases: number;
+  readonly formatVersion: number;
+  readonly inventoryReceipt: boolean;
+  readonly reexports: number;
+} {
   const database = new Database(databasePath, {readonly: true});
   try {
     const aliases = database
@@ -725,8 +928,9 @@ function reusableReceiptStats(
       )
       .get(snapshotId);
     const receipt = database
-      .query<{readonly formatVersion: number}, [string]>(
-        'SELECT format_version AS formatVersion FROM snapshot_reuse_receipts WHERE snapshot_id = ?',
+      .query<{readonly formatVersion: number; readonly inventoryReceiptJson: string | null}, [string]>(
+        `SELECT format_version AS formatVersion, inventory_receipt_json AS inventoryReceiptJson
+         FROM snapshot_reuse_receipts WHERE snapshot_id = ?`,
       )
       .get(snapshotId);
     const reexports = database
@@ -737,6 +941,7 @@ function reusableReceiptStats(
     return {
       aliases: Number(aliases?.aliases ?? 0),
       formatVersion: Number(receipt?.formatVersion ?? 0),
+      inventoryReceipt: receipt?.inventoryReceiptJson !== null && receipt?.inventoryReceiptJson !== undefined,
       reexports: Number(reexports?.reexports ?? 0),
     };
   } finally {
@@ -748,6 +953,17 @@ function deleteReusableReceipt(databasePath: string, snapshotId: string): void {
   const database = new Database(databasePath);
   try {
     database.query('DELETE FROM snapshot_reuse_receipts WHERE snapshot_id = ?').run(snapshotId);
+  } finally {
+    database.close();
+  }
+}
+
+function clearInventoryReuseReceipt(databasePath: string, snapshotId: string): void {
+  const database = new Database(databasePath);
+  try {
+    database
+      .query('UPDATE snapshot_reuse_receipts SET inventory_receipt_json = NULL WHERE snapshot_id = ?')
+      .run(snapshotId);
   } finally {
     database.close();
   }

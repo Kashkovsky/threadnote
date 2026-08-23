@@ -5,10 +5,7 @@ import {
   saturatingCapacityMultiply,
   type CodeGraphDirectPersistentCapacityBoundary,
 } from './disk_capacity.js';
-import {
-  areCodeGraphLookupTiersWithinCandidateBudget,
-  isCodeGraphReferenceWithinCandidateBudget,
-} from './fact_budget.js';
+import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
 import {configureConnection, tableExists} from './store_session.js';
 import {type CodeGraphEdge, type CodeGraphReference, type CodeGraphSymbol, CodeGraphStoreError} from './types.js';
@@ -25,7 +22,6 @@ import {
   assertPersistentBuildOwner,
   assertPersistentMaterializationBatchPlanned,
   type CompactLexicalFormatReceipt,
-  type PersistedFullReferencePageRow,
   type PersistedFullReferenceTotalsRow,
   PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
   PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES,
@@ -33,7 +29,6 @@ import {
   persistentBoundTextBytes,
   type PersistentReexportAliasRow,
   type PreparedPersistedFullFactBatch,
-  referenceCandidateEncoder,
   RESOLUTION_PAGE_ROWS,
   type ResolvableActivationReferenceRow,
   stageCompactLexicalFacts,
@@ -423,70 +418,6 @@ function persistentFullReferencePageTotal(row: PersistedFullReferenceTotalsRow):
   );
 }
 
-function decodePersistedReferenceCandidateRows(
-  references: readonly PersistedFullReferencePageRow[],
-): Effect.Effect<readonly (readonly [string, string, number])[], CodeGraphStoreError> {
-  return Effect.try({
-    try: () => {
-      const rows: Array<readonly [string, string, number]> = [];
-      for (const reference of references) {
-        if (
-          !Number.isSafeInteger(reference.candidate_count) ||
-          reference.candidate_count < 0 ||
-          reference.candidate_count > PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES ||
-          !Number.isSafeInteger(reference.candidate_payload_bytes) ||
-          reference.candidate_payload_bytes < 0 ||
-          reference.candidate_payload_bytes > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES
-        ) {
-          throw new CodeGraphStoreError('Stored reference candidate metadata is invalid.');
-        }
-        // Metadata makes the SQL page selection cheap, but is not a trust
-        // boundary. Measure the actual UTF-8 payload before JSON.parse so a
-        // corrupt row cannot turn a compact page into an unbounded decode.
-        if (reference.lookup_tiers_json.length > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES) {
-          throw new CodeGraphStoreError('Stored reference candidate payload exceeds its byte budget.');
-        }
-        const actualPayloadBytes = referenceCandidateEncoder.encode(reference.lookup_tiers_json).byteLength;
-        if (
-          actualPayloadBytes > PERSISTENT_FULL_RESOLUTION_PAGE_PAYLOAD_BYTES ||
-          actualPayloadBytes !== reference.candidate_payload_bytes
-        ) {
-          throw new CodeGraphStoreError('Stored reference candidate metadata does not match its payload.');
-        }
-        const parsed: unknown = JSON.parse(reference.lookup_tiers_json);
-        if (
-          !Array.isArray(parsed) ||
-          !parsed.every(tier => Array.isArray(tier) && tier.every(lookupKey => typeof lookupKey === 'string'))
-        ) {
-          throw new CodeGraphStoreError('Stored reference lookup tiers are invalid.');
-        }
-        if (!areCodeGraphLookupTiersWithinCandidateBudget(parsed)) {
-          throw new CodeGraphStoreError('Stored reference candidate payload exceeds its cardinality budget.');
-        }
-        const compacted = compactReferenceLookupTiers(parsed);
-        if (
-          compacted.json !== reference.lookup_tiers_json ||
-          compacted.candidateCount !== reference.candidate_count ||
-          compacted.payloadBytes !== reference.candidate_payload_bytes
-        ) {
-          throw new CodeGraphStoreError('Stored reference candidate metadata does not match its payload.');
-        }
-        for (const [tier, lookupKeys] of compacted.tiers.entries()) {
-          for (const lookupKey of lookupKeys) rows.push([lookupKey, reference.edge_id, tier]);
-        }
-      }
-      return rows.sort(
-        (left, right) =>
-          compareCodeUnits(left[0], right[0]) || compareCodeUnits(left[1], right[1]) || left[2] - right[2],
-      );
-    },
-    catch: cause =>
-      cause instanceof CodeGraphStoreError
-        ? cause
-        : new CodeGraphStoreError('Stored reference candidate payload could not be decoded.'),
-  });
-}
-
 /** @internal Exposed so regression tests can verify the SQLite access plan. */
 export function codeGraphPersistedDeltaResolutionPageStatement(
   baseSnapshotId: string,
@@ -770,6 +701,35 @@ function persistentReferenceResolutionCapacityBoundary(
   };
 }
 
+function aggregatePersistentReferenceResolutionCapacityBoundaries(
+  boundaries: readonly CodeGraphDirectPersistentCapacityBoundary[],
+): CodeGraphDirectPersistentCapacityBoundary {
+  const first = boundaries[0];
+  if (first === undefined) {
+    return {finalFactBytes: Number.NaN, operation: 'resolve persistent code graph references', rowCount: Number.NaN};
+  }
+  const compatible = boundaries.every(
+    boundary =>
+      (boundary.operation === 'resolve persistent code graph references' ||
+        boundary.operation === 'resolve temporary code graph references') &&
+      boundary.operation === first.operation &&
+      boundary.mainFilesystem === first.mainFilesystem &&
+      boundary.transientFilesystem === first.transientFilesystem &&
+      Number.isSafeInteger(boundary.finalFactBytes) &&
+      boundary.finalFactBytes >= 0 &&
+      Number.isSafeInteger(boundary.rowCount) &&
+      boundary.rowCount >= 0,
+  );
+  if (!compatible) return {...first, finalFactBytes: Number.NaN, rowCount: Number.NaN};
+  return {
+    finalFactBytes: saturatingCapacityAdd(...boundaries.map(boundary => boundary.finalFactBytes)),
+    operation: first.operation,
+    rowCount: saturatingCapacityAdd(...boundaries.map(boundary => boundary.rowCount)),
+    ...(first.mainFilesystem === undefined ? {} : {mainFilesystem: first.mainFilesystem}),
+    ...(first.transientFilesystem === undefined ? {} : {transientFilesystem: first.transientFilesystem}),
+  };
+}
+
 const identifyChangedSymbols = Effect.fn('codeGraph.identifyChangedSymbols')(function* (
   sql: SqlClient.SqlClient,
   baseSnapshotId: string | undefined,
@@ -832,12 +792,12 @@ export {
   stagePersistedFullFacts,
   positivePageLimit,
   persistentFullReferencePageTotal,
-  decodePersistedReferenceCandidateRows,
   ReexportClosureRow,
   persistentReexportAliasCapacityBoundary,
   capturePersistedAnalysisResolutionEdges,
   adjustPersistedAnalysisResolutionEdges,
   persistentReferenceResolutionCapacityBoundary,
+  aggregatePersistentReferenceResolutionCapacityBoundaries,
   identifyChangedSymbols,
   promotionRemovedSnapshotId,
   selectResumableForcedBuild,

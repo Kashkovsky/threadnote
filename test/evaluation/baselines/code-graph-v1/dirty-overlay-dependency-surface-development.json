@@ -1,0 +1,96 @@
+{
+  "createdAt": "2026-08-23T01:07:05.560Z",
+  "environment": {
+    "architecture": "arm64",
+    "availableBytes": 171841376256,
+    "commit": "9f64703cbcd978d271ca863075ee9eafbc4bd430",
+    "cpu": "Apple M1 Max",
+    "memoryBytes": 68719476736,
+    "minimumFreeBytes": 128849018880,
+    "operatingSystem": "macOS 27.0",
+    "provenance": {
+      "executableSha256": "0f869808f6d1cbadceee72a7b063c436ea5d5973a84e3e75997e4eec9c7cc5ba",
+      "mode": "managed-exact-head",
+      "processLeaseInspection": "complete",
+      "runtime": "bun-1.3.14",
+      "sourceCommit": "9f64703cbcd978d271ca863075ee9eafbc4bd430",
+      "target": "bun-darwin-arm64",
+      "version": "4.3.2-local.g9f64703cbcd978d271ca863075ee9eafbc4bd430"
+    },
+    "runtime": "bun/1.3.14",
+    "storage": {
+      "location": "internal",
+      "medium": "solid-state"
+    }
+  },
+  "fixture": {
+    "dependencySurfaceModifiedFiles": 1,
+    "indexedFiles": 3006,
+    "scenario": "changed-export",
+    "targetSymbols": 300000
+  },
+  "measurements": {
+    "full": {
+      "cpuMilliseconds": 268689.551,
+      "durationMilliseconds": 275451.60725,
+      "factReplayAmplification": 200572,
+      "materializationMilliseconds": 200361.669667,
+      "rewriteAmplification": 3006,
+      "stagedFiles": 3006
+    },
+    "improvement": {
+      "durationPercent": 99.42162310327198,
+      "materializationPercent": 99.96856763217002
+    },
+    "incremental": {
+      "cpuMilliseconds": 1424.509,
+      "durationMilliseconds": 1593.148458,
+      "factReplayAmplification": 0,
+      "materializationMilliseconds": 62.978417,
+      "rewriteAmplification": 4,
+      "stagedFiles": 4
+    }
+  },
+  "observations": {
+    "full": {
+      "edges": 600006,
+      "fallbackReason": "disabled",
+      "materializationMode": "full",
+      "replay": {
+        "attributedFiles": 47,
+        "cachedFactReplayBytes": 792060997,
+        "changedFactBytes": 3949,
+        "crossGenerationShardFiles": 2959,
+        "exactGenerationShardFiles": 0,
+        "materializedShardReplayBytes": 783742887,
+        "rawFactReplayBytes": 8318110
+      },
+      "symbols": 303008,
+      "totalFiles": 3006
+    },
+    "incremental": {
+      "attributionContextFiles": 4,
+      "baseFactsLoaded": 4,
+      "changedFiles": 4,
+      "closureProjects": 2,
+      "edges": 600006,
+      "inventoryFilesInspected": 4,
+      "materializationMode": "incremental-overlay",
+      "probedDependencyPaths": 10,
+      "replay": {
+        "attributedFiles": 0,
+        "cachedFactReplayBytes": 0,
+        "changedFactBytes": 13790,
+        "crossGenerationShardFiles": 0,
+        "exactGenerationShardFiles": 0,
+        "materializedShardReplayBytes": 0,
+        "rawFactReplayBytes": 0
+      },
+      "resolutionClosure": "project",
+      "symbols": 303008,
+      "totalFiles": 3006
+    }
+  },
+  "samples": 1,
+  "version": 2
+}

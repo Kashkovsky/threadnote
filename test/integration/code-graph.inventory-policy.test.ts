@@ -2,7 +2,10 @@ import {execFileSync} from '../helpers/node-child-process.js';
 import {mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {inventoryRepository, previewCodeGraphInventory, worktreeOverlayState} from '../../src/code_graph/inventory.js';
 import {
@@ -10,6 +13,7 @@ import {
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
 } from '../../src/code_graph/inventory_policy.js';
 import {CommandExecutor} from '../../src/effect/command.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -20,15 +24,15 @@ describe('code graph inventory admission policy', () => {
     for (const root of roots.splice(0).reverse()) rmSync(root, {force: true, recursive: true});
   });
 
-  it('excludes low-meaning clean and dirty files before content reads, hashing, or freshness', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-policy-'));
-    roots.push(root);
-    const excludedPaths = createInventoryPolicyFixture(root);
-    const excludedBlobIds = new Set(excludedPaths.map(path => git(root, ['rev-parse', `HEAD:${path}`])));
-    const requestedBlobIds: string[] = [];
+  effectIt.effect('excludes low-meaning clean and dirty files before content reads, hashing, or freshness', () =>
+    Effect.gen(function* () {
+      const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-policy-'));
+      roots.push(root);
+      const excludedPaths = createInventoryPolicyFixture(root);
+      const excludedBlobIds = new Set(excludedPaths.map(path => git(root, ['rev-parse', `HEAD:${path}`])));
+      const requestedBlobIds: string[] = [];
 
-    const clean = await runEffect(
-      Effect.gen(function* () {
+      const clean = yield* Effect.gen(function* () {
         const identity = yield* resolveRepositoryIdentity(root);
         const command = yield* CommandExecutor;
         const wrappedCommand = CommandExecutor.of({
@@ -42,83 +46,89 @@ describe('code graph inventory admission policy', () => {
           },
         });
         return yield* inventoryRepository(identity).pipe(Effect.provideService(CommandExecutor, wrappedCommand));
-      }),
-    );
+      });
 
-    expect(clean.files.map(file => file.path)).toEqual(['data/small.json', 'package.json', 'src/index.ts']);
-    expect(requestedBlobIds.filter(blobId => excludedBlobIds.has(blobId))).toEqual([]);
-    expect(clean.skipped).toBe(4);
-    const cleanExcludedBytes = excludedPaths.reduce((total, path) => total + statSync(join(root, path)).size, 0);
-    expect(clean.policyExclusions).toEqual({
-      bytes: cleanExcludedBytes,
-      files: 4,
-      policyVersion: 1,
-      reasons: [
-        {bytes: statSync(join(root, 'assets/logo.SVG')).size, files: 1, reason: 'svg'},
-        {bytes: statSync(join(root, 'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON')).size, files: 1, reason: 'low-signal-json'},
-        {bytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES, files: 1, reason: 'generic-json-size'},
-        {
-          bytes: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
-          files: 1,
-          reason: 'high-signal-json-hard-cap',
-        },
-      ],
-    });
-    expect(clean.diagnostics).toHaveLength(1);
-    expect(clean.diagnostics![0]!.length).toBeLessThan(512);
-    for (const path of excludedPaths) expect(clean.diagnostics![0]).not.toContain(path);
+      expect(clean.files.map(file => file.path)).toEqual(['data/small.json', 'package.json', 'src/index.ts']);
+      expect(requestedBlobIds.filter(blobId => excludedBlobIds.has(blobId))).toEqual([]);
+      expect(clean.skipped).toBe(4);
+      const cleanExcludedBytes = excludedPaths.reduce((total, path) => total + statSync(join(root, path)).size, 0);
+      expect(clean.policyExclusions).toEqual({
+        bytes: cleanExcludedBytes,
+        files: 4,
+        policyVersion: 1,
+        reasons: [
+          {bytes: statSync(join(root, 'assets/logo.SVG')).size, files: 1, reason: 'svg'},
+          {bytes: statSync(join(root, 'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON')).size, files: 1, reason: 'low-signal-json'},
+          {bytes: CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES, files: 1, reason: 'generic-json-size'},
+          {
+            bytes: CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
+            files: 1,
+            reason: 'high-signal-json-hard-cap',
+          },
+        ],
+      });
+      expect(clean.diagnostics).toHaveLength(1);
+      expect(clean.diagnostics![0]!.length).toBeLessThan(512);
+      for (const path of excludedPaths) expect(clean.diagnostics![0]).not.toContain(path);
 
-    writeFileSync(join(root, 'assets', 'logo.SVG'), '<svg>changed</svg>');
-    writeFileSync(join(root, 'SCHEMAS', '__SNAPSHOTS__', 'PROJECT.JSON'), '{"changed":true}');
-    writeSizedFile(join(root, 'data', 'events.jsonc'), CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES + 1);
-    writeSizedFile(join(root, 'apps', 'mobile', 'project.json'), CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES + 1);
-    writeFileSync(join(root, 'assets', 'untracked.svg'), '<svg/>');
-    const excludedOnlyOpened: string[] = [];
-    const excludedOnly = await inventoryWithObservedOpens(root, excludedOnlyOpened);
+      writeFileSync(join(root, 'assets', 'logo.SVG'), '<svg>changed</svg>');
+      writeFileSync(join(root, 'SCHEMAS', '__SNAPSHOTS__', 'PROJECT.JSON'), '{"changed":true}');
+      writeSizedFile(join(root, 'data', 'events.jsonc'), CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES + 1);
+      writeSizedFile(join(root, 'apps', 'mobile', 'project.json'), CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES + 1);
+      writeFileSync(join(root, 'assets', 'untracked.svg'), '<svg/>');
+      const excludedOnlyOpened: string[] = [];
+      const excludedOnly = yield* inventoryWithObservedOpensEffect(root, excludedOnlyOpened);
 
-    expect(excludedOnlyOpened).toEqual([]);
-    expect(excludedOnly.dirty).toBe(false);
-    expect(excludedOnly.overlayFingerprint).toBeUndefined();
-    expect(await observedOverlayState(root)).toEqual({dirty: false, fingerprint: undefined});
-    expect(excludedOnly.files.map(file => file.path)).toEqual(clean.files.map(file => file.path));
-    expect(excludedOnly.skipped).toBe(5);
-    expect(excludedOnly.policyExclusions?.files).toBe(5);
-    expect(excludedOnly.policyExclusions?.bytes).toBe(
-      [
+      expect(excludedOnlyOpened.some(path => path.endsWith('/.git/info/exclude'))).toBe(true);
+      for (const path of excludedPaths) {
+        expect(
+          excludedOnlyOpened.some(opened => opened.endsWith(`/${path}`)),
+          path,
+        ).toBe(false);
+      }
+      expect(excludedOnly.dirty).toBe(false);
+      expect(excludedOnly.overlayFingerprint).toBeUndefined();
+      expect(yield* observedOverlayStateEffect(root)).toEqual({dirty: false, fingerprint: undefined});
+      expect(excludedOnly.files.map(file => file.path)).toEqual(clean.files.map(file => file.path));
+      expect(excludedOnly.skipped).toBe(5);
+      expect(excludedOnly.policyExclusions?.files).toBe(5);
+      expect(excludedOnly.policyExclusions?.bytes).toBe(
+        [
+          'assets/logo.SVG',
+          'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON',
+          'data/events.jsonc',
+          'apps/mobile/project.json',
+          'assets/untracked.svg',
+        ].reduce((total, path) => total + statSync(join(root, path)).size, 0),
+      );
+
+      writeFileSync(join(root, 'apps', 'mobile', 'project.json'), '{}\n');
+      const admittedOpened: string[] = [];
+      const admitted = yield* inventoryWithObservedOpensEffect(root, admittedOpened);
+
+      expect(admitted.dirty).toBe(true);
+      expect(admitted.overlayFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(yield* observedOverlayStateEffect(root)).toMatchObject({dirty: true, fingerprint: expect.any(String)});
+      expect(admitted.files.find(file => file.path === 'apps/mobile/project.json')).toMatchObject({
+        path: 'apps/mobile/project.json',
+        size: 3,
+        source: 'worktree',
+      });
+      expect(admitted.policyExclusions?.files).toBe(4);
+      expect(admittedOpened.some(path => path.endsWith('/apps/mobile/project.json'))).toBe(true);
+      for (const path of [
         'assets/logo.SVG',
         'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON',
         'data/events.jsonc',
-        'apps/mobile/project.json',
         'assets/untracked.svg',
-      ].reduce((total, path) => total + statSync(join(root, path)).size, 0),
-    );
-
-    writeFileSync(join(root, 'apps', 'mobile', 'project.json'), '{}\n');
-    const admittedOpened: string[] = [];
-    const admitted = await inventoryWithObservedOpens(root, admittedOpened);
-
-    expect(admitted.dirty).toBe(true);
-    expect(admitted.overlayFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(await observedOverlayState(root)).toMatchObject({dirty: true, fingerprint: expect.any(String)});
-    expect(admitted.files.find(file => file.path === 'apps/mobile/project.json')).toMatchObject({
-      path: 'apps/mobile/project.json',
-      size: 3,
-      source: 'worktree',
-    });
-    expect(admitted.policyExclusions?.files).toBe(4);
-    expect(admittedOpened.some(path => path.endsWith('/apps/mobile/project.json'))).toBe(true);
-    for (const path of [
-      'assets/logo.SVG',
-      'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON',
-      'data/events.jsonc',
-      'assets/untracked.svg',
-    ]) {
-      expect(
-        admittedOpened.some(opened => opened.endsWith(`/${path}`)),
-        path,
-      ).toBe(false);
-    }
-  });
+      ]) {
+        expect(
+          admittedOpened.some(opened => opened.endsWith(`/${path}`)),
+          path,
+        ).toBe(false);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   it('previews exact aggregate admission decisions without reading excluded blobs', async () => {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-inventory-preview-'));
@@ -355,21 +365,22 @@ function createInventoryPolicyFixture(root: string): readonly string[] {
   return ['assets/logo.SVG', 'SCHEMAS/__SNAPSHOTS__/PROJECT.JSON', 'data/events.jsonc', 'apps/mobile/project.json'];
 }
 
+const inventoryWithObservedOpensEffect = Effect.fn('test.inventoryWithObservedOpens')(function* (
+  root: string,
+  opened: string[],
+) {
+  const identity = yield* resolveRepositoryIdentity(root);
+  const fileSystem = yield* FileSystem.FileSystem;
+  const observedFileSystem = FileSystem.FileSystem.of({
+    ...fileSystem,
+    open: (path, options) =>
+      Effect.sync(() => opened.push(String(path))).pipe(Effect.andThen(fileSystem.open(path, options))),
+  });
+  return yield* inventoryRepository(identity).pipe(Effect.provideService(FileSystem.FileSystem, observedFileSystem));
+});
+
 async function inventoryWithObservedOpens(root: string, opened: string[]) {
-  return runEffect(
-    Effect.gen(function* () {
-      const identity = yield* resolveRepositoryIdentity(root);
-      const fileSystem = yield* FileSystem.FileSystem;
-      const observedFileSystem = FileSystem.FileSystem.of({
-        ...fileSystem,
-        open: (path, options) =>
-          Effect.sync(() => opened.push(String(path))).pipe(Effect.andThen(fileSystem.open(path, options))),
-      });
-      return yield* inventoryRepository(identity).pipe(
-        Effect.provideService(FileSystem.FileSystem, observedFileSystem),
-      );
-    }),
-  );
+  return runEffect(inventoryWithObservedOpensEffect(root, opened));
 }
 
 async function inventory(root: string) {
@@ -381,13 +392,13 @@ async function inventory(root: string) {
   );
 }
 
+const observedOverlayStateEffect = Effect.fn('test.observedOverlayState')(function* (root: string) {
+  const identity = yield* resolveRepositoryIdentity(root);
+  return yield* worktreeOverlayState(identity);
+});
+
 async function observedOverlayState(root: string) {
-  return runEffect(
-    Effect.gen(function* () {
-      const identity = yield* resolveRepositoryIdentity(root);
-      return yield* worktreeOverlayState(identity);
-    }),
-  );
+  return runEffect(observedOverlayStateEffect(root));
 }
 
 function writeSizedFile(path: string, size: number): void {

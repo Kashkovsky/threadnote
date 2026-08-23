@@ -1,7 +1,7 @@
 import {Crypto, Effect, Option, Path} from 'effect';
 import type {SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
-import type {CodeGraphIncrementalWork} from './incremental_work.js';
+import type {CodeGraphIncrementalWork, CodeGraphIncrementalWorkObservation} from './incremental_work.js';
 import type {CodeGraphInventoryOptions} from './inventory.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import type {CodeGraphBuilderAdmissionClass} from './builder_admission.js';
@@ -95,6 +95,7 @@ export type IncrementalOverlayPreassessment =
       readonly files: readonly CodeGraphInventoryFile[];
       readonly closureProjects?: number;
       readonly mode: 'compatible';
+      readonly proportionalWork?: CodeGraphIncrementalWorkObservation;
       readonly deletedPaths?: readonly string[];
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;

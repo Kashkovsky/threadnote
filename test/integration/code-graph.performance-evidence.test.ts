@@ -143,6 +143,7 @@ describe('external performance evidence', () => {
     Effect.gen(function* () {
       const evidence = yield* benchmarkStorageEnvironment(process.cwd()).pipe(provideTestLayer(ApplicationLayer));
       expect(evidence.filesystem).toMatch(/^[a-z0-9._+-]+$/);
+      expect(['external', 'internal', 'unknown']).toContain(evidence.location);
       expect(['rotational', 'solid-state', 'unknown', 'virtual-or-network']).toContain(evidence.medium);
     }),
   );

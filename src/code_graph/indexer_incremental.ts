@@ -65,6 +65,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
     readonly languagePacks: CodeGraphLanguagePackRegistryShape;
     readonly layout: CodeGraphLayout;
     readonly store: CodeGraphStoreShape;
+    readonly totalFiles?: number;
   },
   workspace: CodeGraphWorkspace,
   suppliedPreassessment?: IncrementalOverlayPreassessment,
@@ -158,7 +159,8 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
     deletedPaths: preassessment.deletedPaths,
     facts,
     files: preassessment.files,
-    totalFiles: input.inventory.files.length,
+    observation: preassessment.proportionalWork,
+    totalFiles: input.totalFiles ?? input.inventory.files.length,
   });
   if (!codeGraphIncrementalWorkFitsBudget(work)) {
     return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
