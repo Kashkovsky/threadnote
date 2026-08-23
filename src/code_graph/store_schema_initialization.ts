@@ -19,8 +19,26 @@ import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
+export const CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES = 8 * 1_024;
+const CODE_GRAPH_WAL_AUTOCHECKPOINT_BYTES = 4_096 * 1_000;
+
 const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql: SqlClient.SqlClient) {
   yield* configureConnection(sql);
+  // Page size is immutable once the database owns schema pages. New stores
+  // use a denser B-tree fanout for the wide, hash-keyed graph tables while
+  // existing stores retain their on-disk contract. Keep the WAL checkpoint
+  // byte window constant rather than silently doubling it with the page size.
+  const pageCountRows = yield* sql.unsafe<{readonly page_count: number}>('PRAGMA main.page_count');
+  const pageCount = Number(pageCountRows[0]?.page_count ?? -1);
+  if (!Number.isSafeInteger(pageCount) || pageCount < 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page count is invalid.'));
+  }
+  if (pageCount === 0) yield* sql.unsafe(`PRAGMA main.page_size = ${CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES}`);
+  const pageSizeRows = yield* sql.unsafe<{readonly page_size: number}>('PRAGMA main.page_size');
+  const pageSize = Number(pageSizeRows[0]?.page_size ?? 0);
+  if (!Number.isSafeInteger(pageSize) || pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page size is invalid.'));
+  }
   // Refuse a drifted cleanup authority surface before any initialization DDL
   // or graph-row mutation. Unlike reconstructible build extensions, this
   // queue is coupled to immutable removal tombstones and is never dropped.
@@ -30,7 +48,9 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   // connection for longer than the build heartbeat. Committed WAL records are
   // already durable; keep routine checkpoint work bounded to SQLite's default
   // 1,000-page auto-checkpoint cadence instead.
-  yield* sql.unsafe('PRAGMA wal_autocheckpoint = 1000');
+  yield* sql.unsafe(
+    `PRAGMA wal_autocheckpoint = ${Math.max(1, Math.floor(CODE_GRAPH_WAL_AUTOCHECKPOINT_BYTES / pageSize))}`,
+  );
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS schema_metadata (
       key TEXT PRIMARY KEY NOT NULL,

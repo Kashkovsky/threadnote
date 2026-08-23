@@ -13,6 +13,7 @@ import {
 } from '../../src/code_graph/disk_capacity.js';
 import {withCodeGraphDiskReservation} from '../../src/code_graph/disk_reservation.js';
 import {
+  CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES,
   CodeGraphStore,
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphStoreShape,
@@ -66,7 +67,11 @@ describe('code graph cache capacity load calibration', () => {
             const store = yield* CodeGraphStore;
             yield* store.initialize(databasePath);
             const sqliteProfile = yield* Effect.sync(() => readSqliteProfile(databasePath));
-            expect(sqliteProfile).toMatchObject({journalMode: 'wal', pageSize: 4_096, walAutoCheckpointPages: 1_000});
+            expect(sqliteProfile).toMatchObject({
+              journalMode: 'wal',
+              pageSize: CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES,
+              walAutoCheckpointPages: 1_000,
+            });
 
             const evidence = new Map([
               [FILE_FACT_OPERATION, emptyLoadEvidence()],

@@ -49,6 +49,7 @@ export {
 } from './store_schema_contracts.js';
 export {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
 export {CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE} from './store_cache_authority.js';
+export {CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES} from './store_schema_initialization.js';
 export {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
 export {nextPersistentActivationBatchRows} from './store_activation_core.js';
 export {codeGraphPersistedEndpointValidationPageStatement} from './store_activation_persistent.js';

@@ -1212,6 +1212,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const storage = yield* codeGraphStorageTelemetry(fs, path, analysisStatus.databasePath, databaseRoot);
     const coldLexicalTermRows = sqliteLexicalTermRowCount(analysisStatus.databasePath, cold.snapshot.id);
     const sqliteVersion = sqliteVersionString(analysisStatus.databasePath);
+    const sqlitePageSizeBytes = sqlitePageSize(analysisStatus.databasePath);
     const coldStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
       analysisStatus.databasePath,
       cold.snapshot.id,
@@ -1629,6 +1630,7 @@ const benchmarkCodeGraph = Effect.scoped(
           'SQLite durable database allocated-page high-water from direct materialization progress; WAL and SHM remain separately sampled filesystem artifacts',
         sqliteTemporaryStorageMeasurement:
           'SQLite TEMP database allocated-page high-water from materialization progress; excludes rollback journals and subjournals and remains separate from the filesystem sampler',
+        sqlitePageSizeBytes,
         sqliteVersion,
         ...(options.materializationTransactionBatchLimit === undefined
           ? {}
@@ -3250,6 +3252,20 @@ function sqliteVersionString(databasePath: string): string {
       throw new ScriptError('Code graph database returned an invalid SQLite version.');
     }
     return version;
+  } finally {
+    database.close(false);
+  }
+}
+
+function sqlitePageSize(databasePath: string): number {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const row = database.query('PRAGMA page_size').get() as {readonly page_size?: bigint | number} | null;
+    const pageSize = Number(row?.page_size ?? 0);
+    if (!Number.isSafeInteger(pageSize) || pageSize < 512 || pageSize > 65_536) {
+      throw new ScriptError('Code graph database returned an invalid SQLite page size.');
+    }
+    return pageSize;
   } finally {
     database.close(false);
   }
