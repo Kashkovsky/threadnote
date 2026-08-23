@@ -175,7 +175,9 @@ export interface CodeGraphMaterializationRows {
  * Cumulative wall time for attribution and adjacent final-batch preparation.
  * Attribution compute, shard serialization, persistence, and association are
  * mutually non-overlapping. The existing `attributing` stage remains an
- * inclusive per-batch timer; a final shard-association flush can follow it.
+ * inclusive cumulative timer; grouped shard persistence is recorded exactly
+ * once rather than being divided speculatively across its logical batches. A
+ * final shard-association flush can follow it.
  * Final-batch preparation spans the transition into row preparation. Keeping
  * them separate prevents codec and SQLite costs from hiding behind one
  * aggregate timer.

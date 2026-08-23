@@ -395,29 +395,29 @@ describe('code graph external benchmark harness', () => {
     );
   });
 
-  it('keeps isolated SQLite writer candidates on the production cache baseline', () => {
+  it('keeps isolated SQLite writer candidates on the production page-cache and WAL baseline', () => {
     const profiles = CODE_GRAPH_SQLITE_WRITER_PROFILES;
 
-    expect(profiles.current.tuning).toEqual({mainCacheKiB: 64, walAutoCheckpointPages: 1_000});
+    expect(profiles.current.tuning).toEqual({mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 500});
     for (const cacheMiB of [8, 32, 64, 128, 256] as const) {
       expect(profiles[`cache-${cacheMiB}m`].tuning).toEqual({
         mainCacheKiB: cacheMiB * 1_024,
-        walAutoCheckpointPages: 1_000,
+        walAutoCheckpointPages: 500,
       });
     }
     expect(profiles['mmap-256m'].tuning).toEqual({
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       mmapSizeBytes: 256 * 1_024 * 1_024,
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     });
     expect(profiles['wal-checkpoint-8192'].tuning).toEqual({
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       walAutoCheckpointPages: 8_192,
     });
     expect(profiles['building-normal-full-publication'].tuning).toEqual({
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       reconstructibleBuildSynchronous: 'normal',
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     });
   });
 
@@ -625,12 +625,12 @@ describe('code graph external benchmark harness', () => {
   it('requires effective PRAGMA readback and FULL-after-NORMAL publication ordering', () => {
     const connection = (benchmarkPhase: 'cold' | 'one-file-reindex' | 'same-overlay-reference') => ({
       benchmarkPhase,
-      cacheSizePragma: -64,
+      cacheSizePragma: -(32 * 1_024),
       journalMode: 'wal',
       mmapSizeBytes: 0,
       phase: 'connection' as const,
       synchronous: 2,
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     });
     const evidence = [
       connection('cold'),
@@ -654,8 +654,12 @@ describe('code graph external benchmark harness', () => {
         ...evidence
           .filter(settings => settings.phase === 'connection')
           .slice(0, 2)
-          .map(settings => ({...settings, cacheSizePragma: -64})),
-        {...connection('same-overlay-reference'), cacheSizePragma: -64, walAutoCheckpointPages: 8_192},
+          .map(settings => ({...settings, cacheSizePragma: -(32 * 1_024)})),
+        {
+          ...connection('same-overlay-reference'),
+          cacheSizePragma: -(32 * 1_024),
+          walAutoCheckpointPages: 8_192,
+        },
       ]),
     ).toThrow('did not apply its WAL checkpoint cadence');
   });

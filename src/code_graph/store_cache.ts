@@ -12,10 +12,11 @@ import {
   type CodeGraphCacheCapacityRow,
 } from './cache_capacity.js';
 import {saturatingCapacityAdd, type CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
-import {type BoundedCodeGraphFact} from './fact_budget.js';
+import {ensureBoundedCodeGraphFact, type BoundedCodeGraphFact} from './fact_budget.js';
 import {encodeStoredCodeGraphFact} from './fact_storage.js';
 import {compareCodeUnits} from './ordering.js';
 import {
+  type CodeGraphMaterializedShardCacheBatch,
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
@@ -104,7 +105,7 @@ function storeFreshFactRows(sql: SqlClient.SqlClient, rows: readonly PlannedFres
   });
 }
 
-/** @internal Keeps cache UPSERT bind counts within the existing physical transaction row ceiling. */
+/** @internal Keeps every cache UPSERT within the existing physical transaction row ceiling. */
 export function codeGraphCacheWritePages<A>(rows: readonly A[]): readonly (readonly A[])[] {
   const pages: A[][] = [];
   for (let offset = 0; offset < rows.length; offset += CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows) {
@@ -325,6 +326,23 @@ function prepareMaterializedShardCacheChunks(
       return {...row, payloadBytes: codeGraphMaterializedShardCapacityBytes(row)};
     }),
   );
+}
+
+/** Plans several already-bounded attribution batches into the same physical cache transaction ceilings. */
+function prepareMaterializedShardCacheBatchChunks(
+  batches: readonly CodeGraphMaterializedShardCacheBatch[],
+  now: string,
+): readonly CodeGraphCacheCapacityChunk<PlannedMaterializedShardCacheRow>[] {
+  const rows = batches.flatMap(batch =>
+    prepareMaterializedShardCacheChunks(
+      batch.files,
+      batch.facts.map(ensureBoundedCodeGraphFact),
+      batch.extractorSet,
+      batch.derivationIdentity,
+      now,
+    ).flatMap(chunk => chunk.rows),
+  );
+  return planCodeGraphCacheCapacityChunks('cache materialized code graph file shards', rows);
 }
 
 function pairCacheInputs(
@@ -564,15 +582,6 @@ function storeNormalMaterializedShardRows(sql: SqlClient.SqlClient, rows: readon
       }
     }
   });
-}
-
-/** @internal Keeps guarded cache UPSERT bind counts conservatively bounded. */
-export function codeGraphCacheWritePages<A>(rows: readonly A[]): readonly (readonly A[])[] {
-  const pages: A[][] = [];
-  for (let offset = 0; offset < rows.length; offset += CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows) {
-    pages.push(rows.slice(offset, offset + CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows));
-  }
-  return pages;
 }
 
 /** @internal Accepts driver-independent RETURNING order while rejecting every partial or ambiguous write. */
@@ -935,5 +944,6 @@ export {
   prepareFreshFactCacheChunks,
   storeFreshFactRows,
   prepareMaterializedShardCacheChunks,
+  prepareMaterializedShardCacheBatchChunks,
   writeMaterializedShardCacheRows,
 };

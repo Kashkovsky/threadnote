@@ -162,8 +162,8 @@ describe('code graph full-build materialization store', () => {
     );
 
     expect(pager).toEqual({
-      cacheSize: -64,
-      spillPages: 16,
+      cacheSize: -(32 * 1_024),
+      spillPages: 8_192,
       temporaryCacheSize: -64,
       temporarySpillPages: 16,
       temporaryStore: 2,
@@ -980,6 +980,50 @@ describe('code graph full-build materialization store', () => {
             {count: 1, operation: 'delete'},
             {count: files.length + 1, operation: 'insert'},
           ]);
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('coalesces bounded attribution batches into one materialized-shard reservation', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const batches = Array.from({length: 4}, (_, index) => {
+        const file = {
+          ...fixture.file,
+          contentHash: (index + 1).toString(16).padStart(64, '0'),
+          path: `src/coalesced-${index}.ts`,
+        };
+        return {
+          derivationIdentity: `coalesced-shard-v${index}`,
+          extractorSet: 'coalesced-shard-cache',
+          facts: [
+            {
+              diagnostics: [],
+              edges: [],
+              path: file.path,
+              symbols: [],
+            } satisfies CodeGraphFileFacts,
+          ],
+          files: [file],
+        };
+      });
+      let reservations = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) => {
+        reservations += 1;
+        return transaction;
+      };
+
+      yield* store.cacheMaterializedFileShardBatches(fixture.databasePath, batches, protector);
+
+      expect(reservations).toBe(1);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(database.query('SELECT COUNT(*) AS count FROM materialized_file_shards').get()).toEqual({count: 4});
         } finally {
           database.close(false);
         }

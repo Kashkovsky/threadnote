@@ -190,43 +190,43 @@ const MATERIALIZATION_SUBPHASES = [
 
 export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
   current: {
-    description: 'Current 64 KiB writer cache and 1,000-page WAL auto-checkpoint.',
-    tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 1_000},
+    description: 'Current 32 MiB writer cache and 4 MiB (500-page at 8 KiB) WAL auto-checkpoint.',
+    tuning: {mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 500},
   },
   'cache-8m': {
     description: 'Isolates an 8 MiB writer page cache.',
-    tuning: {mainCacheKiB: 8 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 8 * 1_024, walAutoCheckpointPages: 500},
   },
   'cache-32m': {
     description: 'Isolates a 32 MiB writer page cache.',
-    tuning: {mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 500},
   },
   'cache-64m': {
     description: 'Isolates a 64 MiB writer page cache.',
-    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 64 * 1_024, walAutoCheckpointPages: 500},
   },
   'cache-128m': {
     description: 'Isolates a 128 MiB writer page cache.',
-    tuning: {mainCacheKiB: 128 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 128 * 1_024, walAutoCheckpointPages: 500},
   },
   'cache-256m': {
     description: 'Isolates a 256 MiB writer page cache.',
-    tuning: {mainCacheKiB: 256 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 256 * 1_024, walAutoCheckpointPages: 500},
   },
   'mmap-256m': {
     description: 'Isolates a 256 MiB main-database mmap window.',
-    tuning: {mainCacheKiB: 64, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 1_000},
+    tuning: {mainCacheKiB: 32 * 1_024, mmapSizeBytes: 256 * 1_024 * 1_024, walAutoCheckpointPages: 500},
   },
   'wal-checkpoint-8192': {
     description: 'Isolates an 8,192-page passive WAL auto-checkpoint cadence.',
-    tuning: {mainCacheKiB: 64, walAutoCheckpointPages: 8_192},
+    tuning: {mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 8_192},
   },
   'building-normal-full-publication': {
     description: 'Uses NORMAL only for reconstructible full-build rows and restores FULL before publication.',
     tuning: {
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       reconstructibleBuildSynchronous: 'normal',
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     },
   },
   'combined-candidate': {

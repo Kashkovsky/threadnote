@@ -68,6 +68,7 @@ import type {
 } from './indexer_types.js';
 import {preferredIncrementalBaseCommitGroups} from './incremental_base_selection.js';
 import type {CodeGraphInventory} from './inventory.js';
+import {makeCodeGraphMaterializedShardWriteQueue} from './indexer_materialized_shard_writes.js';
 import {assessCodeGraphLanguagePackDelta} from './languages/provenance.js';
 import {packDerivationIdentity, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
@@ -82,7 +83,6 @@ import {
   shardDonorIds,
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphLanguagePackProvenance,
-  type CodeGraphMaterializedShardAssociationBatch,
   type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableCleanBase,
   type CodeGraphStagingProgress,
@@ -1377,21 +1377,21 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     let persistentBatchCursor = 0;
     const persistentTransactionBatchLimit = input.persistentMaterializationTransactionBatchLimit ?? 4;
     const pendingBatches: PendingMaterializationBatch[] = [];
-    const pendingShardAssociationBatches: CodeGraphMaterializedShardAssociationBatch[] = [];
-    const flushPendingShardAssociations = () =>
-      Effect.gen(function* () {
-        if (pendingShardAssociationBatches.length === 0) return;
-        const group = pendingShardAssociationBatches.splice(0, pendingShardAssociationBatches.length);
-        const startedAt = performance.now();
-        yield* input.store.associateMaterializedFileShardBatches(
-          input.layout.databasePath,
-          input.building.id,
-          input.persistentOwnerToken!,
-          group,
-          protectDirectPersistentWrite,
-        );
-        materializationSubphases.add('shardAssociation', performance.now() - startedAt);
-      });
+    const shardWrites = makeCodeGraphMaterializedShardWriteQueue({
+      databasePath: input.layout.databasePath,
+      onAssociation: elapsed => materializationSubphases.add('shardAssociation', elapsed),
+      onCachePersistence: (elapsed, recordInAttribution) => {
+        materializationSubphases.add('shardPersistence', elapsed);
+        if (!recordInAttribution) return;
+        attributionMilliseconds += elapsed;
+        stageMilliseconds.attributing = attributionMilliseconds;
+      },
+      ownerToken: input.persistentOwnerToken!,
+      persistentCapacityProtector: protectDirectPersistentWrite,
+      snapshotId: input.building.id,
+      store: input.store,
+      transactionBatchLimit: persistentTransactionBatchLimit,
+    });
     const reportStagingProgress = (batch: PendingMaterializationBatch, progress: CodeGraphStagingProgress) => {
       if (progress.temporaryDatabaseBytes !== undefined) {
         temporaryDatabaseBytes = progress.temporaryDatabaseBytes;
@@ -1437,6 +1437,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     };
     const flushPendingBatches = () =>
       Effect.gen(function* () {
+        yield* shardWrites.flushCaches();
         if (pendingBatches.length === 0) return;
         const group = pendingBatches.splice(0, pendingBatches.length);
         const groupByIndex = new Map(group.map(batch => [batch.batchIndex, batch]));
@@ -1601,6 +1602,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
       const attributionStartedAt = yield* Clock.currentTimeMillis;
+      let flushShardCacheAfterAttribution = false;
       const attributedFallbackFacts = materializationSubphases.measure('attributionCompute', () =>
         attributeFacts(
           fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
@@ -1611,16 +1613,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         const serializedFallbackFacts = materializationSubphases.measure('shardSerialization', () =>
           attributedFallbackFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
         );
-        const persistenceStartedAt = performance.now();
-        yield* input.store.cacheMaterializedFileShards(
-          input.layout.databasePath,
-          fallbackFiles,
-          serializedFallbackFacts,
-          input.building.extractorSet,
-          shardDerivationIdentity,
-          protectDirectPersistentWrite,
-        );
-        materializationSubphases.add('shardPersistence', performance.now() - persistenceStartedAt);
+        flushShardCacheAfterAttribution = shardWrites.enqueueCache({
+          derivationIdentity: shardDerivationIdentity,
+          extractorSet: input.building.extractorSet,
+          facts: serializedFallbackFacts,
+          files: fallbackFiles,
+        });
       }
       if (directPersistentMaterialization) {
         const selectedShardIds = materializedShardBatchComplete
@@ -1636,14 +1634,16 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
                 ),
               ]),
             );
-        pendingShardAssociationBatches.push({
+        const flushShardAssociations = shardWrites.enqueueAssociation({
           derivationIdentity: shardDerivationIdentity,
           extractorSet: input.building.extractorSet,
           files,
           selectedShardIds,
         });
-        if (pendingShardAssociationBatches.length >= persistentTransactionBatchLimit) {
-          yield* flushPendingShardAssociations();
+        if (flushShardAssociations) {
+          // This physical work is already captured by the batch-local
+          // attribution timer below.
+          yield* shardWrites.flushAssociations(false);
         }
       }
       const attributedFallbackByPath = new Map(attributedFallbackFacts.map(fact => [fact.path, fact]));
@@ -1656,6 +1656,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
       attributionMilliseconds += batchAttributionMilliseconds;
       stageMilliseconds.attributing = attributionMilliseconds;
+      if (flushShardCacheAfterAttribution) yield* shardWrites.flushCaches();
       const finalBatchPreparationStartedAt = performance.now();
       const finalBatches = finalCodeGraphFactBatches(facts);
       materializationSubphases.add('factBatchPreparation', performance.now() - finalBatchPreparationStartedAt);
@@ -1750,7 +1751,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       }
     }
     yield* flushPendingBatches();
-    yield* flushPendingShardAssociations();
+    yield* shardWrites.flushCaches();
+    yield* shardWrites.flushAssociations();
     batchesTotal = persistentBatchCursor;
     if (directPersistentMaterialization) {
       yield* input.store.finalizePersistentMaterializationPlan(

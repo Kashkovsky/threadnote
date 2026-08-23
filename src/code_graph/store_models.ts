@@ -1,6 +1,7 @@
 import type {Effect, Option} from 'effect';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
+import type {CodeGraphCacheFactInput} from './fact_budget.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import type {
   CodeGraphWorkspaceBuildSystem,
@@ -82,6 +83,13 @@ export interface CodeGraphMaterializedShardAssociationBatch {
   readonly extractorSet: string;
   readonly files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[];
   readonly selectedShardIds: ReadonlyMap<string, string>;
+}
+
+export interface CodeGraphMaterializedShardCacheBatch {
+  readonly derivationIdentity: string;
+  readonly extractorSet: string;
+  readonly facts: readonly CodeGraphCacheFactInput[];
+  readonly files: readonly CodeGraphInventoryFile[];
 }
 
 export interface CodeGraphReusableBaseReceipt extends CodeGraphReusableBaseReceiptInput {

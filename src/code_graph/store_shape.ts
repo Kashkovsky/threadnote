@@ -17,6 +17,7 @@ import type {
   CodeGraphPersistentBuildClaim,
   CodeGraphLanguagePackProvenance,
   CodeGraphMaterializedShardAssociationBatch,
+  CodeGraphMaterializedShardCacheBatch,
   CodeGraphRemovedViewCleanupAuthorizationResult,
   CodeGraphRemovedViewCleanupEntry,
   CodeGraphRemovedViewCleanupStoreOptions,
@@ -125,6 +126,11 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
     derivationIdentity: string,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly cacheMaterializedFileShardBatches: (
+    databasePath: string,
+    batches: readonly CodeGraphMaterializedShardCacheBatch[],
     persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly associateMaterializedFileShardBatches: (
