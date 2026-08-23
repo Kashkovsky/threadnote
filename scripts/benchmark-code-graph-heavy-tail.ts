@@ -558,6 +558,7 @@ function governedHeavyTailRatchetGenerationIdentity(
     minimumFreeBytes === undefined ||
     minimumFreeBytes < 120 * 1_073_741_824 ||
     availableBytes < minimumFreeBytes ||
+    storage.filesystem === 'unknown' ||
     storage.medium !== 'solid-state' ||
     (standard.metadata.runtimePlatform === 'darwin' && storage.location !== 'internal') ||
     standard.metadata.minimumFreeGiB !== minimumFreeBytes / 1_073_741_824 ||
