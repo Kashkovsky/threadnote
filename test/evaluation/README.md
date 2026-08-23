@@ -194,12 +194,23 @@ Its cold graph intentionally differs because the parity build includes the bench
 
 `heavy-tail-profile.json` is the complementary beta.29 parser/cache regression shape. It checks the file classes that a uniform
 symbol-count generator cannot represent: call-heavy and multi-megabyte generated TypeScript, one 25 MiB test snapshot
-JSON, and 4,000 textless SVG assets. The harness builds clean graphs with one and four parser workers, interrupts a
-third build only after parser facts are durable, then resumes it from the same home. All three completed graphs must
-have the same normalized digest. The resumed run must reuse the interrupted cache; low-signal JSON must remain one
-small metadata fact; TypeScript imports/exports/tail declarations and one metadata symbol per SVG must survive. The
-checked profile is a reviewed workload contract, not a fabricated latency result. Compare wall time, aggregate
-per-language parse/persist timing, RSS, and cache bytes only within the same artifact and runner class.
+JSON, and 4,000 textless SVG assets. The v3 harness builds clean graphs with one, four, six, and eight parser workers,
+interrupts another build only after parser facts are durable, then resumes it from the same home. Every completed
+graph must have the same normalized digest. The resumed run must reuse the interrupted cache; low-signal JSON and
+textless SVG files must remain excluded; TypeScript imports, exports, and tail declarations must survive. Each run
+retains parent-observed parser-request active wall time, summed request time, average/peak concurrency, per-language
+parse/request/fact-byte totals, RSS, and cache bytes. Governed v3 artifacts additionally bind exact clean source/runtime
+provenance, internal solid-state storage and filesystem, at least 120 GiB free, and a declared runner identity. The
+checked `heavy-tail-scheduler-ratchet.json` is generated from three same-commit governed artifacts and independently
+binds all 254 scheduler, resource, language, resume, cache, and graph metrics. `heavy-tail-scheduler-development.json`
+retains the controlled scheduler comparison and the exact APFS/internal-SSD baseline used to generate that ratchet.
+Nonzero millisecond metrics use the larger of 15% relative headroom and 5 ms absolute scheduler-noise headroom; exact
+zero timers remain exact-zero gates. Counts, graph shape, cache reuse, and source-byte metrics retain their stricter
+independent bounds.
+The automatic four-worker choice wins on wall time for this reviewed fixture; six and eight workers raise CPU, RSS,
+and summed request time without a wall-time gain. This is reduced-fixture extraction-scheduler evidence, not the final
+pinned-IntelliJ cold-build or one-file release gate. The checked profile is a reviewed workload contract, not a
+fabricated portable latency result. Compare latency and utilization only within the same artifact and runner class.
 `heavy-tail-development.json` retains the first reviewed full-shape observation on the documented local hardware. It
 is evidence that the harness and contracts passed, not an absolute release threshold for other machines or evidence
 that production-scale materialization was exercised.

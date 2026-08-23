@@ -424,32 +424,35 @@ describe('code graph parser worker pool', () => {
     {fastCheck: {numRuns: 30}},
   );
 
-  it.effect('bounds concurrent parsing across independent pool layers sharing one Threadnote home', () => {
-    const tracker = {active: 0, maximum: 0};
-    const spawn = echoSpawner({delayFor: () => 30, tracker});
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-capacity-'});
-      const leftFiles = Array.from({length: 5}, (_, index) =>
-        inventoryFile(`left/${index}.ts`, `export const left${index} = ${index};`),
-      );
-      const rightFiles = Array.from({length: 5}, (_, index) =>
-        inventoryFile(`right/${index}.ts`, `export const right${index} = ${index};`),
-      );
+  for (const capacity of [2, 4, 6, 8]) {
+    it.effect(`bounds simultaneous-worktree parsing to ${capacity} shared global slots`, () => {
+      const tracker = {active: 0, maximum: 0};
+      const spawn = echoSpawner({delayFor: () => 30, tracker});
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-parser-worker-capacity-'});
+        const leftFiles = Array.from({length: capacity * 2}, (_, index) =>
+          inventoryFile(`left/${index}.ts`, `export const left${index} = ${index};`),
+        );
+        const rightFiles = Array.from({length: capacity * 2}, (_, index) =>
+          inventoryFile(`right/${index}.ts`, `export const right${index} = ${index};`),
+        );
 
-      const joined = Effect.all([runPool(leftFiles, home, 2, spawn), runPool(rightFiles, home, 2, spawn)], {
-        concurrency: 'unbounded',
-      });
-      const joinedFiber = yield* Effect.forkScoped(joined);
-      yield* advanceContentionClock();
-      const [left, right] = yield* Fiber.join(joinedFiber);
+        const joined = Effect.all(
+          [runPool(leftFiles, home, capacity, spawn), runPool(rightFiles, home, capacity, spawn)],
+          {concurrency: 'unbounded'},
+        );
+        const joinedFiber = yield* Effect.forkScoped(joined);
+        yield* advanceContentionClock();
+        const [left, right] = yield* Fiber.join(joinedFiber);
 
-      expect(left).toHaveLength(leftFiles.length);
-      expect(right).toHaveLength(rightFiles.length);
-      expect(tracker.maximum).toBe(2);
-      expect(tracker.active).toBe(0);
-    }).pipe(provideTestLayer(baseLayer), Effect.scoped);
-  });
+        expect(left).toHaveLength(leftFiles.length);
+        expect(right).toHaveLength(rightFiles.length);
+        expect(tracker.maximum).toBe(capacity);
+        expect(tracker.active).toBe(0);
+      }).pipe(provideTestLayer(baseLayer), Effect.scoped);
+    });
+  }
 
   it.effect('interrupts a hung worker, returns its slot, and does not retry the interrupted request', () => {
     const processes: ScriptedParserWorkerProcess[] = [];

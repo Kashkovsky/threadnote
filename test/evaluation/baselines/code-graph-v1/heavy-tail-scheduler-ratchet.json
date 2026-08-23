@@ -1,0 +1,1441 @@
+{
+  "environment": {
+    "architecture": "arm64",
+    "cpu": "Apple M1 Max",
+    "dirty": false,
+    "fixtureHash": "code-graph-heavy-tail-v1:75fe40a319716ffe0234d6e0d4e1128e7ef1cc001d06f91b8492154fd0055150",
+    "memoryBytes": 68719476736,
+    "node": "bun/1.3.14",
+    "operatingSystem": "macOS 27.0",
+    "packageManager": "bun/1.3.14",
+    "runner": "threadnote-code-graph-heavy-tail",
+    "runnerVersion": "3"
+  },
+  "measurements": {
+    "eight-workers-cache-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 300008
+    },
+    "eight-workers-cache-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "eight-workers-cache-low-signal-json-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-cpu": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3375
+    },
+    "eight-workers-duration": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3492
+    },
+    "eight-workers-extraction-active-wall": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1738
+    },
+    "eight-workers-extraction-average-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "minimum": 6.229
+    },
+    "eight-workers-extraction-peak-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 8,
+      "minimum": 8
+    },
+    "eight-workers-extraction-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 12176
+    },
+    "eight-workers-graph-edges": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "eight-workers-graph-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "eight-workers-graph-generated-tail-preserved": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "eight-workers-graph-low-signal-json-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-graph-pathological-typescript-tails": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 8,
+      "minimum": 8
+    },
+    "eight-workers-graph-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 550,
+      "minimum": 550
+    },
+    "eight-workers-graph-textless-svg-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-mixed-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-mixed-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 0
+    },
+    "eight-workers-language-mixed-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-mixed-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "eight-workers-language-mixed-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "eight-workers-language-mixed-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-mixed-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "eight-workers-language-mixed-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-mixed-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-npm-manifest-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-npm-manifest-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 478
+    },
+    "eight-workers-language-npm-manifest-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "eight-workers-language-npm-manifest-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "eight-workers-language-npm-manifest-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 11
+    },
+    "eight-workers-language-npm-manifest-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-npm-manifest-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 12
+    },
+    "eight-workers-language-npm-manifest-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "eight-workers-language-npm-manifest-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "eight-workers-language-typescript-config-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-typescript-config-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 75
+    },
+    "eight-workers-language-typescript-config-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "eight-workers-language-typescript-config-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "eight-workers-language-typescript-config-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "eight-workers-language-typescript-config-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-typescript-config-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 14
+    },
+    "eight-workers-language-typescript-config-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "eight-workers-language-typescript-config-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-typescript-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "eight-workers-language-typescript-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 635327
+    },
+    "eight-workers-language-typescript-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 266,
+      "minimum": 266
+    },
+    "eight-workers-language-typescript-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3739
+    },
+    "eight-workers-language-typescript-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 59
+    },
+    "eight-workers-language-typescript-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "eight-workers-language-typescript-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 12162
+    },
+    "eight-workers-language-typescript-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 5952842,
+      "minimum": 5952842
+    },
+    "eight-workers-language-typescript-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 549,
+      "minimum": 549
+    },
+    "eight-workers-peak-rss": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 433337959
+    },
+    "eight-workers-reading": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 75
+    },
+    "eight-workers-reused-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "interrupted-cache-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 299456
+    },
+    "interrupted-cache-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 256
+    },
+    "interrupted-cache-low-signal-json-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "interrupted-cpu": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1987
+    },
+    "interrupted-duration": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 2281
+    },
+    "interrupted-extraction-active-wall": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1570
+    },
+    "interrupted-extraction-average-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 4
+    },
+    "interrupted-extraction-peak-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 4
+    },
+    "interrupted-extraction-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 5144
+    },
+    "interrupted-interrupted-after-persisted-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 256
+    },
+    "interrupted-peak-rss": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 404868301
+    },
+    "interrupted-reading": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 76
+    },
+    "parallel-active-wall-reduction": {
+      "samplesMinimum": 1,
+      "unit": "percent",
+      "minimum": 1.794
+    },
+    "parallel-cache-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 300008
+    },
+    "parallel-cache-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "parallel-cache-low-signal-json-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-cpu": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3280
+    },
+    "parallel-duration": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3291
+    },
+    "parallel-duration-reduction": {
+      "samplesMinimum": 1,
+      "unit": "percent",
+      "minimum": 7.218
+    },
+    "parallel-extraction-active-wall": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1545
+    },
+    "parallel-extraction-average-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "minimum": 2.961
+    },
+    "parallel-extraction-peak-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 4,
+      "minimum": 4
+    },
+    "parallel-extraction-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 5087
+    },
+    "parallel-graph-edges": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "parallel-graph-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "parallel-graph-generated-tail-preserved": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "parallel-graph-low-signal-json-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-graph-pathological-typescript-tails": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 8,
+      "minimum": 8
+    },
+    "parallel-graph-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 550,
+      "minimum": 550
+    },
+    "parallel-graph-textless-svg-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-mixed-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-mixed-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 0
+    },
+    "parallel-language-mixed-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-mixed-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "parallel-language-mixed-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "parallel-language-mixed-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-mixed-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "parallel-language-mixed-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-mixed-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-npm-manifest-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-npm-manifest-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 478
+    },
+    "parallel-language-npm-manifest-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "parallel-language-npm-manifest-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "parallel-language-npm-manifest-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 10
+    },
+    "parallel-language-npm-manifest-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-npm-manifest-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 8
+    },
+    "parallel-language-npm-manifest-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "parallel-language-npm-manifest-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "parallel-language-typescript-config-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-typescript-config-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 75
+    },
+    "parallel-language-typescript-config-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "parallel-language-typescript-config-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "parallel-language-typescript-config-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "parallel-language-typescript-config-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-typescript-config-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 9
+    },
+    "parallel-language-typescript-config-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "parallel-language-typescript-config-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-typescript-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "parallel-language-typescript-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 635327
+    },
+    "parallel-language-typescript-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 266,
+      "minimum": 266
+    },
+    "parallel-language-typescript-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1551
+    },
+    "parallel-language-typescript-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 61
+    },
+    "parallel-language-typescript-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "parallel-language-typescript-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 5080
+    },
+    "parallel-language-typescript-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 5952842,
+      "minimum": 5952842
+    },
+    "parallel-language-typescript-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 549,
+      "minimum": 549
+    },
+    "parallel-peak-rss": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 417002292
+    },
+    "parallel-reading": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 77
+    },
+    "parallel-reused-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "resume-retained-cache-coverage": {
+      "samplesMinimum": 1,
+      "unit": "percent",
+      "maximum": 100,
+      "minimum": 100
+    },
+    "resumed-cache-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 300008
+    },
+    "resumed-cache-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "resumed-cache-low-signal-json-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "resumed-cpu": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1750
+    },
+    "resumed-duration": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1921
+    },
+    "resumed-extraction-active-wall": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 401
+    },
+    "resumed-extraction-average-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 3
+    },
+    "resumed-extraction-peak-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 2
+    },
+    "resumed-extraction-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 800
+    },
+    "resumed-graph-edges": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "resumed-graph-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "resumed-graph-generated-tail-preserved": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "resumed-graph-low-signal-json-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "resumed-graph-pathological-typescript-tails": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 8,
+      "minimum": 8
+    },
+    "resumed-graph-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 550,
+      "minimum": 550
+    },
+    "resumed-graph-textless-svg-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "resumed-peak-rss": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 286241588
+    },
+    "resumed-reading": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 14
+    },
+    "resumed-reused-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 256
+    },
+    "single-cache-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 300008
+    },
+    "single-cache-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "single-cache-low-signal-json-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-cpu": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3172
+    },
+    "single-duration": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3706
+    },
+    "single-extraction-active-wall": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1695
+    },
+    "single-extraction-average-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "minimum": 0.9
+    },
+    "single-extraction-peak-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "single-extraction-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1695
+    },
+    "single-graph-edges": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "single-graph-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "single-graph-generated-tail-preserved": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "single-graph-low-signal-json-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-graph-pathological-typescript-tails": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 8,
+      "minimum": 8
+    },
+    "single-graph-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 550,
+      "minimum": 550
+    },
+    "single-graph-textless-svg-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-mixed-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-mixed-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 0
+    },
+    "single-language-mixed-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-mixed-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "single-language-mixed-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "single-language-mixed-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-mixed-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "single-language-mixed-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-mixed-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-npm-manifest-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-npm-manifest-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 478
+    },
+    "single-language-npm-manifest-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "single-language-npm-manifest-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "single-language-npm-manifest-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 10
+    },
+    "single-language-npm-manifest-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-npm-manifest-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 7
+    },
+    "single-language-npm-manifest-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "single-language-npm-manifest-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "single-language-typescript-config-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-typescript-config-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 75
+    },
+    "single-language-typescript-config-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "single-language-typescript-config-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "single-language-typescript-config-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "single-language-typescript-config-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-typescript-config-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 7
+    },
+    "single-language-typescript-config-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "single-language-typescript-config-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-typescript-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "single-language-typescript-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 635327
+    },
+    "single-language-typescript-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 266,
+      "minimum": 266
+    },
+    "single-language-typescript-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 707
+    },
+    "single-language-typescript-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 60
+    },
+    "single-language-typescript-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "single-language-typescript-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1691
+    },
+    "single-language-typescript-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 5952842,
+      "minimum": 5952842
+    },
+    "single-language-typescript-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 549,
+      "minimum": 549
+    },
+    "single-peak-rss": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 368202548
+    },
+    "single-reading": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 73
+    },
+    "single-reused-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-cache-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 300008
+    },
+    "six-workers-cache-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "six-workers-cache-low-signal-json-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-cpu": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3356
+    },
+    "six-workers-duration": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 3406
+    },
+    "six-workers-extraction-active-wall": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 1695
+    },
+    "six-workers-extraction-average-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "minimum": 4.613
+    },
+    "six-workers-extraction-peak-concurrency": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 6,
+      "minimum": 6
+    },
+    "six-workers-extraction-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 8688
+    },
+    "six-workers-graph-edges": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "six-workers-graph-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 268,
+      "minimum": 268
+    },
+    "six-workers-graph-generated-tail-preserved": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "six-workers-graph-low-signal-json-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-graph-pathological-typescript-tails": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 8,
+      "minimum": 8
+    },
+    "six-workers-graph-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 550,
+      "minimum": 550
+    },
+    "six-workers-graph-textless-svg-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-mixed-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-mixed-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 0
+    },
+    "six-workers-language-mixed-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-mixed-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "six-workers-language-mixed-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "six-workers-language-mixed-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-mixed-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "six-workers-language-mixed-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-mixed-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-npm-manifest-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-npm-manifest-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 478
+    },
+    "six-workers-language-npm-manifest-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "six-workers-language-npm-manifest-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "six-workers-language-npm-manifest-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 11
+    },
+    "six-workers-language-npm-manifest-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-npm-manifest-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 10
+    },
+    "six-workers-language-npm-manifest-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "six-workers-language-npm-manifest-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "six-workers-language-typescript-config-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-typescript-config-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 75
+    },
+    "six-workers-language-typescript-config-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 1,
+      "minimum": 1
+    },
+    "six-workers-language-typescript-config-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 6
+    },
+    "six-workers-language-typescript-config-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 0
+    },
+    "six-workers-language-typescript-config-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-typescript-config-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 13
+    },
+    "six-workers-language-typescript-config-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 88,
+      "minimum": 88
+    },
+    "six-workers-language-typescript-config-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-typescript-degraded-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    },
+    "six-workers-language-typescript-facts-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 635327
+    },
+    "six-workers-language-typescript-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 266,
+      "minimum": 266
+    },
+    "six-workers-language-typescript-parse": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 2456
+    },
+    "six-workers-language-typescript-persistence": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 61
+    },
+    "six-workers-language-typescript-relations": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 327,
+      "minimum": 327
+    },
+    "six-workers-language-typescript-request": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 8678
+    },
+    "six-workers-language-typescript-source-bytes": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "maximum": 5952842,
+      "minimum": 5952842
+    },
+    "six-workers-language-typescript-symbols": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 549,
+      "minimum": 549
+    },
+    "six-workers-peak-rss": {
+      "samplesMinimum": 1,
+      "unit": "bytes",
+      "p95Maximum": 429607322
+    },
+    "six-workers-reading": {
+      "samplesMinimum": 1,
+      "unit": "milliseconds",
+      "p95Maximum": 74
+    },
+    "six-workers-reused-files": {
+      "samplesMinimum": 1,
+      "unit": "count",
+      "maximum": 0,
+      "minimum": 0
+    }
+  },
+  "metadata": {
+    "automaticParserWorkers": 4,
+    "governed": true,
+    "graphDigest": "862c4f7e69cda68d59679d6b052cccfca01c35a2e13086333c631f2286b02c93",
+    "minimumFreeGiB": 120,
+    "profile": "large-monorepo-heavy-tail-v1",
+    "runnerClass": "apple-m1-max-64g-internal",
+    "runnerIdentity": "local-apple-m1-max",
+    "runtimePlatform": "darwin",
+    "storageFilesystem": "apfs",
+    "storageLocation": "internal",
+    "storageMedium": "solid-state",
+    "vectorEnabled": false,
+    "workerCapacities": "1,4,6,8"
+  },
+  "suite": "threadnote-code-graph-heavy-tail",
+  "version": 1
+}

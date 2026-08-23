@@ -13,7 +13,11 @@ import {
   type CodeGraphDiskReservationOptions,
   withCodeGraphDiskReservation,
 } from './disk_reservation.js';
-import {planCodeGraphExtractionLanes} from './extraction_lanes.js';
+import {
+  createCodeGraphExtractionCostModel,
+  planCodeGraphExtractionLanes,
+  takeCodeGraphExtractionWindow,
+} from './extraction_lanes.js';
 import {extractRepositoryFileFacts} from './extractor.js';
 import {
   budgetCachedCodeGraphFacts,
@@ -194,6 +198,7 @@ export function cacheContentBatch(options: {
   readonly treeSitter: TreeSitterRuntimeShape;
 }): CodeGraphCacheContentCoalescer {
   const windowSize = Math.max(1, options.parserPool.capacity * 2);
+  const extractionCostModel = createCodeGraphExtractionCostModel<ExtractionReuseGroup>();
   let extractionMilliseconds = 0;
   let extractionFactsBytesCompleted = 0;
   let extractionDegradedFiles = 0;
@@ -421,10 +426,20 @@ export function cacheContentBatch(options: {
           reusableExtractionUses.set(key, uses);
         }
       };
-      for (const window of chunkValues(orderedFiles, windowSize)) {
+      let remainingGroups: readonly ExtractionReuseGroup[] = extractionReuseGroups(orderedFiles, options.languagePacks);
+      while (remainingGroups.length > 0) {
+        const lane = planCodeGraphExtractionLanes(
+          remainingGroups,
+          options.parserPool.capacity,
+          extractionCostModel,
+        )[0]!;
+        const [groupWindow, rest] = takeCodeGraphExtractionWindow(lane.groups, windowSize);
+        remainingGroups = rest;
+        const window = groupWindow
+          .flatMap(group => group.files)
+          .sort((left, right) => compareCodeUnits(left.path, right.path));
         let windowCompleted = 0;
-        const groups = extractionReuseGroups(window, options.languagePacks);
-        const extractGroup = (group: (typeof groups)[number]) =>
+        const extractGroup = (group: ExtractionReuseGroup) =>
           Effect.forEach(
             group.files,
             file =>
@@ -472,9 +487,11 @@ export function cacheContentBatch(options: {
                     persistenceMilliseconds,
                     completeExtractionMetrics(file, reused.cacheFact.bytes),
                   );
-                  return {file, result: reused};
+                  return {file, requestMilliseconds: 0, result: reused, reused: true};
                 }
+                const requestStartedAt = performance.now();
                 const parsed = yield* extractParserFacts(file, options);
+                const requestMilliseconds = Math.max(0, performance.now() - requestStartedAt);
                 const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
                 const result = {
                   ...parsed,
@@ -509,17 +526,19 @@ export function cacheContentBatch(options: {
                   persistenceMilliseconds,
                   completeExtractionMetrics(file, result.cacheFact.bytes),
                 );
-                return {file, result};
+                return {file, requestMilliseconds, result, reused: false};
               }),
             {concurrency: 1},
           );
-        const groupedResults: Array<
-          readonly {readonly file: CodeGraphInventoryFile; readonly result: SerializedParserResult}[]
-        > = [];
-        for (const lane of planCodeGraphExtractionLanes(groups, options.parserPool.capacity)) {
-          groupedResults.push(...(yield* Effect.forEach(lane.groups, extractGroup, {concurrency: lane.concurrency})));
-        }
+        const groupedResults = yield* Effect.forEach(groupWindow, extractGroup, {concurrency: lane.concurrency});
         const results = groupedResults.flat();
+        for (const observed of [...results].sort((left, right) => compareCodeUnits(left.file.path, right.file.path))) {
+          if (observed.reused) continue;
+          extractionCostModel.observe(observed.file, {
+            factsBytes: observed.result.cacheFact.bytes,
+            requestMilliseconds: observed.requestMilliseconds,
+          });
+        }
         extractionMilliseconds += results.reduce((total, result) => total + result.result.parseMilliseconds, 0);
         parsedCompleted += results.length;
         const resultsByPath = new Map(results.map(result => [result.file.path, result.result]));
@@ -596,6 +615,8 @@ function extractionReuseGroups(
   return [...groups.values()];
 }
 
+type ExtractionReuseGroup = ReturnType<typeof extractionReuseGroups>[number];
+
 function relocateSerializedParserResult(
   file: CodeGraphInventoryFile,
   donor: CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact},
@@ -651,12 +672,6 @@ function emitContentProgress(
       },
     }) ?? Effect.void
   );
-}
-
-function chunkValues<A>(values: readonly A[], size: number): readonly (readonly A[])[] {
-  const chunks: A[][] = [];
-  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
-  return chunks;
 }
 
 function degradedParserCacheIdentity(activeIdentity: string): string {

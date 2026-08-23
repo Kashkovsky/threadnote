@@ -55,15 +55,18 @@ const CONTROL = JSON.stringify({
 
 describe('code graph external benchmark harness', () => {
   it('classifies the backing macOS device without retaining device identity', () => {
-    expect(benchmarkDarwinStorageClassification('Device Location: Internal\nSolid State: Yes\n')).toEqual({
-      location: 'internal',
-      medium: 'solid-state',
-    });
+    expect(
+      benchmarkDarwinStorageClassification(
+        'File System Personality: APFS\nType (Bundle): apfs\nDevice Location: Internal\nSolid State: Yes\n',
+      ),
+    ).toEqual({filesystem: 'apfs', location: 'internal', medium: 'solid-state'});
     expect(benchmarkDarwinStorageClassification('Internal: No\nSolid State: No\n')).toEqual({
+      filesystem: 'unknown',
       location: 'external',
       medium: 'rotational',
     });
     expect(benchmarkDarwinStorageClassification('Network: Yes\nSolid State: Yes\n')).toEqual({
+      filesystem: 'unknown',
       location: 'unknown',
       medium: 'virtual-or-network',
     });

@@ -5763,7 +5763,7 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
   target: string,
 ) {
   const statArguments = process.platform === 'darwin' ? ['-f', '%T', target] : ['-f', '-c', '%T', target];
-  const filesystem = yield* runCommandEffect('stat', statArguments, {timeoutMs: 10_000}).pipe(
+  let filesystem = yield* runCommandEffect('stat', statArguments, {timeoutMs: 10_000}).pipe(
     Effect.map(result => result.stdout.trim().toLowerCase()),
     Effect.catch(() => Effect.succeed('unknown')),
     Effect.map(value => (/^[a-z0-9._+-]{1,64}$/.test(value) ? value : 'unknown')),
@@ -5781,6 +5781,7 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
       Effect.catch(() => Effect.succeed('')),
     );
     const classification = benchmarkDarwinStorageClassification(info);
+    if (filesystem === 'unknown') filesystem = classification.filesystem;
     medium = classification.medium;
     location = classification.location;
   } else if (process.platform === 'linux') {
@@ -5803,9 +5804,11 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
   return {filesystem, location, medium} satisfies BenchmarkStorageEnvironment;
 });
 
-export function benchmarkDarwinStorageClassification(
-  info: string,
-): Pick<BenchmarkStorageEnvironment, 'location' | 'medium'> {
+export function benchmarkDarwinStorageClassification(info: string): BenchmarkStorageEnvironment {
+  const filesystemValue =
+    /^\s*Type \(Bundle\):\s*([a-z0-9._+-]{1,64})\s*$/imu.exec(info)?.[1] ??
+    /^\s*File System Personality:\s*([a-z0-9._+-]{1,64})\s*$/imu.exec(info)?.[1];
+  const filesystem = filesystemValue?.toLowerCase() ?? 'unknown';
   const virtualOrNetwork = /^\s*(?:Virtual|Network):\s+Yes\s*$/imu.test(info);
   const medium: BenchmarkStorageEnvironment['medium'] = virtualOrNetwork
     ? 'virtual-or-network'
@@ -5820,7 +5823,7 @@ export function benchmarkDarwinStorageClassification(
       : /^\s*(?:Device Location:\s+External|Internal:\s+No)\s*$/imu.test(info)
         ? 'external'
         : 'unknown';
-  return {location, medium};
+  return {filesystem, location, medium};
 }
 
 export const benchmarkConcurrentWorktreeIsolation = Effect.fn('benchmarkCodeGraph.concurrentWorktreeIsolation')(
