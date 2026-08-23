@@ -1305,7 +1305,10 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       sourceBytesCompleted,
       sourceBytesTotal,
       stageMilliseconds: {...stageMilliseconds},
-      subphaseMilliseconds: materializationSubphases.snapshot(),
+      // Subphase totals are cumulative terminal evidence. Publishing a fresh
+      // snapshot on every staging callback turns five counters into sustained
+      // allocator/RSS pressure on large builds without adding information.
+      ...(finalFactsBytesTotal === undefined ? {} : {subphaseMilliseconds: materializationSubphases.snapshot()}),
       storage: {
         ...storagePlan,
         durableDatabaseBytes,
