@@ -158,10 +158,9 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   };
   yield* input.anonymousTelemetry.observeInventory(inventory);
   yield* input.anonymousTelemetry.observeExtractedFactBytes(yield* input.cacheCoalescer.extractedFactBytes);
-  yield* Effect.sync(() => {
-    Bun.gc(true);
-    Bun.shrink();
-  });
+  // Sparse admission hydrates only the bounded changed/fanout slice. A forced
+  // heap-wide collection scales with the process's prior high-water instead of
+  // that slice, turning one-file indexing into repository-sized pause time.
   yield* Effect.yieldNow;
 
   const logicalSnapshotId = sparseOverlaySnapshotIdentity(
