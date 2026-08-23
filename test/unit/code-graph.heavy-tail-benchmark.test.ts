@@ -220,6 +220,7 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     const names = artifacts[0]!.ratchetArtifact.measurements.map(measurement => measurement.name).sort();
 
     expect(Object.keys(ratchet.measurements).sort()).toEqual(names);
+    expect(names).toHaveLength(254);
     expect(names).toEqual(expect.arrayContaining(['parallel-duration', 'parallel-peak-rss']));
     expect(names).toEqual(
       expect.arrayContaining([
@@ -230,6 +231,24 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       ]),
     );
     expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!.ratchetArtifact, ratchet)).not.toThrow();
+    expect(ratchet.measurements['interrupted-interrupted-after-persisted-files']).toMatchObject({
+      maximum: 268,
+      minimum: 256,
+    });
+    expect(ratchet.measurements['resumed-reused-files']).toMatchObject({maximum: 268, minimum: 256});
+    expect(ratchet.measurements['single-reused-files']).toMatchObject({maximum: 0, minimum: 0});
+    expect(ratchet.measurements['resume-retained-cache-coverage']).toMatchObject({maximum: 100, minimum: 100});
+    const reducedInterruptionOvershoot = {
+      ...artifacts[0]!.ratchetArtifact,
+      measurements: artifacts[0]!.ratchetArtifact.measurements.map(measurement =>
+        ['interrupted-cache-files', 'interrupted-interrupted-after-persisted-files', 'resumed-reused-files'].includes(
+          measurement.name,
+        )
+          ? {...measurement, maximum: 256, mean: 256, minimum: 256, p50: 256, p95: 256, p99: 256}
+          : measurement,
+      ),
+    };
+    expect(() => enforceCodeGraphBenchmarkRatchet(reducedInterruptionOvershoot, ratchet)).not.toThrow();
 
     const durationLimit = ratchet.measurements['parallel-duration']!.p95Maximum!;
     const regressed = {
@@ -249,6 +268,26 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       ),
     };
     expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(/parallel-duration/u);
+  });
+
+  it('rejects ratchet generation across different exact source commits', () => {
+    const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
+    const mixed = artifacts[2]!;
+    const differentCommit = 'e'.repeat(40);
+    artifacts[2] = {
+      ...mixed,
+      environment: {
+        ...mixed.environment,
+        commit: differentCommit,
+        provenance: {...mixed.environment.provenance!, sourceCommit: differentCommit},
+      },
+      ratchetArtifact: {
+        ...mixed.ratchetArtifact,
+        environment: {...mixed.ratchetArtifact.environment, commit: differentCommit},
+      },
+    };
+
+    expect(() => createCodeGraphHeavyTailRatchet(artifacts)).toThrow(/exact source\/runtime\/storage/u);
   });
 });
 
@@ -330,6 +369,17 @@ function completeRun(workerCount: number, durationMilliseconds: number, concurre
 }
 
 function baseRun(workerCount: number, durationMilliseconds: number, concurrency: number, offset: number) {
+  const compactLanguage = {
+    degradedFiles: 0,
+    factsBytes: 128,
+    files: 1,
+    parseMilliseconds: 1 + offset,
+    persistenceMilliseconds: 1 + offset,
+    relations: 0,
+    requestMilliseconds: 2 + offset,
+    sourceBytes: 256,
+    symbols: 1,
+  };
   return {
     cache: {factsBytes: 260_876, files: 268, lowSignalJsonFactsBytes: 0},
     cpuMilliseconds: 2_700 + offset,
@@ -341,6 +391,8 @@ function baseRun(workerCount: number, durationMilliseconds: number, concurrency:
       requestMilliseconds: 4_300 + offset,
     },
     languages: {
+      mixed: compactLanguage,
+      'npm-manifest': compactLanguage,
       typescript: {
         degradedFiles: 0,
         factsBytes: 552_458,
@@ -352,6 +404,7 @@ function baseRun(workerCount: number, durationMilliseconds: number, concurrency:
         sourceBytes: 5_952_842,
         symbols: 549,
       },
+      'typescript-config': compactLanguage,
     },
     peakRssBytes: 390_000_000 + offset,
     readingMilliseconds: 60 + offset,

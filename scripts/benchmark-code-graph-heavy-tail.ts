@@ -447,6 +447,7 @@ export function codeGraphHeavyTailRatchetArtifact(
       runnerClass: artifact.environment.runnerClass,
       runnerIdentity: artifact.environment.runnerIdentity,
       runtimePlatform,
+      storageFilesystem: governance?.storage.filesystem ?? 'unverified',
       storageLocation: governance?.storage.location ?? 'unverified',
       storageMedium: governance?.storage.medium ?? 'unverified',
       vectorEnabled: false,
@@ -481,8 +482,10 @@ export function createCodeGraphHeavyTailRatchet(
   if (artifacts.length < 3) throw new ScriptError('Heavy-tail ratchet generation requires at least three artifacts.');
   const standards = artifacts.map(artifact => parseBenchmarkArtifactV1(artifact.ratchetArtifact));
   const first = standards[0]!;
+  const generationIdentity = governedHeavyTailRatchetGenerationIdentity(artifacts[0]!, first);
   const firstNames = first.measurements.map(measurement => measurement.name).sort();
-  for (const artifact of standards.slice(1)) {
+  for (let index = 1; index < standards.length; index += 1) {
+    const artifact = standards[index]!;
     const names = artifact.measurements.map(measurement => measurement.name).sort();
     if (
       artifact.suite !== first.suite ||
@@ -499,6 +502,9 @@ export function createCodeGraphHeavyTailRatchet(
       JSON.stringify(artifact.metadata) !== JSON.stringify(first.metadata)
     ) {
       throw new ScriptError('Heavy-tail ratchet artifacts do not share one governed runner and fixture contract.');
+    }
+    if (governedHeavyTailRatchetGenerationIdentity(artifacts[index]!, artifact) !== generationIdentity) {
+      throw new ScriptError('Heavy-tail ratchet artifacts do not share one exact source/runtime/storage contract.');
     }
   }
   if (standards.some(artifact => artifact.environment.dirty || artifact.metadata.governed !== true)) {
@@ -537,6 +543,33 @@ export function createCodeGraphHeavyTailRatchet(
   };
 }
 
+function governedHeavyTailRatchetGenerationIdentity(
+  artifact: CodeGraphHeavyTailBenchmarkArtifact,
+  standard: BenchmarkArtifactV1,
+): string {
+  const {availableBytes, commit, minimumFreeBytes, provenance, storage} = artifact.environment;
+  if (
+    standard.environment.commit !== commit ||
+    standard.metadata.governed !== true ||
+    provenance === undefined ||
+    provenance.sourceCommit !== commit ||
+    storage === undefined ||
+    availableBytes === undefined ||
+    minimumFreeBytes === undefined ||
+    minimumFreeBytes < 120 * 1_073_741_824 ||
+    availableBytes < minimumFreeBytes ||
+    storage.medium !== 'solid-state' ||
+    (standard.metadata.runtimePlatform === 'darwin' && storage.location !== 'internal') ||
+    standard.metadata.minimumFreeGiB !== minimumFreeBytes / 1_073_741_824 ||
+    standard.metadata.storageFilesystem !== storage.filesystem ||
+    standard.metadata.storageLocation !== storage.location ||
+    standard.metadata.storageMedium !== storage.medium
+  ) {
+    throw new ScriptError('Heavy-tail ratchet generation requires complete exact governed provenance.');
+  }
+  return JSON.stringify({commit, minimumFreeBytes, provenance, storage});
+}
+
 function heavyTailMeasurementRatchet(
   name: string,
   unit: BenchmarkArtifactV1['measurements'][number]['unit'],
@@ -552,12 +585,23 @@ function heavyTailMeasurementRatchet(
   if (name.endsWith('-duration-reduction') || name.endsWith('-active-wall-reduction')) {
     return {...base, minimum: floorThreshold(minimum * 0.8)};
   }
-  if (name === 'resume-retained-cache-coverage') return {...base, minimum: 100};
+  if (name === 'resume-retained-cache-coverage') return {...base, maximum: 100, minimum: 100};
   if (name.endsWith('-interrupted-after-persisted-files')) {
-    return {...base, maximum: CODE_GRAPH_HEAVY_TAIL_PROFILE.regularTypeScriptFiles + 12, minimum: minimum};
+    return {
+      ...base,
+      maximum: codeGraphHeavyTailEligibleFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE),
+      minimum: CODE_GRAPH_HEAVY_TAIL_PROFILE.interruptAfterPersistedFiles,
+    };
+  }
+  if (name === 'resumed-reused-files') {
+    return {
+      ...base,
+      maximum: codeGraphHeavyTailEligibleFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE),
+      minimum: CODE_GRAPH_HEAVY_TAIL_PROFILE.interruptAfterPersistedFiles,
+    };
   }
   if (name.endsWith('-reused-files')) {
-    return {...base, maximum: codeGraphHeavyTailEligibleFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE), minimum};
+    return {...base, maximum, minimum};
   }
   if (name === 'interrupted-cache-files') {
     return {
