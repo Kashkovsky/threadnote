@@ -43,14 +43,26 @@ interface CodeGraphMaterializedShardCapacityFields extends CodeGraphFileBlobCapa
 }
 
 export function codeGraphFileBlobCapacityBytes(fields: CodeGraphFileBlobCapacityFields): number {
-  return codeGraphTextFieldsCapacityBytes(
-    fields.blobId ?? '',
-    fields.contentHash,
-    fields.extractorSet,
-    fields.path,
-    fields.factsJson,
-    fields.createdAt,
-    fields.reuseClass ?? '',
+  return saturatingCapacityAdd(
+    codeGraphTextFieldsCapacityBytes(
+      fields.blobId ?? '',
+      fields.contentHash,
+      fields.extractorSet,
+      fields.path,
+      fields.factsJson,
+      fields.createdAt,
+      fields.reuseClass ?? '',
+    ),
+    // The trigger-maintained admission authority duplicates only bounded hot
+    // metadata, never the fact payload. Reserve it in the same transaction so
+    // cache acceleration cannot weaken WAL/durable capacity protection.
+    codeGraphTextFieldsCapacityBytes(
+      fields.extractorSet,
+      fields.path,
+      fields.contentHash,
+      fields.blobId ?? '',
+      fields.reuseClass ?? '',
+    ),
   );
 }
 

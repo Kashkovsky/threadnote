@@ -125,7 +125,11 @@ export function readCodeGraphStorageSemanticAttribution(
 }
 
 export function codeGraphStorageSemanticGroup(name: string): CodeGraphStorageSemanticGroupName {
-  if (/^(?:sqlite_autoindex_)?(?:file_blobs|materialized_file_shards|snapshot_file_shards)/u.test(name)) {
+  if (
+    /^(?:sqlite_autoindex_)?(?:file_blob_authority|file_blobs|materialized_file_shards|snapshot_file_shards)/u.test(
+      name,
+    )
+  ) {
     return 'facts-cache';
   }
   if (/^(?:sqlite_autoindex_)?(?:lexical_|symbol_terms)/u.test(name)) return 'lexical';

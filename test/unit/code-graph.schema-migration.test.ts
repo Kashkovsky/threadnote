@@ -6,6 +6,7 @@ import {Deferred, Effect, Exit, Fiber, Option} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CodeGraphStore,
   codeGraphRuntimeSchemaRequiresReconnect,
@@ -125,6 +126,110 @@ describe('code graph persistent schema migration', () => {
       {numRuns: 10},
     );
   });
+
+  effectIt.effect('atomically upgrades revision 11 with the cache-authority admission table', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(migrationFixture);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(fixture.databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database.exec(`
+            DROP TRIGGER file_blobs_authority_insert;
+            DROP TRIGGER file_blobs_authority_delete;
+            DROP TRIGGER file_blobs_authority_update;
+            DROP TABLE ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE};
+            UPDATE schema_metadata
+            SET value = '11'
+            WHERE key = 'persistent_extension_schema_revision';
+          `);
+          database
+            .query(
+              `INSERT INTO file_blobs (
+                 content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+               ) VALUES (?, 'revision-11-cache', ?, NULL, NULL, ?, '2026-08-22T00:00:00.000Z')`,
+            )
+            .run('a'.repeat(40), 'src/valid.ts', JSON.stringify({path: 'src/valid.ts'}));
+          database
+            .query(
+              `INSERT INTO file_blobs (
+                 content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+               ) VALUES (?, 'revision-11-cache', ?, NULL, NULL, ?, '2026-08-22T00:00:00.000Z')`,
+            )
+            .run('b'.repeat(40), 'src/invalid.ts', '{');
+        } finally {
+          database.close(false);
+        }
+      });
+
+      const phases: CodeGraphPersistentSchemaMigrationPhase[] = [];
+      yield* store.withSession(fixture.databasePath, store.initialize(fixture.databasePath), {
+        onPersistentSchemaMigrationPhase: phase => Effect.sync(() => phases.push(phase)),
+      });
+      const observed = yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          return {
+            authority: database
+              .query<{readonly sql: string}, [string]>(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+              )
+              .get(CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE),
+            authorityRows: database
+              .query<{readonly path_hint: string}, []>(
+                `SELECT path_hint FROM ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE} ORDER BY path_hint`,
+              )
+              .all(),
+            revision: database
+              .query<{readonly value: string}, []>(
+                "SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'",
+              )
+              .get(),
+          };
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expect(phases).toContain('migrated-query-indexes');
+      expect(observed.authority?.sql).toMatch(/PRIMARY\s+KEY\s*\(extractor_set,\s*path_hint,\s*content_hash\)/iu);
+      expect(observed.authorityRows).toEqual([{path_hint: 'src/valid.ts'}]);
+      expect(observed.revision?.value).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rebuilds a drifted cache-authority trigger before serving admission', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(migrationFixture);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(fixture.databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database
+            .query(
+              `INSERT INTO file_blobs (
+                 content_hash, extractor_set, path_hint, blob_id, reuse_class, facts_json, created_at
+               ) VALUES (?, 'drifted-cache', ?, NULL, NULL, ?, '2026-08-22T00:00:00.000Z')`,
+            )
+            .run('c'.repeat(40), 'src/drifted.ts', JSON.stringify({path: 'src/drifted.ts'}));
+          database.exec(`
+            DROP TRIGGER file_blobs_authority_update;
+            CREATE TRIGGER file_blobs_authority_update
+            AFTER UPDATE OF facts_json ON file_blobs
+            BEGIN SELECT 1; END;
+            UPDATE file_blobs SET facts_json = '{' WHERE extractor_set = 'drifted-cache';
+          `);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      yield* store.initialize(fixture.databasePath);
+      expect(yield* store.cachedCommittedFileKeys(fixture.databasePath, 'drifted-cache')).toEqual(new Set());
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   effectIt.effect('atomically upgrades revision 9 query indexes before serving adjacency', () =>
     Effect.gen(function* () {

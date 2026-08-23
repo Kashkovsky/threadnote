@@ -6,6 +6,7 @@ import {
   type CodeGraphBlobReuseFile,
 } from './blob_reuse.js';
 import {configureConnection} from './store_session.js';
+import {CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE} from './store_cache_authority.js';
 import {CODE_GRAPH_STORED_FACT_CODEC, storedCodeGraphFactRawBytesSql} from './fact_storage.js';
 import {type CodeGraphProvenance, CodeGraphStoreError} from './types.js';
 import {sqlTextOption} from './store_utilities.js';
@@ -151,18 +152,10 @@ function reusableFileBlobFirstDonorSubquery(): string {
       AND json_extract(donor.facts_json, '$.path') = donor.path_hint`;
 }
 
-const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommittedFileKeys')(function* (
-  extractorSet: string,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  yield* configureConnection(sql);
-  const rows = yield* sql<{
-    readonly blob_id: unknown;
-    readonly content_hash: string;
-    readonly path_hint: string;
-    readonly reuse_class: unknown;
-  }>`
-    SELECT
+export function codeGraphCachedCommittedFileKeysStatement(extractorSet: string): CodeGraphSqlQueryStatement {
+  return {
+    parameters: [extractorSet],
+    text: `SELECT
       CASE
         WHEN typeof(blob_id) = 'text' AND length(CAST(blob_id AS BLOB)) IN (40, 64) THEN blob_id
         ELSE NULL
@@ -173,13 +166,23 @@ const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommitted
         WHEN typeof(reuse_class) = 'text' AND length(CAST(reuse_class AS BLOB)) <= 128 THEN reuse_class
         ELSE NULL
       END AS reuse_class
-    FROM file_blobs
-    WHERE extractor_set = ${extractorSet}
-      AND CASE
-        WHEN json_valid(facts_json) THEN json_extract(facts_json, '$.path')
-        ELSE NULL
-      END = path_hint
-  `;
+    FROM ${CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE}
+    WHERE extractor_set = ?`,
+  };
+}
+
+const selectCachedCommittedFileKeys = Effect.fn('codeGraph.selectCachedCommittedFileKeys')(function* (
+  extractorSet: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const statement = codeGraphCachedCommittedFileKeysStatement(extractorSet);
+  const rows = yield* sql.unsafe<{
+    readonly blob_id: unknown;
+    readonly content_hash: string;
+    readonly path_hint: string;
+    readonly reuse_class: unknown;
+  }>(statement.text, statement.parameters);
   const keys = new Set(rows.map(row => `${row.path_hint}\0${row.content_hash}\0${extractorSet}`));
   for (const row of rows) {
     if (

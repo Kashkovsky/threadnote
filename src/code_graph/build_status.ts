@@ -36,6 +36,7 @@ import type {
   CodeGraphIndexSummary,
   CodeGraphMaterializationActivity,
   CodeGraphMaterializationMetrics,
+  CodeGraphRegistrationActivity,
   CodeGraphOverlayFallbackReason,
   CodeGraphProgress,
   CodeGraphResolutionActivity,
@@ -115,6 +116,10 @@ export interface CodeGraphBuildResolution {
   readonly activity: CodeGraphResolutionActivity & {readonly startedAt: string};
 }
 
+export interface CodeGraphBuildRegistration {
+  readonly activity: CodeGraphRegistrationActivity;
+}
+
 export interface CodeGraphBuildStatus {
   readonly activation?: CodeGraphBuildActivation;
   /** Privacy-safe in-flight activity; repository paths and content are intentionally omitted. */
@@ -148,6 +153,7 @@ export interface CodeGraphBuildStatus {
     /** Privacy-safe identity for callers waiting on the same source and extraction pipeline. */
     readonly key: string;
   };
+  readonly registration?: CodeGraphBuildRegistration;
   readonly resolution?: CodeGraphBuildResolution;
   readonly result?: {
     readonly dirty: boolean;
@@ -769,6 +775,7 @@ function observeProgress(
       extraction: progressExtraction(current.status.extraction, progress, pathHashSalt),
       materialization: progressMaterialization(current.status.materialization, progress, timestamp),
       phase: progress.phase,
+      registration: progressRegistration(progress),
       resolution: progressResolution(current.status.resolution, progress, timestamp),
       state: progress.phase === 'waiting' ? 'queued' : 'running',
       subphase: progressSubphase(progress),
@@ -817,6 +824,10 @@ function progressResolution(
   };
 }
 
+function progressRegistration(progress: CodeGraphProgress): CodeGraphBuildRegistration | undefined {
+  return progress.phase === 'registering' && progress.activity ? {activity: progress.activity} : undefined;
+}
+
 function progressSubphase(progress: CodeGraphProgress): string {
   if ('subphase' in progress && typeof progress.subphase === 'string') return boundedText(progress.subphase, 64);
   switch (progress.phase) {
@@ -827,7 +838,7 @@ function progressSubphase(progress: CodeGraphProgress): string {
     case 'materializing':
       return progress.activity?.stage ?? 'facts';
     case 'registering':
-      return 'registration';
+      return progress.activity?.stage ?? 'registration';
     case 'reclaiming':
       return 'superseded-snapshots';
     case 'scanning':

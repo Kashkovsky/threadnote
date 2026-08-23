@@ -265,7 +265,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       }
                       const cachedCommittedFileKeys = options.force
                         ? new Set<string>()
-                        : yield* cachedFileKeys(store, layout.databasePath, languagePacks);
+                        : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
@@ -879,7 +879,12 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       yield* store.initialize(layout.databasePath);
                       const identity = {...currentIdentity, headCommit: options.commit};
-                      const cachedCommittedFileKeys = yield* cachedFileKeys(store, layout.databasePath, languagePacks);
+                      const cachedCommittedFileKeys = yield* cachedFileKeys(
+                        store,
+                        layout.databasePath,
+                        languagePacks,
+                        options.onProgress,
+                      );
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,

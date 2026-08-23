@@ -1,4 +1,4 @@
-import {Crypto, Effect, FileSystem, Option, Path} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {SystemInfo} from '../effect/system.js';
 import {codeGraphBlobExtractionReuseClass, codeGraphBlobReuseCacheKey} from './blob_reuse.js';
@@ -1398,24 +1398,40 @@ export function cachedFileKeys(
   store: CodeGraphStoreShape,
   databasePath: string,
   languagePacks: CodeGraphLanguagePackRegistryShape,
+  onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>,
 ): Effect.Effect<ReadonlySet<string>, unknown> {
-  return Effect.forEach(
-    codeGraphParserCacheLookupGenerations(languagePacks.cacheIdentities),
-    generation =>
-      store
-        .cachedCommittedFileKeys(databasePath, generation.storedIdentity)
-        .pipe(
-          Effect.map(
-            keys =>
-              new Set(
-                [...keys].map(key =>
-                  codeGraphActiveParserCacheKey(key, generation.storedIdentity, generation.activeIdentity),
+  return Effect.gen(function* () {
+    const startedAt = yield* Clock.currentTimeMillis;
+    const generations = codeGraphParserCacheLookupGenerations(languagePacks.cacheIdentities);
+    const sets = yield* Effect.forEach(
+      generations,
+      generation =>
+        store
+          .cachedCommittedFileKeys(databasePath, generation.storedIdentity)
+          .pipe(
+            Effect.map(
+              keys =>
+                new Set(
+                  [...keys].map(key =>
+                    codeGraphActiveParserCacheKey(key, generation.storedIdentity, generation.activeIdentity),
+                  ),
                 ),
-              ),
+            ),
           ),
-        ),
-    {concurrency: 1},
-  ).pipe(Effect.map(sets => new Set(sets.flatMap(set => [...set]))));
+      {concurrency: 1},
+    );
+    const keys = new Set(sets.flatMap(set => [...set]));
+    yield* onProgress?.({
+      activity: {
+        elapsedMilliseconds: Math.max(0, (yield* Clock.currentTimeMillis) - startedAt),
+        generations: generations.length,
+        keys: keys.size,
+        stage: 'loading-cache',
+      },
+      phase: 'registering',
+    }) ?? Effect.void;
+    return keys;
+  });
 }
 
 export function loadCachedFacts(

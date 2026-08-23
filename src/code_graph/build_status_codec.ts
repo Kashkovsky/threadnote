@@ -27,6 +27,7 @@ import type {
   CodeGraphBuildCounters,
   CodeGraphBuildExtraction,
   CodeGraphBuildMaterialization,
+  CodeGraphBuildRegistration,
   CodeGraphBuildResolution,
   CodeGraphBuildState,
   CodeGraphBuildStatus,
@@ -110,6 +111,8 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
   if (value.timings !== undefined && !timings) return undefined;
   const materialization = parseMaterialization(value.materialization);
   if (value.materialization !== undefined && !materialization) return undefined;
+  const registration = parseRegistration(value.registration);
+  if (value.registration !== undefined && !registration) return undefined;
   const ownerStart = value.owner.processStartIdentity;
   if (ownerStart !== undefined && !isText(ownerStart, 256)) return undefined;
   const subphase = value.subphase;
@@ -144,6 +147,7 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       worktreeId: value.identity.worktreeId,
     },
     ...(materialization ? {materialization} : {}),
+    ...(registration ? {registration} : {}),
     owner: {
       processId: Number(value.owner.processId),
       ...(ownerStart ? {processStartIdentity: ownerStart} : {}),
@@ -165,6 +169,29 @@ export function parseCodeGraphBuildStatus(value: unknown): CodeGraphBuildStatus 
       phaseStartedAt: timestamps.phaseStartedAt,
       startedAt: timestamps.startedAt,
       updatedAt: timestamps.updatedAt,
+    },
+  };
+}
+
+function parseRegistration(value: unknown): CodeGraphBuildRegistration | undefined {
+  if (!isRecord(value) || !isRecord(value.activity)) return undefined;
+  const activity = value.activity;
+  if (
+    activity.stage !== 'loading-cache' ||
+    !isNonNegativeFinite(activity.elapsedMilliseconds) ||
+    !Number.isSafeInteger(activity.generations) ||
+    Number(activity.generations) < 0 ||
+    !Number.isSafeInteger(activity.keys) ||
+    Number(activity.keys) < 0
+  ) {
+    return undefined;
+  }
+  return {
+    activity: {
+      elapsedMilliseconds: Number(activity.elapsedMilliseconds),
+      generations: Number(activity.generations),
+      keys: Number(activity.keys),
+      stage: 'loading-cache',
     },
   };
 }

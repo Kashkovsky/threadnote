@@ -40,6 +40,11 @@ describe('code graph persistent cache capacity planning', () => {
           fields.factsJson,
           fields.createdAt,
           fields.reuseClass,
+          fields.extractorSet,
+          fields.path,
+          fields.contentHash,
+          fields.blobId,
+          fields.reuseClass,
         ),
       );
       expect(codeGraphMaterializedShardCapacityBytes(fields)).toBe(
