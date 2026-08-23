@@ -16,6 +16,10 @@ import {
 } from './store_schema_core.js';
 import {ensureInitialReconciliationIndexes} from './store_reconciliation_core.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
+import {
+  codeGraphSchemaInitializationReceiptCurrent,
+  recordCodeGraphSchemaInitializationReceipt,
+} from './store_schema_receipt.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
@@ -39,10 +43,17 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   if (!Number.isSafeInteger(pageSize) || pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page size is invalid.'));
   }
-  // Refuse a drifted cleanup authority surface before any initialization DDL
-  // or graph-row mutation. Unlike reconstructible build extensions, this
-  // queue is coupled to immutable removal tombstones and is never dropped.
-  yield* preflightRemovedViewCleanupSchema(sql);
+  // A matching receipt binds the last complete validation to SQLite's
+  // persistent main-schema cookie and separately revalidates mutable authority
+  // metadata. Any ordinary DDL or contract revision change falls through to
+  // the existing fail-closed initializer before graph rows can be mutated.
+  const receiptCurrent = yield* codeGraphSchemaInitializationReceiptCurrent(sql);
+  if (!receiptCurrent) {
+    // Refuse a drifted cleanup authority surface before any initialization DDL
+    // or graph-row mutation. Unlike reconstructible build extensions, this
+    // queue is coupled to immutable removal tombstones and is never dropped.
+    yield* preflightRemovedViewCleanupSchema(sql);
+  }
   yield* sql.unsafe('PRAGMA journal_mode = WAL');
   // Explicit whole-WAL checkpoints can monopolize the synchronous SQLite
   // connection for longer than the build heartbeat. Committed WAL records are
@@ -51,6 +62,12 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   yield* sql.unsafe(
     `PRAGMA wal_autocheckpoint = ${Math.max(1, Math.floor(CODE_GRAPH_WAL_AUTOCHECKPOINT_BYTES / pageSize))}`,
   );
+  if (receiptCurrent) return;
+  yield* initializeSchemaFully(sql);
+  yield* recordCodeGraphSchemaInitializationReceipt(sql);
+});
+
+const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS schema_metadata (
       key TEXT PRIMARY KEY NOT NULL,

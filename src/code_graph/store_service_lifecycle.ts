@@ -54,7 +54,6 @@ import {
   authorizeRemovedViewCleanup,
   updateRemovedViewCleanup,
 } from './store_reconciliation.js';
-import {preflightRemovedViewCleanupSchema} from './store_schema_migration.js';
 import {acquireSnapshotLease, retainViewSnapshotLease, validateViewSnapshotLease} from './store_leases.js';
 import {prepareActivationTables} from './store_staging_core.js';
 import {initializeSchema} from './store_schema_initialization.js';
@@ -186,7 +185,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           const session = {
             databasePath,
             detachedCleanupRequest,
-            schemaInitialized: false,
+            schemaInitialized: false as boolean,
             sql,
             ...options,
           } satisfies CodeGraphDatabaseSessionShape;
@@ -198,7 +197,18 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             // therefore self-heals on the next ordinary index without
             // making graph queries pay cleanup latency.
             if (options?.cleanupCompletedBuildRows && (yield* tableExists(sql, 'snapshots'))) {
-              yield* preflightRemovedViewCleanupSchema(sql);
+              // Initialize once under the checkout writer gate before cleanup.
+              // The receipt makes the ordinary path bounded, and marking this
+              // session avoids replaying the same admission when the indexing
+              // effect calls store.initialize immediately afterward.
+              yield* ensureSchemaInitialized(databasePath, sql).pipe(
+                Effect.mapError(cause =>
+                  cause instanceof CodeGraphStoreError
+                    ? cause
+                    : storeError('initialize code graph database session', cause),
+                ),
+                Effect.asVoid,
+              );
               const cleanup = yield* drainCompletedPersistentBuildRows(
                 sql,
                 undefined,
