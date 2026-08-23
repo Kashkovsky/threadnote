@@ -4,9 +4,17 @@ import {buildAndActivate, retiredSnapshotCleanupReporter, reuseReadySnapshot} fr
 import {assessIncrementalOverlay} from './indexer_incremental.js';
 import {createRepositoryFactAttributorFromContext, repositoryFactCandidatePaths} from './extractor_context.js';
 import {finalCodeGraphFactBatches} from './fact_budget.js';
+import {
+  assessProjectClosureSeeds,
+  declaredProjectResolutionClosureProjectIds,
+  planProjectIncrementalClosure,
+  PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
+  selectProjectIncrementalClosure,
+} from './incremental_closure.js';
 import type {CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
   CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
+  cachedFactsMetadata,
   cachedFileKeys,
   codeGraphDirectPersistentCapacityProtector,
   extractorSetIdentityFromPackProvenance,
@@ -57,6 +65,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly observation: CodeGraphOverlayObservation;
+  readonly onInvalidBaseCache: Effect.Effect<void>;
   readonly options: CodeGraphIndexOptions;
   readonly requestedOverlay: {readonly dirty: boolean; readonly fingerprint?: string};
   readonly startedAt: number;
@@ -89,6 +98,31 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
     !Number.isSafeInteger(base.snapshot.fileCount) ||
     base.snapshot.fileCount < changedPaths.length
   ) {
+    return Option.none<CodeGraphIndexSummary>();
+  }
+  const changedBaseMetadata = yield* cachedFactsMetadata(
+    input.store,
+    input.layout.databasePath,
+    base.files,
+    input.languagePacks,
+  );
+  if (
+    changedBaseMetadata.files !== base.files.length ||
+    changedBaseMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES
+  ) {
+    return Option.none<CodeGraphIndexSummary>();
+  }
+  const changedBaseCache = yield* loadCachedFacts(
+    input.store,
+    input.layout.databasePath,
+    base.files,
+    input.languagePacks,
+  );
+  if (base.files.some(file => !changedBaseCache.facts.has(file.path))) {
+    if (input.store.discardInvalidCachedFacts !== undefined) {
+      yield* input.store.discardInvalidCachedFacts(input.layout.databasePath, base.files);
+    }
+    yield* input.onInvalidBaseCache;
     return Option.none<CodeGraphIndexSummary>();
   }
   const targetedCachedFileKeys = yield* cachedFileKeys(
@@ -406,7 +440,14 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
     currentFacts.flatMap(file => file.references ?? []),
   );
   if (resolutionSurfaceChanged || reexportSurfaceChanged) {
-    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+    return yield* assessSparseProjectClosure({
+      admission: input.admission,
+      baseFacts,
+      currentFacts,
+      languagePacks: input.languagePacks,
+      layout: input.layout,
+      store: input.store,
+    });
   }
   if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
@@ -426,6 +467,140 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
     ...firstResolutionPublicationAssessment(currentFacts),
   } satisfies IncrementalOverlayPreassessment;
 });
+
+const assessSparseProjectClosure = Effect.fn('codeGraph.assessSparseProjectClosure')(function* (input: {
+  readonly admission: CodeGraphReusableOverlayAdmission;
+  readonly baseFacts: readonly CodeGraphFileFacts[];
+  readonly currentFacts: readonly CodeGraphFileFacts[];
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly layout: CodeGraphLayout;
+  readonly store: CodeGraphStoreShape;
+}) {
+  if (input.store.snapshotProjectClosureFiles === undefined || input.store.existingSnapshotFilePaths === undefined) {
+    return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayPreassessment;
+  }
+  const projects = input.admission.workspace.projects;
+  const seeds = assessProjectClosureSeeds({
+    committedFacts: input.baseFacts,
+    effectiveFacts: input.currentFacts,
+    projects,
+  });
+  if (seeds.mode === 'fallback') return seeds satisfies IncrementalOverlayPreassessment;
+  const projectIds = declaredProjectResolutionClosureProjectIds(projects, seeds.seedProjectIds);
+  if (projectIds === undefined) {
+    return {mode: 'fallback', reason: 'project-closure-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const projectsById = new Map(projects.map(project => [project.id, project]));
+  const prefixes = projectIds.flatMap(id => {
+    const project = projectsById.get(id);
+    return project === undefined ? [] : [project.root, ...project.sourceRoots];
+  });
+  if (projectIds.some(id => !projectsById.has(id)) || prefixes.some(prefix => prefix.length === 0)) {
+    return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+  }
+  const base = input.admission.base;
+  const baseClosureFiles = yield* input.store.snapshotProjectClosureFiles(
+    input.layout.databasePath,
+    base.snapshot.id,
+    prefixes,
+  );
+  if (baseClosureFiles === undefined) {
+    return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+  }
+  const changedByPath = new Map(input.admission.files.map(file => [file.path, file]));
+  const currentFiles = baseClosureFiles.map(file => changedByPath.get(file.path) ?? file);
+  if (input.admission.files.some(file => !currentFiles.some(candidate => candidate.path === file.path))) {
+    return {mode: 'fallback', reason: 'project-closure-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const selection = selectProjectIncrementalClosure({
+    files: currentFiles,
+    modifiedPaths: input.admission.files.map(file => file.path),
+    projects,
+    seedProjectIds: seeds.seedProjectIds,
+    workspaceDiagnostics: input.admission.workspace.diagnostics,
+  });
+  if (selection.mode === 'fallback') return selection satisfies IncrementalOverlayPreassessment;
+  const currentByPath = new Map(currentFiles.map(file => [file.path, file]));
+  const affectedFiles = selection.affectedPaths.map(path => currentByPath.get(path)!);
+  const metadata = yield* cachedFactsMetadata(
+    input.store,
+    input.layout.databasePath,
+    affectedFiles,
+    input.languagePacks,
+  );
+  const plan = planProjectIncrementalClosure({
+    cachedFactBytesByPath: metadata.bytesByPath,
+    files: currentFiles,
+    modifiedPaths: input.admission.files.map(file => file.path),
+    projects,
+    seedProjectIds: seeds.seedProjectIds,
+    workspaceDiagnostics: input.admission.workspace.diagnostics,
+  });
+  if (plan.mode === 'fallback') return plan satisfies IncrementalOverlayPreassessment;
+  if (metadata.files !== affectedFiles.length || plan.affectedPaths.length !== affectedFiles.length) {
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const cache = yield* loadCachedFacts(input.store, input.layout.databasePath, affectedFiles, input.languagePacks);
+  if (affectedFiles.some(file => !cache.facts.has(file.path))) {
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const rawFacts = affectedFiles.map(file => input.languagePacks.postprocessFile(file, cache.facts.get(file.path)!));
+  const inventoryReceipt = base.receipt.inventory!;
+  const candidates = repositoryFactCandidatePaths(inventoryReceipt.attributionFiles, rawFacts);
+  const existingPaths = yield* input.store.existingSnapshotFilePaths(
+    input.layout.databasePath,
+    base.snapshot.id,
+    candidates,
+  );
+  if (existingPaths === undefined) {
+    return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+  }
+  const attributeRepository = createRepositoryFactAttributorFromContext(
+    inventoryReceipt.attributionFiles,
+    new Set(existingPaths),
+  );
+  const attributeWorkspace = createWorkspaceAttributor(input.admission.workspace);
+  const facts = attributeWorkspace(attributeRepository(rawFacts));
+  if (finalCodeGraphFactBatches(facts).length !== 1) {
+    return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
+  }
+  return {
+    baseFileSetFingerprint: base.receipt.fileSetFingerprint,
+    closureProjects: plan.projectIds.length,
+    committedWorkspace: input.admission.workspace,
+    facts,
+    files: affectedFiles,
+    mode: 'compatible',
+    proportionalWork: {
+      attributionContextFiles: inventoryReceipt.attributionFiles.length,
+      baseFactsLoaded: affectedFiles.length,
+      inventoryFilesInspected: currentFiles.length,
+      probedDependencyPaths: candidates.length,
+    },
+    resolutionClosure: 'project',
+    ...firstChangedResolutionPublicationAssessment(input.baseFacts, input.currentFacts),
+  } satisfies IncrementalOverlayPreassessment;
+});
+
+function firstChangedResolutionPublicationAssessment(
+  committedFacts: readonly CodeGraphFileFacts[],
+  effectiveFacts: readonly CodeGraphFileFacts[],
+) {
+  const committedById = new Map(committedFacts.flatMap(file => file.symbols).map(symbol => [symbol.id, symbol]));
+  const effectiveById = new Map(effectiveFacts.flatMap(file => file.symbols).map(symbol => [symbol.id, symbol]));
+  for (const symbol of effectiveById.values()) {
+    const committed = committedById.get(symbol.id);
+    if (committed && hasSameCodeGraphResolutionSurface([committed], [symbol])) continue;
+    const assessment = assessCodeGraphResolutionSymbolPublication(symbol);
+    if (assessment.published) return {resolutionPublicationAssessment: assessment} as const;
+  }
+  for (const symbol of committedById.values()) {
+    if (effectiveById.has(symbol.id)) continue;
+    const assessment = assessCodeGraphResolutionSymbolPublication(symbol);
+    if (assessment.published) return {resolutionPublicationAssessment: assessment} as const;
+  }
+  return firstResolutionPublicationAssessment(effectiveFacts);
+}
 
 function firstResolutionPublicationAssessment(facts: readonly CodeGraphFileFacts[]) {
   for (const symbol of facts.flatMap(file => file.symbols)) {

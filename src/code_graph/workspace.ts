@@ -255,6 +255,9 @@ export function createWorkspaceAttributor(
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   const projectsById = new Map(workspace.projects.map(project => [project.id, project]));
   const findProject = createWorkspaceProjectLookup(workspace.projects);
+  const findPackageProject = createWorkspaceProjectLookup(
+    workspace.projects.filter(project => project.buildSystem === 'node' || project.buildSystem === 'pnpm'),
+  );
   return facts =>
     facts.map(file => {
       return {
@@ -266,10 +269,15 @@ export function createWorkspaceAttributor(
           }),
         ),
         symbols: file.symbols.map(symbol =>
-          Option.match(findProject(file.path, symbol.resolutionDomain), {
-            onNone: () => symbol,
-            onSome: project => attributeSymbol(symbol, project),
-          }),
+          Option.match(
+            symbol.kind === 'package' && symbol.resolutionDomain === 'workspace'
+              ? findPackageProject(file.path)
+              : findProject(file.path, symbol.resolutionDomain),
+            {
+              onNone: () => symbol,
+              onSome: project => attributeSymbol(symbol, project),
+            },
+          ),
         ),
       };
     });
@@ -725,6 +733,13 @@ function materializeProjects(
 }
 
 function attributeSymbol(symbol: CodeGraphSymbol, project: CodeGraphWorkspaceProject): CodeGraphSymbol {
+  if (
+    symbol.kind === 'package' &&
+    symbol.resolutionDomain === 'workspace' &&
+    (project.buildSystem === 'node' || project.buildSystem === 'pnpm')
+  ) {
+    return {...symbol, packageName: project.name};
+  }
   if (symbol.resolutionDomain !== project.resolutionDomain) return symbol;
   return {
     ...symbol,

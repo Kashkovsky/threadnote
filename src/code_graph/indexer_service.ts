@@ -296,6 +296,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         threadnoteHome: options.threadnoteHome,
                         treeSitter,
                       });
+                      let bypassReusableInventoryBase = false;
                       const sparseOverlay = yield* attemptSparseReusableOverlay({
                         anonymousTelemetry,
                         cacheCoalescer,
@@ -307,6 +308,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         languagePacks,
                         layout,
                         observation: inventoryOverlayObservation,
+                        onInvalidBaseCache: Effect.sync(() => {
+                          bypassReusableInventoryBase = true;
+                        }),
                         options,
                         requestedOverlay,
                         startedAt,
@@ -318,6 +322,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           inventoryOverlayObservation.changedPaths.length +
                           inventoryOverlayObservation.deletedPaths.length;
                         const reusableInventoryBase =
+                          !bypassReusableInventoryBase &&
                           !options.force &&
                           options.incrementalOverlay !== false &&
                           changedPathCount > 0 &&

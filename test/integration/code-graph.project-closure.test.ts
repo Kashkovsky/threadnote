@@ -105,6 +105,15 @@ describe('project-closure incremental indexing', () => {
             stagedFiles: 4,
             totalFiles: 11,
           });
+          expect(incremental.incrementalWork).toMatchObject({
+            baseFactsLoaded: 4,
+            changedFiles: 4,
+            inventoryFilesInspected: 4,
+            totalFiles: 11,
+          });
+          expect(incremental.diagnostics).toContain(
+            'Reused persisted clean inventory admission for 1 changed path(s) without hydrating the complete base.',
+          );
           expect(incremental.diagnostics).not.toContain('poisoned final shard');
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
           expect(normalizeCatalog(incrementalCatalog)).toEqual(normalizeCatalog(fullCatalog));
@@ -308,6 +317,15 @@ describe('project-closure incremental indexing', () => {
             stagedFiles: 6,
             totalFiles: 11,
           });
+          expect(incremental.incrementalWork).toMatchObject({
+            baseFactsLoaded: 6,
+            changedFiles: 6,
+            inventoryFilesInspected: 6,
+            totalFiles: 11,
+          });
+          expect(incremental.diagnostics).toContain(
+            'Reused persisted clean inventory admission for 1 changed path(s) without hydrating the complete base.',
+          );
           expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
           expect(incrementalGraph.symbols.some(symbol => symbol.name === 'newlyPublished')).toBe(true);
           expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
@@ -476,6 +494,7 @@ describe('project-closure incremental indexing', () => {
                 stagedFiles: scenario.stagedFiles,
                 totalFiles: scenario.totalFiles,
               });
+              expect(incremental.snapshot.graphContentId).toBe(full.snapshot.graphContentId);
               expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
               expect(normalizeCatalog(yield* store.loadVisualizationCatalog(incrementalLayout.databasePath))).toEqual(
                 normalizeCatalog(yield* store.loadVisualizationCatalog(fullLayout.databasePath)),
@@ -839,7 +858,13 @@ function normalizeGraph(graph: StoredCodeGraph): unknown {
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {
   if (!catalog) return catalog;
   const {activatedAt: _activatedAt, snapshot, ...rest} = catalog;
-  const {baseSnapshotId: _baseSnapshotId, completedAt: _completedAt, id: _id, ...stableSnapshot} = snapshot;
+  const {
+    baseSnapshotId: _baseSnapshotId,
+    completedAt: _completedAt,
+    graphContentId: _graphContentId,
+    id: _id,
+    ...stableSnapshot
+  } = snapshot;
   return {...rest, snapshot: stableSnapshot};
 }
 

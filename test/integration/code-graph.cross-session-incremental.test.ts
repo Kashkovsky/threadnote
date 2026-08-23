@@ -124,6 +124,12 @@ describe('cross-session code graph increments', () => {
           'src/missing.ts',
         ]),
       ).toEqual(['src/use.ts']);
+      expect(
+        yield* store.snapshotProjectClosureFiles!(layout.databasePath, baseSlice!.snapshot.id, ['src']),
+      ).toHaveLength(34);
+      expect(
+        yield* store.snapshotProjectClosureFiles!(layout.databasePath, baseSlice!.snapshot.id, ['']),
+      ).toBeUndefined();
       const baseFacts = yield* store.loadSnapshotMaterializedFileShards!(
         layout.databasePath,
         baseSlice!.snapshot.id,

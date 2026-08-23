@@ -3,6 +3,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {
   assessProjectClosureSeeds,
   assessProjectFileSetClosureSeeds,
+  declaredProjectResolutionClosureProjectIds,
   planProjectIncrementalClosure,
 } from '../../src/code_graph/incremental_closure.js';
 import {resolvePersistedReexportTerminals} from '../../src/code_graph/indexer.js';
@@ -32,6 +33,7 @@ describe('project incremental closure', () => {
       projectIds: ['app', 'barrel'],
       sourceBytes: 64,
     });
+    expect(declaredProjectResolutionClosureProjectIds([...projects].reverse(), ['barrel'])).toEqual(['app', 'barrel']);
   });
 
   it('accepts distinct declared evidence for one structural dependency after workspace composition', () => {

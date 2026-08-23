@@ -5,6 +5,7 @@ import {configureConnection, useDatabase, useReadOnlyDatabase} from './store_ses
 import {CodeGraphStoreError} from './types.js';
 import {upsertRepository, storeError} from './store_utilities.js';
 import {selectCachedCommittedFileKeys} from './store_query_core.js';
+import {discardInvalidCachedFacts} from './store_cache_repair.js';
 import {stageActivationFiles, activationMode, type CodeGraphWriterGate} from './store_build_core.js';
 import {
   selectReusableBaseReceipt,
@@ -70,6 +71,7 @@ import {
 } from './store_relationship_queries.js';
 import {type CodeGraphStoreRuntime} from './store_runtime.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
+import {selectSnapshotProjectClosureFiles} from './store_project_closure.js';
 import {
   temporaryActivationInventoryCapacity,
   temporaryIncrementalActivationCapacity,
@@ -84,6 +86,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'replaceStagedModifiedFiles'
   | 'diagnose'
   | 'cachedCommittedFileKeys'
+  | 'discardInvalidCachedFacts'
   | 'edgesForNodes'
   | 'findSymbolsByPathAndName'
   | 'loadCachedFacts'
@@ -123,6 +126,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'reusableCleanBaseForCommit'
   | 'reusableCleanBaseForCommitPaths'
   | 'existingSnapshotFilePaths'
+  | 'snapshotProjectClosureFiles'
   | 'reusableOverlayBase'
   | 'reusableReexports'
   | 'relationshipSummaryForNode'
@@ -271,6 +275,22 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(new Set<string>()),
         ),
         Effect.mapError(cause => storeError('load cached code graph file keys', cause)),
+      ),
+    discardInvalidCachedFacts: (databasePath, files) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useDatabase(
+                databasePath,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  yield* configureConnection(sql);
+                  yield* sql.withTransaction(discardInvalidCachedFacts(files));
+                }),
+              )
+            : Effect.void,
+        ),
+        Effect.mapError(cause => storeError('discard invalid cached code graph facts', cause)),
       ),
     edgesForNodes: (databasePath, snapshotId, nodeIds, direction, limit, allowedProvenances) =>
       prepare(databasePath).pipe(
@@ -658,6 +678,15 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('probe existing code graph snapshot file paths', cause)),
+      ),
+    snapshotProjectClosureFiles: (databasePath, snapshotId, prefixes) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectSnapshotProjectClosureFiles(snapshotId, prefixes))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load bounded code graph project closure files', cause)),
       ),
     reusableOverlayBase: (databasePath, repositoryId, extractorSet, overlayFingerprint) =>
       fs.exists(databasePath).pipe(

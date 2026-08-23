@@ -197,6 +197,18 @@ describe('code graph workspace properties', () => {
     expect(workspace.projects).toContainEqual(expect.objectContaining({buildSystem: 'gradle', root: 'apps/web'}));
 
     const attributed = createWorkspaceAttributor(workspace)([
+      facts('package.json', [
+        {
+          ...workspaceSymbol('root-package', 'package.json', 'threadnote-root', 'workspace', 'npm-manifest'),
+          kind: 'package',
+        },
+      ]),
+      facts('apps/web/package.json', [
+        {
+          ...workspaceSymbol('web-package', 'apps/web/package.json', '@acme/web', 'workspace', 'npm-manifest'),
+          kind: 'package',
+        },
+      ]),
       facts('src/index.ts', [workspaceSymbol('root-ts', 'src/index.ts', 'root', 'typescript', 'typescript')]),
       facts('apps/web/src/index.ts', [
         workspaceSymbol('web-ts', 'apps/web/src/index.ts', 'web', 'typescript', 'typescript'),
@@ -206,6 +218,8 @@ describe('code graph workspace properties', () => {
       ]),
     ]);
     const attributedSymbols = attributed.flatMap(file => file.symbols);
+    expect(attributedSymbols.find(symbol => symbol.id === 'root-package')?.packageName).toBe('threadnote-root');
+    expect(attributedSymbols.find(symbol => symbol.id === 'web-package')?.packageName).toBe('@acme/web');
     expect(attributedSymbols.find(symbol => symbol.id === 'root-ts')?.resolutionScopeId).toBe(root.id);
     expect(attributedSymbols.find(symbol => symbol.id === 'web-ts')?.resolutionScopeId).toBe(web.id);
     expect(attributedSymbols.find(symbol => symbol.id === 'web-jvm')?.resolutionScopeId).toBe(

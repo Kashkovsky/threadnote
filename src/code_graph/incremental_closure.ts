@@ -439,6 +439,19 @@ interface DeclaredProjectResolutionClosure {
   readonly projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>;
 }
 
+/**
+ * Returns the exact declared reverse-dependency closure without enumerating
+ * repository files. Sparse persisted-base admission uses these stable project
+ * identities to issue bounded prefix probes before the ordinary closure
+ * planner verifies ownership and resource limits.
+ */
+export function declaredProjectResolutionClosureProjectIds(
+  projects: readonly CodeGraphWorkspaceProject[],
+  seedProjectIds: readonly string[],
+): readonly string[] | undefined {
+  return declaredProjectResolutionClosure(projects, seedProjectIds)?.projectIds;
+}
+
 function declaredProjectResolutionClosure(
   projects: readonly CodeGraphWorkspaceProject[],
   seedProjectIds: readonly string[],

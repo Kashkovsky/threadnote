@@ -250,6 +250,10 @@ export interface CodeGraphStoreShape {
     extractorSet: string,
     files?: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
   ) => Effect.Effect<ReadonlySet<string>, CodeGraphStoreError>;
+  readonly discardInvalidCachedFacts?: (
+    databasePath: string,
+    files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[],
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly loadCachedFacts: (
     databasePath: string,
     files: readonly CodeGraphBlobReuseFile[],
@@ -467,6 +471,11 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     paths: readonly string[],
   ) => Effect.Effect<readonly string[] | undefined, CodeGraphStoreError>;
+  readonly snapshotProjectClosureFiles?: (
+    databasePath: string,
+    snapshotId: string,
+    prefixes: readonly string[],
+  ) => Effect.Effect<readonly CodeGraphInventoryFile[] | undefined, CodeGraphStoreError>;
   readonly reusableOverlayBase?: (
     databasePath: string,
     repositoryId: string,
