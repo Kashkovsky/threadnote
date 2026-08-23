@@ -267,7 +267,11 @@ export const terminateSupersededStandaloneProcesses = Effect.fn('installations.t
     const superseded = scan.leases.filter(
       lease => lease.version !== activeVersion && lease.processId !== system.processId,
     );
-    const preservedIds = preservedStandaloneProcessIds(superseded);
+    // The stable broker is explicitly session-pinned, but its versioned MCP
+    // runtime and workers retain the default terminate policy. An explicit
+    // maintenance cleanup must therefore preserve only leases that opted in,
+    // rather than treating every descendant of the broker as pinned too.
+    const preservedIds = explicitlyPreservedStandaloneProcessIds(superseded);
     const preserved = superseded.filter(lease => preservedIds.has(lease.processId));
     const eligible = superseded.filter(lease => !preservedIds.has(lease.processId));
     const verified = eligible.filter(lease => lease.identityVerified);
@@ -395,9 +399,7 @@ function publicLease(lease: ObservedStandaloneProcessLease): StandaloneProcessLe
 export function preservedStandaloneProcessIds(
   leases: readonly Pick<StandaloneProcessLease, 'parentProcessId' | 'processId' | 'retirementPolicy'>[],
 ): ReadonlySet<number> {
-  const preserved = new Set(
-    leases.filter(lease => lease.retirementPolicy === 'preserve-session').map(lease => lease.processId),
-  );
+  const preserved = new Set(explicitlyPreservedStandaloneProcessIds(leases));
   let changed = true;
   while (changed) {
     changed = false;
@@ -413,6 +415,13 @@ export function preservedStandaloneProcessIds(
     }
   }
   return preserved;
+}
+
+/** @internal Explicit preserve-session leases remain alive during requested retirement. */
+export function explicitlyPreservedStandaloneProcessIds(
+  leases: readonly Pick<StandaloneProcessLease, 'processId' | 'retirementPolicy'>[],
+): ReadonlySet<number> {
+  return new Set(leases.filter(lease => lease.retirementPolicy === 'preserve-session').map(lease => lease.processId));
 }
 
 function signalLeaseIfStillOwned(

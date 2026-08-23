@@ -1001,7 +1001,7 @@ describe('exact-head development runtime', () => {
       }),
   );
 
-  effectIt.effect('reports the complete preserved session tree when superseded processes remain running', () =>
+  effectIt.effect('retires the old MCP runtime below a preserved stable broker when requested', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -1066,6 +1066,8 @@ describe('exact-head development runtime', () => {
             leases.map(lease => [lease.processId, lease.processStartIdentity]),
           );
           const running = new Set<number>(leases.map(lease => lease.processId));
+          const signals: Array<readonly [number, NodeJS.Signals]> = [];
+          let terminationRequested = false;
           const testSystem = SystemInfo.of({
             ...baseSystem,
             environment: () => ({
@@ -1076,11 +1078,15 @@ describe('exact-head development runtime', () => {
             isProcessRunning: processId => running.has(processId),
             processId: 99_999,
             processStartIdentity: processId => Effect.succeed(identities.get(processId)),
-            signalProcess: () => {
-              throw new TestError('Installer must not signal processes without --terminate-superseded');
+            signalProcess: (processId, signal) => {
+              if (!terminationRequested) {
+                throw new TestError('Installer must not signal processes without --terminate-superseded');
+              }
+              signals.push([processId, signal]);
+              running.delete(processId);
             },
           });
-          return yield* activateLocalStandaloneRelease({
+          const activation = {
             canonicalInstallRoot: yield* fs.realPath(installRoot),
             canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
             commit: sourceCommit,
@@ -1092,20 +1098,40 @@ describe('exact-head development runtime', () => {
             takeOverGlobalRuntime: false,
             terminateSuperseded: false,
             version,
-          }).pipe(
+          } as const;
+          const preserved = yield* activateLocalStandaloneRelease(activation).pipe(
             Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
             Effect.provideService(SystemInfo, testSystem),
           );
+          terminationRequested = true;
+          const cleaned = yield* activateLocalStandaloneRelease({...activation, terminateSuperseded: true}).pipe(
+            Effect.provideService(CommandExecutor, versionCommandExecutor(version)),
+            Effect.provideService(SystemInfo, testSystem),
+          );
+          return {cleaned, preserved, running, signals};
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(result).toMatchObject({
+      expect(result.preserved).toMatchObject({
         cleanupComplete: false,
         cleanupIssues: [],
         preservedMcpSessionProcesses: 3,
         remainingSupersededProcesses: 1,
         terminatedSupersededProcesses: 0,
       });
+      expect(result.signals).toEqual([
+        [45_002, 'SIGTERM'],
+        [45_004, 'SIGTERM'],
+        [45_003, 'SIGTERM'],
+      ]);
+      expect(result.cleaned).toMatchObject({
+        cleanupComplete: true,
+        cleanupIssues: [],
+        preservedMcpSessionProcesses: 1,
+        remainingSupersededProcesses: 0,
+        terminatedSupersededProcesses: 3,
+      });
+      expect([...result.running]).toEqual([45_001]);
     }),
   );
 

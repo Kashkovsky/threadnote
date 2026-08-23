@@ -602,7 +602,7 @@ describe('standalone release lifecycle', () => {
     }),
   );
 
-  effectIt.effect('preserves an MCP session process and its complete descendant tree during retirement', () =>
+  effectIt.effect('preserves the stable MCP broker while retiring its superseded runtime tree', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -654,9 +654,14 @@ describe('standalone release lifecycle', () => {
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(result.signals).toEqual([[44_004, 'SIGTERM']]);
-      expect(result.termination.preserved.map(lease => lease.processId)).toEqual([44_001, 44_002, 44_003]);
-      expect([...result.running].sort()).toEqual([44_001, 44_002, 44_003]);
+      expect(result.signals).toEqual([
+        [44_002, 'SIGTERM'],
+        [44_004, 'SIGTERM'],
+        [44_003, 'SIGTERM'],
+      ]);
+      expect(result.termination.preserved.map(lease => lease.processId)).toEqual([44_001]);
+      expect(result.termination.signaled.map(lease => lease.processId)).toEqual([44_002, 44_003, 44_004]);
+      expect([...result.running]).toEqual([44_001]);
     }),
   );
 
