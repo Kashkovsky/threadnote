@@ -33,6 +33,131 @@ const POLYGLOT_BUDGETS = 'test/evaluation/baselines/code-graph-polyglot-v1/budge
 const BETA30_STAGING_EVIDENCE = 'test/evaluation/baselines/code-graph-v1/beta30-staging-development.json';
 
 describe('code graph release evidence', () => {
+  it('retains the maximum cumulative inventory subphase timings', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            extractionMilliseconds: fc.integer({max: 10_000, min: 0}),
+            persistenceMilliseconds: fc.integer({max: 10_000, min: 0}),
+            readingMilliseconds: fc.integer({max: 10_000, min: 0}),
+            serializationMilliseconds: fc.integer({max: 10_000, min: 0}),
+          }),
+          {maxLength: 20, minLength: 1},
+        ),
+        timings => {
+          const telemetry = {cpuSystemMicroseconds: 0, cpuUserMicroseconds: 0, peakRssBytes: 0, rssBytes: 0};
+          const timeline = new IndexPhaseTimeline(0n, telemetry);
+          for (const [index, observation] of timings.entries()) {
+            timeline.observe(
+              {
+                accepted: 1,
+                completed: index + 1,
+                excluded: 0,
+                phase: 'scanning',
+                skipped: 0,
+                timings: observation,
+                total: timings.length,
+                unit: 'files',
+              },
+              BigInt(index + 1),
+              telemetry,
+            );
+          }
+
+          const measurements = new Map(
+            indexPhaseMeasurements('cold', timeline, false).map(measurement => [measurement.name, measurement.minimum]),
+          );
+          expect(measurements.get('cold-inventory-source-reading-n1')).toBe(
+            Math.max(...timings.map(observation => observation.readingMilliseconds)),
+          );
+          expect(measurements.get('cold-inventory-parser-extraction-summed-n1')).toBe(
+            Math.max(...timings.map(observation => observation.extractionMilliseconds)),
+          );
+          expect(measurements.get('cold-inventory-cache-persistence-n1')).toBe(
+            Math.max(...timings.map(observation => observation.persistenceMilliseconds)),
+          );
+          expect(measurements.get('cold-inventory-parser-fact-serialization-n1')).toBe(
+            Math.max(...timings.map(observation => observation.serializationMilliseconds)),
+          );
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('retains the maximum cumulative materialization subphase timings', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            attributionCompute: fc.integer({max: 10_000, min: 0}),
+            factBatchPreparation: fc.integer({max: 10_000, min: 0}),
+            shardAssociation: fc.integer({max: 10_000, min: 0}),
+            shardPersistence: fc.integer({max: 10_000, min: 0}),
+            shardSerialization: fc.integer({max: 10_000, min: 0}),
+          }),
+          {maxLength: 20, minLength: 1},
+        ),
+        timings => {
+          const telemetry = {cpuSystemMicroseconds: 0, cpuUserMicroseconds: 0, peakRssBytes: 0, rssBytes: 0};
+          const timeline = new IndexPhaseTimeline(0n, telemetry);
+          for (const [index, observation] of timings.entries()) {
+            timeline.observe(
+              {
+                completed: index + 1,
+                metrics: {
+                  batchesCompleted: index + 1,
+                  batchesTotal: timings.length,
+                  sourceBytesCompleted: index + 1,
+                  sourceBytesTotal: timings.length,
+                  subphaseMilliseconds: observation,
+                },
+                phase: 'materializing',
+                reused: 0,
+                total: timings.length,
+                unit: 'files',
+              },
+              BigInt(index + 1),
+              telemetry,
+            );
+          }
+
+          const measurements = new Map(
+            indexPhaseMeasurements('cold', timeline, false).map(measurement => [measurement.name, measurement.minimum]),
+          );
+          for (const [field, suffix] of [
+            ['attributionCompute', 'attribution-compute'],
+            ['factBatchPreparation', 'fact-batch-preparation'],
+            ['shardAssociation', 'shard-association'],
+            ['shardPersistence', 'shard-persistence'],
+            ['shardSerialization', 'shard-serialization'],
+          ] as const) {
+            expect(measurements.get(`cold-materialization-subphase-${suffix}-n1`)).toBe(
+              Math.max(...timings.map(observation => observation[field])),
+            );
+          }
+        },
+      ),
+      {numRuns: 50},
+    );
+
+    for (const prefix of ['cold', 'same-overlay-reference'] as const) {
+      for (const suffix of [
+        'attribution-compute',
+        'fact-batch-preparation',
+        'shard-association',
+        'shard-persistence',
+        'shard-serialization',
+      ] as const) {
+        expect(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS).toContainEqual({
+          name: `${prefix}-materialization-subphase-${suffix}-n1`,
+          unit: 'milliseconds',
+        });
+      }
+    }
+  });
+
   it('emits exact materialization row counts required by release-bound site evidence', () => {
     const telemetry = {cpuSystemMicroseconds: 0, cpuUserMicroseconds: 0, peakRssBytes: 0, rssBytes: 0};
     const timeline = new IndexPhaseTimeline(0n, telemetry);

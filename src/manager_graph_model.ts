@@ -287,6 +287,7 @@ export interface GraphBuildStatus {
       readonly sourceBytesCompleted: number;
       readonly sourceBytesTotal: number;
       readonly stageMilliseconds?: Readonly<Partial<Record<GraphMaterializationStage, number>>>;
+      readonly subphaseMilliseconds?: GraphMaterializationSubphaseMilliseconds;
       readonly storage?: GraphMaterializationStorage;
       readonly transactionMilliseconds?: number;
     };
@@ -325,6 +326,7 @@ export interface GraphBuildStatus {
     readonly extractionMilliseconds: number;
     readonly persistenceMilliseconds: number;
     readonly readingMilliseconds: number;
+    readonly serializationMilliseconds?: number;
   };
   readonly timestamps: {
     readonly heartbeatAt: string;
@@ -371,6 +373,14 @@ export interface GraphMaterializationRows {
   readonly reexports?: number;
   readonly symbols?: number;
   readonly terms?: number;
+}
+
+export interface GraphMaterializationSubphaseMilliseconds {
+  readonly attributionCompute: number;
+  readonly factBatchPreparation: number;
+  readonly shardAssociation: number;
+  readonly shardPersistence: number;
+  readonly shardSerialization: number;
 }
 
 export interface GraphMaterializationStorage {

@@ -235,6 +235,13 @@ describe('code graph build-status properties', () => {
             },
             sourceBytesCompleted: sample.sourceBytes,
             sourceBytesTotal: sample.sourceBytes,
+            subphaseMilliseconds: {
+              attributionCompute: sample.batchCompleted,
+              factBatchPreparation: sample.batchCompleted + 1,
+              shardAssociation: sample.batchCompleted + 2,
+              shardPersistence: sample.batchCompleted + 3,
+              shardSerialization: sample.batchCompleted + 4,
+            },
             storage: {
               availableBytes: sample.availableBytes,
               durableAvailableBytes: sample.availableBytes,
@@ -267,6 +274,21 @@ describe('code graph build-status properties', () => {
               ...materializing.materialization!.metrics!,
               cachedFactReplayBytesCompleted:
                 materializing.materialization!.metrics!.cachedFactReplayBytesCompleted! + 1,
+            },
+          },
+        }),
+      ).toBeUndefined();
+      expect(
+        parseCodeGraphBuildStatus({
+          ...materializing,
+          materialization: {
+            ...materializing.materialization,
+            metrics: {
+              ...materializing.materialization!.metrics!,
+              subphaseMilliseconds: {
+                ...materializing.materialization!.metrics!.subphaseMilliseconds!,
+                shardPersistence: -1,
+              },
             },
           },
         }),

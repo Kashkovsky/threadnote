@@ -142,9 +142,10 @@ export function materializedShardRepositorySemanticEnvelope(
 }
 
 /**
- * V4 final-fact derivation identity. The ordered batch is part of the key so
+ * V5 final-fact derivation identity. The ordered batch is part of the key so
  * attribution never observes a hit/miss partition that differs from the one
- * that originally produced the shard rows.
+ * that originally produced the shard rows. V5 stores the canonical bounded
+ * fact shared by shard persistence and graph staging.
  */
 export function materializedBatchShardDerivationIdentity(
   extractorSet: string,
@@ -154,7 +155,7 @@ export function materializedBatchShardDerivationIdentity(
 ): string {
   const orderedBatchMembers = files.map(file => [file.path, file.contentHash, file.language, file.mode, file.source]);
   return `cgfd_${sha256HexSync(
-    `materialized-file-derivation-v4\n${extractorSet}\n${workspaceFingerprint}\n${repositorySemanticEnvelope}\n${JSON.stringify(
+    `materialized-file-derivation-v5\n${extractorSet}\n${workspaceFingerprint}\n${repositorySemanticEnvelope}\n${JSON.stringify(
       orderedBatchMembers,
     )}`,
   ).slice(0, 40)}`;

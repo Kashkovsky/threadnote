@@ -242,7 +242,7 @@ describe('code graph indexer properties', () => {
     expect(materializedShardDerivationIdentity(extractor, workspace, graphContent)).not.toBe(legacy);
   });
 
-  it('derives v4 batch identities from an independently canonicalized repository envelope', () => {
+  it('derives v5 batch identities from an independently canonicalized repository envelope', () => {
     fc.assert(
       fc.property(
         fc.uniqueArray(
@@ -265,7 +265,7 @@ describe('code graph indexer properties', () => {
           const envelope = materializedShardRepositorySemanticEnvelope(files);
           const batch = files.slice(0, 2);
           const expectedDerivation = `cgfd_${sha256HexSync(
-            `materialized-file-derivation-v4\nextractor\nworkspace\n${expectedEnvelope}\n${JSON.stringify(
+            `materialized-file-derivation-v5\nextractor\nworkspace\n${expectedEnvelope}\n${JSON.stringify(
               batch.map(file => [file.path, file.contentHash, file.language, file.mode, file.source]),
             )}`,
           ).slice(0, 40)}`;
@@ -306,7 +306,7 @@ describe('code graph indexer properties', () => {
     );
   });
 
-  it('invalidates v4 repository envelopes on retained context or path membership changes', () => {
+  it('invalidates v5 repository envelopes on retained context or path membership changes', () => {
     const source = {
       contentHash: 'source-a',
       language: 'typescript',

@@ -24,6 +24,7 @@ import {
 import {resolveRepositoryIdentity} from '../src/code_graph/repository.js';
 import type {
   CodeGraphActivationActivity,
+  CodeGraphMaterializationSubphaseMilliseconds,
   CodeGraphProgress,
   CodeGraphQueryResult,
   CodeGraphStatus,
@@ -62,6 +63,8 @@ import {
 } from '../src/evaluation/benchmark.js';
 import {
   EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS,
+  INVENTORY_TIMING_REQUIRED_MEASUREMENTS,
+  MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS,
   RELEASE_EVIDENCE_HARNESS_DELTA_PATHS,
   isReviewedPublicBenchmarkRepository,
   projectExternalEvidenceMetadata,
@@ -176,6 +179,14 @@ const MATERIALIZATION_STAGES = [
 ] as const satisfies readonly NonNullable<
   Extract<CodeGraphProgress, {readonly phase: 'materializing'}>['activity']
 >['stage'][];
+
+const MATERIALIZATION_SUBPHASES = [
+  ['attributionCompute', 'attribution-compute'],
+  ['factBatchPreparation', 'fact-batch-preparation'],
+  ['shardAssociation', 'shard-association'],
+  ['shardPersistence', 'shard-persistence'],
+  ['shardSerialization', 'shard-serialization'],
+] as const satisfies readonly (readonly [keyof CodeGraphMaterializationSubphaseMilliseconds, string])[];
 
 export const CODE_GRAPH_SQLITE_WRITER_PROFILES = {
   current: {
@@ -398,6 +409,8 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'production-shape-symbol-target-attainment', unit: 'percent'},
   {name: 'production-shape-edge-target-attainment', unit: 'percent'},
   {name: 'production-shape-lexical-term-target-attainment', unit: 'percent'},
+  ...INVENTORY_TIMING_REQUIRED_MEASUREMENTS,
+  ...MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS,
   ...MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS,
   ...SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS,
   ...ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS,
@@ -1566,8 +1579,12 @@ const benchmarkCodeGraph = Effect.scoped(
         diskMeasurement:
           'final bytes plus SQLite main/WAL/SHM peaks sampled at progress boundaries; vectors, sidecar, and unclassified bytes separate',
         incrementalIndexSamples: 1,
+        inventorySubphaseMeasurement:
+          'cumulative source reading, summed parser extraction, parser-fact serialization, and cache-persistence wall time; summed parser work can overlap',
         materializationMeasurement:
           'aggregate phase duration plus stage-attributed SQLite wall time, process CPU, boundary RSS, and row counts; no repository paths or source content',
+        materializationSubphaseMeasurement:
+          'inclusive attribution retained for continuity plus separately measured compute, serialization, shard persistence, shard association, and fact-batch preparation wall time',
         mcpOperationCount: mcpOperationMatrix.length,
         mcpOperationMeasurement:
           'status + inspect + compact serialization for query, node, neighbors, explain, impact, and path; excludes maintenance, watcher bookkeeping, and MCP transport; no graph content retained',
@@ -1954,6 +1971,10 @@ export class IndexPhaseTimeline {
   #lastProgressAt: bigint;
   #inventoryEligibleFiles = 0;
   #inventoryExcludedFiles = 0;
+  #inventoryCachePersistenceMilliseconds = 0;
+  #inventoryParserExtractionMilliseconds = 0;
+  #inventoryReadingMilliseconds = 0;
+  #inventorySerializationMilliseconds = 0;
   #maximumActivationTransactionMilliseconds = 0;
   #maximumProgressHeartbeatGapMilliseconds = 0;
   #materializationDeduplicatedEdges = 0;
@@ -1961,6 +1982,7 @@ export class IndexPhaseTimeline {
   #materializedLookupKeys = 0;
   #materializedReferenceCandidates = 0;
   readonly #materializationStageMilliseconds = new Map<(typeof MATERIALIZATION_STAGES)[number], number>();
+  readonly #materializationSubphaseMilliseconds = new Map<keyof CodeGraphMaterializationSubphaseMilliseconds, number>();
   #materializationStorage: IndexMaterializationStorageEvidence | undefined;
   #referenceResolutionAliasesDiscovered = 0;
   #referenceResolutionMatchingMilliseconds = 0;
@@ -1995,6 +2017,22 @@ export class IndexPhaseTimeline {
         this.#first('scanning:start', at, telemetry);
         this.#inventoryEligibleFiles = Math.max(this.#inventoryEligibleFiles, progress.total);
         this.#inventoryExcludedFiles = Math.max(this.#inventoryExcludedFiles, progress.excluded);
+        this.#inventoryCachePersistenceMilliseconds = Math.max(
+          this.#inventoryCachePersistenceMilliseconds,
+          progress.timings?.persistenceMilliseconds ?? 0,
+        );
+        this.#inventoryParserExtractionMilliseconds = Math.max(
+          this.#inventoryParserExtractionMilliseconds,
+          progress.timings?.extractionMilliseconds ?? 0,
+        );
+        this.#inventoryReadingMilliseconds = Math.max(
+          this.#inventoryReadingMilliseconds,
+          progress.timings?.readingMilliseconds ?? 0,
+        );
+        this.#inventorySerializationMilliseconds = Math.max(
+          this.#inventorySerializationMilliseconds,
+          progress.timings?.serializationMilliseconds ?? 0,
+        );
         if (progress.completed >= progress.total) this.#set('scanning:complete', at, telemetry);
         break;
       case 'materializing':
@@ -2018,6 +2056,15 @@ export class IndexPhaseTimeline {
             this.#materializationStageMilliseconds.set(
               stage,
               Math.max(this.#materializationStageMilliseconds.get(stage) ?? 0, milliseconds),
+            );
+          }
+        }
+        for (const [subphase] of MATERIALIZATION_SUBPHASES) {
+          const milliseconds = progress.metrics?.subphaseMilliseconds?.[subphase];
+          if (milliseconds !== undefined) {
+            this.#materializationSubphaseMilliseconds.set(
+              subphase,
+              Math.max(this.#materializationSubphaseMilliseconds.get(subphase) ?? 0, milliseconds),
             );
           }
         }
@@ -2181,6 +2228,22 @@ export class IndexPhaseTimeline {
     return this.#inventoryExcludedFiles;
   }
 
+  inventoryCachePersistenceMilliseconds(): number {
+    return this.#inventoryCachePersistenceMilliseconds;
+  }
+
+  inventoryParserExtractionMilliseconds(): number {
+    return this.#inventoryParserExtractionMilliseconds;
+  }
+
+  inventoryReadingMilliseconds(): number {
+    return this.#inventoryReadingMilliseconds;
+  }
+
+  inventorySerializationMilliseconds(): number {
+    return this.#inventorySerializationMilliseconds;
+  }
+
   materializationDeduplicatedEdges(): number {
     return this.#materializationDeduplicatedEdges;
   }
@@ -2203,6 +2266,12 @@ export class IndexPhaseTimeline {
 
   materializationStageMilliseconds(stage: (typeof MATERIALIZATION_STAGES)[number]): number | undefined {
     return this.#materializationStageMilliseconds.get(stage);
+  }
+
+  materializationSubphaseMilliseconds(
+    subphase: keyof CodeGraphMaterializationSubphaseMilliseconds,
+  ): number | undefined {
+    return this.#materializationSubphaseMilliseconds.get(subphase);
   }
 
   referenceResolutionAliasesDiscovered(): number {
@@ -2368,6 +2437,18 @@ export function indexPhaseMeasurements(
     benchmarkMeasurement(`${prefix}-inventory-and-extraction`, 'milliseconds', [
       timeline.duration('scanning:start', 'scanning:complete', 'materializing:start'),
     ]),
+    benchmarkMeasurement(`${prefix}-inventory-source-reading-n1`, 'milliseconds', [
+      timeline.inventoryReadingMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-inventory-parser-extraction-summed-n1`, 'milliseconds', [
+      timeline.inventoryParserExtractionMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-inventory-cache-persistence-n1`, 'milliseconds', [
+      timeline.inventoryCachePersistenceMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-inventory-parser-fact-serialization-n1`, 'milliseconds', [
+      timeline.inventorySerializationMilliseconds(),
+    ]),
     benchmarkMeasurement(`${prefix}-post-committed-scan-overlay-and-workspace`, 'milliseconds', [
       timeline.duration('scanning:complete', 'materializing:start'),
     ]),
@@ -2447,6 +2528,16 @@ export function indexPhaseMeasurements(
         timeline.materializationStageMilliseconds(stage) ?? 0,
       ]),
     ),
+    ...MATERIALIZATION_SUBPHASES.flatMap(([subphase, measurement]) => {
+      const milliseconds = timeline.materializationSubphaseMilliseconds(subphase);
+      return milliseconds === undefined
+        ? []
+        : [
+            benchmarkMeasurement(`${prefix}-materialization-subphase-${measurement}-n1`, 'milliseconds', [
+              milliseconds,
+            ]),
+          ];
+    }),
     ...materializationStorageMeasurements(prefix, timeline.materializationStorage()),
     ...activationStageMeasurements(prefix, timeline),
   ];

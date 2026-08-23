@@ -6,10 +6,9 @@ import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {readCodeGraphBuildStatuses} from './build_status.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
-import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from './embedding.js';
-import {finalCodeGraphFactBatches, serializeBoundedCodeGraphFact} from './fact_budget.js';
+import {finalSerializedCodeGraphFactBatches, serializeBoundedCodeGraphFact} from './fact_budget.js';
 import {
   assessIncrementalOverlay,
   assessReusableCleanBaseCompatibility,
@@ -51,8 +50,8 @@ import {
   snapshotIdentity,
   uniqueById,
   verifyIndexInput,
-  type PersistentMaterializationTransactionCandidate,
 } from './indexer_materialization.js';
+import {preparedFactsByPath, type PendingMaterializationBatch} from './indexer_materialization_batch.js';
 import {
   CodeGraphIndexOperationError,
   codeGraphInventoryFileChanged,
@@ -74,6 +73,7 @@ import {packDerivationIdentity, type CodeGraphLanguagePackRegistryShape} from '.
 import type {CodeGraphWorkspace} from './languages/types.js';
 import {codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
+import {MaterializationSubphaseTiming} from './materialization_subphase_timing.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   materializedBatchShardDerivationIdentity,
@@ -90,17 +90,13 @@ import {
 } from './store.js';
 import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
-  type CodeGraphEdge,
   type CodeGraphIndexSummary,
-  type CodeGraphInventoryFile,
   type CodeGraphMaterializationActivity,
   type CodeGraphMaterializationMetrics,
   type CodeGraphMaterializationRows,
   type CodeGraphOverlayFallbackReason,
   type CodeGraphProgress,
-  type CodeGraphReference,
   type CodeGraphSnapshot,
-  type CodeGraphSymbol,
   type RepositoryIdentity,
 } from './types.js';
 import {reserveCodeGraphRetainedBase} from './retained_base_reservation.js';
@@ -1261,6 +1257,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     let sourceBytesCompleted = 0;
     let loadingMilliseconds = 0;
     let attributionMilliseconds = 0;
+    const materializationSubphases = new MaterializationSubphaseTiming();
     let transactionMilliseconds = 0;
     let cachedFactBytesCompleted = 0;
     let factsBytesCompleted = 0;
@@ -1308,6 +1305,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       sourceBytesCompleted,
       sourceBytesTotal,
       stageMilliseconds: {...stageMilliseconds},
+      subphaseMilliseconds: materializationSubphases.snapshot(),
       storage: {
         ...storagePlan,
         durableDatabaseBytes,
@@ -1375,25 +1373,13 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     yield* input.store.stageWorkspaceCatalog(input.layout.databasePath, workspace, persistentCapacityGuard);
     let persistentBatchCursor = 0;
     const persistentTransactionBatchLimit = input.persistentMaterializationTransactionBatchLimit ?? 4;
-    interface PendingMaterializationBatch extends PersistentMaterializationTransactionCandidate {
-      readonly attributionMilliseconds: number;
-      readonly batchCachedFactBytes: number;
-      readonly batchFiles: readonly CodeGraphInventoryFile[];
-      readonly batchIndex: number;
-      readonly edges: readonly CodeGraphEdge[];
-      readonly loadingMilliseconds: number;
-      readonly monikers: readonly CodeGraphMonikerV1[];
-      readonly references: readonly CodeGraphReference[];
-      rows: CodeGraphMaterializationRows;
-      readonly stageMilliseconds: Map<string, number>;
-      readonly symbols: readonly CodeGraphSymbol[];
-    }
     const pendingBatches: PendingMaterializationBatch[] = [];
     const pendingShardAssociationBatches: CodeGraphMaterializedShardAssociationBatch[] = [];
     const flushPendingShardAssociations = () =>
       Effect.gen(function* () {
         if (pendingShardAssociationBatches.length === 0) return;
         const group = pendingShardAssociationBatches.splice(0, pendingShardAssociationBatches.length);
+        const startedAt = performance.now();
         yield* input.store.associateMaterializedFileShardBatches(
           input.layout.databasePath,
           input.building.id,
@@ -1401,6 +1387,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           group,
           protectDirectPersistentWrite,
         );
+        materializationSubphases.add('shardAssociation', performance.now() - startedAt);
       });
     const reportStagingProgress = (batch: PendingMaterializationBatch, progress: CodeGraphStagingProgress) => {
       if (progress.temporaryDatabaseBytes !== undefined) {
@@ -1611,19 +1598,38 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
       const attributionStartedAt = yield* Clock.currentTimeMillis;
-      const attributedFallbackFacts = attributeFacts(
-        fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
+      const attributedFallbackFacts = materializationSubphases.measure('attributionCompute', () =>
+        attributeFacts(
+          fallbackFiles.map(file => input.languagePacks.postprocessFile(file, cached.facts.get(file.path)!)),
+        ),
       );
       replayMetrics = addMaterializationReplayMetrics(replayMetrics, {attributedFiles: fallbackFiles.length});
+      const attributedFallbackByPath = new Map(attributedFallbackFacts.map(fact => [fact.path, fact]));
+      const attributedFacts = files.map(file =>
+        materializedShardBatchComplete
+          ? materializedShards.facts.get(file.path)!
+          : attributedFallbackByPath.get(file.path)!,
+      );
+      const finalBatches = materializationSubphases.measureExcluding('factBatchPreparation', 'shardSerialization', () =>
+        finalSerializedCodeGraphFactBatches(attributedFacts, {
+          serialize: (fact, maximumBytes) =>
+            materializationSubphases.measure('shardSerialization', () =>
+              serializeBoundedCodeGraphFact(fact, maximumBytes),
+            ),
+        }),
+      );
+      const finalFactsByPath = preparedFactsByPath(finalBatches, files);
       if (fallbackFiles.length > 0 && directPersistentMaterialization) {
+        const persistenceStartedAt = performance.now();
         yield* input.store.cacheMaterializedFileShards(
           input.layout.databasePath,
           fallbackFiles,
-          attributedFallbackFacts.map(fact => serializeBoundedCodeGraphFact(fact)),
+          fallbackFiles.map(file => finalFactsByPath.get(file.path)!),
           input.building.extractorSet,
           shardDerivationIdentity,
           protectDirectPersistentWrite,
         );
+        materializationSubphases.add('shardPersistence', performance.now() - persistenceStartedAt);
       }
       if (directPersistentMaterialization) {
         const selectedShardIds = materializedShardBatchComplete
@@ -1649,18 +1655,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           yield* flushPendingShardAssociations();
         }
       }
-      const attributedFallbackByPath = new Map(attributedFallbackFacts.map(fact => [fact.path, fact]));
-      const facts = files.map(file =>
-        materializedShardBatchComplete
-          ? materializedShards.facts.get(file.path)!
-          : attributedFallbackByPath.get(file.path)!,
-      );
       materializedShardFilesReused += materializedShardBatchComplete ? files.length : 0;
       const batchAttributionMilliseconds = (yield* Clock.currentTimeMillis) - attributionStartedAt;
       attributionMilliseconds += batchAttributionMilliseconds;
       stageMilliseconds.attributing = attributionMilliseconds;
-      const finalBatches = finalCodeGraphFactBatches(facts);
       batchesTotal += Math.max(0, finalBatches.length - 1);
+      let finalPreparationStartedAt = performance.now();
       if (extractionDiagnostics.length < 100) {
         extractionDiagnostics.push(
           ...finalBatches
@@ -1669,7 +1669,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         );
       }
       const filesByPath = new Map(files.map(file => [file.path, file]));
+      materializationSubphases.add('factBatchPreparation', performance.now() - finalPreparationStartedAt);
       for (let finalBatchIndex = 0; finalBatchIndex < finalBatches.length; finalBatchIndex += 1) {
+        finalPreparationStartedAt = performance.now();
         const finalBatch = finalBatches[finalBatchIndex]!;
         const finalFacts = finalBatch.map(value => value.facts);
         const batchFinalFactBytes = finalBatch.reduce((total, value) => total + value.bytes, 0);
@@ -1691,6 +1693,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           edges: relationships.duplicateEdges,
           references: relationships.duplicateReferences,
         });
+        materializationSubphases.add('factBatchPreparation', performance.now() - finalPreparationStartedAt);
         yield* input.onProgress?.({
           activity: {
             batchCompleted: batchesCompleted,

@@ -275,6 +275,19 @@ or incremental run, `p50`, `p95`, and `p99` are schema-compatible copies of that
 estimates; cite it as “one observation (n=1),” never as p95. Distribution labels are valid only for measurements with
 multiple samples.
 
+Cold, one-file, and independent-rebuild inventory evidence also retains cumulative source-reading wall time, summed
+parser-extraction time, parser-fact serialization wall time, and cache-persistence wall time. Summed parser time can
+exceed inventory wall time when workers overlap; it is not a phase-duration substitute. Production-large and
+external-repository evidence require all four subphase measurements so a total inventory win cannot hide a reading,
+extraction, serialization, or persistence regression.
+
+Full materialization evidence retains the existing inclusive `attributing` stage for continuity and separately records
+mutually non-overlapping attribution-compute, final-fact-serialization, materialized-shard-persistence, and
+shard-association timers, plus adjacent fact-batch preparation. Cold and independent-rebuild evidence require
+every subphase independently. The attribution components are not added to the inclusive stage when interpreting total
+wall time; fact-batch preparation spans the transition into row preparation. One-file incremental staging remains
+governed by its own end-to-end materialization measurement because it does not execute these full-build substages.
+
 The bounded development, polyglot, 10k, and 100k budget contracts gate cold and one-file materialization independently
 from total indexing. Production-large and external-soak artifacts additionally retain privacy-safe aggregate file,
 symbol, edge, lexical-term, staged-file, phase CPU, and phase boundary-RSS measurements. Completed activation-stage

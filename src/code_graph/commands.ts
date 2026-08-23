@@ -446,6 +446,16 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           : `transactions ${formatMilliseconds(metrics.transactionMilliseconds)}`,
       ].filter((value): value is string => value !== undefined);
       yield* Console.log(`Materialized: ${details.join(' · ')}`);
+      if (metrics.subphaseMilliseconds) {
+        const subphases = metrics.subphaseMilliseconds;
+        yield* Console.log(
+          `Materialization detail: compute ${formatMilliseconds(subphases.attributionCompute)} · ` +
+            `serialize ${formatMilliseconds(subphases.shardSerialization)} · ` +
+            `persist shards ${formatMilliseconds(subphases.shardPersistence)} · ` +
+            `associate shards ${formatMilliseconds(subphases.shardAssociation)} · ` +
+            `prepare batches ${formatMilliseconds(subphases.factBatchPreparation)}`,
+        );
+      }
       if (metrics.storage) {
         const storage = metrics.storage;
         const storageDetails = [
@@ -515,6 +525,9 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
       yield* Console.log(
         `Phase timings: read ${formatMilliseconds(current.timings.readingMilliseconds)} · ` +
           `parse ${formatMilliseconds(current.timings.extractionMilliseconds)} · ` +
+          (current.timings.serializationMilliseconds === undefined
+            ? ''
+            : `serialize ${formatMilliseconds(current.timings.serializationMilliseconds)} · `) +
           `persist ${formatMilliseconds(current.timings.persistenceMilliseconds)}`,
       );
     }

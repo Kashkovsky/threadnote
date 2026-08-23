@@ -172,6 +172,23 @@ export interface CodeGraphMaterializationRows {
 }
 
 /**
+ * Cumulative wall time for attribution and adjacent final-batch preparation.
+ * Attribution compute, shard serialization, persistence, and association are
+ * mutually non-overlapping. The existing `attributing` stage remains an
+ * inclusive per-batch timer; a final shard-association flush can follow it.
+ * Final-batch preparation spans the transition into row preparation. Keeping
+ * them separate prevents codec and SQLite costs from hiding behind one
+ * aggregate timer.
+ */
+export interface CodeGraphMaterializationSubphaseMilliseconds {
+  readonly attributionCompute: number;
+  readonly factBatchPreparation: number;
+  readonly shardAssociation: number;
+  readonly shardPersistence: number;
+  readonly shardSerialization: number;
+}
+
+/**
  * Batch-local materialization activity. Paths, symbol names, and repository
  * content are deliberately excluded because this shape is persisted and
  * exposed through the CLI and Manager.
@@ -242,6 +259,7 @@ export interface CodeGraphMaterializationMetrics {
   readonly sourceBytesTotal: number;
   /** Cumulative wall time attributed to privacy-safe materialization stages. */
   readonly stageMilliseconds?: Readonly<Partial<Record<CodeGraphMaterializationActivity['stage'], number>>>;
+  readonly subphaseMilliseconds?: CodeGraphMaterializationSubphaseMilliseconds;
   readonly storage?: {
     /** Legacy combined value, present only when durable and TEMP data share one filesystem. */
     readonly availableBytes?: number;
@@ -400,6 +418,7 @@ export type CodeGraphProgress =
         readonly extractionMilliseconds: number;
         readonly persistenceMilliseconds: number;
         readonly readingMilliseconds: number;
+        readonly serializationMilliseconds: number;
       };
       readonly total: number;
       readonly unit: 'files';

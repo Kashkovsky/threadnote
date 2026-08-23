@@ -177,7 +177,9 @@ export function codeGraphProgressFromBuildStatus(
         excluded: counters.excluded ?? 0,
         phase: 'scanning',
         skipped: counters.skipped ?? 0,
-        ...(status.timings ? {timings: status.timings} : {}),
+        ...(status.timings
+          ? {timings: {...status.timings, serializationMilliseconds: status.timings.serializationMilliseconds ?? 0}}
+          : {}),
         total: counters.total ?? 0,
         unit: 'files',
       };

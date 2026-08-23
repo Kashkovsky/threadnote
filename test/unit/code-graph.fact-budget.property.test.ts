@@ -14,6 +14,7 @@ import {
   factMaterializationBatches,
   finalCodeGraphFactBatches,
 } from '../../src/code_graph/indexer.js';
+import {finalSerializedCodeGraphFactBatches, serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
 import {CODE_GRAPH_PARSER_FACTS_VERSION, packCacheIdentity} from '../../src/code_graph/languages/registry.js';
 import type {CodeGraphCapability, CodeGraphLanguagePack} from '../../src/code_graph/languages/types.js';
 import {augmentRationaleFacts, CODE_GRAPH_RATIONALE_INPUT_VERSION} from '../../src/code_graph/rationale.js';
@@ -430,6 +431,38 @@ describe('cached code graph fact persistence budget', () => {
   );
 
   it.prop(
+    'serializes each closure-stable final fact once for shared cache and staging reuse',
+    {files: FC.integer({max: 64, min: 1})},
+    ({files}) => {
+      const facts = Array.from({length: files}, (_, index) => {
+        const path = `src/shared-final-${index}.ts`;
+        return {
+          diagnostics: [],
+          edges: [],
+          path,
+          symbols: [graphSymbol(`shared-final-${index}`, 'module', path, 1, true)],
+        } satisfies CodeGraphFileFacts;
+      });
+      let serializations = 0;
+      const batches = finalSerializedCodeGraphFactBatches(facts, {
+        maximumBytes: CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+        serialize: (fact, maximumBytes) => {
+          serializations += 1;
+          return serializeBoundedCodeGraphFact(fact, maximumBytes);
+        },
+      });
+
+      expect(serializations).toBe(files);
+      expect(batches.flat().map(value => value.facts.path)).toEqual(facts.map(fact => fact.path));
+      for (const value of batches.flat()) {
+        expect(JSON.parse(value.json)).toEqual(value.facts);
+        expect(value.bytes).toBe(new TextEncoder().encode(value.json).byteLength);
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
     'packs final attributed facts into deterministic non-empty transactions under the exact byte cap',
     {
       maximumBytes: FC.integer({max: 8_000, min: 512}),
@@ -446,9 +479,15 @@ describe('cached code graph fact persistence budget', () => {
       const attributed = createCachedCodeGraphFactsAttributor(files, discoverManifestWorkspace(files))(raw);
       const first = finalCodeGraphFactBatches(attributed, maximumBytes);
       const second = finalCodeGraphFactBatches(attributed, maximumBytes);
+      const replayed = finalCodeGraphFactBatches(
+        first.flatMap(batch => batch.map(value => value.facts)),
+        maximumBytes,
+      );
       const flattened = first.flat();
 
       expect(first).toEqual(second);
+      expect(replayed).toEqual(first);
+      expect(flattened.every(value => !('json' in value))).toBe(true);
       expect(first.every(batch => batch.length > 0)).toBe(true);
       expect(first.every(batch => batch.reduce((total, value) => total + value.bytes, 0) <= maximumBytes)).toBe(true);
       expect(flattened.map(value => value.facts.path)).toEqual(attributed.map(fact => fact.path));
