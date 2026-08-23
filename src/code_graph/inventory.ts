@@ -18,6 +18,7 @@ import {
   shouldOmitRepositoryContent,
 } from './inventory_content.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
+import {parsePorcelainV1Status} from './inventory_porcelain.js';
 import {
   codeGraphAttributionContextFilesForReceipt,
   codeGraphInventoryReuseContract,
@@ -894,7 +895,17 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
   const pathspec = excludedPathPrefix === undefined ? [] : ['--', '.', `:(top,exclude,literal)${excludedPathPrefix}`];
   const porcelain = yield* runCommandEffect(
     'git',
-    ['-C', identity.repoRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=normal', ...pathspec],
+    [
+      '--no-optional-locks',
+      '-C',
+      identity.repoRoot,
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=all',
+      '--renames',
+      ...pathspec,
+    ],
     {maxOutputBytes: 0, timeoutMs: 0},
   );
   if (porcelain.stdout.length === 0) {
@@ -903,21 +914,19 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
       state: {dirty: false, fingerprint: undefined},
     } satisfies CodeGraphBuildRequestObservation;
   }
-  const tree = yield* readInventoryPreviewTree(identity, path, [], true, excludedPathPrefix);
+  const overlay = parsePorcelainV1Status(porcelain.stdout);
   const threadnoteIgnore = yield* readOptionalText(fs, path.join(identity.repoRoot, '.threadnoteignore'));
   const fileRows: string[] = [];
   const observedFiles: CodeGraphObservedOverlayFile[] = [];
   const skippedRows: string[] = [];
-  for (const relative of [...tree.changes.changed].sort(compareCodeUnits)) {
-    if (tree.changes.deleted.has(relative)) continue;
-    const metadata = tree.changedMetadata.get(relative);
+  for (const relative of [...overlay.changed].sort(compareCodeUnits)) {
+    if (overlay.deleted.has(relative)) continue;
     const materialized = yield* materializeContainedStableRegularFile(
       fs,
       path,
       repositoryRoot,
       relative,
       () => true,
-      metadata?.size,
     ).pipe(Effect.option);
     if (Option.isSome(materialized)) {
       fileRows.push(`F\0${relative}\0${materialized.value.contentHash}`);
@@ -928,14 +937,14 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
       });
     } else skippedRows.push(`S\0${relative}`);
   }
-  const dirty = tree.changes.changed.size > 0 || tree.changes.deleted.size > 0;
+  const dirty = overlay.changed.size > 0 || overlay.deleted.size > 0;
   return {
     overlay: {
-      addedPaths: [...tree.changes.added].sort(compareCodeUnits),
-      changedPaths: [...tree.changes.changed].sort(compareCodeUnits),
-      deletedPaths: [...tree.changes.deleted].sort(compareCodeUnits),
+      addedPaths: [...overlay.added].sort(compareCodeUnits),
+      changedPaths: [...overlay.changed].sort(compareCodeUnits),
+      deletedPaths: [...overlay.deleted].sort(compareCodeUnits),
       files: observedFiles.sort((left, right) => compareCodeUnits(left.path, right.path)),
-      untrackedPaths: [...tree.untracked].sort(compareCodeUnits),
+      untrackedPaths: [...overlay.untracked].sort(compareCodeUnits),
     },
     state: {
       dirty,
@@ -944,7 +953,7 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
             [
               'build-request-overlay-v1',
               `I\0${sha256HexSync(threadnoteIgnore)}`,
-              ...[...tree.changes.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
+              ...[...overlay.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
               ...fileRows,
               ...skippedRows,
             ].join('\n'),

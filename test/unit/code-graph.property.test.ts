@@ -9,6 +9,7 @@ import {
   parseNameStatus,
   summarizeCodeGraphInventoryPreview,
 } from '../../src/code_graph/inventory.js';
+import {parsePorcelainV1Status} from '../../src/code_graph/inventory_porcelain.js';
 import {
   CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES,
   CODE_GRAPH_HIGH_SIGNAL_JSON_HARD_CAP_BYTES,
@@ -76,6 +77,33 @@ const nameStatusChangeArbitrary: FC.Arbitrary<NameStatusChange> = FC.oneof(
     kind: FC.constantFrom('C' as const, 'R' as const),
     score: FC.integer({max: 100, min: 0}),
     to: repositoryPathArbitrary,
+  }),
+);
+
+type PorcelainStatusChange =
+  | NameStatusChange
+  | {readonly kind: '?'; readonly path: string}
+  | {
+      readonly kind: 'U';
+      readonly path: string;
+      readonly status: 'AA' | 'AU' | 'DD' | 'DU' | 'UA' | 'UD' | 'UU';
+    };
+
+const porcelainStatusChangeArbitrary: FC.Arbitrary<PorcelainStatusChange> = FC.oneof(
+  nameStatusChangeArbitrary,
+  FC.record({kind: FC.constant('?' as const), path: repositoryPathArbitrary}),
+  FC.record({
+    kind: FC.constant('U' as const),
+    path: repositoryPathArbitrary,
+    status: FC.constantFrom(
+      'AA' as const,
+      'AU' as const,
+      'DD' as const,
+      'DU' as const,
+      'UA' as const,
+      'UD' as const,
+      'UU' as const,
+    ),
   }),
 );
 
@@ -226,6 +254,23 @@ describe('native code graph parser properties', () => {
     },
     {fastCheck: {numRuns: 200}},
   );
+
+  it.prop(
+    'matches a reference model for porcelain-v1 add, modify, delete, copy, rename, and untracked records',
+    {
+      changes: FC.array(porcelainStatusChangeArbitrary, {maxLength: 40}),
+    },
+    ({changes}) => {
+      const actual = parsePorcelainV1Status(encodePorcelainStatus(changes));
+      const expected = modelPorcelainStatus(changes);
+
+      expect([...actual.added].sort()).toEqual([...expected.added].sort());
+      expect([...actual.changed].sort()).toEqual([...expected.changed].sort());
+      expect([...actual.deleted].sort()).toEqual([...expected.deleted].sort());
+      expect([...actual.untracked].sort()).toEqual([...expected.untracked].sort());
+    },
+    {fastCheck: {numRuns: 200}},
+  );
 });
 
 function inventoryPolicyPath(
@@ -372,6 +417,23 @@ function encodeNameStatus(changes: readonly NameStatusChange[]): string {
   return `${fields.join('\0')}\0`;
 }
 
+function encodePorcelainStatus(changes: readonly PorcelainStatusChange[]): string {
+  const fields: string[] = [];
+  for (const change of changes) {
+    if ('from' in change) {
+      fields.push(`${change.kind}  ${change.to}`, change.from);
+    } else if (change.kind === '?') {
+      fields.push(`?? ${change.path}`);
+    } else if (change.kind === 'U') {
+      fields.push(`${change.status} ${change.path}`);
+    } else {
+      const status = change.kind === 'M' ? ' M' : `${change.kind} `;
+      fields.push(`${status} ${change.path}`);
+    }
+  }
+  return `${fields.join('\0')}\0`;
+}
+
 function modelNameStatus(changes: readonly NameStatusChange[]): {
   readonly added: Set<string>;
   readonly changed: Set<string>;
@@ -397,6 +459,33 @@ function modelNameStatus(changes: readonly NameStatusChange[]): {
     }
   }
   return {added, changed, deleted};
+}
+
+function modelPorcelainStatus(changes: readonly PorcelainStatusChange[]): {
+  readonly added: Set<string>;
+  readonly changed: Set<string>;
+  readonly deleted: Set<string>;
+  readonly untracked: Set<string>;
+} {
+  const tracked = modelNameStatus(
+    changes.filter((change): change is NameStatusChange => change.kind !== '?' && change.kind !== 'U'),
+  );
+  const untracked = new Set(
+    changes
+      .filter((change): change is Extract<PorcelainStatusChange, {readonly kind: '?'}> => change.kind === '?')
+      .map(change => normalizeRepositoryPath(change.path)),
+  );
+  for (const path of untracked) {
+    tracked.added.add(path);
+    tracked.changed.add(path);
+  }
+  for (const change of changes) {
+    if (change.kind !== 'U') continue;
+    const path = normalizeRepositoryPath(change.path);
+    tracked.changed.add(path);
+    if (change.status.includes('A')) tracked.added.add(path);
+  }
+  return {...tracked, untracked};
 }
 
 function graphNode(index: number): CodeGraphQueryNode {

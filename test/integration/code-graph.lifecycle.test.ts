@@ -3265,9 +3265,26 @@ describe('native code graph lifecycle', () => {
         writeFileSync(join(root, 'packages/app/src/untracked.ts'), 'export const untracked = true;\n');
       });
       const identity = yield* resolveRepositoryIdentity(root);
-      const observation = yield* worktreeBuildRequestObservation(identity);
-      const independentlyScanned = yield* inventoryRepository(identity);
       const command = yield* CommandExecutor;
+      const observationCommands: string[] = [];
+      const observationCommand = CommandExecutor.of({
+        ...command,
+        execute: (executable, args, options) => {
+          if (
+            executable === 'git' &&
+            (args.includes('status') ||
+              args.includes('diff') ||
+              (args.includes('ls-files') && args.includes('--others')))
+          ) {
+            observationCommands.push(args.join(' '));
+          }
+          return command.execute(executable, args, options);
+        },
+      });
+      const observation = yield* worktreeBuildRequestObservation(identity).pipe(
+        Effect.provideService(CommandExecutor, observationCommand),
+      );
+      const independentlyScanned = yield* inventoryRepository(identity);
       const repeatedOverlayCommands: string[] = [];
       const observedCommand = CommandExecutor.of({
         ...command,
@@ -3291,6 +3308,8 @@ describe('native code graph lifecycle', () => {
       ]);
       expect(observation.overlay.deletedPaths).toEqual(['docs/architecture.md']);
       expect(observation.overlay.untrackedPaths).toEqual(['packages/app/src/untracked.ts']);
+      expect(observationCommands).toHaveLength(1);
+      expect(observationCommands[0]).toContain('status --porcelain=v1 -z --untracked-files=all --renames');
       expect(repeatedOverlayCommands).toEqual([]);
       expect(reused).toEqual(independentlyScanned);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
