@@ -1,3 +1,4 @@
+import {readFileSync} from '../helpers/node-fs.js';
 import {describe, expect, it} from 'vitest';
 import {
   dirtyOverlayAmplificationEvidence,
@@ -6,10 +7,74 @@ import {
   dirtyOverlayReplayEvidence,
   parseDirtyOverlayBenchmarkArguments,
 } from '../../scripts/benchmark-code-graph-dirty-overlay.js';
-import {enforceCodeGraphBenchmarkRatchet} from '../../scripts/benchmark-code-graph.js';
+import {
+  enforceCodeGraphBenchmarkRatchet,
+  validateCodeGraphBenchmarkRatchet,
+} from '../../scripts/benchmark-code-graph.js';
 import {generatedStaticReexportControlStatement} from '../../scripts/code-graph-fixture.js';
 
 describe('code graph dirty-overlay benchmark evidence', () => {
+  it('retains governed 300k dependency-closure evidence with proportional work', () => {
+    const evidence = JSON.parse(
+      readFileSync('test/evaluation/baselines/code-graph-v1/dirty-overlay-dependency-surface-development.json', 'utf8'),
+    ) as {
+      readonly environment: {
+        readonly availableBytes: number;
+        readonly commit: string;
+        readonly minimumFreeBytes: number;
+        readonly provenance: {readonly sourceCommit: string};
+        readonly storage: {readonly location: string; readonly medium: string};
+      };
+      readonly measurements: {
+        readonly full: {readonly durationMilliseconds: number; readonly stagedFiles: number};
+        readonly incremental: {readonly durationMilliseconds: number; readonly stagedFiles: number};
+      };
+      readonly observations: {
+        readonly full: {readonly edges: number; readonly symbols: number; readonly totalFiles: number};
+        readonly incremental: {
+          readonly attributionContextFiles: number;
+          readonly baseFactsLoaded: number;
+          readonly changedFiles: number;
+          readonly closureProjects: number;
+          readonly edges: number;
+          readonly inventoryFilesInspected: number;
+          readonly probedDependencyPaths: number;
+          readonly replay: {
+            readonly cachedFactReplayBytes: number;
+            readonly materializedShardReplayBytes: number;
+            readonly rawFactReplayBytes: number;
+          };
+          readonly resolutionClosure: string;
+          readonly symbols: number;
+          readonly totalFiles: number;
+        };
+      };
+    };
+    expect(evidence.environment.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(evidence.environment.provenance.sourceCommit).toBe(evidence.environment.commit);
+    expect(evidence.environment.availableBytes).toBeGreaterThanOrEqual(evidence.environment.minimumFreeBytes);
+    expect(evidence.environment.storage).toEqual({location: 'internal', medium: 'solid-state'});
+    expect(evidence.measurements.incremental.durationMilliseconds).toBeLessThan(30_000);
+    expect(evidence.measurements.incremental.durationMilliseconds).toBeLessThan(
+      evidence.measurements.full.durationMilliseconds,
+    );
+    expect(evidence.measurements.incremental.stagedFiles).toBe(4);
+    expect(evidence.measurements.full.stagedFiles).toBe(3_006);
+    expect(evidence.observations.incremental).toMatchObject({
+      attributionContextFiles: 4,
+      baseFactsLoaded: 4,
+      changedFiles: 4,
+      closureProjects: 2,
+      inventoryFilesInspected: 4,
+      probedDependencyPaths: 10,
+      replay: {cachedFactReplayBytes: 0, materializedShardReplayBytes: 0, rawFactReplayBytes: 0},
+      resolutionClosure: 'project',
+    });
+    expect(evidence.observations.incremental.symbols).toBe(evidence.observations.full.symbols);
+    expect(evidence.observations.incremental.edges).toBe(evidence.observations.full.edges);
+    expect(evidence.observations.incremental.totalFiles).toBe(evidence.observations.full.totalFiles);
+  });
+
   it('preserves the body-only default and opts into the static re-export case', () => {
     expect(parseDirtyOverlayBenchmarkArguments([])).toEqual({
       governed: false,
@@ -209,6 +274,14 @@ describe('code graph dirty-overlay benchmark evidence', () => {
     });
     expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(
       'incremental-base-facts-loaded maximum 5 exceeds 4',
+    );
+
+    const checkedRatchet = JSON.parse(
+      readFileSync('test/evaluation/baselines/code-graph-v1/dirty-overlay-dependency-surface-ratchet.json', 'utf8'),
+    ) as {readonly measurements: Readonly<Record<string, unknown>>};
+    expect(() => validateCodeGraphBenchmarkRatchet(checkedRatchet)).not.toThrow();
+    expect(Object.keys(checkedRatchet.measurements).sort()).toEqual(
+      artifact.measurements.map(measurement => measurement.name).sort(),
     );
   });
 

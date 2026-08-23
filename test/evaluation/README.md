@@ -31,6 +31,7 @@ bun run bench:code-graph:dirty-overlay -- --scenario unchanged-static-reexport \
   --output artifacts/code-graph-dirty-overlay-static-reexport.json
 bun run bench:code-graph:dirty-overlay -- --scenario changed-export \
   --scale-symbols 300000 --samples 1 --governed --minimum-free-gib 120 \
+  --ratchet test/evaluation/baselines/code-graph-v1/dirty-overlay-dependency-surface-ratchet.json \
   --output artifacts/code-graph-dirty-overlay-dependency-surface.json
 bun run bench:worktree-readiness -- --candidate-ref v4.0.1 --samples 5 --warmups 1 \
   --output artifacts/code-graph-worktree-readiness-v4.0.1.json
@@ -208,7 +209,8 @@ path with an explicitly disabled full-materialization control. It requires ident
 CPU, materialization, proportional-work, and physical-replay evidence. `--governed` requires a clean exact-HEAD managed
 runtime, retained output, at least 120 GiB free by default, solid-state temporary storage, and the internal device on
 macOS; source/runtime provenance is revalidated after the run. `--ratchet <path>` applies independent reviewed bounds
-to the standard `ratchetArtifact` embedded in the output. The reviewed local 10k-symbol result is stored as
+to the standard `ratchetArtifact` embedded in the output. The checked dependency-surface ratchet binds every emitted
+measurement to the reviewed 300k-symbol/3,006-file Apple M1 Max runner class. The reviewed local 10k-symbol result is stored as
 `dirty-overlay-development.json`; it predates the governed format and remains comparative evidence, not a portable
 latency gate.
 
@@ -222,7 +224,8 @@ The opt-in `changed-export` scenario adds one published symbol in a two-project 
 background generator uses 100 declarations per source file, so `--scale-symbols 300000` produces about 3,000 indexed
 background files. The harness requires the incremental run to use the bounded two-project closure, stage exactly four
 files, and report four attribution, base-fact, changed-file, and inventory-file units instead of silently falling back
-to repository-wide work.
+to repository-wide work. `dirty-overlay-dependency-surface-development.json` retains the first governed observation;
+it is exact local runner evidence, while `dirty-overlay-dependency-surface-ratchet.json` is the reviewed regression gate.
 
 `bench:worktree-readiness` compares an exact candidate ref with its immediate parent on one machine and one pinned
 public checkout. Each runtime gets an independent frozen dependency installation, Threadnote home, and fixture clone.
