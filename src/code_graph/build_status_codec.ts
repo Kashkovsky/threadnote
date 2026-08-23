@@ -471,6 +471,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   if (value.rows !== undefined && !rows) return undefined;
   const stageMilliseconds = parseMaterializationStageMilliseconds(value.stageMilliseconds);
   if (value.stageMilliseconds !== undefined && !stageMilliseconds) return undefined;
+  const subphaseMilliseconds = parseMaterializationSubphaseMilliseconds(value.subphaseMilliseconds);
+  if (value.subphaseMilliseconds !== undefined && !subphaseMilliseconds) return undefined;
   const storage = parseMaterializationStorage(value.storage);
   if (value.storage !== undefined && !storage) return undefined;
   if (storage?.estimateBasis === 'cached-fact-bytes' && value.cachedFactBytesTotal === undefined) return undefined;
@@ -529,10 +531,34 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     sourceBytesCompleted: Number(value.sourceBytesCompleted),
     sourceBytesTotal: Number(value.sourceBytesTotal),
     ...(stageMilliseconds ? {stageMilliseconds} : {}),
+    ...(subphaseMilliseconds ? {subphaseMilliseconds} : {}),
     ...(storage ? {storage} : {}),
     ...(value.transactionMilliseconds === undefined
       ? {}
       : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
+  };
+}
+
+function parseMaterializationSubphaseMilliseconds(
+  value: unknown,
+): CodeGraphMaterializationMetrics['subphaseMilliseconds'] | undefined {
+  if (!isRecord(value)) return undefined;
+  const keys = [
+    'attributionCompute',
+    'factBatchPreparation',
+    'shardAssociation',
+    'shardPersistence',
+    'shardSerialization',
+  ] as const;
+  if (Object.keys(value).length !== keys.length || keys.some(key => !isNonNegativeFinite(value[key]))) {
+    return undefined;
+  }
+  return {
+    attributionCompute: Number(value.attributionCompute),
+    factBatchPreparation: Number(value.factBatchPreparation),
+    shardAssociation: Number(value.shardAssociation),
+    shardPersistence: Number(value.shardPersistence),
+    shardSerialization: Number(value.shardSerialization),
   };
 }
 
@@ -897,11 +923,15 @@ function parseTimings(value: unknown): CodeGraphBuildTimings | undefined {
   return isRecord(value) &&
     isNonNegativeFinite(value.extractionMilliseconds) &&
     isNonNegativeFinite(value.persistenceMilliseconds) &&
-    isNonNegativeFinite(value.readingMilliseconds)
+    isNonNegativeFinite(value.readingMilliseconds) &&
+    (value.serializationMilliseconds === undefined || isNonNegativeFinite(value.serializationMilliseconds))
     ? {
         extractionMilliseconds: Number(value.extractionMilliseconds),
         persistenceMilliseconds: Number(value.persistenceMilliseconds),
         readingMilliseconds: Number(value.readingMilliseconds),
+        ...(value.serializationMilliseconds === undefined
+          ? {}
+          : {serializationMilliseconds: Number(value.serializationMilliseconds)}),
       }
     : undefined;
 }

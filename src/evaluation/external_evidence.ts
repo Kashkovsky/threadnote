@@ -72,6 +72,30 @@ const ACTIVATION_REQUIRED_MEASUREMENTS = (['cold', 'one-file-reindex'] as const)
   ]),
 ]);
 
+export const INVENTORY_TIMING_REQUIRED_MEASUREMENTS = (
+  ['cold', 'one-file-reindex', 'same-overlay-reference'] as const
+).flatMap(prefix => [
+  {name: `${prefix}-inventory-source-reading-n1`, unit: 'milliseconds'} as const,
+  {name: `${prefix}-inventory-parser-extraction-summed-n1`, unit: 'milliseconds'} as const,
+  {name: `${prefix}-inventory-cache-persistence-n1`, unit: 'milliseconds'} as const,
+  {name: `${prefix}-inventory-parser-fact-serialization-n1`, unit: 'milliseconds'} as const,
+]);
+
+const MATERIALIZATION_SUBPHASE_MEASUREMENT_NAMES = [
+  'attribution-compute',
+  'fact-batch-preparation',
+  'shard-association',
+  'shard-persistence',
+  'shard-serialization',
+] as const;
+
+export const MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS = (['cold', 'same-overlay-reference'] as const).flatMap(
+  prefix =>
+    MATERIALIZATION_SUBPHASE_MEASUREMENT_NAMES.map(
+      subphase => ({name: `${prefix}-materialization-subphase-${subphase}-n1`, unit: 'milliseconds'}) as const,
+    ),
+);
+
 const CORE_REQUIRED_MEASUREMENTS = [
   {name: 'cold-materialization', unit: 'milliseconds'},
   {name: 'cold-materialization-process-cpu-n1', unit: 'milliseconds'},
@@ -128,6 +152,8 @@ const CORE_REQUIRED_MEASUREMENTS = [
   {name: 'cold-durable-filesystem-growth', unit: 'bytes'},
   {name: 'cold-sqlite-journal-peak-observed', unit: 'bytes'},
   {name: 'cold-sqlite-wal-peak-observed', unit: 'bytes'},
+  ...INVENTORY_TIMING_REQUIRED_MEASUREMENTS,
+  ...MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS,
   ...SAMPLER_REQUIRED_MEASUREMENTS,
   ...ACTIVATION_REQUIRED_MEASUREMENTS,
 ] as const;

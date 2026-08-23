@@ -4,6 +4,7 @@ import {readExclusiveFileLockOwner, type FileLockOwner} from '../effect/file_loc
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {parseCodeGraphBuildStatus} from './build_status_codec.js';
+import {codeGraphProgressTimings} from './build_status_timings.js';
 import {
   CODE_GRAPH_BUILD_HASH_ID as HASH_ID,
   CODE_GRAPH_BUILD_ID as BUILD_ID,
@@ -101,6 +102,7 @@ export interface CodeGraphBuildTimings {
   readonly extractionMilliseconds: number;
   readonly persistenceMilliseconds: number;
   readonly readingMilliseconds: number;
+  readonly serializationMilliseconds?: number;
 }
 
 export interface CodeGraphBuildMaterialization {
@@ -779,7 +781,7 @@ function observeProgress(
       resolution: progressResolution(current.status.resolution, progress, timestamp),
       state: progress.phase === 'waiting' ? 'queued' : 'running',
       subphase: progressSubphase(progress),
-      timings: progress.phase === 'scanning' ? progress.timings : undefined,
+      timings: codeGraphProgressTimings(current.status, progress),
       timestamps: {
         ...current.status.timestamps,
         heartbeatAt: timestamp,

@@ -1269,6 +1269,18 @@ export function GraphBuildProgress(props: {
               ? ''
               : ` · transactions ${formatGraphMilliseconds(build.materialization.metrics.transactionMilliseconds)}`}
           </p>
+          {build.materialization.metrics.subphaseMilliseconds ? (
+            <p>
+              Materialization detail: compute{' '}
+              {formatGraphMilliseconds(build.materialization.metrics.subphaseMilliseconds.attributionCompute)} ·
+              serialize {formatGraphMilliseconds(build.materialization.metrics.subphaseMilliseconds.shardSerialization)}{' '}
+              · persist shards{' '}
+              {formatGraphMilliseconds(build.materialization.metrics.subphaseMilliseconds.shardPersistence)} · associate
+              shards {formatGraphMilliseconds(build.materialization.metrics.subphaseMilliseconds.shardAssociation)} ·
+              prepare batches{' '}
+              {formatGraphMilliseconds(build.materialization.metrics.subphaseMilliseconds.factBatchPreparation)}
+            </p>
+          ) : null}
           {build.materialization.metrics.attributedFilesCompleted === undefined &&
           build.materialization.metrics.crossGenerationShardFilesCompleted === undefined &&
           build.materialization.metrics.exactGenerationShardFilesCompleted === undefined &&
@@ -1363,8 +1375,11 @@ export function GraphBuildProgress(props: {
       {build.timings ? (
         <p>
           Phase: read {formatGraphMilliseconds(build.timings.readingMilliseconds)} · parse{' '}
-          {formatGraphMilliseconds(build.timings.extractionMilliseconds)} · persist{' '}
-          {formatGraphMilliseconds(build.timings.persistenceMilliseconds)}
+          {formatGraphMilliseconds(build.timings.extractionMilliseconds)}
+          {build.timings.serializationMilliseconds === undefined
+            ? null
+            : ` · serialize ${formatGraphMilliseconds(build.timings.serializationMilliseconds)}`}{' '}
+          · persist {formatGraphMilliseconds(build.timings.persistenceMilliseconds)}
         </p>
       ) : null}
       <footer>

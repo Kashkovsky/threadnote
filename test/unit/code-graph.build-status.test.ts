@@ -291,6 +291,7 @@ describe('code graph cross-process build status', () => {
             extractionMilliseconds: 1_250,
             persistenceMilliseconds: 0,
             readingMilliseconds: 1.5,
+            serializationMilliseconds: 25,
           },
           total: 10,
           unit: 'files',
@@ -335,6 +336,12 @@ describe('code graph cross-process build status', () => {
       ],
     });
     expect(status.extraction?.topSlowFiles[0]?.pathHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(status.timings).toEqual({
+      extractionMilliseconds: 1_250,
+      persistenceMilliseconds: 0,
+      readingMilliseconds: 1.5,
+      serializationMilliseconds: 25,
+    });
     expect(JSON.stringify(status)).not.toContain(secretPath);
   });
 
@@ -406,6 +413,13 @@ describe('code graph cross-process build status', () => {
           },
           sourceBytesCompleted: completed * 10_000,
           sourceBytesTotal: 100_000,
+          subphaseMilliseconds: {
+            attributionCompute: completed,
+            factBatchPreparation: completed * 2,
+            shardAssociation: completed * 3,
+            shardPersistence: completed * 4,
+            shardSerialization: completed * 5,
+          },
           storage: {
             availableBytes: 2_000_000,
             estimateBasis: 'final-fact-bytes' as const,
@@ -512,6 +526,13 @@ describe('code graph cross-process build status', () => {
           },
           sourceBytesCompleted: 50_000,
           sourceBytesTotal: 100_000,
+          subphaseMilliseconds: {
+            attributionCompute: 5,
+            factBatchPreparation: 10,
+            shardAssociation: 15,
+            shardPersistence: 20,
+            shardSerialization: 25,
+          },
           storage: {
             availableBytes: 2_000_000,
             estimateBasis: 'final-fact-bytes',

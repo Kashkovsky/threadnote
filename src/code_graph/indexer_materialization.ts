@@ -211,6 +211,7 @@ export function cacheContentBatch(options: {
   let terminalExtractedFactBytes = 0;
   let persistenceMilliseconds = 0;
   let readingMilliseconds = 0;
+  let serializationMilliseconds = 0;
   let pendingBytes = 0;
   let pendingRows = 0;
   let latestContext: CodeGraphContentBatchContext | undefined;
@@ -305,6 +306,7 @@ export function cacheContentBatch(options: {
         },
         extractionMilliseconds,
         persistenceMilliseconds,
+        serializationMilliseconds,
         currentScanningMetrics(),
       );
       const startedAt = performance.now();
@@ -339,6 +341,7 @@ export function cacheContentBatch(options: {
         },
         extractionMilliseconds,
         persistenceMilliseconds,
+        serializationMilliseconds,
         currentScanningMetrics(),
       );
     });
@@ -459,10 +462,13 @@ export function cacheContentBatch(options: {
                   },
                   extractionMilliseconds,
                   persistenceMilliseconds,
+                  serializationMilliseconds,
                   currentScanningMetrics(),
                 );
                 const donor = reuseKey === undefined ? undefined : reusableExtractions.get(reuseKey);
-                const reused = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
+                const relocation = donor === undefined ? undefined : relocateSerializedParserResult(file, donor);
+                const reused = relocation?.result;
+                serializationMilliseconds += relocation?.serializationMilliseconds ?? 0;
                 if (reused !== undefined) {
                   finishReuseAttempt(reuseKey);
                   windowCompleted += 1;
@@ -485,6 +491,7 @@ export function cacheContentBatch(options: {
                     },
                     extractionMilliseconds,
                     persistenceMilliseconds,
+                    serializationMilliseconds,
                     completeExtractionMetrics(file, reused.cacheFact.bytes),
                   );
                   return {file, requestMilliseconds: 0, result: reused, reused: true};
@@ -492,7 +499,9 @@ export function cacheContentBatch(options: {
                 const requestStartedAt = performance.now();
                 const parsed = yield* extractParserFacts(file, options);
                 const requestMilliseconds = Math.max(0, performance.now() - requestStartedAt);
+                const freshSerializationStartedAt = performance.now();
                 const cacheFact = serializeBoundedCodeGraphFact(parsed.facts);
+                serializationMilliseconds += Math.max(0, performance.now() - freshSerializationStartedAt);
                 const result = {
                   ...parsed,
                   cacheFact,
@@ -524,6 +533,7 @@ export function cacheContentBatch(options: {
                   },
                   extractionMilliseconds + result.parseMilliseconds,
                   persistenceMilliseconds,
+                  serializationMilliseconds,
                   completeExtractionMetrics(file, result.cacheFact.bytes),
                 );
                 return {file, requestMilliseconds, result, reused: false};
@@ -620,12 +630,21 @@ type ExtractionReuseGroup = ReturnType<typeof extractionReuseGroups>[number];
 function relocateSerializedParserResult(
   file: CodeGraphInventoryFile,
   donor: CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact},
-): (CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact}) | undefined {
+):
+  | {
+      readonly result: CodeGraphParserResult & {readonly cacheFact: BoundedCodeGraphFact};
+      readonly serializationMilliseconds: number;
+    }
+  | undefined {
   if (donor.degraded) return undefined;
   const relocated = relocateStructuredSchemaFacts(file, donor.facts);
   if (relocated === undefined) return undefined;
+  const serializationStartedAt = performance.now();
   const cacheFact = serializeBoundedCodeGraphFact(relocated);
-  return {cacheFact, degraded: false, facts: cacheFact.facts, parseMilliseconds: 0};
+  return {
+    result: {cacheFact, degraded: false, facts: cacheFact.facts, parseMilliseconds: 0},
+    serializationMilliseconds: Math.max(0, performance.now() - serializationStartedAt),
+  };
 }
 
 function extractParserFacts(
@@ -658,6 +677,7 @@ function emitContentProgress(
   activity: NonNullable<Extract<CodeGraphProgress, {readonly phase: 'scanning'}>['activity']>,
   extractionMilliseconds: number,
   persistenceMilliseconds: number,
+  serializationMilliseconds: number,
   metrics?: CodeGraphScanningMetrics,
 ) {
   return (
@@ -669,6 +689,7 @@ function emitContentProgress(
         extractionMilliseconds,
         persistenceMilliseconds,
         readingMilliseconds: context.readingMilliseconds,
+        serializationMilliseconds,
       },
     }) ?? Effect.void
   );
