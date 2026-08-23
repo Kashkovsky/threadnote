@@ -10,8 +10,15 @@ import {CodeGraphStore, type StoredCodeGraph} from '../src/code_graph/store.js';
 import type {CodeGraphProgress} from '../src/code_graph/types.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {SystemInfo, type SystemInfoShape} from '../src/effect/system.js';
+import {
+  BENCHMARK_ARTIFACT_VERSION,
+  benchmarkMeasurement,
+  parseBenchmarkArtifactV1,
+  type BenchmarkArtifactV1,
+} from '../src/evaluation/benchmark.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
+import type {BenchmarkRuntimeProvenance, BenchmarkStorageEnvironment} from './benchmark-code-graph.js';
 import {
   CODE_GRAPH_HEAVY_TAIL_GENERATED_TYPESCRIPT_PATH,
   CODE_GRAPH_HEAVY_TAIL_PROFILE,
@@ -25,7 +32,7 @@ import {
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
 const CHILD_OUTPUT_LIMIT_BYTES = 1_048_576;
 
-interface HeavyTailLanguageTelemetry {
+export interface HeavyTailLanguageTelemetry {
   readonly degradedFiles: number;
   readonly factsBytes: number;
   readonly files: number;
@@ -37,7 +44,7 @@ interface HeavyTailLanguageTelemetry {
   readonly symbols: number;
 }
 
-interface HeavyTailSlowFile {
+export interface HeavyTailSlowFile {
   readonly bytes: number;
   readonly factsBytes: number;
   readonly language: string;
@@ -46,7 +53,7 @@ interface HeavyTailSlowFile {
   readonly requestMilliseconds: number;
 }
 
-interface HeavyTailExtractionUtilization {
+export interface HeavyTailExtractionUtilization {
   /** Wall time during which at least one parser request was active. */
   readonly activeWallMilliseconds: number;
   /** Sum of parent-observed request durations divided by active wall time. */
@@ -56,7 +63,7 @@ interface HeavyTailExtractionUtilization {
   readonly requestMilliseconds: number;
 }
 
-interface HeavyTailChildRun {
+export interface HeavyTailChildRun {
   readonly cache: {
     readonly factsBytes: number;
     readonly files: number;
@@ -86,7 +93,7 @@ interface HeavyTailChildRun {
   readonly workerCount: number;
 }
 
-interface CodeGraphHeavyTailBenchmarkArtifact {
+export interface CodeGraphHeavyTailBenchmarkArtifact {
   readonly assertions: {
     readonly interruptionRetainedCache: true;
     readonly lowSignalJsonExcluded: true;
@@ -101,16 +108,21 @@ interface CodeGraphHeavyTailBenchmarkArtifact {
   readonly createdAt: string;
   readonly environment: {
     readonly architecture: string;
+    readonly availableBytes?: number;
     readonly commit: string;
     readonly cpu: string;
     readonly dirty: boolean;
     readonly memoryBytes: number;
+    readonly minimumFreeBytes?: number;
     readonly operatingSystem: string;
+    readonly provenance?: BenchmarkRuntimeProvenance;
     readonly runtime: string;
     readonly runnerClass: string;
     readonly runnerIdentity: string;
+    readonly storage?: BenchmarkStorageEnvironment;
   };
   readonly profile: CodeGraphHeavyTailProfile;
+  readonly ratchetArtifact: BenchmarkArtifactV1;
   readonly runs: {
     readonly eightWorkers: HeavyTailChildRun;
     readonly interrupted: HeavyTailChildRun;
@@ -120,15 +132,36 @@ interface CodeGraphHeavyTailBenchmarkArtifact {
     readonly single: HeavyTailChildRun;
   };
   readonly suite: 'code-graph-large-monorepo-heavy-tail-v2';
+  readonly version: 3;
+}
+
+export interface LegacyCodeGraphHeavyTailBenchmarkArtifact extends Omit<
+  CodeGraphHeavyTailBenchmarkArtifact,
+  'ratchetArtifact' | 'version'
+> {
+  readonly ratchetArtifact?: undefined;
   readonly version: 2;
 }
 
-interface BenchmarkArguments {
+export type AnyCodeGraphHeavyTailBenchmarkArtifact =
+  CodeGraphHeavyTailBenchmarkArtifact | LegacyCodeGraphHeavyTailBenchmarkArtifact;
+
+export interface HeavyTailGovernanceEvidence {
+  readonly availableBytes: number;
+  readonly minimumFreeBytes: number;
+  readonly runtimeProvenance: BenchmarkRuntimeProvenance;
+  readonly storage: BenchmarkStorageEnvironment;
+}
+
+export interface CodeGraphHeavyTailBenchmarkArguments {
   readonly child: boolean;
+  readonly governed: boolean;
   readonly home?: string;
   readonly interruptAfterPersistedFiles?: number;
+  readonly minimumFreeGiB: number;
   readonly outputPath?: string;
   readonly profilePath?: string;
+  readonly ratchetPath?: string;
   readonly repository?: string;
   readonly smoke: boolean;
   readonly workers?: number;
@@ -136,16 +169,27 @@ interface BenchmarkArguments {
 
 const benchmark = Effect.scoped(
   Effect.gen(function* () {
-    const args = parseArguments(yield* scriptArguments());
+    const args = parseCodeGraphHeavyTailBenchmarkArguments(yield* scriptArguments());
     if (args.child) return yield* runChild(args);
     return yield* runParent(args);
   }),
 );
 
-const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (args: BenchmarkArguments) {
+const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (
+  args: CodeGraphHeavyTailBenchmarkArguments,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
+  const sourceRoot = path.resolve(yield* path.fromFileUrl(new URL('..', import.meta.url)));
+  const governance = args.governed
+    ? yield* prepareHeavyTailGovernance(system, sourceRoot, args.minimumFreeGiB)
+    : undefined;
+  const ratchet = args.ratchetPath === undefined ? undefined : yield* readJsonFile(args.ratchetPath);
+  if (ratchet !== undefined) {
+    const {validateCodeGraphBenchmarkRatchet} = yield* Effect.promise(() => import('./benchmark-code-graph.js'));
+    validateCodeGraphBenchmarkRatchet(ratchet);
+  }
   const profile = args.smoke ? CODE_GRAPH_HEAVY_TAIL_SMOKE_PROFILE : CODE_GRAPH_HEAVY_TAIL_PROFILE;
   const fixture = yield* prepareCodeGraphHeavyTailFixture(profile);
   const profilePath = path.join(fixture.root, 'profile.json');
@@ -234,11 +278,22 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
   }
 
   const hardware = yield* system.hardwareInfo;
-  const [commit, dirty] = yield* Effect.all(
-    [git(process.cwd(), ['rev-parse', 'HEAD']), git(process.cwd(), ['status', '--porcelain'])],
-    {concurrency: 2},
-  );
-  const artifact: CodeGraphHeavyTailBenchmarkArtifact = {
+  const [commit, dirty] =
+    governance === undefined
+      ? yield* Effect.all([git(sourceRoot, ['rev-parse', 'HEAD']), git(sourceRoot, ['status', '--porcelain'])], {
+          concurrency: 2,
+        })
+      : [governance.runtimeProvenance.sourceCommit, ''];
+  if (governance !== undefined) {
+    const {validateBenchmarkRuntimeProvenance} = yield* Effect.promise(() => import('./benchmark-code-graph.js'));
+    const finalProvenance = yield* validateBenchmarkRuntimeProvenance(sourceRoot);
+    if (JSON.stringify(finalProvenance) !== JSON.stringify(governance.runtimeProvenance)) {
+      return yield* Effect.fail(
+        new ScriptError('Heavy-tail benchmark source/runtime provenance changed during the run.'),
+      );
+    }
+  }
+  const baseArtifact = {
     assertions: {
       interruptionRetainedCache: true,
       lowSignalJsonExcluded: true,
@@ -253,6 +308,14 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
     createdAt: new Date().toISOString(),
     environment: {
       architecture: system.architecture,
+      ...(governance === undefined
+        ? {}
+        : {
+            availableBytes: governance.availableBytes,
+            minimumFreeBytes: governance.minimumFreeBytes,
+            provenance: governance.runtimeProvenance,
+            storage: governance.storage,
+          }),
       commit,
       cpu: hardware.cpuModel,
       dirty: dirty.length > 0,
@@ -265,14 +328,341 @@ const runParent = Effect.fn('benchmarkCodeGraphHeavyTail.parent')(function* (arg
     profile,
     runs: {eightWorkers, interrupted, parallel, resumed, sixWorkers, single},
     suite: 'code-graph-large-monorepo-heavy-tail-v2',
-    version: 2,
+    version: 3,
+  } satisfies Omit<CodeGraphHeavyTailBenchmarkArtifact, 'ratchetArtifact'>;
+  const artifact: CodeGraphHeavyTailBenchmarkArtifact = {
+    ...baseArtifact,
+    ratchetArtifact: codeGraphHeavyTailRatchetArtifact(baseArtifact, system.platform, governance),
   };
   parseCodeGraphHeavyTailBenchmarkArtifact(artifact);
   if (args.outputPath) yield* atomicWrite(args.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
   yield* printJson(artifact);
+  if (ratchet !== undefined) {
+    const {enforceCodeGraphBenchmarkRatchet} = yield* Effect.promise(() => import('./benchmark-code-graph.js'));
+    return yield* Effect.try({
+      catch: cause =>
+        cause instanceof ScriptError
+          ? cause
+          : new ScriptError(`Heavy-tail performance ratchet failed: ${String(cause)}`),
+      try: () => enforceCodeGraphBenchmarkRatchet(artifact.ratchetArtifact, ratchet),
+    });
+  }
 });
 
-const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args: BenchmarkArguments) {
+const prepareHeavyTailGovernance = Effect.fn('benchmarkCodeGraphHeavyTail.prepareGovernance')(function* (
+  system: SystemInfoShape,
+  sourceRoot: string,
+  minimumFreeGiB: number,
+) {
+  const minimumFreeBytes = minimumFreeGiB * 1_073_741_824;
+  const {benchmarkStorageEnvironment, validateBenchmarkRuntimeProvenance} = yield* Effect.promise(
+    () => import('./benchmark-code-graph.js'),
+  );
+  const [runtimeProvenance, storage, availableBytes] = yield* Effect.all(
+    [
+      validateBenchmarkRuntimeProvenance(sourceRoot),
+      benchmarkStorageEnvironment(system.tempDirectory),
+      system.availableDiskBytes(system.tempDirectory),
+    ],
+    {concurrency: 3},
+  );
+  if (availableBytes === undefined || availableBytes < minimumFreeBytes) {
+    return yield* Effect.fail(
+      new ScriptError(
+        `Governed heavy-tail benchmark requires at least ${minimumFreeGiB} GiB free on its temporary filesystem.`,
+      ),
+    );
+  }
+  if (storage.medium !== 'solid-state') {
+    return yield* Effect.fail(
+      new ScriptError(`Governed heavy-tail benchmark requires solid-state storage; detected ${storage.medium}.`),
+    );
+  }
+  if (system.platform === 'darwin' && storage.location !== 'internal') {
+    return yield* Effect.fail(
+      new ScriptError(
+        `Governed heavy-tail benchmark requires the internal macOS device; detected ${storage.location}.`,
+      ),
+    );
+  }
+  return {availableBytes, minimumFreeBytes, runtimeProvenance, storage} satisfies HeavyTailGovernanceEvidence;
+});
+
+export function codeGraphHeavyTailRatchetArtifact(
+  artifact: Omit<CodeGraphHeavyTailBenchmarkArtifact, 'ratchetArtifact'>,
+  runtimePlatform: string,
+  governance?: HeavyTailGovernanceEvidence,
+): BenchmarkArtifactV1 {
+  const runs = [
+    ['single', artifact.runs.single],
+    ['parallel', artifact.runs.parallel],
+    ['six-workers', artifact.runs.sixWorkers],
+    ['eight-workers', artifact.runs.eightWorkers],
+    ['interrupted', artifact.runs.interrupted],
+    ['resumed', artifact.runs.resumed],
+  ] as const;
+  const measurements = runs.flatMap(([name, run]) =>
+    heavyTailRunMeasurements(name, run, name !== 'interrupted' && name !== 'resumed'),
+  );
+  measurements.push(
+    benchmarkMeasurement('parallel-duration-reduction', 'percent', [
+      nonNegativePercentReduction(
+        artifact.runs.single.durationMilliseconds,
+        artifact.runs.parallel.durationMilliseconds,
+      ),
+    ]),
+    benchmarkMeasurement('parallel-active-wall-reduction', 'percent', [
+      nonNegativePercentReduction(
+        artifact.runs.single.extraction.activeWallMilliseconds,
+        artifact.runs.parallel.extraction.activeWallMilliseconds,
+      ),
+    ]),
+    benchmarkMeasurement('resume-retained-cache-coverage', 'percent', [
+      percentage(artifact.runs.resumed.reusedFiles ?? 0, artifact.runs.interrupted.cache.files),
+    ]),
+  );
+  const fixtureHash = `code-graph-heavy-tail-v1:${sha256HexSync(JSON.stringify(artifact.profile))}`;
+  const ratchetArtifact: BenchmarkArtifactV1 = {
+    createdAt: artifact.createdAt,
+    environment: {
+      architecture: artifact.environment.architecture,
+      commit: artifact.environment.commit,
+      cpu: artifact.environment.cpu,
+      dirty: artifact.environment.dirty,
+      fixtureHash,
+      memoryBytes: artifact.environment.memoryBytes,
+      node: artifact.environment.runtime,
+      operatingSystem: artifact.environment.operatingSystem,
+      packageManager: artifact.environment.runtime,
+      runner: 'threadnote-code-graph-heavy-tail',
+      runnerVersion: '3',
+    },
+    measurements,
+    metadata: {
+      automaticParserWorkers: artifact.profile.parallelWorkers,
+      governed: governance !== undefined,
+      graphDigest: artifact.runs.single.graph?.digest ?? 'missing',
+      minimumFreeGiB: governance === undefined ? 0 : governance.minimumFreeBytes / 1_073_741_824,
+      profile: `${artifact.profile.id}-v${artifact.profile.version}`,
+      runnerClass: artifact.environment.runnerClass,
+      runnerIdentity: artifact.environment.runnerIdentity,
+      runtimePlatform,
+      storageLocation: governance?.storage.location ?? 'unverified',
+      storageMedium: governance?.storage.medium ?? 'unverified',
+      vectorEnabled: false,
+      workerCapacities: '1,4,6,8',
+    },
+    suite: 'threadnote-code-graph-heavy-tail',
+    version: BENCHMARK_ARTIFACT_VERSION,
+    warmups: 0,
+  };
+  return parseBenchmarkArtifactV1(ratchetArtifact);
+}
+
+interface HeavyTailMeasurementRatchet {
+  readonly maximum?: number;
+  readonly minimum?: number;
+  readonly p95Maximum?: number;
+  readonly samplesMinimum: 1;
+  readonly unit: BenchmarkArtifactV1['measurements'][number]['unit'];
+}
+
+export interface CodeGraphHeavyTailRatchet {
+  readonly environment: Readonly<Record<string, boolean | number | string>>;
+  readonly measurements: Readonly<Record<string, HeavyTailMeasurementRatchet>>;
+  readonly metadata: Readonly<Record<string, boolean | number | string>>;
+  readonly suite: 'threadnote-code-graph-heavy-tail';
+  readonly version: 1;
+}
+
+export function createCodeGraphHeavyTailRatchet(
+  artifacts: readonly CodeGraphHeavyTailBenchmarkArtifact[],
+): CodeGraphHeavyTailRatchet {
+  if (artifacts.length < 3) throw new ScriptError('Heavy-tail ratchet generation requires at least three artifacts.');
+  const standards = artifacts.map(artifact => parseBenchmarkArtifactV1(artifact.ratchetArtifact));
+  const first = standards[0]!;
+  const firstNames = first.measurements.map(measurement => measurement.name).sort();
+  for (const artifact of standards.slice(1)) {
+    const names = artifact.measurements.map(measurement => measurement.name).sort();
+    if (
+      artifact.suite !== first.suite ||
+      JSON.stringify(names) !== JSON.stringify(firstNames) ||
+      artifact.environment.architecture !== first.environment.architecture ||
+      artifact.environment.cpu !== first.environment.cpu ||
+      artifact.environment.fixtureHash !== first.environment.fixtureHash ||
+      artifact.environment.memoryBytes !== first.environment.memoryBytes ||
+      artifact.environment.node !== first.environment.node ||
+      artifact.environment.operatingSystem !== first.environment.operatingSystem ||
+      artifact.environment.packageManager !== first.environment.packageManager ||
+      artifact.environment.runner !== first.environment.runner ||
+      artifact.environment.runnerVersion !== first.environment.runnerVersion ||
+      JSON.stringify(artifact.metadata) !== JSON.stringify(first.metadata)
+    ) {
+      throw new ScriptError('Heavy-tail ratchet artifacts do not share one governed runner and fixture contract.');
+    }
+  }
+  if (standards.some(artifact => artifact.environment.dirty || artifact.metadata.governed !== true)) {
+    throw new ScriptError('Heavy-tail ratchet generation requires clean governed artifacts.');
+  }
+  const measurements: Record<string, HeavyTailMeasurementRatchet> = {};
+  for (const name of firstNames) {
+    const samples = standards.map(artifact => artifact.measurements.find(measurement => measurement.name === name)!);
+    const unit = samples[0]!.unit;
+    if (samples.some(sample => sample.unit !== unit || sample.samples !== 1)) {
+      throw new ScriptError(`Heavy-tail ratchet measurement ${name} has inconsistent samples or units.`);
+    }
+    measurements[name] = heavyTailMeasurementRatchet(
+      name,
+      unit,
+      samples.map(sample => sample.p50),
+    );
+  }
+  return {
+    environment: {
+      architecture: first.environment.architecture,
+      cpu: first.environment.cpu,
+      dirty: false,
+      fixtureHash: first.environment.fixtureHash,
+      memoryBytes: first.environment.memoryBytes,
+      node: first.environment.node,
+      operatingSystem: first.environment.operatingSystem,
+      packageManager: first.environment.packageManager,
+      runner: first.environment.runner,
+      runnerVersion: first.environment.runnerVersion,
+    },
+    measurements,
+    metadata: first.metadata,
+    suite: 'threadnote-code-graph-heavy-tail',
+    version: 1,
+  };
+}
+
+function heavyTailMeasurementRatchet(
+  name: string,
+  unit: BenchmarkArtifactV1['measurements'][number]['unit'],
+  values: readonly number[],
+): HeavyTailMeasurementRatchet {
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const base = {samplesMinimum: 1 as const, unit};
+  const scheduleDependentResume = name.startsWith('interrupted-') || name.startsWith('resumed-');
+  if (name.endsWith('-extraction-average-concurrency') && !scheduleDependentResume) {
+    return {...base, minimum: floorThreshold(minimum * 0.9)};
+  }
+  if (name.endsWith('-duration-reduction') || name.endsWith('-active-wall-reduction')) {
+    return {...base, minimum: floorThreshold(minimum * 0.8)};
+  }
+  if (name === 'resume-retained-cache-coverage') return {...base, minimum: 100};
+  if (name.endsWith('-interrupted-after-persisted-files')) {
+    return {...base, maximum: CODE_GRAPH_HEAVY_TAIL_PROFILE.regularTypeScriptFiles + 12, minimum: minimum};
+  }
+  if (name.endsWith('-reused-files')) {
+    return {...base, maximum: codeGraphHeavyTailEligibleFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE), minimum};
+  }
+  if (name === 'interrupted-cache-files') {
+    return {
+      ...base,
+      maximum: codeGraphHeavyTailEligibleFiles(CODE_GRAPH_HEAVY_TAIL_PROFILE),
+      minimum: CODE_GRAPH_HEAVY_TAIL_PROFILE.interruptAfterPersistedFiles,
+    };
+  }
+  if (name.endsWith('-extraction-peak-concurrency') && scheduleDependentResume) {
+    return {...base, maximum};
+  }
+  if (name.endsWith('-extraction-peak-concurrency') || deterministicHeavyTailMeasurement(name)) {
+    return {...base, maximum, minimum};
+  }
+  if (unit === 'bytes' && name.endsWith('-source-bytes')) return {...base, maximum, minimum};
+  if (unit === 'bytes' || unit === 'milliseconds') {
+    return {...base, p95Maximum: Math.ceil(maximum * 1.15)};
+  }
+  return {...base, maximum: Math.ceil(maximum * 1.05)};
+}
+
+function deterministicHeavyTailMeasurement(name: string): boolean {
+  return (
+    name.includes('-graph-') ||
+    name.endsWith('-cache-files') ||
+    name.endsWith('-cache-low-signal-json-facts-bytes') ||
+    name.endsWith('-degraded-files') ||
+    name.endsWith('-files') ||
+    name.endsWith('-relations') ||
+    name.endsWith('-symbols')
+  );
+}
+
+function floorThreshold(value: number): number {
+  return Math.floor(value * 1_000) / 1_000;
+}
+
+function heavyTailRunMeasurements(
+  name: string,
+  run: HeavyTailChildRun,
+  includeLanguageTelemetry: boolean,
+): ReturnType<typeof benchmarkMeasurement>[] {
+  const measurements = [
+    benchmarkMeasurement(`${name}-duration`, 'milliseconds', [run.durationMilliseconds]),
+    benchmarkMeasurement(`${name}-cpu`, 'milliseconds', [run.cpuMilliseconds]),
+    benchmarkMeasurement(`${name}-peak-rss`, 'bytes', [run.peakRssBytes]),
+    benchmarkMeasurement(`${name}-reading`, 'milliseconds', [run.readingMilliseconds]),
+    benchmarkMeasurement(`${name}-extraction-active-wall`, 'milliseconds', [run.extraction.activeWallMilliseconds]),
+    benchmarkMeasurement(`${name}-extraction-average-concurrency`, 'count', [run.extraction.averageConcurrency]),
+    benchmarkMeasurement(`${name}-extraction-peak-concurrency`, 'count', [run.extraction.peakConcurrency]),
+    benchmarkMeasurement(`${name}-extraction-request`, 'milliseconds', [run.extraction.requestMilliseconds]),
+    benchmarkMeasurement(`${name}-cache-files`, 'count', [run.cache.files]),
+    benchmarkMeasurement(`${name}-cache-facts-bytes`, 'bytes', [run.cache.factsBytes]),
+    benchmarkMeasurement(`${name}-cache-low-signal-json-facts-bytes`, 'bytes', [run.cache.lowSignalJsonFactsBytes]),
+  ];
+  if (run.interruptedAfterPersistedFiles !== undefined) {
+    measurements.push(
+      benchmarkMeasurement(`${name}-interrupted-after-persisted-files`, 'count', [run.interruptedAfterPersistedFiles]),
+    );
+  }
+  if (run.reusedFiles !== undefined) {
+    measurements.push(benchmarkMeasurement(`${name}-reused-files`, 'count', [run.reusedFiles]));
+  }
+  const languages = includeLanguageTelemetry ? Object.entries(run.languages) : [];
+  for (const [language, telemetry] of languages.sort(([left], [right]) => left.localeCompare(right))) {
+    const prefix = `${name}-language-${language}`;
+    measurements.push(
+      benchmarkMeasurement(`${prefix}-degraded-files`, 'count', [telemetry.degradedFiles]),
+      benchmarkMeasurement(`${prefix}-facts-bytes`, 'bytes', [telemetry.factsBytes]),
+      benchmarkMeasurement(`${prefix}-files`, 'count', [telemetry.files]),
+      benchmarkMeasurement(`${prefix}-parse`, 'milliseconds', [telemetry.parseMilliseconds]),
+      benchmarkMeasurement(`${prefix}-persistence`, 'milliseconds', [telemetry.persistenceMilliseconds]),
+      benchmarkMeasurement(`${prefix}-request`, 'milliseconds', [telemetry.requestMilliseconds]),
+      benchmarkMeasurement(`${prefix}-relations`, 'count', [telemetry.relations]),
+      benchmarkMeasurement(`${prefix}-source-bytes`, 'bytes', [telemetry.sourceBytes]),
+      benchmarkMeasurement(`${prefix}-symbols`, 'count', [telemetry.symbols]),
+    );
+  }
+  if (run.graph !== undefined) {
+    measurements.push(
+      benchmarkMeasurement(`${name}-graph-edges`, 'count', [run.graph.edges]),
+      benchmarkMeasurement(`${name}-graph-files`, 'count', [run.graph.files]),
+      benchmarkMeasurement(`${name}-graph-generated-tail-preserved`, 'count', [
+        run.graph.generatedTypeScriptTailPreserved ? 1 : 0,
+      ]),
+      benchmarkMeasurement(`${name}-graph-low-signal-json-symbols`, 'count', [run.graph.lowSignalJsonSymbols]),
+      benchmarkMeasurement(`${name}-graph-pathological-typescript-tails`, 'count', [
+        run.graph.pathologicalTypeScriptTails,
+      ]),
+      benchmarkMeasurement(`${name}-graph-symbols`, 'count', [run.graph.symbols]),
+      benchmarkMeasurement(`${name}-graph-textless-svg-symbols`, 'count', [run.graph.textlessSvgSymbols]),
+    );
+  }
+  return measurements;
+}
+
+function nonNegativePercentReduction(baseline: number, candidate: number): number {
+  return Math.max(0, percentage(baseline - candidate, baseline));
+}
+
+function percentage(numerator: number, denominator: number): number {
+  return denominator <= 0 ? 0 : (numerator / denominator) * 100;
+}
+
+const runChild = Effect.fn('benchmarkCodeGraphHeavyTail.child')(function* (args: CodeGraphHeavyTailBenchmarkArguments) {
   const outputPath = required(args.outputPath, '--output');
   const repository = required(args.repository, '--repository');
   const home = required(args.home, '--home');
@@ -633,12 +1023,12 @@ export function parseHeavyTailChildRun(value: unknown): HeavyTailChildRun {
   return artifact as HeavyTailChildRun;
 }
 
-export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): CodeGraphHeavyTailBenchmarkArtifact {
+export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): AnyCodeGraphHeavyTailBenchmarkArtifact {
   if (typeof value !== 'object' || value === null)
     throw new ScriptError('Heavy-tail benchmark artifact must be an object.');
-  const artifact = value as Partial<CodeGraphHeavyTailBenchmarkArtifact>;
+  const artifact = value as Partial<AnyCodeGraphHeavyTailBenchmarkArtifact>;
   if (
-    artifact.version !== 2 ||
+    (artifact.version !== 2 && artifact.version !== 3) ||
     artifact.suite !== 'code-graph-large-monorepo-heavy-tail-v2' ||
     typeof artifact.createdAt !== 'string' ||
     !Number.isFinite(Date.parse(artifact.createdAt)) ||
@@ -654,30 +1044,50 @@ export function parseCodeGraphHeavyTailBenchmarkArtifact(value: unknown): CodeGr
   parseHeavyTailChildRun(artifact.runs.eightWorkers);
   parseHeavyTailChildRun(artifact.runs.interrupted);
   parseHeavyTailChildRun(artifact.runs.resumed);
-  return artifact as CodeGraphHeavyTailBenchmarkArtifact;
+  if (artifact.version === 3) {
+    const ratchetArtifact = parseBenchmarkArtifactV1(artifact.ratchetArtifact);
+    if (
+      ratchetArtifact.suite !== 'threadnote-code-graph-heavy-tail' ||
+      ratchetArtifact.environment.commit !== artifact.environment?.commit
+    ) {
+      throw new ScriptError('Heavy-tail benchmark ratchet artifact is inconsistent.');
+    }
+  }
+  return artifact as AnyCodeGraphHeavyTailBenchmarkArtifact;
 }
 
-function parseArguments(args: readonly string[]): BenchmarkArguments {
+export function parseCodeGraphHeavyTailBenchmarkArguments(
+  args: readonly string[],
+): CodeGraphHeavyTailBenchmarkArguments {
   let child = false;
+  let governed = false;
   let home: string | undefined;
   let interruptAfterPersistedFiles: number | undefined;
+  let minimumFreeGiB = 120;
   let outputPath: string | undefined;
   let profilePath: string | undefined;
+  let ratchetPath: string | undefined;
   let repository: string | undefined;
   let smoke = false;
   let workers: number | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--child') child = true;
+    else if (argument === '--governed') governed = true;
     else if (argument === '--home') home = required(args[++index], argument);
     else if (argument === '--interrupt-after-files') {
       interruptAfterPersistedFiles = integer(args[++index], argument, 1);
-    } else if (argument === '--output') outputPath = required(args[++index], argument);
+    } else if (argument === '--minimum-free-gib') minimumFreeGiB = integer(args[++index], argument, 1);
+    else if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--profile-file') profilePath = required(args[++index], argument);
+    else if (argument === '--ratchet') ratchetPath = required(args[++index], argument);
     else if (argument === '--repository') repository = required(args[++index], argument);
     else if (argument === '--smoke') smoke = true;
     else if (argument === '--workers') workers = integer(args[++index], argument, 1, 8);
     else throw new ScriptError(`Unknown heavy-tail benchmark option: ${argument}`);
+  }
+  if (child && (governed || minimumFreeGiB !== 120 || ratchetPath !== undefined || smoke)) {
+    throw new ScriptError('Parent-only heavy-tail benchmark options cannot be used with --child.');
   }
   if (
     !child &&
@@ -685,8 +1095,29 @@ function parseArguments(args: readonly string[]): BenchmarkArguments {
   ) {
     throw new ScriptError('Child-only heavy-tail benchmark options require --child.');
   }
-  if (child && smoke) throw new ScriptError('--smoke is a parent benchmark option.');
-  return {child, home, interruptAfterPersistedFiles, outputPath, profilePath, repository, smoke, workers};
+  if (governed && minimumFreeGiB < 120) {
+    throw new ScriptError('--governed requires --minimum-free-gib of at least 120.');
+  }
+  if (governed && outputPath === undefined) {
+    throw new ScriptError('--governed requires --output so exact evidence is retained.');
+  }
+  if (governed && smoke) throw new ScriptError('--governed cannot be combined with --smoke.');
+  if (ratchetPath !== undefined && (!governed || outputPath === undefined)) {
+    throw new ScriptError('--ratchet requires --governed and --output.');
+  }
+  return {
+    child,
+    governed,
+    home,
+    interruptAfterPersistedFiles,
+    minimumFreeGiB,
+    outputPath,
+    profilePath,
+    ratchetPath,
+    repository,
+    smoke,
+    workers,
+  };
 }
 
 function integer(

@@ -64,6 +64,7 @@
     "bench:code-graph-workset": "bun scripts/benchmark-code-graph-workset.ts",
     "bench:code-graph:lexical-production": "bun scripts/benchmark-code-graph-lexical-production.ts",
     "bench:code-graph:heavy-tail": "bun scripts/benchmark-code-graph-heavy-tail.ts",
+    "bench:code-graph:heavy-tail:ratchet": "bun scripts/generate-code-graph-heavy-tail-ratchet.ts",
     "bench:code-graph:dirty-overlay": "bun scripts/benchmark-code-graph-dirty-overlay.ts",
     "bench:code-graph:mixed-monorepo:fixture": "bun scripts/generate-mixed-nx-bazel-fixture.ts",
     "bench:code-graph:mixed-monorepo:gate": "bun scripts/validate-mixed-nx-bazel-gate.ts",

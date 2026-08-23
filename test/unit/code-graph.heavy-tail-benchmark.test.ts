@@ -1,9 +1,16 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphHeavyTailRatchetArtifact,
+  createCodeGraphHeavyTailRatchet,
+  parseCodeGraphHeavyTailBenchmarkArguments,
   parseCodeGraphHeavyTailBenchmarkArtifact,
   parseHeavyTailChildRun,
+  type CodeGraphHeavyTailBenchmarkArtifact,
+  type HeavyTailChildRun,
+  type HeavyTailGovernanceEvidence,
 } from '../../scripts/benchmark-code-graph-heavy-tail.js';
+import {enforceCodeGraphBenchmarkRatchet} from '../../scripts/benchmark-code-graph.js';
 import {
   CODE_GRAPH_HEAVY_TAIL_PROFILE,
   CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES,
@@ -186,4 +193,170 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
       }),
     ).toThrow(/child artifact/i);
   });
+
+  it('requires retained governed evidence before enforcing a ratchet', () => {
+    expect(() => parseCodeGraphHeavyTailBenchmarkArguments(['--governed'])).toThrow(/requires --output/u);
+    expect(() =>
+      parseCodeGraphHeavyTailBenchmarkArguments(['--governed', '--minimum-free-gib', '119', '--output', '/tmp/a']),
+    ).toThrow(/at least 120/u);
+    expect(() => parseCodeGraphHeavyTailBenchmarkArguments(['--ratchet', '/tmp/r', '--output', '/tmp/a'])).toThrow(
+      /requires --governed/u,
+    );
+    expect(() => parseCodeGraphHeavyTailBenchmarkArguments(['--child', '--governed'])).toThrow(/parent-only/iu);
+    expect(
+      parseCodeGraphHeavyTailBenchmarkArguments([
+        '--governed',
+        '--output',
+        '/tmp/evidence.json',
+        '--ratchet',
+        '/tmp/ratchet.json',
+      ]),
+    ).toMatchObject({governed: true, minimumFreeGiB: 120, ratchetPath: '/tmp/ratchet.json'});
+  });
+
+  it('independently ratchets every emitted scheduler, resource, language, resume, and graph measurement', () => {
+    const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
+    const ratchet = createCodeGraphHeavyTailRatchet(artifacts);
+    const names = artifacts[0]!.ratchetArtifact.measurements.map(measurement => measurement.name).sort();
+
+    expect(Object.keys(ratchet.measurements).sort()).toEqual(names);
+    expect(names).toEqual(expect.arrayContaining(['parallel-duration', 'parallel-peak-rss']));
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'parallel-extraction-average-concurrency',
+        'parallel-extraction-request',
+        'resumed-reused-files',
+        'resume-retained-cache-coverage',
+      ]),
+    );
+    expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!.ratchetArtifact, ratchet)).not.toThrow();
+
+    const durationLimit = ratchet.measurements['parallel-duration']!.p95Maximum!;
+    const regressed = {
+      ...artifacts[0]!.ratchetArtifact,
+      measurements: artifacts[0]!.ratchetArtifact.measurements.map(measurement =>
+        measurement.name === 'parallel-duration'
+          ? {
+              ...measurement,
+              maximum: durationLimit + 1,
+              mean: durationLimit + 1,
+              minimum: durationLimit + 1,
+              p50: durationLimit + 1,
+              p95: durationLimit + 1,
+              p99: durationLimit + 1,
+            }
+          : measurement,
+      ),
+    };
+    expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(/parallel-duration/u);
+  });
 });
+
+function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact {
+  const governance: HeavyTailGovernanceEvidence = {
+    availableBytes: 200 * 1_073_741_824,
+    minimumFreeBytes: 120 * 1_073_741_824,
+    runtimeProvenance: {
+      mode: 'github-actions-clean-source',
+      sourceCommit: 'a'.repeat(40),
+      sourceLockfileSha256: 'b'.repeat(64),
+      sourcePackageManifestSha256: 'c'.repeat(64),
+    },
+    storage: {filesystem: 'apfs', location: 'internal', medium: 'solid-state'},
+  };
+  const single = completeRun(1, 3_200 + offset, 1, offset);
+  const parallel = completeRun(4, 2_800 + offset, 3.25, offset);
+  const sixWorkers = completeRun(6, 2_900 + offset, 5.1, offset);
+  const eightWorkers = completeRun(8, 3_000 + offset, 7.1, offset);
+  const interrupted: HeavyTailChildRun = {
+    ...baseRun(4, 1_900 + offset, 3.2, offset),
+    cache: {factsBytes: 260_396, files: 266, lowSignalJsonFactsBytes: 0},
+    interruptedAfterPersistedFiles: 266,
+    state: 'interrupted',
+  };
+  const resumed = {...completeRun(4, 1_600 + offset, 2, offset), reusedFiles: 266};
+  const base: Omit<CodeGraphHeavyTailBenchmarkArtifact, 'ratchetArtifact'> = {
+    assertions: {
+      interruptionRetainedCache: true,
+      lowSignalJsonExcluded: true,
+      parallelMatchesSingle: true,
+      sixWorkersMatchSingle: true,
+      pathologicalTypeScriptSurfacePreserved: true,
+      resumeMatchesClean: true,
+      resumeReusedCache: true,
+      textlessSvgExcluded: true,
+      eightWorkersMatchSingle: true,
+    },
+    createdAt: new Date(offset).toISOString(),
+    environment: {
+      architecture: 'arm64',
+      availableBytes: governance.availableBytes,
+      commit: 'a'.repeat(40),
+      cpu: 'Apple M1 Max',
+      dirty: false,
+      memoryBytes: 64 * 1_073_741_824,
+      minimumFreeBytes: governance.minimumFreeBytes,
+      operatingSystem: 'macOS 27.0',
+      provenance: governance.runtimeProvenance,
+      runtime: 'bun/1.3.14',
+      runnerClass: 'pinned-apple-m1-max',
+      runnerIdentity: 'local-apple-m1-max',
+      storage: governance.storage,
+    },
+    profile: CODE_GRAPH_HEAVY_TAIL_PROFILE,
+    runs: {eightWorkers, interrupted, parallel, resumed, sixWorkers, single},
+    suite: 'code-graph-large-monorepo-heavy-tail-v2' as const,
+    version: 3 as const,
+  };
+  return {...base, ratchetArtifact: codeGraphHeavyTailRatchetArtifact(base, 'darwin', governance)};
+}
+
+function completeRun(workerCount: number, durationMilliseconds: number, concurrency: number, offset: number) {
+  return {
+    ...baseRun(workerCount, durationMilliseconds, concurrency, offset),
+    graph: {
+      digest: 'd'.repeat(64),
+      edges: 327,
+      files: 268,
+      generatedTypeScriptTailPreserved: true,
+      lowSignalJsonSymbols: 0,
+      pathologicalTypeScriptTails: 8,
+      symbols: 550,
+      textlessSvgSymbols: 0,
+    },
+    reusedFiles: 0,
+    state: 'complete' as const,
+  } satisfies HeavyTailChildRun;
+}
+
+function baseRun(workerCount: number, durationMilliseconds: number, concurrency: number, offset: number) {
+  return {
+    cache: {factsBytes: 260_876, files: 268, lowSignalJsonFactsBytes: 0},
+    cpuMilliseconds: 2_700 + offset,
+    durationMilliseconds,
+    extraction: {
+      activeWallMilliseconds: 1_300 + offset,
+      averageConcurrency: concurrency,
+      peakConcurrency: workerCount,
+      requestMilliseconds: 4_300 + offset,
+    },
+    languages: {
+      typescript: {
+        degradedFiles: 0,
+        factsBytes: 552_458,
+        files: 266,
+        parseMilliseconds: 1_300 + offset,
+        persistenceMilliseconds: 50 + offset,
+        requestMilliseconds: 4_290 + offset,
+        relations: 327,
+        sourceBytes: 5_952_842,
+        symbols: 549,
+      },
+    },
+    peakRssBytes: 390_000_000 + offset,
+    readingMilliseconds: 60 + offset,
+    slowFiles: [],
+    version: 2 as const,
+    workerCount,
+  };
+}

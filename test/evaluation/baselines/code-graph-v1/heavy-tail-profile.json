@@ -18,9 +18,9 @@
     "excludedJsonFiles": 8,
     "excludedSvgFiles": 4000,
     "interruptionResumeRequired": true,
-    "latencyBudget": "same-run comparison only; no portable absolute threshold",
+    "latencyBudget": "same-run comparison by default; governed exact-runtime runs may enforce the reviewed pinned-runner scheduler ratchet",
     "lowSignalJsonPolicy": "small, 0.8 MiB, 5.7 MiB, and 25 MiB duplicate snapshot blobs are excluded before extraction and cache admission",
-    "parallelDeterminism": "workers=1 graph digest must equal workers=4 graph digest",
+    "parallelDeterminism": "workers=1 graph digest must equal workers=4, workers=6, and workers=8 graph digests",
     "pathologicalTypeScriptPolicy": "imports, exports, and declarations after bounded calls remain present",
     "textlessSvgPolicy": "generated textless SVG packs are excluded before extraction and cache admission"
   }
