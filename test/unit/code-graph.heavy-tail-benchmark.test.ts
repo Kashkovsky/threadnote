@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
+import {join, mkdtemp, readFile, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {
   codeGraphHeavyTailRatchetArtifact,
   createCodeGraphHeavyTailRatchet,
@@ -10,7 +11,10 @@ import {
   type HeavyTailChildRun,
   type HeavyTailGovernanceEvidence,
 } from '../../scripts/benchmark-code-graph-heavy-tail.js';
-import {enforceCodeGraphBenchmarkRatchet} from '../../scripts/benchmark-code-graph.js';
+import {
+  enforceCodeGraphBenchmarkRatchet,
+  validateCodeGraphBenchmarkRatchet,
+} from '../../scripts/benchmark-code-graph.js';
 import {
   CODE_GRAPH_HEAVY_TAIL_PROFILE,
   CODE_GRAPH_HEAVY_TAIL_JSON_DUPLICATES,
@@ -270,6 +274,65 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(/parallel-duration/u);
   });
 
+  it('keeps the checked scheduler ratchet and governed development evidence synchronized', async () => {
+    const ratchet = JSON.parse(
+      await readFile('test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json', 'utf8'),
+    ) as {
+      readonly measurements: Readonly<Record<string, unknown>>;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    };
+    const evidence = JSON.parse(
+      await readFile('test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-development.json', 'utf8'),
+    ) as {
+      readonly baseline: {
+        readonly artifactSha256: readonly string[];
+        readonly commit: string;
+        readonly samples: number;
+        readonly storage: {readonly filesystem: string; readonly location: string; readonly medium: string};
+      };
+      readonly graph: {
+        readonly digest: string;
+        readonly edges: number;
+        readonly files: number;
+        readonly symbols: number;
+      };
+      readonly interpretation: {readonly scope: string};
+      readonly ratchet: {readonly measurementCount: number};
+      readonly scheduler: {readonly automaticParserWorkers: number; readonly capacities: readonly number[]};
+    };
+    const emittedNames = heavyTailArtifact(0)
+      .ratchetArtifact.measurements.map(measurement => measurement.name)
+      .sort();
+
+    expect(() => validateCodeGraphBenchmarkRatchet(ratchet)).not.toThrow();
+    expect(Object.keys(ratchet.measurements).sort()).toEqual(emittedNames);
+    expect(emittedNames).toHaveLength(254);
+    expect(ratchet.metadata).toMatchObject({
+      automaticParserWorkers: 4,
+      governed: true,
+      storageFilesystem: 'apfs',
+      storageLocation: 'internal',
+      storageMedium: 'solid-state',
+      workerCapacities: '1,4,6,8',
+    });
+    expect(evidence.ratchet.measurementCount).toBe(emittedNames.length);
+    expect(evidence.scheduler).toEqual({automaticParserWorkers: 4, capacities: [1, 4, 6, 8]});
+    expect(evidence.baseline).toMatchObject({
+      commit: '5ee8fa6eb20ca24e6f35f0a7e8653a58f880e8b1',
+      samples: 3,
+      storage: {filesystem: 'apfs', location: 'internal', medium: 'solid-state'},
+    });
+    expect(evidence.baseline.artifactSha256).toHaveLength(3);
+    expect(evidence.baseline.artifactSha256.every(hash => /^[a-f0-9]{64}$/u.test(hash))).toBe(true);
+    expect(evidence.graph).toEqual({
+      digest: '862c4f7e69cda68d59679d6b052cccfca01c35a2e13086333c631f2286b02c93',
+      edges: 327,
+      files: 268,
+      symbols: 550,
+    });
+    expect(evidence.interpretation.scope).toContain('not pinned-IntelliJ');
+  });
+
   it('rejects ratchet generation across different exact source commits', () => {
     const artifacts = [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)];
     const mixed = artifacts[2]!;
@@ -288,6 +351,42 @@ describe('code graph large-monorepo heavy-tail benchmark', () => {
     };
 
     expect(() => createCodeGraphHeavyTailRatchet(artifacts)).toThrow(/exact source\/runtime\/storage/u);
+  });
+
+  it('executes the checked ratchet generator through its Bun process boundary', async () => {
+    const root = await mkdtemp('threadnote-heavy-tail-ratchet-generator-');
+    try {
+      const artifactPaths: string[] = [];
+      for (const [index, artifact] of [heavyTailArtifact(0), heavyTailArtifact(10), heavyTailArtifact(20)].entries()) {
+        const artifactPath = join(root, `artifact-${index}.json`);
+        await writeFile(artifactPath, `${JSON.stringify(artifact)}\n`);
+        artifactPaths.push(artifactPath);
+      }
+      const outputPath = join(root, 'ratchet.json');
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          'scripts/generate-code-graph-heavy-tail-ratchet.ts',
+          '--output',
+          outputPath,
+          ...artifactPaths,
+        ],
+        {cwd: process.cwd(), stderr: 'pipe', stdout: 'pipe'},
+      );
+      const [exitCode, stderr, stdout] = await Promise.all([
+        child.exited,
+        new Response(child.stderr).text(),
+        new Response(child.stdout).text(),
+      ]);
+
+      expect(stderr).toBe('');
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain('threadnote-code-graph-heavy-tail');
+      const ratchet = JSON.parse(await readFile(outputPath, 'utf8')) as {readonly measurements: object};
+      expect(Object.keys(ratchet.measurements)).toHaveLength(254);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 });
 

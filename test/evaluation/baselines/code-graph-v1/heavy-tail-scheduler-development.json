@@ -1,0 +1,117 @@
+{
+  "baseline": {
+    "artifactSha256": [
+      "65e5394ca1db850a8fcb58dd93fe623726fd01ee7f75e8486d35af051156966f",
+      "b7b2d00b33af3e8c73ace57f3a1765a5eb19af5e0955344f1a051eb2f4e83d7d",
+      "db5330f019364bf4e107890339a8e30b24e350c8ee4e5ab00a74c897fc2fe96f"
+    ],
+    "availableBytesMinimum": 171224993792,
+    "commit": "5ee8fa6eb20ca24e6f35f0a7e8653a58f880e8b1",
+    "executableSha256": "367246ee71f5c646cf4ed553f7720c444ebb37c12ac311b5ee67d16c274763f7",
+    "minimumFreeBytes": 128849018880,
+    "runnerClass": "apple-m1-max-64g-internal",
+    "runnerIdentity": "local-apple-m1-max",
+    "runtime": "bun/1.3.14",
+    "samples": 3,
+    "storage": {
+      "filesystem": "apfs",
+      "location": "internal",
+      "medium": "solid-state"
+    }
+  },
+  "capacities": {
+    "1": {
+      "cpuMillisecondsMean": 2725.607666666667,
+      "durationMillisecondsMean": 3177.0654303333336,
+      "extractionActiveWallMillisecondsMean": 1426.9570063333342,
+      "extractionAverageConcurrencyMean": 1.0000000000000007,
+      "extractionRequestMillisecondsMean": 1426.9570063333356,
+      "peakRssBytesMean": 314638336
+    },
+    "4": {
+      "cpuMillisecondsMean": 2815.9070000000006,
+      "durationMillisecondsMean": 2834.9681806666667,
+      "extractionActiveWallMillisecondsMean": 1330.1699193333332,
+      "extractionAverageConcurrencyMean": 3.3016948510264466,
+      "extractionRequestMillisecondsMean": 4391.760793333329,
+      "peakRssBytesMean": 361704106.6666667
+    },
+    "6": {
+      "cpuMillisecondsMean": 2903.7926666666667,
+      "durationMillisecondsMean": 2913.189347333333,
+      "extractionActiveWallMillisecondsMean": 1412.6517386666667,
+      "extractionAverageConcurrencyMean": 5.162466079821317,
+      "extractionRequestMillisecondsMean": 7291.543979666675,
+      "peakRssBytesMean": 370977450.6666667
+    },
+    "8": {
+      "cpuMillisecondsMean": 2911.4926666666665,
+      "durationMillisecondsMean": 3032.6899169999997,
+      "extractionActiveWallMillisecondsMean": 1508.529681333334,
+      "extractionAverageConcurrencyMean": 6.973437581140652,
+      "extractionRequestMillisecondsMean": 10519.592125666664,
+      "peakRssBytesMean": 375122602.6666667
+    }
+  },
+  "createdAt": "2026-08-23T02:24:55.548Z",
+  "graph": {
+    "digest": "862c4f7e69cda68d59679d6b052cccfca01c35a2e13086333c631f2286b02c93",
+    "edges": 327,
+    "files": 268,
+    "symbols": 550
+  },
+  "historicalControlledComparison": {
+    "candidateCommit": "7d57b4e5a5f70adb11f301205e5aad01360edaf5",
+    "controlCommit": "042e91ee92bdd710712dd3820c0f4634d515d092",
+    "parallelFourWorkers": {
+      "cpuMilliseconds": {
+        "candidateMean": 2871.673666666667,
+        "changePercent": -0.39194489022905676,
+        "controlMean": 2882.9733333333334
+      },
+      "durationMilliseconds": {
+        "candidateMean": 2869.2281946666667,
+        "changePercent": -17.726371914990303,
+        "controlMean": 3487.4215000000004
+      },
+      "extractionActiveWallMilliseconds": {
+        "candidateMean": 1326.1305003333339,
+        "changePercent": -30.41677879538558,
+        "controlMean": 1905.819358999999
+      },
+      "extractionAverageConcurrency": {
+        "candidateMean": 3.3141891503060013,
+        "changePercent": 52.68725063425415,
+        "controlMean": 2.1705735983450145
+      },
+      "extractionRequestMilliseconds": {
+        "candidateMean": 4394.55640433334,
+        "changePercent": 6.233511648135326,
+        "controlMean": 4136.69503733333
+      },
+      "peakRssBytes": {
+        "candidateMean": 382189568,
+        "changePercent": 0.8633363120117643,
+        "controlMean": 378918229.3333333
+      }
+    },
+    "samplesPerArm": 3
+  },
+  "interpretation": {
+    "ipcDecision": "The fixture reports 552458 TypeScript fact bytes from 5952842 source bytes, but current telemetry does not isolate JSON serialization or IPC overhead. Binary or spool IPC remains conditionally rejected pending an isolated profile.",
+    "resourceDisclosure": "The controlled candidate improved four-worker wall time while peak RSS rose 0.86% and summed parser-request time rose 6.23%; those costs are retained explicitly.",
+    "scope": "Reduced-fixture extraction-scheduler evidence only; not pinned-IntelliJ, production-scale materialization, or final release-goal evidence."
+  },
+  "profile": "large-monorepo-heavy-tail-v1",
+  "ratchet": {
+    "latencyAndResourceCeilingHeadroomPercent": 15,
+    "measurementCount": 254,
+    "path": "test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json",
+    "samplesPerMeasurementMinimum": 1
+  },
+  "scheduler": {
+    "automaticParserWorkers": 4,
+    "capacities": [1, 4, 6, 8]
+  },
+  "version": 1
+}

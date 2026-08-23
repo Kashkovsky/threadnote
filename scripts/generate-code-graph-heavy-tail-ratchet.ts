@@ -1,6 +1,7 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import {Effect} from 'effect';
+import {ApplicationLayer} from '../src/effect/runtime.js';
 import {
   createCodeGraphHeavyTailRatchet,
   parseCodeGraphHeavyTailBenchmarkArtifact,
@@ -43,4 +44,4 @@ function parseArguments(args: readonly string[]): {readonly artifacts: readonly 
   return {artifacts, outputPath};
 }
 
-if (import.meta.main) BunRuntime.runMain(provideScriptLayer(generate));
+if (import.meta.main) BunRuntime.runMain(provideScriptLayer(generate, ApplicationLayer));
