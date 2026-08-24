@@ -11,6 +11,50 @@ export interface CodeGraphMaterializationSymbolLookupRow {
   readonly symbolId: string;
 }
 
+export interface CodeGraphMaterializationSymbolRow {
+  readonly arity: number | null;
+  readonly contentHash: string;
+  readonly documentation: string | null;
+  readonly exported: 0 | 1;
+  readonly id: string;
+  readonly kind: string;
+  readonly language: string;
+  readonly lookupKeysJson: string;
+  readonly name: string;
+  readonly packageName: string | null;
+  readonly path: string;
+  readonly qualifiedName: string;
+  readonly resolutionDomain: string | null;
+  readonly resolutionScopeId: string | null;
+  readonly signature: string | null;
+  readonly spanJson: string;
+}
+
+export function codeGraphMaterializationSymbolRows(
+  symbols: readonly CodeGraphSymbol[],
+): readonly CodeGraphMaterializationSymbolRow[] {
+  return [...symbols]
+    .sort((left, right) => compareCodeUnits(left.id, right.id))
+    .map(symbol => ({
+      arity: symbol.arity ?? null,
+      contentHash: symbol.contentHash,
+      documentation: symbol.documentation ?? null,
+      exported: symbol.exported ? 1 : 0,
+      id: symbol.id,
+      kind: symbol.kind,
+      language: symbol.language,
+      lookupKeysJson: JSON.stringify(symbol.lookupKeys ?? []),
+      name: symbol.name,
+      packageName: symbol.packageName ?? null,
+      path: symbol.path,
+      qualifiedName: symbol.qualifiedName,
+      resolutionDomain: symbol.resolutionDomain ?? null,
+      resolutionScopeId: symbol.resolutionScopeId ?? null,
+      signature: symbol.signature ?? null,
+      spanJson: JSON.stringify(symbol.span),
+    }));
+}
+
 /** Canonical snapshot-independent lookup rows shared by direct and spool writers. */
 export function codeGraphMaterializationSymbolLookupRows(
   symbols: readonly CodeGraphSymbol[],
