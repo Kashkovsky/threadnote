@@ -52,10 +52,11 @@ export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
 // Unresolved publication hydrates complete edge payloads for the capacity
 // reservation, unlike the insert-select activation copier. Retain the proven
 // 1,500-row first transaction, then permit measured 2x growth while keeping a
-// 10k hard ceiling on both memory and writer-lock exposure.
+// 20k hard ceiling on both memory and writer-lock exposure; the adaptive
+// controller shrinks after transactions exceed five seconds.
 const PERSISTENT_UNRESOLVED_REFERENCE_INITIAL_BATCH_ROWS = 1_500;
 
-const PERSISTENT_UNRESOLVED_REFERENCE_MAXIMUM_BATCH_ROWS = 10_000;
+const PERSISTENT_UNRESOLVED_REFERENCE_MAXIMUM_BATCH_ROWS = 20_000;
 
 /** @internal Pure adaptive boundary retained for state-machine properties. */
 export function nextPersistentUnresolvedReferenceBatchRows(currentRows: number, milliseconds: number): number {
