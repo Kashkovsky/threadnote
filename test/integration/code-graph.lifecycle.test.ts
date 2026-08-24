@@ -4326,7 +4326,21 @@ describe('native code graph lifecycle', () => {
             'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
           )
           .all(pausedId),
-      ).toEqual([{batch_index: 0}]);
+      ).toEqual([]);
+      const pausedSpoolDatabase = new Database(codeGraphMaterializationSpoolPath(home, baseline, pausedId), {
+        readonly: true,
+      });
+      try {
+        expect(
+          pausedSpoolDatabase
+            .query<{readonly batch_index: number}, []>(
+              'SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index',
+            )
+            .all(),
+        ).toEqual([{batch_index: 0}]);
+      } finally {
+        pausedSpoolDatabase.close();
+      }
       expect(
         pausedDatabase
           .query<{readonly count: number}, [string]>(
@@ -4520,7 +4534,21 @@ describe('native code graph lifecycle', () => {
               'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
             )
             .all(paused!.id),
-        ).toEqual([{batch_index: 0}]);
+        ).toEqual([]);
+        const pausedSpoolDatabase = new Database(codeGraphMaterializationSpoolPath(home, baseline, paused!.id), {
+          readonly: true,
+        });
+        try {
+          expect(
+            pausedSpoolDatabase
+              .query<{readonly batch_index: number}, []>(
+                'SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index',
+              )
+              .all(),
+          ).toEqual([{batch_index: 0}]);
+        } finally {
+          pausedSpoolDatabase.close();
+        }
         expect(
           pausedDatabase
             .query<{readonly count: number}, [string]>(
@@ -4547,7 +4575,7 @@ describe('native code graph lifecycle', () => {
       const store = yield* CodeGraphStore;
       const failingStore = CodeGraphStore.of({
         ...store,
-        cacheMaterializedFileShards: () =>
+        cacheMaterializedFileShardBatches: () =>
           Effect.fail(
             new CodeGraphStoreNoSpaceError('Classified SQLite full during materialized-shard write.', {
               operation: 'cache code graph materialized shards',
@@ -5753,6 +5781,21 @@ function createFactBudgetExpandedRepository(): string {
 
 function codeGraphDatabasePath(home: string, indexed: {readonly identity: {readonly checkoutId: string}}): string {
   return join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite');
+}
+
+function codeGraphMaterializationSpoolPath(
+  home: string,
+  indexed: {readonly identity: {readonly checkoutId: string}},
+  snapshotId: string,
+): string {
+  return join(
+    home,
+    'indexes',
+    'code-graph',
+    'repositories',
+    indexed.identity.checkoutId,
+    `materialization-spool-v1-${snapshotId}.sqlite`,
+  );
 }
 
 function materializedShardFacts(databasePath: string, path: string) {

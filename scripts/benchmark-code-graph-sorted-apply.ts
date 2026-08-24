@@ -174,7 +174,7 @@ const output = {
   },
 };
 await Bun.write(resultPath, `${JSON.stringify(output, null, 2)}\n`);
-console.log(JSON.stringify(output));
+await Bun.write(Bun.stdout, `${JSON.stringify(output)}\n`);
 
 interface LookupRow {
   readonly exported: number;
