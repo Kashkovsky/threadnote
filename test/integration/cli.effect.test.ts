@@ -167,6 +167,13 @@ describe('Effect CLI', () => {
     expect(repair.stdout).toContain('--dry-run');
   });
 
+  it('documents graph query paging scope and token bounds before execution', async () => {
+    const query = await runCli(['graph', 'query', '--help']);
+
+    expect(query.stdout).toContain('Requires --workset; maximum estimated tokens (1-1500)');
+    expect(query.stdout).toContain('Requires --workset; opaque cgwc_ continuation from a prior query');
+  });
+
   it('emits a path-free aggregate graph inventory preview', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-inventory-'));
     try {

@@ -11,6 +11,7 @@ import type {CodeGraphProvenance, CodeGraphRelation, CodeGraphSpan} from './type
 export const CODE_GRAPH_WORKSET_EVIDENCE_RESULT_VERSION = 2 as const;
 export const CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION = 1 as const;
 export const CODE_GRAPH_WORKSET_EVIDENCE_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
+export const CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS = 1 as const;
 export const CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 
 export const CODE_GRAPH_WORKSET_EVIDENCE_REPOSITORY_STATES = [
@@ -778,9 +779,13 @@ function relationshipKey(relationship: CompactEvidenceRelationshipV1): string {
 
 function projectionMaximumBytes(options: CodeGraphWorksetEvidenceProjectionOptionsV1): number {
   const tokens = options.maximumEstimatedTokens ?? CODE_GRAPH_WORKSET_EVIDENCE_DEFAULT_ESTIMATED_TOKENS;
-  if (!Number.isSafeInteger(tokens) || tokens < 1 || tokens > CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS) {
+  if (
+    !Number.isSafeInteger(tokens) ||
+    tokens < CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS ||
+    tokens > CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS
+  ) {
     throw invalid(
-      `Workset evidence token budget must be an integer from 1 to ${CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS}.`,
+      `Workset evidence token budget must be an integer from ${CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS} to ${CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS}.`,
     );
   }
   const tokenBytes = tokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
