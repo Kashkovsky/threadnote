@@ -2,10 +2,19 @@ import {expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {
   codeGraphLookupDomain,
+  codeGraphMaterializationEdgeRows,
   codeGraphMaterializationSymbolLookupRows,
   codeGraphMaterializationSymbolRows,
 } from '../../src/code_graph/materialization_rows.js';
 import type {CodeGraphSymbol} from '../../src/code_graph/types.js';
+
+const edgeArbitrary = FC.record({
+  confidence: FC.integer({max: 100, min: 0}).map(value => value / 100),
+  id: FC.stringMatching(/^edge-[a-z0-9]{1,8}$/u),
+  relation: FC.constantFrom('calls' as const, 'contains' as const, 'references' as const),
+  sourceId: FC.option(FC.stringMatching(/^symbol-[a-z0-9]{1,8}$/u), {nil: undefined}),
+  targetId: FC.option(FC.stringMatching(/^symbol-[a-z0-9]{1,8}$/u), {nil: undefined}),
+});
 
 const symbolArbitrary = FC.record({
   exported: FC.boolean(),
@@ -70,6 +79,26 @@ it('encodes optional symbol columns and JSON at the SQLite boundary', () => {
     spanJson: '{"column":1,"endColumn":2,"endLine":1,"line":1}',
   });
 });
+
+it.prop(
+  'materializes direct edge rows independent of unique edge order',
+  {edges: FC.uniqueArray(edgeArbitrary, {maxLength: 24, selector: edge => edge.id})},
+  ({edges}) => {
+    const materialized = edges.map(edge => ({
+      ...edge,
+      evidencePath: 'src/source.ts',
+      evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+      provenance: 'resolved' as const,
+      sourceName: 'source',
+      targetName: 'target',
+    }));
+    const forward = codeGraphMaterializationEdgeRows(materialized);
+    expect(codeGraphMaterializationEdgeRows([...materialized].reverse())).toEqual(forward);
+    expect(forward.map(row => row.id)).toEqual(materialized.map(edge => edge.id).sort());
+    expect(forward.every(row => row.evidenceSpanJson === '{"column":1,"endColumn":2,"endLine":1,"line":1}')).toBe(true);
+  },
+  {fastCheck: {numRuns: 100}},
+);
 
 function codeGraphSymbol(input: {
   readonly exported: boolean;

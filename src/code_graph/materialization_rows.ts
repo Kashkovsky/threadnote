@@ -1,5 +1,37 @@
 import {compareCodeUnits} from './ordering.js';
-import type {CodeGraphSymbol} from './types.js';
+import type {CodeGraphEdge, CodeGraphSymbol} from './types.js';
+
+export interface CodeGraphMaterializationEdgeRow {
+  readonly confidence: number;
+  readonly evidencePath: string;
+  readonly evidenceSpanJson: string;
+  readonly id: string;
+  readonly provenance: CodeGraphEdge['provenance'];
+  readonly relation: CodeGraphEdge['relation'];
+  readonly sourceId: string | null;
+  readonly sourceName: string;
+  readonly targetId: string | null;
+  readonly targetName: string;
+}
+
+export function codeGraphMaterializationEdgeRows(
+  edges: readonly CodeGraphEdge[],
+): readonly CodeGraphMaterializationEdgeRow[] {
+  return [...edges]
+    .sort((left, right) => compareCodeUnits(left.id, right.id))
+    .map(edge => ({
+      confidence: edge.confidence,
+      evidencePath: edge.evidencePath,
+      evidenceSpanJson: JSON.stringify(edge.evidenceSpan),
+      id: edge.id,
+      provenance: edge.provenance,
+      relation: edge.relation,
+      sourceId: edge.sourceId ?? null,
+      sourceName: edge.sourceName,
+      targetId: edge.targetId ?? null,
+      targetName: edge.targetName,
+    }));
+}
 
 export interface CodeGraphMaterializationSymbolLookupRow {
   readonly evidenceEdgeId?: string;
