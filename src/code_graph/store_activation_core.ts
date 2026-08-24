@@ -2,6 +2,7 @@ import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphActivationStage, type CodeGraphActivationProgressCallback} from './store_models.js';
 import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './store_schema_contracts.js';
+import {persistedIncrementalFactCountsStatement} from './store_incremental_plan.js';
 import {tableExists} from './store_session.js';
 import {type CodeGraphSnapshot, CodeGraphStoreError} from './types.js';
 
@@ -785,41 +786,12 @@ const persistedIncrementalFactCounts = Effect.fn('codeGraph.persistedIncremental
   sql: SqlClient.SqlClient,
   baseSnapshotId: string,
 ) {
-  const rows = yield* sql<{
+  const statement = persistedIncrementalFactCountsStatement(baseSnapshotId);
+  const rows = yield* sql.unsafe<{
     readonly edges: number;
     readonly files: number;
     readonly symbols: number;
-  }>`
-    SELECT
-      base.file_count
-        - (
-            SELECT COUNT(*)
-            FROM snapshot_files AS file
-            JOIN activation_incremental_paths AS changed ON changed.path = file.path
-            WHERE file.snapshot_id = base.id
-          )
-        + (SELECT COUNT(*) FROM activation_files) AS files,
-      base.symbol_count
-        - (
-            SELECT COUNT(*)
-            FROM symbols AS symbol
-            JOIN activation_incremental_paths AS changed ON changed.path = symbol.path
-            WHERE symbol.snapshot_id = base.id
-          )
-        + (SELECT COUNT(*) FROM activation_symbols) AS symbols,
-      base.edge_count
-        - (
-            SELECT COUNT(*)
-            FROM edges AS edge
-            JOIN activation_incremental_paths AS changed ON changed.path = edge.evidence_path
-            WHERE edge.snapshot_id = base.id
-          )
-        + (SELECT COUNT(*) FROM activation_edges) AS edges
-    FROM snapshots AS base
-    WHERE base.id = ${baseSnapshotId} AND base.state = 'ready'
-      AND base.base_snapshot_id IS NULL
-    LIMIT 1
-  `;
+  }>(statement.text, statement.parameters);
   const row = rows[0];
   if (!row) return yield* Effect.fail(new CodeGraphStoreError(`Reusable base ${baseSnapshotId} is unavailable.`));
   const counts = {
