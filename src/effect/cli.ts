@@ -109,6 +109,10 @@ import {
   runCodeGraphWorksetStatus,
   runCodeGraphWorksetTopology,
 } from '../code_graph/commands.js';
+import {
+  CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
+  CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
+} from '../code_graph/workset_evidence.js';
 import {runProcessDiagnostics} from '../process_diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
@@ -724,12 +728,19 @@ const graphQuery = Command.make(
     budgetTokens: optional(
       describeFlag(
         integerFlag('budget-tokens').pipe(
-          Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 1_500}))),
+          Flag.withSchema(
+            Schema.Int.check(
+              Schema.isBetween({
+                minimum: CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
+                maximum: CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
+              }),
+            ),
+          ),
         ),
-        'Maximum estimated tokens for the compact workset agent response',
+        `Requires --workset; maximum estimated tokens (${CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS}-${CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS}) for the compact agent response`,
       ),
     ),
-    cursor: optionalString('cursor', 'Opaque cgwc_ continuation from a prior workset query'),
+    cursor: optionalString('cursor', 'Requires --workset; opaque cgwc_ continuation from a prior query'),
     packageName: optionalString('package', 'Restrict results to one exact indexed package or workspace component'),
     query: optionalString('query', 'Concept, symbol, module, path, or documentation query'),
     workset: optionalString(
