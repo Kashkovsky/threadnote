@@ -3,6 +3,7 @@ import {Database} from 'bun:sqlite';
 import {afterEach, describe, expect, it} from 'vitest';
 import {Deferred, Effect, Fiber, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -546,7 +547,7 @@ function buildingSnapshot(identity: RepositoryIdentity, suffix: string): CodeGra
     edgeCount: 0,
     extractorSet: 'extractor-set',
     fileCount: 0,
-    id: `cgsn_${suffix}`,
+    id: `cgsn_${'0'.repeat(40)}-full-${sha256HexSync(suffix).slice(0, 16)}`,
     overlayFingerprint: `overlay-${suffix}`,
     repositoryId: identity.repositoryId,
     state: 'building',
