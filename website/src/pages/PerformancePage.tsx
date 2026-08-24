@@ -4,6 +4,7 @@ import {checkedInEmbeddingContextPerformance} from '../content/embeddingContextP
 import {
   performanceControlLanguages,
   retainedPerformanceArtifactFieldPaths,
+  retainedPerformanceObjectiveResults,
   type RetainedPerformanceArtifact,
 } from '../content/performance';
 import {performanceEvidence} from '../content/performanceEvidence';
@@ -104,7 +105,7 @@ const retainedProofGroups = [
   },
   {
     label: 'End-to-end phases',
-    body: 'Cold discovery, extraction, materialization, resolution, activation, and total time; then a one-file incremental overlay and an independent rebuild of that same overlay.',
+    body: 'Cold discovery, extraction, materialization, resolution, activation, and total time; then a one-file incremental overlay with explicit registration, post-scan, and proportional-work counters plus an independent rebuild of that same overlay.',
   },
   {
     label: 'Resource high-water',
@@ -216,7 +217,9 @@ function phaseCards(artifact: RetainedPerformanceArtifact | undefined): readonly
     {
       label: 'One-file incremental',
       value: formatDuration(artifact.phases.incremental.totalMilliseconds),
-      detail: `${formatInteger(artifact.phases.incremental.changedFiles)} changed file`,
+      detail:
+        `Registration ${formatDuration(artifact.phases.incremental.registrationMilliseconds)} · ` +
+        `post-scan ${formatDuration(artifact.phases.incremental.postCommittedScanMilliseconds)}`,
     },
     {
       label: 'Independent rebuild',
@@ -330,6 +333,8 @@ export default function PerformancePage() {
   const artifact = performanceEvidence.state === 'verified' ? performanceEvidence.artifact : undefined;
   const metrics = scaleCards(artifact);
   const phases = phaseCards(artifact);
+  const objectives = artifact ? retainedPerformanceObjectiveResults(artifact) : [];
+  const passedObjectiveCount = objectives.filter(objective => objective.passed).length;
   const surfaces = surfaceCards(artifact);
   const proofGroups = artifact ? retainedProofGroups : checkedInProofGroups;
 
@@ -431,6 +436,30 @@ export default function PerformancePage() {
             ))}
           </div>
         </div>
+
+        {artifact ? (
+          <div className="performance-phase-panel">
+            <header>
+              <span className="eyebrow">Release engineering targets</span>
+              <p>
+                {passedObjectiveCount} of {objectives.length} targets passed on this exact pinned run. Open targets stay
+                visible; they do not invalidate complete, correct evidence.
+              </p>
+            </header>
+            <div>
+              {objectives.map(objective => (
+                <article key={objective.measurement}>
+                  <span>{objective.label}</span>
+                  <strong>{objective.passed ? 'Passed' : 'Open'}</strong>
+                  <small>
+                    {formatDuration(objective.observedMilliseconds)} observed · target under{' '}
+                    {formatDuration(objective.targetMilliseconds)}
+                  </small>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="performance-pipeline">
@@ -640,13 +669,32 @@ export default function PerformancePage() {
               <p>
                 The release-run adapter verified all {retainedPerformanceArtifactFieldPaths.length} retained fields and
                 fails closed on malformed, mixed, or source-mismatched evidence. The public artifact is bound to its
-                exact bytes, Threadnote source, v4.3.1 release commit, and pinned IntelliJ commit.
+                exact bytes, Threadnote source, {artifact.source.threadnote.version} release commit, and pinned IntelliJ
+                commit.
               </p>
               <p>
                 The retained IntelliJ run covers {formatInteger(artifact.inventory.indexedFiles)} indexed files,{' '}
                 {formatInteger(artifact.graph.symbols)} symbols, {formatInteger(artifact.graph.relationships)}{' '}
                 relationships, and Java, Kotlin, TypeScript, and Bazel controls. Its one-file overlay matches the
                 independent rebuild's structural digest exactly.
+              </p>
+              <p>
+                This exact release run met {passedObjectiveCount} of {objectives.length} stated engineering targets.
+                Targets that remain open are shown beside their observed measurements instead of being hidden or
+                promoted into a universal latency promise.
+              </p>
+              <p>
+                For that {formatInteger(artifact.phases.incremental.changedFiles)}-file overlay, the harness recorded:{' '}
+                {formatInteger(artifact.phases.incremental.inventoryFilesInspected)} inventory files inspected;{' '}
+                {formatInteger(artifact.phases.incremental.baseFactsLoaded)} base facts loaded;{' '}
+                {formatInteger(artifact.phases.incremental.attributionContextFiles)} attribution-context files; and{' '}
+                {formatInteger(artifact.phases.incremental.probedDependencyPaths)} dependency-path probes against{' '}
+                {formatInteger(artifact.phases.incremental.totalFiles)} total files. It planned{' '}
+                {formatInteger(artifact.phases.incremental.plannedRows)} rows from{' '}
+                {formatBytes(artifact.phases.incremental.sourceBytes)} of source and{' '}
+                {formatBytes(artifact.phases.incremental.factBytes)} of facts, with{' '}
+                {formatInteger(artifact.phases.incremental.deletedFiles)} deleted files. These counters distinguish
+                bounded changed/fanout work from a repository-wide scan.
               </p>
             </>
           ) : (
