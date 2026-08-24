@@ -3,6 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_RESOLUTION_PASS_MAXIMUM,
   codeGraphResolutionPassAdmitted,
+  nextPersistentUnresolvedReferenceBatchRows,
 } from '../../src/code_graph/store_resolution.js';
 import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
@@ -12,6 +13,29 @@ import {
 } from '../../src/code_graph/store_resolution_core.js';
 
 describe('code graph resolution pass bounds', () => {
+  it('adapts unresolved publication from the proven page size without exceeding 10k hydrated rows', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({max: 60_000, min: 0}), {maxLength: 64}), durations => {
+        let current = 1_500;
+        for (const duration of durations) {
+          const next = nextPersistentUnresolvedReferenceBatchRows(current, duration);
+          expect(Number.isSafeInteger(next)).toBe(true);
+          expect(next).toBeGreaterThanOrEqual(250);
+          expect(next).toBeLessThanOrEqual(10_000);
+          expect(next).toBeLessThanOrEqual(current * 2);
+          if (duration >= 2_000 && duration <= 5_000) expect(next).toBe(current);
+          else if (duration > 5_000) expect(next).toBeLessThanOrEqual(current);
+          else expect(next).toBeGreaterThanOrEqual(current);
+          current = next;
+        }
+      }),
+      {numRuns: 250},
+    );
+    let current = 1_500;
+    const growth = Array.from({length: 4}, () => (current = nextPersistentUnresolvedReferenceBatchRows(current, 0)));
+    expect(growth).toEqual([3_000, 6_000, 10_000, 10_000]);
+  });
+
   it('admits exactly the finite non-negative pass prefix', () => {
     fc.assert(
       fc.property(fc.integer({max: 1_000, min: -1_000}), completed => {

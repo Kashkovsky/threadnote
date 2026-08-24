@@ -10,7 +10,6 @@ import {configureConnection} from './store_session.js';
 import {type CodeGraphProvenance, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
 import {
   activationMode,
-  ACTIVATION_EDGE_BATCH_ROWS,
   type ActivationResolutionRow,
   assertPersistentBuildOwner,
   assertPersistentMaterializationComplete,
@@ -44,9 +43,26 @@ import {
 } from './store_reconciliation.js';
 import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconciliation_core.js';
 import {CodeGraphPromotionCapacityPlanChanged, type EdgeRow} from './store_internal_models.js';
-import {lastStatementChangeCount} from './store_activation_core.js';
+import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './store_activation_core.js';
 
 export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
+
+// Unresolved publication hydrates complete edge payloads for the capacity
+// reservation, unlike the insert-select activation copier. Retain the proven
+// 1,500-row first transaction, then permit measured 2x growth while keeping a
+// 10k hard ceiling on both memory and writer-lock exposure.
+const PERSISTENT_UNRESOLVED_REFERENCE_INITIAL_BATCH_ROWS = 1_500;
+
+const PERSISTENT_UNRESOLVED_REFERENCE_MAXIMUM_BATCH_ROWS = 10_000;
+
+/** @internal Pure adaptive boundary retained for state-machine properties. */
+export function nextPersistentUnresolvedReferenceBatchRows(currentRows: number, milliseconds: number): number {
+  return nextPersistentActivationBatchRows(
+    currentRows,
+    milliseconds,
+    PERSISTENT_UNRESOLVED_REFERENCE_MAXIMUM_BATCH_ROWS,
+  );
+}
 
 interface ResolutionTransactionPage {
   readonly aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[];
@@ -181,14 +197,16 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     writingAliases: transactionWritingAliasesMilliseconds,
     writingEdges: transactionWritingEdgesMilliseconds,
   });
-  const observeResolutionTransaction = <A, E, R>(transaction: Effect.Effect<A, E, R>) =>
+  const observeResolutionTransaction = <A, E, R>(
+    transaction: Effect.Effect<A, E, R>,
+    onDuration?: (milliseconds: number) => void,
+  ) =>
     Effect.gen(function* () {
       const startedAt = yield* Clock.currentTimeMillis;
       const result = yield* transaction;
-      longestTransactionMilliseconds = Math.max(
-        longestTransactionMilliseconds,
-        (yield* Clock.currentTimeMillis) - startedAt,
-      );
+      const milliseconds = (yield* Clock.currentTimeMillis) - startedAt;
+      longestTransactionMilliseconds = Math.max(longestTransactionMilliseconds, milliseconds);
+      onDuration?.(milliseconds);
       return result;
     });
   const preparationCountStartedAt = yield* Clock.currentTimeMillis;
@@ -522,6 +540,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     const flushUnresolvedReferenceEdges = Effect.fn('codeGraph.flushUnresolvedReferenceEdges')(function* () {
       if (!persistentFull) return;
       let unresolvedCursor = '';
+      let unresolvedBatchRows = PERSISTENT_UNRESOLVED_REFERENCE_INITIAL_BATCH_ROWS;
       for (;;) {
         const unresolved = yield* sql.unsafe<EdgeRow>(
           `SELECT edge_id AS id, source_id, source_name, relation, NULL AS target_id,
@@ -529,7 +548,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
            FROM building_references
            WHERE snapshot_id = ? AND edge_id > ?
            ORDER BY edge_id
-           LIMIT ${ACTIVATION_EDGE_BATCH_ROWS}`,
+           LIMIT ${unresolvedBatchRows}`,
           [persistentFull.snapshotId, unresolvedCursor],
         );
         if (unresolved.length === 0) break;
@@ -564,7 +583,10 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
           }),
         );
-        const observedTransaction = observeResolutionTransaction(transaction);
+        let observedTransactionMilliseconds = 0;
+        const observedTransaction = observeResolutionTransaction(transaction, milliseconds => {
+          observedTransactionMilliseconds = milliseconds;
+        });
         const gated = writerGate ? writerGate(observedTransaction) : observedTransaction;
         const protectedTransaction = persistentCapacityProtector
           ? persistentCapacityProtector(
@@ -576,6 +598,10 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         yield* protectedTransaction;
         transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
         unresolvedCursor = batchEnd;
+        unresolvedBatchRows = nextPersistentUnresolvedReferenceBatchRows(
+          unresolvedBatchRows,
+          observedTransactionMilliseconds,
+        );
         yield* reportResolutionProgress();
         yield* Effect.yieldNow;
       }
