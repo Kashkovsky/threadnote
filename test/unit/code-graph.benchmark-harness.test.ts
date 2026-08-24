@@ -10,6 +10,7 @@ import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
   benchmarkDarwinStorageClassification,
+  benchmarkLinuxStorageClassification,
   benchmarkVectorModelDirectoryName,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
   codeGraphBenchmarkSqlitePeak,
@@ -94,6 +95,13 @@ describe('code graph external benchmark harness', () => {
       location: 'unknown',
       medium: 'virtual-or-network',
     });
+  });
+
+  it('classifies hosted Linux overlay storage without trusting its device alias', () => {
+    expect(benchmarkLinuxStorageClassification('overlayfs', '/dev/root', [])).toBe('virtual-or-network');
+    expect(benchmarkLinuxStorageClassification('ext4', '/dev/nvme0n1p1', ['0'])).toBe('solid-state');
+    expect(benchmarkLinuxStorageClassification('xfs', '/dev/sda1', ['1'])).toBe('rotational');
+    expect(benchmarkLinuxStorageClassification('ext4', '/dev/root', [])).toBe('unknown');
   });
 
   it('ignores ordinary vector-maintenance metadata before filesystem inspection', () => {

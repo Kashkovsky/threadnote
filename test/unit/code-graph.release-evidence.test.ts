@@ -1153,6 +1153,18 @@ describe('code graph release evidence', () => {
     expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 1);
     expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
     expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        {
+          ...artifacts[0]!,
+          measurements: [
+            ...artifacts[0]!.measurements,
+            benchmarkMeasurement('future-stable-production-metric', 'count', [1]),
+          ],
+        },
+        ratchet,
+      ),
+    ).toThrow(/stable production measurement set changed.*future-stable-production-metric/u);
     const scaledArtifacts = artifacts.map(artifact => ({
       ...artifact,
       metadata: {
@@ -1195,6 +1207,14 @@ describe('code graph release evidence', () => {
         githubVirtualArtifacts.map(artifact => ({
           ...artifact,
           metadata: {...artifact.metadata, benchmarkReferenceDiskMedium: 'unknown'},
+        })),
+      ),
+    ).toThrow(/governed storage evidence/);
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubVirtualArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkGithubRunnerEnvironment: 'self-hosted'},
         })),
       ),
     ).toThrow(/governed storage evidence/);
@@ -2311,6 +2331,9 @@ function benchmarkArtifact(
       benchmarkMeasuredSourceCommit: commit,
       benchmarkMeasuredSourceLockfileSha256: 'a'.repeat(64),
       benchmarkMeasuredSourcePackageManifestSha256: 'b'.repeat(64),
+      benchmarkGithubRunnerArchitecture: 'X64',
+      benchmarkGithubRunnerEnvironment: 'github-hosted',
+      benchmarkGithubRunnerOperatingSystem: 'Linux',
       benchmarkSourceValidationMode: 'github-actions-clean-source',
       benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source',
       ...(suite.startsWith('code-graph-production-large-')

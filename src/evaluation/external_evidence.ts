@@ -204,6 +204,9 @@ export const EXTERNAL_PUBLIC_METADATA_KEYS = [
   'benchmarkMeasuredSourceCommit',
   'benchmarkMeasuredSourceLockfileSha256',
   'benchmarkMeasuredSourcePackageManifestSha256',
+  'benchmarkGithubRunnerArchitecture',
+  'benchmarkGithubRunnerEnvironment',
+  'benchmarkGithubRunnerOperatingSystem',
   'benchmarkSourceValidationMode',
   'benchmarkValidatedManagedPayload',
   'benchmarkValidatedManagedDependencyInstallation',
@@ -802,8 +805,17 @@ function validateProvenance(artifact: BenchmarkArtifactV1, releaseBound: boolean
   }
   const mode = metadata.benchmarkSourceValidationMode;
   if (mode === 'github-actions-clean-source') {
-    if (metadata.benchmarkValidatedManagedPayload !== 'not-applicable-github-actions-clean-source') {
-      missing.push('GitHub Actions source-only validation disclosure');
+    if (
+      metadata.benchmarkValidatedManagedPayload !== 'not-applicable-github-actions-clean-source' ||
+      (metadata.benchmarkGithubRunnerEnvironment !== 'github-hosted' &&
+        metadata.benchmarkGithubRunnerEnvironment !== 'self-hosted') ||
+      (metadata.benchmarkGithubRunnerArchitecture !== 'ARM64' &&
+        metadata.benchmarkGithubRunnerArchitecture !== 'X64') ||
+      (metadata.benchmarkGithubRunnerOperatingSystem !== 'Linux' &&
+        metadata.benchmarkGithubRunnerOperatingSystem !== 'macOS' &&
+        metadata.benchmarkGithubRunnerOperatingSystem !== 'Windows')
+    ) {
+      missing.push('GitHub Actions source-only validation and runner disclosure');
     }
   } else if (mode === 'managed-payload-exact-head-validated') {
     if (

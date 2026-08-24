@@ -512,6 +512,9 @@ interface ProductionBenchmarkGovernanceEvidence {
 export type BenchmarkRuntimeProvenance =
   | {
       readonly mode: 'github-actions-clean-source';
+      readonly runnerArchitecture: 'ARM64' | 'X64';
+      readonly runnerEnvironment: 'github-hosted' | 'self-hosted';
+      readonly runnerOperatingSystem: 'Linux' | 'macOS' | 'Windows';
       readonly sourceCommit: string;
       readonly sourceLockfileSha256: string;
       readonly sourcePackageManifestSha256: string;
@@ -666,6 +669,7 @@ const benchmarkCodeGraph = Effect.scoped(
         sameOverlayReferenceHome,
         options.minimumFreeGiB,
         runtimeProvenance?.mode === 'github-actions-clean-source' &&
+          runtimeProvenance.runnerEnvironment === 'github-hosted' &&
           !options.vectors &&
           reducedProductionRatchetProfile(prepared.profile.sourceFiles, prepared.profile.targetGraphSymbols),
       );
@@ -5116,9 +5120,16 @@ function missingBenchmarkRuntimeProvenance(artifact: BenchmarkArtifactV1): reado
     return ['clean exact local-source ApplicationLayer benchmark provenance'];
   }
   if (mode === 'github-actions-clean-source') {
-    return metadata.benchmarkValidatedManagedPayload === 'not-applicable-github-actions-clean-source'
+    return metadata.benchmarkValidatedManagedPayload === 'not-applicable-github-actions-clean-source' &&
+      (metadata.benchmarkGithubRunnerEnvironment === 'github-hosted' ||
+        metadata.benchmarkGithubRunnerEnvironment === 'self-hosted') &&
+      (metadata.benchmarkGithubRunnerArchitecture === 'ARM64' ||
+        metadata.benchmarkGithubRunnerArchitecture === 'X64') &&
+      (metadata.benchmarkGithubRunnerOperatingSystem === 'Linux' ||
+        metadata.benchmarkGithubRunnerOperatingSystem === 'macOS' ||
+        metadata.benchmarkGithubRunnerOperatingSystem === 'Windows')
       ? []
-      : ['GitHub Actions source-only validation disclosure'];
+      : ['GitHub Actions source-only validation and runner disclosure'];
   }
   const managedVersion = metadata.benchmarkValidatedManagedVersion;
   return metadata.benchmarkValidatedManagedPayload === 'exact-head-not-executed' &&
@@ -5194,6 +5205,19 @@ const threadnoteSourceGit = Effect.fn('benchmarkCodeGraph.threadnoteSourceGit')(
     repositoryGit(sourceRoot, args).pipe(Effect.map(result => result.stdout.trim())),
 );
 
+function githubRunnerArchitecture(architecture: string): 'ARM64' | 'X64' | undefined {
+  if (architecture === 'arm64') return 'ARM64';
+  if (architecture === 'x64') return 'X64';
+  return undefined;
+}
+
+function githubRunnerOperatingSystem(platform: string): 'Linux' | 'macOS' | 'Windows' | undefined {
+  if (platform === 'darwin') return 'macOS';
+  if (platform === 'linux') return 'Linux';
+  if (platform === 'win32') return 'Windows';
+  return undefined;
+}
+
 export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.validateRuntimeProvenance')(function* (
   sourceRoot: string,
 ) {
@@ -5218,13 +5242,23 @@ export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.
     const githubSha = environment.GITHUB_SHA?.trim();
     const githubRunId = environment.GITHUB_RUN_ID?.trim();
     const githubRepository = environment.GITHUB_REPOSITORY?.trim();
+    const runnerArchitecture = environment.RUNNER_ARCH?.trim();
+    const runnerEnvironment = environment.RUNNER_ENVIRONMENT?.trim();
+    const runnerOperatingSystem = environment.RUNNER_OS?.trim();
+    const expectedRunnerArchitecture = githubRunnerArchitecture(system.architecture);
+    const expectedRunnerOperatingSystem = githubRunnerOperatingSystem(system.platform);
     if (
       environment.CI !== 'true' ||
       githubSha !== sourceCommit ||
       !EXACT_GIT_COMMIT_PATTERN.test(githubSha ?? '') ||
       !githubWorkspace ||
       !/^\d+$/.test(githubRunId ?? '') ||
-      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(githubRepository ?? '')
+      !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(githubRepository ?? '') ||
+      (runnerEnvironment !== 'github-hosted' && runnerEnvironment !== 'self-hosted') ||
+      expectedRunnerArchitecture === undefined ||
+      runnerArchitecture !== expectedRunnerArchitecture ||
+      expectedRunnerOperatingSystem === undefined ||
+      runnerOperatingSystem !== expectedRunnerOperatingSystem
     ) {
       return yield* Effect.fail(
         new ScriptError('GitHub Actions benchmark provenance is incomplete or does not match the checkout commit.'),
@@ -5247,6 +5281,9 @@ export const validateBenchmarkRuntimeProvenance = Effect.fn('benchmarkCodeGraph.
     yield* verifyBenchmarkSourceUnchanged(sourceRoot, sourceCommit);
     return {
       mode: 'github-actions-clean-source',
+      runnerArchitecture,
+      runnerEnvironment,
+      runnerOperatingSystem,
       sourceCommit,
       sourceLockfileSha256,
       sourcePackageManifestSha256,
@@ -5295,7 +5332,13 @@ function benchmarkRuntimeProvenanceMetadata(
       provenance.mode === 'managed-exact-head' ? 'managed-payload-exact-head-validated' : provenance.mode,
   } as const;
   return provenance.mode === 'github-actions-clean-source'
-    ? {...common, benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source'}
+    ? {
+        ...common,
+        benchmarkGithubRunnerArchitecture: provenance.runnerArchitecture,
+        benchmarkGithubRunnerEnvironment: provenance.runnerEnvironment,
+        benchmarkGithubRunnerOperatingSystem: provenance.runnerOperatingSystem,
+        benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source',
+      }
     : {
         ...common,
         benchmarkValidatedManagedDependencyInstallation: provenance.dependencyInstallation,
@@ -6212,18 +6255,31 @@ export const benchmarkStorageEnvironment = Effect.fn('benchmarkCodeGraph.storage
       Effect.map(result => result.stdout.trim()),
       Effect.catch(() => Effect.succeed('')),
     );
-    if (/^(?:overlay|tmpfs|none|[a-z]+fs)(?:\[.*\])?$/iu.test(source)) medium = 'virtual-or-network';
-    else if (source.length > 0) {
+    medium = benchmarkLinuxStorageClassification(filesystem, source, []);
+    if (medium === 'unknown' && source.length > 0) {
       const rotational = yield* runCommandEffect('lsblk', ['-n', '-o', 'ROTA', source], {timeoutMs: 10_000}).pipe(
         Effect.map(result => result.stdout.trim().split(/\s+/).filter(Boolean)),
         Effect.catch(() => Effect.succeed([] as string[])),
       );
-      if (rotational.includes('1')) medium = 'rotational';
-      else if (rotational.includes('0')) medium = 'solid-state';
+      medium = benchmarkLinuxStorageClassification(filesystem, source, rotational);
     }
   }
   return {filesystem, location, medium} satisfies BenchmarkStorageEnvironment;
 });
+
+export function benchmarkLinuxStorageClassification(
+  filesystem: string,
+  source: string,
+  rotational: readonly string[],
+): BenchmarkStorageEnvironment['medium'] {
+  const virtualFilesystem =
+    /^(?:9p|cifs|fuse(?:\..*)?|nfs\d*|overlay|overlayfs|ramfs|rootfs|smbfs|squashfs|tmpfs)$/iu.test(filesystem);
+  const virtualSource = /^(?:fuse(?:\..*)?|none|overlay|ramfs|rootfs|squashfs|tmpfs)(?:\[.*\])?$/iu.test(source);
+  if (virtualFilesystem || virtualSource) return 'virtual-or-network';
+  if (rotational.includes('1')) return 'rotational';
+  if (rotational.includes('0')) return 'solid-state';
+  return 'unknown';
+}
 
 export function benchmarkDarwinStorageClassification(info: string): BenchmarkStorageEnvironment {
   const filesystemValue =
@@ -6929,6 +6985,13 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
     benchmarkReferenceDiskLocation: artifact.metadata.benchmarkReferenceDiskLocation,
     benchmarkReferenceDiskMedium: artifact.metadata.benchmarkReferenceDiskMedium,
     benchmarkSourceValidationMode: artifact.metadata.benchmarkSourceValidationMode,
+    ...(artifact.metadata.benchmarkSourceValidationMode === 'github-actions-clean-source'
+      ? {
+          benchmarkGithubRunnerArchitecture: artifact.metadata.benchmarkGithubRunnerArchitecture,
+          benchmarkGithubRunnerEnvironment: artifact.metadata.benchmarkGithubRunnerEnvironment,
+          benchmarkGithubRunnerOperatingSystem: artifact.metadata.benchmarkGithubRunnerOperatingSystem,
+        }
+      : {}),
     coldEdges: artifact.metadata.coldEdges,
     coldFiles: artifact.metadata.coldFiles,
     coldMaterializationStorageMode: artifact.metadata.coldMaterializationStorageMode,
@@ -7006,8 +7069,13 @@ function productionRatchetStorageGoverned(metadata: Readonly<Record<string, unkn
     metadata.benchmarkDiskMedium === 'virtual-or-network' &&
     metadata.benchmarkReferenceDiskMedium === 'virtual-or-network' &&
     metadata.benchmarkSourceValidationMode === 'github-actions-clean-source' &&
+    metadata.benchmarkGithubRunnerEnvironment === 'github-hosted' &&
+    (metadata.benchmarkGithubRunnerArchitecture === 'ARM64' || metadata.benchmarkGithubRunnerArchitecture === 'X64') &&
+    metadata.benchmarkGithubRunnerOperatingSystem === 'Linux' &&
     metadata.runtimePlatform === 'linux' &&
-    (metadata.runnerClass === 'github-hosted-linux-x64' || metadata.runnerClass === 'github-hosted-linux-arm64') &&
+    ((metadata.benchmarkGithubRunnerArchitecture === 'X64' && metadata.runnerClass === 'github-hosted-linux-x64') ||
+      (metadata.benchmarkGithubRunnerArchitecture === 'ARM64' &&
+        metadata.runnerClass === 'github-hosted-linux-arm64')) &&
     metadata.vectorEnabled === false &&
     reducedProductionRatchetProfile(metadata.profileSourceFiles, metadata.profileTargetSymbols)
   );
@@ -7121,6 +7189,23 @@ export function enforceCodeGraphBenchmarkRatchet(artifact: BenchmarkArtifactV1, 
     const actual = artifact.metadata[name];
     if (actual !== expected) {
       failures.push(`metadata.${name} ${formatRatchetValue(actual)} does not match ${formatRatchetValue(expected)}`);
+    }
+  }
+  if (ratchet.suite === 'code-graph-production-large-v2') {
+    const assessedNames = productionRatchetMeasurements(artifact)
+      .map(measurement => measurement.name)
+      .sort();
+    const ratchetedNames = Object.keys(ratchet.measurements).sort();
+    if (JSON.stringify(assessedNames) !== JSON.stringify(ratchetedNames)) {
+      const assessed = new Set(assessedNames);
+      const ratcheted = new Set(ratchetedNames);
+      const missing = ratchetedNames.filter(name => !assessed.has(name));
+      const ungoverned = assessedNames.filter(name => !ratcheted.has(name));
+      failures.push(
+        `stable production measurement set changed` +
+          `${missing.length > 0 ? `; missing: ${missing.join(', ')}` : ''}` +
+          `${ungoverned.length > 0 ? `; ungoverned: ${ungoverned.join(', ')}` : ''}`,
+      );
     }
   }
   const measurementsByName = new Map<string, BenchmarkArtifactV1['measurements'][number][]>();
