@@ -105,6 +105,7 @@ export const deferCodeGraphQueryIndexesForColdBuild = Effect.fn('codeGraph.defer
 export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.restoreQueryIndexesAfterColdBuild')(
   function* (options: {
     readonly onProgress?: CodeGraphSecondaryIndexRestorationProgressCallback;
+    readonly observeTransaction?: () => Effect.Effect<void>;
     readonly ownerToken: string;
     readonly persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector;
     readonly snapshotId: string;
@@ -174,6 +175,7 @@ export const restoreCodeGraphQueryIndexesAfterColdBuild = Effect.fn('codeGraph.r
                 return yield* Effect.fail(new CodeGraphStoreError('Code graph query index restoration changed.'));
               }
               yield* sql.unsafe(definition.createSql);
+              yield* options.observeTransaction?.() ?? Effect.void;
             }),
           ),
         );

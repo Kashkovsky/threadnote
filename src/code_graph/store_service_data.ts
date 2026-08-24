@@ -79,6 +79,7 @@ import {
 import {restoreCodeGraphQueryIndexesAfterColdBuild} from './store_cold_index_deferral.js';
 import {
   finalizePersistentMaterializationSpool,
+  persistentMaterializationStorageObservation,
   removePersistentMaterializationSpool,
 } from './store_materialization_spool_lifecycle.js';
 
@@ -241,6 +242,16 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
               yield* persistentCapacityProtector ? persistentCapacityProtector(boundary, transaction) : transaction;
               yield* restoreCodeGraphQueryIndexesAfterColdBuild({
                 onProgress: onSecondaryIndexProgress,
+                ...(spoolPath && materializationSpool?.onStorageObservation
+                  ? {
+                      observeTransaction: () =>
+                        Effect.sync(() =>
+                          materializationSpool.onStorageObservation?.(
+                            persistentMaterializationStorageObservation(databasePath, spoolPath),
+                          ),
+                        ),
+                    }
+                  : {}),
                 ownerToken: mode.ownerToken,
                 persistentCapacityProtector,
                 snapshotId: mode.snapshotId,

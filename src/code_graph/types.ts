@@ -288,6 +288,14 @@ export interface CodeGraphMaterializationMetrics {
     readonly durableJournalHighWaterBytes?: number;
     readonly durableSharedMemoryBytes?: number;
     readonly durableSharedMemoryHighWaterBytes?: number;
+    /** Reconstructible sorted materialization sidecar and its transient rollback journal. */
+    readonly durableSidecarDatabaseBytes?: number;
+    readonly durableSidecarDatabaseHighWaterBytes?: number;
+    readonly durableSidecarJournalBytes?: number;
+    readonly durableSidecarJournalHighWaterBytes?: number;
+    /** Must remain zero because the spool contract uses DELETE journaling. */
+    readonly durableSidecarWalBytes?: number;
+    readonly durableSidecarWalHighWaterBytes?: number;
     readonly durableWalBytes?: number;
     readonly durableWalHighWaterBytes?: number;
     readonly estimateBasis?: 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback';

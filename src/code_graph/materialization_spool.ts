@@ -257,6 +257,7 @@ export function commitCodeGraphMaterializationSpoolBatch(
   database: Database,
   receipt: CodeGraphMaterializationSpoolBatchReceipt,
   writeBatch: () => void,
+  observeTransaction?: () => void,
 ): 'appended' | 'resumed' {
   validateCodeGraphMaterializationSpoolBatchReceipt(receipt);
   return database.transaction(() => {
@@ -312,6 +313,7 @@ export function commitCodeGraphMaterializationSpoolBatch(
          WHERE singleton = 1 AND stage = 'appending' AND appended_batch_count = ?`,
       )
       .run(state.appendedBatchCount);
+    observeTransaction?.();
     return 'appended';
   })();
 }
@@ -376,6 +378,7 @@ export function commitCodeGraphMaterializationSpoolSortedSurface(
   database: Database,
   surfaceIndex: number,
   writeSurface: () => void,
+  observeTransaction?: () => void,
 ): 'sorted' | 'resumed' {
   validateNonNegativeSafeInteger(surfaceIndex, 'surface index');
   return database.transaction(() => {
@@ -396,6 +399,7 @@ export function commitCodeGraphMaterializationSpoolSortedSurface(
          WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = ?`,
       )
       .run(surfaceIndex);
+    observeTransaction?.();
     return 'sorted';
   })();
 }
@@ -422,12 +426,15 @@ export function finishCodeGraphMaterializationSpoolSort(database: Database): 're
   })();
 }
 
-export function sortCodeGraphMaterializationSpoolSurfaces(database: Database): void {
+export function sortCodeGraphMaterializationSpoolSurfaces(database: Database, observeTransaction?: () => void): void {
   beginCodeGraphMaterializationSpoolSort(database, CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length);
   for (let index = 0; index < CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length; index += 1) {
     const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!;
-    commitCodeGraphMaterializationSpoolSortedSurface(database, index, () =>
-      sortCodeGraphMaterializationSpoolSurface(database, surface),
+    commitCodeGraphMaterializationSpoolSortedSurface(
+      database,
+      index,
+      () => sortCodeGraphMaterializationSpoolSurface(database, surface),
+      observeTransaction,
     );
   }
   finishCodeGraphMaterializationSpoolSort(database);

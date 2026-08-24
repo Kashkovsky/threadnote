@@ -660,6 +660,12 @@ function parseMaterializationStorage(
     'durableJournalHighWaterBytes',
     'durableSharedMemoryBytes',
     'durableSharedMemoryHighWaterBytes',
+    'durableSidecarDatabaseBytes',
+    'durableSidecarDatabaseHighWaterBytes',
+    'durableSidecarJournalBytes',
+    'durableSidecarJournalHighWaterBytes',
+    'durableSidecarWalBytes',
+    'durableSidecarWalHighWaterBytes',
     'durableWalBytes',
     'durableWalHighWaterBytes',
     'estimatedConcurrentBuildBytes',
@@ -686,6 +692,9 @@ function parseMaterializationStorage(
     ['durableFilesystemBytes', 'durableFilesystemHighWaterBytes'],
     ['durableJournalBytes', 'durableJournalHighWaterBytes'],
     ['durableSharedMemoryBytes', 'durableSharedMemoryHighWaterBytes'],
+    ['durableSidecarDatabaseBytes', 'durableSidecarDatabaseHighWaterBytes'],
+    ['durableSidecarJournalBytes', 'durableSidecarJournalHighWaterBytes'],
+    ['durableSidecarWalBytes', 'durableSidecarWalHighWaterBytes'],
     ['durableWalBytes', 'durableWalHighWaterBytes'],
   ] as const) {
     if (
@@ -748,6 +757,24 @@ function parseMaterializationStorage(
     ...(value.durableSharedMemoryHighWaterBytes === undefined
       ? {}
       : {durableSharedMemoryHighWaterBytes: Number(value.durableSharedMemoryHighWaterBytes)}),
+    ...(value.durableSidecarDatabaseBytes === undefined
+      ? {}
+      : {durableSidecarDatabaseBytes: Number(value.durableSidecarDatabaseBytes)}),
+    ...(value.durableSidecarDatabaseHighWaterBytes === undefined
+      ? {}
+      : {durableSidecarDatabaseHighWaterBytes: Number(value.durableSidecarDatabaseHighWaterBytes)}),
+    ...(value.durableSidecarJournalBytes === undefined
+      ? {}
+      : {durableSidecarJournalBytes: Number(value.durableSidecarJournalBytes)}),
+    ...(value.durableSidecarJournalHighWaterBytes === undefined
+      ? {}
+      : {durableSidecarJournalHighWaterBytes: Number(value.durableSidecarJournalHighWaterBytes)}),
+    ...(value.durableSidecarWalBytes === undefined
+      ? {}
+      : {durableSidecarWalBytes: Number(value.durableSidecarWalBytes)}),
+    ...(value.durableSidecarWalHighWaterBytes === undefined
+      ? {}
+      : {durableSidecarWalHighWaterBytes: Number(value.durableSidecarWalHighWaterBytes)}),
     ...(value.durableWalBytes === undefined ? {} : {durableWalBytes: Number(value.durableWalBytes)}),
     ...(value.durableWalHighWaterBytes === undefined
       ? {}

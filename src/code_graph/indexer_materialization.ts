@@ -1448,34 +1448,172 @@ export function materializationRowsWithStoreProgress(
   }
 }
 
-interface MaterializationStorageFiles {
+export interface MaterializationStorageFiles {
   readonly databaseBytes: number;
   readonly journalBytes: number;
   readonly sharedMemoryBytes: number;
+  readonly sidecarDatabaseBytes: number;
+  readonly sidecarJournalBytes: number;
+  readonly sidecarSharedMemoryBytes: number;
+  readonly sidecarWalBytes: number;
   readonly totalBytes: number;
   readonly walBytes: number;
+}
+
+export interface MaterializationStorageTelemetry {
+  readonly durableDatabaseFileBytes: number;
+  readonly durableDatabaseFileHighWaterBytes: number;
+  readonly durableDatabaseGrowthBytes: number;
+  readonly durableDatabaseGrowthHighWaterBytes: number;
+  readonly durableDatabaseStartBytes: number;
+  readonly durableFilesystemBytes: number;
+  readonly durableFilesystemHighWaterBytes: number;
+  readonly durableJournalBytes: number;
+  readonly durableJournalHighWaterBytes: number;
+  readonly durableSharedMemoryBytes: number;
+  readonly durableSharedMemoryHighWaterBytes: number;
+  readonly durableSidecarDatabaseBytes?: number;
+  readonly durableSidecarDatabaseHighWaterBytes?: number;
+  readonly durableSidecarJournalBytes?: number;
+  readonly durableSidecarJournalHighWaterBytes?: number;
+  readonly durableSidecarWalBytes?: number;
+  readonly durableSidecarWalHighWaterBytes?: number;
+  readonly durableWalBytes: number;
+  readonly durableWalHighWaterBytes: number;
+}
+
+export function initialMaterializationStorageTelemetry(
+  current: MaterializationStorageFiles,
+  includeSidecar: boolean,
+): MaterializationStorageTelemetry {
+  return {
+    durableDatabaseFileBytes: current.databaseBytes,
+    durableDatabaseFileHighWaterBytes: current.databaseBytes,
+    durableDatabaseGrowthBytes: 0,
+    durableDatabaseGrowthHighWaterBytes: 0,
+    durableDatabaseStartBytes: current.databaseBytes,
+    durableFilesystemBytes: current.totalBytes,
+    durableFilesystemHighWaterBytes: current.totalBytes,
+    durableJournalBytes: current.journalBytes,
+    durableJournalHighWaterBytes: current.journalBytes,
+    durableSharedMemoryBytes: current.sharedMemoryBytes,
+    durableSharedMemoryHighWaterBytes: current.sharedMemoryBytes,
+    ...(includeSidecar
+      ? {
+          durableSidecarDatabaseBytes: current.sidecarDatabaseBytes,
+          durableSidecarDatabaseHighWaterBytes: current.sidecarDatabaseBytes,
+          durableSidecarJournalBytes: current.sidecarJournalBytes,
+          durableSidecarJournalHighWaterBytes: current.sidecarJournalBytes,
+          durableSidecarWalBytes: current.sidecarWalBytes,
+          durableSidecarWalHighWaterBytes: current.sidecarWalBytes,
+        }
+      : {}),
+    durableWalBytes: current.walBytes,
+    durableWalHighWaterBytes: current.walBytes,
+  };
+}
+
+export function observeMaterializationStorage(
+  previous: MaterializationStorageTelemetry,
+  current: MaterializationStorageFiles,
+): MaterializationStorageTelemetry {
+  const durableDatabaseGrowthBytes = Math.max(0, current.databaseBytes - previous.durableDatabaseStartBytes);
+  return {
+    ...previous,
+    durableDatabaseFileBytes: current.databaseBytes,
+    durableDatabaseFileHighWaterBytes: Math.max(previous.durableDatabaseFileHighWaterBytes, current.databaseBytes),
+    durableDatabaseGrowthBytes,
+    durableDatabaseGrowthHighWaterBytes: Math.max(
+      previous.durableDatabaseGrowthHighWaterBytes,
+      durableDatabaseGrowthBytes,
+    ),
+    durableFilesystemBytes: current.totalBytes,
+    durableFilesystemHighWaterBytes: Math.max(previous.durableFilesystemHighWaterBytes, current.totalBytes),
+    durableJournalBytes: current.journalBytes,
+    durableJournalHighWaterBytes: Math.max(previous.durableJournalHighWaterBytes, current.journalBytes),
+    durableSharedMemoryBytes: current.sharedMemoryBytes,
+    durableSharedMemoryHighWaterBytes: Math.max(previous.durableSharedMemoryHighWaterBytes, current.sharedMemoryBytes),
+    ...(previous.durableSidecarDatabaseBytes === undefined
+      ? {}
+      : {
+          durableSidecarDatabaseBytes: current.sidecarDatabaseBytes,
+          durableSidecarDatabaseHighWaterBytes: Math.max(
+            previous.durableSidecarDatabaseHighWaterBytes ?? 0,
+            current.sidecarDatabaseBytes,
+          ),
+          durableSidecarJournalBytes: current.sidecarJournalBytes,
+          durableSidecarJournalHighWaterBytes: Math.max(
+            previous.durableSidecarJournalHighWaterBytes ?? 0,
+            current.sidecarJournalBytes,
+          ),
+          durableSidecarWalBytes: current.sidecarWalBytes,
+          durableSidecarWalHighWaterBytes: Math.max(
+            previous.durableSidecarWalHighWaterBytes ?? 0,
+            current.sidecarWalBytes,
+          ),
+        }),
+    durableWalBytes: current.walBytes,
+    durableWalHighWaterBytes: Math.max(previous.durableWalHighWaterBytes, current.walBytes),
+  };
 }
 
 export function materializationStorageFiles(
   fs: FileSystem.FileSystem,
   databasePath: string,
+  sidecarDatabasePaths: readonly string[] = [],
 ): Effect.Effect<MaterializationStorageFiles, never> {
   const bytes = (file: string) =>
     fs.stat(file).pipe(
       Effect.map(info => Math.min(Number(info.size), Number.MAX_SAFE_INTEGER)),
       Effect.catch(() => Effect.succeed(0)),
     );
+  const sidecarFiles = sidecarDatabasePaths.flatMap(sidecar => [
+    bytes(sidecar),
+    bytes(`${sidecar}-journal`),
+    bytes(`${sidecar}-shm`),
+    bytes(`${sidecar}-wal`),
+  ]);
   return Effect.all(
-    [bytes(databasePath), bytes(`${databasePath}-journal`), bytes(`${databasePath}-shm`), bytes(`${databasePath}-wal`)],
-    {concurrency: 4},
+    [
+      bytes(databasePath),
+      bytes(`${databasePath}-journal`),
+      bytes(`${databasePath}-shm`),
+      bytes(`${databasePath}-wal`),
+      ...sidecarFiles,
+    ],
+    {concurrency: 8},
   ).pipe(
-    Effect.map(([databaseBytes, journalBytes, sharedMemoryBytes, walBytes]) => ({
-      databaseBytes,
-      journalBytes,
-      sharedMemoryBytes,
-      totalBytes: databaseBytes + journalBytes + sharedMemoryBytes + walBytes,
-      walBytes,
-    })),
+    Effect.map(([databaseBytes, journalBytes, sharedMemoryBytes, walBytes, ...sidecars]) => {
+      let sidecarDatabaseBytes = 0;
+      let sidecarJournalBytes = 0;
+      let sidecarSharedMemoryBytes = 0;
+      let sidecarWalBytes = 0;
+      for (let index = 0; index < sidecars.length; index += 4) {
+        sidecarDatabaseBytes += sidecars[index] ?? 0;
+        sidecarJournalBytes += sidecars[index + 1] ?? 0;
+        sidecarSharedMemoryBytes += sidecars[index + 2] ?? 0;
+        sidecarWalBytes += sidecars[index + 3] ?? 0;
+      }
+      return {
+        databaseBytes,
+        journalBytes,
+        sharedMemoryBytes,
+        sidecarDatabaseBytes,
+        sidecarJournalBytes,
+        sidecarSharedMemoryBytes,
+        sidecarWalBytes,
+        totalBytes:
+          databaseBytes +
+          journalBytes +
+          sharedMemoryBytes +
+          walBytes +
+          sidecarDatabaseBytes +
+          sidecarJournalBytes +
+          sidecarSharedMemoryBytes +
+          sidecarWalBytes,
+        walBytes,
+      };
+    }),
   );
 }
 

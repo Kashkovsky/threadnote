@@ -35,6 +35,7 @@ import {
   factMaterializationBatches,
   forcedSnapshotIdentity,
   graphContentIdentity,
+  initialMaterializationStorageTelemetry,
   loadCachedFacts,
   materializationRows,
   materializationRowsWithStoreProgress,
@@ -45,6 +46,7 @@ import {
   messageOf,
   persistentMaterializationTransactionBatches,
   promoteReadySnapshotWithCapacity,
+  observeMaterializationStorage,
   reusableReadySnapshotForCleanCommit,
   selectedDecodedFactBytes,
   snapshotIdentity,
@@ -75,6 +77,7 @@ import type {CodeGraphWorkspace} from './languages/types.js';
 import {codeGraphRequestBuildLockPath, codeGraphSnapshotBuildLockPath, type CodeGraphLayout} from './layout.js';
 import {compareCodeUnits} from './ordering.js';
 import {MaterializationSubphaseTiming} from './materialization_subphase_timing.js';
+import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
 import {
   CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION,
   materializedBatchShardDerivationIdentity,
@@ -83,6 +86,7 @@ import {
   shardDonorIds,
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphLanguagePackProvenance,
+  type CodeGraphMaterializationSpoolContext,
   type CodeGraphRetiredSnapshotCleanupProgress,
   type CodeGraphReusableCleanBase,
   type CodeGraphStagingProgress,
@@ -1077,6 +1081,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     input.inventory.workspace ??
     (yield* input.languagePacks.discoverWorkspace(input.inventory.files));
   const directPersistentMaterialization = input.persistentOwnerToken !== undefined;
+  const materializationSpoolStoragePath = directPersistentMaterialization
+    ? codeGraphMaterializationSpoolPath(yield* Path.Path, input.layout, input.building.id)
+    : undefined;
   const protectDirectPersistentWrite = codeGraphDirectPersistentCapacityProtector(input);
   const persistentCapacityGuard = protectDirectPersistentWrite;
   const extractionDiagnostics: string[] = [...workspace.diagnostics];
@@ -1228,20 +1235,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     let factsBytesCompleted = 0;
     let durableDatabaseBytes = 0;
     let durableDatabaseHighWaterBytes = 0;
-    const storageAtStart = yield* materializationStorageFiles(input.fs, input.layout.databasePath);
-    let durableDatabaseFileBytes = storageAtStart.databaseBytes;
-    let durableDatabaseFileHighWaterBytes = storageAtStart.databaseBytes;
-    const durableDatabaseStartBytes = storageAtStart.databaseBytes;
-    let durableDatabaseGrowthBytes = 0;
-    let durableDatabaseGrowthHighWaterBytes = 0;
-    let durableFilesystemBytes = storageAtStart.totalBytes;
-    let durableFilesystemHighWaterBytes = storageAtStart.totalBytes;
-    let durableJournalBytes = storageAtStart.journalBytes;
-    let durableJournalHighWaterBytes = storageAtStart.journalBytes;
-    let durableSharedMemoryBytes = storageAtStart.sharedMemoryBytes;
-    let durableSharedMemoryHighWaterBytes = storageAtStart.sharedMemoryBytes;
-    let durableWalBytes = storageAtStart.walBytes;
-    let durableWalHighWaterBytes = storageAtStart.walBytes;
+    const storageAtStart = yield* materializationStorageFiles(
+      input.fs,
+      input.layout.databasePath,
+      materializationSpoolStoragePath ? [materializationSpoolStoragePath] : [],
+    );
+    let storageTelemetry = initialMaterializationStorageTelemetry(storageAtStart, directPersistentMaterialization);
     let lastStorageFileSampleAt = Number.NEGATIVE_INFINITY;
     let temporaryDatabaseBytes = 0;
     let temporaryDatabaseHighWaterBytes = 0;
@@ -1275,42 +1274,33 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       storage: {
         ...storagePlan,
         durableDatabaseBytes,
-        durableDatabaseFileBytes,
-        durableDatabaseFileHighWaterBytes,
-        durableDatabaseGrowthBytes,
-        durableDatabaseGrowthHighWaterBytes,
         durableDatabaseHighWaterBytes,
-        durableDatabaseStartBytes,
-        durableFilesystemBytes,
-        durableFilesystemHighWaterBytes,
-        durableJournalBytes,
-        durableJournalHighWaterBytes,
-        durableSharedMemoryBytes,
-        durableSharedMemoryHighWaterBytes,
-        durableWalBytes,
-        durableWalHighWaterBytes,
+        ...storageTelemetry,
         temporaryDatabaseBytes,
         temporaryDatabaseHighWaterBytes,
       },
       transactionMilliseconds,
     });
+    const materializationSpoolContext: CodeGraphMaterializationSpoolContext | undefined =
+      directPersistentMaterialization
+        ? {
+            checkoutId: input.layout.checkoutId,
+            onStorageObservation: current => {
+              storageTelemetry = observeMaterializationStorage(storageTelemetry, current);
+            },
+            repositoryRoot: input.layout.repositoryRoot,
+          }
+        : undefined;
     const refreshStorageFiles = (force = false) =>
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         if (!force && now - lastStorageFileSampleAt < 1_000) return;
-        const current = yield* materializationStorageFiles(input.fs, input.layout.databasePath);
-        durableDatabaseFileBytes = current.databaseBytes;
-        durableDatabaseFileHighWaterBytes = Math.max(durableDatabaseFileHighWaterBytes, current.databaseBytes);
-        durableDatabaseGrowthBytes = Math.max(0, current.databaseBytes - durableDatabaseStartBytes);
-        durableDatabaseGrowthHighWaterBytes = Math.max(durableDatabaseGrowthHighWaterBytes, durableDatabaseGrowthBytes);
-        durableFilesystemBytes = current.totalBytes;
-        durableFilesystemHighWaterBytes = Math.max(durableFilesystemHighWaterBytes, current.totalBytes);
-        durableJournalBytes = current.journalBytes;
-        durableJournalHighWaterBytes = Math.max(durableJournalHighWaterBytes, current.journalBytes);
-        durableSharedMemoryBytes = current.sharedMemoryBytes;
-        durableSharedMemoryHighWaterBytes = Math.max(durableSharedMemoryHighWaterBytes, current.sharedMemoryBytes);
-        durableWalBytes = current.walBytes;
-        durableWalHighWaterBytes = Math.max(durableWalHighWaterBytes, current.walBytes);
+        const current = yield* materializationStorageFiles(
+          input.fs,
+          input.layout.databasePath,
+          materializationSpoolStoragePath ? [materializationSpoolStoragePath] : [],
+        );
+        storageTelemetry = observeMaterializationStorage(storageTelemetry, current);
         lastStorageFileSampleAt = now;
       });
     const storageShortfalls = materializationStorageShortfalls(storagePlan);
@@ -1419,7 +1409,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
             })),
             (batchIndex, progress) => reportStagingProgress(groupByIndex.get(batchIndex)!, progress),
             persistentCapacityGuard,
-            {checkoutId: input.layout.checkoutId, repositoryRoot: input.layout.repositoryRoot},
+            materializationSpoolContext,
           );
         } else {
           for (const batch of group) {
@@ -1748,8 +1738,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           stageMilliseconds,
           total: totalFiles,
         }),
-        {checkoutId: input.layout.checkoutId, repositoryRoot: input.layout.repositoryRoot},
+        materializationSpoolContext,
       );
+      yield* refreshStorageFiles(true);
     }
     yield* input.onProgress?.({
       completed: materializedFiles,

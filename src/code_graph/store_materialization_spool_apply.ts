@@ -35,6 +35,7 @@ export const registerCodeGraphMaterializationSpoolApply = Effect.fn('codeGraph.r
     ownerToken: string,
     spoolIdentity: string,
     surfaces: readonly CodeGraphMaterializationSpoolSurfacePlan[],
+    observeTransaction?: () => Effect.Effect<void>,
   ) {
     yield* validateApplyIdentity(spoolIdentity);
     yield* validateSurfacePlan(surfaces);
@@ -64,6 +65,7 @@ export const registerCodeGraphMaterializationSpoolApply = Effect.fn('codeGraph.r
             surface.rowCount === 0 ? 1 : 0,
           ]),
         );
+        yield* observeTransaction?.() ?? Effect.void;
         return 'registered' as const;
       }),
     );
@@ -79,6 +81,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
   spoolIdentity: string,
   surfaceIndex: number,
   writePage: (page: {readonly afterRowid: number; readonly rowCount: number}) => Effect.Effect<void, unknown>,
+  observeTransaction?: () => Effect.Effect<void>,
 ) {
   yield* validateApplyIdentity(spoolIdentity);
   if (
@@ -157,6 +160,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
       if (Number(updates[0]?.count ?? 0) !== 1) {
         return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply cursor changed.'));
       }
+      yield* observeTransaction?.() ?? Effect.void;
       return {
         afterRowid: page.afterRowid,
         rowCount: page.rowCount,
@@ -312,7 +316,13 @@ export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
 
 export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
   'codeGraph.finalizeMaterializationSpoolReceipts',
-)(function* (sql: SqlClient.SqlClient, snapshotId: string, ownerToken: string, spoolIdentity: string) {
+)(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  ownerToken: string,
+  spoolIdentity: string,
+  observeTransaction?: () => Effect.Effect<void>,
+) {
   yield* validateApplyIdentity(spoolIdentity);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -470,6 +480,7 @@ export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
         return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool receipts lost rows.'));
       }
       yield* assertPersistentMaterializationComplete(sql, snapshotId, ownerToken);
+      yield* observeTransaction?.() ?? Effect.void;
       return 'finalized' as const;
     }),
   );

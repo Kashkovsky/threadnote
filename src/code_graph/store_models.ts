@@ -324,7 +324,20 @@ export interface CodeGraphStagingBatch {
 
 export interface CodeGraphMaterializationSpoolContext {
   readonly checkoutId: string;
+  readonly onStorageObservation?: (observation: CodeGraphMaterializationStorageObservation) => void;
   readonly repositoryRoot: string;
+}
+
+export interface CodeGraphMaterializationStorageObservation {
+  readonly databaseBytes: number;
+  readonly journalBytes: number;
+  readonly sharedMemoryBytes: number;
+  readonly sidecarDatabaseBytes: number;
+  readonly sidecarJournalBytes: number;
+  readonly sidecarSharedMemoryBytes: number;
+  readonly sidecarWalBytes: number;
+  readonly totalBytes: number;
+  readonly walBytes: number;
 }
 
 export type CodeGraphDirectPersistentCapacityProtector = <A, E, R>(

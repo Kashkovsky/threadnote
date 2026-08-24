@@ -33,6 +33,7 @@ import {
 import type {
   CodeGraphDirectPersistentCapacityProtector,
   CodeGraphMaterializationSpoolContext,
+  CodeGraphMaterializationStorageObservation,
   CodeGraphStagingBatch,
 } from './store_models.js';
 import {partitionPersistedReferenceEdges} from './store_resolution_core.js';
@@ -67,6 +68,7 @@ export const appendPersistentMaterializationSpoolFactBatches = Effect.fn(
   if (batches.length === 0) return;
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
   const header = yield* persistentSpoolHeader(runtime, databasePath, sql, snapshotId, context);
+  const spoolPath = codeGraphMaterializationSpoolPath(runtime.path, context, snapshotId);
   const preparation = preparePersistedFullFactCapacity(batches);
   const prepared: PreparedSpoolBatch[] = [];
   for (let index = 0; index < batches.length; index += 1) {
@@ -109,8 +111,11 @@ export const appendPersistentMaterializationSpoolFactBatches = Effect.fn(
   }
   const append = usePersistentSpool(runtime, header, context, database => {
     for (const batch of prepared) {
-      commitCodeGraphMaterializationSpoolBatch(database, batch.receipt, () =>
-        appendCodeGraphMaterializationSpoolFactBatch(database, batch.prepared),
+      commitCodeGraphMaterializationSpoolBatch(
+        database,
+        batch.receipt,
+        () => appendCodeGraphMaterializationSpoolFactBatch(database, batch.prepared),
+        () => observePersistentMaterializationStorage(databasePath, spoolPath, context),
       );
     }
   });
@@ -152,6 +157,7 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
     const protect = <A, E, R>(boundary: CodeGraphDirectPersistentCapacityBoundary, effect: Effect.Effect<A, E, R>) =>
       persistentCapacityProtector ? persistentCapacityProtector(boundary, effect) : effect;
     const header = yield* persistentSpoolHeader(runtime, databasePath, sql, snapshotId, context);
+    const spoolPath = codeGraphMaterializationSpoolPath(runtime.path, context, snapshotId);
     yield* protect(
       {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: 2},
       runWrite(
@@ -174,16 +180,21 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
     const ready = yield* protect(
       sortBoundary,
       usePersistentSpool(runtime, header, context, database => {
-        sortCodeGraphMaterializationSpoolSurfaces(database);
+        sortCodeGraphMaterializationSpoolSurfaces(database, () =>
+          observePersistentMaterializationStorage(databasePath, spoolPath, context),
+        );
         return readCodeGraphMaterializationSpoolReadyPlan(database);
       }),
     );
     const plan = codeGraphMaterializationSpoolApplyPlan(ready);
-    const spoolPath = codeGraphMaterializationSpoolPath(runtime.path, context, snapshotId);
     const attached = Effect.gen(function* () {
       yield* protect(
         {finalFactBytes: 0, operation: 'register persistent code graph materialization plan', rowCount: plan.length},
-        runWrite(registerCodeGraphMaterializationSpoolApply(sql, snapshotId, ownerToken, ready.spoolIdentity, plan)),
+        runWrite(
+          registerCodeGraphMaterializationSpoolApply(sql, snapshotId, ownerToken, ready.spoolIdentity, plan, () =>
+            observePersistentMaterializationStorageEffect(databasePath, spoolPath, context),
+          ),
+        ),
       );
       for (let surfaceIndex = 0; surfaceIndex < plan.length; surfaceIndex += 1) {
         for (;;) {
@@ -197,6 +208,7 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
                 ready.spoolIdentity,
                 surfaceIndex,
                 page => writeCodeGraphMaterializationSpoolSurfacePage(sql, snapshotId, surfaceIndex, page),
+                () => observePersistentMaterializationStorageEffect(databasePath, spoolPath, context),
               ),
             ),
           );
@@ -209,7 +221,11 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
           operation: 'publish persistent code graph materialization spool receipts',
           rowCount: ready.batches.length,
         },
-        runWrite(finalizeCodeGraphMaterializationSpoolReceipts(sql, snapshotId, ownerToken, ready.spoolIdentity)),
+        runWrite(
+          finalizeCodeGraphMaterializationSpoolReceipts(sql, snapshotId, ownerToken, ready.spoolIdentity, () =>
+            observePersistentMaterializationStorageEffect(databasePath, spoolPath, context),
+          ),
+        ),
       );
     });
     yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(spoolPath)]);
@@ -229,7 +245,7 @@ export function materializationSpoolReadOnlyUri(filePath: string): string {
 
 export const removePersistentMaterializationSpool = Effect.fn('codeGraph.removePersistentMaterializationSpool')(
   function* (runtime: CodeGraphStoreRuntime, spoolPath: string) {
-    for (const candidate of [spoolPath, `${spoolPath}-journal`]) {
+    for (const candidate of [spoolPath, `${spoolPath}-journal`, `${spoolPath}-shm`, `${spoolPath}-wal`]) {
       if (yield* runtime.fs.exists(candidate)) yield* runtime.fs.remove(candidate);
     }
   },
@@ -290,4 +306,57 @@ function usePersistentSpool<Value>(
       }),
     database => Effect.sync(() => database.close()),
   );
+}
+
+function observePersistentMaterializationStorageEffect(
+  databasePath: string,
+  spoolPath: string,
+  context: CodeGraphMaterializationSpoolContext,
+): Effect.Effect<void> {
+  return Effect.sync(() => observePersistentMaterializationStorage(databasePath, spoolPath, context));
+}
+
+function observePersistentMaterializationStorage(
+  databasePath: string,
+  spoolPath: string,
+  context: CodeGraphMaterializationSpoolContext,
+): void {
+  context.onStorageObservation?.(persistentMaterializationStorageObservation(databasePath, spoolPath));
+}
+
+export function persistentMaterializationStorageObservation(
+  databasePath: string,
+  spoolPath: string,
+): CodeGraphMaterializationStorageObservation {
+  const databaseBytes = bunFileBytes(databasePath);
+  const journalBytes = bunFileBytes(`${databasePath}-journal`);
+  const sharedMemoryBytes = bunFileBytes(`${databasePath}-shm`);
+  const walBytes = bunFileBytes(`${databasePath}-wal`);
+  const sidecarDatabaseBytes = bunFileBytes(spoolPath);
+  const sidecarJournalBytes = bunFileBytes(`${spoolPath}-journal`);
+  const sidecarSharedMemoryBytes = bunFileBytes(`${spoolPath}-shm`);
+  const sidecarWalBytes = bunFileBytes(`${spoolPath}-wal`);
+  return {
+    databaseBytes,
+    journalBytes,
+    sharedMemoryBytes,
+    sidecarDatabaseBytes,
+    sidecarJournalBytes,
+    sidecarSharedMemoryBytes,
+    sidecarWalBytes,
+    totalBytes:
+      databaseBytes +
+      journalBytes +
+      sharedMemoryBytes +
+      walBytes +
+      sidecarDatabaseBytes +
+      sidecarJournalBytes +
+      sidecarSharedMemoryBytes +
+      sidecarWalBytes,
+    walBytes,
+  };
+}
+
+function bunFileBytes(filePath: string): number {
+  return Math.min(Bun.file(filePath).size, Number.MAX_SAFE_INTEGER);
 }

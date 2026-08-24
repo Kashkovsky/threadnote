@@ -11,6 +11,7 @@ import type {
 } from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
+import {materializationStorageFiles} from '../../src/code_graph/indexer_materialization.js';
 
 effectIt.effect('materializes a full build through the sorted sidecar and removes it after finalization', () =>
   Effect.gen(function* () {
@@ -55,7 +56,28 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
       qualifiedName: 'main',
       span: {column: 1, endColumn: 5, endLine: 1, line: 1},
     };
-    const context = {checkoutId: identity.checkoutId, repositoryRoot};
+    let databaseJournalHighWaterBytes = 0;
+    let databaseWalHighWaterBytes = 0;
+    let sidecarDatabaseHighWaterBytes = 0;
+    let sidecarJournalHighWaterBytes = 0;
+    let sidecarWalHighWaterBytes = 0;
+    const context = {
+      checkoutId: identity.checkoutId,
+      onStorageObservation: (observation: {
+        readonly journalBytes: number;
+        readonly sidecarDatabaseBytes: number;
+        readonly sidecarJournalBytes: number;
+        readonly sidecarWalBytes: number;
+        readonly walBytes: number;
+      }) => {
+        databaseJournalHighWaterBytes = Math.max(databaseJournalHighWaterBytes, observation.journalBytes);
+        databaseWalHighWaterBytes = Math.max(databaseWalHighWaterBytes, observation.walBytes);
+        sidecarDatabaseHighWaterBytes = Math.max(sidecarDatabaseHighWaterBytes, observation.sidecarDatabaseBytes);
+        sidecarJournalHighWaterBytes = Math.max(sidecarJournalHighWaterBytes, observation.sidecarJournalBytes);
+        sidecarWalHighWaterBytes = Math.max(sidecarWalHighWaterBytes, observation.sidecarWalBytes);
+      },
+      repositoryRoot,
+    };
     const store = yield* CodeGraphStore;
     yield* store.withSession(
       databasePath,
@@ -78,6 +100,10 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
     );
     const sidecarPath = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
     expect(yield* fs.exists(sidecarPath)).toBe(false);
+    expect(Math.max(databaseJournalHighWaterBytes, databaseWalHighWaterBytes)).toBeGreaterThan(0);
+    expect(sidecarDatabaseHighWaterBytes).toBeGreaterThan(0);
+    expect(sidecarJournalHighWaterBytes).toBeGreaterThan(0);
+    expect(sidecarWalHighWaterBytes).toBe(0);
     const database = new Database(databasePath, {readonly: true, strict: true});
     try {
       expect(
@@ -94,6 +120,39 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
     } finally {
       database.close(false);
     }
+  }).pipe(provideTestLayer(ApplicationLayer)),
+);
+
+effectIt.effect('accounts for the sidecar and every journal family in durable high-water samples', () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-materialization-spool-storage-'});
+    const databasePath = path.join(root, 'graph.sqlite');
+    const sidecarPath = path.join(root, 'spool.sqlite');
+    for (const [file, size] of [
+      [databasePath, 10],
+      [`${databasePath}-journal`, 2],
+      [`${databasePath}-shm`, 3],
+      [`${databasePath}-wal`, 4],
+      [sidecarPath, 20],
+      [`${sidecarPath}-journal`, 5],
+      [`${sidecarPath}-shm`, 6],
+      [`${sidecarPath}-wal`, 7],
+    ] as const) {
+      yield* fs.writeFile(file, new Uint8Array(size));
+    }
+    expect(yield* materializationStorageFiles(fs, databasePath, [sidecarPath])).toEqual({
+      databaseBytes: 10,
+      journalBytes: 2,
+      sharedMemoryBytes: 3,
+      sidecarDatabaseBytes: 20,
+      sidecarJournalBytes: 5,
+      sidecarSharedMemoryBytes: 6,
+      sidecarWalBytes: 7,
+      totalBytes: 57,
+      walBytes: 4,
+    });
   }).pipe(provideTestLayer(ApplicationLayer)),
 );
 
