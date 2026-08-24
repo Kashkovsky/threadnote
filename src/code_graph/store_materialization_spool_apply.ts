@@ -2,7 +2,7 @@ import {Effect} from 'effect';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphMaterializationApplyPages} from './materialization_spool.js';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from './materialization_spool_apply_surfaces.js';
-import {assertPersistentBuildOwner} from './store_build_core.js';
+import {assertPersistentBuildOwner, assertPersistentMaterializationComplete} from './store_build_core.js';
 import {CodeGraphStoreError} from './types.js';
 
 export interface CodeGraphMaterializationSpoolSurfacePlan {
@@ -308,6 +308,171 @@ export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
   ) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply is incomplete.'));
   }
+});
+
+export const finalizeCodeGraphMaterializationSpoolReceipts = Effect.fn(
+  'codeGraph.finalizeMaterializationSpoolReceipts',
+)(function* (sql: SqlClient.SqlClient, snapshotId: string, ownerToken: string, spoolIdentity: string) {
+  yield* validateApplyIdentity(spoolIdentity);
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
+      yield* assertCodeGraphMaterializationSpoolApplyComplete(sql, snapshotId, ownerToken, spoolIdentity);
+      const expectedRows = yield* sql.unsafe<{readonly count: number | bigint}>(
+        'SELECT COUNT(*) AS count FROM materialization_spool.materialization_spool_batches',
+      );
+      const expectedBatchCount = Number(expectedRows[0]?.count ?? -1);
+      if (!Number.isSafeInteger(expectedBatchCount) || expectedBatchCount < 0) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError('Persistent materialization spool receipt count is invalid.'),
+        );
+      }
+      const existing = yield* sql.unsafe<{
+        readonly analysis_count: number | bigint;
+        readonly materialization_count: number | bigint;
+      }>(
+        `SELECT
+           (SELECT COUNT(*) FROM building_analysis_batches WHERE snapshot_id = ?) AS analysis_count,
+           (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ?) AS materialization_count`,
+        [snapshotId, snapshotId],
+      );
+      const analysisCount = Number(existing[0]?.analysis_count ?? -1);
+      const materializationCount = Number(existing[0]?.materialization_count ?? -1);
+      if (analysisCount !== 0 || materializationCount !== 0) {
+        if (analysisCount !== expectedBatchCount || materializationCount !== expectedBatchCount) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError('Persistent materialization spool receipts are incomplete.'),
+          );
+        }
+        const mismatches = yield* sql.unsafe<{readonly count: number | bigint}>(
+          `SELECT COUNT(*) AS count
+           FROM materialization_spool.materialization_spool_batches AS spool
+           LEFT JOIN building_materialization_batches AS materialization
+             ON materialization.snapshot_id = ? AND materialization.batch_index = spool.batch_index
+           LEFT JOIN building_analysis_batches AS analysis
+             ON analysis.snapshot_id = ? AND analysis.batch_index = spool.batch_index
+           WHERE materialization.batch_fingerprint IS NOT spool.batch_id
+              OR materialization.symbol_count IS NOT spool.symbol_count
+              OR materialization.edge_count IS NOT spool.edge_count
+              OR materialization.term_count IS NOT spool.term_count
+              OR materialization.lookup_count IS NOT spool.lookup_count
+              OR materialization.reference_count IS NOT spool.reference_count
+              OR materialization.candidate_count IS NOT spool.candidate_count
+              OR materialization.reexport_count IS NOT spool.reexport_count
+              OR analysis.batch_fingerprint IS NOT spool.batch_id
+              OR analysis.symbol_count IS NOT spool.symbol_count
+              OR analysis.edge_count IS NOT spool.edge_count`,
+          [snapshotId, snapshotId],
+        );
+        if (Number(mismatches[0]?.count ?? -1) !== 0) {
+          return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool receipts changed.'));
+        }
+        const lexical = yield* sql.unsafe<{
+          readonly completed_batch_count: number | bigint;
+          readonly posting_count: number | bigint;
+          readonly symbol_count: number | bigint;
+          readonly term_count: number | bigint;
+        }>(
+          `SELECT completed_batch_count, posting_count, symbol_count, term_count
+           FROM building_lexical_counters WHERE snapshot_id = ? LIMIT 1`,
+          [snapshotId],
+        );
+        const expectedLexical = yield* sql.unsafe<{
+          readonly posting_count: number | bigint;
+          readonly symbol_count: number | bigint;
+          readonly term_count: number | bigint;
+        }>(`SELECT
+          (SELECT COUNT(*) FROM materialization_spool.materialization_ordered_symbol_terms) AS posting_count,
+          (SELECT COUNT(*) FROM materialization_spool.materialization_ordered_symbols) AS symbol_count,
+          (SELECT COUNT(*) FROM materialization_spool.materialization_ordered_terms) AS term_count`);
+        if (
+          Number(lexical[0]?.completed_batch_count ?? -1) !== expectedBatchCount ||
+          Number(lexical[0]?.posting_count ?? -1) !== Number(expectedLexical[0]?.posting_count ?? -2) ||
+          Number(lexical[0]?.symbol_count ?? -1) !== Number(expectedLexical[0]?.symbol_count ?? -2) ||
+          Number(lexical[0]?.term_count ?? -1) !== Number(expectedLexical[0]?.term_count ?? -2)
+        ) {
+          return yield* Effect.fail(
+            new CodeGraphStoreError('Persistent materialization spool lexical receipt changed.'),
+          );
+        }
+        yield* assertPersistentMaterializationComplete(sql, snapshotId, ownerToken);
+        return 'resumed' as const;
+      }
+
+      yield* sql.unsafe(
+        `INSERT INTO snapshot_analysis_symbol_counts (snapshot_id, language, kind, count)
+         SELECT ?, language, kind, COUNT(*)
+         FROM symbols WHERE snapshot_id = ?
+         GROUP BY language, kind`,
+        [snapshotId, snapshotId],
+      );
+      yield* sql.unsafe(
+        `INSERT INTO snapshot_analysis_edge_histogram (
+           snapshot_id, provenance, relation, confidence, endpoint_state, count
+         )
+         SELECT ?, provenance, relation, confidence, endpoint_state, COUNT(*)
+         FROM (
+           SELECT provenance, relation, confidence,
+             CASE WHEN source_id IS NULL OR target_id IS NULL THEN 1 WHEN source_id = target_id THEN 2 ELSE 0 END
+               AS endpoint_state
+           FROM edges WHERE snapshot_id = ?
+           UNION ALL
+           SELECT provenance, relation, confidence, 1 AS endpoint_state
+           FROM building_references WHERE snapshot_id = ?
+         ) AS staged_edges
+         GROUP BY provenance, relation, confidence, endpoint_state`,
+        [snapshotId, snapshotId, snapshotId],
+      );
+      const completedAt = new Date().toISOString();
+      yield* sql.unsafe(
+        `INSERT INTO building_analysis_batches (
+           snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, completed_at
+         )
+         SELECT ?, batch_index, batch_id, symbol_count, edge_count, ?
+         FROM materialization_spool.materialization_spool_batches
+         ORDER BY batch_index`,
+        [snapshotId, completedAt],
+      );
+      yield* sql.unsafe(
+        `UPDATE building_lexical_counters
+         SET completed_batch_count = ?,
+             posting_count = (
+               SELECT COUNT(*) FROM materialization_spool.materialization_ordered_symbol_terms
+             ),
+             symbol_count = (
+               SELECT COUNT(*) FROM materialization_spool.materialization_ordered_symbols
+             ),
+             term_count = (
+               SELECT COUNT(*) FROM materialization_spool.materialization_ordered_terms
+             )
+         WHERE snapshot_id = ?`,
+        [expectedBatchCount, snapshotId],
+      );
+      const lexicalUpdates = yield* sql.unsafe<{readonly count: number | bigint}>('SELECT changes() AS count');
+      if (Number(lexicalUpdates[0]?.count ?? 0) !== 1) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError('Persistent materialization spool lexical receipt is missing.'),
+        );
+      }
+      yield* sql.unsafe(
+        `INSERT INTO building_materialization_batches (
+           snapshot_id, batch_index, batch_fingerprint, symbol_count, edge_count, term_count,
+           lookup_count, reference_count, candidate_count, reexport_count, completed_at
+         )
+         SELECT ?, batch_index, batch_id, symbol_count, edge_count, term_count,
+           lookup_count, reference_count, candidate_count, reexport_count, ?
+         FROM materialization_spool.materialization_spool_batches
+         ORDER BY batch_index`,
+        [snapshotId, completedAt],
+      );
+      const receiptChanges = yield* sql.unsafe<{readonly count: number | bigint}>('SELECT changes() AS count');
+      if (Number(receiptChanges[0]?.count ?? -1) !== expectedBatchCount) {
+        return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool receipts lost rows.'));
+      }
+      yield* assertPersistentMaterializationComplete(sql, snapshotId, ownerToken);
+      return 'finalized' as const;
+    }),
+  );
 });
 
 function readSurfaceRows(sql: SqlClient.SqlClient, snapshotId: string) {
