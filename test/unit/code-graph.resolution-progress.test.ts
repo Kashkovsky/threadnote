@@ -287,7 +287,10 @@ describe('code graph reference-resolution progress', () => {
         expect(result.afterFailure).toEqual({remaining: 13, resolved: 4});
         expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 8, resolved: 4});
         expect(resumedCapacityRows).toEqual([88, 55]);
-        expect(resumedTransactions).toBe(4);
+        // Commit width adapts from live SQLite duration; the durable eight-page
+        // capacity windows and exact committed prefix are the stable contract.
+        expect(resumedTransactions).toBeGreaterThanOrEqual(3);
+        expect(resumedTransactions).toBeLessThanOrEqual(7);
         expect(result.resumed).toMatchObject({pagesCompleted: 13, referencesExamined: 13, resolved: 13});
         expect(result.afterResume).toEqual({remaining: 0, resolved: 17});
         expect(result.graph.edges).toHaveLength(17);

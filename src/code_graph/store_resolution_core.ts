@@ -482,10 +482,32 @@ function persistentFullReferencePageTotal(
 
 export const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
 export const PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES = 8;
+export const PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES = PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES;
 
 export interface PersistentReferenceResolutionReservation<Value> {
   readonly pages: readonly Value[];
   readonly transactions: readonly (readonly Value[])[];
+}
+
+/**
+ * Adapt the next resolved-reference commit toward the existing three-second
+ * transaction target without retaining more than one eight-page capacity
+ * window. Growth is at most 2x and a slow region shrinks before the next
+ * reservation, preserving a wide margin below the 15-second heartbeat gate.
+ */
+export function nextPersistentReferenceResolutionTransactionPages(currentPages: number, milliseconds: number): number {
+  const current =
+    Number.isSafeInteger(currentPages) &&
+    currentPages >= 1 &&
+    currentPages <= PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES
+      ? currentPages
+      : PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES;
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return current;
+  if (milliseconds < 2_000) {
+    return Math.min(PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES, current * 2);
+  }
+  if (milliseconds > 5_000) return Math.max(1, Math.floor(current / 2));
+  return current;
 }
 
 /**
@@ -495,10 +517,17 @@ export interface PersistentReferenceResolutionReservation<Value> {
  */
 export function planPersistentReferenceResolutionPages<const Value>(
   pages: readonly Value[],
+  transactionPageLimit = PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
 ): readonly PersistentReferenceResolutionReservation<Value>[] {
+  const boundedTransactionPageLimit =
+    Number.isSafeInteger(transactionPageLimit) &&
+    transactionPageLimit >= 1 &&
+    transactionPageLimit <= PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES
+      ? transactionPageLimit
+      : PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES;
   return [...chunk(pages, PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES)].map(reservationPages => ({
     pages: reservationPages,
-    transactions: [...chunk(reservationPages, PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES)],
+    transactions: [...chunk(reservationPages, boundedTransactionPageLimit)],
   }));
 }
 

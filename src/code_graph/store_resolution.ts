@@ -27,7 +27,9 @@ import {
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
   codeGraphPersistentReferencePageStatement,
+  nextPersistentReferenceResolutionTransactionPages,
   PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
+  PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
   planPersistentReferenceResolutionPages,
   persistentFullReferencePageTotal,
   persistentReferenceResolutionCapacityBoundary,
@@ -190,6 +192,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   let transactionMilliseconds = 0;
   let transactionWritingAliasesMilliseconds = 0;
   let transactionWritingEdgesMilliseconds = 0;
+  let persistentTransactionPageLimit = PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES;
   const transactionStageMilliseconds = () => ({
     preparingBatch: transactionPreparingBatchMilliseconds,
     retiringReferences: transactionRetiringReferencesMilliseconds,
@@ -329,6 +332,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     ) {
       const resolutions: ActivationResolutionRow[] = [];
       const aliases: Array<readonly [string, string, string, number, 'alias', string, string]> = [];
+      let observedTransactionMilliseconds: number | undefined;
       for (const page of transactionPages) {
         for (const resolution of page.resolutions) resolutions.push(resolution);
         for (const alias of page.aliases) aliases.push(alias);
@@ -492,7 +496,9 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             }
           }),
         );
-        const observedTransaction = observeResolutionTransaction(transaction);
+        const observedTransaction = observeResolutionTransaction(transaction, milliseconds => {
+          observedTransactionMilliseconds = milliseconds;
+        });
         const gatedTransaction =
           mode?.mode === 'persisted-full' && writerGate ? writerGate(observedTransaction) : observedTransaction;
         yield* gatedTransaction;
@@ -504,17 +510,24 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       aliasesDiscovered += aliases.length;
       resolvedInPass += resolutions.length;
       resolved += resolutions.length;
+      return observedTransactionMilliseconds;
     });
     const flushReservationPages = Effect.fn('codeGraph.flushResolutionReservationPages')(function* () {
       if (reservationPages.length === 0) return;
-      const reservations = planPersistentReferenceResolutionPages(reservationPages);
+      const reservations = planPersistentReferenceResolutionPages(reservationPages, persistentTransactionPageLimit);
       for (const reservation of reservations) {
         const transactions = Effect.gen(function* () {
           for (let index = 0; index < reservation.transactions.length; index += 1) {
-            yield* commitTransactionPages(reservation.transactions[index]!);
+            const observedTransactionMilliseconds = yield* commitTransactionPages(reservation.transactions[index]!);
+            if (persistentFull && observedTransactionMilliseconds !== undefined) {
+              persistentTransactionPageLimit = nextPersistentReferenceResolutionTransactionPages(
+                persistentTransactionPageLimit,
+                observedTransactionMilliseconds,
+              );
+            }
             if (index + 1 < reservation.transactions.length) {
               // The writer lock is released at this boundary. Preserve the
-              // established four-page progress cadence without reacquiring the
+              // bounded transaction progress cadence without reacquiring the
               // wider disk-capacity reservation for the next transaction.
               yield* reportResolutionProgress();
               yield* Effect.yieldNow;

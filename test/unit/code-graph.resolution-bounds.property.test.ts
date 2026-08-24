@@ -7,6 +7,8 @@ import {
 } from '../../src/code_graph/store_resolution.js';
 import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
+  nextPersistentReferenceResolutionTransactionPages,
+  PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
   PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
   PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
   planPersistentReferenceResolutionPages,
@@ -108,6 +110,9 @@ describe('code graph resolution pass bounds', () => {
     expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBeGreaterThanOrEqual(
       PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
     );
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBeGreaterThanOrEqual(
+      PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
+    );
     expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES % PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES).toBe(0);
     fc.assert(
       fc.property(fc.array(fc.integer(), {maxLength: 257}), pages => {
@@ -137,5 +142,69 @@ describe('code graph resolution pass bounds', () => {
       [4, 4],
       [1],
     ]);
+    const widened = planPersistentReferenceResolutionPages(
+      Array.from({length: 17}, (_, index) => index),
+      PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
+    );
+    expect(widened.map(reservation => reservation.transactions.map(transaction => transaction.length))).toEqual([
+      [8],
+      [8],
+      [1],
+    ]);
+
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer(), {maxLength: 257}),
+        fc.integer({
+          max: PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
+          min: 1,
+        }),
+        (pages, transactionPageLimit) => {
+          const reservations = planPersistentReferenceResolutionPages(pages, transactionPageLimit);
+          expect(reservations.flatMap(reservation => reservation.pages)).toEqual(pages);
+          expect(reservations.flatMap(reservation => reservation.transactions).flat()).toEqual(pages);
+          for (const transaction of reservations.flatMap(reservation => reservation.transactions)) {
+            expect(transaction.length).toBeGreaterThan(0);
+            expect(transaction.length).toBeLessThanOrEqual(transactionPageLimit);
+          }
+        },
+      ),
+      {numRuns: 250},
+    );
+    expect(planPersistentReferenceResolutionPages([1, 2, 3, 4, 5], Number.NaN)[0]?.transactions).toEqual([
+      [1, 2, 3, 4],
+      [5],
+    ]);
+  });
+
+  it('adapts resolved-reference commits within the existing eight-page reservation', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({max: 60_000, min: 0}), {maxLength: 64}), durations => {
+        let current = PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES;
+        for (const duration of durations) {
+          const next = nextPersistentReferenceResolutionTransactionPages(current, duration);
+          expect(Number.isSafeInteger(next)).toBe(true);
+          expect(next).toBeGreaterThanOrEqual(1);
+          expect(next).toBeLessThanOrEqual(PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES);
+          expect(next).toBeLessThanOrEqual(current * 2);
+          if (duration < 2_000) expect(next).toBeGreaterThanOrEqual(current);
+          else if (duration > 5_000) expect(next).toBeLessThanOrEqual(current);
+          else expect(next).toBe(current);
+          current = next;
+        }
+      }),
+      {numRuns: 250},
+    );
+
+    expect(nextPersistentReferenceResolutionTransactionPages(4, 1_999)).toBe(8);
+    expect(nextPersistentReferenceResolutionTransactionPages(8, 2_000)).toBe(8);
+    expect(nextPersistentReferenceResolutionTransactionPages(8, 5_001)).toBe(4);
+    expect(nextPersistentReferenceResolutionTransactionPages(4, 5_001)).toBe(2);
+    expect(nextPersistentReferenceResolutionTransactionPages(2, 5_001)).toBe(1);
+    expect(nextPersistentReferenceResolutionTransactionPages(Number.NaN, 3_000)).toBe(
+      PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
+    );
+    expect(nextPersistentReferenceResolutionTransactionPages(8, Number.NaN)).toBe(8);
+    expect(nextPersistentReferenceResolutionTransactionPages(8, -1)).toBe(8);
   });
 });
