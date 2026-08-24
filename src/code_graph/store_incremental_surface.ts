@@ -2,6 +2,7 @@ import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact_budget.js';
 import {hasSameCodeGraphResolutionSurface, type CodeGraphResolutionSurfaceSymbol} from './resolution_surface.js';
+import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 
 interface PersistedIncrementalSurfaceSymbolRow {
   readonly arity: unknown;
@@ -77,30 +78,40 @@ const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncreme
   // Sparse raw-fact attribution can be more conservative than the original
   // full batch. Require exact changed-path re-export publication in SQLite so
   // an optimistic preassessment falls closed before persisted-delta reuse.
-  const reexportMismatch = yield* sql<{readonly mismatch: number}>`
-    SELECT (
+  const reexportStatement = persistedIncrementalReexportMismatchStatement(baseSnapshotId);
+  const reexportMismatch = yield* sql.unsafe<{readonly mismatch: number}>(
+    reexportStatement.text,
+    reexportStatement.parameters,
+  );
+  return Number(reexportMismatch[0]?.mismatch ?? 1) === 0;
+});
+
+/** @internal Exposed so regression tests can verify the changed-path-first SQLite access plan. */
+function persistedIncrementalReexportMismatchStatement(baseSnapshotId: string): CodeGraphSqlQueryStatement {
+  return {
+    parameters: [baseSnapshotId, baseSnapshotId],
+    text: `SELECT (
       EXISTS (
         SELECT source_path, local_name, target_path, imported_name
         FROM activation_reexport_provenance
         EXCEPT
         SELECT base.source_path, base.local_name, base.target_path, base.imported_name
-        FROM snapshot_reexport_provenance AS base
-        JOIN activation_files AS changed ON changed.path = base.source_path
-        WHERE base.snapshot_id = ${baseSnapshotId}
+        FROM activation_files AS changed
+        CROSS JOIN snapshot_reexport_provenance AS base
+          ON base.snapshot_id = ? AND base.source_path = changed.path
       )
       OR EXISTS (
         SELECT base.source_path, base.local_name, base.target_path, base.imported_name
-        FROM snapshot_reexport_provenance AS base
-        JOIN activation_files AS changed ON changed.path = base.source_path
-        WHERE base.snapshot_id = ${baseSnapshotId}
+        FROM activation_files AS changed
+        CROSS JOIN snapshot_reexport_provenance AS base
+          ON base.snapshot_id = ? AND base.source_path = changed.path
         EXCEPT
         SELECT source_path, local_name, target_path, imported_name
         FROM activation_reexport_provenance
       )
-    ) AS mismatch
-  `;
-  return Number(reexportMismatch[0]?.mismatch ?? 1) === 0;
-});
+    ) AS mismatch`,
+  };
+}
 
 function decodePersistedIncrementalSurfaceSymbols(
   rows: readonly PersistedIncrementalSurfaceSymbolRow[],
@@ -175,4 +186,4 @@ function isOptionalString(value: unknown): value is null | string {
   return value === null || typeof value === 'string';
 }
 
-export {persistedIncrementalSurfaceMatches};
+export {persistedIncrementalReexportMismatchStatement, persistedIncrementalSurfaceMatches};

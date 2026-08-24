@@ -8,7 +8,10 @@ import {Effect} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CodeGraphStore, type CodeGraphStoreShape} from '../../src/code_graph/store.js';
-import {persistedIncrementalSurfaceMatches} from '../../src/code_graph/store_incremental_surface.js';
+import {
+  persistedIncrementalReexportMismatchStatement,
+  persistedIncrementalSurfaceMatches,
+} from '../../src/code_graph/store_incremental_surface.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,
@@ -230,6 +233,45 @@ describe('project-closure persisted store', () => {
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
+
+  it('point-probes persisted re-export provenance only for changed paths', () => {
+    const database = new Database(':memory:');
+    try {
+      database.exec(`
+        CREATE TEMP TABLE activation_files (
+          path TEXT PRIMARY KEY
+        ) WITHOUT ROWID;
+        CREATE TEMP TABLE activation_reexport_provenance (
+          source_path TEXT NOT NULL,
+          local_name TEXT NOT NULL,
+          target_path TEXT NOT NULL,
+          imported_name TEXT NOT NULL,
+          PRIMARY KEY (source_path, local_name, target_path, imported_name)
+        ) WITHOUT ROWID;
+        CREATE TABLE snapshot_reexport_provenance (
+          snapshot_id TEXT NOT NULL,
+          source_path TEXT NOT NULL,
+          local_name TEXT NOT NULL,
+          target_path TEXT NOT NULL,
+          imported_name TEXT NOT NULL,
+          PRIMARY KEY (snapshot_id, source_path, local_name, target_path, imported_name)
+        ) WITHOUT ROWID;
+      `);
+      const statement = persistedIncrementalReexportMismatchStatement('snapshot-base');
+      const plan = database.query(`EXPLAIN QUERY PLAN ${statement.text}`).all(...statement.parameters) as readonly {
+        readonly detail: string;
+      }[];
+      const details = plan.map(row => row.detail);
+
+      expect(details.filter(detail => detail === 'SCAN changed')).toHaveLength(2);
+      expect(
+        details.filter(detail => detail === 'SEARCH base USING PRIMARY KEY (snapshot_id=? AND source_path=?)'),
+      ).toHaveLength(2);
+      expect(details.join('\n')).not.toMatch(/SEARCH base USING PRIMARY KEY \(snapshot_id=\?\)(?! AND source_path)/u);
+    } finally {
+      database.close(false);
+    }
+  });
 
   it.effect.prop(
     'matches exactly when arbitrary changed-path re-export sets are equal',
