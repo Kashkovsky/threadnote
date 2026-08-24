@@ -665,6 +665,9 @@ const benchmarkCodeGraph = Effect.scoped(
         prepared.home,
         sameOverlayReferenceHome,
         options.minimumFreeGiB,
+        runtimeProvenance?.mode === 'github-actions-clean-source' &&
+          !options.vectors &&
+          reducedProductionRatchetProfile(prepared.profile.sourceFiles, prepared.profile.targetGraphSymbols),
       );
     }
     yield* runCheckpoint?.mark('preparing-runtime') ?? Effect.void;
@@ -6099,6 +6102,7 @@ const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGo
   primaryHome: string,
   referenceHome: string,
   minimumFreeGiB: number,
+  allowGithubActionsVirtualStorage: boolean,
 ) {
   const system = yield* SystemInfo;
   const [primaryCapacity, referenceCapacity, primaryStorage, referenceStorage] = yield* Effect.all(
@@ -6124,7 +6128,11 @@ const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGo
     );
   }
   const storageEnvironments = [primaryStorage, referenceStorage];
-  if (storageEnvironments.some(storage => storage.medium !== 'solid-state')) {
+  const governedVirtualStorage =
+    allowGithubActionsVirtualStorage &&
+    system.platform === 'linux' &&
+    storageEnvironments.every(storage => storage.medium === 'virtual-or-network');
+  if (!governedVirtualStorage && storageEnvironments.some(storage => storage.medium !== 'solid-state')) {
     return yield* Effect.fail(new ScriptError('Production-large benchmark requires solid-state storage.'));
   }
   if (system.platform === 'darwin' && storageEnvironments.some(storage => storage.location !== 'internal')) {
@@ -6920,6 +6928,7 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
     benchmarkReferenceDiskFilesystem: artifact.metadata.benchmarkReferenceDiskFilesystem,
     benchmarkReferenceDiskLocation: artifact.metadata.benchmarkReferenceDiskLocation,
     benchmarkReferenceDiskMedium: artifact.metadata.benchmarkReferenceDiskMedium,
+    benchmarkSourceValidationMode: artifact.metadata.benchmarkSourceValidationMode,
     coldEdges: artifact.metadata.coldEdges,
     coldFiles: artifact.metadata.coldFiles,
     coldMaterializationStorageMode: artifact.metadata.coldMaterializationStorageMode,
@@ -6962,8 +6971,7 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
     primaryAvailableBytes < minimumFreeBytes ||
     typeof referenceAvailableBytes !== 'number' ||
     referenceAvailableBytes < minimumFreeBytes ||
-    metadata.benchmarkDiskMedium !== 'solid-state' ||
-    metadata.benchmarkReferenceDiskMedium !== 'solid-state' ||
+    !productionRatchetStorageGoverned(metadata) ||
     (metadata.runtimePlatform === 'darwin' &&
       (metadata.benchmarkDiskLocation !== 'internal' || metadata.benchmarkReferenceDiskLocation !== 'internal')) ||
     metadata.benchmarkDiskFilesystem !== metadata.benchmarkReferenceDiskFilesystem
@@ -6988,6 +6996,21 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
     target: metadata.benchmarkValidatedManagedTarget,
     version: metadata.benchmarkValidatedManagedVersion,
   });
+}
+
+function productionRatchetStorageGoverned(metadata: Readonly<Record<string, unknown>>): boolean {
+  if (metadata.benchmarkDiskMedium === 'solid-state' && metadata.benchmarkReferenceDiskMedium === 'solid-state') {
+    return true;
+  }
+  return (
+    metadata.benchmarkDiskMedium === 'virtual-or-network' &&
+    metadata.benchmarkReferenceDiskMedium === 'virtual-or-network' &&
+    metadata.benchmarkSourceValidationMode === 'github-actions-clean-source' &&
+    metadata.runtimePlatform === 'linux' &&
+    (metadata.runnerClass === 'github-hosted-linux-x64' || metadata.runnerClass === 'github-hosted-linux-arm64') &&
+    metadata.vectorEnabled === false &&
+    reducedProductionRatchetProfile(metadata.profileSourceFiles, metadata.profileTargetSymbols)
+  );
 }
 
 function productionRatchetMinimumFreeBytes(metadata: Readonly<Record<string, unknown>>): number {

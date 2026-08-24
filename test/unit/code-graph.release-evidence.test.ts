@@ -1175,6 +1175,29 @@ describe('code graph release evidence', () => {
     for (const artifact of scaledArtifacts) {
       expect(() => enforceCodeGraphBenchmarkRatchet(artifact, scaledRatchet)).not.toThrow();
     }
+    const githubVirtualArtifacts = scaledArtifacts.map(artifact => ({
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        benchmarkDiskFilesystem: 'overlayfs',
+        benchmarkDiskLocation: 'unknown',
+        benchmarkDiskMedium: 'virtual-or-network',
+        benchmarkReferenceDiskFilesystem: 'overlayfs',
+        benchmarkReferenceDiskLocation: 'unknown',
+        benchmarkReferenceDiskMedium: 'virtual-or-network',
+        runnerClass: 'github-hosted-linux-x64',
+        runtimePlatform: 'linux',
+      },
+    }));
+    expect(() => createCodeGraphProductionRatchet(githubVirtualArtifacts)).not.toThrow();
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubVirtualArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkReferenceDiskMedium: 'unknown'},
+        })),
+      ),
+    ).toThrow(/governed storage evidence/);
     expect(() =>
       createCodeGraphProductionRatchet(
         scaledArtifacts.map(artifact => ({
