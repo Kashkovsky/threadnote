@@ -4,6 +4,7 @@ import type {CodeGraphLayout} from './layout.js';
 
 export const CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION = 1 as const;
 export const CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS = 50_000;
+export const CODE_GRAPH_MATERIALIZATION_SORT_SURFACES_MAXIMUM = 32;
 
 const PERSISTENT_SNAPSHOT_ID = /^cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?$/u;
 
@@ -31,7 +32,9 @@ export interface CodeGraphMaterializationSpoolBatchReceipt {
 export interface CodeGraphMaterializationSpoolState {
   readonly appendedBatchCount: number;
   readonly expectedBatchCount?: number;
-  readonly stage: 'appending' | 'sealed';
+  readonly expectedSurfaceCount?: number;
+  readonly sortedSurfaceCount?: number;
+  readonly stage: 'appending' | 'ready' | 'sealed' | 'sorting';
 }
 
 interface CodeGraphMaterializationSpoolHeaderRow {
@@ -54,7 +57,9 @@ interface CodeGraphMaterializationSpoolBatchReceiptRow {
 interface CodeGraphMaterializationSpoolStateRow {
   readonly appended_batch_count: number;
   readonly expected_batch_count: number | null;
-  readonly stage: 'appending' | 'sealed';
+  readonly expected_surface_count: number | null;
+  readonly sorted_surface_count: number;
+  readonly stage: 'appending' | 'ready' | 'sealed' | 'sorting';
 }
 
 /**
@@ -134,12 +139,22 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
     database.exec(`
       CREATE TABLE IF NOT EXISTS materialization_spool_state (
         singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
-        stage TEXT NOT NULL CHECK (stage IN ('appending', 'sealed')),
+        stage TEXT NOT NULL CHECK (stage IN ('appending', 'sealed', 'sorting', 'ready')),
         appended_batch_count INTEGER NOT NULL CHECK (appended_batch_count >= 0),
         expected_batch_count INTEGER CHECK (expected_batch_count >= 0),
+        sorted_surface_count INTEGER NOT NULL CHECK (sorted_surface_count >= 0),
+        expected_surface_count INTEGER CHECK (
+          expected_surface_count > 0 AND expected_surface_count <= ${CODE_GRAPH_MATERIALIZATION_SORT_SURFACES_MAXIMUM}
+        ),
         CHECK (
-          (stage = 'appending' AND expected_batch_count IS NULL) OR
-          (stage = 'sealed' AND expected_batch_count = appended_batch_count)
+          (stage = 'appending' AND expected_batch_count IS NULL
+            AND sorted_surface_count = 0 AND expected_surface_count IS NULL) OR
+          (stage = 'sealed' AND expected_batch_count = appended_batch_count
+            AND sorted_surface_count = 0 AND expected_surface_count IS NULL) OR
+          (stage = 'sorting' AND expected_batch_count = appended_batch_count
+            AND sorted_surface_count <= expected_surface_count) OR
+          (stage = 'ready' AND expected_batch_count = appended_batch_count
+            AND sorted_surface_count = expected_surface_count)
         )
       ) WITHOUT ROWID;
       CREATE TABLE IF NOT EXISTS materialization_spool_batches (
@@ -175,8 +190,9 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
         );
       database.exec(`
         INSERT INTO materialization_spool_state (
-          singleton, stage, appended_batch_count, expected_batch_count
-        ) VALUES (1, 'appending', 0, NULL)
+          singleton, stage, appended_batch_count, expected_batch_count,
+          sorted_surface_count, expected_surface_count
+        ) VALUES (1, 'appending', 0, NULL, 0, NULL)
       `);
       return 'created';
     }
@@ -246,7 +262,7 @@ export function sealCodeGraphMaterializationSpool(
   validateNonNegativeSafeInteger(expectedBatchCount, 'expected batch count');
   return database.transaction(() => {
     const state = readCodeGraphMaterializationSpoolState(database);
-    if (state.stage === 'sealed') {
+    if (state.stage !== 'appending') {
       if (state.expectedBatchCount !== expectedBatchCount) {
         throw new Error('Code graph materialization spool sealed batch count does not match.');
       }
@@ -266,10 +282,89 @@ export function sealCodeGraphMaterializationSpool(
   })();
 }
 
+export function beginCodeGraphMaterializationSpoolSort(
+  database: Database,
+  expectedSurfaceCount: number,
+): 'sorting' | 'resumed' {
+  validatePositiveSurfaceCount(expectedSurfaceCount);
+  return database.transaction(() => {
+    const state = readCodeGraphMaterializationSpoolState(database);
+    if (state.stage === 'sorting' || state.stage === 'ready') {
+      if (state.expectedSurfaceCount !== expectedSurfaceCount) {
+        throw new Error('Code graph materialization spool sorted surface count does not match.');
+      }
+      return 'resumed';
+    }
+    if (state.stage !== 'sealed') {
+      throw new Error('Code graph materialization spool must be sealed before sorting.');
+    }
+    database
+      .prepare(
+        `UPDATE materialization_spool_state
+         SET stage = 'sorting', expected_surface_count = ?
+         WHERE singleton = 1 AND stage = 'sealed'`,
+      )
+      .run(expectedSurfaceCount);
+    return 'sorting';
+  })();
+}
+
+/** Commits one CTAS/drop surface and its contiguous resume cursor together. */
+export function commitCodeGraphMaterializationSpoolSortedSurface(
+  database: Database,
+  surfaceIndex: number,
+  writeSurface: () => void,
+): 'sorted' | 'resumed' {
+  validateNonNegativeSafeInteger(surfaceIndex, 'surface index');
+  return database.transaction(() => {
+    const state = readCodeGraphMaterializationSpoolState(database);
+    const sortedSurfaceCount = state.sortedSurfaceCount ?? 0;
+    if ((state.stage === 'sorting' || state.stage === 'ready') && surfaceIndex < sortedSurfaceCount) return 'resumed';
+    if (state.stage !== 'sorting') {
+      throw new Error('Code graph materialization spool is not sorting.');
+    }
+    if (surfaceIndex !== sortedSurfaceCount || surfaceIndex >= (state.expectedSurfaceCount ?? 0)) {
+      throw new Error('Code graph materialization spool sorted surface sequence is not contiguous.');
+    }
+    writeSurface();
+    database
+      .prepare(
+        `UPDATE materialization_spool_state
+         SET sorted_surface_count = sorted_surface_count + 1
+         WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = ?`,
+      )
+      .run(surfaceIndex);
+    return 'sorted';
+  })();
+}
+
+export function finishCodeGraphMaterializationSpoolSort(database: Database): 'ready' | 'resumed' {
+  return database.transaction(() => {
+    const state = readCodeGraphMaterializationSpoolState(database);
+    if (state.stage === 'ready') return 'resumed';
+    if (
+      state.stage !== 'sorting' ||
+      state.expectedSurfaceCount === undefined ||
+      state.sortedSurfaceCount !== state.expectedSurfaceCount
+    ) {
+      throw new Error('Code graph materialization spool cannot become ready before every surface is sorted.');
+    }
+    database
+      .prepare(
+        `UPDATE materialization_spool_state
+         SET stage = 'ready'
+         WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = expected_surface_count`,
+      )
+      .run();
+    return 'ready';
+  })();
+}
+
 export function readCodeGraphMaterializationSpoolState(database: Database): CodeGraphMaterializationSpoolState {
   const rows = database
     .prepare(
-      `SELECT stage, appended_batch_count, expected_batch_count
+      `SELECT stage, appended_batch_count, expected_batch_count,
+         sorted_surface_count, expected_surface_count
        FROM materialization_spool_state
        WHERE singleton = 1
        LIMIT 2`,
@@ -282,14 +377,31 @@ export function readCodeGraphMaterializationSpoolState(database: Database): Code
   if (
     !Number.isSafeInteger(row.appended_batch_count) ||
     row.appended_batch_count < 0 ||
-    (row.stage === 'appending' && row.expected_batch_count !== null) ||
-    (row.stage === 'sealed' && row.expected_batch_count !== row.appended_batch_count)
+    !Number.isSafeInteger(row.sorted_surface_count) ||
+    row.sorted_surface_count < 0 ||
+    (row.stage === 'appending' &&
+      (row.expected_batch_count !== null || row.expected_surface_count !== null || row.sorted_surface_count !== 0)) ||
+    (row.stage === 'sealed' &&
+      (row.expected_batch_count !== row.appended_batch_count ||
+        row.expected_surface_count !== null ||
+        row.sorted_surface_count !== 0)) ||
+    ((row.stage === 'sorting' || row.stage === 'ready') &&
+      (row.expected_batch_count !== row.appended_batch_count ||
+        row.expected_surface_count === null ||
+        !Number.isSafeInteger(row.expected_surface_count) ||
+        row.expected_surface_count <= 0 ||
+        row.expected_surface_count > CODE_GRAPH_MATERIALIZATION_SORT_SURFACES_MAXIMUM ||
+        row.sorted_surface_count > row.expected_surface_count ||
+        (row.stage === 'ready' && row.sorted_surface_count !== row.expected_surface_count)))
   ) {
     throw new Error('Code graph materialization spool state is missing or corrupt.');
   }
   return {
     appendedBatchCount: row.appended_batch_count,
     ...(row.expected_batch_count === null ? {} : {expectedBatchCount: row.expected_batch_count}),
+    ...(row.expected_surface_count === null
+      ? {}
+      : {expectedSurfaceCount: row.expected_surface_count, sortedSurfaceCount: row.sorted_surface_count}),
     stage: row.stage,
   };
 }
@@ -355,6 +467,12 @@ function validateCodeGraphMaterializationSpoolBatchReceipt(receipt: CodeGraphMat
 function validateNonNegativeSafeInteger(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`Code graph materialization spool ${field} is invalid.`);
+  }
+}
+
+function validatePositiveSurfaceCount(value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > CODE_GRAPH_MATERIALIZATION_SORT_SURFACES_MAXIMUM) {
+    throw new Error('Code graph materialization spool expected surface count is invalid.');
   }
 }
 

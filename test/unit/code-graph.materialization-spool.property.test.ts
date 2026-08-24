@@ -3,10 +3,13 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {
   CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS,
+  beginCodeGraphMaterializationSpoolSort,
   codeGraphMaterializationApplyPages,
   codeGraphMaterializationSpoolPath,
   commitCodeGraphMaterializationSpoolBatch,
+  commitCodeGraphMaterializationSpoolSortedSurface,
   configureCodeGraphMaterializationSpoolDatabase,
+  finishCodeGraphMaterializationSpoolSort,
   initializeCodeGraphMaterializationSpoolDatabase,
   readCodeGraphMaterializationSpoolState,
   sealCodeGraphMaterializationSpool,
@@ -260,6 +263,79 @@ describe('code graph materialization spool', () => {
         }),
       ).toBe('resumed');
       expect(database.prepare('SELECT value FROM raw_test').all()).toEqual([{value: 'committed'}]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it.prop(
+    'sorts a registered surface plan in a contiguous atomic prefix',
+    {surfaceCount: FC.integer({max: 16, min: 1})},
+    ({surfaceCount}) => {
+      const database = new Database(':memory:', {strict: true});
+      try {
+        configureCodeGraphMaterializationSpoolDatabase(database);
+        initializeCodeGraphMaterializationSpoolDatabase(database, {
+          checkoutId: 'a'.repeat(64),
+          extractorSet: 'extractor-v1',
+          graphContentId: `cgc_${'b'.repeat(40)}`,
+          repositoryId: 'c'.repeat(64),
+          snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+        });
+        sealCodeGraphMaterializationSpool(database, 0);
+        expect(beginCodeGraphMaterializationSpoolSort(database, surfaceCount)).toBe('sorting');
+        for (let surfaceIndex = 0; surfaceIndex < surfaceCount; surfaceIndex += 1) {
+          expect(commitCodeGraphMaterializationSpoolSortedSurface(database, surfaceIndex, () => undefined)).toBe(
+            'sorted',
+          );
+          expect(commitCodeGraphMaterializationSpoolSortedSurface(database, surfaceIndex, () => undefined)).toBe(
+            'resumed',
+          );
+        }
+        expect(finishCodeGraphMaterializationSpoolSort(database)).toBe('ready');
+        expect(finishCodeGraphMaterializationSpoolSort(database)).toBe('resumed');
+        expect(sealCodeGraphMaterializationSpool(database, 0)).toBe('resumed');
+        expect(readCodeGraphMaterializationSpoolState(database)).toEqual({
+          appendedBatchCount: 0,
+          expectedBatchCount: 0,
+          expectedSurfaceCount: surfaceCount,
+          sortedSurfaceCount: surfaceCount,
+          stage: 'ready',
+        });
+      } finally {
+        database.close();
+      }
+    },
+    {fastCheck: {numRuns: 50}},
+  );
+
+  it('rolls a failed surface back without advancing and rejects gaps or early readiness', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, {
+        checkoutId: 'a'.repeat(64),
+        extractorSet: 'extractor-v1',
+        graphContentId: `cgc_${'b'.repeat(40)}`,
+        repositoryId: 'c'.repeat(64),
+        snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+      });
+      sealCodeGraphMaterializationSpool(database, 0);
+      beginCodeGraphMaterializationSpoolSort(database, 2);
+      database.exec('CREATE TABLE sorted_test (value TEXT NOT NULL)');
+      expect(() =>
+        commitCodeGraphMaterializationSpoolSortedSurface(database, 0, () => {
+          database.prepare('INSERT INTO sorted_test (value) VALUES (?)').run('rolled-back');
+          throw new Error('injected sort failure');
+        }),
+      ).toThrow('injected sort failure');
+      expect(database.prepare('SELECT value FROM sorted_test').all()).toEqual([]);
+      expect(() => commitCodeGraphMaterializationSpoolSortedSurface(database, 1, () => undefined)).toThrow(
+        'Code graph materialization spool sorted surface sequence is not contiguous.',
+      );
+      expect(() => finishCodeGraphMaterializationSpoolSort(database)).toThrow(
+        'Code graph materialization spool cannot become ready before every surface is sorted.',
+      );
     } finally {
       database.close();
     }
