@@ -13,7 +13,9 @@ import {
   initializeCodeGraphMaterializationSpoolDatabase,
   readCodeGraphMaterializationSpoolState,
   sealCodeGraphMaterializationSpool,
+  sortCodeGraphMaterializationSpoolSurfaces,
 } from '../../src/code_graph/materialization_spool.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization_spool_surfaces.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
 describe('code graph materialization spool', () => {
@@ -94,6 +96,60 @@ describe('code graph materialization spool', () => {
           initializeCodeGraphMaterializationSpoolDatabase(database, {...header, [field]: replacement}),
         ).toThrow('Code graph materialization spool identity does not match the persistent build.');
       }
+      database.exec('DROP TABLE materialization_raw_edges');
+      expect(() => initializeCodeGraphMaterializationSpoolDatabase(database, header)).toThrow(
+        'Code graph materialization spool fact surfaces are missing or corrupt.',
+      );
+    } finally {
+      database.close();
+    }
+  });
+
+  it('atomically sorts every raw fact surface and resumes the ready state', () => {
+    const database = new Database(':memory:', {strict: true});
+    const header = {
+      checkoutId: 'a'.repeat(64),
+      extractorSet: 'extractor-v1',
+      graphContentId: `cgc_${'b'.repeat(40)}`,
+      repositoryId: 'c'.repeat(64),
+      snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+    };
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, header);
+      database.exec(`
+        INSERT INTO materialization_raw_lookup (
+          lookup_key, symbol_id, resolution_domain, exported, provenance, evidence_edge_id, evidence_path
+        ) VALUES
+          ('zeta', 'symbol-2', 'generic', 0, 'symbol', NULL, 'src/zeta.ts'),
+          ('alpha', 'symbol-3', 'generic', 1, 'symbol', NULL, 'src/alpha.ts'),
+          ('alpha', 'symbol-1', 'generic', 1, 'symbol', NULL, 'src/alpha.ts')
+      `);
+      sealCodeGraphMaterializationSpool(database, 0);
+      sortCodeGraphMaterializationSpoolSurfaces(database);
+      expect(readCodeGraphMaterializationSpoolState(database)).toEqual({
+        appendedBatchCount: 0,
+        expectedBatchCount: 0,
+        expectedSurfaceCount: CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length,
+        sortedSurfaceCount: CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length,
+        stage: 'ready',
+      });
+      expect(
+        database.prepare('SELECT lookup_key, symbol_id FROM materialization_ordered_lookup ORDER BY rowid').all(),
+      ).toEqual([
+        {lookup_key: 'alpha', symbol_id: 'symbol-1'},
+        {lookup_key: 'alpha', symbol_id: 'symbol-3'},
+        {lookup_key: 'zeta', symbol_id: 'symbol-2'},
+      ]);
+      expect(
+        database
+          .prepare(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name LIKE 'materialization_raw_%'",
+          )
+          .get(),
+      ).toEqual({count: 0});
+      expect(() => sortCodeGraphMaterializationSpoolSurfaces(database)).not.toThrow();
+      expect(initializeCodeGraphMaterializationSpoolDatabase(database, header)).toBe('resumed');
     } finally {
       database.close();
     }

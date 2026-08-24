@@ -1,6 +1,12 @@
 import type {Database} from 'bun:sqlite';
 import type {Path} from 'effect';
 import type {CodeGraphLayout} from './layout.js';
+import {
+  assertCodeGraphMaterializationSpoolSurfaceState,
+  CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES,
+  initializeCodeGraphMaterializationSpoolSurfaces,
+  sortCodeGraphMaterializationSpoolSurface,
+} from './materialization_spool_surfaces.js';
 
 export const CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION = 1 as const;
 export const CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS = 50_000;
@@ -202,12 +208,15 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
           sorted_surface_count, expected_surface_count
         ) VALUES (1, 'appending', 0, NULL, 0, NULL)
       `);
+      initializeCodeGraphMaterializationSpoolSurfaces(database);
       return 'created';
     }
     if (current.length !== 1 || !codeGraphMaterializationSpoolHeaderMatches(current[0]!, expected)) {
       throw new Error('Code graph materialization spool identity does not match the persistent build.');
     }
     assertCodeGraphMaterializationSpoolLedger(database);
+    const state = readCodeGraphMaterializationSpoolState(database);
+    assertCodeGraphMaterializationSpoolSurfaceState(database, state.stage, state.sortedSurfaceCount ?? 0);
     return 'resumed';
   })();
 }
@@ -366,6 +375,17 @@ export function finishCodeGraphMaterializationSpoolSort(database: Database): 're
       .run();
     return 'ready';
   })();
+}
+
+export function sortCodeGraphMaterializationSpoolSurfaces(database: Database): void {
+  beginCodeGraphMaterializationSpoolSort(database, CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length);
+  for (let index = 0; index < CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length; index += 1) {
+    const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!;
+    commitCodeGraphMaterializationSpoolSortedSurface(database, index, () =>
+      sortCodeGraphMaterializationSpoolSurface(database, surface),
+    );
+  }
+  finishCodeGraphMaterializationSpoolSort(database);
 }
 
 export function readCodeGraphMaterializationSpoolState(database: Database): CodeGraphMaterializationSpoolState {
