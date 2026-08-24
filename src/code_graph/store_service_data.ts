@@ -82,6 +82,7 @@ import {
   persistentMaterializationStorageObservation,
   removePersistentMaterializationSpool,
 } from './store_materialization_spool_lifecycle.js';
+import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
 
 type CodeGraphStoreDataMethods = Pick<
   CodeGraphStoreShape,
@@ -593,6 +594,18 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             options?.cleanupMode,
           ),
         );
+        for (const snapshotId of result.spoolCleanupSnapshotIds) {
+          const spoolPath = yield* Effect.try({
+            catch: () => new CodeGraphStoreError('Retired materialization spool identity is invalid.'),
+            try: () =>
+              codeGraphMaterializationSpoolPath(
+                runtime.path,
+                {repositoryRoot: runtime.path.dirname(databasePath)},
+                snapshotId,
+              ),
+          });
+          yield* removePersistentMaterializationSpool(runtime, spoolPath);
+        }
         if (result.reclaimable > 0) {
           yield* scheduleRoutinePhysicalCleanup(databasePath);
         }

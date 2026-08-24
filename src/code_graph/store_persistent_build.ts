@@ -259,8 +259,8 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       }),
     ),
   );
-  if (result.reclaimable.length > 0) {
-    const targets = result.reclaimable.slice(0, 100);
+  const targets = result.reclaimable.slice(0, 100);
+  if (targets.length > 0) {
     yield* onProgress?.({
       pagesCompleted: 0,
       rowsDeleted: 0,
@@ -281,7 +281,7 @@ const retireIncompleteWorktreeSnapshots = Effect.fn('codeGraph.retireIncompleteW
       snapshotsTotal: result.reclaimable.length,
     }) ?? Effect.void;
   }
-  return {reclaimable: result.reclaimable.length, retired: result.retired};
+  return {reclaimable: result.reclaimable.length, retired: result.retired, spoolCleanupSnapshotIds: targets};
 });
 
 /**
