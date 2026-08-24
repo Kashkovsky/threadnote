@@ -43,6 +43,11 @@ export interface CodeGraphMaterializationSpoolState {
   readonly stage: 'appending' | 'ready' | 'sealed' | 'sorting';
 }
 
+export interface CodeGraphMaterializationSpoolReadyPlan {
+  readonly spoolIdentity: string;
+  readonly surfaces: readonly {readonly name: string; readonly rowCount: number}[];
+}
+
 interface CodeGraphMaterializationSpoolHeaderRow {
   readonly checkout_id: string;
   readonly extractor_set: string;
@@ -386,6 +391,53 @@ export function sortCodeGraphMaterializationSpoolSurfaces(database: Database): v
     );
   }
   finishCodeGraphMaterializationSpoolSort(database);
+}
+
+export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): CodeGraphMaterializationSpoolReadyPlan {
+  const state = readCodeGraphMaterializationSpoolState(database);
+  if (state.stage !== 'ready') {
+    throw new Error('Code graph materialization spool is not ready to apply.');
+  }
+  assertCodeGraphMaterializationSpoolLedger(database);
+  assertCodeGraphMaterializationSpoolSurfaceState(database, state.stage, state.sortedSurfaceCount ?? 0);
+  const headers = database
+    .prepare(
+      `SELECT format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
+       FROM materialization_spool_header
+       WHERE singleton = 1
+       LIMIT 2`,
+    )
+    .all() as readonly CodeGraphMaterializationSpoolHeaderRow[];
+  if (headers.length !== 1) {
+    throw new Error('Code graph materialization spool header is missing or corrupt.');
+  }
+  const receipts = database
+    .prepare(
+      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count
+       FROM materialization_spool_batches
+       ORDER BY batch_index`,
+    )
+    .all() as readonly CodeGraphMaterializationSpoolBatchReceiptRow[];
+  const surfaces = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.map(surface => {
+    const row = database.prepare(`SELECT COUNT(*) AS count FROM materialization_ordered_${surface.name}`).get() as {
+      readonly count: number | bigint;
+    };
+    const rowCount = Number(row.count);
+    if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
+      throw new Error('Code graph materialization spool surface row count is invalid.');
+    }
+    return {name: surface.name, rowCount};
+  });
+  const digest = new Bun.CryptoHasher('sha256');
+  digest.update(
+    JSON.stringify({
+      header: headers[0],
+      receipts,
+      surfaces,
+      version: CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION,
+    }),
+  );
+  return {spoolIdentity: digest.digest('hex'), surfaces};
 }
 
 export function readCodeGraphMaterializationSpoolState(database: Database): CodeGraphMaterializationSpoolState {

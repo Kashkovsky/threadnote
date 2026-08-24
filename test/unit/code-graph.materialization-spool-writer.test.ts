@@ -5,6 +5,7 @@ import {
   commitCodeGraphMaterializationSpoolBatch,
   configureCodeGraphMaterializationSpoolDatabase,
   initializeCodeGraphMaterializationSpoolDatabase,
+  readCodeGraphMaterializationSpoolReadyPlan,
   sealCodeGraphMaterializationSpool,
   sortCodeGraphMaterializationSpoolSurfaces,
 } from '../../src/code_graph/materialization_spool.js';
@@ -95,6 +96,18 @@ it('appends every canonical fact surface under the exact durable batch receipt',
     });
     sealCodeGraphMaterializationSpool(database, 1);
     sortCodeGraphMaterializationSpoolSurfaces(database);
+    const readyPlan = readCodeGraphMaterializationSpoolReadyPlan(database);
+    expect(readyPlan.spoolIdentity).toMatch(/^[0-9a-f]{64}$/u);
+    expect(readCodeGraphMaterializationSpoolReadyPlan(database)).toEqual(readyPlan);
+    expect(Object.fromEntries(readyPlan.surfaces.map(surface => [surface.name, surface.rowCount]))).toEqual({
+      edges: 1,
+      lookup: 2,
+      monikers: 1,
+      references: 1,
+      reexports: 1,
+      symbol_terms: 2,
+      symbols: 1,
+    });
     expect(
       database.prepare('SELECT lookup_key, symbol_id FROM materialization_ordered_lookup ORDER BY rowid').all(),
     ).toEqual([
