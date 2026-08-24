@@ -81,8 +81,9 @@ export function codeGraphMaterializationSpoolPath(
 }
 
 /**
- * Stable rowid pages let the main database commit final rows and its resume
- * cursor atomically without retaining a repository-sized decoded page.
+ * Stable median-block rowid pages let the main database commit final rows and
+ * its resume cursor atomically while preserving B-tree fill without retaining
+ * a repository-sized decoded page.
  */
 export function codeGraphMaterializationApplyPages(
   rowCount: number,
@@ -94,9 +95,16 @@ export function codeGraphMaterializationApplyPages(
   if (!Number.isSafeInteger(pageRows) || pageRows <= 0 || pageRows > CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS) {
     throw new Error('Code graph materialization spool page bound is invalid.');
   }
+  const blockCount = Math.ceil(rowCount / pageRows);
   const pages: CodeGraphMaterializationApplyPage[] = [];
-  for (let afterRowid = 0; afterRowid < rowCount; afterRowid += pageRows) {
+  const pending: Array<readonly [number, number]> = [[0, blockCount]];
+  for (let cursor = 0; cursor < pending.length; cursor += 1) {
+    const [start, end] = pending[cursor]!;
+    if (start >= end) continue;
+    const block = Math.floor((start + end) / 2);
+    const afterRowid = block * pageRows;
     pages.push({afterRowid, rowCount: Math.min(pageRows, rowCount - afterRowid)});
+    pending.push([start, block], [block + 1, end]);
   }
   return pages;
 }

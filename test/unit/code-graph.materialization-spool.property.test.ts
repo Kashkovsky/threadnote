@@ -18,7 +18,7 @@ import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
 describe('code graph materialization spool', () => {
   it.prop(
-    'covers every ordered row once with monotonic bounded cursors',
+    'covers every ordered row once with median-block bounded cursors',
     {
       pageRows: FC.integer({max: CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS, min: 1}),
       rowCount: FC.integer({max: 100_000, min: 0}),
@@ -27,13 +27,20 @@ describe('code graph materialization spool', () => {
       const pages = codeGraphMaterializationApplyPages(rowCount, pageRows);
       expect(pages.reduce((total, page) => total + page.rowCount, 0)).toBe(rowCount);
       expect(pages.every(page => page.rowCount > 0 && page.rowCount <= pageRows)).toBe(true);
-      expect(pages.map(page => page.afterRowid)).toEqual(
+      expect(pages.map(page => page.afterRowid).sort((left, right) => left - right)).toEqual(
         Array.from({length: pages.length}, (_, index) => index * pageRows),
       );
-      expect(pages.at(-1)?.afterRowid ?? 0).toBeLessThanOrEqual(rowCount);
+      expect(new Set(pages.map(page => page.afterRowid)).size).toBe(pages.length);
+      if (pages.length > 0) {
+        expect(pages[0]!.afterRowid).toBe(Math.floor(pages.length / 2) * pageRows);
+      }
     },
     {fastCheck: {numRuns: 100}},
   );
+
+  it('uses the breadth-first median schedule retained by the storage screen', () => {
+    expect(codeGraphMaterializationApplyPages(50, 10).map(page => page.afterRowid)).toEqual([20, 10, 40, 0, 30]);
+  });
 
   it('uses a closed snapshot grammar for a repository-contained sibling path', () => {
     const layout = {repositoryRoot: '/threadnote/code-graph/repository'} as CodeGraphLayout;
