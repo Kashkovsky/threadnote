@@ -334,6 +334,7 @@ describe('code graph build-status properties', () => {
       const activity = {
         aliasesDiscovered: 0,
         elapsedMilliseconds: 500_000,
+        longestTransactionMilliseconds: 75_000,
         matchingMilliseconds: 100_000,
         pageCompleted: 1,
         pageTotal: 2,
@@ -361,6 +362,12 @@ describe('code graph build-status properties', () => {
               transactionStageMilliseconds: {...sample, writingEdges: -1},
             },
           },
+        }),
+      ).toBeUndefined();
+      expect(
+        parseCodeGraphBuildStatus({
+          ...resolving,
+          resolution: {activity: {...activity, longestTransactionMilliseconds: -1}},
         }),
       ).toBeUndefined();
     },

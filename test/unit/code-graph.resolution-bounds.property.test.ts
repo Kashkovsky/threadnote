@@ -80,8 +80,11 @@ describe('code graph resolution pass bounds', () => {
     ).toMatchObject({finalFactBytes: Number.NaN, rowCount: Number.NaN});
   });
 
-  it('widens reservation windows without widening transactions or changing page order', () => {
-    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBe(2 * PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES);
+  it('keeps transaction groups within reservation memory bounds without changing page order', () => {
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBeGreaterThanOrEqual(
+      PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
+    );
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES % PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES).toBe(0);
     fc.assert(
       fc.property(fc.array(fc.integer(), {maxLength: 257}), pages => {
         const reservations = planPersistentReferenceResolutionPages(pages);
@@ -106,8 +109,8 @@ describe('code graph resolution pass bounds', () => {
     const boundary = planPersistentReferenceResolutionPages(Array.from({length: 17}, (_, index) => index));
     expect(boundary.map(reservation => reservation.pages.length)).toEqual([8, 8, 1]);
     expect(boundary.map(reservation => reservation.transactions.map(transaction => transaction.length))).toEqual([
-      [4, 4],
-      [4, 4],
+      [8],
+      [8],
       [1],
     ]);
   });

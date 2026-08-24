@@ -375,6 +375,10 @@ const MATERIALIZATION_QUERY_INDEX_RESTORATION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'one-file-reindex-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
 ] as const;
 
+const RESOLUTION_TRANSACTION_RELEASE_EVIDENCE_MEASUREMENTS = (
+  ['cold', 'one-file-reindex', 'same-overlay-reference'] as const
+).map(prefix => ({name: `${prefix}-reference-resolution-longest-transaction-n1`, unit: 'milliseconds'}) as const);
+
 export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'cold-materialization', unit: 'milliseconds'},
   {name: 'cold-materialization-process-cpu-n1', unit: 'milliseconds'},
@@ -426,6 +430,7 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   ...MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS,
   ...MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS,
   ...MATERIALIZATION_QUERY_INDEX_RESTORATION_RELEASE_EVIDENCE_MEASUREMENTS,
+  ...RESOLUTION_TRANSACTION_RELEASE_EVIDENCE_MEASUREMENTS,
   ...SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS,
   ...ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS,
 ] as const;
@@ -2035,6 +2040,7 @@ export class IndexPhaseTimeline {
   readonly #materializationSubphaseMilliseconds = new Map<keyof CodeGraphMaterializationSubphaseMilliseconds, number>();
   #materializationStorage: IndexMaterializationStorageEvidence | undefined;
   #referenceResolutionAliasesDiscovered = 0;
+  #referenceResolutionLongestTransactionMilliseconds = 0;
   #referenceResolutionMatchingMilliseconds = 0;
   #referenceResolutionPagesCompleted = 0;
   #referenceResolutionPassesObserved = 0;
@@ -2167,6 +2173,10 @@ export class IndexPhaseTimeline {
             this.#referenceResolutionAliasesDiscovered = Math.max(
               this.#referenceResolutionAliasesDiscovered,
               progress.activity.aliasesDiscovered,
+            );
+            this.#referenceResolutionLongestTransactionMilliseconds = Math.max(
+              this.#referenceResolutionLongestTransactionMilliseconds,
+              progress.activity.longestTransactionMilliseconds ?? 0,
             );
             this.#referenceResolutionMatchingMilliseconds = Math.max(
               this.#referenceResolutionMatchingMilliseconds,
@@ -2333,6 +2343,10 @@ export class IndexPhaseTimeline {
 
   referenceResolutionMatchingMilliseconds(): number {
     return this.#referenceResolutionMatchingMilliseconds;
+  }
+
+  referenceResolutionLongestTransactionMilliseconds(): number {
+    return this.#referenceResolutionLongestTransactionMilliseconds;
   }
 
   referenceResolutionPagesCompleted(): number {
@@ -2521,6 +2535,9 @@ export function indexPhaseMeasurements(
     ]),
     benchmarkMeasurement(`${prefix}-reference-resolution-transactions-n1`, 'milliseconds', [
       timeline.referenceResolutionTransactionMilliseconds(),
+    ]),
+    benchmarkMeasurement(`${prefix}-reference-resolution-longest-transaction-n1`, 'milliseconds', [
+      timeline.referenceResolutionLongestTransactionMilliseconds(),
     ]),
     ...RESOLUTION_TRANSACTION_STAGES.map(([stage, measurement]) =>
       benchmarkMeasurement(`${prefix}-reference-resolution-transaction-stage-${measurement}-n1`, 'milliseconds', [
@@ -6648,9 +6665,12 @@ const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 5;
 const PRODUCTION_RATCHET_MINIMUM_FREE_BYTES = 120 * 1_073_741_824;
 const PRODUCTION_RATCHET_MILLISECOND_TARGETS = new Map<string, number>([
   ['cold-index', 60 * 60_000 - 1],
+  ['cold-reference-resolution-longest-transaction-n1', 15_000 - 1],
   ['one-file-reindex-index', 30_000 - 1],
   ['one-file-reindex-post-committed-scan-overlay-and-workspace', 5_000 - 1],
   ['one-file-reindex-registration-lock-and-database-setup', 5_000 - 1],
+  ['one-file-reindex-reference-resolution-longest-transaction-n1', 15_000 - 1],
+  ['same-overlay-reference-reference-resolution-longest-transaction-n1', 15_000 - 1],
 ]);
 
 /**

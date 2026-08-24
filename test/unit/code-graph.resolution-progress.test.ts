@@ -161,6 +161,7 @@ describe('code graph reference-resolution progress', () => {
           resolved: 5_001,
         });
         expect(result.resolution.elapsedMilliseconds).toBeLessThan(30_000);
+        expect(result.resolution.longestTransactionMilliseconds).toBeGreaterThan(0);
         expect(capacityBoundaries).toHaveLength(1);
         expect(capacityBoundaries[0]).toMatchObject({rowCount: 55_011});
         expect(capacityBoundaries[0]!.finalFactBytes).toBeGreaterThan(0);
@@ -173,6 +174,9 @@ describe('code graph reference-resolution progress', () => {
         expect(observations.map(progress => progress.pageCompleted)).toEqual([0, 0, 0, 1, 1, 2, 2]);
         expect(observations.at(-2)).toMatchObject({resolved: 0});
         expect(observations.at(-1)).toMatchObject({resolved: 5_001});
+        expect(observations.at(-1)?.longestTransactionMilliseconds).toBe(
+          result.resolution.longestTransactionMilliseconds,
+        );
         expect(result.graph.edges).toHaveLength(5_001);
         expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
         const semanticDigest = sha256HexSync(
@@ -191,7 +195,9 @@ describe('code graph reference-resolution progress', () => {
       Effect.gen(function* () {
         const fixture = yield* Effect.promise(() => resolutionFixture());
         const target = symbol('window-target', 'windowTarget');
-        const callers = Array.from({length: 9}, (_, index) => symbol(`window-caller-${index}`, `windowCaller${index}`));
+        const callers = Array.from({length: 17}, (_, index) =>
+          symbol(`window-caller-${index}`, `windowCaller${index}`),
+        );
         const unresolved = callers.map((caller, index) => resolvableReference(fixture.file, caller, target, index));
         const snapshot = persistentSnapshot(fixture.identity, callers.length + 1, unresolved.length);
         const firstCapacityRows: number[] = [];
@@ -276,15 +282,15 @@ describe('code graph reference-resolution progress', () => {
         });
 
         expect(result.firstFailure).toBeInstanceOf(CodeGraphStoreError);
-        expect(firstCapacityRows).toEqual([88]);
+        expect(firstCapacityRows).toEqual([88, 88]);
         expect(firstTransactionAttempts).toBe(2);
-        expect(result.afterFailure).toEqual({remaining: 5, resolved: 4});
-        expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 8, resolved: 4});
-        expect(resumedCapacityRows).toEqual([55]);
+        expect(result.afterFailure).toEqual({remaining: 9, resolved: 8});
+        expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 15, resolved: 8});
+        expect(resumedCapacityRows).toEqual([88, 11]);
         expect(resumedTransactions).toBe(2);
-        expect(result.resumed).toMatchObject({pagesCompleted: 5, referencesExamined: 5, resolved: 5});
-        expect(result.afterResume).toEqual({remaining: 0, resolved: 9});
-        expect(result.graph.edges).toHaveLength(9);
+        expect(result.resumed).toMatchObject({pagesCompleted: 9, referencesExamined: 9, resolved: 9});
+        expect(result.afterResume).toEqual({remaining: 0, resolved: 17});
+        expect(result.graph.edges).toHaveLength(17);
         expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
       }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     30_000,

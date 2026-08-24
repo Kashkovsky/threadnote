@@ -369,6 +369,7 @@ export type CodeGraphResolutionProgressCallback = (progress: CodeGraphResolution
 export interface CodeGraphResolutionSummary {
   readonly aliasesDiscovered: number;
   readonly elapsedMilliseconds: number;
+  readonly longestTransactionMilliseconds: number;
   readonly matchingMilliseconds: number;
   readonly pagesCompleted: number;
   readonly passesCompleted: number;

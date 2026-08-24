@@ -162,6 +162,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   const pageRows = persistentFull ? PERSISTENT_FULL_RESOLUTION_PAGE_ROWS : RESOLUTION_PAGE_ROWS;
   const persistedBaseSnapshotId = mode?.mode === 'persisted-delta' ? mode.baseSnapshotId : undefined;
   let aliasesDiscovered = 0;
+  let longestTransactionMilliseconds = 0;
   let matchingMilliseconds = 0;
   let pagesCompleted = 0;
   let passesCompleted = 0;
@@ -180,6 +181,16 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     writingAliases: transactionWritingAliasesMilliseconds,
     writingEdges: transactionWritingEdgesMilliseconds,
   });
+  const observeResolutionTransaction = <A, E, R>(transaction: Effect.Effect<A, E, R>) =>
+    Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis;
+      const result = yield* transaction;
+      longestTransactionMilliseconds = Math.max(
+        longestTransactionMilliseconds,
+        (yield* Clock.currentTimeMillis) - startedAt,
+      );
+      return result;
+    });
   const preparationCountStartedAt = yield* Clock.currentTimeMillis;
   const preparationCountRows = persistentFull
     ? yield* sql<PersistedFullReferenceTotalsRow>`
@@ -208,6 +219,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       yield* onProgress({
         aliasesDiscovered: aliases,
         elapsedMilliseconds,
+        longestTransactionMilliseconds,
         matchingMilliseconds,
         pageCompleted: 0,
         pageTotal: preparationPageTotal,
@@ -280,6 +292,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         yield* onProgress({
           aliasesDiscovered,
           elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+          longestTransactionMilliseconds,
           matchingMilliseconds: reportedMatchingMilliseconds,
           pageCompleted,
           pageTotal,
@@ -461,7 +474,9 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             }
           }),
         );
-        const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
+        const observedTransaction = observeResolutionTransaction(transaction);
+        const gatedTransaction =
+          mode?.mode === 'persisted-full' && writerGate ? writerGate(observedTransaction) : observedTransaction;
         yield* gatedTransaction;
       }
       // A later transaction in the same reservation can fail after this group
@@ -549,7 +564,8 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
           }),
         );
-        const gated = writerGate ? writerGate(transaction) : transaction;
+        const observedTransaction = observeResolutionTransaction(transaction);
+        const gated = writerGate ? writerGate(observedTransaction) : observedTransaction;
         const protectedTransaction = persistentCapacityProtector
           ? persistentCapacityProtector(
               persistentUnresolvedReferenceCapacityBoundary(persistentFull.snapshotId, unresolved),
@@ -748,6 +764,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   return {
     aliasesDiscovered,
     elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+    longestTransactionMilliseconds,
     matchingMilliseconds,
     pagesCompleted,
     passesCompleted,

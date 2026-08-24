@@ -320,6 +320,8 @@ export interface CodeGraphMaterializationMetrics {
 export interface CodeGraphResolutionActivity {
   readonly aliasesDiscovered: number;
   readonly elapsedMilliseconds: number;
+  /** Longest completed SQLite resolution transaction in this build. */
+  readonly longestTransactionMilliseconds?: number;
   readonly matchingMilliseconds: number;
   readonly pageCompleted: number;
   readonly pageTotal: number;

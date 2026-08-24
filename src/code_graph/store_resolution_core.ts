@@ -480,7 +480,7 @@ function persistentFullReferencePageTotal(
   );
 }
 
-export const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
+export const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 8;
 export const PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES = 8;
 
 export interface PersistentReferenceResolutionReservation<Value> {
@@ -489,9 +489,9 @@ export interface PersistentReferenceResolutionReservation<Value> {
 }
 
 /**
- * Reserve capacity across a wider page window without increasing the SQLite
- * transaction size. The two independent bounds make durable receipt/fsync work
- * less frequent while keeping WAL, rollback, and writer-lock exposure fixed.
+ * Reserve capacity across a bounded page window. The reservation and SQLite
+ * transaction ceilings remain independent so experiments can amortize commits
+ * without increasing the number of decoded pages retained in memory.
  */
 export function planPersistentReferenceResolutionPages<const Value>(
   pages: readonly Value[],

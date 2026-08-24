@@ -252,6 +252,12 @@ function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['acti
   if (!isRecord(value) || !isTimestamp(value.startedAt)) return undefined;
   const transactionStageMilliseconds = parseResolutionTransactionStageMilliseconds(value.transactionStageMilliseconds);
   if (value.transactionStageMilliseconds !== undefined && transactionStageMilliseconds === undefined) return undefined;
+  if (
+    value.longestTransactionMilliseconds !== undefined &&
+    !isNonNegativeFinite(value.longestTransactionMilliseconds)
+  ) {
+    return undefined;
+  }
   for (const key of [
     'aliasesDiscovered',
     'pageCompleted',
@@ -280,6 +286,9 @@ function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['acti
   return {
     aliasesDiscovered: Number(value.aliasesDiscovered),
     elapsedMilliseconds: Number(value.elapsedMilliseconds),
+    ...(value.longestTransactionMilliseconds === undefined
+      ? {}
+      : {longestTransactionMilliseconds: Number(value.longestTransactionMilliseconds)}),
     matchingMilliseconds: Number(value.matchingMilliseconds),
     pageCompleted: Number(value.pageCompleted),
     pageTotal: Number(value.pageTotal),

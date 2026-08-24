@@ -203,6 +203,7 @@ describe('code graph release evidence', () => {
         activity: {
           aliasesDiscovered: 13,
           elapsedMilliseconds: 1_000,
+          longestTransactionMilliseconds: 125,
           matchingMilliseconds: 700,
           pageCompleted: 2,
           pageTotal: 2,
@@ -238,6 +239,7 @@ describe('code graph release evidence', () => {
     );
     expect(Object.fromEntries([...measurements].filter(([name]) => name.includes('reference-resolution-')))).toEqual({
       'cold-reference-resolution-aliases-discovered-n1': 13,
+      'cold-reference-resolution-longest-transaction-n1': 125,
       'cold-reference-resolution-matching-n1': 700,
       'cold-reference-resolution-pages-n1': 5,
       'cold-reference-resolution-passes-n1': 3,
