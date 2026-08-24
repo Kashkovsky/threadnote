@@ -52,6 +52,7 @@ export interface CodeGraphMaterializationSpoolState {
 
 export interface CodeGraphMaterializationSpoolReadyPlan {
   readonly batches: readonly CodeGraphMaterializationSpoolBatchReceipt[];
+  readonly lexicalTermCount: number;
   readonly spoolIdentity: string;
   readonly surfaces: readonly {readonly name: string; readonly rowCount: number}[];
 }
@@ -469,10 +470,21 @@ export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): 
     }
     return {name: surface.name, rowCount};
   });
+  const lexicalTermCount = Number(
+    (
+      database.prepare('SELECT COUNT(*) AS count FROM materialization_ordered_terms').get() as {
+        readonly count: number | bigint;
+      }
+    ).count,
+  );
+  if (!Number.isSafeInteger(lexicalTermCount) || lexicalTermCount < 0) {
+    throw new Error('Code graph materialization spool lexical term count is invalid.');
+  }
   const digest = new Bun.CryptoHasher('sha256');
   digest.update(
     JSON.stringify({
       header: headers[0],
+      lexicalTermCount,
       receipts,
       surfaces,
       version: CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION,
@@ -480,6 +492,7 @@ export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): 
   );
   return {
     batches: receipts.map(materializationSpoolBatchReceiptFromRow),
+    lexicalTermCount,
     spoolIdentity: digest.digest('hex'),
     surfaces,
   };

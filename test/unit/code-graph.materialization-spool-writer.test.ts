@@ -112,6 +112,7 @@ it('appends every canonical fact surface under the exact durable batch receipt',
     const readyPlan = readCodeGraphMaterializationSpoolReadyPlan(database);
     expect(readyPlan.spoolIdentity).toMatch(/^[0-9a-f]{64}$/u);
     expect(readCodeGraphMaterializationSpoolReadyPlan(database)).toEqual(readyPlan);
+    expect(readyPlan.lexicalTermCount).toBe(2);
     expect(readyPlan.batches).toEqual([
       {
         batchId: 'e'.repeat(64),
@@ -146,6 +147,10 @@ it('appends every canonical fact surface under the exact durable batch receipt',
     expect(
       database.prepare('SELECT candidate_count, lookup_tiers_json FROM materialization_ordered_references').get(),
     ).toEqual({candidate_count: 1, lookup_tiers_json: '[["typescript:path:src%2Ftarget.ts:name:imported"]]'});
+    expect(database.prepare('SELECT term FROM materialization_ordered_terms ORDER BY rowid').all()).toEqual([
+      {term: 'shared'},
+      {term: 'source'},
+    ]);
   } finally {
     database.close();
   }

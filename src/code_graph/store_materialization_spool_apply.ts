@@ -1,7 +1,7 @@
 import {Effect} from 'effect';
 import type * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphMaterializationApplyPages} from './materialization_spool.js';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from './materialization_spool_surfaces.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from './materialization_spool_apply_surfaces.js';
 import {assertPersistentBuildOwner} from './store_build_core.js';
 import {CodeGraphStoreError} from './types.js';
 
@@ -84,7 +84,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
   if (
     !Number.isSafeInteger(surfaceIndex) ||
     surfaceIndex < 0 ||
-    surfaceIndex >= CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length
+    surfaceIndex >= CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length
   ) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool surface index is invalid.'));
   }
@@ -92,10 +92,10 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
     Effect.gen(function* () {
       yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
       const rows = yield* readSurfaceRows(sql, snapshotId);
-      const expected = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[surfaceIndex]!;
+      const expected = CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[surfaceIndex]!;
       const current = rows[surfaceIndex];
       if (
-        rows.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
+        rows.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length ||
         current === undefined ||
         current.surface_index !== surfaceIndex ||
         current.surface_name !== expected.name ||
@@ -113,7 +113,11 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
           surfaceName: current.surface_name,
         } satisfies CodeGraphMaterializationSpoolApplyPageResult;
       }
-      const pages = codeGraphMaterializationApplyPages(current.row_count);
+      const scheduledPages = codeGraphMaterializationApplyPages(current.row_count);
+      const pages =
+        'pageOrder' in expected && expected.pageOrder === 'ascending'
+          ? [...scheduledPages].sort((left, right) => left.afterRowid - right.afterRowid)
+          : scheduledPages;
       const page = pages[current.next_page_index];
       if (page === undefined) {
         return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool apply cursor is invalid.'));
@@ -164,6 +168,127 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
   );
 });
 
+export const writeCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
+  'codeGraph.writeMaterializationSpoolSurfacePage',
+)(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  surfaceIndex: number,
+  page: {readonly afterRowid: number; readonly rowCount: number},
+) {
+  const surface = CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[surfaceIndex];
+  if (surface === undefined || !Number.isSafeInteger(page.afterRowid) || page.afterRowid < 0 || page.rowCount <= 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Persistent materialization spool page is invalid.'));
+  }
+  const upperRowid = page.afterRowid + page.rowCount;
+  switch (surface.name) {
+    case 'symbols':
+      return yield* sql.unsafe(
+        `INSERT INTO symbols (
+           snapshot_id, id, content_hash, kind, name, qualified_name, path, language,
+           arity, lookup_keys_json, resolution_domain, resolution_scope_id, package_name,
+           exported, signature, documentation, span_json
+         ) SELECT ?, id, content_hash, kind, name, qualified_name, path, language,
+           arity, lookup_keys_json, resolution_domain, resolution_scope_id, package_name,
+           exported, signature, documentation, span_json
+         FROM materialization_spool.materialization_ordered_symbols
+         WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'lookup':
+      return yield* sql.unsafe(
+        `INSERT INTO snapshot_symbol_lookup (
+           snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
+           provenance, evidence_edge_id, evidence_path
+         ) SELECT ?, lookup_key, symbol_id, resolution_domain, exported,
+           provenance, evidence_edge_id, evidence_path
+         FROM materialization_spool.materialization_ordered_lookup
+         WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'edges':
+      return yield* sql.unsafe(
+        `INSERT INTO edges (
+           snapshot_id, id, source_id, source_name, relation, target_id, target_name,
+           provenance, confidence, evidence_path, evidence_span_json
+         ) SELECT ?, id, source_id, source_name, relation, target_id, target_name,
+           provenance, confidence, evidence_path, evidence_span_json
+         FROM materialization_spool.materialization_ordered_edges
+         WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'references':
+      return yield* sql.unsafe(
+        `INSERT INTO building_references (
+           snapshot_id, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
+           lookup_tiers_json, candidate_count, candidate_payload_bytes, source_id, source_name,
+           relation, target_name, provenance, confidence, evidence_path, evidence_span_json
+         ) SELECT ?, edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
+           lookup_tiers_json, candidate_count, candidate_payload_bytes, source_id, source_name,
+           relation, target_name, provenance, confidence, evidence_path, evidence_span_json
+         FROM materialization_spool.materialization_ordered_references
+         WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'reexports':
+      return yield* sql.unsafe(
+        `INSERT INTO snapshot_reexport_provenance (
+           snapshot_id, source_path, local_name, target_path, imported_name
+         ) SELECT ?, source_path, local_name, target_path, imported_name
+         FROM materialization_spool.materialization_ordered_reexports
+         WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'monikers':
+      return yield* sql.unsafe(
+        `INSERT INTO code_graph_monikers (
+           snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
+           package_name, package_version, import_path, qualified_name, component_id,
+           symbol_id, dependency_kind, evidence_path, evidence_span_json
+         ) SELECT ?, id, version, scheme, role, kind, resolution_domain, identity,
+           package_name, package_version, import_path, qualified_name, component_id,
+           symbol_id, dependency_kind, evidence_path, evidence_span_json
+         FROM materialization_spool.materialization_ordered_monikers
+         WHERE rowid > ? AND rowid <= ? ORDER BY rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'lexical_snapshot':
+      return yield* sql`INSERT INTO lexical_compact_snapshots (snapshot_id) VALUES (${snapshotId})`;
+    case 'lexical_symbols':
+      return yield* sql.unsafe(
+        `INSERT INTO lexical_compact_symbols (snapshot_key, symbol_id)
+         SELECT compact.snapshot_key, source.id
+         FROM materialization_spool.materialization_ordered_symbols AS source
+         CROSS JOIN lexical_compact_snapshots AS compact ON compact.snapshot_id = ?
+         WHERE source.rowid > ? AND source.rowid <= ? ORDER BY source.rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'lexical_terms':
+      return yield* sql.unsafe(
+        `INSERT INTO lexical_compact_terms (snapshot_key, term)
+         SELECT compact.snapshot_key, source.term
+         FROM materialization_spool.materialization_ordered_terms AS source
+         CROSS JOIN lexical_compact_snapshots AS compact ON compact.snapshot_id = ?
+         WHERE source.rowid > ? AND source.rowid <= ? ORDER BY source.rowid`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+    case 'symbol_terms':
+      return yield* sql.unsafe(
+        `INSERT INTO lexical_compact_postings (snapshot_key, term_key, symbol_key, weight)
+         SELECT compact.snapshot_key, terms.term_key, symbols.symbol_key, source.weight
+         FROM materialization_spool.materialization_ordered_symbol_terms AS source
+         CROSS JOIN lexical_compact_snapshots AS compact ON compact.snapshot_id = ?
+         CROSS JOIN lexical_compact_terms AS terms
+           ON terms.snapshot_key = compact.snapshot_key AND terms.term = source.term
+         CROSS JOIN lexical_compact_symbols AS symbols
+           ON symbols.snapshot_key = compact.snapshot_key AND symbols.symbol_id = source.symbol_id
+         WHERE source.rowid > ? AND source.rowid <= ?
+         ORDER BY terms.term_key, symbols.symbol_key`,
+        [snapshotId, page.afterRowid, upperRowid],
+      );
+  }
+});
+
 export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
   'codeGraph.assertMaterializationSpoolApplyComplete',
 )(function* (sql: SqlClient.SqlClient, snapshotId: string, ownerToken: string, spoolIdentity: string) {
@@ -171,11 +296,11 @@ export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
   const rows = yield* readSurfaceRows(sql, snapshotId);
   if (
-    rows.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
+    rows.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length ||
     rows.some(
       (row, index) =>
         row.surface_index !== index ||
-        row.surface_name !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!.name ||
+        row.surface_name !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[index]!.name ||
         row.spool_identity !== spoolIdentity ||
         row.complete !== 1 ||
         row.applied_row_count !== row.row_count,
@@ -205,10 +330,10 @@ function validateApplyIdentity(spoolIdentity: string): Effect.Effect<void, CodeG
 function validateSurfacePlan(
   surfaces: readonly CodeGraphMaterializationSpoolSurfacePlan[],
 ): Effect.Effect<void, CodeGraphStoreError> {
-  return surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
+  return surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.length ||
     surfaces.some(
       (surface, index) =>
-        surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!.name ||
+        surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES[index]!.name ||
         !Number.isSafeInteger(surface.rowCount) ||
         surface.rowCount < 0,
     )

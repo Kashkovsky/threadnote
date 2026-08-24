@@ -3,7 +3,7 @@ import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {expect, it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization_spool_surfaces.js';
+import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from '../../src/code_graph/materialization_spool_apply_surfaces.js';
 import {
   applyCodeGraphMaterializationSpoolSurfacePage,
   assertCodeGraphMaterializationSpoolApplyComplete,
@@ -35,7 +35,7 @@ effectIt.effect('commits a main-database page and its exact apply cursor atomica
     yield* sql.unsafe("INSERT INTO snapshots (id, state) VALUES ('snapshot', 'building')");
     yield* sql.unsafe("INSERT INTO snapshot_build_owners (snapshot_id, owner_token) VALUES ('snapshot', 'owner')");
     const identity = 'a'.repeat(64);
-    const plan = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.map((surface, index) => ({
+    const plan = CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.map((surface, index) => ({
       name: surface.name,
       rowCount: index === 0 ? 3 : 0,
     }));

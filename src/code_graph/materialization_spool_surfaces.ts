@@ -2,6 +2,7 @@ import type {Database} from 'bun:sqlite';
 
 export interface CodeGraphMaterializationSpoolSurface {
   readonly columns: string;
+  readonly distinct?: boolean;
   readonly name: string;
   readonly orderBy: string;
 }
@@ -36,6 +37,7 @@ export const CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES = [
   },
   {
     columns: 'source_path, local_name, target_path, imported_name',
+    distinct: true,
     name: 'reexports',
     orderBy: 'source_path, local_name, target_path, imported_name',
   },
@@ -167,6 +169,16 @@ export function assertCodeGraphMaterializationSpoolSurfaceState(
       throw new Error('Code graph materialization spool fact surfaces are missing or corrupt.');
     }
   }
+  // symbol_terms is deliberately last because its atomic sort also derives
+  // the compact lexical term dictionary from the same raw surface.
+  const expectsOrderedTerms =
+    stage === 'ready' ||
+    (stage === 'sorting' && sortedSurfaceCount === CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length);
+  if (
+    expectsOrderedTerms ? !tables.delete('materialization_ordered_terms') : tables.has('materialization_ordered_terms')
+  ) {
+    throw new Error('Code graph materialization spool fact surfaces are missing or corrupt.');
+  }
   if (tables.size !== 0) {
     throw new Error('Code graph materialization spool fact surfaces are missing or corrupt.');
   }
@@ -176,9 +188,16 @@ export function sortCodeGraphMaterializationSpoolSurface(
   database: Database,
   surface: CodeGraphMaterializationSpoolSurface,
 ): void {
+  const distinct = surface.distinct ? 'DISTINCT ' : '';
+  const lexicalTerms =
+    surface.name === 'symbol_terms'
+      ? 'CREATE TABLE materialization_ordered_terms AS ' +
+        'SELECT DISTINCT term FROM materialization_raw_symbol_terms ORDER BY term; '
+      : '';
   database.exec(
-    `CREATE TABLE materialization_ordered_${surface.name} AS ` +
-      `SELECT ${surface.columns} FROM materialization_raw_${surface.name} ORDER BY ${surface.orderBy}; ` +
+    lexicalTerms +
+      `CREATE TABLE materialization_ordered_${surface.name} AS ` +
+      `SELECT ${distinct}${surface.columns} FROM materialization_raw_${surface.name} ORDER BY ${surface.orderBy}; ` +
       `DROP TABLE materialization_raw_${surface.name}`,
   );
 }
