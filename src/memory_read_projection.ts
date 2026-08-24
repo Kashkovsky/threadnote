@@ -7,7 +7,6 @@ export const MEMORY_READ_CURSOR_TTL_MILLISECONDS = 10 * 60 * 1_000;
 
 const MEMORY_READ_ESTIMATED_BYTES_PER_TOKEN = 3;
 const MEMORY_READ_CURSOR_PREFIX = 'tnrc_';
-const MEMORY_READ_CURSOR_MAXIMUM_ENTRIES = 256;
 const MEMORY_READ_WARNING_MAXIMUM_BYTES = 160;
 const UTF8 = new TextEncoder();
 
@@ -59,57 +58,6 @@ export interface MemoryReadPage {
 
 export class MemoryReadProjectionError extends Error {
   override readonly name = 'MemoryReadProjectionError';
-}
-
-interface StoredCursor {
-  readonly expiresAt: number;
-  readonly state: MemoryReadCursorState;
-}
-
-/**
- * Process-local cursors deliberately contain no source identity. They are
- * single-use so retries cannot race two divergent continuations, and bounded
- * so abandoned reads cannot grow the MCP process without limit.
- */
-export class MemoryReadCursorStore {
-  readonly #entries = new Map<string, StoredCursor>();
-
-  constructor(
-    readonly ttlMilliseconds = MEMORY_READ_CURSOR_TTL_MILLISECONDS,
-    readonly maximumEntries = MEMORY_READ_CURSOR_MAXIMUM_ENTRIES,
-  ) {
-    if (!Number.isSafeInteger(ttlMilliseconds) || ttlMilliseconds < 1) {
-      throw new MemoryReadProjectionError('Memory read cursor TTL must be a positive integer.');
-    }
-    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
-      throw new MemoryReadProjectionError('Memory read cursor capacity must be a positive integer.');
-    }
-  }
-
-  put(cursor: string, state: MemoryReadCursorState, now: number): void {
-    this.#prune(now);
-    this.#entries.delete(cursor);
-    while (this.#entries.size >= this.maximumEntries) {
-      const oldest = this.#entries.keys().next().value as string | undefined;
-      if (oldest === undefined) break;
-      this.#entries.delete(oldest);
-    }
-    this.#entries.set(cursor, {expiresAt: now + this.ttlMilliseconds, state});
-  }
-
-  take(cursor: string, now: number): MemoryReadCursorState | undefined {
-    this.#prune(now);
-    const stored = this.#entries.get(cursor);
-    if (!stored) return undefined;
-    this.#entries.delete(cursor);
-    return stored.state;
-  }
-
-  #prune(now: number): void {
-    for (const [cursor, stored] of this.#entries) {
-      if (stored.expiresAt <= now) this.#entries.delete(cursor);
-    }
-  }
 }
 
 export function memoryReadCursorToken(entropy: string): string {

@@ -49,13 +49,17 @@ import {
   MEMORY_READ_DEFAULT_BUDGET_TOKENS,
   MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
   MEMORY_READ_MINIMUM_BUDGET_TOKENS,
-  MemoryReadCursorStore,
   memoryReadCursorToken,
   memoryReadSourceHashes,
   memoryReadSourcesMatch,
   projectMemoryReadPage,
   type MemoryReadResource,
 } from './memory_read_projection.js';
+import {
+  memoryReadCursorNamespace,
+  putPersistentMemoryReadCursor,
+  takePersistentMemoryReadCursor,
+} from './memory_read_cursor_store.js';
 import {
   buildCandidateReview,
   candidateReviewWithAuditEvent,
@@ -1180,7 +1184,12 @@ export function registerReadTool(
   description: string,
   memoryScope?: CursorCloudMemoryScope,
 ): void {
-  const cursorStore = new MemoryReadCursorStore();
+  const cursorNamespace = memoryReadCursorNamespace({
+    account: config.account,
+    ...(memoryScope ? {memoryRoot: memoryScope.root, team: memoryScope.team} : {}),
+    toolName: name,
+    user: config.user,
+  });
   server.registerTool(
     name,
     {
@@ -1216,7 +1225,14 @@ export function registerReadTool(
       }
       return Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const continuation = requestedCursor ? cursorStore.take(requestedCursor, now) : undefined;
+        const continuationResult = requestedCursor
+          ? yield* takePersistentMemoryReadCursor(config.agentContextHome, cursorNamespace, requestedCursor, now).pipe(
+              Effect.map(value => ({ok: true as const, value})),
+              Effect.catch(error => Effect.succeed({error, ok: false as const})),
+            )
+          : {ok: true as const, value: undefined};
+        if (!continuationResult.ok) return mcpErrorResult(continuationResult.error);
+        const continuation = continuationResult.value;
         if (requestedCursor && !continuation) {
           return argumentError(`${name} cursor is invalid, expired, or already consumed; restart from the URI.`);
         }
@@ -1280,7 +1296,10 @@ export function registerReadTool(
         if (Result.isFailure(projected)) return argumentError(errorMessage(projected.failure));
         const page = projected.success;
         if (!page.complete) {
-          cursorStore.put(
+          const cursorIssuedAt = yield* Clock.currentTimeMillis;
+          const stored = yield* putPersistentMemoryReadCursor(
+            config.agentContextHome,
+            cursorNamespace,
             continuationCursor,
             {
               mode: continuation?.mode ?? mode ?? 'content',
@@ -1289,8 +1308,12 @@ export function registerReadTool(
               sourceHashes: memoryReadSourceHashes(resources),
               uris: requestedUris,
             },
-            now,
+            cursorIssuedAt,
+          ).pipe(
+            Effect.map(() => ({ok: true as const})),
+            Effect.catch(error => Effect.succeed({error, ok: false as const})),
           );
+          if (!stored.ok) return mcpErrorResult(stored.error);
         }
         return {
           _meta: {
