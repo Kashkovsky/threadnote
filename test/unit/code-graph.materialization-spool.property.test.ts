@@ -7,6 +7,9 @@ import {
   codeGraphMaterializationSpoolPath,
   configureCodeGraphMaterializationSpoolDatabase,
   initializeCodeGraphMaterializationSpoolDatabase,
+  readCodeGraphMaterializationSpoolState,
+  recordCodeGraphMaterializationSpoolBatch,
+  sealCodeGraphMaterializationSpool,
 } from '../../src/code_graph/materialization_spool.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
@@ -104,6 +107,113 @@ describe('code graph materialization spool', () => {
           readonly count: number;
         },
       ).toEqual({count: 0});
+    } finally {
+      database.close();
+    }
+  });
+
+  it.prop(
+    'records a contiguous exact append prefix and seals it once',
+    {batchIds: FC.uniqueArray(FC.stringMatching(/^[0-9a-f]{64}$/u), {maxLength: 24})},
+    ({batchIds}) => {
+      const database = new Database(':memory:', {strict: true});
+      try {
+        configureCodeGraphMaterializationSpoolDatabase(database);
+        initializeCodeGraphMaterializationSpoolDatabase(database, {
+          checkoutId: 'a'.repeat(64),
+          extractorSet: 'extractor-v1',
+          graphContentId: `cgc_${'b'.repeat(40)}`,
+          repositoryId: 'c'.repeat(64),
+          snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+        });
+        for (const [batchIndex, batchId] of batchIds.entries()) {
+          const receipt = {batchId, batchIndex, factBytes: batchIndex * 3, rowCount: batchIndex * 5, sourceBytes: 7};
+          expect(recordCodeGraphMaterializationSpoolBatch(database, receipt)).toBe('appended');
+          expect(recordCodeGraphMaterializationSpoolBatch(database, receipt)).toBe('resumed');
+        }
+        expect(readCodeGraphMaterializationSpoolState(database)).toEqual({
+          appendedBatchCount: batchIds.length,
+          stage: 'appending',
+        });
+        expect(sealCodeGraphMaterializationSpool(database, batchIds.length)).toBe('sealed');
+        expect(sealCodeGraphMaterializationSpool(database, batchIds.length)).toBe('resumed');
+        expect(readCodeGraphMaterializationSpoolState(database)).toEqual({
+          appendedBatchCount: batchIds.length,
+          expectedBatchCount: batchIds.length,
+          stage: 'sealed',
+        });
+      } finally {
+        database.close();
+      }
+    },
+    {fastCheck: {numRuns: 50}},
+  );
+
+  it('fails closed for gaps, receipt changes, premature seals, and appends after sealing', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, {
+        checkoutId: 'a'.repeat(64),
+        extractorSet: 'extractor-v1',
+        graphContentId: `cgc_${'b'.repeat(40)}`,
+        repositoryId: 'c'.repeat(64),
+        snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+      });
+      const receipt = {batchId: 'e'.repeat(64), batchIndex: 0, factBytes: 3, rowCount: 5, sourceBytes: 7};
+      expect(() => recordCodeGraphMaterializationSpoolBatch(database, {...receipt, batchIndex: 1})).toThrow(
+        'Code graph materialization spool batch sequence is not contiguous.',
+      );
+      expect(() => sealCodeGraphMaterializationSpool(database, 1)).toThrow(
+        'Code graph materialization spool cannot seal before every expected batch is committed.',
+      );
+      expect(recordCodeGraphMaterializationSpoolBatch(database, receipt)).toBe('appended');
+      expect(() => recordCodeGraphMaterializationSpoolBatch(database, {...receipt, rowCount: 6})).toThrow(
+        'Code graph materialization spool batch identity does not match the committed receipt.',
+      );
+      expect(sealCodeGraphMaterializationSpool(database, 1)).toBe('sealed');
+      expect(() => sealCodeGraphMaterializationSpool(database, 2)).toThrow(
+        'Code graph materialization spool sealed batch count does not match.',
+      );
+      expect(() =>
+        recordCodeGraphMaterializationSpoolBatch(database, {
+          batchId: 'f'.repeat(64),
+          batchIndex: 1,
+          factBytes: 0,
+          rowCount: 0,
+          sourceBytes: 0,
+        }),
+      ).toThrow('Code graph materialization spool is already sealed.');
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects a corrupt durable receipt ledger during exact-identity resume', () => {
+    const database = new Database(':memory:', {strict: true});
+    const header = {
+      checkoutId: 'a'.repeat(64),
+      extractorSet: 'extractor-v1',
+      graphContentId: `cgc_${'b'.repeat(40)}`,
+      repositoryId: 'c'.repeat(64),
+      snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+    };
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, header);
+      recordCodeGraphMaterializationSpoolBatch(database, {
+        batchId: 'e'.repeat(64),
+        batchIndex: 0,
+        factBytes: 3,
+        rowCount: 5,
+        sourceBytes: 7,
+      });
+      database
+        .prepare('UPDATE materialization_spool_batches SET batch_id = ? WHERE batch_index = 0')
+        .run('z'.repeat(64));
+      expect(() => initializeCodeGraphMaterializationSpoolDatabase(database, header)).toThrow(
+        'Code graph materialization spool batch ledger is corrupt.',
+      );
     } finally {
       database.close();
     }
