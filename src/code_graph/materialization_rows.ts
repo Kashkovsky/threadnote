@@ -48,6 +48,12 @@ export interface CodeGraphMaterializationSymbolLookupRow {
   readonly symbolId: string;
 }
 
+export interface CodeGraphMaterializationSymbolTermRow {
+  readonly symbolId: string;
+  readonly term: string;
+  readonly weight: number;
+}
+
 export interface CodeGraphMaterializationReferenceRow {
   readonly aliasLookupKeysJson: string;
   readonly candidateCount: number;
@@ -158,6 +164,23 @@ export function codeGraphMaterializationSymbolLookupRows(
   return [...rows.values()].sort(
     (left, right) =>
       compareCodeUnits(left.lookupKey, right.lookupKey) || compareCodeUnits(left.symbolId, right.symbolId),
+  );
+}
+
+export function codeGraphMaterializationSymbolTermRows(
+  symbols: readonly CodeGraphSymbol[],
+  termsBySymbol: ReadonlyMap<CodeGraphSymbol, readonly (readonly [string, number])[]>,
+): readonly CodeGraphMaterializationSymbolTermRow[] {
+  const rows: CodeGraphMaterializationSymbolTermRow[] = [];
+  for (const symbol of symbols) {
+    const terms = termsBySymbol.get(symbol);
+    if (terms === undefined) {
+      throw new Error('Code graph materialization symbol terms are missing.');
+    }
+    for (const [term, weight] of terms) rows.push({symbolId: symbol.id, term, weight});
+  }
+  return rows.sort(
+    (left, right) => compareCodeUnits(left.term, right.term) || compareCodeUnits(left.symbolId, right.symbolId),
   );
 }
 

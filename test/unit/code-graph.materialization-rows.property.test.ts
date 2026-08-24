@@ -9,6 +9,7 @@ import {
   codeGraphMaterializationEdgeRows,
   codeGraphMaterializationSymbolLookupRows,
   codeGraphMaterializationSymbolRows,
+  codeGraphMaterializationSymbolTermRows,
 } from '../../src/code_graph/materialization_rows.js';
 import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
@@ -59,6 +60,34 @@ it.prop(
     expect(codeGraphMaterializationSymbolRows(materialized).map(row => row.id)).toEqual(
       materialized.map(symbol => symbol.id).sort(),
     );
+  },
+  {fastCheck: {numRuns: 100}},
+);
+
+it.prop(
+  'materializes prepared symbol terms independent of unique symbol order',
+  {symbols: FC.uniqueArray(symbolArbitrary, {maxLength: 24, selector: symbol => symbol.id})},
+  ({symbols}) => {
+    const materialized = symbols.map(codeGraphSymbol);
+    const terms = new Map(
+      materialized.map(symbol => [
+        symbol,
+        [
+          [`term-${symbol.id}`, 5],
+          ['shared', 1],
+        ] as const,
+      ]),
+    );
+    const forward = codeGraphMaterializationSymbolTermRows(materialized, terms);
+    expect(codeGraphMaterializationSymbolTermRows([...materialized].reverse(), terms)).toEqual(forward);
+    expect(
+      forward.every(
+        (row, index) =>
+          index === 0 ||
+          forward[index - 1]!.term < row.term ||
+          (forward[index - 1]!.term === row.term && forward[index - 1]!.symbolId < row.symbolId),
+      ),
+    ).toBe(true);
   },
   {fastCheck: {numRuns: 100}},
 );
