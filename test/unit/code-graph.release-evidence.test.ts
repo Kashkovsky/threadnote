@@ -1225,6 +1225,18 @@ describe('code graph release evidence', () => {
           metadata: {...artifact.metadata, benchmarkReferenceDiskMedium: 'rotational'},
         })),
       ),
+    ).not.toThrow();
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {
+            ...artifact.metadata,
+            benchmarkGithubRunnerEnvironment: 'self-hosted',
+            benchmarkReferenceDiskMedium: 'rotational',
+          },
+        })),
+      ),
     ).toThrow(/governed storage evidence/);
     expect(() =>
       createCodeGraphProductionRatchet(

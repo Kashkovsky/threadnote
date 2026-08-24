@@ -25,6 +25,7 @@ import {
   measureBenchmarkIndex,
   measureSampledBenchmarkIndex,
   parseCodeGraphBenchmarkArguments,
+  productionBenchmarkStorageGoverned,
   restoreBenchmarkOverlay,
   sanitizedBenchmarkEnvironmentProvenance,
   semanticBenchmarkOverlay,
@@ -102,6 +103,25 @@ describe('code graph external benchmark harness', () => {
     expect(benchmarkLinuxStorageClassification('ext4', '/dev/nvme0n1p1', ['0'])).toBe('solid-state');
     expect(benchmarkLinuxStorageClassification('xfs', '/dev/sda1', ['1'])).toBe('rotational');
     expect(benchmarkLinuxStorageClassification('ext4', '/dev/root', [])).toBe('unknown');
+  });
+
+  it('uses trusted GitHub-hosted Linux SSD attestation without weakening local storage governance', () => {
+    const storage = (medium: 'rotational' | 'solid-state' | 'unknown' | 'virtual-or-network') => ({
+      filesystem: 'bounded',
+      location: 'unknown' as const,
+      medium,
+    });
+    for (const medium of ['rotational', 'solid-state', 'unknown', 'virtual-or-network'] as const) {
+      expect(productionBenchmarkStorageGoverned('linux', true, [storage(medium), storage(medium)])).toBe(true);
+      expect(productionBenchmarkStorageGoverned('linux', false, [storage(medium), storage(medium)])).toBe(
+        medium === 'solid-state',
+      );
+    }
+    expect(productionBenchmarkStorageGoverned('darwin', true, [storage('unknown'), storage('unknown')])).toBe(false);
+    expect(productionBenchmarkStorageGoverned('linux', false, [storage('solid-state'), storage('rotational')])).toBe(
+      false,
+    );
+    expect(productionBenchmarkStorageGoverned('linux', true, [])).toBe(false);
   });
 
   it('ignores ordinary vector-maintenance metadata before filesystem inspection', () => {
