@@ -1,5 +1,8 @@
 import {compareCodeUnits} from './ordering.js';
-import type {CodeGraphEdge, CodeGraphSymbol} from './types.js';
+import type {CodeGraphReusableReexport} from './store_models.js';
+import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from './types.js';
+
+const referenceCandidateEncoder = new TextEncoder();
 
 export interface CodeGraphMaterializationEdgeRow {
   readonly confidence: number;
@@ -41,6 +44,31 @@ export interface CodeGraphMaterializationSymbolLookupRow {
   readonly provenance: 'symbol';
   readonly resolutionDomain: string;
   readonly symbolId: string;
+}
+
+export interface CodeGraphMaterializationReferenceRow {
+  readonly aliasLookupKeysJson: string;
+  readonly candidateCount: number;
+  readonly candidatePayloadBytes: number;
+  readonly confidence: number;
+  readonly edgeId: string;
+  readonly evidencePath: string;
+  readonly evidenceSpanJson: string;
+  readonly exportedOnly: 0 | 1;
+  readonly lookupTiersJson: string;
+  readonly provenance: CodeGraphEdge['provenance'];
+  readonly relation: CodeGraphEdge['relation'];
+  readonly resolutionDomain: string;
+  readonly sourceId: string | null;
+  readonly sourceName: string;
+  readonly targetName: string;
+}
+
+export interface CompactedReferenceLookupTiers {
+  readonly candidateCount: number;
+  readonly json: string;
+  readonly payloadBytes: number;
+  readonly tiers: readonly (readonly string[])[];
 }
 
 export interface CodeGraphMaterializationSymbolRow {
@@ -110,6 +138,115 @@ export function codeGraphMaterializationSymbolLookupRows(
     (left, right) =>
       compareCodeUnits(left.lookupKey, right.lookupKey) || compareCodeUnits(left.symbolId, right.symbolId),
   );
+}
+
+/** Canonical unresolved-reference payload shared by direct and spool writers. */
+export function codeGraphMaterializationReferenceRows(
+  references: readonly CodeGraphReference[],
+  referenceEdges: ReadonlyMap<string, CodeGraphEdge>,
+): readonly CodeGraphMaterializationReferenceRow[] {
+  const edgeIds = new Set<string>();
+  return [...references]
+    .sort((left, right) => compareCodeUnits(left.edgeId, right.edgeId))
+    .map(reference => {
+      if (edgeIds.has(reference.edgeId)) {
+        throw new Error('Code graph materialization reference identities are duplicated.');
+      }
+      edgeIds.add(reference.edgeId);
+      const edge = referenceEdges.get(reference.edgeId);
+      if (edge === undefined || edge.targetId !== undefined) {
+        throw new Error('Code graph materialization reference edge payload is missing or resolved.');
+      }
+      const candidates = compactReferenceLookupTiers(reference.lookupTiers);
+      return {
+        aliasLookupKeysJson: JSON.stringify(reference.aliasLookupKeys ?? []),
+        candidateCount: candidates.candidateCount,
+        candidatePayloadBytes: candidates.payloadBytes,
+        confidence: edge.confidence,
+        edgeId: reference.edgeId,
+        evidencePath: edge.evidencePath,
+        evidenceSpanJson: JSON.stringify(edge.evidenceSpan),
+        exportedOnly: reference.exportedOnly === true ? 1 : 0,
+        lookupTiersJson: candidates.json,
+        provenance: edge.provenance,
+        relation: edge.relation,
+        resolutionDomain: reference.resolutionDomain,
+        sourceId: edge.sourceId ?? null,
+        sourceName: edge.sourceName,
+        targetName: edge.targetName,
+      };
+    });
+}
+
+export function compactReferenceLookupTiers(
+  lookupTiers: readonly (readonly string[])[],
+): CompactedReferenceLookupTiers {
+  const tiers = lookupTiers.map(tier => [...new Set(tier)].sort(compareCodeUnits));
+  const json = JSON.stringify(tiers);
+  return {
+    candidateCount: tiers.reduce((total, tier) => total + tier.length, 0),
+    json,
+    payloadBytes: referenceCandidateEncoder.encode(json).byteLength,
+    tiers,
+  };
+}
+
+export function codeGraphMaterializationReexportRows(
+  references: readonly CodeGraphReference[],
+): readonly CodeGraphReusableReexport[] {
+  const rows = new Map<string, CodeGraphReusableReexport>();
+  for (const reference of references) {
+    for (const row of normalizedReexportProvenance(reference)) {
+      rows.set([row.sourcePath, row.localName, row.targetPath, row.importedName].join('\0'), row);
+    }
+  }
+  return [...rows.values()].sort(
+    (left, right) =>
+      compareCodeUnits(left.sourcePath, right.sourcePath) ||
+      compareCodeUnits(left.localName, right.localName) ||
+      compareCodeUnits(left.targetPath, right.targetPath) ||
+      compareCodeUnits(left.importedName, right.importedName),
+  );
+}
+
+export function normalizedReexportProvenance(reference: CodeGraphReference): readonly CodeGraphReusableReexport[] {
+  if (reference.relation !== 'reexports' || reference.resolutionDomain !== 'typescript') return [];
+  const aliases = uniquePathNameLookupKeys(reference.aliasLookupKeys ?? []).filter(
+    candidate => candidate.path === reference.evidencePath,
+  );
+  const targets = uniquePathNameLookupKeys(reference.lookupTiers.flat());
+  return aliases.flatMap(alias =>
+    targets.map(target => ({
+      importedName: target.name,
+      localName: alias.name,
+      sourcePath: alias.path,
+      targetPath: target.path,
+    })),
+  );
+}
+
+export function parseTypeScriptPathNameLookupKey(
+  value: string,
+): {readonly name: string; readonly path: string} | undefined {
+  const match =
+    /^typescript:(?:[^:]+:)?path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/u.exec(value);
+  if (!match) return undefined;
+  try {
+    return {name: decodeURIComponent(match[2]!), path: decodeURIComponent(match[1]!)};
+  } catch {
+    return undefined;
+  }
+}
+
+function uniquePathNameLookupKeys(
+  values: readonly string[],
+): readonly {readonly name: string; readonly path: string}[] {
+  const parsed = new Map<string, {readonly name: string; readonly path: string}>();
+  for (const value of values) {
+    const candidate = parseTypeScriptPathNameLookupKey(value);
+    if (candidate !== undefined) parsed.set(`${candidate.path}\0${candidate.name}`, candidate);
+  }
+  return [...parsed.values()];
 }
 
 export function codeGraphLookupDomain(lookupKey: string, fallback: string | undefined): string {

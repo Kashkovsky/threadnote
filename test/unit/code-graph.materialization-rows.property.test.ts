@@ -1,12 +1,14 @@
 import {expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {
+  codeGraphMaterializationReferenceRows,
+  codeGraphMaterializationReexportRows,
   codeGraphLookupDomain,
   codeGraphMaterializationEdgeRows,
   codeGraphMaterializationSymbolLookupRows,
   codeGraphMaterializationSymbolRows,
 } from '../../src/code_graph/materialization_rows.js';
-import type {CodeGraphSymbol} from '../../src/code_graph/types.js';
+import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from '../../src/code_graph/types.js';
 
 const edgeArbitrary = FC.record({
   confidence: FC.integer({max: 100, min: 0}).map(value => value / 100),
@@ -22,6 +24,15 @@ const symbolArbitrary = FC.record({
   lookupKeys: FC.uniqueArray(FC.stringMatching(/^[a-z][a-z0-9]{0,5}(?::[a-z]{1,6})?$/u), {maxLength: 6}),
   path: FC.stringMatching(/^src\/[a-z]{1,8}\.ts$/u),
   resolutionDomain: FC.option(FC.stringMatching(/^[a-z]{1,6}$/u), {nil: undefined}),
+});
+
+const referenceArbitrary = FC.record({
+  edgeId: FC.stringMatching(/^edge-[a-z0-9]{1,8}$/u),
+  exportedOnly: FC.boolean(),
+  lookupTiers: FC.array(FC.array(FC.stringMatching(/^[a-z][a-z0-9]{0,5}$/u), {maxLength: 6}), {
+    maxLength: 4,
+  }),
+  resolutionDomain: FC.stringMatching(/^[a-z]{1,8}$/u),
 });
 
 it.prop(
@@ -100,6 +111,48 @@ it.prop(
   {fastCheck: {numRuns: 100}},
 );
 
+it.prop(
+  'materializes unresolved references independent of unique input order',
+  {references: FC.uniqueArray(referenceArbitrary, {maxLength: 24, selector: reference => reference.edgeId})},
+  ({references}) => {
+    const materialized = references.map(reference => codeGraphReference(reference));
+    const edges = materialized.map(reference => referenceEdge(reference));
+    const forward = codeGraphMaterializationReferenceRows(materialized, new Map(edges.map(edge => [edge.id, edge])));
+    const reverse = codeGraphMaterializationReferenceRows(
+      [...materialized].reverse(),
+      new Map([...edges].reverse().map(edge => [edge.id, edge])),
+    );
+    expect(reverse).toEqual(forward);
+    expect(forward.map(row => row.edgeId)).toEqual(materialized.map(reference => reference.edgeId).sort());
+    for (const row of forward) {
+      const tiers = JSON.parse(row.lookupTiersJson) as readonly (readonly string[])[];
+      expect(row.candidateCount).toBe(tiers.reduce((total, tier) => total + tier.length, 0));
+      expect(row.candidatePayloadBytes).toBe(new TextEncoder().encode(row.lookupTiersJson).byteLength);
+      expect(tiers.every(tier => new Set(tier).size === tier.length)).toBe(true);
+    }
+  },
+  {fastCheck: {numRuns: 100}},
+);
+
+it('deduplicates and orders canonical TypeScript re-export rows', () => {
+  const reference = codeGraphReference({
+    edgeId: 'edge-reexport',
+    exportedOnly: true,
+    lookupTiers: [['typescript:path:src%2Ftarget.ts:name:zeta', 'typescript:path:src%2Ftarget.ts:name:alpha']],
+    resolutionDomain: 'typescript',
+  });
+  const reexport = {
+    ...reference,
+    aliasLookupKeys: ['typescript:path:src%2Fsource.ts:name:local'],
+    evidencePath: 'src/source.ts',
+    relation: 'reexports' as const,
+  };
+  expect(codeGraphMaterializationReexportRows([reexport, reexport])).toEqual([
+    {importedName: 'alpha', localName: 'local', sourcePath: 'src/source.ts', targetPath: 'src/target.ts'},
+    {importedName: 'zeta', localName: 'local', sourcePath: 'src/source.ts', targetPath: 'src/target.ts'},
+  ]);
+});
+
 function codeGraphSymbol(input: {
   readonly exported: boolean;
   readonly id: string;
@@ -115,5 +168,36 @@ function codeGraphSymbol(input: {
     name: input.id,
     qualifiedName: input.id,
     span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
+}
+
+function codeGraphReference(input: {
+  readonly edgeId: string;
+  readonly exportedOnly: boolean;
+  readonly lookupTiers: readonly (readonly string[])[];
+  readonly resolutionDomain: string;
+}): CodeGraphReference {
+  return {
+    ...input,
+    evidencePath: 'src/source.ts',
+    evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    provenance: 'syntactic',
+    relation: 'references',
+    sourceName: 'source',
+    targetName: 'target',
+  };
+}
+
+function referenceEdge(reference: CodeGraphReference): CodeGraphEdge {
+  return {
+    confidence: 0.75,
+    evidencePath: reference.evidencePath,
+    evidenceSpan: reference.evidenceSpan,
+    id: reference.edgeId,
+    provenance: reference.provenance,
+    relation: reference.relation,
+    sourceId: reference.sourceId,
+    sourceName: reference.sourceName,
+    targetName: reference.targetName,
   };
 }
