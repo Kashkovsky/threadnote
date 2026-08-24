@@ -6145,7 +6145,7 @@ const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGo
   primaryHome: string,
   referenceHome: string,
   minimumFreeGiB: number,
-  allowGithubActionsVirtualStorage: boolean,
+  allowGithubActionsHostedStorage: boolean,
 ) {
   const system = yield* SystemInfo;
   const [primaryCapacity, referenceCapacity, primaryStorage, referenceStorage] = yield* Effect.all(
@@ -6171,11 +6171,15 @@ const productionBenchmarkGovernance = Effect.fn('benchmarkCodeGraph.productionGo
     );
   }
   const storageEnvironments = [primaryStorage, referenceStorage];
-  const governedVirtualStorage =
-    allowGithubActionsVirtualStorage &&
+  // GitHub-hosted runners do not consistently expose their ephemeral backing
+  // device through /dev, so an honest observation may remain `unknown` even
+  // though the runner itself is attested. Never extend this allowance to a
+  // self-hosted runner or to storage that is positively rotational.
+  const governedHostedStorage =
+    allowGithubActionsHostedStorage &&
     system.platform === 'linux' &&
-    storageEnvironments.every(storage => storage.medium === 'virtual-or-network');
-  if (!governedVirtualStorage && storageEnvironments.some(storage => storage.medium !== 'solid-state')) {
+    storageEnvironments.every(storage => storage.medium !== 'rotational');
+  if (!governedHostedStorage && storageEnvironments.some(storage => storage.medium !== 'solid-state')) {
     return yield* Effect.fail(new ScriptError('Production-large benchmark requires solid-state storage.'));
   }
   if (system.platform === 'darwin' && storageEnvironments.some(storage => storage.location !== 'internal')) {
@@ -7066,8 +7070,9 @@ function productionRatchetStorageGoverned(metadata: Readonly<Record<string, unkn
     return true;
   }
   return (
-    metadata.benchmarkDiskMedium === 'virtual-or-network' &&
-    metadata.benchmarkReferenceDiskMedium === 'virtual-or-network' &&
+    (metadata.benchmarkDiskMedium === 'virtual-or-network' || metadata.benchmarkDiskMedium === 'unknown') &&
+    (metadata.benchmarkReferenceDiskMedium === 'virtual-or-network' ||
+      metadata.benchmarkReferenceDiskMedium === 'unknown') &&
     metadata.benchmarkSourceValidationMode === 'github-actions-clean-source' &&
     metadata.benchmarkGithubRunnerEnvironment === 'github-hosted' &&
     (metadata.benchmarkGithubRunnerArchitecture === 'ARM64' || metadata.benchmarkGithubRunnerArchitecture === 'X64') &&

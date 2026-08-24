@@ -3951,7 +3951,12 @@ describe('native code graph lifecycle', () => {
         return yield* indexer.index({
           cwd: root,
           onProgress: progress => {
-            if (progress.phase !== 'scanning' || progress.completed !== 0 || progress.activity !== undefined)
+            if (
+              progress.phase !== 'scanning' ||
+              progress.completed !== 0 ||
+              progress.total !== 0 ||
+              progress.activity !== undefined
+            )
               return Effect.void;
             inventoryPasses += 1;
             reportOwnerScanning();
@@ -3975,7 +3980,12 @@ describe('native code graph lifecycle', () => {
             cwd: root,
             onProgress: progress => {
               if (progress.phase === 'waiting') signal.queued();
-              if (progress.phase === 'scanning' && progress.completed === 0 && progress.activity === undefined)
+              if (
+                progress.phase === 'scanning' &&
+                progress.completed === 0 &&
+                progress.total === 0 &&
+                progress.activity === undefined
+              )
                 inventoryPasses += 1;
               return Effect.void;
             },
@@ -4020,7 +4030,13 @@ describe('native code graph lifecycle', () => {
       const inventoryPasses = [
         ...codeGraphProcessProgress(firstOutput),
         ...codeGraphProcessProgress(secondOutput),
-      ].filter(progress => progress.phase === 'scanning' && progress.completed === 0 && !('activity' in progress));
+      ].filter(
+        progress =>
+          progress.phase === 'scanning' &&
+          progress.completed === 0 &&
+          progress.total === 0 &&
+          !('activity' in progress),
+      );
 
       expect(inventoryPasses).toHaveLength(1);
       expect(existsSync(`${secondMarker}.scanning`)).toBe(false);
@@ -5995,11 +6011,18 @@ async function waitForPath(path: string, timeoutMilliseconds = 15_000): Promise<
   }
 }
 
-function codeGraphProcessProgress(output: string): readonly {readonly completed?: number; readonly phase: string}[] {
+function codeGraphProcessProgress(
+  output: string,
+): readonly {readonly completed?: number; readonly phase: string; readonly total?: number}[] {
   return output
     .split(/\r?\n/)
     .filter(Boolean)
-    .map(line => JSON.parse(line) as {readonly progress?: {readonly completed?: number; readonly phase: string}})
+    .map(
+      line =>
+        JSON.parse(line) as {
+          readonly progress?: {readonly completed?: number; readonly phase: string; readonly total?: number};
+        },
+    )
     .flatMap(message => (message.progress ? [message.progress] : []));
 }
 
