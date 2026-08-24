@@ -14,6 +14,7 @@ import {
   withCodeGraphDiskReservation,
 } from './disk_reservation.js';
 import {
+  codeGraphExtractionWindowSize,
   createCodeGraphExtractionCostModel,
   planCodeGraphExtractionLanes,
   takeCodeGraphExtractionWindow,
@@ -199,7 +200,7 @@ export function cacheContentBatch(options: {
   readonly threadnoteHome: string;
   readonly treeSitter: TreeSitterRuntimeShape;
 }): CodeGraphCacheContentCoalescer {
-  const windowSize = Math.max(1, options.parserPool.capacity * 2);
+  const windowSize = codeGraphExtractionWindowSize(options.parserPool.capacity);
   const extractionCostModel = createCodeGraphExtractionCostModel<ExtractionReuseGroup>();
   let extractionMilliseconds = 0;
   let extractionFactsBytesCompleted = 0;

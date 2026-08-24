@@ -1,6 +1,7 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphExtractionWindowSize,
   createCodeGraphExtractionCostModel,
   planCodeGraphExtractionLanes,
   takeCodeGraphExtractionWindow,
@@ -24,6 +25,20 @@ const groupArbitrary = fc.record({
 });
 
 describe('code graph extraction scheduling', () => {
+  it('scales the retained extraction window monotonically within the absolute file bound', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 8, min: 1}), fc.integer({max: 8, min: 1}), (left, right) => {
+        const lower = Math.min(left, right);
+        const upper = Math.max(left, right);
+        expect(codeGraphExtractionWindowSize(lower)).toBeLessThanOrEqual(codeGraphExtractionWindowSize(upper));
+        expect(codeGraphExtractionWindowSize(lower)).toBe(lower * 8);
+        expect(codeGraphExtractionWindowSize(upper)).toBe(upper * 8);
+      }),
+      {numRuns: 100},
+    );
+    expect(() => codeGraphExtractionWindowSize(0)).toThrow(/capacity/u);
+  });
+
   it('preserves every reuse group exactly once in deterministic longest-predicted-time order', () => {
     fc.assert(
       fc.property(fc.array(groupArbitrary, {maxLength: 40}), fc.integer({max: 16, min: 1}), (groups, capacity) => {
