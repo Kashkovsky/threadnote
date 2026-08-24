@@ -993,7 +993,43 @@ describe('code graph release evidence', () => {
     ];
     const ratchet = createCodeGraphProductionRatchet(artifacts);
 
+    const cleanRebuilds = artifacts.map((artifact, index) => ({
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        benchmarkValidatedManagedExecutableSha256: (index + 1).toString(16).repeat(64),
+        benchmarkValidatedManagedPayloadManifestSha256: (index + 4).toString(16).repeat(64),
+      },
+    }));
+
     expect(() => createCodeGraphProductionRatchet(artifacts.slice(0, 2))).toThrow(/at least three artifacts/);
+    expect(createCodeGraphProductionRatchet(cleanRebuilds)).toEqual(ratchet);
+    fc.assert(
+      fc.property(fc.array(fc.stringMatching(/^[0-9a-f]{64}$/u), {maxLength: 6, minLength: 6}), rebuildDigests => {
+        const rebuilt = artifacts.map((artifact, index) => ({
+          ...artifact,
+          metadata: {
+            ...artifact.metadata,
+            benchmarkValidatedManagedExecutableSha256: rebuildDigests[index * 2]!,
+            benchmarkValidatedManagedPayloadManifestSha256: rebuildDigests[index * 2 + 1]!,
+          },
+        }));
+        expect(createCodeGraphProductionRatchet(rebuilt)).toEqual(ratchet);
+      }),
+      {numRuns: 25},
+    );
+    expect(() =>
+      createCodeGraphProductionRatchet([
+        ...artifacts.slice(0, 2),
+        {
+          ...artifacts[2]!,
+          metadata: {
+            ...artifacts[2]!.metadata,
+            benchmarkValidatedManagedReleaseMetadataSha256: 'f'.repeat(64),
+          },
+        },
+      ]),
+    ).toThrow(/exact source\/runtime\/storage contract/);
     expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 127, unit: 'milliseconds'});
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).toMatchObject({
       p95Maximum: 115,

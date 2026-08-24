@@ -6829,12 +6829,16 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
   }
   return JSON.stringify({
     commit: artifact.environment.commit,
-    executableSha256: metadata.benchmarkValidatedManagedExecutableSha256,
     filesystem: metadata.benchmarkDiskFilesystem,
     lockfileSha256: metadata.benchmarkMeasuredSourceLockfileSha256,
     minimumFreeBytes,
     packageManifestSha256: metadata.benchmarkMeasuredSourcePackageManifestSha256,
-    payloadManifestSha256: metadata.benchmarkValidatedManagedPayloadManifestSha256,
+    // Bun's compiled development executable is not reproducible byte-for-byte
+    // across clean builds of the same exact source commit. Each observation is
+    // still required to carry a separately validated executable and payload
+    // digest by assertProductionLargeEvidence above; cross-run identity binds
+    // the stable source and release contract instead of requiring those
+    // per-build digests to agree.
     releaseMetadataSha256: metadata.benchmarkValidatedManagedReleaseMetadataSha256,
     runtime: metadata.benchmarkValidatedManagedRuntime,
     sourceCommit: metadata.benchmarkMeasuredSourceCommit,
