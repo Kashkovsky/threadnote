@@ -375,6 +375,20 @@ const MATERIALIZATION_QUERY_INDEX_RESTORATION_RELEASE_EVIDENCE_MEASUREMENTS = [
   {name: 'one-file-reindex-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
 ] as const;
 
+const MATERIALIZATION_STORAGE_HIGH_WATER_RELEASE_EVIDENCE_MEASUREMENTS = [
+  ...(['cold', 'one-file-reindex', 'same-overlay-reference'] as const).flatMap(prefix => [
+    {name: `${prefix}-materialization-durable-database-growth-high-water-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-durable-filesystem-high-water-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-durable-journal-high-water-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-durable-wal-high-water-n1`, unit: 'bytes'} as const,
+  ]),
+  ...(['cold', 'same-overlay-reference'] as const).flatMap(prefix => [
+    {name: `${prefix}-materialization-sidecar-database-high-water-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-sidecar-journal-high-water-n1`, unit: 'bytes'} as const,
+    {name: `${prefix}-materialization-sidecar-wal-high-water-n1`, unit: 'bytes'} as const,
+  ]),
+] as const;
+
 const RESOLUTION_TRANSACTION_RELEASE_EVIDENCE_MEASUREMENTS = (
   ['cold', 'one-file-reindex', 'same-overlay-reference'] as const
 ).map(prefix => ({name: `${prefix}-reference-resolution-longest-transaction-n1`, unit: 'milliseconds'}) as const);
@@ -430,6 +444,7 @@ export const PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS = [
   ...MATERIALIZATION_SUBPHASE_REQUIRED_MEASUREMENTS,
   ...MATERIALIZATION_REPLAY_RELEASE_EVIDENCE_MEASUREMENTS,
   ...MATERIALIZATION_QUERY_INDEX_RESTORATION_RELEASE_EVIDENCE_MEASUREMENTS,
+  ...MATERIALIZATION_STORAGE_HIGH_WATER_RELEASE_EVIDENCE_MEASUREMENTS,
   ...RESOLUTION_TRANSACTION_RELEASE_EVIDENCE_MEASUREMENTS,
   ...SAMPLER_RELEASE_EVIDENCE_MEASUREMENTS,
   ...ACTIVATION_RELEASE_EVIDENCE_MEASUREMENTS,
@@ -2144,6 +2159,9 @@ export class IndexPhaseTimeline {
             durableDatabaseGrowthHighWaterBytes: progress.metrics.storage.durableDatabaseGrowthHighWaterBytes,
             durableFilesystemHighWaterBytes: progress.metrics.storage.durableFilesystemHighWaterBytes,
             durableJournalHighWaterBytes: progress.metrics.storage.durableJournalHighWaterBytes,
+            durableSidecarDatabaseHighWaterBytes: progress.metrics.storage.durableSidecarDatabaseHighWaterBytes,
+            durableSidecarJournalHighWaterBytes: progress.metrics.storage.durableSidecarJournalHighWaterBytes,
+            durableSidecarWalHighWaterBytes: progress.metrics.storage.durableSidecarWalHighWaterBytes,
             durableWalHighWaterBytes: progress.metrics.storage.durableWalHighWaterBytes,
             estimateBasis: progress.metrics.storage.estimateBasis,
             estimatedDurableFilesystemRequiredBytes: progress.metrics.storage.estimatedDurableFilesystemRequiredBytes,
@@ -2475,6 +2493,9 @@ export interface IndexMaterializationStorageEvidence {
   readonly durableDatabaseGrowthHighWaterBytes?: number;
   readonly durableFilesystemHighWaterBytes?: number;
   readonly durableJournalHighWaterBytes?: number;
+  readonly durableSidecarDatabaseHighWaterBytes?: number;
+  readonly durableSidecarJournalHighWaterBytes?: number;
+  readonly durableSidecarWalHighWaterBytes?: number;
   readonly durableWalHighWaterBytes?: number;
   readonly estimateBasis?: 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback';
   readonly estimatedDurableFilesystemRequiredBytes?: number;
@@ -2655,6 +2676,13 @@ export function materializationStorageMeasurements(
   );
   add('materialization-temp-filesystem-available-n1', 'bytes', storage.temporaryAvailableBytes);
   add('materialization-durable-filesystem-available-n1', 'bytes', storage.durableAvailableBytes);
+  add('materialization-durable-database-growth-high-water-n1', 'bytes', storage.durableDatabaseGrowthHighWaterBytes);
+  add('materialization-durable-filesystem-high-water-n1', 'bytes', storage.durableFilesystemHighWaterBytes);
+  add('materialization-durable-journal-high-water-n1', 'bytes', storage.durableJournalHighWaterBytes);
+  add('materialization-durable-wal-high-water-n1', 'bytes', storage.durableWalHighWaterBytes);
+  add('materialization-sidecar-database-high-water-n1', 'bytes', storage.durableSidecarDatabaseHighWaterBytes);
+  add('materialization-sidecar-journal-high-water-n1', 'bytes', storage.durableSidecarJournalHighWaterBytes);
+  add('materialization-sidecar-wal-high-water-n1', 'bytes', storage.durableSidecarWalHighWaterBytes);
   add(
     'materialization-filesystems-shared-n1',
     'count',
@@ -4704,6 +4732,7 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
   });
   missing.push(...missingMaterializationReplayEquations(measurements));
   missing.push(...missingMaterializationQueryIndexRestorationEvidence(measurements));
+  missing.push(...missingMaterializationStorageHighWaterEvidence(measurements));
   if (artifact.metadata.oneFileReindexMaterializationMode !== 'incremental-overlay') {
     missing.push('one-file reindex incremental-overlay materialization mode');
   }
@@ -4728,6 +4757,35 @@ function assertProductionLargeEvidence(artifact: BenchmarkArtifactV1, requireRel
   if (missing.length > 0) {
     throw new ScriptError(`Production release evidence is incomplete: ${missing.join(', ')}.`);
   }
+}
+
+function missingMaterializationStorageHighWaterEvidence(
+  measurements: ReadonlyMap<string, BenchmarkArtifactV1['measurements'][number]>,
+): readonly string[] {
+  const value = (name: string) => {
+    const measurement = measurements.get(name);
+    return measurement === undefined ? undefined : exactSingleSampleCount(measurement);
+  };
+  const missing = (['cold', 'one-file-reindex', 'same-overlay-reference'] as const).flatMap(prefix => {
+    const filesystem = value(`${prefix}-materialization-durable-filesystem-high-water-n1`);
+    const journal = value(`${prefix}-materialization-durable-journal-high-water-n1`);
+    const wal = value(`${prefix}-materialization-durable-wal-high-water-n1`);
+    const result: string[] = [];
+    if (filesystem === undefined || filesystem <= 0) result.push(`${prefix} materialization filesystem high-water`);
+    if (journal === undefined || wal === undefined || Math.max(journal, wal) <= 0) {
+      result.push(`${prefix} materialization journal/WAL high-water`);
+    }
+    return result;
+  });
+  for (const prefix of ['cold', 'same-overlay-reference'] as const) {
+    const database = value(`${prefix}-materialization-sidecar-database-high-water-n1`);
+    const journal = value(`${prefix}-materialization-sidecar-journal-high-water-n1`);
+    const wal = value(`${prefix}-materialization-sidecar-wal-high-water-n1`);
+    if (database === undefined || database <= 0) missing.push(`${prefix} sorted-sidecar database high-water`);
+    if (journal === undefined || journal <= 0) missing.push(`${prefix} sorted-sidecar journal high-water`);
+    if (wal !== 0) missing.push(`${prefix} sorted-sidecar WAL exclusion`);
+  }
+  return missing;
 }
 
 function missingMaterializationQueryIndexRestorationEvidence(

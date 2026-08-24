@@ -627,6 +627,45 @@ describe('code graph release evidence', () => {
     ).toThrow(/cold-materialization/);
   });
 
+  it('requires transaction-observed main and sorted-sidecar storage high-water evidence', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v1',
+    );
+    const withValues = (values: Readonly<Record<string, number>>) => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        values[measurement.name] === undefined
+          ? measurement
+          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]!]),
+      ),
+    });
+
+    expect(() =>
+      assertProductionReleaseEvidence(withValues({'cold-materialization-sidecar-database-high-water-n1': 0})),
+    ).toThrow(/cold sorted-sidecar database high-water/);
+    expect(() =>
+      assertProductionReleaseEvidence(withValues({'cold-materialization-sidecar-journal-high-water-n1': 0})),
+    ).toThrow(/cold sorted-sidecar journal high-water/);
+    expect(() =>
+      assertProductionReleaseEvidence(withValues({'cold-materialization-sidecar-wal-high-water-n1': 1})),
+    ).toThrow(/cold sorted-sidecar WAL exclusion/);
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withValues({
+          'one-file-reindex-materialization-durable-journal-high-water-n1': 0,
+          'one-file-reindex-materialization-durable-wal-high-water-n1': 0,
+        }),
+      ),
+    ).toThrow(/one-file-reindex materialization journal\/WAL high-water/);
+  });
+
   it.each([
     'production-shape-file-target-attainment',
     'production-shape-repository-file-target-attainment',
@@ -725,6 +764,13 @@ describe('code graph release evidence', () => {
         {name: 'cold-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-deduplicated-edge-rows-n1', unit: 'count'},
         {name: 'cold-materialization-deduplicated-reference-rows-n1', unit: 'count'},
+        {name: 'cold-materialization-durable-database-growth-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-durable-filesystem-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-durable-journal-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-durable-wal-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-sidecar-database-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-sidecar-journal-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-sidecar-wal-high-water-n1', unit: 'bytes'},
         {name: 'one-file-reindex-materialization-deduplicated-edge-rows-n1', unit: 'count'},
         {name: 'one-file-reindex-materialization-deduplicated-reference-rows-n1', unit: 'count'},
         {name: 'cold-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
@@ -756,6 +802,13 @@ describe('code graph release evidence', () => {
         changedFactBytesCompleted: 2,
         crossGenerationShardFilesCompleted: 0,
         durableAvailableBytes: 20,
+        durableDatabaseGrowthHighWaterBytes: 60,
+        durableFilesystemHighWaterBytes: 70,
+        durableJournalHighWaterBytes: 80,
+        durableSidecarDatabaseHighWaterBytes: 90,
+        durableSidecarJournalHighWaterBytes: 100,
+        durableSidecarWalHighWaterBytes: 0,
+        durableWalHighWaterBytes: 110,
         estimateBasis: 'cached-fact-bytes',
         estimatedDurableFilesystemRequiredBytes: 30,
         estimatedTemporaryFilesystemRequiredBytes: 40,
@@ -784,6 +837,13 @@ describe('code graph release evidence', () => {
         ['cold-materialization-estimated-durable-filesystem-required-n1', 30],
         ['cold-materialization-temp-filesystem-available-n1', 50],
         ['cold-materialization-durable-filesystem-available-n1', 20],
+        ['cold-materialization-durable-database-growth-high-water-n1', 60],
+        ['cold-materialization-durable-filesystem-high-water-n1', 70],
+        ['cold-materialization-durable-journal-high-water-n1', 80],
+        ['cold-materialization-durable-wal-high-water-n1', 110],
+        ['cold-materialization-sidecar-database-high-water-n1', 90],
+        ['cold-materialization-sidecar-journal-high-water-n1', 100],
+        ['cold-materialization-sidecar-wal-high-water-n1', 0],
         ['cold-materialization-filesystems-shared-n1', 0],
       ]),
     );
@@ -2211,12 +2271,14 @@ function requiredReleaseMeasurements(
                       ? 32
                       : measurement.name.endsWith('-external-sampler-version-n1')
                         ? 4
-                        : measurement.name.endsWith('-external-process-tree-failures-n1') ||
-                            measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+                        : measurement.name.endsWith('-materialization-sidecar-wal-high-water-n1')
                           ? 0
-                          : measurement.name === 'one-file-reindex-materialization-stage-restoring-indexes-n1'
+                          : measurement.name.endsWith('-external-process-tree-failures-n1') ||
+                              measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
                             ? 0
-                            : 1,
+                            : measurement.name === 'one-file-reindex-materialization-stage-restoring-indexes-n1'
+                              ? 0
+                              : 1,
     ]),
   );
 }
