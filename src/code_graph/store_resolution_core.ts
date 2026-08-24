@@ -480,7 +480,7 @@ function persistentFullReferencePageTotal(
   );
 }
 
-export const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 8;
+export const PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES = 4;
 export const PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES = 8;
 
 export interface PersistentReferenceResolutionReservation<Value> {

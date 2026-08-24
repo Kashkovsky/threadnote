@@ -282,13 +282,13 @@ describe('code graph reference-resolution progress', () => {
         });
 
         expect(result.firstFailure).toBeInstanceOf(CodeGraphStoreError);
-        expect(firstCapacityRows).toEqual([88, 88]);
+        expect(firstCapacityRows).toEqual([88]);
         expect(firstTransactionAttempts).toBe(2);
-        expect(result.afterFailure).toEqual({remaining: 9, resolved: 8});
-        expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 15, resolved: 8});
-        expect(resumedCapacityRows).toEqual([88, 11]);
-        expect(resumedTransactions).toBe(2);
-        expect(result.resumed).toMatchObject({pagesCompleted: 9, referencesExamined: 9, resolved: 9});
+        expect(result.afterFailure).toEqual({remaining: 13, resolved: 4});
+        expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 8, resolved: 4});
+        expect(resumedCapacityRows).toEqual([88, 55]);
+        expect(resumedTransactions).toBe(4);
+        expect(result.resumed).toMatchObject({pagesCompleted: 13, referencesExamined: 13, resolved: 13});
         expect(result.afterResume).toEqual({remaining: 0, resolved: 17});
         expect(result.graph.edges).toHaveLength(17);
         expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);

@@ -109,8 +109,8 @@ describe('code graph resolution pass bounds', () => {
     const boundary = planPersistentReferenceResolutionPages(Array.from({length: 17}, (_, index) => index));
     expect(boundary.map(reservation => reservation.pages.length)).toEqual([8, 8, 1]);
     expect(boundary.map(reservation => reservation.transactions.map(transaction => transaction.length))).toEqual([
-      [8],
-      [8],
+      [4, 4],
+      [4, 4],
       [1],
     ]);
   });
