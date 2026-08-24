@@ -398,6 +398,47 @@ describe('code graph external benchmark harness', () => {
     expect(() =>
       parseCodeGraphBenchmarkArguments(['--profile', 'production-large', '--minimum-free-gib', '119']),
     ).toThrow('at least 120');
+    expect(
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--profile-files',
+        '3000',
+        '--profile-symbols',
+        '110000',
+        '--minimum-free-gib',
+        '20',
+      ]).minimumFreeGiB,
+    ).toBe(20);
+    expect(() =>
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--profile-files',
+        '3000',
+        '--profile-symbols',
+        '110000',
+        '--minimum-free-gib',
+        '19',
+      ]),
+    ).toThrow('at least 20');
+    for (const partialOrOversizedProfile of [
+      ['--profile-files', '3000'],
+      ['--profile-symbols', '110000'],
+      ['--profile-files', '3001', '--profile-symbols', '110000'],
+      ['--profile-files', '3000', '--profile-symbols', '110001'],
+      ['--profile-files', '3000', '--profile-symbols', '110000', '--vectors'],
+    ]) {
+      expect(() =>
+        parseCodeGraphBenchmarkArguments([
+          '--profile',
+          'production-large',
+          ...partialOrOversizedProfile,
+          '--minimum-free-gib',
+          '20',
+        ]),
+      ).toThrow('at least 120');
+    }
   });
 
   it('selects explicit SQLite writer candidates without exposing production environment knobs', () => {

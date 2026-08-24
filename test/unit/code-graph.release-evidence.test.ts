@@ -1066,6 +1066,33 @@ describe('code graph release evidence', () => {
 
     expect(() => createCodeGraphProductionRatchet(artifacts.slice(0, 2))).toThrow(/at least three artifacts/);
     expect(createCodeGraphProductionRatchet(cleanRebuilds)).toEqual(ratchet);
+    expect(
+      createCodeGraphProductionRatchet(
+        artifacts.map((artifact, index) => ({
+          ...artifact,
+          environment: {
+            ...artifact.environment,
+            cpu: `governed-pool-cpu-${index}`,
+            memoryBytes: artifact.environment.memoryBytes + index * 1_073_741_824,
+            operatingSystem: `macOS 27.${index}`,
+          },
+          metadata: {
+            ...artifact.metadata,
+            effectiveParserMemoryBytes:
+              (artifact.metadata.effectiveParserMemoryBytes as number) + index * 1_073_741_824,
+          },
+        })),
+      ),
+    ).toEqual(ratchet);
+    expect(ratchet.environment).toEqual({
+      architecture: artifacts[0]!.environment.architecture,
+      dirty: false,
+      fixtureHash: artifacts[0]!.environment.fixtureHash,
+      node: artifacts[0]!.environment.node,
+      packageManager: artifacts[0]!.environment.packageManager,
+      runner: artifacts[0]!.environment.runner,
+      runnerVersion: artifacts[0]!.environment.runnerVersion,
+    });
     fc.assert(
       fc.property(fc.array(fc.stringMatching(/^[0-9a-f]{64}$/u), {maxLength: 6, minLength: 6}), rebuildDigests => {
         const rebuilt = artifacts.map((artifact, index) => ({
@@ -1130,6 +1157,9 @@ describe('code graph release evidence', () => {
       ...artifact,
       metadata: {
         ...artifact.metadata,
+        benchmarkMinimumFreeBytes: 20 * 1_073_741_824,
+        benchmarkPrimaryAvailableBytesAtStart: 30 * 1_073_741_824,
+        benchmarkReferenceAvailableBytesAtStart: 30 * 1_073_741_824,
         profileSourceFiles: 3_000,
         profileTargetEligibleFiles: 4_926,
         profileTargetSymbols: 110_000,
@@ -1137,6 +1167,7 @@ describe('code graph release evidence', () => {
     }));
     const scaledRatchet = createCodeGraphProductionRatchet(scaledArtifacts);
     expect(scaledRatchet.metadata).toMatchObject({
+      benchmarkMinimumFreeBytes: 20 * 1_073_741_824,
       profileSourceFiles: 3_000,
       profileTargetEligibleFiles: 4_926,
       profileTargetSymbols: 110_000,
@@ -1144,6 +1175,14 @@ describe('code graph release evidence', () => {
     for (const artifact of scaledArtifacts) {
       expect(() => enforceCodeGraphBenchmarkRatchet(artifact, scaledRatchet)).not.toThrow();
     }
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        scaledArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkMinimumFreeBytes: 20 * 1_073_741_824 - 1},
+        })),
+      ),
+    ).toThrow(/governed storage evidence/);
 
     const limit = ratchet.measurements['cold-index']!.p95Maximum!;
     const regressed = {

@@ -5529,8 +5529,14 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   if ((profileFiles !== undefined || profileSymbols !== undefined) && profile !== 'production-large') {
     throw new ScriptError('--profile-files and --profile-symbols require --profile production-large.');
   }
-  if (profile === 'production-large' && minimumFreeGiB < 120) {
-    throw new ScriptError('The production-large profile requires --minimum-free-gib of at least 120.');
+  const requiredProfileFreeGiB =
+    !vectors && reducedProductionRatchetProfile(profileFiles, profileSymbols)
+      ? PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_GIB
+      : 120;
+  if (profile === 'production-large' && minimumFreeGiB < requiredProfileFreeGiB) {
+    throw new ScriptError(
+      `The selected production-large profile requires --minimum-free-gib of at least ${requiredProfileFreeGiB}.`,
+    );
   }
   if (profile === 'production-large' && fixture !== 'code-graph-v1') {
     throw new ScriptError('The production-large profile uses the code-graph-v1 query contract.');
@@ -6780,6 +6786,13 @@ const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
 const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.15;
 const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 5;
 const PRODUCTION_RATCHET_MINIMUM_FREE_BYTES = 120 * 1_073_741_824;
+// Keep the permanent lexical CI ratchet production-shaped but small enough to
+// run in parallel with ordinary checks. Full-size and vector observations keep
+// the release benchmark's 120 GiB floor.
+const PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_GIB = 20;
+const PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_BYTES = PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_GIB * 1_073_741_824;
+const PRODUCTION_RATCHET_REDUCED_PROFILE_FILES_MAXIMUM = 3_000;
+const PRODUCTION_RATCHET_REDUCED_PROFILE_SYMBOLS_MAXIMUM = 110_000;
 const PRODUCTION_RATCHET_MILLISECOND_TARGETS = new Map<string, number>([
   ['cold-index', 60 * 60_000 - 1],
   ['cold-reference-resolution-longest-transaction-n1', 15_000 - 1],
@@ -6814,11 +6827,8 @@ export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtif
       artifact.suite !== first.suite ||
       JSON.stringify(candidateNames) !== JSON.stringify(names) ||
       artifact.environment.architecture !== first.environment.architecture ||
-      artifact.environment.cpu !== first.environment.cpu ||
       artifact.environment.fixtureHash !== first.environment.fixtureHash ||
-      artifact.environment.memoryBytes !== first.environment.memoryBytes ||
       artifact.environment.node !== first.environment.node ||
-      artifact.environment.operatingSystem !== first.environment.operatingSystem ||
       artifact.environment.packageManager !== first.environment.packageManager ||
       artifact.environment.runner !== first.environment.runner ||
       artifact.environment.runnerVersion !== first.environment.runnerVersion ||
@@ -6852,12 +6862,9 @@ export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtif
   return {
     environment: {
       architecture: first.environment.architecture,
-      cpu: first.environment.cpu,
       dirty: false,
       fixtureHash: first.environment.fixtureHash,
-      memoryBytes: first.environment.memoryBytes,
       node: first.environment.node,
-      operatingSystem: first.environment.operatingSystem,
       packageManager: first.environment.packageManager,
       runner: first.environment.runner,
       runnerVersion: first.environment.runnerVersion,
@@ -6917,7 +6924,6 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
     coldFiles: artifact.metadata.coldFiles,
     coldMaterializationStorageMode: artifact.metadata.coldMaterializationStorageMode,
     coldSymbols: artifact.metadata.coldSymbols,
-    effectiveParserMemoryBytes: artifact.metadata.effectiveParserMemoryBytes,
     effectiveParserWorkers: artifact.metadata.effectiveParserWorkers,
     oneFileReindexMaterializationMode: artifact.metadata.oneFileReindexMaterializationMode,
     oneFileReindexMaterializationStorageMode: artifact.metadata.oneFileReindexMaterializationStorageMode,
@@ -6951,7 +6957,7 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
     metadata.benchmarkGoverned !== true ||
     metadata.benchmarkFilesystemsShared !== true ||
     typeof minimumFreeBytes !== 'number' ||
-    minimumFreeBytes < PRODUCTION_RATCHET_MINIMUM_FREE_BYTES ||
+    minimumFreeBytes < productionRatchetMinimumFreeBytes(metadata) ||
     typeof primaryAvailableBytes !== 'number' ||
     primaryAvailableBytes < minimumFreeBytes ||
     typeof referenceAvailableBytes !== 'number' ||
@@ -6982,6 +6988,26 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
     target: metadata.benchmarkValidatedManagedTarget,
     version: metadata.benchmarkValidatedManagedVersion,
   });
+}
+
+function productionRatchetMinimumFreeBytes(metadata: Readonly<Record<string, unknown>>): number {
+  return metadata.vectorEnabled === false &&
+    reducedProductionRatchetProfile(metadata.profileSourceFiles, metadata.profileTargetSymbols)
+    ? PRODUCTION_RATCHET_REDUCED_MINIMUM_FREE_BYTES
+    : PRODUCTION_RATCHET_MINIMUM_FREE_BYTES;
+}
+
+function reducedProductionRatchetProfile(profileFiles: unknown, profileSymbols: unknown): boolean {
+  return (
+    typeof profileFiles === 'number' &&
+    Number.isSafeInteger(profileFiles) &&
+    profileFiles >= 2 &&
+    profileFiles <= PRODUCTION_RATCHET_REDUCED_PROFILE_FILES_MAXIMUM &&
+    typeof profileSymbols === 'number' &&
+    Number.isSafeInteger(profileSymbols) &&
+    profileSymbols >= 2 &&
+    profileSymbols <= PRODUCTION_RATCHET_REDUCED_PROFILE_SYMBOLS_MAXIMUM
+  );
 }
 
 function productionMeasurementRatchet(
