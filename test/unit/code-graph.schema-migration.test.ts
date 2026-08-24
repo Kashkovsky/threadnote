@@ -773,7 +773,8 @@ describe('code graph persistent schema migration', () => {
              'building_analysis_batches',
              'building_references',
              'building_reference_candidates',
-             'building_materialization_batches'
+             'building_materialization_batches',
+             'building_materialization_spool_surfaces'
            )`,
         )
         .get() as {readonly count: number};
@@ -790,7 +791,7 @@ describe('code graph persistent schema migration', () => {
 
       expect(interruptedState.state).toBe('retired');
       expect(columns.map(column => column.name)).toContain('batch_fingerprint');
-      expect(extensionTableCount.count).toBe(9);
+      expect(extensionTableCount.count).toBe(10);
       expect(removedIndexCount.count).toBe(0);
       expect(revision.value).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
       expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
@@ -1555,6 +1556,7 @@ function readMigrationState(databasePath: string) {
              'building_references',
              'building_reference_candidates',
              'building_materialization_batches',
+             'building_materialization_spool_surfaces',
              'terms_lookup',
              'terms_symbol',
              'snapshot_symbol_lookup_key'
@@ -1689,6 +1691,7 @@ function downgradePersistentExtensionSchema(
     database.exec("DELETE FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'");
     for (const table of [
       'building_materialization_batches',
+      'building_materialization_spool_surfaces',
       'building_reference_candidates',
       'building_references',
       'building_analysis_batches',

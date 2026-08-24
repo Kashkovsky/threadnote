@@ -467,6 +467,38 @@ export const PERSISTENT_EXTENSION_TABLES = [
   {
     columns: [
       requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('surface_index', 'INTEGER', 2),
+      requiredColumn('spool_identity', 'TEXT'),
+      requiredColumn('surface_name', 'TEXT'),
+      requiredColumn('row_count', 'INTEGER'),
+      requiredColumn('next_page_index', 'INTEGER'),
+      requiredColumn('applied_row_count', 'INTEGER'),
+      requiredColumn('complete', 'INTEGER'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS building_materialization_spool_surfaces (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      surface_index INTEGER NOT NULL CHECK (surface_index >= 0 AND surface_index < 32),
+      spool_identity TEXT NOT NULL CHECK (length(spool_identity) = 64),
+      surface_name TEXT NOT NULL,
+      row_count INTEGER NOT NULL CHECK (row_count >= 0),
+      next_page_index INTEGER NOT NULL CHECK (next_page_index >= 0),
+      applied_row_count INTEGER NOT NULL CHECK (applied_row_count >= 0 AND applied_row_count <= row_count),
+      complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+      PRIMARY KEY (snapshot_id, surface_index),
+      UNIQUE (snapshot_id, surface_name),
+      CHECK (complete = 0 OR applied_row_count = row_count)
+    ) WITHOUT ROWID`,
+    group: 'build',
+    name: 'building_materialization_spool_surfaces',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*surface_index\s*>=\s*0\s+AND\s+surface_index\s*<\s*32\s*\)/i,
+      /CHECK\s*\(\s*complete\s*=\s*0\s+OR\s+applied_row_count\s*=\s*row_count\s*\)/i,
+    ],
+    uniqueKeys: [['snapshot_id', 'surface_name']],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
       requiredColumn('completed_batch_count', 'INTEGER'),
       requiredColumn('posting_count', 'INTEGER'),
       requiredColumn('symbol_count', 'INTEGER'),

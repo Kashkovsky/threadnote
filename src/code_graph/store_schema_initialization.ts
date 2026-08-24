@@ -471,6 +471,21 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       PRIMARY KEY (snapshot_id, batch_index)
     ) WITHOUT ROWID
   `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS building_materialization_spool_surfaces (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      surface_index INTEGER NOT NULL CHECK (surface_index >= 0 AND surface_index < 32),
+      spool_identity TEXT NOT NULL CHECK (length(spool_identity) = 64),
+      surface_name TEXT NOT NULL,
+      row_count INTEGER NOT NULL CHECK (row_count >= 0),
+      next_page_index INTEGER NOT NULL CHECK (next_page_index >= 0),
+      applied_row_count INTEGER NOT NULL CHECK (applied_row_count >= 0 AND applied_row_count <= row_count),
+      complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+      PRIMARY KEY (snapshot_id, surface_index),
+      UNIQUE (snapshot_id, surface_name),
+      CHECK (complete = 0 OR applied_row_count = row_count)
+    ) WITHOUT ROWID
+  `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_worktree_state ON snapshots(worktree_id, state)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_commit ON snapshots(repository_id, commit_id)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_base_state_id ON snapshots(base_snapshot_id, state, id)');
