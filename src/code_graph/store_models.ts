@@ -317,7 +317,14 @@ export interface CodeGraphStagingBatch {
   readonly finalFactBytes?: number;
   readonly monikers?: readonly CodeGraphMonikerV1[];
   readonly references: readonly CodeGraphReference[];
+  /** Exact source bytes represented by this deterministic materialization batch. */
+  readonly sourceBytes?: number;
   readonly symbols: readonly CodeGraphSymbol[];
+}
+
+export interface CodeGraphMaterializationSpoolContext {
+  readonly checkoutId: string;
+  readonly repositoryRoot: string;
 }
 
 export type CodeGraphDirectPersistentCapacityProtector = <A, E, R>(

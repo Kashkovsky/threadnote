@@ -95,7 +95,7 @@ interface CodeGraphMaterializationSpoolStateRow {
  */
 export function codeGraphMaterializationSpoolPath(
   path: Path.Path,
-  layout: CodeGraphLayout,
+  layout: Pick<CodeGraphLayout, 'repositoryRoot'>,
   snapshotId: string,
 ): string {
   if (!PERSISTENT_SNAPSHOT_ID.test(snapshotId)) {

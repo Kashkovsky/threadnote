@@ -16,6 +16,7 @@ import type {
   CodeGraphEdgeCursor,
   CodeGraphPersistentBuildClaim,
   CodeGraphLanguagePackProvenance,
+  CodeGraphMaterializationSpoolContext,
   CodeGraphMaterializedShardAssociationBatch,
   CodeGraphMaterializedShardCacheBatch,
   CodeGraphRemovedViewCleanupAuthorizationResult,
@@ -233,6 +234,7 @@ export interface CodeGraphStoreShape {
     expectedBatchCount: number,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
     onSecondaryIndexProgress?: CodeGraphSecondaryIndexRestorationProgressCallback,
+    materializationSpool?: CodeGraphMaterializationSpoolContext,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly preparePersistedIncrementalActivation: (
     databasePath: string,
@@ -558,6 +560,7 @@ export interface CodeGraphStoreShape {
     batches: readonly CodeGraphStagingBatch[],
     onProgress?: CodeGraphStagingBatchProgressCallback,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+    materializationSpool?: CodeGraphMaterializationSpoolContext,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly stageWorkspaceCatalog: (
     databasePath: string,

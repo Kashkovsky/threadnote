@@ -77,6 +77,10 @@ import {
   temporaryIncrementalActivationCapacity,
 } from './store_temporary_capacity.js';
 import {restoreCodeGraphQueryIndexesAfterColdBuild} from './store_cold_index_deferral.js';
+import {
+  finalizePersistentMaterializationSpool,
+  removePersistentMaterializationSpool,
+} from './store_materialization_spool_lifecycle.js';
 
 type CodeGraphStoreDataMethods = Pick<
   CodeGraphStoreShape,
@@ -197,6 +201,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       expectedBatchCount,
       persistentCapacityProtector,
       onSecondaryIndexProgress,
+      materializationSpool,
     ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
@@ -210,6 +215,19 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   new CodeGraphStoreError('Persistent full-build materialization is not active.'),
                 );
               }
+              const spoolPath = materializationSpool
+                ? yield* finalizePersistentMaterializationSpool(
+                    runtime,
+                    databasePath,
+                    sql,
+                    mode.snapshotId,
+                    mode.ownerToken,
+                    expectedBatchCount,
+                    materializationSpool,
+                    effect => withWriterGate(databasePath, effect),
+                    persistentCapacityProtector,
+                  )
+                : undefined;
               const boundary: CodeGraphDirectPersistentCapacityBoundary = {
                 finalFactBytes: 0,
                 operation: 'register persistent code graph materialization plan',
@@ -229,6 +247,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 sql,
                 writerGate: effect => withWriterGate(databasePath, effect),
               });
+              if (spoolPath) yield* removePersistentMaterializationSpool(runtime, spoolPath);
             }),
           ),
         ),

@@ -2,7 +2,7 @@ import {BunFileSystem, BunPath} from '@effect/platform-bun';
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
 import {Database} from 'bun:sqlite';
 import {expect, it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Layer, Path} from 'effect';
+import {Effect, FileSystem, Layer, Path, Result} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES} from '../../src/code_graph/materialization_spool_apply_surfaces.js';
@@ -10,6 +10,7 @@ import {
   finalizeCodeGraphMaterializationSpoolReceipts,
   writeCodeGraphMaterializationSpoolSurfacePage,
 } from '../../src/code_graph/store_materialization_spool_apply.js';
+import {materializationSpoolReadOnlyUri} from '../../src/code_graph/store_materialization_spool_lifecycle.js';
 
 const layer = Layer.mergeAll(
   BunFileSystem.layer,
@@ -64,7 +65,11 @@ effectIt.effect('applies compact lexical dictionaries before exact joined postin
       weight INTEGER NOT NULL,
       PRIMARY KEY (snapshot_key, term_key, symbol_key)
     ) WITHOUT ROWID`);
-    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [sidecarPath]);
+    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(sidecarPath)]);
+    const sidecarWrite = yield* sql
+      .unsafe('DELETE FROM materialization_spool.materialization_ordered_symbols')
+      .pipe(Effect.result);
+    expect(Result.isFailure(sidecarWrite)).toBe(true);
     const surfaceIndex = (name: string) =>
       CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.findIndex(surface => surface.name === name);
     yield* writeCodeGraphMaterializationSpoolSurfacePage(sql, 'snapshot', surfaceIndex('lexical_snapshot'), {
@@ -198,7 +203,7 @@ effectIt.effect('publishes exact deferred receipts and aggregate analysis atomic
        ) VALUES ${CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.map(() => "('snapshot', ?, ?, ?, 0, 0, 0, 1)").join(', ')}`,
       CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.flatMap((surface, index) => [index, identity, surface.name]),
     );
-    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [sidecarPath]);
+    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(sidecarPath)]);
     expect(yield* finalizeCodeGraphMaterializationSpoolReceipts(sql, 'snapshot', 'owner', identity)).toBe('finalized');
     expect(yield* finalizeCodeGraphMaterializationSpoolReceipts(sql, 'snapshot', 'owner', identity)).toBe('resumed');
     expect(

@@ -1414,10 +1414,12 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
               finalFactBytes: batch.factBytes,
               monikers: batch.monikers,
               references: batch.references,
+              sourceBytes: batch.sourceBytes,
               symbols: batch.symbols,
             })),
             (batchIndex, progress) => reportStagingProgress(groupByIndex.get(batchIndex)!, progress),
             persistentCapacityGuard,
+            {checkoutId: input.layout.checkoutId, repositoryRoot: input.layout.repositoryRoot},
           );
         } else {
           for (const batch of group) {
@@ -1746,6 +1748,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           stageMilliseconds,
           total: totalFiles,
         }),
+        {checkoutId: input.layout.checkoutId, repositoryRoot: input.layout.repositoryRoot},
       );
     }
     yield* input.onProgress?.({

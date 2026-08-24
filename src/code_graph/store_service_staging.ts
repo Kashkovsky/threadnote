@@ -29,6 +29,7 @@ import {selectSymbolsByPaths} from './store_relationship_queries.js';
 import {type CodeGraphStoreRuntime} from './store_runtime.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
 import {temporaryActivationFactsCapacity, temporaryActivationWorkspaceCapacity} from './store_temporary_capacity.js';
+import {appendPersistentMaterializationSpoolFactBatches} from './store_materialization_spool_lifecycle.js';
 
 type CodeGraphStoreStagingMethods = Pick<
   CodeGraphStoreShape,
@@ -129,7 +130,13 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
         ),
         Effect.mapError(cause => storeError('stage code graph facts', cause)),
       ),
-    stageActivationFactBatches: (databasePath, batches, onProgress, persistentCapacityProtector) =>
+    stageActivationFactBatches: (
+      databasePath,
+      batches,
+      onProgress,
+      persistentCapacityProtector,
+      materializationSpool,
+    ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
@@ -141,6 +148,25 @@ export function makeCodeGraphStoreStagingMethods(runtime: CodeGraphStoreRuntime)
                 return yield* Effect.fail(
                   new CodeGraphStoreError('Grouped fact staging requires a persistent full build.'),
                 );
+              }
+              if (materializationSpool) {
+                yield* appendPersistentMaterializationSpoolFactBatches(
+                  runtime,
+                  databasePath,
+                  sql,
+                  mode.snapshotId,
+                  mode.ownerToken,
+                  batches,
+                  materializationSpool,
+                  batchIndex =>
+                    activationStagingObserver(
+                      sql,
+                      onProgress ? progress => onProgress(batchIndex, progress) : undefined,
+                      'main',
+                    ),
+                  persistentCapacityProtector,
+                );
+                return;
               }
               let prepared: readonly PreparedPersistedFullFactBatch[] | undefined;
               if (persistentCapacityProtector) {

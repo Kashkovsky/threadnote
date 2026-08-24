@@ -13,11 +13,13 @@ const SQLITE_WAL_FRAME_HEADER_BYTES = 24;
 
 export type CodeGraphDirectPersistentCapacityOperation =
   | 'admit code graph vector retirement'
+  | 'apply persistent code graph materialization spool'
   | 'cache code graph file facts'
   | 'cache materialized code graph file shards'
   | 'prepare code graph vector retirement schema'
   | 'maintain code graph vector retirement'
   | 'publish persistent code graph snapshot'
+  | 'publish persistent code graph materialization spool receipts'
   | 'promote ready code graph snapshot'
   | 'register persistent code graph materialization plan'
   | 'restore persistent code graph query indexes'
@@ -28,6 +30,7 @@ export type CodeGraphDirectPersistentCapacityOperation =
   | 'stage persistent code graph facts'
   | 'stage persistent code graph inventory'
   | 'stage persistent code graph workspace'
+  | 'sort persistent code graph materialization spool'
   | 'prepare temporary incremental code graph activation'
   | 'publish temporary code graph snapshot'
   | 'resolve temporary code graph reexport aliases'
@@ -38,11 +41,13 @@ export type CodeGraphDirectPersistentCapacityOperation =
 
 export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS = [
   'admit code graph vector retirement',
+  'apply persistent code graph materialization spool',
   'cache code graph file facts',
   'cache materialized code graph file shards',
   'prepare code graph vector retirement schema',
   'maintain code graph vector retirement',
   'publish persistent code graph snapshot',
+  'publish persistent code graph materialization spool receipts',
   'promote ready code graph snapshot',
   'register persistent code graph materialization plan',
   'restore persistent code graph query indexes',
@@ -53,6 +58,7 @@ export const CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS = [
   'stage persistent code graph facts',
   'stage persistent code graph inventory',
   'stage persistent code graph workspace',
+  'sort persistent code graph materialization spool',
   'prepare temporary incremental code graph activation',
   'publish temporary code graph snapshot',
   'resolve temporary code graph reexport aliases',
