@@ -39,6 +39,7 @@ import type {
 import {partitionPersistedReferenceEdges} from './store_resolution_core.js';
 import {persistedFullBatchFingerprint} from './store_staging_core.js';
 import type {CodeGraphStoreRuntime} from './store_runtime.js';
+import {classifyCodeGraphStoreFailure} from './store_failure.js';
 import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
 
 interface PersistentSpoolSnapshotRow {
@@ -228,7 +229,7 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
         ),
       );
     });
-    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(spoolPath)]);
+    yield* attachPersistentMaterializationSpool(sql, spoolPath);
     yield* attached.pipe(Effect.ensuring(sql.unsafe('DETACH DATABASE materialization_spool').pipe(Effect.orDie)));
     return spoolPath;
   },
@@ -241,6 +242,30 @@ export function materializationSpoolReadOnlyUri(filePath: string): string {
   uri.searchParams.set('immutable', '1');
   uri.searchParams.set('mode', 'ro');
   return uri.href;
+}
+
+/**
+ * SQLite URI filenames are disabled in some Bun platform builds. Prefer the
+ * immutable read-only URI, then fall back to the already sealed and
+ * identity-verified local sidecar path when ATTACH reports that the URI cannot
+ * be opened. Every statement against this schema is a fixed SELECT; the main
+ * graph database remains the only write target.
+ */
+export function attachPersistentMaterializationSpool(
+  sql: SqlClient.SqlClient,
+  spoolPath: string,
+): Effect.Effect<'readonly-uri' | 'verified-path-fallback', unknown> {
+  return sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(spoolPath)]).pipe(
+    Effect.as('readonly-uri' as const),
+    Effect.catch(error =>
+      classifyCodeGraphStoreFailure('register persistent code graph materialization plan', error).code ===
+      'transient-io'
+        ? sql
+            .unsafe('ATTACH DATABASE ? AS materialization_spool', [spoolPath])
+            .pipe(Effect.as('verified-path-fallback' as const))
+        : Effect.fail(error),
+    ),
+  );
 }
 
 export const removePersistentMaterializationSpool = Effect.fn('codeGraph.removePersistentMaterializationSpool')(

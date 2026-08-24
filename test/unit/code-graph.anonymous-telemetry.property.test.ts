@@ -31,6 +31,23 @@ describe('code graph anonymous telemetry', () => {
     expect(codeGraphAnonymousTelemetryFields({phase: 'registering'})).toEqual({phase: 'graph.registering'});
     expect(
       codeGraphAnonymousTelemetryFields({
+        activity: {
+          batchCompleted: 1,
+          batchTotal: 1,
+          elapsedMilliseconds: 250,
+          sourceBytes: 0,
+          stage: 'restoring-indexes',
+          stageElapsedMilliseconds: 250,
+        },
+        completed: 1,
+        phase: 'materializing',
+        reused: 0,
+        total: 1,
+        unit: 'files',
+      }),
+    ).toEqual({completed: 1, phase: 'graph.materializing', total: 1});
+    expect(
+      codeGraphAnonymousTelemetryFields({
         activity: {elapsedMilliseconds: 250, generations: 2, keys: 400, stage: 'loading-cache'},
         phase: 'registering',
       }),

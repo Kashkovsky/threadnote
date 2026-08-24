@@ -369,7 +369,6 @@ describe('code graph disk capacity properties', () => {
       'cache materialized code graph file shards',
       'publish persistent code graph snapshot',
       'register persistent code graph materialization plan',
-      'restore persistent code graph query indexes',
       'stage persistent code graph facts',
       'stage persistent code graph inventory',
       'stage persistent code graph workspace',

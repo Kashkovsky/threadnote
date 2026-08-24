@@ -268,15 +268,17 @@ export function codeGraphAnonymousTelemetryFields(progress: CodeGraphProgress): 
         total: progress.total,
         ...(progress.activity === undefined
           ? {}
-          : {
-              stage: progress.activity.stage,
-              ...(progress.activity.stageElapsedMilliseconds === undefined
-                ? {}
-                : {stageElapsedMilliseconds: progress.activity.stageElapsedMilliseconds}),
-              ...(progress.activity.transactionMilliseconds === undefined
-                ? {}
-                : {transactionMilliseconds: progress.activity.transactionMilliseconds}),
-            }),
+          : progress.activity.stage === 'restoring-indexes'
+            ? {}
+            : {
+                stage: progress.activity.stage,
+                ...(progress.activity.stageElapsedMilliseconds === undefined
+                  ? {}
+                  : {stageElapsedMilliseconds: progress.activity.stageElapsedMilliseconds}),
+                ...(progress.activity.transactionMilliseconds === undefined
+                  ? {}
+                  : {transactionMilliseconds: progress.activity.transactionMilliseconds}),
+              }),
         ...(progress.metrics === undefined
           ? {}
           : {

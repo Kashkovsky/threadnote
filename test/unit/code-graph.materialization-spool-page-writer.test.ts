@@ -10,12 +10,47 @@ import {
   finalizeCodeGraphMaterializationSpoolReceipts,
   writeCodeGraphMaterializationSpoolSurfacePage,
 } from '../../src/code_graph/store_materialization_spool_apply.js';
-import {materializationSpoolReadOnlyUri} from '../../src/code_graph/store_materialization_spool_lifecycle.js';
+import {
+  attachPersistentMaterializationSpool,
+  materializationSpoolReadOnlyUri,
+} from '../../src/code_graph/store_materialization_spool_lifecycle.js';
 
 const layer = Layer.mergeAll(
   BunFileSystem.layer,
   BunPath.layer,
   SqliteClient.layer({disableWAL: true, filename: ':memory:'}),
+);
+
+effectIt.effect('falls back to the verified path when SQLite URI attach is unavailable', () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const spoolPath = '/tmp/threadnote spool.sqlite';
+    const sql = {
+      unsafe: (_statement: string, parameters: readonly unknown[]) => {
+        calls.push(String(parameters[0]));
+        return calls.length === 1 ? Effect.fail({code: 'SQLITE_CANTOPEN'}) : Effect.succeed([]);
+      },
+    } as unknown as SqlClient.SqlClient;
+
+    expect(yield* attachPersistentMaterializationSpool(sql, spoolPath)).toBe('verified-path-fallback');
+    expect(calls).toEqual([materializationSpoolReadOnlyUri(spoolPath), spoolPath]);
+  }),
+);
+
+effectIt.effect('does not weaken the attach mode for non-transient URI failures', () =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const sql = {
+      unsafe: (_statement: string, parameters: readonly unknown[]) => {
+        calls.push(String(parameters[0]));
+        return Effect.fail({code: 'SQLITE_READONLY'});
+      },
+    } as unknown as SqlClient.SqlClient;
+
+    const result = yield* attachPersistentMaterializationSpool(sql, '/tmp/threadnote-spool.sqlite').pipe(Effect.result);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(calls).toHaveLength(1);
+  }),
 );
 
 effectIt.effect('applies compact lexical dictionaries before exact joined postings', () =>

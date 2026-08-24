@@ -79,7 +79,6 @@ export const ANONYMOUS_TELEMETRY_STAGES = [
   'loading-cache',
   'persisting',
   'preparing-rows',
-  'restoring-indexes',
   'query-repository-identity',
   'query-serialization',
   'query-strict-reobservation',
