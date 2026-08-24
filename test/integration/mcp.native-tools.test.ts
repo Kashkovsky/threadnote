@@ -81,25 +81,54 @@ const ADVANCED_TOOL_NAMES = [
   'install_shared_skill',
 ];
 
+interface McpFixture {
+  readonly home: string;
+  readonly root: string;
+}
+
+interface McpClientOptions {
+  readonly environment?: Readonly<Record<string, string>>;
+  readonly maxBufferSize?: number;
+  readonly toolset?: 'core' | 'full' | null;
+}
+
 async function withMcpClient<T>(
-  fn: (client: Client, fixture: {readonly home: string; readonly root: string}) => Promise<T>,
-  options: {
-    readonly environment?: Readonly<Record<string, string>>;
-    readonly maxBufferSize?: number;
-    readonly toolset?: 'core' | 'full' | null;
-  } = {},
+  fn: (client: Client, fixture: McpFixture) => Promise<T>,
+  options: McpClientOptions = {},
 ): Promise<T> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-native-'));
   const home = join(root, 'home');
   await mkdir(home, {recursive: true});
+  const fixture = {home, root};
+  try {
+    return await withMcpClientForFixture(fixture, fn, options);
+  } finally {
+    await rm(root, {force: true, recursive: true});
+  }
+}
+
+async function withMcpClientForFixture<T>(
+  fixture: McpFixture,
+  fn: (client: Client, fixture: McpFixture) => Promise<T>,
+  options: McpClientOptions = {},
+): Promise<T> {
+  const client = await connectMcpClient(fixture, options);
+  try {
+    return await fn(client, fixture);
+  } finally {
+    await client.close().catch(() => undefined);
+  }
+}
+
+async function connectMcpClient(fixture: McpFixture, options: McpClientOptions = {}): Promise<Client> {
   const repoRoot = process.cwd();
   const environment = {
     ...process.env,
     ...options.environment,
     THREADNOTE_ACCOUNT: 'local',
     THREADNOTE_AGENT_ID: 'threadnote',
-    THREADNOTE_HOME: home,
-    THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
+    THREADNOTE_HOME: fixture.home,
+    THREADNOTE_MANIFEST: join(fixture.home, 'seed-manifest.yaml'),
     THREADNOTE_USER: 'test-user',
   } as Record<string, string>;
   if (options.toolset === null) {
@@ -118,10 +147,10 @@ async function withMcpClient<T>(
   const client = new Client({name: 'threadnote-test', version: '0.0.0'});
   try {
     await client.connect(transport);
-    return await fn(client, {home, root});
-  } finally {
+    return client;
+  } catch (error) {
     await client.close().catch(() => undefined);
-    await rm(root, {force: true, recursive: true});
+    throw error;
   }
 }
 
@@ -882,6 +911,81 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
+  it('continues read_context in a separate MCP process and atomically consumes a raced cursor', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-cross-process-read-'));
+    const fixture = {home: join(root, 'home'), root};
+    await mkdir(fixture.home, {recursive: true});
+    try {
+      const uri = 'threadnote://user/test-user/memories/durable/projects/threadnote/cross-process-read.md';
+      const content = canonicalMemoryContent(
+        'cross-process-read',
+        `${'cross-process evidence 🙂漢字\n'.repeat(3_000)}terminal`,
+      );
+      await writeCanonicalMemory(fixture.home, 'cross-process-read.md', content);
+
+      let initialCursor: string | undefined;
+      let initialText = '';
+      await withMcpClientForFixture(
+        fixture,
+        async client => {
+          const first = await client.callTool({arguments: {budgetTokens: 128, uri}, name: 'read_context'}, undefined, {
+            timeout: 30_000,
+          });
+          expect(first.isError, JSON.stringify(first)).not.toBe(true);
+          const structured = first.structuredContent as ReadPageStructuredContent | undefined;
+          initialCursor = structured?.cursor;
+          initialText = structured?.content ?? '';
+          expect(initialCursor).toMatch(/^tnrc_[0-9a-f]{32}$/u);
+        },
+        {toolset: 'core'},
+      );
+      if (!initialCursor) throw new TestError('First MCP process did not issue a continuation cursor.');
+
+      let raceCursor: string | undefined;
+      await withMcpClientForFixture(
+        fixture,
+        async client => {
+          const continued = await client.callTool(
+            {arguments: {budgetTokens: 128, cursor: initialCursor}, name: 'read_context'},
+            undefined,
+            {timeout: 30_000},
+          );
+          expect(continued.isError, JSON.stringify(continued)).not.toBe(true);
+          const structured = continued.structuredContent as ReadPageStructuredContent | undefined;
+          expect(structured?.content).not.toBe(initialText);
+          raceCursor = structured?.cursor;
+          expect(raceCursor).toMatch(/^tnrc_[0-9a-f]{32}$/u);
+        },
+        {toolset: 'core'},
+      );
+      if (!raceCursor) throw new TestError('Second MCP process did not issue a continuation cursor.');
+
+      const [left, right] = await Promise.all([
+        connectMcpClient(fixture, {toolset: 'core'}),
+        connectMcpClient(fixture, {toolset: 'core'}),
+      ]);
+      try {
+        const results = await Promise.all(
+          [left, right].map(client =>
+            client.callTool({arguments: {budgetTokens: 128, cursor: raceCursor}, name: 'read_context'}, undefined, {
+              timeout: 30_000,
+            }),
+          ),
+        );
+        const successful = results.filter(result => result.isError !== true);
+        const rejected = results.filter(result => result.isError === true);
+        expect(successful).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        const rejectionContent = Array.isArray(rejected[0]?.content) ? rejected[0].content : [];
+        expect((rejectionContent[0] as TextContent | undefined)?.text).toContain('already consumed');
+      } finally {
+        await Promise.all([left.close().catch(() => undefined), right.close().catch(() => undefined)]);
+      }
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  }, 60_000);
+
   it('advances read_context across repeated pages of one resource and then later resources', async () => {
     await withMcpClient(
       async (client, fixture) => {
@@ -962,6 +1066,8 @@ describe('Threadnote MCP toolsets', () => {
         const firstContent = Array.isArray(first.content) ? first.content : [];
         expect((firstContent[1] as TextContent | undefined)?.text).toContain('Continue with read cursor');
 
+        const wrongTool = await client.callTool({arguments: {budgetTokens: 128, cursor}, name: 'read_context'});
+        expect(wrongTool.isError).toBe(true);
         const continued = await client.callTool({arguments: {budgetTokens: 128, cursor}, name: 'read'});
         expect(continued.isError, JSON.stringify(continued)).not.toBe(true);
       },

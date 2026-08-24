@@ -1,7 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
-  MemoryReadCursorStore,
   memoryMarkdownOutline,
   memoryReadCursorToken,
   memoryReadPageEstimatedTokens,
@@ -185,7 +184,7 @@ describe('bounded memory read projection', () => {
     );
   });
 
-  it('uses opaque single-use cursors that expire and rejects changed sources', () => {
+  it('uses opaque cursor tokens and rejects changed sources', () => {
     const cursor = memoryReadCursorToken('private entropy and threadnote://secret/source.md');
     expect(cursor).toMatch(/^tnrc_[0-9a-f]{32}$/u);
     expect(cursor).not.toContain('secret');
@@ -197,13 +196,6 @@ describe('bounded memory read projection', () => {
       sourceHashes: memoryReadSourceHashes(resources),
       uris: resources.map(resource => resource.uri),
     };
-    const store = new MemoryReadCursorStore(10, 2);
-    store.put(cursor, state, 100);
-    expect(store.take(cursor, 109)).toEqual(state);
-    expect(store.take(cursor, 109)).toBeUndefined();
-
-    store.put(cursor, state, 200);
-    expect(store.take(cursor, 210)).toBeUndefined();
     expect(memoryReadSourcesMatch(resources, state.sourceHashes)).toBe(true);
     expect(memoryReadSourcesMatch([{...resources[0]!, text: 'changed'}], state.sourceHashes)).toBe(false);
   });
