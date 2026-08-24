@@ -19,6 +19,7 @@ import {
 } from './inventory_content.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
 import {parsePorcelainV1Status} from './inventory_porcelain.js';
+import {worktreeStatusWithPrivateCache} from './git_status_cache.js';
 import {
   codeGraphAttributionContextFilesForReceipt,
   codeGraphInventoryReuseContract,
@@ -37,6 +38,7 @@ import {compareCodeUnits} from './ordering.js';
 import {
   codeGraphExtractionPlanMetrics,
   codeGraphSourceSizeBucket,
+  CODE_GRAPH_SCANNING_STARTED_PROGRESS,
   type CodeGraphExtractionPlanMetrics,
 } from './progress_telemetry.js';
 import {type CodeGraphInventoryFile, type CodeGraphProgress, type RepositoryIdentity} from './types.js';
@@ -324,6 +326,10 @@ export const inventoryRepository = Effect.fn('codeGraph.inventoryRepository')(fu
   const path = yield* Path.Path;
   const languagePacks = options.languagePacks ?? BUILTIN_LANGUAGE_PACK_REGISTRY;
   const includeOpaqueCorpusAssets = options.includeOpaqueCorpusAssets !== false;
+  // Committed-tree discovery, workspace classification, and ignore-policy
+  // admission are inventory work. Mark the phase before those operations so
+  // registration timing remains limited to lock and database setup.
+  yield* options.onProgress?.(CODE_GRAPH_SCANNING_STARTED_PROGRESS) ?? Effect.void;
   const reuseEnvironment = yield* readCodeGraphInventoryReuseEnvironment(identity, fs, path);
   const allTreeEntries = isZeroObjectId(identity.headCommit)
     ? []
@@ -893,21 +899,15 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
       ? relativeHome
       : undefined;
   const pathspec = excludedPathPrefix === undefined ? [] : ['--', '.', `:(top,exclude,literal)${excludedPathPrefix}`];
-  const porcelain = yield* runCommandEffect(
-    'git',
-    [
-      '--no-optional-locks',
-      '-C',
-      identity.repoRoot,
-      'status',
-      '--porcelain=v1',
-      '-z',
-      '--untracked-files=all',
-      '--renames',
-      ...pathspec,
-    ],
-    {maxOutputBytes: 0, timeoutMs: 0},
-  );
+  const porcelain = yield* worktreeStatusWithPrivateCache(identity, threadnoteHome, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+    '--renames',
+    '--ignore-submodules=none',
+    ...pathspec,
+  ]);
   if (porcelain.stdout.length === 0) {
     return {
       overlay: {addedPaths: [], changedPaths: [], deletedPaths: [], files: [], untrackedPaths: []},

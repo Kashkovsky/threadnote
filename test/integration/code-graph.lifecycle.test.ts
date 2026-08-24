@@ -3321,6 +3321,28 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('marks scanning before committed-tree inventory discovery', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const identity = yield* resolveRepositoryIdentity(root);
+      const progress: CodeGraphProgress[] = [];
+
+      yield* inventoryRepository(identity, {
+        onProgress: current => Effect.sync(() => progress.push(current)),
+      });
+
+      expect(progress[0]).toEqual({
+        accepted: 0,
+        completed: 0,
+        excluded: 0,
+        phase: 'scanning',
+        skipped: 0,
+        total: 0,
+        unit: 'files',
+      });
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('reuses manifest-only workspace discovery until a resolution context changes', () =>
     Effect.gen(function* () {
       const root = createFixtureRepository();
