@@ -1861,6 +1861,18 @@ describe('code graph release evidence', () => {
       ['cold-reference-resolution', 'milliseconds'],
       ['cold-activation-lexical-only', 'milliseconds'],
       ['one-file-reindex-index', 'milliseconds'],
+      ['one-file-reindex-registration-lock-and-database-setup', 'milliseconds'],
+      ['one-file-reindex-post-committed-scan-overlay-and-workspace', 'milliseconds'],
+      ['one-file-reindex-incremental-work-attribution-context-files-n1', 'count'],
+      ['one-file-reindex-incremental-work-base-facts-loaded-n1', 'count'],
+      ['one-file-reindex-incremental-work-changed-files-n1', 'count'],
+      ['one-file-reindex-incremental-work-deleted-files-n1', 'count'],
+      ['one-file-reindex-incremental-work-fact-bytes-n1', 'bytes'],
+      ['one-file-reindex-incremental-work-inventory-files-inspected-n1', 'count'],
+      ['one-file-reindex-incremental-work-planned-rows-n1', 'count'],
+      ['one-file-reindex-incremental-work-probed-dependency-paths-n1', 'count'],
+      ['one-file-reindex-incremental-work-source-bytes-n1', 'bytes'],
+      ['one-file-reindex-incremental-work-total-files-n1', 'count'],
       ['same-overlay-full-rebuild-index', 'milliseconds'],
       ['hot-exact-lexical-query', 'milliseconds'],
       ['cold-materialized-file-rows', 'count'],
@@ -1967,6 +1979,20 @@ describe('code graph release evidence', () => {
 
     expect(() => assertExternalPerformanceEvidence(artifact)).not.toThrow();
     expect(() => validateRetainedPerformancePayload(artifact)).not.toThrow();
+    for (const measurementName of [
+      'one-file-reindex-registration-lock-and-database-setup',
+      'one-file-reindex-post-committed-scan-overlay-and-workspace',
+      'one-file-reindex-incremental-work-planned-rows-n1',
+      'one-file-reindex-incremental-work-source-bytes-n1',
+      'one-file-reindex-incremental-work-fact-bytes-n1',
+    ] as const) {
+      expect(() =>
+        assertExternalPerformanceEvidence({
+          ...artifact,
+          measurements: artifact.measurements.filter(measurement => measurement.name !== measurementName),
+        }),
+      ).toThrow(measurementName);
+    }
     const harnessDeltaArtifact: BenchmarkArtifactV1 = {
       ...artifact,
       metadata: {

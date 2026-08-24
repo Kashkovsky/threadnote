@@ -12,6 +12,7 @@ import {
   benchmarkDarwinStorageClassification,
   benchmarkVectorModelDirectoryName,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
+  codeGraphBenchmarkSqlitePeak,
   codeGraphQueryResultParityEvidence,
   codeGraphQueryResultParityFailureMessage,
   codeGraphStructuralParityEvidence,
@@ -54,6 +55,29 @@ const CONTROL = JSON.stringify({
 });
 
 describe('code graph external benchmark harness', () => {
+  it('takes governed SQLite peaks from the independent sampler without losing the final boundary', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+        fc.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+        fc.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+        (boundaryBytes, scanningBytes, resolvingBytes) => {
+          const sampler = {
+            phases: {
+              resolving: {databasePeakBytes: resolvingBytes},
+              scanning: {databasePeakBytes: scanningBytes},
+            },
+          } as unknown as CodeGraphBenchmarkSamplerArtifact;
+          expect(codeGraphBenchmarkSqlitePeak(boundaryBytes, sampler, 'databasePeakBytes')).toBe(
+            Math.max(boundaryBytes, scanningBytes, resolvingBytes),
+          );
+          expect(codeGraphBenchmarkSqlitePeak(boundaryBytes, undefined, 'databasePeakBytes')).toBe(boundaryBytes);
+        },
+      ),
+      {numRuns: 250},
+    );
+  });
+
   it('classifies the backing macOS device without retaining device identity', () => {
     expect(
       benchmarkDarwinStorageClassification(
@@ -286,6 +310,7 @@ describe('code graph external benchmark harness', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     expect(source).toContain('const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined');
     expect(source.match(/sampleProcessTree\s*\? startExternalSampler/g)).toHaveLength(3);
+    expect(source.match(/sampler\s*\? Effect\.void\s*:\s*observeSqliteStoragePeak/g)).toHaveLength(3);
   });
 
   it('retains provenance-valid artifact evidence before reporting a ratchet regression', () => {
@@ -405,6 +430,17 @@ describe('code graph external benchmark harness', () => {
       'const sameOverlayReferenceHome',
       'productionBenchmarkGovernance(',
       "runCheckpoint?.mark('preparing-runtime')",
+    ]);
+  });
+
+  it('checkpoints post-build analysis and structural parity independently of the long index phases', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    expectInOrder(source, [
+      "runCheckpoint?.mark('same-overlay-reference-index')",
+      "runCheckpoint?.mark('post-build-analysis')",
+      "runCheckpoint?.mark('structural-parity')",
+      "runCheckpoint?.mark('concurrent-worktree-control')",
+      "runCheckpoint?.mark('finalizing-artifact')",
     ]);
   });
 

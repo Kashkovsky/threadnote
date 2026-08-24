@@ -740,7 +740,9 @@ const benchmarkCodeGraph = Effect.scoped(
           onProgress: progress =>
             observeIndexProgress(timeline, progress).pipe(
               Effect.andThen(sampler?.mark(progress) ?? Effect.void),
-              Effect.andThen(observeSqliteStoragePeak(fs, coldStoragePeak, benchmarkLayout.databasePath)),
+              Effect.andThen(
+                sampler ? Effect.void : observeSqliteStoragePeak(fs, coldStoragePeak, benchmarkLayout.databasePath),
+              ),
             ),
           ...sqliteWriterIndexOptions,
           threadnoteHome: prepared.home,
@@ -961,7 +963,11 @@ const benchmarkCodeGraph = Effect.scoped(
                 onProgress: progress =>
                   observeIndexProgress(timeline, progress).pipe(
                     Effect.andThen(sampler?.mark(progress) ?? Effect.void),
-                    Effect.andThen(observeSqliteStoragePeak(fs, incrementalStoragePeak, benchmarkLayout.databasePath)),
+                    Effect.andThen(
+                      sampler
+                        ? Effect.void
+                        : observeSqliteStoragePeak(fs, incrementalStoragePeak, benchmarkLayout.databasePath),
+                    ),
                   ),
                 ...sqliteWriterIndexOptions,
                 threadnoteHome: prepared.home,
@@ -1105,11 +1111,13 @@ const benchmarkCodeGraph = Effect.scoped(
                       observeIndexProgress(timeline, progress).pipe(
                         Effect.andThen(sampler?.mark(progress) ?? Effect.void),
                         Effect.andThen(
-                          observeSqliteStoragePeak(
-                            fs,
-                            sameOverlayReferenceStoragePeak,
-                            sameOverlayReferenceLayout.databasePath,
-                          ),
+                          sampler
+                            ? Effect.void
+                            : observeSqliteStoragePeak(
+                                fs,
+                                sameOverlayReferenceStoragePeak,
+                                sameOverlayReferenceLayout.databasePath,
+                              ),
                         ),
                       ),
                     ...sqliteWriterIndexOptions,
@@ -1179,6 +1187,7 @@ const benchmarkCodeGraph = Effect.scoped(
       yield* verifyExternalRepositoryUnchanged(prepared.repository, prepared.externalCommit);
     }
 
+    yield* runCheckpoint?.mark('post-build-analysis') ?? Effect.void;
     const coldStatusStarted = yield* Clock.currentTimeNanos;
     const analysisStatus = yield* query.status(prepared.home, prepared.repository);
     const coldStatusDuration =
@@ -1266,6 +1275,7 @@ const benchmarkCodeGraph = Effect.scoped(
     const coldLexicalTermRows = sqliteLexicalTermRowCount(analysisStatus.databasePath, cold.snapshot.id);
     const sqliteVersion = sqliteVersionString(analysisStatus.databasePath);
     const sqlitePageSizeBytes = sqlitePageSize(analysisStatus.databasePath);
+    yield* runCheckpoint?.mark('structural-parity') ?? Effect.void;
     const coldStructuralGraphEvidence = yield* sqliteStructuralGraphEvidence(
       analysisStatus.databasePath,
       cold.snapshot.id,
@@ -1452,37 +1462,73 @@ const benchmarkCodeGraph = Effect.scoped(
         benchmarkMeasurement('cold-durable-filesystem-growth', 'bytes', [
           Math.max(0, coldStorageAfter.totalBytes - coldStorageBaseline.totalBytes),
         ]),
-        benchmarkMeasurement('cold-sqlite-main-peak-observed', 'bytes', [coldStoragePeak.sqliteMainBytes]),
-        benchmarkMeasurement('cold-sqlite-wal-peak-observed', 'bytes', [
-          coldExternalTelemetry
-            ? externalTelemetryPeak(coldExternalTelemetry, 'walPeakBytes')
-            : coldStoragePeak.sqliteWalBytes,
+        benchmarkMeasurement('cold-sqlite-main-peak-observed', 'bytes', [
+          codeGraphBenchmarkSqlitePeak(coldStoragePeak.sqliteMainBytes, coldExternalTelemetry, 'databasePeakBytes'),
         ]),
-        benchmarkMeasurement('cold-sqlite-shm-peak-observed', 'bytes', [coldStoragePeak.sqliteShmBytes]),
+        benchmarkMeasurement('cold-sqlite-wal-peak-observed', 'bytes', [
+          codeGraphBenchmarkSqlitePeak(coldStoragePeak.sqliteWalBytes, coldExternalTelemetry, 'walPeakBytes'),
+        ]),
+        benchmarkMeasurement('cold-sqlite-shm-peak-observed', 'bytes', [
+          codeGraphBenchmarkSqlitePeak(coldStoragePeak.sqliteShmBytes, coldExternalTelemetry, 'shmPeakBytes'),
+        ]),
         benchmarkMeasurement('cold-sqlite-journal-peak-observed', 'bytes', [
-          coldExternalTelemetry
-            ? externalTelemetryPeak(coldExternalTelemetry, 'journalPeakBytes')
-            : coldStoragePeak.sqliteJournalBytes,
+          codeGraphBenchmarkSqlitePeak(coldStoragePeak.sqliteJournalBytes, coldExternalTelemetry, 'journalPeakBytes'),
         ]),
         benchmarkMeasurement('incremental-sqlite-main-peak-observed', 'bytes', [
-          incrementalStoragePeak.sqliteMainBytes,
+          codeGraphBenchmarkSqlitePeak(
+            incrementalStoragePeak.sqliteMainBytes,
+            incrementalExternalTelemetry,
+            'databasePeakBytes',
+          ),
         ]),
-        benchmarkMeasurement('incremental-sqlite-wal-peak-observed', 'bytes', [incrementalStoragePeak.sqliteWalBytes]),
-        benchmarkMeasurement('incremental-sqlite-shm-peak-observed', 'bytes', [incrementalStoragePeak.sqliteShmBytes]),
+        benchmarkMeasurement('incremental-sqlite-wal-peak-observed', 'bytes', [
+          codeGraphBenchmarkSqlitePeak(
+            incrementalStoragePeak.sqliteWalBytes,
+            incrementalExternalTelemetry,
+            'walPeakBytes',
+          ),
+        ]),
+        benchmarkMeasurement('incremental-sqlite-shm-peak-observed', 'bytes', [
+          codeGraphBenchmarkSqlitePeak(
+            incrementalStoragePeak.sqliteShmBytes,
+            incrementalExternalTelemetry,
+            'shmPeakBytes',
+          ),
+        ]),
         benchmarkMeasurement('incremental-sqlite-journal-peak-observed', 'bytes', [
-          incrementalStoragePeak.sqliteJournalBytes,
+          codeGraphBenchmarkSqlitePeak(
+            incrementalStoragePeak.sqliteJournalBytes,
+            incrementalExternalTelemetry,
+            'journalPeakBytes',
+          ),
         ]),
         benchmarkMeasurement('same-overlay-reference-sqlite-main-peak-observed', 'bytes', [
-          sameOverlayReferenceStoragePeak.sqliteMainBytes,
+          codeGraphBenchmarkSqlitePeak(
+            sameOverlayReferenceStoragePeak.sqliteMainBytes,
+            sameOverlayReferenceTelemetry,
+            'databasePeakBytes',
+          ),
         ]),
         benchmarkMeasurement('same-overlay-reference-sqlite-wal-peak-observed', 'bytes', [
-          sameOverlayReferenceStoragePeak.sqliteWalBytes,
+          codeGraphBenchmarkSqlitePeak(
+            sameOverlayReferenceStoragePeak.sqliteWalBytes,
+            sameOverlayReferenceTelemetry,
+            'walPeakBytes',
+          ),
         ]),
         benchmarkMeasurement('same-overlay-reference-sqlite-shm-peak-observed', 'bytes', [
-          sameOverlayReferenceStoragePeak.sqliteShmBytes,
+          codeGraphBenchmarkSqlitePeak(
+            sameOverlayReferenceStoragePeak.sqliteShmBytes,
+            sameOverlayReferenceTelemetry,
+            'shmPeakBytes',
+          ),
         ]),
         benchmarkMeasurement('same-overlay-reference-sqlite-journal-peak-observed', 'bytes', [
-          sameOverlayReferenceStoragePeak.sqliteJournalBytes,
+          codeGraphBenchmarkSqlitePeak(
+            sameOverlayReferenceStoragePeak.sqliteJournalBytes,
+            sameOverlayReferenceTelemetry,
+            'journalPeakBytes',
+          ),
         ]),
         ...(coldExternalTelemetry
           ? [
@@ -2912,6 +2958,19 @@ function externalTelemetryPeak(
   field: 'databasePeakBytes' | 'journalPeakBytes' | 'shmPeakBytes' | 'temporaryPeakBytes' | 'walPeakBytes',
 ): number {
   return Math.max(0, ...Object.values(artifact.phases).map(phase => phase[field] ?? 0));
+}
+
+/**
+ * Governed runs sample SQLite files independently every 25 ms. Keep the final
+ * in-process boundary in the maximum, but do not require progress callbacks to
+ * issue four redundant filesystem stats inside the measured path.
+ */
+export function codeGraphBenchmarkSqlitePeak(
+  boundaryBytes: number,
+  sampler: CodeGraphBenchmarkSamplerArtifact | undefined,
+  field: 'databasePeakBytes' | 'journalPeakBytes' | 'shmPeakBytes' | 'walPeakBytes',
+): number {
+  return sampler === undefined ? boundaryBytes : Math.max(boundaryBytes, externalTelemetryPeak(sampler, field));
 }
 
 function externalSamplerDescription(artifact: CodeGraphBenchmarkSamplerArtifact | undefined): string {
