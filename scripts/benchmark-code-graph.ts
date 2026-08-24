@@ -6987,17 +6987,26 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
       artifact.metadata[name],
     ]),
   );
+  const githubHostedStorageAttested = productionRatchetGithubHostedStorageAttested(artifact.metadata);
   const selected = {
     ...profile,
-    benchmarkDiskFilesystem: artifact.metadata.benchmarkDiskFilesystem,
-    benchmarkDiskLocation: artifact.metadata.benchmarkDiskLocation,
-    benchmarkDiskMedium: artifact.metadata.benchmarkDiskMedium,
+    // Standard GitHub-hosted Linux runners are governed by the attested runner
+    // contract. Their guest block layer may report the same SSD as rotational,
+    // virtual, or unknown across hosts, so retain those observations in the
+    // evidence artifact without turning them into unstable ratchet identity.
+    ...(githubHostedStorageAttested
+      ? {}
+      : {
+          benchmarkDiskFilesystem: artifact.metadata.benchmarkDiskFilesystem,
+          benchmarkDiskLocation: artifact.metadata.benchmarkDiskLocation,
+          benchmarkDiskMedium: artifact.metadata.benchmarkDiskMedium,
+          benchmarkReferenceDiskFilesystem: artifact.metadata.benchmarkReferenceDiskFilesystem,
+          benchmarkReferenceDiskLocation: artifact.metadata.benchmarkReferenceDiskLocation,
+          benchmarkReferenceDiskMedium: artifact.metadata.benchmarkReferenceDiskMedium,
+        }),
     benchmarkFilesystemsShared: artifact.metadata.benchmarkFilesystemsShared,
     benchmarkGoverned: artifact.metadata.benchmarkGoverned,
     benchmarkMinimumFreeBytes: artifact.metadata.benchmarkMinimumFreeBytes,
-    benchmarkReferenceDiskFilesystem: artifact.metadata.benchmarkReferenceDiskFilesystem,
-    benchmarkReferenceDiskLocation: artifact.metadata.benchmarkReferenceDiskLocation,
-    benchmarkReferenceDiskMedium: artifact.metadata.benchmarkReferenceDiskMedium,
     benchmarkSourceValidationMode: artifact.metadata.benchmarkSourceValidationMode,
     ...(artifact.metadata.benchmarkSourceValidationMode === 'github-actions-clean-source'
       ? {
@@ -7079,6 +7088,10 @@ function productionRatchetStorageGoverned(metadata: Readonly<Record<string, unkn
   if (metadata.benchmarkDiskMedium === 'solid-state' && metadata.benchmarkReferenceDiskMedium === 'solid-state') {
     return true;
   }
+  return productionRatchetGithubHostedStorageAttested(metadata);
+}
+
+function productionRatchetGithubHostedStorageAttested(metadata: Readonly<Record<string, unknown>>): boolean {
   const observedStorageMedium = (value: unknown) =>
     value === 'rotational' || value === 'solid-state' || value === 'unknown' || value === 'virtual-or-network';
   return (

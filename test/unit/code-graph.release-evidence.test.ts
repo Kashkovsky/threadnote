@@ -1201,7 +1201,40 @@ describe('code graph release evidence', () => {
         runtimePlatform: 'linux',
       },
     }));
-    expect(() => createCodeGraphProductionRatchet(githubHostedArtifacts)).not.toThrow();
+    const githubHostedRatchet = createCodeGraphProductionRatchet(githubHostedArtifacts);
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkDiskFilesystem');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkDiskLocation');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkDiskMedium');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskFilesystem');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskLocation');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskMedium');
+    fc.assert(
+      fc.property(
+        fc.constantFrom('unknown', 'overlayfs', 'ext4'),
+        fc.constantFrom('unknown', 'rotational', 'solid-state', 'virtual-or-network'),
+        fc.constantFrom('unknown', 'internal', 'external', 'virtual-or-network'),
+        (filesystem, medium, location) => {
+          expect(() =>
+            enforceCodeGraphBenchmarkRatchet(
+              {
+                ...githubHostedArtifacts[0]!,
+                metadata: {
+                  ...githubHostedArtifacts[0]!.metadata,
+                  benchmarkDiskFilesystem: filesystem,
+                  benchmarkDiskLocation: location,
+                  benchmarkDiskMedium: medium,
+                  benchmarkReferenceDiskFilesystem: filesystem,
+                  benchmarkReferenceDiskLocation: location,
+                  benchmarkReferenceDiskMedium: medium,
+                },
+              },
+              githubHostedRatchet,
+            ),
+          ).not.toThrow();
+        },
+      ),
+      {numRuns: 50},
+    );
     expect(() =>
       createCodeGraphProductionRatchet(
         githubHostedArtifacts.map(artifact => ({
