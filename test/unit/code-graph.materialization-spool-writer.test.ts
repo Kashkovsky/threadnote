@@ -80,7 +80,20 @@ it('appends every canonical fact surface under the exact durable batch receipt',
     expect(
       commitCodeGraphMaterializationSpoolBatch(
         database,
-        {batchId: 'e'.repeat(64), batchIndex: 0, factBytes: 100, rowCount: prepared.rowCount, sourceBytes: 200},
+        {
+          batchId: 'e'.repeat(64),
+          batchIndex: 0,
+          candidateCount: 1,
+          edgeCount: 2,
+          factBytes: 100,
+          lookupCount: 2,
+          referenceCount: 1,
+          reexportCount: 1,
+          rowCount: prepared.rowCount,
+          sourceBytes: 200,
+          symbolCount: 1,
+          termCount: 2,
+        },
         () => appendCodeGraphMaterializationSpoolFactBatch(database, prepared),
       ),
     ).toBe('appended');
@@ -99,6 +112,22 @@ it('appends every canonical fact surface under the exact durable batch receipt',
     const readyPlan = readCodeGraphMaterializationSpoolReadyPlan(database);
     expect(readyPlan.spoolIdentity).toMatch(/^[0-9a-f]{64}$/u);
     expect(readCodeGraphMaterializationSpoolReadyPlan(database)).toEqual(readyPlan);
+    expect(readyPlan.batches).toEqual([
+      {
+        batchId: 'e'.repeat(64),
+        batchIndex: 0,
+        candidateCount: 1,
+        edgeCount: 2,
+        factBytes: 100,
+        lookupCount: 2,
+        referenceCount: 1,
+        reexportCount: 1,
+        rowCount: prepared.rowCount,
+        sourceBytes: 200,
+        symbolCount: 1,
+        termCount: 2,
+      },
+    ]);
     expect(Object.fromEntries(readyPlan.surfaces.map(surface => [surface.name, surface.rowCount]))).toEqual({
       edges: 1,
       lookup: 2,

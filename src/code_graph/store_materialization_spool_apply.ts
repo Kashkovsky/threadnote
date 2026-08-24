@@ -36,8 +36,8 @@ export const registerCodeGraphMaterializationSpoolApply = Effect.fn('codeGraph.r
     spoolIdentity: string,
     surfaces: readonly CodeGraphMaterializationSpoolSurfacePlan[],
   ) {
-    validateApplyIdentity(spoolIdentity);
-    validateSurfacePlan(surfaces);
+    yield* validateApplyIdentity(spoolIdentity);
+    yield* validateSurfacePlan(surfaces);
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
@@ -80,7 +80,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
   surfaceIndex: number,
   writePage: (page: {readonly afterRowid: number; readonly rowCount: number}) => Effect.Effect<void, unknown>,
 ) {
-  validateApplyIdentity(spoolIdentity);
+  yield* validateApplyIdentity(spoolIdentity);
   if (
     !Number.isSafeInteger(surfaceIndex) ||
     surfaceIndex < 0 ||
@@ -167,7 +167,7 @@ export const applyCodeGraphMaterializationSpoolSurfacePage = Effect.fn(
 export const assertCodeGraphMaterializationSpoolApplyComplete = Effect.fn(
   'codeGraph.assertMaterializationSpoolApplyComplete',
 )(function* (sql: SqlClient.SqlClient, snapshotId: string, ownerToken: string, spoolIdentity: string) {
-  validateApplyIdentity(spoolIdentity);
+  yield* validateApplyIdentity(spoolIdentity);
   yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
   const rows = yield* readSurfaceRows(sql, snapshotId);
   if (
@@ -196,24 +196,24 @@ function readSurfaceRows(sql: SqlClient.SqlClient, snapshotId: string) {
   );
 }
 
-function validateApplyIdentity(spoolIdentity: string): void {
-  if (!/^[0-9a-f]{64}$/u.test(spoolIdentity)) {
-    throw new CodeGraphStoreError('Persistent materialization spool identity is invalid.');
-  }
+function validateApplyIdentity(spoolIdentity: string): Effect.Effect<void, CodeGraphStoreError> {
+  return /^[0-9a-f]{64}$/u.test(spoolIdentity)
+    ? Effect.void
+    : Effect.fail(new CodeGraphStoreError('Persistent materialization spool identity is invalid.'));
 }
 
-function validateSurfacePlan(surfaces: readonly CodeGraphMaterializationSpoolSurfacePlan[]): void {
-  if (
-    surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
+function validateSurfacePlan(
+  surfaces: readonly CodeGraphMaterializationSpoolSurfacePlan[],
+): Effect.Effect<void, CodeGraphStoreError> {
+  return surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
     surfaces.some(
       (surface, index) =>
         surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!.name ||
         !Number.isSafeInteger(surface.rowCount) ||
         surface.rowCount < 0,
     )
-  ) {
-    throw new CodeGraphStoreError('Persistent materialization spool surface plan is invalid.');
-  }
+    ? Effect.fail(new CodeGraphStoreError('Persistent materialization spool surface plan is invalid.'))
+    : Effect.void;
 }
 
 function surfaceRowsMatch(

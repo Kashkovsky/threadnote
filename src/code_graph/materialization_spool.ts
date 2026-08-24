@@ -30,9 +30,16 @@ export interface CodeGraphMaterializationSpoolHeader {
 export interface CodeGraphMaterializationSpoolBatchReceipt {
   readonly batchId: string;
   readonly batchIndex: number;
+  readonly candidateCount: number;
+  readonly edgeCount: number;
   readonly factBytes: number;
+  readonly lookupCount: number;
+  readonly referenceCount: number;
+  readonly reexportCount: number;
   readonly rowCount: number;
   readonly sourceBytes: number;
+  readonly symbolCount: number;
+  readonly termCount: number;
 }
 
 export interface CodeGraphMaterializationSpoolState {
@@ -44,6 +51,7 @@ export interface CodeGraphMaterializationSpoolState {
 }
 
 export interface CodeGraphMaterializationSpoolReadyPlan {
+  readonly batches: readonly CodeGraphMaterializationSpoolBatchReceipt[];
   readonly spoolIdentity: string;
   readonly surfaces: readonly {readonly name: string; readonly rowCount: number}[];
 }
@@ -60,9 +68,16 @@ interface CodeGraphMaterializationSpoolHeaderRow {
 interface CodeGraphMaterializationSpoolBatchReceiptRow {
   readonly batch_id: string;
   readonly batch_index: number;
+  readonly candidate_count: number;
+  readonly edge_count: number;
   readonly fact_bytes: number;
+  readonly lookup_count: number;
+  readonly reference_count: number;
+  readonly reexport_count: number;
   readonly row_count: number;
   readonly source_bytes: number;
+  readonly symbol_count: number;
+  readonly term_count: number;
 }
 
 interface CodeGraphMaterializationSpoolStateRow {
@@ -181,7 +196,14 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
         batch_id TEXT NOT NULL CHECK (length(batch_id) = 64),
         fact_bytes INTEGER NOT NULL CHECK (fact_bytes >= 0),
         source_bytes INTEGER NOT NULL CHECK (source_bytes >= 0),
-        row_count INTEGER NOT NULL CHECK (row_count >= 0)
+        row_count INTEGER NOT NULL CHECK (row_count >= 0),
+        symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
+        edge_count INTEGER NOT NULL CHECK (edge_count >= 0),
+        term_count INTEGER NOT NULL CHECK (term_count >= 0),
+        lookup_count INTEGER NOT NULL CHECK (lookup_count >= 0),
+        reference_count INTEGER NOT NULL CHECK (reference_count >= 0),
+        candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
+        reexport_count INTEGER NOT NULL CHECK (reexport_count >= 0)
       ) WITHOUT ROWID
     `);
     const current = database
@@ -240,7 +262,9 @@ export function commitCodeGraphMaterializationSpoolBatch(
     const state = readCodeGraphMaterializationSpoolState(database);
     const current = database
       .prepare(
-        `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count
+        `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
+           symbol_count, edge_count, term_count, lookup_count, reference_count,
+           candidate_count, reexport_count
          FROM materialization_spool_batches
          WHERE batch_index = ?`,
       )
@@ -261,10 +285,25 @@ export function commitCodeGraphMaterializationSpoolBatch(
     database
       .prepare(
         `INSERT INTO materialization_spool_batches (
-           batch_index, batch_id, fact_bytes, source_bytes, row_count
-         ) VALUES (?, ?, ?, ?, ?)`,
+           batch_index, batch_id, fact_bytes, source_bytes, row_count,
+           symbol_count, edge_count, term_count, lookup_count, reference_count,
+           candidate_count, reexport_count
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(receipt.batchIndex, receipt.batchId, receipt.factBytes, receipt.sourceBytes, receipt.rowCount);
+      .run(
+        receipt.batchIndex,
+        receipt.batchId,
+        receipt.factBytes,
+        receipt.sourceBytes,
+        receipt.rowCount,
+        receipt.symbolCount,
+        receipt.edgeCount,
+        receipt.termCount,
+        receipt.lookupCount,
+        receipt.referenceCount,
+        receipt.candidateCount,
+        receipt.reexportCount,
+      );
     database
       .prepare(
         `UPDATE materialization_spool_state
@@ -413,7 +452,9 @@ export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): 
   }
   const receipts = database
     .prepare(
-      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count
+      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
+         symbol_count, edge_count, term_count, lookup_count, reference_count,
+         candidate_count, reexport_count
        FROM materialization_spool_batches
        ORDER BY batch_index`,
     )
@@ -437,7 +478,11 @@ export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): 
       version: CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION,
     }),
   );
-  return {spoolIdentity: digest.digest('hex'), surfaces};
+  return {
+    batches: receipts.map(materializationSpoolBatchReceiptFromRow),
+    spoolIdentity: digest.digest('hex'),
+    surfaces,
+  };
 }
 
 export function readCodeGraphMaterializationSpoolState(database: Database): CodeGraphMaterializationSpoolState {
@@ -490,7 +535,9 @@ function assertCodeGraphMaterializationSpoolLedger(database: Database): void {
   const state = readCodeGraphMaterializationSpoolState(database);
   const receipts = database
     .prepare(
-      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count
+      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
+         symbol_count, edge_count, term_count, lookup_count, reference_count,
+         candidate_count, reexport_count
        FROM materialization_spool_batches
        ORDER BY batch_index`,
     )
@@ -526,8 +573,34 @@ function codeGraphMaterializationSpoolBatchReceiptMatches(
     current.batch_id === expected.batchId &&
     current.fact_bytes === expected.factBytes &&
     current.source_bytes === expected.sourceBytes &&
-    current.row_count === expected.rowCount
+    current.row_count === expected.rowCount &&
+    current.symbol_count === expected.symbolCount &&
+    current.edge_count === expected.edgeCount &&
+    current.term_count === expected.termCount &&
+    current.lookup_count === expected.lookupCount &&
+    current.reference_count === expected.referenceCount &&
+    current.candidate_count === expected.candidateCount &&
+    current.reexport_count === expected.reexportCount
   );
+}
+
+function materializationSpoolBatchReceiptFromRow(
+  row: CodeGraphMaterializationSpoolBatchReceiptRow,
+): CodeGraphMaterializationSpoolBatchReceipt {
+  return {
+    batchId: row.batch_id,
+    batchIndex: row.batch_index,
+    candidateCount: row.candidate_count,
+    edgeCount: row.edge_count,
+    factBytes: row.fact_bytes,
+    lookupCount: row.lookup_count,
+    referenceCount: row.reference_count,
+    reexportCount: row.reexport_count,
+    rowCount: row.row_count,
+    sourceBytes: row.source_bytes,
+    symbolCount: row.symbol_count,
+    termCount: row.term_count,
+  };
 }
 
 function validateCodeGraphMaterializationSpoolBatchReceipt(receipt: CodeGraphMaterializationSpoolBatchReceipt): void {
@@ -536,9 +609,16 @@ function validateCodeGraphMaterializationSpoolBatchReceipt(receipt: CodeGraphMat
   }
   for (const [value, field] of [
     [receipt.batchIndex, 'batch index'],
+    [receipt.candidateCount, 'candidate count'],
+    [receipt.edgeCount, 'edge count'],
     [receipt.factBytes, 'fact bytes'],
+    [receipt.lookupCount, 'lookup count'],
+    [receipt.referenceCount, 'reference count'],
+    [receipt.reexportCount, 'reexport count'],
     [receipt.sourceBytes, 'source bytes'],
     [receipt.rowCount, 'row count'],
+    [receipt.symbolCount, 'symbol count'],
+    [receipt.termCount, 'term count'],
   ] as const) {
     validateNonNegativeSafeInteger(value, field);
   }

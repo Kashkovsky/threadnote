@@ -193,7 +193,19 @@ describe('code graph materialization spool', () => {
           snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
         });
         for (const [batchIndex, batchId] of batchIds.entries()) {
-          const receipt = {batchId, batchIndex, factBytes: batchIndex * 3, rowCount: batchIndex * 5, sourceBytes: 7};
+          const receipt = spoolReceipt({
+            batchId,
+            batchIndex,
+            candidateCount: batchIndex,
+            edgeCount: batchIndex * 2,
+            factBytes: batchIndex * 3,
+            lookupCount: batchIndex * 4,
+            referenceCount: batchIndex * 5,
+            reexportCount: batchIndex * 6,
+            rowCount: batchIndex * 7,
+            symbolCount: batchIndex * 8,
+            termCount: batchIndex * 9,
+          });
           expect(commitCodeGraphMaterializationSpoolBatch(database, receipt, () => undefined)).toBe('appended');
           expect(commitCodeGraphMaterializationSpoolBatch(database, receipt, () => undefined)).toBe('resumed');
         }
@@ -226,7 +238,7 @@ describe('code graph materialization spool', () => {
         repositoryId: 'c'.repeat(64),
         snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
       });
-      const receipt = {batchId: 'e'.repeat(64), batchIndex: 0, factBytes: 3, rowCount: 5, sourceBytes: 7};
+      const receipt = spoolReceipt({rowCount: 5});
       expect(() =>
         commitCodeGraphMaterializationSpoolBatch(database, {...receipt, batchIndex: 1}, () => undefined),
       ).toThrow('Code graph materialization spool batch sequence is not contiguous.');
@@ -247,9 +259,16 @@ describe('code graph materialization spool', () => {
           {
             batchId: 'f'.repeat(64),
             batchIndex: 1,
+            candidateCount: 0,
+            edgeCount: 0,
             factBytes: 0,
+            lookupCount: 0,
+            referenceCount: 0,
+            reexportCount: 0,
             rowCount: 0,
             sourceBytes: 0,
+            symbolCount: 0,
+            termCount: 0,
           },
           () => undefined,
         ),
@@ -271,17 +290,7 @@ describe('code graph materialization spool', () => {
     try {
       configureCodeGraphMaterializationSpoolDatabase(database);
       initializeCodeGraphMaterializationSpoolDatabase(database, header);
-      commitCodeGraphMaterializationSpoolBatch(
-        database,
-        {
-          batchId: 'e'.repeat(64),
-          batchIndex: 0,
-          factBytes: 3,
-          rowCount: 5,
-          sourceBytes: 7,
-        },
-        () => undefined,
-      );
+      commitCodeGraphMaterializationSpoolBatch(database, spoolReceipt({rowCount: 5}), () => undefined);
       database
         .prepare('UPDATE materialization_spool_batches SET batch_id = ? WHERE batch_index = 0')
         .run('z'.repeat(64));
@@ -305,7 +314,7 @@ describe('code graph materialization spool', () => {
         snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
       });
       database.exec('CREATE TABLE raw_test (value TEXT NOT NULL)');
-      const receipt = {batchId: 'e'.repeat(64), batchIndex: 0, factBytes: 3, rowCount: 1, sourceBytes: 7};
+      const receipt = spoolReceipt({rowCount: 1});
       expect(() =>
         commitCodeGraphMaterializationSpoolBatch(database, receipt, () => {
           database.prepare('INSERT INTO raw_test (value) VALUES (?)').run('rolled-back');
@@ -404,3 +413,21 @@ describe('code graph materialization spool', () => {
     }
   });
 });
+
+function spoolReceipt(overrides: Partial<Parameters<typeof commitCodeGraphMaterializationSpoolBatch>[1]> = {}) {
+  return {
+    batchId: 'e'.repeat(64),
+    batchIndex: 0,
+    candidateCount: 0,
+    edgeCount: 0,
+    factBytes: 3,
+    lookupCount: 0,
+    referenceCount: 0,
+    reexportCount: 0,
+    rowCount: 0,
+    sourceBytes: 7,
+    symbolCount: 0,
+    termCount: 0,
+    ...overrides,
+  };
+}

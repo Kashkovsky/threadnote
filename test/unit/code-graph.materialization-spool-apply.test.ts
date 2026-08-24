@@ -39,6 +39,14 @@ effectIt.effect('commits a main-database page and its exact apply cursor atomica
       name: surface.name,
       rowCount: index === 0 ? 3 : 0,
     }));
+    const invalidIdentity = yield* registerCodeGraphMaterializationSpoolApply(
+      sql,
+      'snapshot',
+      'owner',
+      'invalid',
+      plan,
+    ).pipe(Effect.flip);
+    expect(invalidIdentity.message).toContain('identity is invalid');
     expect(yield* registerCodeGraphMaterializationSpoolApply(sql, 'snapshot', 'owner', identity, plan)).toBe(
       'registered',
     );
