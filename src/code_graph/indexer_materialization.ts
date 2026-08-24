@@ -27,7 +27,7 @@ import {
   type BoundedCodeGraphFact,
 } from './fact_budget.js';
 import {CodeGraphIndexOperationError, sameOverlayState, WorktreeChangedDuringIndex} from './indexer_shared.js';
-import type {DirectPersistentCapacityProtection} from './indexer_types.js';
+import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './indexer_types.js';
 import {
   worktreeBuildRequestState,
   type CodeGraphContentBatchContext,
@@ -58,6 +58,7 @@ import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphEdge,
   type CodeGraphFileFacts,
+  type CodeGraphMaterializationMetrics,
   type CodeGraphInventoryFile,
   type CodeGraphMaterializationRows,
   type CodeGraphProgress,
@@ -1554,6 +1555,90 @@ export function observeMaterializationStorage(
         }),
     durableWalBytes: current.walBytes,
     durableWalHighWaterBytes: Math.max(previous.durableWalHighWaterBytes, current.walBytes),
+  };
+}
+
+/**
+ * Capture durable-storage growth around a bounded incremental publication.
+ * Incremental staging bypasses the full-materialization loop, so it must
+ * establish and close its own high-water interval instead of inheriting the
+ * full-build sampler.
+ */
+export function withIncrementalMaterializationStorageTelemetry<A, E, R>(
+  fs: FileSystem.FileSystem,
+  databasePath: string,
+  transaction: Effect.Effect<A, E, R>,
+): Effect.Effect<{readonly result: A; readonly storage: MaterializationStorageTelemetry}, E, R> {
+  return Effect.gen(function* () {
+    const before = yield* materializationStorageFiles(fs, databasePath);
+    const initial = initialMaterializationStorageTelemetry(before, false);
+    const result = yield* transaction;
+    const after = yield* materializationStorageFiles(fs, databasePath);
+    return {result, storage: observeMaterializationStorage(initial, after)};
+  });
+}
+
+export function applyIncrementalMaterialization(input: {
+  readonly assessment: Extract<IncrementalOverlayAssessment, {readonly mode: 'eligible'}>;
+  readonly baseSnapshotId: string;
+  readonly databasePath: string;
+  readonly fs: FileSystem.FileSystem;
+  readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
+  readonly prepared: boolean;
+  readonly storage?: MaterializationStorageTelemetry;
+  readonly store: CodeGraphStoreShape;
+}) {
+  return Effect.gen(function* () {
+    if (input.prepared) return {result: true, storage: input.storage};
+    if (input.assessment.reuse === 'persisted-base') {
+      return yield* withIncrementalMaterializationStorageTelemetry(
+        input.fs,
+        input.databasePath,
+        input.store.preparePersistedIncrementalActivation(
+          input.databasePath,
+          input.baseSnapshotId,
+          input.assessment.files,
+          input.assessment.facts,
+          {
+            deletedPaths: input.assessment.deletedPaths,
+            resolutionClosure: input.assessment.resolutionClosure,
+          },
+          input.persistentCapacityProtector,
+        ),
+      );
+    }
+    return {
+      result: yield* input.store.replaceStagedModifiedFiles(
+        input.databasePath,
+        input.baseSnapshotId,
+        input.assessment.files,
+        input.assessment.facts,
+        input.persistentCapacityProtector,
+      ),
+      storage: undefined,
+    };
+  });
+}
+
+export function incrementalMaterializationMetrics(
+  assessment: Extract<IncrementalOverlayAssessment, {readonly mode: 'eligible'}>,
+  storage: MaterializationStorageTelemetry,
+  dirty: boolean,
+): CodeGraphMaterializationMetrics {
+  const sourceBytesTotal = assessment.files.reduce((total, file) => total + file.size, 0);
+  return {
+    attributedFilesCompleted: assessment.files.length,
+    batchesCompleted: 1,
+    batchesTotal: 1,
+    mode: dirty ? 'incremental-overlay' : 'incremental-clean',
+    sourceBytesCompleted: sourceBytesTotal,
+    sourceBytesTotal,
+    storage: {
+      ...storage,
+      materializationMode: 'direct-persistent',
+      temporaryDatabaseBytes: 0,
+      temporaryDatabaseHighWaterBytes: 0,
+    },
   };
 }
 

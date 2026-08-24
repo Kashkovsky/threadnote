@@ -23,6 +23,7 @@ import {
   promoteReadySnapshotWithCapacity,
   sparseOverlayGraphContentIdentity,
   sparseOverlaySnapshotIdentity,
+  withIncrementalMaterializationStorageTelemetry,
   type CodeGraphCacheContentCoalescer,
 } from './indexer_materialization.js';
 import type {
@@ -289,24 +290,29 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         total: incrementalAssessment.files.length,
         unit: 'files',
       }) ?? Effect.void;
-      const prepared = yield* input.store.preparePersistedIncrementalActivation(
+      const preparedMaterialization = yield* withIncrementalMaterializationStorageTelemetry(
+        input.fs,
         input.layout.databasePath,
-        base.snapshot.id,
-        incrementalAssessment.files,
-        incrementalAssessment.facts,
-        {
-          deletedPaths: incrementalAssessment.deletedPaths,
-          resolutionClosure: incrementalAssessment.resolutionClosure,
-        },
-        codeGraphDirectPersistentCapacityProtector({
-          capacityProtection: input.capacityProtection,
-          fs: input.fs,
-          identity: input.identity,
-          layout: input.layout,
-          onProgress: input.options.onProgress,
-          threadnoteHome: input.options.threadnoteHome,
-        }),
+        input.store.preparePersistedIncrementalActivation(
+          input.layout.databasePath,
+          base.snapshot.id,
+          incrementalAssessment.files,
+          incrementalAssessment.facts,
+          {
+            deletedPaths: incrementalAssessment.deletedPaths,
+            resolutionClosure: incrementalAssessment.resolutionClosure,
+          },
+          codeGraphDirectPersistentCapacityProtector({
+            capacityProtection: input.capacityProtection,
+            fs: input.fs,
+            identity: input.identity,
+            layout: input.layout,
+            onProgress: input.options.onProgress,
+            threadnoteHome: input.options.threadnoteHome,
+          }),
+        ),
       );
+      const prepared = preparedMaterialization.result;
       if (!prepared) return Option.none<CodeGraphIndexSummary>();
       yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
       const workspace = {
@@ -328,6 +334,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
           fs: input.fs,
           identity: input.identity,
           incrementalAssessment,
+          incrementalMaterializationStorageTelemetry: preparedMaterialization.storage,
           incrementalOverlayEnabled: true,
           incrementalPrepared: true,
           inventory,

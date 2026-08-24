@@ -91,6 +91,7 @@ describe('code graph incremental-overlay differential properties', () => {
         const homesRoot = `${root}-homes`;
         const incrementalHome = join(homesRoot, 'incremental');
         const fullHome = join(homesRoot, 'full');
+        const incrementalStorageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
         const fullStorageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
         try {
           await runEffect(
@@ -106,7 +107,16 @@ describe('code graph incremental-overlay differential properties', () => {
               const path = yield* Path.Path;
               const query = yield* CodeGraphQueryService;
               const store = yield* CodeGraphStore;
-              const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+              const incremental = yield* indexer.index({
+                cwd: root,
+                onProgress: progress =>
+                  Effect.sync(() => {
+                    if (progress.phase === 'materializing' && progress.metrics?.storage !== undefined) {
+                      incrementalStorageObservations.push(progress.metrics.storage);
+                    }
+                  }),
+                threadnoteHome: incrementalHome,
+              });
               const full = yield* indexer.index({
                 cwd: root,
                 incrementalOverlay: false,
@@ -187,6 +197,20 @@ describe('code graph incremental-overlay differential properties', () => {
               state: 'ready',
             },
           ]);
+          const incrementalStorage = incrementalStorageObservations.at(-1);
+          expect(incrementalStorage).toMatchObject({
+            materializationMode: 'direct-persistent',
+            temporaryDatabaseBytes: 0,
+            temporaryDatabaseHighWaterBytes: 0,
+          });
+          expect(incrementalStorage?.durableDatabaseGrowthHighWaterBytes).toBeGreaterThanOrEqual(0);
+          expect(incrementalStorage?.durableFilesystemHighWaterBytes).toBeGreaterThan(0);
+          expect(
+            Math.max(
+              incrementalStorage?.durableJournalHighWaterBytes ?? 0,
+              incrementalStorage?.durableWalHighWaterBytes ?? 0,
+            ),
+          ).toBeGreaterThan(0);
           expect(fullStorageObservations.at(-1)).toMatchObject({
             materializationMode: 'direct-persistent',
             temporaryDatabaseBytes: 0,

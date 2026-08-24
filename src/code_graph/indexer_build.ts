@@ -24,6 +24,7 @@ import {
   PERSISTENT_MATERIALIZATION_TRANSACTION_SOURCE_BYTES,
   addMaterializationReplayMetrics,
   addMaterializationRows,
+  applyIncrementalMaterialization,
   cachedFactsMetadata,
   codeGraphDirectPersistentCapacityProtector,
   deduplicateMaterializationRelationships,
@@ -35,6 +36,7 @@ import {
   factMaterializationBatches,
   forcedSnapshotIdentity,
   graphContentIdentity,
+  incrementalMaterializationMetrics,
   initialMaterializationStorageTelemetry,
   loadCachedFacts,
   materializationRows,
@@ -52,6 +54,8 @@ import {
   snapshotIdentity,
   uniqueById,
   verifyIndexInput,
+  withIncrementalMaterializationStorageTelemetry,
+  type MaterializationStorageTelemetry,
 } from './indexer_materialization.js';
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
 import {verifyCommittedIndexInput} from './indexer_input_verification.js';
@@ -719,17 +723,22 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           total: incrementalAssessment.files.length,
           unit: 'files',
         }) ?? Effect.void;
-        const prepared = yield* input.store.preparePersistedIncrementalActivation(
+        const preparedMaterialization = yield* withIncrementalMaterializationStorageTelemetry(
+          input.fs,
           input.layout.databasePath,
-          candidate.snapshot.id,
-          incrementalAssessment.files,
-          incrementalAssessment.facts,
-          {
-            deletedPaths: incrementalAssessment.deletedPaths,
-            resolutionClosure: incrementalAssessment.resolutionClosure,
-          },
-          codeGraphDirectPersistentCapacityProtector(input),
+          input.store.preparePersistedIncrementalActivation(
+            input.layout.databasePath,
+            candidate.snapshot.id,
+            incrementalAssessment.files,
+            incrementalAssessment.facts,
+            {
+              deletedPaths: incrementalAssessment.deletedPaths,
+              resolutionClosure: incrementalAssessment.resolutionClosure,
+            },
+            codeGraphDirectPersistentCapacityProtector(input),
+          ),
         );
+        const prepared = preparedMaterialization.result;
         if (!prepared) {
           return Option.some<ReusableCleanSnapshotAttempt>({mode: 'fallback', reason: 'staging-identity-mismatch'});
         }
@@ -746,6 +755,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           fs: input.fs,
           identity: input.identity,
           incrementalAssessment,
+          incrementalMaterializationStorageTelemetry: preparedMaterialization.storage,
           incrementalOverlayEnabled: true,
           incrementalPrepared: true,
           inventory: input.inventory,
@@ -1059,6 +1069,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   readonly identity: RepositoryIdentity;
   readonly inventory: CodeGraphInventory;
   readonly incrementalAssessment?: IncrementalOverlayAssessment;
+  readonly incrementalMaterializationStorageTelemetry?: MaterializationStorageTelemetry;
   readonly incrementalOverlayEnabled?: boolean;
   readonly incrementalPrepared?: boolean;
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
@@ -1109,6 +1120,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         ? 'extractor-context-changed'
         : undefined;
   let incrementalApplied = false;
+  let incrementalStorageTelemetry = input.incrementalMaterializationStorageTelemetry;
   if (incrementalAssessment?.mode === 'eligible') {
     const incrementalReusedFiles = totalFiles - incrementalAssessment.files.length;
     if (input.incrementalPrepared !== true) {
@@ -1120,28 +1132,18 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         unit: 'files',
       }) ?? Effect.void;
     }
-    incrementalApplied =
-      input.incrementalPrepared === true
-        ? true
-        : incrementalAssessment.reuse === 'persisted-base'
-          ? yield* input.store.preparePersistedIncrementalActivation(
-              input.layout.databasePath,
-              input.committedBase!.snapshot.id,
-              incrementalAssessment.files,
-              incrementalAssessment.facts,
-              {
-                deletedPaths: incrementalAssessment.deletedPaths,
-                resolutionClosure: incrementalAssessment.resolutionClosure,
-              },
-              protectDirectPersistentWrite,
-            )
-          : yield* input.store.replaceStagedModifiedFiles(
-              input.layout.databasePath,
-              input.committedBase!.snapshot.id,
-              incrementalAssessment.files,
-              incrementalAssessment.facts,
-              protectDirectPersistentWrite,
-            );
+    const applied = yield* applyIncrementalMaterialization({
+      assessment: incrementalAssessment,
+      baseSnapshotId: input.committedBase!.snapshot.id,
+      databasePath: input.layout.databasePath,
+      fs: input.fs,
+      persistentCapacityProtector: protectDirectPersistentWrite,
+      prepared: input.incrementalPrepared === true,
+      storage: incrementalStorageTelemetry,
+      store: input.store,
+    });
+    incrementalApplied = applied.result;
+    incrementalStorageTelemetry = applied.storage;
     if (incrementalApplied) {
       materializedFiles = incrementalAssessment.files.length;
       for (const diagnostic of [
@@ -1153,6 +1155,15 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       }
       yield* input.onProgress?.({
         completed: materializedFiles,
+        ...(incrementalStorageTelemetry === undefined
+          ? {}
+          : {
+              metrics: incrementalMaterializationMetrics(
+                incrementalAssessment,
+                incrementalStorageTelemetry,
+                input.inventory.dirty,
+              ),
+            }),
         phase: 'materializing',
         reused: incrementalReusedFiles,
         total: incrementalAssessment.files.length,
