@@ -1,9 +1,12 @@
+import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {
   CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS,
   codeGraphMaterializationApplyPages,
   codeGraphMaterializationSpoolPath,
+  configureCodeGraphMaterializationSpoolDatabase,
+  initializeCodeGraphMaterializationSpoolDatabase,
 } from '../../src/code_graph/materialization_spool.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
@@ -51,6 +54,58 @@ describe('code graph materialization spool', () => {
       expect(() => codeGraphMaterializationApplyPages(1, pageRows)).toThrow(
         'Code graph materialization spool page bound is invalid.',
       );
+    }
+  });
+
+  it('resumes only the exact immutable sidecar identity', () => {
+    const database = new Database(':memory:', {strict: true});
+    const header = {
+      checkoutId: 'a'.repeat(64),
+      extractorSet: 'extractor-v1',
+      graphContentId: `cgc_${'b'.repeat(40)}`,
+      repositoryId: 'c'.repeat(64),
+      snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+    };
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      expect(initializeCodeGraphMaterializationSpoolDatabase(database, header)).toBe('created');
+      expect(initializeCodeGraphMaterializationSpoolDatabase(database, header)).toBe('resumed');
+      for (const [field, replacement] of [
+        ['checkoutId', 'e'.repeat(64)],
+        ['extractorSet', 'extractor-v2'],
+        ['graphContentId', `cgc_${'e'.repeat(40)}`],
+        ['repositoryId', 'e'.repeat(64)],
+        ['snapshotId', `cgsn_${'e'.repeat(40)}-direct`],
+      ] as const) {
+        expect(() =>
+          initializeCodeGraphMaterializationSpoolDatabase(database, {...header, [field]: replacement}),
+        ).toThrow('Code graph materialization spool identity does not match the persistent build.');
+      }
+    } finally {
+      database.close();
+    }
+  });
+
+  it('rejects malformed sidecar headers before creating schema', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      expect(() =>
+        initializeCodeGraphMaterializationSpoolDatabase(database, {
+          checkoutId: '../escape',
+          extractorSet: 'extractor-v1',
+          graphContentId: `cgc_${'b'.repeat(40)}`,
+          repositoryId: 'c'.repeat(64),
+          snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+        }),
+      ).toThrow('Code graph materialization spool header is invalid.');
+      expect(
+        database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table'").get() as {
+          readonly count: number;
+        },
+      ).toEqual({count: 0});
+    } finally {
+      database.close();
     }
   });
 });
