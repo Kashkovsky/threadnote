@@ -5,10 +5,10 @@ import {
   CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS,
   codeGraphMaterializationApplyPages,
   codeGraphMaterializationSpoolPath,
+  commitCodeGraphMaterializationSpoolBatch,
   configureCodeGraphMaterializationSpoolDatabase,
   initializeCodeGraphMaterializationSpoolDatabase,
   readCodeGraphMaterializationSpoolState,
-  recordCodeGraphMaterializationSpoolBatch,
   sealCodeGraphMaterializationSpool,
 } from '../../src/code_graph/materialization_spool.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
@@ -128,8 +128,8 @@ describe('code graph materialization spool', () => {
         });
         for (const [batchIndex, batchId] of batchIds.entries()) {
           const receipt = {batchId, batchIndex, factBytes: batchIndex * 3, rowCount: batchIndex * 5, sourceBytes: 7};
-          expect(recordCodeGraphMaterializationSpoolBatch(database, receipt)).toBe('appended');
-          expect(recordCodeGraphMaterializationSpoolBatch(database, receipt)).toBe('resumed');
+          expect(commitCodeGraphMaterializationSpoolBatch(database, receipt, () => undefined)).toBe('appended');
+          expect(commitCodeGraphMaterializationSpoolBatch(database, receipt, () => undefined)).toBe('resumed');
         }
         expect(readCodeGraphMaterializationSpoolState(database)).toEqual({
           appendedBatchCount: batchIds.length,
@@ -161,28 +161,32 @@ describe('code graph materialization spool', () => {
         snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
       });
       const receipt = {batchId: 'e'.repeat(64), batchIndex: 0, factBytes: 3, rowCount: 5, sourceBytes: 7};
-      expect(() => recordCodeGraphMaterializationSpoolBatch(database, {...receipt, batchIndex: 1})).toThrow(
-        'Code graph materialization spool batch sequence is not contiguous.',
-      );
+      expect(() =>
+        commitCodeGraphMaterializationSpoolBatch(database, {...receipt, batchIndex: 1}, () => undefined),
+      ).toThrow('Code graph materialization spool batch sequence is not contiguous.');
       expect(() => sealCodeGraphMaterializationSpool(database, 1)).toThrow(
         'Code graph materialization spool cannot seal before every expected batch is committed.',
       );
-      expect(recordCodeGraphMaterializationSpoolBatch(database, receipt)).toBe('appended');
-      expect(() => recordCodeGraphMaterializationSpoolBatch(database, {...receipt, rowCount: 6})).toThrow(
-        'Code graph materialization spool batch identity does not match the committed receipt.',
-      );
+      expect(commitCodeGraphMaterializationSpoolBatch(database, receipt, () => undefined)).toBe('appended');
+      expect(() =>
+        commitCodeGraphMaterializationSpoolBatch(database, {...receipt, rowCount: 6}, () => undefined),
+      ).toThrow('Code graph materialization spool batch identity does not match the committed receipt.');
       expect(sealCodeGraphMaterializationSpool(database, 1)).toBe('sealed');
       expect(() => sealCodeGraphMaterializationSpool(database, 2)).toThrow(
         'Code graph materialization spool sealed batch count does not match.',
       );
       expect(() =>
-        recordCodeGraphMaterializationSpoolBatch(database, {
-          batchId: 'f'.repeat(64),
-          batchIndex: 1,
-          factBytes: 0,
-          rowCount: 0,
-          sourceBytes: 0,
-        }),
+        commitCodeGraphMaterializationSpoolBatch(
+          database,
+          {
+            batchId: 'f'.repeat(64),
+            batchIndex: 1,
+            factBytes: 0,
+            rowCount: 0,
+            sourceBytes: 0,
+          },
+          () => undefined,
+        ),
       ).toThrow('Code graph materialization spool is already sealed.');
     } finally {
       database.close();
@@ -201,19 +205,61 @@ describe('code graph materialization spool', () => {
     try {
       configureCodeGraphMaterializationSpoolDatabase(database);
       initializeCodeGraphMaterializationSpoolDatabase(database, header);
-      recordCodeGraphMaterializationSpoolBatch(database, {
-        batchId: 'e'.repeat(64),
-        batchIndex: 0,
-        factBytes: 3,
-        rowCount: 5,
-        sourceBytes: 7,
-      });
+      commitCodeGraphMaterializationSpoolBatch(
+        database,
+        {
+          batchId: 'e'.repeat(64),
+          batchIndex: 0,
+          factBytes: 3,
+          rowCount: 5,
+          sourceBytes: 7,
+        },
+        () => undefined,
+      );
       database
         .prepare('UPDATE materialization_spool_batches SET batch_id = ? WHERE batch_index = 0')
         .run('z'.repeat(64));
       expect(() => initializeCodeGraphMaterializationSpoolDatabase(database, header)).toThrow(
         'Code graph materialization spool batch ledger is corrupt.',
       );
+    } finally {
+      database.close();
+    }
+  });
+
+  it('commits raw rows and their receipt atomically and skips an exact replay writer', () => {
+    const database = new Database(':memory:', {strict: true});
+    try {
+      configureCodeGraphMaterializationSpoolDatabase(database);
+      initializeCodeGraphMaterializationSpoolDatabase(database, {
+        checkoutId: 'a'.repeat(64),
+        extractorSet: 'extractor-v1',
+        graphContentId: `cgc_${'b'.repeat(40)}`,
+        repositoryId: 'c'.repeat(64),
+        snapshotId: `cgsn_${'d'.repeat(40)}-direct`,
+      });
+      database.exec('CREATE TABLE raw_test (value TEXT NOT NULL)');
+      const receipt = {batchId: 'e'.repeat(64), batchIndex: 0, factBytes: 3, rowCount: 1, sourceBytes: 7};
+      expect(() =>
+        commitCodeGraphMaterializationSpoolBatch(database, receipt, () => {
+          database.prepare('INSERT INTO raw_test (value) VALUES (?)').run('rolled-back');
+          throw new Error('injected append failure');
+        }),
+      ).toThrow('injected append failure');
+      expect(database.prepare('SELECT value FROM raw_test').all()).toEqual([]);
+      expect(readCodeGraphMaterializationSpoolState(database)).toEqual({appendedBatchCount: 0, stage: 'appending'});
+
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, receipt, () => {
+          database.prepare('INSERT INTO raw_test (value) VALUES (?)').run('committed');
+        }),
+      ).toBe('appended');
+      expect(
+        commitCodeGraphMaterializationSpoolBatch(database, receipt, () => {
+          throw new Error('exact replay writer must not run');
+        }),
+      ).toBe('resumed');
+      expect(database.prepare('SELECT value FROM raw_test').all()).toEqual([{value: 'committed'}]);
     } finally {
       database.close();
     }

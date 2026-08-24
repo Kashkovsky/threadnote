@@ -192,9 +192,10 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
  * Commits one deterministic append receipt. Exact replay is idempotent, while
  * gaps or different content at an already committed index fail closed.
  */
-export function recordCodeGraphMaterializationSpoolBatch(
+export function commitCodeGraphMaterializationSpoolBatch(
   database: Database,
   receipt: CodeGraphMaterializationSpoolBatchReceipt,
+  writeBatch: () => void,
 ): 'appended' | 'resumed' {
   validateCodeGraphMaterializationSpoolBatchReceipt(receipt);
   return database.transaction(() => {
@@ -218,6 +219,7 @@ export function recordCodeGraphMaterializationSpoolBatch(
     if (receipt.batchIndex !== state.appendedBatchCount) {
       throw new Error('Code graph materialization spool batch sequence is not contiguous.');
     }
+    writeBatch();
     database
       .prepare(
         `INSERT INTO materialization_spool_batches (
