@@ -100,11 +100,13 @@ effectIt.effect('applies compact lexical dictionaries before exact joined postin
       weight INTEGER NOT NULL,
       PRIMARY KEY (snapshot_key, term_key, symbol_key)
     ) WITHOUT ROWID`);
-    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(sidecarPath)]);
-    const sidecarWrite = yield* sql
-      .unsafe('DELETE FROM materialization_spool.materialization_ordered_symbols')
-      .pipe(Effect.result);
-    expect(Result.isFailure(sidecarWrite)).toBe(true);
+    const attachMode = yield* attachPersistentMaterializationSpool(sql, sidecarPath);
+    if (attachMode === 'readonly-uri') {
+      const sidecarWrite = yield* sql
+        .unsafe('DELETE FROM materialization_spool.materialization_ordered_symbols')
+        .pipe(Effect.result);
+      expect(Result.isFailure(sidecarWrite)).toBe(true);
+    }
     const surfaceIndex = (name: string) =>
       CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.findIndex(surface => surface.name === name);
     yield* writeCodeGraphMaterializationSpoolSurfacePage(sql, 'snapshot', surfaceIndex('lexical_snapshot'), {
@@ -238,7 +240,7 @@ effectIt.effect('publishes exact deferred receipts and aggregate analysis atomic
        ) VALUES ${CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.map(() => "('snapshot', ?, ?, ?, 0, 0, 0, 1)").join(', ')}`,
       CODE_GRAPH_MATERIALIZATION_SPOOL_APPLY_SURFACES.flatMap((surface, index) => [index, identity, surface.name]),
     );
-    yield* sql.unsafe('ATTACH DATABASE ? AS materialization_spool', [materializationSpoolReadOnlyUri(sidecarPath)]);
+    yield* attachPersistentMaterializationSpool(sql, sidecarPath);
     expect(yield* finalizeCodeGraphMaterializationSpoolReceipts(sql, 'snapshot', 'owner', identity)).toBe('finalized');
     expect(yield* finalizeCodeGraphMaterializationSpoolReceipts(sql, 'snapshot', 'owner', identity)).toBe('resumed');
     expect(

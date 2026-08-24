@@ -4071,10 +4071,23 @@ describe('native code graph lifecycle', () => {
       interruptedDatabase.close(false);
       expect(rawCache.files).toBe(3);
       expect(rawCache.bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
-      expect(receiptsBefore.map(receipt => receipt.batch_index)).toEqual([0]);
-      expect(receiptsBefore).toHaveLength(markerProgress.batchesCompleted);
-      expect(receiptsBefore.length).toBeLessThan(markerProgress.batchTotal);
-      expect(partialSymbols.count).toBeGreaterThan(0);
+      expect(receiptsBefore).toEqual([]);
+      const interruptedSpool = new Database(codeGraphMaterializationSpoolPath(home, {identity}, interrupted.id), {
+        readonly: true,
+        strict: true,
+      });
+      let spoolReceiptsBefore: Array<{readonly batch_index: number}>;
+      try {
+        spoolReceiptsBefore = interruptedSpool
+          .query('SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index')
+          .all() as Array<{readonly batch_index: number}>;
+      } finally {
+        interruptedSpool.close(false);
+      }
+      expect(spoolReceiptsBefore.map(receipt => receipt.batch_index)).toEqual([0]);
+      expect(spoolReceiptsBefore).toHaveLength(markerProgress.batchesCompleted);
+      expect(spoolReceiptsBefore.length).toBeLessThan(markerProgress.batchTotal);
+      expect(partialSymbols.count).toBe(0);
       expect(partiallyActive.count).toBe(0);
 
       let completedMetrics:
@@ -4797,14 +4810,25 @@ describe('native code graph lifecycle', () => {
           .get(orphanIdentity.worktreeId);
         expect(interrupted).toBeDefined();
         const interruptedId = interrupted!.id;
+        const interruptedSpoolPath = codeGraphMaterializationSpoolPath(home, {identity: orphanIdentity}, interruptedId);
         expect(
           interruptedDatabase
             .query<{readonly count: number}, [string]>(
               'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
             )
             .get(interruptedId)?.count,
-        ).toBeGreaterThan(0);
+        ).toBe(0);
         interruptedDatabase.close();
+        const interruptedSpool = new Database(interruptedSpoolPath, {readonly: true});
+        try {
+          expect(
+            interruptedSpool
+              .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM materialization_spool_batches')
+              .get()?.count,
+          ).toBeGreaterThan(0);
+        } finally {
+          interruptedSpool.close();
+        }
 
         git(root, ['worktree', 'remove', '--force', orphanWorktree]);
         const survivor = await runEffect(
@@ -4832,6 +4856,7 @@ describe('native code graph lifecycle', () => {
               .get(survivor.identity.worktreeId),
           ).toEqual({snapshot_id: interruptedId});
           expect(survivor.snapshot.id).toBe(interruptedId);
+          expect(existsSync(interruptedSpoolPath)).toBe(false);
           for (const table of ['snapshot_build_owners', 'building_materialization_batches'] as const) {
             expect(
               reclaimedDatabase

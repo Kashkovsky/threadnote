@@ -1,9 +1,9 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
-import {join} from '../helpers/node-path.js';
+import {dirname, join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it} from '@effect/vitest';
 import {TestClock} from 'effect/testing';
@@ -552,7 +552,7 @@ describe('code graph incremental-overlay differential properties', () => {
     }
   });
 
-  it.effect('reuses the ready logical snapshot while bounded cleanup retires an interrupted direct sibling', () => {
+  it.effect('reuses the ready logical snapshot while bounded cleanup discards an interrupted direct sibling', () => {
     const scenario = {
       baseTargets: [1, 0, 1],
       dirty: new Set([0, 2]),
@@ -592,17 +592,19 @@ describe('code graph incremental-overlay differential properties', () => {
           const direct = persistedBuildingSnapshot(interrupted.databasePath);
           expect(direct.id).toMatch(/-direct$/);
           expect(Option.isNone(direct.baseSnapshotId)).toBe(true);
-          expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBeGreaterThan(0);
+          expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBe(0);
+          expect(persistedMaterializationSpoolBatchCount(interrupted.databasePath, direct.id)).toBe(1);
 
           const reused = yield* indexer.index({cwd: root, threadnoteHome: home});
 
           expect(reused.snapshot.id).toBe(interrupted.logical.snapshot.id);
           expect(reused.materialization?.mode).toBe('reused-snapshot');
-          expect(persistedSnapshotState(interrupted.databasePath, direct.id)).toBe('retired');
-          expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBeGreaterThan(0);
+          expect(persistedSnapshotState(interrupted.databasePath, direct.id)).toBeUndefined();
+          expect(persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'symbols')).toBe(0);
           expect(
             persistedSnapshotRowCount(interrupted.databasePath, direct.id, 'building_materialization_batches'),
-          ).toBe(1);
+          ).toBe(0);
+          expect(existsSync(materializationSpoolPath(interrupted.databasePath, direct.id))).toBe(false);
         }),
       ({root}) => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive);
@@ -692,7 +694,7 @@ describe('code graph incremental-overlay differential properties', () => {
     }
   });
 
-  it.effect('indexes the restored clean worktree while bounded cleanup retires an interrupted dirty build', () => {
+  it.effect('indexes the restored clean worktree while bounded cleanup discards an interrupted dirty build', () => {
     const scenario = {
       baseTargets: [1, 0, 1],
       dirty: new Set([0, 2]),
@@ -726,21 +728,17 @@ describe('code graph incremental-overlay differential properties', () => {
           const databasePath = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId).databasePath;
           const interrupted = persistedBuildingSnapshot(databasePath);
           expect(interrupted.id).toMatch(/-direct$/);
+          expect(persistedMaterializationSpoolBatchCount(databasePath, interrupted.id)).toBeGreaterThan(0);
           yield* Effect.sync(() => restoreCleanScenario(root, scenario));
 
           const clean = yield* indexer.index({cwd: root, threadnoteHome: home});
 
           expect(clean.snapshot.dirty).toBe(false);
           expect(clean.snapshot.id).not.toMatch(/-direct$/);
-          expect(persistedSnapshotState(databasePath, interrupted.id)).toBe('retired');
-          expect(persistedSnapshotRowCount(databasePath, interrupted.id, 'symbols')).toBeGreaterThan(0);
+          expect(persistedSnapshotState(databasePath, interrupted.id)).toBeUndefined();
+          expect(persistedSnapshotRowCount(databasePath, interrupted.id, 'symbols')).toBe(0);
+          expect(existsSync(materializationSpoolPath(databasePath, interrupted.id))).toBe(false);
           expect(persistedSnapshots(databasePath)).toEqual([
-            {
-              baseSnapshotId: Option.none(),
-              dirty: 1,
-              id: interrupted.id,
-              state: 'retired',
-            },
             {
               baseSnapshotId: Option.none(),
               dirty: 0,
@@ -1090,14 +1088,25 @@ function persistedForcedBuildCheckpoint(databasePath: string): {
       )
       .get();
     if (snapshot === null) throw new TestError('Interrupted forced build did not preserve its building snapshot.');
-    const receipt = database
-      .query<{readonly count: number}, [string]>(
-        'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
-      )
-      .get(snapshot.id);
-    return {...snapshot, batchCount: Number(receipt?.count ?? 0)};
+    return {...snapshot, batchCount: persistedMaterializationSpoolBatchCount(databasePath, snapshot.id)};
   } finally {
     database.close();
+  }
+}
+
+function materializationSpoolPath(databasePath: string, snapshotId: string): string {
+  return join(dirname(databasePath), `materialization-spool-v1-${snapshotId}.sqlite`);
+}
+
+function persistedMaterializationSpoolBatchCount(databasePath: string, snapshotId: string): number {
+  const spool = new Database(materializationSpoolPath(databasePath, snapshotId), {readonly: true});
+  try {
+    return Number(
+      spool.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM materialization_spool_batches').get()
+        ?.count ?? 0,
+    );
+  } finally {
+    spool.close();
   }
 }
 
