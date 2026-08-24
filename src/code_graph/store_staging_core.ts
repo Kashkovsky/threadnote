@@ -4,6 +4,7 @@ import {codeGraphUtf8ByteLength, saturatingCapacityAdd} from './disk_capacity.js
 import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
 import {
   compactReferenceLookupTiers,
+  codeGraphMaterializationMonikerRows,
   normalizedReexportProvenance,
   parseTypeScriptPathNameLookupKey,
   type CompactedReferenceLookupTiers,
@@ -627,7 +628,7 @@ function stageSnapshotMonikers(
   mode: ActivationInsertMode = 'insert',
 ) {
   return Effect.gen(function* () {
-    for (const batch of chunk(canonicalCodeGraphMonikers(monikers), 500)) {
+    for (const batch of chunk(codeGraphMaterializationMonikerRows(monikers), 500)) {
       yield* sql.unsafe(
         `${activationInsertClause(mode)} INTO code_graph_monikers (
           snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
@@ -643,15 +644,15 @@ function stageSnapshotMonikers(
           moniker.kind,
           moniker.resolutionDomain,
           moniker.identity,
-          'packageName' in moniker ? (moniker.packageName ?? null) : null,
-          'packageVersion' in moniker ? (moniker.packageVersion ?? null) : null,
-          'importPath' in moniker ? (moniker.importPath ?? null) : null,
-          'qualifiedName' in moniker ? (moniker.qualifiedName ?? null) : null,
-          'componentId' in moniker ? (moniker.componentId ?? null) : null,
-          'symbolId' in moniker ? (moniker.symbolId ?? null) : null,
-          'dependencyKind' in moniker ? (moniker.dependencyKind ?? null) : null,
-          moniker.evidence.path,
-          JSON.stringify(moniker.evidence.span),
+          moniker.packageName,
+          moniker.packageVersion,
+          moniker.importPath,
+          moniker.qualifiedName,
+          moniker.componentId,
+          moniker.symbolId,
+          moniker.dependencyKind,
+          moniker.evidencePath,
+          moniker.evidenceSpanJson,
         ]),
       );
     }

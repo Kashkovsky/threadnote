@@ -1,6 +1,8 @@
 import {expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
+import {codeGraphPackageMoniker} from '../../src/code_graph/cross_repository/monikers.js';
 import {
+  codeGraphMaterializationMonikerRows,
   codeGraphMaterializationReferenceRows,
   codeGraphMaterializationReexportRows,
   codeGraphLookupDomain,
@@ -151,6 +153,36 @@ it('deduplicates and orders canonical TypeScript re-export rows', () => {
     {importedName: 'alpha', localName: 'local', sourcePath: 'src/source.ts', targetPath: 'src/target.ts'},
     {importedName: 'zeta', localName: 'local', sourcePath: 'src/source.ts', targetPath: 'src/target.ts'},
   ]);
+});
+
+it('deduplicates and encodes canonical moniker rows independent of input order', () => {
+  const first = codeGraphPackageMoniker({
+    componentId: `cgp_${'1'.repeat(32)}`,
+    evidence: {path: 'package.json', span: {column: 1, endColumn: 2, endLine: 1, line: 1}},
+    packageName: '@scope/first',
+    packageVersion: '1.0.0',
+    role: 'export',
+  });
+  const second = codeGraphPackageMoniker({
+    componentId: `cgp_${'2'.repeat(32)}`,
+    dependencyKind: 'runtime',
+    evidence: {path: 'package.json', span: {column: 3, endColumn: 4, endLine: 1, line: 1}},
+    packageName: '@scope/second',
+    role: 'import',
+  });
+  const forward = codeGraphMaterializationMonikerRows([first, second]);
+  expect(codeGraphMaterializationMonikerRows([second, first, second])).toEqual(forward);
+  expect(forward).toHaveLength(2);
+  expect(forward[0]).toMatchObject({
+    dependencyKind: null,
+    evidenceSpanJson: '{"column":1,"endColumn":2,"endLine":1,"line":1}',
+    importPath: null,
+    packageName: '@scope/first',
+    packageVersion: '1.0.0',
+    qualifiedName: null,
+    symbolId: null,
+  });
+  expect(forward[1]).toMatchObject({dependencyKind: 'runtime', packageVersion: null});
 });
 
 function codeGraphSymbol(input: {

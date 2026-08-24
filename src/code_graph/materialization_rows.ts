@@ -1,3 +1,5 @@
+import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
+import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphReusableReexport} from './store_models.js';
 import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from './types.js';
@@ -62,6 +64,25 @@ export interface CodeGraphMaterializationReferenceRow {
   readonly sourceId: string | null;
   readonly sourceName: string;
   readonly targetName: string;
+}
+
+export interface CodeGraphMaterializationMonikerRow {
+  readonly componentId: string | null;
+  readonly dependencyKind: string | null;
+  readonly evidencePath: string;
+  readonly evidenceSpanJson: string;
+  readonly id: string;
+  readonly identity: string;
+  readonly importPath: string | null;
+  readonly kind: string;
+  readonly packageName: string | null;
+  readonly packageVersion: string | null;
+  readonly qualifiedName: string | null;
+  readonly resolutionDomain: string;
+  readonly role: string;
+  readonly scheme: string;
+  readonly symbolId: string | null;
+  readonly version: number;
 }
 
 export interface CompactedReferenceLookupTiers {
@@ -176,6 +197,29 @@ export function codeGraphMaterializationReferenceRows(
         targetName: edge.targetName,
       };
     });
+}
+
+export function codeGraphMaterializationMonikerRows(
+  monikers: readonly CodeGraphMonikerV1[],
+): readonly CodeGraphMaterializationMonikerRow[] {
+  return canonicalCodeGraphMonikers(monikers).map(moniker => ({
+    componentId: 'componentId' in moniker ? (moniker.componentId ?? null) : null,
+    dependencyKind: 'dependencyKind' in moniker ? (moniker.dependencyKind ?? null) : null,
+    evidencePath: moniker.evidence.path,
+    evidenceSpanJson: JSON.stringify(moniker.evidence.span),
+    id: moniker.id,
+    identity: moniker.identity,
+    importPath: 'importPath' in moniker ? (moniker.importPath ?? null) : null,
+    kind: moniker.kind,
+    packageName: 'packageName' in moniker ? (moniker.packageName ?? null) : null,
+    packageVersion: 'packageVersion' in moniker ? (moniker.packageVersion ?? null) : null,
+    qualifiedName: 'qualifiedName' in moniker ? (moniker.qualifiedName ?? null) : null,
+    resolutionDomain: moniker.resolutionDomain,
+    role: moniker.role,
+    scheme: moniker.scheme,
+    symbolId: 'symbolId' in moniker ? (moniker.symbolId ?? null) : null,
+    version: moniker.version,
+  }));
 }
 
 export function compactReferenceLookupTiers(
