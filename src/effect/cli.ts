@@ -350,7 +350,7 @@ const update = Command.make(
     check: boolean('check', 'Only check whether a newer version is available'),
     dryRun: boolean('dry-run', 'Print update and repair commands without running them'),
     force: boolean('force', 'Reinstall the selected standalone release even if already current'),
-    json: boolean('json', 'Emit versioned machine-readable update status'),
+    json: boolean('json', 'Emit versioned machine-readable status or update-check output'),
     postUpdate: negatedBoolean('post-update', 'Skip post-update migration prompts'),
     repair: negatedBoolean('repair', 'Skip threadnote repair after updating the package'),
     source: optionalString('source', 'GitHub-compatible releases API URL'),

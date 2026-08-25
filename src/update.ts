@@ -14,6 +14,7 @@ import {maybeRunEffect, runCommandEffect, runStreamingCommandEffect} from './eff
 import {applicationError, fromSync} from './effect/errors.js';
 import {syncDirectoryBestEffort, syncWritableFile} from './effect/file_durability.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
+import {writeFinalCliOutput} from './effect/cli_output.js';
 import {getJsonEffect, HttpService} from './effect/http.js';
 import {sha256FileHex} from './effect/digest.js';
 import {SystemInfo, type SystemInfoShape} from './effect/system.js';
@@ -175,6 +176,32 @@ export const runUpdate = Effect.fn('runUpdate')(function* (config: RuntimeConfig
       requestedChannel,
     }),
   );
+
+  if (options.check === true && options.json === true) {
+    if (requiresFreshStandaloneInstall(info.currentVersion)) {
+      return yield* Effect.fail(
+        new UpdateOperationError(
+          'Threadnote 3 cannot update across the standalone-runtime boundary. Install Threadnote 4 fresh from the GitHub release installer.',
+        ),
+      );
+    }
+    yield* writeFinalCliOutput(
+      JSON.stringify({
+        channel: info.channel,
+        currentVersion: info.currentVersion,
+        isChannelSwitch: info.isChannelSwitch,
+        isUpdateAvailable: info.isUpdateAvailable,
+        isVersionUpgrade: info.isVersionUpgrade,
+        latestVersion: info.latestVersion ?? null,
+        requestedChannel: requestedChannel ?? null,
+        source: info.source,
+        type: 'threadnote-update-check',
+        usedCache: info.usedCache,
+        version: 1,
+      }),
+    );
+    return;
+  }
 
   yield* Console.log(keyValue('Current version', infoText(info.currentVersion)));
   yield* Console.log(

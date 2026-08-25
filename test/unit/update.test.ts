@@ -422,6 +422,33 @@ describe('update notifications', () => {
 });
 
 describe('standalone updater', () => {
+  effectIt.effect('emits one versioned JSON document for a release check', () =>
+    Effect.gen(function* () {
+      const captured = yield* captureDryRunUpdateSelection(
+        '4.1.0',
+        [
+          ['4.2.0-beta.1', true],
+          ['4.1.1', false],
+        ],
+        {check: true, json: true, stable: true},
+      );
+
+      expect(JSON.parse(captured.output)).toEqual({
+        channel: 'latest',
+        currentVersion: '4.1.0',
+        isChannelSwitch: false,
+        isUpdateAvailable: true,
+        isVersionUpgrade: true,
+        latestVersion: '4.1.1',
+        requestedChannel: 'latest',
+        source: OFFICIAL_RELEASE_SOURCE,
+        type: 'threadnote-update-check',
+        usedCache: false,
+        version: 1,
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('updates an installed beta to a newer stable release without an explicit channel flag', () =>
     Effect.gen(function* () {
       const captured = yield* captureDryRunUpdateSelection(
