@@ -4,7 +4,7 @@ import {syncDirectoryBestEffort} from '../effect/file_durability.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {runtimeTextDirectoryNamePage, SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {
-  CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS,
+  CODE_GRAPH_DISK_RESERVATION_OPERATIONS,
   codeGraphDiskCapacityFailure,
   codeGraphDiskCapacityReservationProjection,
   codeGraphUtf8ByteLength,
@@ -48,9 +48,7 @@ const RUNTIME_PLATFORMS = new Set<NodeJS.Platform>([
   'sunos',
   'win32',
 ]);
-const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>(
-  CODE_GRAPH_DIRECT_PERSISTENT_CAPACITY_OPERATIONS,
-);
+const OPERATIONS = new Set<CodeGraphDirectPersistentCapacityOperation>(CODE_GRAPH_DISK_RESERVATION_OPERATIONS);
 // Recovery authority is local-process state for one exact immutable receipt.
 // Receipt paths include the ledger identity, so a copied token/canonical body
 // in another Threadnote home can never consume that authority.

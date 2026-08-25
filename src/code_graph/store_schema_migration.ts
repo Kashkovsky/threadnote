@@ -39,6 +39,7 @@ import {
 } from './store_reconciliation_core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
+import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 import {
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
   type CodeGraphRemovedViewCleanupSchemaAdmission,
@@ -194,19 +195,12 @@ const ensureCurrentCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureCurrentQue
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_name');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_resolution_scope');
   yield* sql.unsafe('DROP INDEX IF EXISTS edges_target');
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS edges_target_resolved
-    ON edges(snapshot_id, target_id, relation)
-    WHERE target_id IS NOT NULL
-  `);
-  // Incremental publication must enumerate only the base edges owned by the
-  // changed path closure. Without this index a one-file overlay scans every
-  // edge twice (counting and deletion), retaining repository-sized pager
-  // state inside the ready-state transaction.
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS edges_evidence_path
-    ON edges(snapshot_id, evidence_path)
-  `);
+  yield* ensureCodeGraphQueryIndexes(
+    sql,
+    CODE_GRAPH_QUERY_INDEX_DEFINITIONS.filter(
+      definition => definition.name === 'edges_target_resolved' || definition.name === 'edges_evidence_path',
+    ),
+  );
   // Cache admission runs before inventory and previously evaluated JSON
   // authority from every fact payload in the selected extractor generation.
   // A narrow trigger-maintained table materializes that authority at write
@@ -334,6 +328,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           recordedRevision === 10 ||
           recordedRevision === 11 ||
           recordedRevision === 12 ||
+          recordedRevision === 14 ||
           recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) &&
         extensionSchemaCompatible
       ) {

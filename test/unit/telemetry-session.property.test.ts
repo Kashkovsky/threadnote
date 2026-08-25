@@ -247,6 +247,23 @@ describe('anonymous telemetry agent sessions', () => {
     expect(environment[TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]).toBe('raw-provider-token');
   });
 
+  it('restores only an explicitly trusted private index for Git cache writes', () => {
+    const environment = {
+      GIT_INDEX_FILE: '/untrusted/index',
+      GIT_OPTIONAL_LOCKS: '0',
+      PATH: '/usr/bin',
+      [TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]: 'raw-provider-token',
+    };
+
+    expect(commandEnvironment('git', environment, {}, '/private/threadnote/index')).toEqual({
+      GIT_INDEX_FILE: '/private/threadnote/index',
+      GIT_OPTIONAL_LOCKS: '1',
+      PATH: '/usr/bin',
+    });
+    expect(environment.GIT_INDEX_FILE).toBe('/untrusted/index');
+    expect(environment.GIT_OPTIONAL_LOCKS).toBe('0');
+  });
+
   it('preserves only a valid current alias when a Threadnote child is selected explicitly', () => {
     const consentGeneration = telemetryConsentGeneration({
       endpoint: ENDPOINT,

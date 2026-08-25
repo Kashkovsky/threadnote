@@ -2,8 +2,15 @@ import {Clock, Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {codeGraphUtf8ByteLength, saturatingCapacityAdd} from './disk_capacity.js';
 import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
+import {
+  compactReferenceLookupTiers,
+  codeGraphMaterializationMonikerRows,
+  normalizedReexportProvenance,
+  parseTypeScriptPathNameLookupKey,
+  type CompactedReferenceLookupTiers,
+} from './materialization_rows.js';
 import {compareCodeUnits} from './ordering.js';
-import {type CodeGraphRetiredSnapshotCleanupProgressCallback, type CodeGraphReusableReexport} from './store_models.js';
+import {type CodeGraphRetiredSnapshotCleanupProgressCallback} from './store_models.js';
 import {LEGACY_BUILDING_REFERENCES_V3_TABLE} from './store_schema_contracts.js';
 import {CODE_GRAPH_CLEANUP_YIELD_MILLISECONDS, tableExists} from './store_session.js';
 import {
@@ -28,7 +35,6 @@ import {
   ensureCompactLexicalSnapshot,
   type PersistedAnalysisBatchReceipt,
   prepareAnalysisResolutionTables,
-  referenceCandidateEncoder,
   validatedCompactLexicalCount,
 } from './store_build_core.js';
 import {chunk, sortedBy, uniqueBy} from './store_utilities.js';
@@ -622,7 +628,7 @@ function stageSnapshotMonikers(
   mode: ActivationInsertMode = 'insert',
 ) {
   return Effect.gen(function* () {
-    for (const batch of chunk(canonicalCodeGraphMonikers(monikers), 500)) {
+    for (const batch of chunk(codeGraphMaterializationMonikerRows(monikers), 500)) {
       yield* sql.unsafe(
         `${activationInsertClause(mode)} INTO code_graph_monikers (
           snapshot_id, id, version, scheme, role, kind, resolution_domain, identity,
@@ -638,15 +644,15 @@ function stageSnapshotMonikers(
           moniker.kind,
           moniker.resolutionDomain,
           moniker.identity,
-          'packageName' in moniker ? (moniker.packageName ?? null) : null,
-          'packageVersion' in moniker ? (moniker.packageVersion ?? null) : null,
-          'importPath' in moniker ? (moniker.importPath ?? null) : null,
-          'qualifiedName' in moniker ? (moniker.qualifiedName ?? null) : null,
-          'componentId' in moniker ? (moniker.componentId ?? null) : null,
-          'symbolId' in moniker ? (moniker.symbolId ?? null) : null,
-          'dependencyKind' in moniker ? (moniker.dependencyKind ?? null) : null,
-          moniker.evidence.path,
-          JSON.stringify(moniker.evidence.span),
+          moniker.packageName,
+          moniker.packageVersion,
+          moniker.importPath,
+          moniker.qualifiedName,
+          moniker.componentId,
+          moniker.symbolId,
+          moniker.dependencyKind,
+          moniker.evidencePath,
+          moniker.evidenceSpanJson,
         ]),
       );
     }
@@ -837,63 +843,6 @@ function aggregateEdgeHistogram(edges: readonly CodeGraphEdge[]): readonly Analy
 function analysisEndpointState(sourceId: string | undefined, targetId: string | undefined): 0 | 1 | 2 {
   if (sourceId === undefined || targetId === undefined) return 1;
   return sourceId === targetId ? 2 : 0;
-}
-
-interface CompactedReferenceLookupTiers {
-  readonly candidateCount: number;
-  readonly json: string;
-  readonly payloadBytes: number;
-  readonly tiers: readonly (readonly string[])[];
-}
-
-function compactReferenceLookupTiers(lookupTiers: readonly (readonly string[])[]): CompactedReferenceLookupTiers {
-  const tiers = lookupTiers.map(tier => [...new Set(tier)].sort(compareCodeUnits));
-  const json = JSON.stringify(tiers);
-  return {
-    candidateCount: tiers.reduce((total, tier) => total + tier.length, 0),
-    json,
-    payloadBytes: referenceCandidateEncoder.encode(json).byteLength,
-    tiers,
-  };
-}
-
-function normalizedReexportProvenance(reference: CodeGraphReference): readonly CodeGraphReusableReexport[] {
-  if (reference.relation !== 'reexports' || reference.resolutionDomain !== 'typescript') return [];
-  const aliases = uniqueBy(
-    (reference.aliasLookupKeys ?? []).flatMap(key => {
-      const parsed = parseTypeScriptPathNameLookupKey(key);
-      return parsed && parsed.path === reference.evidencePath ? [parsed] : [];
-    }),
-    candidate => `${candidate.path}\0${candidate.name}`,
-  );
-  const targets = uniqueBy(
-    reference.lookupTiers.flatMap(tier =>
-      tier.flatMap(key => {
-        const parsed = parseTypeScriptPathNameLookupKey(key);
-        return parsed ? [parsed] : [];
-      }),
-    ),
-    candidate => `${candidate.path}\0${candidate.name}`,
-  );
-  return aliases.flatMap(alias =>
-    targets.map(target => ({
-      importedName: target.name,
-      localName: alias.name,
-      sourcePath: alias.path,
-      targetPath: target.path,
-    })),
-  );
-}
-
-function parseTypeScriptPathNameLookupKey(value: string): {readonly name: string; readonly path: string} | undefined {
-  const match =
-    /^typescript:(?:[^:]+:)?path:([^:]+):name:([^:]+)(?::(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
-  if (!match) return undefined;
-  try {
-    return {name: decodeURIComponent(match[2]!), path: decodeURIComponent(match[1]!)};
-  } catch {
-    return undefined;
-  }
 }
 
 const REEXPORT_CLOSURE_SEED_PAGE_ROWS = 100;

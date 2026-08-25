@@ -1,6 +1,7 @@
 import type {Effect, Option} from 'effect';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
+import type {CodeGraphCacheFactInput} from './fact_budget.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import type {
   CodeGraphWorkspaceBuildSystem,
@@ -82,6 +83,13 @@ export interface CodeGraphMaterializedShardAssociationBatch {
   readonly extractorSet: string;
   readonly files: readonly Pick<CodeGraphInventoryFile, 'contentHash' | 'path'>[];
   readonly selectedShardIds: ReadonlyMap<string, string>;
+}
+
+export interface CodeGraphMaterializedShardCacheBatch {
+  readonly derivationIdentity: string;
+  readonly extractorSet: string;
+  readonly facts: readonly CodeGraphCacheFactInput[];
+  readonly files: readonly CodeGraphInventoryFile[];
 }
 
 export interface CodeGraphReusableBaseReceipt extends CodeGraphReusableBaseReceiptInput {
@@ -309,7 +317,27 @@ export interface CodeGraphStagingBatch {
   readonly finalFactBytes?: number;
   readonly monikers?: readonly CodeGraphMonikerV1[];
   readonly references: readonly CodeGraphReference[];
+  /** Exact source bytes represented by this deterministic materialization batch. */
+  readonly sourceBytes?: number;
   readonly symbols: readonly CodeGraphSymbol[];
+}
+
+export interface CodeGraphMaterializationSpoolContext {
+  readonly checkoutId: string;
+  readonly onStorageObservation?: (observation: CodeGraphMaterializationStorageObservation) => void;
+  readonly repositoryRoot: string;
+}
+
+export interface CodeGraphMaterializationStorageObservation {
+  readonly databaseBytes: number;
+  readonly journalBytes: number;
+  readonly sharedMemoryBytes: number;
+  readonly sidecarDatabaseBytes: number;
+  readonly sidecarJournalBytes: number;
+  readonly sidecarSharedMemoryBytes: number;
+  readonly sidecarWalBytes: number;
+  readonly totalBytes: number;
+  readonly walBytes: number;
 }
 
 export type CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
@@ -320,6 +348,16 @@ export type CodeGraphDirectPersistentCapacityProtector = <A, E, R>(
 export type CodeGraphStagingBatchProgressCallback = (
   batchIndex: number,
   progress: CodeGraphStagingProgress,
+) => Effect.Effect<void, never>;
+
+export interface CodeGraphSecondaryIndexRestorationProgress {
+  readonly completed: number;
+  readonly elapsedMilliseconds: number;
+  readonly total: number;
+}
+
+export type CodeGraphSecondaryIndexRestorationProgressCallback = (
+  progress: CodeGraphSecondaryIndexRestorationProgress,
 ) => Effect.Effect<void, never>;
 
 export type CodeGraphActivationStage =
@@ -351,6 +389,7 @@ export type CodeGraphResolutionProgressCallback = (progress: CodeGraphResolution
 export interface CodeGraphResolutionSummary {
   readonly aliasesDiscovered: number;
   readonly elapsedMilliseconds: number;
+  readonly longestTransactionMilliseconds: number;
   readonly matchingMilliseconds: number;
   readonly pagesCompleted: number;
   readonly passesCompleted: number;

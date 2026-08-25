@@ -3,15 +3,71 @@ import {describe, expect, it} from 'vitest';
 import {
   CODE_GRAPH_RESOLUTION_PASS_MAXIMUM,
   codeGraphResolutionPassAdmitted,
+  nextPersistentUnresolvedReferenceBatchRows,
+  persistentUnresolvedReferenceMaximumBatchRows,
 } from '../../src/code_graph/store_resolution.js';
 import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
+  nextPersistentReferenceResolutionTransactionPages,
+  PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
   PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
   PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
   planPersistentReferenceResolutionPages,
 } from '../../src/code_graph/store_resolution_core.js';
 
 describe('code graph resolution pass bounds', () => {
+  it('adapts unresolved publication without exceeding the workload-specific hydrated-row ceiling', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 1_000_000, min: 0}),
+        fc.array(fc.integer({max: 60_000, min: 0}), {maxLength: 64}),
+        (referenceRows, durations) => {
+          const maximum = persistentUnresolvedReferenceMaximumBatchRows(referenceRows);
+          let current = 1_500;
+          for (const duration of durations) {
+            const next = nextPersistentUnresolvedReferenceBatchRows(current, duration, referenceRows);
+            expect(Number.isSafeInteger(next)).toBe(true);
+            expect(next).toBeGreaterThanOrEqual(250);
+            expect(next).toBeLessThanOrEqual(maximum);
+            expect(next).toBeLessThanOrEqual(current * 2);
+            if (duration >= 2_000 && duration <= 5_000) expect(next).toBe(current);
+            else if (duration > 5_000) expect(next).toBeLessThanOrEqual(current);
+            else expect(next).toBeGreaterThanOrEqual(current);
+            current = next;
+          }
+        },
+      ),
+      {numRuns: 250},
+    );
+    const growth = (referenceRows: number) => {
+      let current = 1_500;
+      return Array.from(
+        {length: 4},
+        () => (current = nextPersistentUnresolvedReferenceBatchRows(current, 0, referenceRows)),
+      );
+    };
+    expect(growth(149_999)).toEqual([3_000, 6_000, 10_000, 10_000]);
+    expect(growth(150_000)).toEqual([3_000, 6_000, 12_000, 20_000]);
+  });
+
+  it('selects the wider ceiling only for finite safe large-graph reference counts', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 149_999, min: 0}), referenceRows => {
+        expect(persistentUnresolvedReferenceMaximumBatchRows(referenceRows)).toBe(10_000);
+      }),
+      {numRuns: 250},
+    );
+    fc.assert(
+      fc.property(fc.integer({max: Number.MAX_SAFE_INTEGER, min: 150_000}), referenceRows => {
+        expect(persistentUnresolvedReferenceMaximumBatchRows(referenceRows)).toBe(20_000);
+      }),
+      {numRuns: 250},
+    );
+    for (const invalid of [-1, Number.NaN, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, 149_999.5]) {
+      expect(persistentUnresolvedReferenceMaximumBatchRows(invalid)).toBe(10_000);
+    }
+  });
+
   it('admits exactly the finite non-negative pass prefix', () => {
     fc.assert(
       fc.property(fc.integer({max: 1_000, min: -1_000}), completed => {
@@ -80,8 +136,14 @@ describe('code graph resolution pass bounds', () => {
     ).toMatchObject({finalFactBytes: Number.NaN, rowCount: Number.NaN});
   });
 
-  it('widens reservation windows without widening transactions or changing page order', () => {
-    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBe(2 * PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES);
+  it('keeps transaction groups within reservation memory bounds without changing page order', () => {
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBeGreaterThanOrEqual(
+      PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
+    );
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES).toBeGreaterThanOrEqual(
+      PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
+    );
+    expect(PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES % PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES).toBe(0);
     fc.assert(
       fc.property(fc.array(fc.integer(), {maxLength: 257}), pages => {
         const reservations = planPersistentReferenceResolutionPages(pages);
@@ -110,5 +172,69 @@ describe('code graph resolution pass bounds', () => {
       [4, 4],
       [1],
     ]);
+    const widened = planPersistentReferenceResolutionPages(
+      Array.from({length: 17}, (_, index) => index),
+      PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
+    );
+    expect(widened.map(reservation => reservation.transactions.map(transaction => transaction.length))).toEqual([
+      [8],
+      [8],
+      [1],
+    ]);
+
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer(), {maxLength: 257}),
+        fc.integer({
+          max: PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES,
+          min: 1,
+        }),
+        (pages, transactionPageLimit) => {
+          const reservations = planPersistentReferenceResolutionPages(pages, transactionPageLimit);
+          expect(reservations.flatMap(reservation => reservation.pages)).toEqual(pages);
+          expect(reservations.flatMap(reservation => reservation.transactions).flat()).toEqual(pages);
+          for (const transaction of reservations.flatMap(reservation => reservation.transactions)) {
+            expect(transaction.length).toBeGreaterThan(0);
+            expect(transaction.length).toBeLessThanOrEqual(transactionPageLimit);
+          }
+        },
+      ),
+      {numRuns: 250},
+    );
+    expect(planPersistentReferenceResolutionPages([1, 2, 3, 4, 5], Number.NaN)[0]?.transactions).toEqual([
+      [1, 2, 3, 4],
+      [5],
+    ]);
+  });
+
+  it('adapts resolved-reference commits within the existing eight-page reservation', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({max: 60_000, min: 0}), {maxLength: 64}), durations => {
+        let current = PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES;
+        for (const duration of durations) {
+          const next = nextPersistentReferenceResolutionTransactionPages(current, duration);
+          expect(Number.isSafeInteger(next)).toBe(true);
+          expect(next).toBeGreaterThanOrEqual(1);
+          expect(next).toBeLessThanOrEqual(PERSISTENT_FULL_RESOLUTION_MAXIMUM_TRANSACTION_PAGES);
+          expect(next).toBeLessThanOrEqual(current * 2);
+          if (duration < 2_000) expect(next).toBeGreaterThanOrEqual(current);
+          else if (duration > 5_000) expect(next).toBeLessThanOrEqual(current);
+          else expect(next).toBe(current);
+          current = next;
+        }
+      }),
+      {numRuns: 250},
+    );
+
+    expect(nextPersistentReferenceResolutionTransactionPages(4, 1_999)).toBe(8);
+    expect(nextPersistentReferenceResolutionTransactionPages(8, 2_000)).toBe(8);
+    expect(nextPersistentReferenceResolutionTransactionPages(8, 5_001)).toBe(4);
+    expect(nextPersistentReferenceResolutionTransactionPages(4, 5_001)).toBe(2);
+    expect(nextPersistentReferenceResolutionTransactionPages(2, 5_001)).toBe(1);
+    expect(nextPersistentReferenceResolutionTransactionPages(Number.NaN, 3_000)).toBe(
+      PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
+    );
+    expect(nextPersistentReferenceResolutionTransactionPages(8, Number.NaN)).toBe(8);
+    expect(nextPersistentReferenceResolutionTransactionPages(8, -1)).toBe(8);
   });
 });

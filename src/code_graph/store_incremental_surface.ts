@@ -2,6 +2,11 @@ import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact_budget.js';
 import {hasSameCodeGraphResolutionSurface, type CodeGraphResolutionSurfaceSymbol} from './resolution_surface.js';
+import {
+  persistedIncrementalBaseSymbolsStatement,
+  persistedIncrementalChangedFilesStatement,
+  persistedIncrementalReexportMismatchStatement,
+} from './store_incremental_plan.js';
 
 interface PersistedIncrementalSurfaceSymbolRow {
   readonly arity: unknown;
@@ -28,17 +33,11 @@ const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncreme
   sql: SqlClient.SqlClient,
   baseSnapshotId: string,
 ) {
-  const changedFiles = yield* sql<{readonly expected: number; readonly present: number}>`
-    SELECT
-      (SELECT COUNT(*) FROM activation_incremental_paths) AS expected,
-      (
-        SELECT COUNT(*)
-        FROM activation_incremental_paths AS changed
-        JOIN activation_files AS current ON current.path = changed.path
-        JOIN snapshot_files AS base
-          ON base.snapshot_id = ${baseSnapshotId} AND base.path = current.path
-      ) AS present
-  `;
+  const changedFilesStatement = persistedIncrementalChangedFilesStatement(baseSnapshotId);
+  const changedFiles = yield* sql.unsafe<{readonly expected: number; readonly present: number}>(
+    changedFilesStatement.text,
+    changedFilesStatement.parameters,
+  );
   if (Number(changedFiles[0]?.expected ?? 0) !== Number(changedFiles[0]?.present ?? -1)) return false;
   const rowLimit = PERSISTED_INCREMENTAL_SURFACE_MAX_SYMBOL_ROWS + 1;
   const currentRows = yield* sql<PersistedIncrementalSurfaceSymbolRow>`
@@ -49,16 +48,11 @@ const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncreme
     ORDER BY id
     LIMIT ${rowLimit}
   `;
-  const baseRows = yield* sql<PersistedIncrementalSurfaceSymbolRow>`
-    SELECT
-      base.arity, base.exported, base.id, base.kind, base.language, base.lookup_keys_json, base.name,
-      base.package_name, base.path, base.qualified_name, base.resolution_domain, base.resolution_scope_id
-    FROM symbols AS base
-    JOIN activation_files AS changed ON changed.path = base.path
-    WHERE base.snapshot_id = ${baseSnapshotId}
-    ORDER BY base.id
-    LIMIT ${rowLimit}
-  `;
+  const baseRowsStatement = persistedIncrementalBaseSymbolsStatement(baseSnapshotId, rowLimit);
+  const baseRows = yield* sql.unsafe<PersistedIncrementalSurfaceSymbolRow>(
+    baseRowsStatement.text,
+    baseRowsStatement.parameters,
+  );
   if (
     currentRows.length > PERSISTED_INCREMENTAL_SURFACE_MAX_SYMBOL_ROWS ||
     baseRows.length > PERSISTED_INCREMENTAL_SURFACE_MAX_SYMBOL_ROWS
@@ -67,11 +61,22 @@ const persistedIncrementalSurfaceMatches = Effect.fn('codeGraph.persistedIncreme
   }
   const currentSymbols = decodePersistedIncrementalSurfaceSymbols(currentRows);
   const baseSymbols = decodePersistedIncrementalSurfaceSymbols(baseRows);
-  return (
-    currentSymbols !== undefined &&
-    baseSymbols !== undefined &&
-    hasSameCodeGraphResolutionSurface(baseSymbols, currentSymbols)
+  if (
+    currentSymbols === undefined ||
+    baseSymbols === undefined ||
+    !hasSameCodeGraphResolutionSurface(baseSymbols, currentSymbols)
+  ) {
+    return false;
+  }
+  // Sparse raw-fact attribution can be more conservative than the original
+  // full batch. Require exact changed-path re-export publication in SQLite so
+  // an optimistic preassessment falls closed before persisted-delta reuse.
+  const reexportStatement = persistedIncrementalReexportMismatchStatement(baseSnapshotId);
+  const reexportMismatch = yield* sql.unsafe<{readonly mismatch: number}>(
+    reexportStatement.text,
+    reexportStatement.parameters,
   );
+  return Number(reexportMismatch[0]?.mismatch ?? 1) === 0;
 });
 
 function decodePersistedIncrementalSurfaceSymbols(

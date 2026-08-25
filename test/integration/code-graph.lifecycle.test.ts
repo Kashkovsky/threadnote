@@ -1072,6 +1072,8 @@ describe('native code graph lifecycle', () => {
       expect(metrics.cachedFactReplayBytesCompleted).toBeGreaterThan(0);
       expect(metrics.rawFactReplayBytesCompleted).toBe(metrics.cachedFactBytesTotal);
       expect(metrics.materializedShardReplayBytesCompleted).toBe(0);
+      expect(metrics.materializedShardCacheDeferredFilesCompleted).toBe(0);
+      expect(metrics.materializedShardCacheDeferredRawFactBytesCompleted).toBe(0);
       expect(metrics.attributedFilesCompleted).toBe(12);
       expect(metrics.exactGenerationShardFilesCompleted).toBe(0);
       expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
@@ -1127,6 +1129,8 @@ describe('native code graph lifecycle', () => {
       expect(metrics.cachedFactReplayBytesCompleted).toBe(shardState.bytes);
       expect(metrics.rawFactReplayBytesCompleted).toBe(0);
       expect(metrics.materializedShardReplayBytesCompleted).toBe(shardState.bytes);
+      expect(metrics.materializedShardCacheDeferredFilesCompleted).toBe(0);
+      expect(metrics.materializedShardCacheDeferredRawFactBytesCompleted).toBe(0);
       expect(metrics.attributedFilesCompleted).toBe(0);
       expect(metrics.exactGenerationShardFilesCompleted).toBe(12);
       expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
@@ -1232,6 +1236,8 @@ describe('native code graph lifecycle', () => {
       );
       expect(metrics.rawFactReplayBytesCompleted).toBe(partialShardState.rawFactBytes);
       expect(metrics.materializedShardReplayBytesCompleted).toBe(partialShardState.completeShardBytes);
+      expect(metrics.materializedShardCacheDeferredFilesCompleted).toBe(0);
+      expect(metrics.materializedShardCacheDeferredRawFactBytesCompleted).toBe(0);
       expect(metrics.attributedFilesCompleted).toBe(2);
       expect(metrics.exactGenerationShardFilesCompleted).toBe(128);
       expect(metrics.crossGenerationShardFilesCompleted).toBe(0);
@@ -3315,6 +3321,28 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('marks scanning before committed-tree inventory discovery', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const identity = yield* resolveRepositoryIdentity(root);
+      const progress: CodeGraphProgress[] = [];
+
+      yield* inventoryRepository(identity, {
+        onProgress: current => Effect.sync(() => progress.push(current)),
+      });
+
+      expect(progress[0]).toEqual({
+        accepted: 0,
+        completed: 0,
+        excluded: 0,
+        phase: 'scanning',
+        skipped: 0,
+        total: 0,
+        unit: 'files',
+      });
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('reuses manifest-only workspace discovery until a resolution context changes', () =>
     Effect.gen(function* () {
       const root = createFixtureRepository();
@@ -3923,7 +3951,12 @@ describe('native code graph lifecycle', () => {
         return yield* indexer.index({
           cwd: root,
           onProgress: progress => {
-            if (progress.phase !== 'scanning' || progress.completed !== 0 || progress.activity !== undefined)
+            if (
+              progress.phase !== 'scanning' ||
+              progress.completed !== 0 ||
+              progress.total !== 0 ||
+              progress.activity !== undefined
+            )
               return Effect.void;
             inventoryPasses += 1;
             reportOwnerScanning();
@@ -3947,7 +3980,12 @@ describe('native code graph lifecycle', () => {
             cwd: root,
             onProgress: progress => {
               if (progress.phase === 'waiting') signal.queued();
-              if (progress.phase === 'scanning' && progress.completed === 0 && progress.activity === undefined)
+              if (
+                progress.phase === 'scanning' &&
+                progress.completed === 0 &&
+                progress.total === 0 &&
+                progress.activity === undefined
+              )
                 inventoryPasses += 1;
               return Effect.void;
             },
@@ -3992,7 +4030,13 @@ describe('native code graph lifecycle', () => {
       const inventoryPasses = [
         ...codeGraphProcessProgress(firstOutput),
         ...codeGraphProcessProgress(secondOutput),
-      ].filter(progress => progress.phase === 'scanning' && progress.completed === 0 && !('activity' in progress));
+      ].filter(
+        progress =>
+          progress.phase === 'scanning' &&
+          progress.completed === 0 &&
+          progress.total === 0 &&
+          !('activity' in progress),
+      );
 
       expect(inventoryPasses).toHaveLength(1);
       expect(existsSync(`${secondMarker}.scanning`)).toBe(false);
@@ -4065,10 +4109,23 @@ describe('native code graph lifecycle', () => {
       interruptedDatabase.close(false);
       expect(rawCache.files).toBe(3);
       expect(rawCache.bytes).toBeLessThanOrEqual(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
-      expect(receiptsBefore.map(receipt => receipt.batch_index)).toEqual([0]);
-      expect(receiptsBefore).toHaveLength(markerProgress.batchesCompleted);
-      expect(receiptsBefore.length).toBeLessThan(markerProgress.batchTotal);
-      expect(partialSymbols.count).toBeGreaterThan(0);
+      expect(receiptsBefore).toEqual([]);
+      const interruptedSpool = new Database(codeGraphMaterializationSpoolPath(home, {identity}, interrupted.id), {
+        readonly: true,
+        strict: true,
+      });
+      let spoolReceiptsBefore: Array<{readonly batch_index: number}>;
+      try {
+        spoolReceiptsBefore = interruptedSpool
+          .query('SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index')
+          .all() as Array<{readonly batch_index: number}>;
+      } finally {
+        interruptedSpool.close(false);
+      }
+      expect(spoolReceiptsBefore.map(receipt => receipt.batch_index)).toEqual([0]);
+      expect(spoolReceiptsBefore).toHaveLength(markerProgress.batchesCompleted);
+      expect(spoolReceiptsBefore.length).toBeLessThan(markerProgress.batchTotal);
+      expect(partialSymbols.count).toBe(0);
       expect(partiallyActive.count).toBe(0);
 
       let completedMetrics:
@@ -4320,7 +4377,21 @@ describe('native code graph lifecycle', () => {
             'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
           )
           .all(pausedId),
-      ).toEqual([{batch_index: 0}]);
+      ).toEqual([]);
+      const pausedSpoolDatabase = new Database(codeGraphMaterializationSpoolPath(home, baseline, pausedId), {
+        readonly: true,
+      });
+      try {
+        expect(
+          pausedSpoolDatabase
+            .query<{readonly batch_index: number}, []>(
+              'SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index',
+            )
+            .all(),
+        ).toEqual([{batch_index: 0}]);
+      } finally {
+        pausedSpoolDatabase.close();
+      }
       expect(
         pausedDatabase
           .query<{readonly count: number}, [string]>(
@@ -4514,7 +4585,21 @@ describe('native code graph lifecycle', () => {
               'SELECT batch_index FROM building_materialization_batches WHERE snapshot_id = ? ORDER BY batch_index',
             )
             .all(paused!.id),
-        ).toEqual([{batch_index: 0}]);
+        ).toEqual([]);
+        const pausedSpoolDatabase = new Database(codeGraphMaterializationSpoolPath(home, baseline, paused!.id), {
+          readonly: true,
+        });
+        try {
+          expect(
+            pausedSpoolDatabase
+              .query<{readonly batch_index: number}, []>(
+                'SELECT batch_index FROM materialization_spool_batches ORDER BY batch_index',
+              )
+              .all(),
+          ).toEqual([{batch_index: 0}]);
+        } finally {
+          pausedSpoolDatabase.close();
+        }
         expect(
           pausedDatabase
             .query<{readonly count: number}, [string]>(
@@ -4541,7 +4626,7 @@ describe('native code graph lifecycle', () => {
       const store = yield* CodeGraphStore;
       const failingStore = CodeGraphStore.of({
         ...store,
-        cacheMaterializedFileShards: () =>
+        cacheMaterializedFileShardBatches: () =>
           Effect.fail(
             new CodeGraphStoreNoSpaceError('Classified SQLite full during materialized-shard write.', {
               operation: 'cache code graph materialized shards',
@@ -4763,14 +4848,25 @@ describe('native code graph lifecycle', () => {
           .get(orphanIdentity.worktreeId);
         expect(interrupted).toBeDefined();
         const interruptedId = interrupted!.id;
+        const interruptedSpoolPath = codeGraphMaterializationSpoolPath(home, {identity: orphanIdentity}, interruptedId);
         expect(
           interruptedDatabase
             .query<{readonly count: number}, [string]>(
               'SELECT COUNT(*) AS count FROM building_materialization_batches WHERE snapshot_id = ?',
             )
             .get(interruptedId)?.count,
-        ).toBeGreaterThan(0);
+        ).toBe(0);
         interruptedDatabase.close();
+        const interruptedSpool = new Database(interruptedSpoolPath, {readonly: true});
+        try {
+          expect(
+            interruptedSpool
+              .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM materialization_spool_batches')
+              .get()?.count,
+          ).toBeGreaterThan(0);
+        } finally {
+          interruptedSpool.close();
+        }
 
         git(root, ['worktree', 'remove', '--force', orphanWorktree]);
         const survivor = await runEffect(
@@ -4798,6 +4894,7 @@ describe('native code graph lifecycle', () => {
               .get(survivor.identity.worktreeId),
           ).toEqual({snapshot_id: interruptedId});
           expect(survivor.snapshot.id).toBe(interruptedId);
+          expect(existsSync(interruptedSpoolPath)).toBe(false);
           for (const table of ['snapshot_build_owners', 'building_materialization_batches'] as const) {
             expect(
               reclaimedDatabase
@@ -5749,6 +5846,21 @@ function codeGraphDatabasePath(home: string, indexed: {readonly identity: {reado
   return join(home, 'indexes', 'code-graph', 'repositories', indexed.identity.checkoutId, 'graph-v3.sqlite');
 }
 
+function codeGraphMaterializationSpoolPath(
+  home: string,
+  indexed: {readonly identity: {readonly checkoutId: string}},
+  snapshotId: string,
+): string {
+  return join(
+    home,
+    'indexes',
+    'code-graph',
+    'repositories',
+    indexed.identity.checkoutId,
+    `materialization-spool-v1-${snapshotId}.sqlite`,
+  );
+}
+
 function materializedShardFacts(databasePath: string, path: string) {
   const database = new Database(databasePath, {readonly: true});
   try {
@@ -5899,11 +6011,18 @@ async function waitForPath(path: string, timeoutMilliseconds = 15_000): Promise<
   }
 }
 
-function codeGraphProcessProgress(output: string): readonly {readonly completed?: number; readonly phase: string}[] {
+function codeGraphProcessProgress(
+  output: string,
+): readonly {readonly completed?: number; readonly phase: string; readonly total?: number}[] {
   return output
     .split(/\r?\n/)
     .filter(Boolean)
-    .map(line => JSON.parse(line) as {readonly progress?: {readonly completed?: number; readonly phase: string}})
+    .map(
+      line =>
+        JSON.parse(line) as {
+          readonly progress?: {readonly completed?: number; readonly phase: string; readonly total?: number};
+        },
+    )
     .flatMap(message => (message.progress ? [message.progress] : []));
 }
 

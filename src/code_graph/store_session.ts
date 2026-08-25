@@ -97,7 +97,11 @@ export const configureReadConnection = Effect.fn('codeGraph.configureReadConnect
   yield* sql.unsafe('PRAGMA query_only = ON');
 });
 
-export const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 64;
+// One indexing writer owns the repository-sized B-trees. The former 64 KiB
+// cache repeatedly evicted their upper pages at production scale; 32 MiB was
+// the smallest screened setting with a material cold-build win, while staying
+// bounded independently of repository size and leaving read sessions small.
+export const CODE_GRAPH_WRITER_MAIN_CACHE_KIB = 32 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_CACHE_KIB_MAXIMUM = 4 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_MMAP_BYTES_MAXIMUM = 64 * 1_024 * 1_024 * 1_024;
 const CODE_GRAPH_SQLITE_WRITER_WAL_CHECKPOINT_PAGES_MAXIMUM = 1_000_000;

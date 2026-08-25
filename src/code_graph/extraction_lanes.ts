@@ -3,6 +3,8 @@ import {codeGraphExtractionWorkUnits, codeGraphSourceSizeBucket} from './progres
 
 const REQUEST_COST_SCALE = 1_024;
 const FACT_COST_SCALE = 4;
+const EXTRACTION_WINDOW_FILES_PER_WORKER = 8;
+const EXTRACTION_WINDOW_FILES_MAXIMUM = 64;
 
 export interface CodeGraphExtractionCostFile {
   readonly language: string;
@@ -33,6 +35,17 @@ export interface CodeGraphExtractionLane<Group extends CodeGraphExtractionCostGr
   readonly concurrency: number;
   readonly groups: readonly Group[];
   readonly kind: 'cost-ordered';
+}
+
+/**
+ * Keep enough independent parser work in flight to absorb file-cost skew
+ * without retaining an entire 128-file inventory batch. Parser capacity is
+ * capped at eight elsewhere, so this also bounds serialized facts retained
+ * between persistence boundaries to at most 64 files.
+ */
+export function codeGraphExtractionWindowSize(capacity: number): number {
+  if (!Number.isSafeInteger(capacity) || capacity < 1) throw new Error('Code graph parser capacity is invalid.');
+  return Math.min(EXTRACTION_WINDOW_FILES_MAXIMUM, capacity * EXTRACTION_WINDOW_FILES_PER_WORKER);
 }
 
 interface ExtractionCostAggregate {

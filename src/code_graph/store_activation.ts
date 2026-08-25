@@ -33,6 +33,11 @@ import {associateSnapshotFileShards, inheritSnapshotFileShards} from './store_ca
 import {insertActivationLease, recordSnapshotExtractorGeneration} from './store_maintenance_core.js';
 import {selectReusableBaseReceipt} from './store_queries.js';
 import {recordSnapshotPackProvenance} from './store_pack_provenance.js';
+import {
+  persistedIncrementalEdgeDeletionsStatement,
+  persistedIncrementalFileDeletionsStatement,
+  persistedIncrementalSymbolDeletionsStatement,
+} from './store_incremental_plan.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
@@ -654,14 +659,8 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
           SELECT ${snapshot.id}, path, content_hash, language, mode, size, source
           FROM activation_files
         `;
-        yield* sql`
-          INSERT INTO snapshot_file_deletions (snapshot_id, path)
-          SELECT ${snapshot.id}, base.path
-          FROM snapshot_files AS base
-          JOIN activation_incremental_paths AS changed ON changed.path = base.path
-          WHERE base.snapshot_id = ${baseSnapshotId}
-            AND NOT EXISTS (SELECT 1 FROM activation_files AS current WHERE current.path = base.path)
-        `;
+        const fileDeletions = persistedIncrementalFileDeletionsStatement(snapshot.id, baseSnapshotId);
+        yield* sql.unsafe(fileDeletions.text, fileDeletions.parameters);
         yield* observe('copying-files', 'completed', Number(staged.files));
         yield* observe('copying-symbols', 'started');
         yield* sql`
@@ -683,14 +682,8 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         }
         compactLexicalReceipt = Option.some(compact);
         yield* observe('copying-terms', 'completed', compact.postingCount);
-        yield* sql`
-          INSERT INTO snapshot_symbol_deletions (snapshot_id, symbol_id)
-          SELECT ${snapshot.id}, base.id
-          FROM symbols AS base
-          JOIN activation_incremental_paths AS changed ON changed.path = base.path
-          WHERE base.snapshot_id = ${baseSnapshotId}
-            AND NOT EXISTS (SELECT 1 FROM activation_symbols AS current WHERE current.id = base.id)
-        `;
+        const symbolDeletions = persistedIncrementalSymbolDeletionsStatement(snapshot.id, baseSnapshotId);
+        yield* sql.unsafe(symbolDeletions.text, symbolDeletions.parameters);
         yield* observe('copying-edges', 'started');
         yield* sql`
           INSERT INTO edges (
@@ -701,14 +694,8 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
             provenance, confidence, evidence_path, evidence_span_json
           FROM activation_edges
         `;
-        yield* sql`
-          INSERT INTO snapshot_edge_deletions (snapshot_id, edge_id)
-          SELECT ${snapshot.id}, base.id
-          FROM edges AS base
-          JOIN activation_incremental_paths AS changed ON changed.path = base.evidence_path
-          WHERE base.snapshot_id = ${baseSnapshotId}
-            AND NOT EXISTS (SELECT 1 FROM activation_edges AS current WHERE current.id = base.id)
-        `;
+        const edgeDeletions = persistedIncrementalEdgeDeletionsStatement(snapshot.id, baseSnapshotId);
+        yield* sql.unsafe(edgeDeletions.text, edgeDeletions.parameters);
         yield* observe('copying-edges', 'completed', Number(staged.edges));
       }
       if (existing[0]?.state !== 'ready') {

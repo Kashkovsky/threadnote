@@ -252,6 +252,12 @@ function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['acti
   if (!isRecord(value) || !isTimestamp(value.startedAt)) return undefined;
   const transactionStageMilliseconds = parseResolutionTransactionStageMilliseconds(value.transactionStageMilliseconds);
   if (value.transactionStageMilliseconds !== undefined && transactionStageMilliseconds === undefined) return undefined;
+  if (
+    value.longestTransactionMilliseconds !== undefined &&
+    !isNonNegativeFinite(value.longestTransactionMilliseconds)
+  ) {
+    return undefined;
+  }
   for (const key of [
     'aliasesDiscovered',
     'pageCompleted',
@@ -280,6 +286,9 @@ function parseResolutionActivity(value: unknown): CodeGraphBuildResolution['acti
   return {
     aliasesDiscovered: Number(value.aliasesDiscovered),
     elapsedMilliseconds: Number(value.elapsedMilliseconds),
+    ...(value.longestTransactionMilliseconds === undefined
+      ? {}
+      : {longestTransactionMilliseconds: Number(value.longestTransactionMilliseconds)}),
     matchingMilliseconds: Number(value.matchingMilliseconds),
     pageCompleted: Number(value.pageCompleted),
     pageTotal: Number(value.pageTotal),
@@ -336,6 +345,7 @@ function parseMaterializationActivity(value: unknown): CodeGraphBuildMaterializa
       'committing',
       'loading-cache',
       'preparing-rows',
+      'restoring-indexes',
       'writing-analysis',
       'writing-candidates',
       'writing-edges',
@@ -430,6 +440,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     'exactGenerationShardFilesCompleted',
     'factsBytesCompleted',
     'factsBytesTotal',
+    'materializedShardCacheDeferredFilesCompleted',
+    'materializedShardCacheDeferredRawFactBytesCompleted',
     'materializedShardReplayBytesCompleted',
     'rawFactReplayBytesCompleted',
   ] as const) {
@@ -461,6 +473,20 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     value.factsBytesCompleted !== undefined &&
     value.factsBytesTotal !== undefined &&
     Number(value.factsBytesCompleted) > Number(value.factsBytesTotal)
+  ) {
+    return undefined;
+  }
+  const hasDeferredShardCache =
+    value.materializedShardCacheDeferredFilesCompleted !== undefined ||
+    value.materializedShardCacheDeferredRawFactBytesCompleted !== undefined;
+  if (
+    hasDeferredShardCache &&
+    (value.materializedShardCacheDeferredFilesCompleted === undefined ||
+      value.materializedShardCacheDeferredRawFactBytesCompleted === undefined ||
+      value.attributedFilesCompleted === undefined ||
+      value.rawFactReplayBytesCompleted === undefined ||
+      Number(value.materializedShardCacheDeferredFilesCompleted) > Number(value.attributedFilesCompleted) ||
+      Number(value.materializedShardCacheDeferredRawFactBytesCompleted) > Number(value.rawFactReplayBytesCompleted))
   ) {
     return undefined;
   }
@@ -523,6 +549,16 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.materializedShardReplayBytesCompleted === undefined
       ? {}
       : {materializedShardReplayBytesCompleted: Number(value.materializedShardReplayBytesCompleted)}),
+    ...(value.materializedShardCacheDeferredFilesCompleted === undefined
+      ? {}
+      : {materializedShardCacheDeferredFilesCompleted: Number(value.materializedShardCacheDeferredFilesCompleted)}),
+    ...(value.materializedShardCacheDeferredRawFactBytesCompleted === undefined
+      ? {}
+      : {
+          materializedShardCacheDeferredRawFactBytesCompleted: Number(
+            value.materializedShardCacheDeferredRawFactBytesCompleted,
+          ),
+        }),
     ...(value.mode === undefined ? {} : {mode: value.mode as CodeGraphMaterializationMetrics['mode']}),
     ...(value.rawFactReplayBytesCompleted === undefined
       ? {}
@@ -571,6 +607,7 @@ function parseMaterializationStageMilliseconds(
     'committing',
     'loading-cache',
     'preparing-rows',
+    'restoring-indexes',
     'writing-analysis',
     'writing-candidates',
     'writing-edges',
@@ -623,6 +660,12 @@ function parseMaterializationStorage(
     'durableJournalHighWaterBytes',
     'durableSharedMemoryBytes',
     'durableSharedMemoryHighWaterBytes',
+    'durableSidecarDatabaseBytes',
+    'durableSidecarDatabaseHighWaterBytes',
+    'durableSidecarJournalBytes',
+    'durableSidecarJournalHighWaterBytes',
+    'durableSidecarWalBytes',
+    'durableSidecarWalHighWaterBytes',
     'durableWalBytes',
     'durableWalHighWaterBytes',
     'estimatedConcurrentBuildBytes',
@@ -649,6 +692,9 @@ function parseMaterializationStorage(
     ['durableFilesystemBytes', 'durableFilesystemHighWaterBytes'],
     ['durableJournalBytes', 'durableJournalHighWaterBytes'],
     ['durableSharedMemoryBytes', 'durableSharedMemoryHighWaterBytes'],
+    ['durableSidecarDatabaseBytes', 'durableSidecarDatabaseHighWaterBytes'],
+    ['durableSidecarJournalBytes', 'durableSidecarJournalHighWaterBytes'],
+    ['durableSidecarWalBytes', 'durableSidecarWalHighWaterBytes'],
     ['durableWalBytes', 'durableWalHighWaterBytes'],
   ] as const) {
     if (
@@ -711,6 +757,24 @@ function parseMaterializationStorage(
     ...(value.durableSharedMemoryHighWaterBytes === undefined
       ? {}
       : {durableSharedMemoryHighWaterBytes: Number(value.durableSharedMemoryHighWaterBytes)}),
+    ...(value.durableSidecarDatabaseBytes === undefined
+      ? {}
+      : {durableSidecarDatabaseBytes: Number(value.durableSidecarDatabaseBytes)}),
+    ...(value.durableSidecarDatabaseHighWaterBytes === undefined
+      ? {}
+      : {durableSidecarDatabaseHighWaterBytes: Number(value.durableSidecarDatabaseHighWaterBytes)}),
+    ...(value.durableSidecarJournalBytes === undefined
+      ? {}
+      : {durableSidecarJournalBytes: Number(value.durableSidecarJournalBytes)}),
+    ...(value.durableSidecarJournalHighWaterBytes === undefined
+      ? {}
+      : {durableSidecarJournalHighWaterBytes: Number(value.durableSidecarJournalHighWaterBytes)}),
+    ...(value.durableSidecarWalBytes === undefined
+      ? {}
+      : {durableSidecarWalBytes: Number(value.durableSidecarWalBytes)}),
+    ...(value.durableSidecarWalHighWaterBytes === undefined
+      ? {}
+      : {durableSidecarWalHighWaterBytes: Number(value.durableSidecarWalHighWaterBytes)}),
     ...(value.durableWalBytes === undefined ? {} : {durableWalBytes: Number(value.durableWalBytes)}),
     ...(value.durableWalHighWaterBytes === undefined
       ? {}

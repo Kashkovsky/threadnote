@@ -49,6 +49,9 @@ describe('external code graph benchmark execution safety', () => {
               GITHUB_RUN_ID: '123',
               GITHUB_SHA: sourceCommit,
               GITHUB_WORKSPACE: sourceRepository,
+              RUNNER_ARCH: process.arch === 'arm64' ? 'ARM64' : 'X64',
+              RUNNER_ENVIRONMENT: 'github-hosted',
+              RUNNER_OS: process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'Linux',
             }),
           });
           const initial = yield* validateBenchmarkRuntimeProvenance(sourceRepository).pipe(

@@ -1,6 +1,16 @@
 export const CODE_GRAPH_SLOW_FILE_THRESHOLD_MILLISECONDS = 1_000;
 export const CODE_GRAPH_TOP_SLOW_FILE_LIMIT = 10;
 
+export const CODE_GRAPH_SCANNING_STARTED_PROGRESS = {
+  accepted: 0,
+  completed: 0,
+  excluded: 0,
+  phase: 'scanning',
+  skipped: 0,
+  total: 0,
+  unit: 'files',
+} as const;
+
 export const CODE_GRAPH_SOURCE_SIZE_BUCKETS = ['0-16KiB', '16-64KiB', '64-256KiB', '256KiB-1MiB', '>1MiB'] as const;
 
 export type CodeGraphSourceSizeBucket = (typeof CODE_GRAPH_SOURCE_SIZE_BUCKETS)[number];

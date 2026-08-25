@@ -1,5 +1,5 @@
 import {Effect, Option} from 'effect';
-import {Query, type Node, type QueryMatch} from 'web-tree-sitter';
+import {type Node, type QueryMatch} from 'web-tree-sitter';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import type {
   CodeGraphEdge,
@@ -98,69 +98,65 @@ export function extractTreeSitterFacts(
       .withParsedSource(definition.asset, file.content!, parsed => {
         const spanForNode = createNodeSpan(file.content!);
         const queries = [
-          new Query(parsed.language, definition.metadataQuery),
-          new Query(parsed.language, definition.declarationQuery),
-          new Query(parsed.language, definition.referenceQuery),
+          parsed.query(definition.metadataQuery),
+          parsed.query(definition.declarationQuery),
+          parsed.query(definition.referenceQuery),
         ] as const;
-        try {
-          const metadata = extractMetadata(definition, queries[0].matches(parsed.root), context);
-          const moduleSymbol = makeModuleSymbol(file, definition, metadata);
-          const declarations = materializeDeclarations(
-            definition,
-            file,
-            metadata,
-            declarationMatches(definition, queries[1].matches(parsed.root)),
-            spanForNode,
-          );
-          const owners = createDeclarationOwnerIndex(declarations);
-          const symbols = [moduleSymbol, ...declarations.map(declaration => declaration.symbol)];
-          const edges: CodeGraphEdge[] = [];
-          const references: CodeGraphReference[] = [];
-          for (const declaration of declarations) {
-            const parent = owners.find(declaration.node, declaration.symbol.id)?.symbol ?? moduleSymbol;
-            edges.push(resolvedEdge(parent, declaration.symbol, 'contains', declaration.node, file.path, spanForNode));
-          }
-          for (const match of queries[2].matches(parsed.root)) {
-            const capture = match.captures.find(candidate => candidate.name.startsWith('reference.'));
-            if (!capture) continue;
-            const targetName = (definition.referenceTarget?.(capture.name, capture.node) ?? capture.node.text).trim();
-            if (!targetName) continue;
-            const relation =
-              definition.referenceRelation?.(capture.name, capture.node) ??
-              relationForCapture(capture.name.replace(/^reference\./, ''));
-            const owner = owners.find(capture.node)?.symbol ?? moduleSymbol;
-            const arity = referenceArity(capture.node);
-            const input: TreeSitterReferenceInput = {
-              arity,
-              metadata,
-              owner,
-              relation,
-              targetName,
-            };
-            if (definition.ignoreReference?.(input) === true) continue;
-            const edge = unresolvedEdge(owner, targetName, relation, capture.node, file.path, spanForNode, arity);
-            edges.push(edge);
-            references.push({
-              arity: Option.getOrUndefined(arity),
-              edgeId: edge.id,
-              evidencePath: edge.evidencePath,
-              evidenceSpan: edge.evidenceSpan,
-              lookupTiers: definition.lookupTiersForReference(input),
-              provenance: edge.provenance,
-              relation,
-              resolutionDomain: definition.resolutionDomain,
-              sourceId: edge.sourceId,
-              sourceName: edge.sourceName,
-              targetName,
-            });
-          }
-          const diagnostics = parsed.root.hasError
-            ? [`${file.path}: ${definition.id} parser recovered from one or more syntax errors`]
-            : [];
-          return {diagnostics, edges, path: file.path, references, symbols} satisfies CodeGraphFileFacts;
-        } finally {
-          for (const query of queries) query.delete();
+        const metadata = extractMetadata(definition, queries[0].matches(parsed.root), context);
+        const moduleSymbol = makeModuleSymbol(file, definition, metadata);
+        const declarations = materializeDeclarations(
+          definition,
+          file,
+          metadata,
+          declarationMatches(definition, queries[1].matches(parsed.root)),
+          spanForNode,
+        );
+        const owners = createDeclarationOwnerIndex(declarations);
+        const symbols = [moduleSymbol, ...declarations.map(declaration => declaration.symbol)];
+        const edges: CodeGraphEdge[] = [];
+        const references: CodeGraphReference[] = [];
+        for (const declaration of declarations) {
+          const parent = owners.find(declaration.node, declaration.symbol.id)?.symbol ?? moduleSymbol;
+          edges.push(resolvedEdge(parent, declaration.symbol, 'contains', declaration.node, file.path, spanForNode));
         }
+        for (const match of queries[2].matches(parsed.root)) {
+          const capture = match.captures.find(candidate => candidate.name.startsWith('reference.'));
+          if (!capture) continue;
+          const targetName = (definition.referenceTarget?.(capture.name, capture.node) ?? capture.node.text).trim();
+          if (!targetName) continue;
+          const relation =
+            definition.referenceRelation?.(capture.name, capture.node) ??
+            relationForCapture(capture.name.replace(/^reference\./, ''));
+          const owner = owners.find(capture.node)?.symbol ?? moduleSymbol;
+          const arity = referenceArity(capture.node);
+          const input: TreeSitterReferenceInput = {
+            arity,
+            metadata,
+            owner,
+            relation,
+            targetName,
+          };
+          if (definition.ignoreReference?.(input) === true) continue;
+          const edge = unresolvedEdge(owner, targetName, relation, capture.node, file.path, spanForNode, arity);
+          edges.push(edge);
+          references.push({
+            arity: Option.getOrUndefined(arity),
+            edgeId: edge.id,
+            evidencePath: edge.evidencePath,
+            evidenceSpan: edge.evidenceSpan,
+            lookupTiers: definition.lookupTiersForReference(input),
+            provenance: edge.provenance,
+            relation,
+            resolutionDomain: definition.resolutionDomain,
+            sourceId: edge.sourceId,
+            sourceName: edge.sourceName,
+            targetName,
+          });
+        }
+        const diagnostics = parsed.root.hasError
+          ? [`${file.path}: ${definition.id} parser recovered from one or more syntax errors`]
+          : [];
+        return {diagnostics, edges, path: file.path, references, symbols} satisfies CodeGraphFileFacts;
       })
       .pipe(Effect.mapError(cause => languageError(`${file.path}: ${cause.message}`, cause)));
   });

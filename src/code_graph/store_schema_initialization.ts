@@ -16,21 +16,59 @@ import {
 } from './store_schema_core.js';
 import {ensureInitialReconciliationIndexes} from './store_reconciliation_core.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
+import {
+  codeGraphSchemaInitializationReceiptCurrent,
+  recordCodeGraphSchemaInitializationReceipt,
+} from './store_schema_receipt.js';
+import {ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
+export const CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES = 8 * 1_024;
+const CODE_GRAPH_WAL_AUTOCHECKPOINT_BYTES = 4_096 * 1_000;
+
 const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql: SqlClient.SqlClient) {
   yield* configureConnection(sql);
-  // Refuse a drifted cleanup authority surface before any initialization DDL
-  // or graph-row mutation. Unlike reconstructible build extensions, this
-  // queue is coupled to immutable removal tombstones and is never dropped.
-  yield* preflightRemovedViewCleanupSchema(sql);
+  // Page size is immutable once the database owns schema pages. New stores
+  // use a denser B-tree fanout for the wide, hash-keyed graph tables while
+  // existing stores retain their on-disk contract. Keep the WAL checkpoint
+  // byte window constant rather than silently doubling it with the page size.
+  const pageCountRows = yield* sql.unsafe<{readonly page_count: number}>('PRAGMA main.page_count');
+  const pageCount = Number(pageCountRows[0]?.page_count ?? -1);
+  if (!Number.isSafeInteger(pageCount) || pageCount < 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page count is invalid.'));
+  }
+  if (pageCount === 0) yield* sql.unsafe(`PRAGMA main.page_size = ${CODE_GRAPH_DATABASE_PAGE_SIZE_BYTES}`);
+  const pageSizeRows = yield* sql.unsafe<{readonly page_size: number}>('PRAGMA main.page_size');
+  const pageSize = Number(pageSizeRows[0]?.page_size ?? 0);
+  if (!Number.isSafeInteger(pageSize) || pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph SQLite page size is invalid.'));
+  }
+  // A matching receipt binds the last complete validation to SQLite's
+  // persistent main-schema cookie and separately revalidates mutable authority
+  // metadata. Any ordinary DDL or contract revision change falls through to
+  // the existing fail-closed initializer before graph rows can be mutated.
+  const receiptCurrent = yield* codeGraphSchemaInitializationReceiptCurrent(sql);
+  if (!receiptCurrent) {
+    // Refuse a drifted cleanup authority surface before any initialization DDL
+    // or graph-row mutation. Unlike reconstructible build extensions, this
+    // queue is coupled to immutable removal tombstones and is never dropped.
+    yield* preflightRemovedViewCleanupSchema(sql);
+  }
   yield* sql.unsafe('PRAGMA journal_mode = WAL');
   // Explicit whole-WAL checkpoints can monopolize the synchronous SQLite
   // connection for longer than the build heartbeat. Committed WAL records are
   // already durable; keep routine checkpoint work bounded to SQLite's default
   // 1,000-page auto-checkpoint cadence instead.
-  yield* sql.unsafe('PRAGMA wal_autocheckpoint = 1000');
+  yield* sql.unsafe(
+    `PRAGMA wal_autocheckpoint = ${Math.max(1, Math.floor(CODE_GRAPH_WAL_AUTOCHECKPOINT_BYTES / pageSize))}`,
+  );
+  if (receiptCurrent) return;
+  yield* initializeSchemaFully(sql);
+  yield* recordCodeGraphSchemaInitializationReceipt(sql);
+});
+
+const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(function* (sql: SqlClient.SqlClient) {
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS schema_metadata (
       key TEXT PRIMARY KEY NOT NULL,
@@ -381,10 +419,11 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       PRIMARY KEY (snapshot_id, source_path, local_name, target_path, imported_name)
     ) WITHOUT ROWID
   `);
-  // Clean full builds write directly into the final snapshot tables while the
-  // snapshot remains `building`. Reference lookup tiers live as one compact
-  // payload per reference, while the legacy candidate table remains available
-  // only for bounded cleanup of pre-compaction databases. Batch receipts make
+  // Clean full builds write symbols and already-final edges directly while the
+  // snapshot remains `building`. Each unresolved edge and its compact lookup
+  // tiers share one build-only primary-key row until resolution publishes the
+  // retained final edge exactly once. The legacy candidate table remains only
+  // for bounded cleanup of pre-compaction databases; batch receipts make
   // interrupted builds resumable without replaying committed fact batches.
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS building_references (
@@ -396,6 +435,14 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       lookup_tiers_json TEXT NOT NULL,
       candidate_count INTEGER NOT NULL CHECK (candidate_count >= 0),
       candidate_payload_bytes INTEGER NOT NULL CHECK (candidate_payload_bytes >= 0),
+      source_id TEXT,
+      source_name TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      target_name TEXT NOT NULL,
+      provenance TEXT NOT NULL,
+      confidence REAL NOT NULL,
+      evidence_path TEXT NOT NULL,
+      evidence_span_json TEXT NOT NULL,
       PRIMARY KEY (snapshot_id, edge_id)
     ) WITHOUT ROWID
   `);
@@ -422,6 +469,21 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
       reexport_count INTEGER NOT NULL CHECK (reexport_count >= 0),
       completed_at TEXT NOT NULL,
       PRIMARY KEY (snapshot_id, batch_index)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS building_materialization_spool_surfaces (
+      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      surface_index INTEGER NOT NULL CHECK (surface_index >= 0 AND surface_index < 32),
+      spool_identity TEXT NOT NULL CHECK (length(spool_identity) = 64),
+      surface_name TEXT NOT NULL,
+      row_count INTEGER NOT NULL CHECK (row_count >= 0),
+      next_page_index INTEGER NOT NULL CHECK (next_page_index >= 0),
+      applied_row_count INTEGER NOT NULL CHECK (applied_row_count >= 0 AND applied_row_count <= row_count),
+      complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+      PRIMARY KEY (snapshot_id, surface_index),
+      UNIQUE (snapshot_id, surface_name),
+      CHECK (complete = 0 OR applied_row_count = row_count)
     ) WITHOUT ROWID
   `);
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshots_worktree_state ON snapshots(worktree_id, state)');
@@ -482,50 +544,10 @@ const initializeSchema = Effect.fn('codeGraph.initializeSchema')(function* (sql:
   // the same rows. Query-required index changes are shared with the atomic
   // persistent-extension upgrade path.
   yield* ensureCurrentCodeGraphQueryIndexes(sql);
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path ON symbols(snapshot_id, path)');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_scope');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_package');
   yield* sql.unsafe('DROP INDEX IF EXISTS symbols_visualization_path');
-  const visualizationKindOrder = `CASE kind
-    WHEN 'package' THEN 0 WHEN 'module' THEN 1 WHEN 'class' THEN 2 WHEN 'interface' THEN 3
-    WHEN 'function' THEN 4 WHEN 'method' THEN 5 ELSE 6 END`;
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS symbols_visualization_scope_v2
-    ON symbols(snapshot_id, resolution_scope_id, exported DESC, (${visualizationKindOrder}), id)
-  `);
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS symbols_visualization_package_v2
-    ON symbols(
-      snapshot_id, resolution_scope_id, package_name, exported DESC,
-      (${visualizationKindOrder}), id
-    )
-    WHERE resolution_scope_id IS NULL
-  `);
-  yield* sql.unsafe(`
-    CREATE INDEX IF NOT EXISTS symbols_visualization_path_v2
-    ON symbols(
-      snapshot_id,
-      resolution_scope_id,
-      (CASE WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1) ELSE '(root)' END),
-      exported DESC,
-      (${visualizationKindOrder}),
-      id
-    )
-    WHERE resolution_scope_id IS NULL AND (package_name IS NULL OR trim(package_name) = '')
-  `);
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_name_nocase ON symbols(snapshot_id, name COLLATE NOCASE)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS symbols_qualified_nocase ON symbols(snapshot_id, qualified_name COLLATE NOCASE)',
-  );
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS symbols_path_nocase ON symbols(snapshot_id, path COLLATE NOCASE)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS symbols_export_order ON symbols(snapshot_id, path, qualified_name, id)',
-  );
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_source ON edges(snapshot_id, source_id, relation)');
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS edges_evidence_path ON edges(snapshot_id, evidence_path)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS edges_export_order ON edges(snapshot_id, source_name, relation, target_name, id)',
-  );
+  yield* ensureCodeGraphQueryIndexes(sql);
   // The WITHOUT ROWID primary key already serves `(snapshot_id, term)` lexical
   // lookups. Snapshot-owned postings are purged before snapshot/symbol rows, so
   // a second `(snapshot_id, symbol_id)` ordering is unnecessary for cascades.

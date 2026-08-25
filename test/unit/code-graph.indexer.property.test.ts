@@ -55,6 +55,8 @@ describe('code graph indexer properties', () => {
           attributedFiles: byteCount,
           crossGenerationShardFiles: byteCount,
           exactGenerationShardFiles: byteCount,
+          materializedShardCacheDeferredFiles: byteCount,
+          materializedShardCacheDeferredRawFactBytes: byteCount,
           materializedShardReplayBytes: byteCount,
           rawFactReplayBytes: byteCount,
         }),
@@ -75,11 +77,19 @@ describe('code graph indexer properties', () => {
       const expectedAttributed = bounded(observations.map(observation => observation.attributedFiles));
       const expectedCrossGeneration = bounded(observations.map(observation => observation.crossGenerationShardFiles));
       const expectedExactGeneration = bounded(observations.map(observation => observation.exactGenerationShardFiles));
+      const expectedDeferredFiles = bounded(
+        observations.map(observation => observation.materializedShardCacheDeferredFiles),
+      );
+      const expectedDeferredRawFactBytes = bounded(
+        observations.map(observation => observation.materializedShardCacheDeferredRawFactBytes),
+      );
 
       expect(aggregate).toEqual(reversed);
       expect(aggregate.attributedFilesCompleted).toBe(expectedAttributed);
       expect(aggregate.crossGenerationShardFilesCompleted).toBe(expectedCrossGeneration);
       expect(aggregate.exactGenerationShardFilesCompleted).toBe(expectedExactGeneration);
+      expect(aggregate.materializedShardCacheDeferredFilesCompleted).toBe(expectedDeferredFiles);
+      expect(aggregate.materializedShardCacheDeferredRawFactBytesCompleted).toBe(expectedDeferredRawFactBytes);
       expect(aggregate.rawFactReplayBytesCompleted).toBe(expectedRaw);
       expect(aggregate.materializedShardReplayBytesCompleted).toBe(expectedMaterialized);
       expect(aggregate.cachedFactReplayBytesCompleted).toBe(bounded([expectedRaw, expectedMaterialized]));

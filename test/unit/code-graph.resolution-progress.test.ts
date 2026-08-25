@@ -1,9 +1,10 @@
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Ref} from 'effect';
+import {Deferred, Effect, Exit, Ref} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it} from 'vitest';
 import {CodeGraphStore, type CodeGraphResolutionProgressCallback} from '../../src/code_graph/store.js';
+import {compareCodeUnits} from '../../src/code_graph/ordering.js';
 import {
   type CodeGraphWriterGate,
   PERSISTENT_FULL_RESOLUTION_PAGE_CANDIDATES,
@@ -160,6 +161,7 @@ describe('code graph reference-resolution progress', () => {
           resolved: 5_001,
         });
         expect(result.resolution.elapsedMilliseconds).toBeLessThan(30_000);
+        expect(result.resolution.longestTransactionMilliseconds).toBeGreaterThan(0);
         expect(capacityBoundaries).toHaveLength(1);
         expect(capacityBoundaries[0]).toMatchObject({rowCount: 55_011});
         expect(capacityBoundaries[0]!.finalFactBytes).toBeGreaterThan(0);
@@ -172,6 +174,9 @@ describe('code graph reference-resolution progress', () => {
         expect(observations.map(progress => progress.pageCompleted)).toEqual([0, 0, 0, 1, 1, 2, 2]);
         expect(observations.at(-2)).toMatchObject({resolved: 0});
         expect(observations.at(-1)).toMatchObject({resolved: 5_001});
+        expect(observations.at(-1)?.longestTransactionMilliseconds).toBe(
+          result.resolution.longestTransactionMilliseconds,
+        );
         expect(result.graph.edges).toHaveLength(5_001);
         expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
         const semanticDigest = sha256HexSync(
@@ -190,7 +195,9 @@ describe('code graph reference-resolution progress', () => {
       Effect.gen(function* () {
         const fixture = yield* Effect.promise(() => resolutionFixture());
         const target = symbol('window-target', 'windowTarget');
-        const callers = Array.from({length: 9}, (_, index) => symbol(`window-caller-${index}`, `windowCaller${index}`));
+        const callers = Array.from({length: 17}, (_, index) =>
+          symbol(`window-caller-${index}`, `windowCaller${index}`),
+        );
         const unresolved = callers.map((caller, index) => resolvableReference(fixture.file, caller, target, index));
         const snapshot = persistentSnapshot(fixture.identity, callers.length + 1, unresolved.length);
         const firstCapacityRows: number[] = [];
@@ -277,14 +284,127 @@ describe('code graph reference-resolution progress', () => {
         expect(result.firstFailure).toBeInstanceOf(CodeGraphStoreError);
         expect(firstCapacityRows).toEqual([88]);
         expect(firstTransactionAttempts).toBe(2);
-        expect(result.afterFailure).toEqual({remaining: 5, resolved: 4});
+        expect(result.afterFailure).toEqual({remaining: 13, resolved: 4});
         expect(firstProgress.at(-1)).toMatchObject({pageCompleted: 8, resolved: 4});
-        expect(resumedCapacityRows).toEqual([55]);
-        expect(resumedTransactions).toBe(2);
-        expect(result.resumed).toMatchObject({pagesCompleted: 5, referencesExamined: 5, resolved: 5});
-        expect(result.afterResume).toEqual({remaining: 0, resolved: 9});
-        expect(result.graph.edges).toHaveLength(9);
+        expect(resumedCapacityRows).toEqual([88, 55]);
+        // Commit width adapts from live SQLite duration; the durable eight-page
+        // capacity windows and exact committed prefix are the stable contract.
+        expect(resumedTransactions).toBeGreaterThanOrEqual(3);
+        expect(resumedTransactions).toBeLessThanOrEqual(7);
+        expect(result.resumed).toMatchObject({pagesCompleted: 13, referencesExamined: 13, resolved: 13});
+        expect(result.afterResume).toEqual({remaining: 0, resolved: 17});
+        expect(result.graph.edges).toHaveLength(17);
         expect(result.graph.edges.every(edge => edge.targetId === target.id)).toBe(true);
+      }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    30_000,
+  );
+
+  effectIt.effect(
+    'resumes deferred unresolved-edge publication after a committed prefix',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(() => resolutionFixture());
+        const referenceCount = 1_501;
+        const callers = Array.from({length: referenceCount}, (_, index) =>
+          symbol(`deferred-caller-${String(index).padStart(4, '0')}`, `deferredCaller${index}`),
+        );
+        const unresolved = callers.map((caller, index) => unresolvedReference(fixture.file, caller, index));
+        const snapshot = persistentSnapshot(fixture.identity, callers.length, unresolved.length);
+        const firstCapacityRows: number[] = [];
+        const resumedCapacityRows: number[] = [];
+        let firstTransactionAttempts = 0;
+        let resumedTransactions = 0;
+
+        const result = yield* Effect.gen(function* () {
+          const store = yield* CodeGraphStore;
+          return yield* store.withSession(
+            fixture.databasePath,
+            Effect.gen(function* () {
+              const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+                ...snapshot,
+                state: 'building',
+              });
+              yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+              yield* store.stageActivationFacts(
+                fixture.databasePath,
+                callers,
+                unresolved.map(entry => entry.edge),
+                unresolved.map(entry => entry.reference),
+                undefined,
+                0,
+              );
+              const dieBeforeSecondTransaction: CodeGraphWriterGate = transaction =>
+                Effect.gen(function* () {
+                  firstTransactionAttempts += 1;
+                  if (firstTransactionAttempts === 2) {
+                    return yield* Effect.die(new Error('Injected deferred-edge publication crash.'));
+                  }
+                  return yield* transaction;
+                });
+              const firstExit = yield* resolveActivationReferences(
+                undefined,
+                dieBeforeSecondTransaction,
+                (boundary, transaction) =>
+                  Effect.sync(() => firstCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transaction)),
+              ).pipe(Effect.exit);
+              const sql = yield* SqlClient.SqlClient;
+              const afterCrash = yield* sql<{readonly remaining: number; readonly unresolved: number}>`
+                SELECT
+                  (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
+                  (SELECT COUNT(*) FROM edges
+                   WHERE snapshot_id = ${snapshot.id} AND target_id IS NULL) AS unresolved
+              `;
+              const resumed = yield* resolveActivationReferences(
+                undefined,
+                transaction =>
+                  Effect.sync(() => {
+                    resumedTransactions += 1;
+                  }).pipe(Effect.andThen(transaction)),
+                (boundary, transaction) =>
+                  Effect.sync(() => resumedCapacityRows.push(boundary.rowCount)).pipe(Effect.andThen(transaction)),
+              );
+              const afterResume = yield* sql<{readonly remaining: number; readonly unresolved: number}>`
+                SELECT
+                  (SELECT COUNT(*) FROM building_references WHERE snapshot_id = ${snapshot.id}) AS remaining,
+                  (SELECT COUNT(*) FROM edges
+                   WHERE snapshot_id = ${snapshot.id} AND target_id IS NULL) AS unresolved
+              `;
+              yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+              return {
+                afterCrash: afterCrash[0]!,
+                afterResume: afterResume[0]!,
+                firstExit,
+                graph: yield* store.loadGraph(fixture.databasePath, snapshot.id),
+                resumed,
+              };
+            }),
+          );
+        });
+
+        expect(Exit.isFailure(result.firstExit)).toBe(true);
+        expect(firstTransactionAttempts).toBe(2);
+        expect(firstCapacityRows).toEqual([12_000, 8]);
+        expect(result.afterCrash).toEqual({remaining: 1, unresolved: 1_500});
+        expect(resumedTransactions).toBe(1);
+        expect(resumedCapacityRows).toEqual([8]);
+        expect(result.resumed).toMatchObject({passesCompleted: 1, referencesExamined: 1, resolved: 0});
+        expect(result.afterResume).toEqual({remaining: 0, unresolved: referenceCount});
+        const semanticRows = (edges: readonly CodeGraphEdge[]) =>
+          edges
+            .map(edge => [
+              edge.id,
+              edge.sourceId,
+              edge.sourceName,
+              edge.relation,
+              edge.targetId,
+              edge.targetName,
+              edge.provenance,
+              edge.confidence,
+              edge.evidencePath,
+              edge.evidenceSpan,
+            ])
+            .sort((left, right) => compareCodeUnits(String(left[0]), String(right[0])));
+        expect(semanticRows(result.graph.edges)).toEqual(semanticRows(unresolved.map(entry => entry.edge)));
       }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     30_000,
   );

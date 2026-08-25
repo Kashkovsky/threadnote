@@ -7,6 +7,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
+import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS} from '../../src/code_graph/cache_capacity.js';
 import {
   cachedCodeGraphFactBytes,
   CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
@@ -161,8 +162,8 @@ describe('code graph full-build materialization store', () => {
     );
 
     expect(pager).toEqual({
-      cacheSize: -64,
-      spillPages: 16,
+      cacheSize: -(32 * 1_024),
+      spillPages: 8_192,
       temporaryCacheSize: -64,
       temporarySpillPages: 16,
       temporaryStore: 2,
@@ -867,6 +868,162 @@ describe('code graph full-build materialization store', () => {
           expect(
             database.query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE id = ?').get(wrongId),
           ).toEqual({count: 0});
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rolls back a multi-row shard UPSERT when one row races with a tuple collision', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const extractorSet = 'materialized-shard-multi-row-race';
+      const derivationIdentity = 'materialized-shard-multi-row-race-v1';
+      const files = Array.from({length: CODE_GRAPH_CACHE_TRANSACTION_LIMITS.rows}, (_, index) => ({
+        ...fixture.file,
+        contentHash: index.toString(16).padStart(64, '0'),
+        path: `src/batched-${index.toString().padStart(3, '0')}.ts`,
+      }));
+      const facts = files.map(file => ({
+        diagnostics: [`canonical ${file.path}`],
+        edges: [],
+        path: file.path,
+        symbols: [],
+      })) satisfies readonly CodeGraphFileFacts[];
+      const raced = files.at(-1)!;
+      const wrongId = 'cgfs_multi-row-race-wrong-id';
+      yield* store.initialize(fixture.databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database.exec(`
+            CREATE TABLE materialized_shard_multi_row_audit (operation TEXT NOT NULL);
+            CREATE TRIGGER materialized_shard_multi_row_insert
+            AFTER INSERT ON materialized_file_shards
+            BEGIN INSERT INTO materialized_shard_multi_row_audit VALUES ('insert'); END;
+            CREATE TRIGGER materialized_shard_multi_row_update
+            AFTER UPDATE ON materialized_file_shards
+            BEGIN INSERT INTO materialized_shard_multi_row_audit VALUES ('update'); END;
+            CREATE TRIGGER materialized_shard_multi_row_delete
+            AFTER DELETE ON materialized_file_shards
+            BEGIN INSERT INTO materialized_shard_multi_row_audit VALUES ('delete'); END;
+          `);
+        } finally {
+          database.close(false);
+        }
+      });
+      let reservations = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) =>
+        Effect.gen(function* () {
+          reservations += 1;
+          if (reservations === 1) {
+            yield* Effect.sync(() => {
+              const database = new Database(fixture.databasePath, {strict: true});
+              try {
+                database
+                  .query(
+                    `INSERT INTO materialized_file_shards (
+                       id, content_hash, extractor_set, derivation_identity, path_hint,
+                       facts_json, created_at, last_used_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                  )
+                  .run(
+                    wrongId,
+                    raced.contentHash,
+                    extractorSet,
+                    derivationIdentity,
+                    raced.path,
+                    JSON.stringify({...facts.at(-1)!, diagnostics: ['racing collision']}),
+                    '2026-08-23T00:00:00.000Z',
+                    '2026-08-23T00:00:00.000Z',
+                  );
+              } finally {
+                database.close(false);
+              }
+            });
+          }
+          return yield* transaction;
+        });
+
+      yield* store.cacheMaterializedFileShards(
+        fixture.databasePath,
+        files,
+        facts,
+        extractorSet,
+        derivationIdentity,
+        protector,
+      );
+
+      expect(reservations).toBe(3);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(
+            database
+              .query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE derivation_identity = ?')
+              .get(derivationIdentity),
+          ).toEqual({count: files.length});
+          expect(
+            database.query('SELECT COUNT(*) AS count FROM materialized_file_shards WHERE id = ?').get(wrongId),
+          ).toEqual({count: 0});
+          expect(
+            database
+              .query<{readonly count: number; readonly operation: string}, []>(
+                `SELECT operation, COUNT(*) AS count
+                 FROM materialized_shard_multi_row_audit
+                 GROUP BY operation ORDER BY operation`,
+              )
+              .all(),
+          ).toEqual([
+            {count: 1, operation: 'delete'},
+            {count: files.length + 1, operation: 'insert'},
+          ]);
+        } finally {
+          database.close(false);
+        }
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('coalesces bounded attribution batches into one materialized-shard reservation', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const store = yield* CodeGraphStore;
+      const batches = Array.from({length: 4}, (_, index) => {
+        const file = {
+          ...fixture.file,
+          contentHash: (index + 1).toString(16).padStart(64, '0'),
+          path: `src/coalesced-${index}.ts`,
+        };
+        return {
+          derivationIdentity: `coalesced-shard-v${index}`,
+          extractorSet: 'coalesced-shard-cache',
+          facts: [
+            {
+              diagnostics: [],
+              edges: [],
+              path: file.path,
+              symbols: [],
+            } satisfies CodeGraphFileFacts,
+          ],
+          files: [file],
+        };
+      });
+      let reservations = 0;
+      const protector: CodeGraphDirectPersistentCapacityProtector = (_boundary, transaction) => {
+        reservations += 1;
+        return transaction;
+      };
+
+      yield* store.cacheMaterializedFileShardBatches(fixture.databasePath, batches, protector);
+
+      expect(reservations).toBe(1);
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          expect(database.query('SELECT COUNT(*) AS count FROM materialized_file_shards').get()).toEqual({count: 4});
         } finally {
           database.close(false);
         }
@@ -2126,97 +2283,117 @@ describe('code graph full-build materialization store', () => {
     ),
   );
 
-  it('resumes compacted reference payloads without durable candidate rows', async () => {
-    const fixture = await materializationFixture();
-    const caller = symbol('compacted-caller', 'compactedCaller', ['typescript:name:compactedCaller']);
-    const unresolved = edge('compacted-edge', caller, 'missingCompactedTarget');
-    const reference: CodeGraphReference = {
-      edgeId: unresolved.id,
-      evidencePath: fixture.file.path,
-      evidenceSpan: unresolved.evidenceSpan,
-      lookupTiers: [
-        ['typescript:name:żółw🙂zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
-        ['typescript:name:alpha'],
-      ],
-      provenance: 'syntactic',
-      relation: 'calls',
-      resolutionDomain: 'typescript',
-      sourceId: caller.id,
-      sourceName: caller.name,
-      targetName: unresolved.targetName,
-    };
-    const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'compacted-reference-resume'};
+  effectIt.effect('resumes compacted reference payloads without durable candidate rows', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(() => materializationFixture());
+      const caller = symbol('compacted-caller', 'compactedCaller', ['typescript:name:compactedCaller']);
+      const unresolved = edge('compacted-edge', caller, 'missingCompactedTarget');
+      const reference: CodeGraphReference = {
+        edgeId: unresolved.id,
+        evidencePath: fixture.file.path,
+        evidenceSpan: unresolved.evidenceSpan,
+        lookupTiers: [
+          ['typescript:name:żółw🙂zeta', 'typescript:name:alpha', 'typescript:name:alpha'],
+          ['typescript:name:alpha'],
+        ],
+        provenance: 'syntactic',
+        relation: 'calls',
+        resolutionDomain: 'typescript',
+        sourceId: caller.id,
+        sourceName: caller.name,
+        targetName: unresolved.targetName,
+      };
+      const snapshot = {...readySnapshot(fixture.identity, 1, 1), id: 'compacted-reference-resume'};
+      const store = yield* CodeGraphStore;
 
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
-          }),
-        );
-      }),
-    );
+      yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+          yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+        }),
+      );
 
-    const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:żółw🙂zeta'], ['typescript:name:alpha']];
-    const expectedPayload = JSON.stringify(expectedLookupTiers);
-    const interrupted = new Database(fixture.databasePath, {readonly: true, strict: true});
-    const stored = interrupted
-      .query(
-        `SELECT lookup_tiers_json, candidate_count, candidate_payload_bytes
-         FROM building_references
-         WHERE snapshot_id = ? AND edge_id = ?`,
-      )
-      .get(snapshot.id, unresolved.id) as {
-      readonly candidate_count: number;
-      readonly candidate_payload_bytes: number;
-      readonly lookup_tiers_json: string;
-    };
-    const durableCandidates = interrupted
-      .query('SELECT COUNT(*) AS count FROM building_reference_candidates WHERE snapshot_id = ?')
-      .get(snapshot.id) as {readonly count: number};
-    const receipt = interrupted
-      .query('SELECT candidate_count FROM building_materialization_batches WHERE snapshot_id = ?')
-      .get(snapshot.id) as {readonly candidate_count: number};
-    interrupted.close(false);
+      const expectedLookupTiers = [['typescript:name:alpha', 'typescript:name:żółw🙂zeta'], ['typescript:name:alpha']];
+      const expectedPayload = JSON.stringify(expectedLookupTiers);
+      const interruptedEvidence = yield* Effect.acquireUseRelease(
+        Effect.sync(() => new Database(fixture.databasePath, {readonly: true, strict: true})),
+        interrupted =>
+          Effect.sync(() => ({
+            durableCandidates: interrupted
+              .query('SELECT COUNT(*) AS count FROM building_reference_candidates WHERE snapshot_id = ?')
+              .get(snapshot.id) as {readonly count: number},
+            receipt: interrupted
+              .query('SELECT candidate_count FROM building_materialization_batches WHERE snapshot_id = ?')
+              .get(snapshot.id) as {readonly candidate_count: number},
+            stagedEdge: interrupted
+              .query('SELECT id FROM edges WHERE snapshot_id = ? AND id = ?')
+              .get(snapshot.id, unresolved.id),
+            stored: interrupted
+              .query(
+                `SELECT lookup_tiers_json, candidate_count, candidate_payload_bytes,
+                   source_id, source_name, relation, target_name, provenance, confidence,
+                   evidence_path, evidence_span_json
+                 FROM building_references
+                 WHERE snapshot_id = ? AND edge_id = ?`,
+              )
+              .get(snapshot.id, unresolved.id) as {
+              readonly candidate_count: number;
+              readonly candidate_payload_bytes: number;
+              readonly confidence: number;
+              readonly evidence_path: string;
+              readonly evidence_span_json: string;
+              readonly lookup_tiers_json: string;
+              readonly provenance: string;
+              readonly relation: string;
+              readonly source_id: string | null;
+              readonly source_name: string;
+              readonly target_name: string;
+            },
+          })),
+        interrupted => Effect.sync(() => interrupted.close(false)),
+      );
 
-    expect(stored).toEqual({
-      candidate_count: 3,
-      candidate_payload_bytes: new TextEncoder().encode(expectedPayload).byteLength,
-      lookup_tiers_json: expectedPayload,
-    });
-    expect(durableCandidates.count).toBe(0);
-    expect(receipt.candidate_count).toBe(3);
+      expect(interruptedEvidence.stored).toEqual({
+        candidate_count: 3,
+        candidate_payload_bytes: new TextEncoder().encode(expectedPayload).byteLength,
+        confidence: unresolved.confidence,
+        evidence_path: unresolved.evidencePath,
+        evidence_span_json: JSON.stringify(unresolved.evidenceSpan),
+        lookup_tiers_json: expectedPayload,
+        provenance: unresolved.provenance,
+        relation: unresolved.relation,
+        source_id: unresolved.sourceId,
+        source_name: unresolved.sourceName,
+        target_name: unresolved.targetName,
+      });
+      expect(interruptedEvidence.stagedEdge).toBeNull();
+      expect(interruptedEvidence.durableCandidates.count).toBe(0);
+      expect(interruptedEvidence.receipt.candidate_count).toBe(3);
 
-    const resumed = await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        return yield* store.withSession(
-          fixture.databasePath,
-          Effect.gen(function* () {
-            const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
-              ...snapshot,
-              state: 'building',
-            });
-            yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
-            yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
-            const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
-            yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
-            return {graph: yield* store.loadGraph(fixture.databasePath, snapshot.id), resolution};
-          }),
-        );
-      }),
-    );
+      const resumed = yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const ownerToken = yield* claimPersistentBuildForTest(store, fixture.databasePath, fixture.identity, {
+            ...snapshot,
+            state: 'building',
+          });
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file], snapshot.id, 1, ownerToken);
+          yield* store.stageActivationFacts(fixture.databasePath, [caller], [unresolved], [reference], undefined, 0);
+          const resolution = yield* store.resolveStagedReferences(fixture.databasePath);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, snapshot);
+          return {graph: yield* store.loadGraph(fixture.databasePath, snapshot.id), resolution};
+        }),
+      );
 
-    expect(resumed.resolution.resolved).toBe(0);
-    expect(resumed.graph.edges).toEqual([unresolved]);
-  });
+      expect(resumed.resolution.resolved).toBe(0);
+      expect(resumed.graph.edges).toEqual([unresolved]);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
 
   effectIt.effect('aggregates an overflowing lookup pair without truncating an exported-only match', () =>
     Effect.gen(function* () {
@@ -5676,7 +5853,9 @@ function readPersistentResolutionState(databasePath: string, snapshotId: string)
     references: database
       .query(
         `SELECT edge_id, resolution_domain, exported_only, alias_lookup_keys_json,
-           lookup_tiers_json, candidate_count, candidate_payload_bytes
+           lookup_tiers_json, candidate_count, candidate_payload_bytes,
+           source_id, source_name, relation, target_name, provenance, confidence,
+           evidence_path, evidence_span_json
          FROM building_references
          WHERE snapshot_id = ?
          ORDER BY edge_id`,

@@ -1,5 +1,4 @@
 import {Effect} from 'effect';
-import {sha256HexSync} from '../crypto/sha256.js';
 import {createRepositoryFactAttributor} from './extractor.js';
 import {finalCodeGraphFactBatches} from './fact_budget.js';
 import {
@@ -26,6 +25,7 @@ import type {
   IncrementalOverlayPreassessment,
 } from './indexer_types.js';
 import type {CodeGraphInventory} from './inventory.js';
+import {codeGraphInventorySha256Hex} from './inventory_identity.js';
 import {assessCodeGraphLanguagePackDelta} from './languages/provenance.js';
 import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
@@ -39,6 +39,7 @@ import {
 } from './resolution_surface.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  type CodeGraphReusableBaseReceipt,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
@@ -59,6 +60,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
   input: {
     readonly building: CodeGraphSnapshot;
     readonly committedBase?: CommittedBaseResult;
+    readonly committedBaseReceipt?: CodeGraphReusableBaseReceipt;
     readonly force: boolean;
     readonly incrementalOverlayEnabled?: boolean;
     readonly inventory: CodeGraphInventory;
@@ -97,11 +99,20 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
   }
   let reuse: 'persisted-base' | 'staged-base' = 'staged-base';
   if (!input.committedBase.stagingReusable) {
-    const receipt = yield* input.store.reusableBaseReceipt(
-      input.layout.databasePath,
-      input.committedBase.snapshot.id,
-      input.committedBase.snapshot.dirty ? {allowDirtyRoot: true} : undefined,
-    );
+    // Sparse admission already decoded the immutable receipt for this exact
+    // leased READY snapshot. Reuse it instead of parsing the repository-sized
+    // workspace/attribution payload a second time after scanning completes.
+    const suppliedReceipt = input.committedBaseReceipt;
+    if (suppliedReceipt !== undefined && suppliedReceipt.snapshotId !== input.committedBase.snapshot.id) {
+      return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
+    }
+    const receipt =
+      suppliedReceipt ??
+      (yield* input.store.reusableBaseReceipt(
+        input.layout.databasePath,
+        input.committedBase.snapshot.id,
+        input.committedBase.snapshot.dirty ? {allowDirtyRoot: true} : undefined,
+      ));
     if (
       !receipt ||
       receipt.formatVersion !== CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION ||
@@ -888,11 +899,10 @@ function uniqueStrings(values: readonly string[]): readonly string[] {
 }
 
 export function reusableBaseFileSetFingerprint(files: readonly CodeGraphInventoryFile[]): string {
-  return sha256HexSync(
-    `reusable-base-file-set-v1\n${files
-      .map(file => `${file.path}\0${file.language}\0${file.mode}`)
-      .sort(compareCodeUnits)
-      .join('\n')}`,
+  return codeGraphInventorySha256Hex(
+    'reusable-base-file-set-v1\n',
+    files,
+    file => `${file.path}\0${file.language}\0${file.mode}`,
   );
 }
 

@@ -10,8 +10,10 @@ import {describe, expect, it} from 'vitest';
 import {
   applyBenchmarkOverlay,
   benchmarkDarwinStorageClassification,
+  benchmarkLinuxStorageClassification,
   benchmarkVectorModelDirectoryName,
   CODE_GRAPH_SQLITE_WRITER_PROFILES,
+  codeGraphBenchmarkSqlitePeak,
   codeGraphQueryResultParityEvidence,
   codeGraphQueryResultParityFailureMessage,
   codeGraphStructuralParityEvidence,
@@ -23,6 +25,7 @@ import {
   measureBenchmarkIndex,
   measureSampledBenchmarkIndex,
   parseCodeGraphBenchmarkArguments,
+  productionBenchmarkStorageGoverned,
   restoreBenchmarkOverlay,
   sanitizedBenchmarkEnvironmentProvenance,
   semanticBenchmarkOverlay,
@@ -54,6 +57,29 @@ const CONTROL = JSON.stringify({
 });
 
 describe('code graph external benchmark harness', () => {
+  it('takes governed SQLite peaks from the independent sampler without losing the final boundary', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+        fc.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+        fc.integer({max: Number.MAX_SAFE_INTEGER, min: 0}),
+        (boundaryBytes, scanningBytes, resolvingBytes) => {
+          const sampler = {
+            phases: {
+              resolving: {databasePeakBytes: resolvingBytes},
+              scanning: {databasePeakBytes: scanningBytes},
+            },
+          } as unknown as CodeGraphBenchmarkSamplerArtifact;
+          expect(codeGraphBenchmarkSqlitePeak(boundaryBytes, sampler, 'databasePeakBytes')).toBe(
+            Math.max(boundaryBytes, scanningBytes, resolvingBytes),
+          );
+          expect(codeGraphBenchmarkSqlitePeak(boundaryBytes, undefined, 'databasePeakBytes')).toBe(boundaryBytes);
+        },
+      ),
+      {numRuns: 250},
+    );
+  });
+
   it('classifies the backing macOS device without retaining device identity', () => {
     expect(
       benchmarkDarwinStorageClassification(
@@ -70,6 +96,32 @@ describe('code graph external benchmark harness', () => {
       location: 'unknown',
       medium: 'virtual-or-network',
     });
+  });
+
+  it('classifies hosted Linux overlay storage without trusting its device alias', () => {
+    expect(benchmarkLinuxStorageClassification('overlayfs', '/dev/root', [])).toBe('virtual-or-network');
+    expect(benchmarkLinuxStorageClassification('ext4', '/dev/nvme0n1p1', ['0'])).toBe('solid-state');
+    expect(benchmarkLinuxStorageClassification('xfs', '/dev/sda1', ['1'])).toBe('rotational');
+    expect(benchmarkLinuxStorageClassification('ext4', '/dev/root', [])).toBe('unknown');
+  });
+
+  it('uses trusted GitHub-hosted Linux SSD attestation without weakening local storage governance', () => {
+    const storage = (medium: 'rotational' | 'solid-state' | 'unknown' | 'virtual-or-network') => ({
+      filesystem: 'bounded',
+      location: 'unknown' as const,
+      medium,
+    });
+    for (const medium of ['rotational', 'solid-state', 'unknown', 'virtual-or-network'] as const) {
+      expect(productionBenchmarkStorageGoverned('linux', true, [storage(medium), storage(medium)])).toBe(true);
+      expect(productionBenchmarkStorageGoverned('linux', false, [storage(medium), storage(medium)])).toBe(
+        medium === 'solid-state',
+      );
+    }
+    expect(productionBenchmarkStorageGoverned('darwin', true, [storage('unknown'), storage('unknown')])).toBe(false);
+    expect(productionBenchmarkStorageGoverned('linux', false, [storage('solid-state'), storage('rotational')])).toBe(
+      false,
+    );
+    expect(productionBenchmarkStorageGoverned('linux', true, [])).toBe(false);
   });
 
   it('ignores ordinary vector-maintenance metadata before filesystem inspection', () => {
@@ -253,7 +305,7 @@ describe('code graph external benchmark harness', () => {
   it('wires all three index phases through the phase-pure sampler boundary', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     const cold = sourceSlice(source, 'const coldStoragePeak', 'const changedPath');
-    const incremental = sourceSlice(source, 'const incrementalStoragePeak', 'const sameOverlayReferenceHome');
+    const incremental = sourceSlice(source, 'const incrementalStoragePeak', 'const sameOverlayReferenceIdentity');
     const sameOverlay = sourceSlice(source, 'const sameOverlayReferenceStoragePeak', 'const coldStatusStarted');
 
     expectInOrder(cold, [
@@ -286,6 +338,7 @@ describe('code graph external benchmark harness', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
     expect(source).toContain('const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined');
     expect(source.match(/sampleProcessTree\s*\? startExternalSampler/g)).toHaveLength(3);
+    expect(source.match(/sampler\s*\? Effect\.void\s*:\s*observeSqliteStoragePeak/g)).toHaveLength(3);
   });
 
   it('retains provenance-valid artifact evidence before reporting a ratchet regression', () => {
@@ -370,6 +423,50 @@ describe('code graph external benchmark harness', () => {
       'cannot be combined with --preflight',
     );
     expect(() => parseCodeGraphBenchmarkArguments(['--ratchet', '/tmp/ratchet.json'])).toThrow('requires --output');
+    expect(() =>
+      parseCodeGraphBenchmarkArguments(['--profile', 'production-large', '--minimum-free-gib', '119']),
+    ).toThrow('at least 120');
+    expect(
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--profile-files',
+        '3000',
+        '--profile-symbols',
+        '110000',
+        '--minimum-free-gib',
+        '20',
+      ]).minimumFreeGiB,
+    ).toBe(20);
+    expect(() =>
+      parseCodeGraphBenchmarkArguments([
+        '--profile',
+        'production-large',
+        '--profile-files',
+        '3000',
+        '--profile-symbols',
+        '110000',
+        '--minimum-free-gib',
+        '19',
+      ]),
+    ).toThrow('at least 20');
+    for (const partialOrOversizedProfile of [
+      ['--profile-files', '3000'],
+      ['--profile-symbols', '110000'],
+      ['--profile-files', '3001', '--profile-symbols', '110000'],
+      ['--profile-files', '3000', '--profile-symbols', '110001'],
+      ['--profile-files', '3000', '--profile-symbols', '110000', '--vectors'],
+    ]) {
+      expect(() =>
+        parseCodeGraphBenchmarkArguments([
+          '--profile',
+          'production-large',
+          ...partialOrOversizedProfile,
+          '--minimum-free-gib',
+          '20',
+        ]),
+      ).toThrow('at least 120');
+    }
   });
 
   it('selects explicit SQLite writer candidates without exposing production environment knobs', () => {
@@ -395,29 +492,50 @@ describe('code graph external benchmark harness', () => {
     );
   });
 
-  it('keeps isolated SQLite writer candidates on the production cache baseline', () => {
+  it('governs both generated production homes before preparing the measured runtime', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    expect(source.match(/const sameOverlayReferenceHome/g)).toHaveLength(1);
+    expectInOrder(source, [
+      'const sameOverlayReferenceHome',
+      'productionBenchmarkGovernance(',
+      "runCheckpoint?.mark('preparing-runtime')",
+    ]);
+  });
+
+  it('checkpoints post-build analysis and structural parity independently of the long index phases', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+    expectInOrder(source, [
+      "runCheckpoint?.mark('same-overlay-reference-index')",
+      "runCheckpoint?.mark('post-build-analysis')",
+      "runCheckpoint?.mark('structural-parity')",
+      "runCheckpoint?.mark('concurrent-worktree-control')",
+      "runCheckpoint?.mark('finalizing-artifact')",
+    ]);
+  });
+
+  it('keeps isolated SQLite writer candidates on the production page-cache and WAL baseline', () => {
     const profiles = CODE_GRAPH_SQLITE_WRITER_PROFILES;
 
-    expect(profiles.current.tuning).toEqual({mainCacheKiB: 64, walAutoCheckpointPages: 1_000});
+    expect(profiles.current.tuning).toEqual({mainCacheKiB: 32 * 1_024, walAutoCheckpointPages: 500});
     for (const cacheMiB of [8, 32, 64, 128, 256] as const) {
       expect(profiles[`cache-${cacheMiB}m`].tuning).toEqual({
         mainCacheKiB: cacheMiB * 1_024,
-        walAutoCheckpointPages: 1_000,
+        walAutoCheckpointPages: 500,
       });
     }
     expect(profiles['mmap-256m'].tuning).toEqual({
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       mmapSizeBytes: 256 * 1_024 * 1_024,
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     });
     expect(profiles['wal-checkpoint-8192'].tuning).toEqual({
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       walAutoCheckpointPages: 8_192,
     });
     expect(profiles['building-normal-full-publication'].tuning).toEqual({
-      mainCacheKiB: 64,
+      mainCacheKiB: 32 * 1_024,
       reconstructibleBuildSynchronous: 'normal',
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     });
   });
 
@@ -625,12 +743,12 @@ describe('code graph external benchmark harness', () => {
   it('requires effective PRAGMA readback and FULL-after-NORMAL publication ordering', () => {
     const connection = (benchmarkPhase: 'cold' | 'one-file-reindex' | 'same-overlay-reference') => ({
       benchmarkPhase,
-      cacheSizePragma: -64,
+      cacheSizePragma: -(32 * 1_024),
       journalMode: 'wal',
       mmapSizeBytes: 0,
       phase: 'connection' as const,
       synchronous: 2,
-      walAutoCheckpointPages: 1_000,
+      walAutoCheckpointPages: 500,
     });
     const evidence = [
       connection('cold'),
@@ -654,8 +772,12 @@ describe('code graph external benchmark harness', () => {
         ...evidence
           .filter(settings => settings.phase === 'connection')
           .slice(0, 2)
-          .map(settings => ({...settings, cacheSizePragma: -64})),
-        {...connection('same-overlay-reference'), cacheSizePragma: -64, walAutoCheckpointPages: 8_192},
+          .map(settings => ({...settings, cacheSizePragma: -(32 * 1_024)})),
+        {
+          ...connection('same-overlay-reference'),
+          cacheSizePragma: -(32 * 1_024),
+          walAutoCheckpointPages: 8_192,
+        },
       ]),
     ).toThrow('did not apply its WAL checkpoint cadence');
   });

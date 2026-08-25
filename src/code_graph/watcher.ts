@@ -296,6 +296,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
             );
             const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome).pipe(
               Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(Crypto.Crypto, crypto),
               Effect.provideService(FileSystem.FileSystem, fs),
               Effect.provideService(Path.Path, path),
               Effect.provideService(SystemInfo, systemInfo),

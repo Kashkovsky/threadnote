@@ -1,0 +1,82 @@
+name: Code graph production ratchet
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/code-graph-production-ratchet.yml'
+      - 'bun.lock'
+      - 'package.json'
+      - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/code-graph-benchmark-sampler.ts'
+      - 'scripts/code-graph-fixture.ts'
+      - 'scripts/generate-code-graph-language-catalog.ts'
+      - 'src/code_graph/**'
+      - 'src/crypto/**'
+      - 'src/effect/command.ts'
+      - 'src/effect/digest.ts'
+      - 'src/effect/errors.ts'
+      - 'src/effect/file_durability.ts'
+      - 'src/effect/file_lock.ts'
+      - 'src/effect/runtime.ts'
+      - 'src/effect/system.ts'
+      - 'src/effect/time.ts'
+      - 'src/evaluation/**'
+      - 'src/models/**'
+      - 'src/process_diagnostics.ts'
+      - 'src/search/chunker.ts'
+      - 'src/storage/layout.ts'
+      - 'src/telemetry/session.ts'
+      - 'src/utils.ts'
+      - 'src/worker_protocol.ts'
+      - 'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json'
+      - 'test/evaluation/fixtures/code-graph-v1/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-graph-production-ratchet-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.3.14
+
+jobs:
+  ratchet:
+    name: Governed reduced production profile · Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate the governed reduced production profile
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+          THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '4'
+        run: >-
+          bun run bench:code-graph --
+          --profile production-large
+          --profile-files 3000
+          --profile-symbols 110000
+          --minimum-free-gib 20
+          --samples 1
+          --warmups 0
+          --quiet
+          --ratchet test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json
+          --output artifacts/code-graph-production-ratchet-Linux-${{ runner.arch }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: code-graph-production-ratchet-Linux-${{ runner.arch }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 14

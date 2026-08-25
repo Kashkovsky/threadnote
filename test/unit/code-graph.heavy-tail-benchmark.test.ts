@@ -428,6 +428,9 @@ function heavyTailArtifact(offset: number): CodeGraphHeavyTailBenchmarkArtifact 
     minimumFreeBytes: 120 * 1_073_741_824,
     runtimeProvenance: {
       mode: 'github-actions-clean-source',
+      runnerArchitecture: 'X64',
+      runnerEnvironment: 'github-hosted',
+      runnerOperatingSystem: 'Linux',
       sourceCommit: 'a'.repeat(40),
       sourceLockfileSha256: 'b'.repeat(64),
       sourcePackageManifestSha256: 'c'.repeat(64),

@@ -474,6 +474,15 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
           storage.durableFilesystemHighWaterBytes === undefined
             ? undefined
             : `${formatBytes(storage.durableFilesystemHighWaterBytes)} DB + sidecars high-water`,
+          storage.durableSidecarDatabaseHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableSidecarDatabaseHighWaterBytes)} sorted-sidecar high-water`,
+          storage.durableSidecarJournalHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableSidecarJournalHighWaterBytes)} sidecar journal high-water`,
+          storage.durableSidecarWalHighWaterBytes === undefined
+            ? undefined
+            : `${formatBytes(storage.durableSidecarWalHighWaterBytes)} sidecar WAL high-water`,
           storage.durableWalHighWaterBytes === undefined
             ? undefined
             : `${formatBytes(storage.durableWalHighWaterBytes)} WAL high-water`,
@@ -1900,6 +1909,8 @@ function materializationStageLabel(
       return 'attributing facts';
     case 'preparing-rows':
       return 'preparing rows';
+    case 'restoring-indexes':
+      return 'restoring query indexes';
     case 'writing-analysis':
       return 'writing analysis summary';
     case 'writing-symbols':

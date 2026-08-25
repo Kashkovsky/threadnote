@@ -27,10 +27,13 @@ import {
   capturePersistedAnalysisResolutionEdges,
   codeGraphPersistedDeltaResolutionPageStatement,
   codeGraphPersistentReferencePageStatement,
+  nextPersistentReferenceResolutionTransactionPages,
   PERSISTENT_FULL_RESOLUTION_RESERVATION_PAGES,
+  PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES,
   planPersistentReferenceResolutionPages,
   persistentFullReferencePageTotal,
   persistentReferenceResolutionCapacityBoundary,
+  persistentUnresolvedReferenceCapacityBoundary,
 } from './store_resolution_core.js';
 import {resolvePersistedFullReferencePage} from './store_resolution_matching.js';
 import {expandTransitiveReexportAliases} from './store_persistent_build.js';
@@ -41,10 +44,44 @@ import {
   markSnapshotLeaseRetirementBaton,
 } from './store_reconciliation.js';
 import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconciliation_core.js';
-import {CodeGraphPromotionCapacityPlanChanged} from './store_internal_models.js';
-import {lastStatementChangeCount} from './store_activation_core.js';
+import {CodeGraphPromotionCapacityPlanChanged, type EdgeRow} from './store_internal_models.js';
+import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './store_activation_core.js';
 
 export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
+
+// Unresolved publication hydrates complete edge payloads for the capacity
+// reservation, unlike the insert-select activation copier. Retain the proven
+// 1,500-row first transaction and 10k ceiling for ordinary graphs. Above the
+// measured 150k-reference crossover, permit 2x growth to 20k; the larger JVM
+// sample benefited while the reduced production fixture did not. The adaptive
+// controller still shrinks after transactions exceed five seconds.
+const PERSISTENT_UNRESOLVED_REFERENCE_INITIAL_BATCH_ROWS = 1_500;
+
+const PERSISTENT_UNRESOLVED_REFERENCE_LARGE_GRAPH_ROWS = 150_000;
+
+const PERSISTENT_UNRESOLVED_REFERENCE_STANDARD_MAXIMUM_BATCH_ROWS = 10_000;
+
+const PERSISTENT_UNRESOLVED_REFERENCE_LARGE_MAXIMUM_BATCH_ROWS = 20_000;
+
+/** @internal Deterministic workload boundary retained for state-machine properties. */
+export function persistentUnresolvedReferenceMaximumBatchRows(referenceRows: number): number {
+  return Number.isSafeInteger(referenceRows) && referenceRows >= PERSISTENT_UNRESOLVED_REFERENCE_LARGE_GRAPH_ROWS
+    ? PERSISTENT_UNRESOLVED_REFERENCE_LARGE_MAXIMUM_BATCH_ROWS
+    : PERSISTENT_UNRESOLVED_REFERENCE_STANDARD_MAXIMUM_BATCH_ROWS;
+}
+
+/** @internal Pure adaptive boundary retained for state-machine properties. */
+export function nextPersistentUnresolvedReferenceBatchRows(
+  currentRows: number,
+  milliseconds: number,
+  referenceRows: number,
+): number {
+  return nextPersistentActivationBatchRows(
+    currentRows,
+    milliseconds,
+    persistentUnresolvedReferenceMaximumBatchRows(referenceRows),
+  );
+}
 
 interface ResolutionTransactionPage {
   readonly aliases: readonly (readonly [string, string, string, number, 'alias', string, string])[];
@@ -160,6 +197,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   const pageRows = persistentFull ? PERSISTENT_FULL_RESOLUTION_PAGE_ROWS : RESOLUTION_PAGE_ROWS;
   const persistedBaseSnapshotId = mode?.mode === 'persisted-delta' ? mode.baseSnapshotId : undefined;
   let aliasesDiscovered = 0;
+  let longestTransactionMilliseconds = 0;
   let matchingMilliseconds = 0;
   let pagesCompleted = 0;
   let passesCompleted = 0;
@@ -171,6 +209,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
   let transactionMilliseconds = 0;
   let transactionWritingAliasesMilliseconds = 0;
   let transactionWritingEdgesMilliseconds = 0;
+  let persistentTransactionPageLimit = PERSISTENT_FULL_RESOLUTION_TRANSACTION_PAGES;
   const transactionStageMilliseconds = () => ({
     preparingBatch: transactionPreparingBatchMilliseconds,
     retiringReferences: transactionRetiringReferencesMilliseconds,
@@ -178,6 +217,18 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     writingAliases: transactionWritingAliasesMilliseconds,
     writingEdges: transactionWritingEdgesMilliseconds,
   });
+  const observeResolutionTransaction = <A, E, R>(
+    transaction: Effect.Effect<A, E, R>,
+    onDuration?: (milliseconds: number) => void,
+  ) =>
+    Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis;
+      const result = yield* transaction;
+      const milliseconds = (yield* Clock.currentTimeMillis) - startedAt;
+      longestTransactionMilliseconds = Math.max(longestTransactionMilliseconds, milliseconds);
+      onDuration?.(milliseconds);
+      return result;
+    });
   const preparationCountStartedAt = yield* Clock.currentTimeMillis;
   const preparationCountRows = persistentFull
     ? yield* sql<PersistedFullReferenceTotalsRow>`
@@ -206,6 +257,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       yield* onProgress({
         aliasesDiscovered: aliases,
         elapsedMilliseconds,
+        longestTransactionMilliseconds,
         matchingMilliseconds,
         pageCompleted: 0,
         pageTotal: preparationPageTotal,
@@ -278,6 +330,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         yield* onProgress({
           aliasesDiscovered,
           elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+          longestTransactionMilliseconds,
           matchingMilliseconds: reportedMatchingMilliseconds,
           pageCompleted,
           pageTotal,
@@ -296,6 +349,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
     ) {
       const resolutions: ActivationResolutionRow[] = [];
       const aliases: Array<readonly [string, string, string, number, 'alias', string, string]> = [];
+      let observedTransactionMilliseconds: number | undefined;
       for (const page of transactionPages) {
         for (const resolution of page.resolutions) resolutions.push(resolution);
         for (const alias of page.aliases) aliases.push(alias);
@@ -352,20 +406,44 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             transactionStageStartedAt = yield* Clock.currentTimeMillis;
             if (persistentFull) {
               yield* sql.unsafe(
-                `INSERT OR REPLACE INTO edges (
+                `WITH edge_payloads AS MATERIALIZED (
+                   SELECT resolution.old_edge_id, resolution.new_edge_id,
+                     edge.source_id, edge.source_name, edge.evidence_path, edge.evidence_span_json
+                   FROM activation_resolved_reference_batch AS resolution
+                   CROSS JOIN edges AS edge
+                     ON edge.snapshot_id = ? AND edge.id = resolution.old_edge_id
+                   UNION ALL
+                   SELECT resolution.old_edge_id, resolution.new_edge_id,
+                     reference.source_id, reference.source_name,
+                     reference.evidence_path, reference.evidence_span_json
+                   FROM activation_resolved_reference_batch AS resolution
+                   CROSS JOIN building_references AS reference
+                     ON reference.snapshot_id = ? AND reference.edge_id = resolution.old_edge_id
+                   WHERE NOT EXISTS (
+                     SELECT 1 FROM edges AS current
+                     WHERE current.snapshot_id = ? AND current.id = resolution.old_edge_id
+                   )
+                 )
+                 INSERT OR REPLACE INTO edges (
                    snapshot_id, id, source_id, source_name, relation, target_id, target_name,
                    provenance, confidence, evidence_path, evidence_span_json
                  )
                  SELECT
-                   ?, resolution.new_edge_id, edge.source_id, edge.source_name,
+                   ?, resolution.new_edge_id, payload.source_id, payload.source_name,
                    resolution.relation, resolution.target_id, resolution.target_name,
                    resolution.provenance, resolution.confidence,
-                   edge.evidence_path, edge.evidence_span_json
+                   payload.evidence_path, payload.evidence_span_json
                  FROM activation_resolved_reference_batch AS resolution
-                 CROSS JOIN edges AS edge
-                   ON edge.snapshot_id = ? AND edge.id = resolution.old_edge_id
+                 CROSS JOIN edge_payloads AS payload
+                   ON payload.old_edge_id = resolution.old_edge_id
+                      AND payload.new_edge_id = resolution.new_edge_id
                  ORDER BY resolution.new_edge_id, resolution.old_edge_id`,
-                [persistentFull.snapshotId, persistentFull.snapshotId],
+                [
+                  persistentFull.snapshotId,
+                  persistentFull.snapshotId,
+                  persistentFull.snapshotId,
+                  persistentFull.snapshotId,
+                ],
               );
               yield* sql.unsafe(
                 `DELETE FROM edges
@@ -435,7 +513,11 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
             }
           }),
         );
-        const gatedTransaction = mode?.mode === 'persisted-full' && writerGate ? writerGate(transaction) : transaction;
+        const observedTransaction = observeResolutionTransaction(transaction, milliseconds => {
+          observedTransactionMilliseconds = milliseconds;
+        });
+        const gatedTransaction =
+          mode?.mode === 'persisted-full' && writerGate ? writerGate(observedTransaction) : observedTransaction;
         yield* gatedTransaction;
       }
       // A later transaction in the same reservation can fail after this group
@@ -445,17 +527,24 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       aliasesDiscovered += aliases.length;
       resolvedInPass += resolutions.length;
       resolved += resolutions.length;
+      return observedTransactionMilliseconds;
     });
     const flushReservationPages = Effect.fn('codeGraph.flushResolutionReservationPages')(function* () {
       if (reservationPages.length === 0) return;
-      const reservations = planPersistentReferenceResolutionPages(reservationPages);
+      const reservations = planPersistentReferenceResolutionPages(reservationPages, persistentTransactionPageLimit);
       for (const reservation of reservations) {
         const transactions = Effect.gen(function* () {
           for (let index = 0; index < reservation.transactions.length; index += 1) {
-            yield* commitTransactionPages(reservation.transactions[index]!);
+            const observedTransactionMilliseconds = yield* commitTransactionPages(reservation.transactions[index]!);
+            if (persistentFull && observedTransactionMilliseconds !== undefined) {
+              persistentTransactionPageLimit = nextPersistentReferenceResolutionTransactionPages(
+                persistentTransactionPageLimit,
+                observedTransactionMilliseconds,
+              );
+            }
             if (index + 1 < reservation.transactions.length) {
               // The writer lock is released at this boundary. Preserve the
-              // established four-page progress cadence without reacquiring the
+              // bounded transaction progress cadence without reacquiring the
               // wider disk-capacity reservation for the next transaction.
               yield* reportResolutionProgress();
               yield* Effect.yieldNow;
@@ -477,6 +566,76 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         }
       }
       reservationPages.length = 0;
+    });
+    const flushUnresolvedReferenceEdges = Effect.fn('codeGraph.flushUnresolvedReferenceEdges')(function* () {
+      if (!persistentFull) return;
+      let unresolvedCursor = '';
+      let unresolvedBatchRows = PERSISTENT_UNRESOLVED_REFERENCE_INITIAL_BATCH_ROWS;
+      for (;;) {
+        const unresolved = yield* sql.unsafe<EdgeRow>(
+          `SELECT edge_id AS id, source_id, source_name, relation, NULL AS target_id,
+             target_name, provenance, confidence, evidence_path, evidence_span_json
+           FROM building_references
+           WHERE snapshot_id = ? AND edge_id > ?
+           ORDER BY edge_id
+           LIMIT ${unresolvedBatchRows}`,
+          [persistentFull.snapshotId, unresolvedCursor],
+        );
+        if (unresolved.length === 0) break;
+        const batchEnd = unresolved.at(-1)!.id;
+        const transaction = sql.withTransaction(
+          Effect.gen(function* () {
+            yield* assertPersistentBuildOwner(sql, persistentFull.snapshotId, persistentFull.ownerToken);
+            let transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            // A resolved edge can intentionally collide with the original ID
+            // of a still-unresolved reference. INSERT OR IGNORE preserves the
+            // already-established winner exactly as the former eager raw-edge
+            // insert followed by resolution replacement did.
+            yield* sql.unsafe(
+              `INSERT OR IGNORE INTO edges (
+                 snapshot_id, id, source_id, source_name, relation, target_id, target_name,
+                 provenance, confidence, evidence_path, evidence_span_json
+               )
+               SELECT snapshot_id, edge_id, source_id, source_name, relation, NULL, target_name,
+                 provenance, confidence, evidence_path, evidence_span_json
+               FROM building_references
+               WHERE snapshot_id = ? AND edge_id > ? AND edge_id <= ?
+               ORDER BY edge_id`,
+              [persistentFull.snapshotId, unresolvedCursor, batchEnd],
+            );
+            transactionWritingEdgesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+            transactionStageStartedAt = yield* Clock.currentTimeMillis;
+            yield* sql.unsafe(
+              `DELETE FROM building_references
+               WHERE snapshot_id = ? AND edge_id > ? AND edge_id <= ?`,
+              [persistentFull.snapshotId, unresolvedCursor, batchEnd],
+            );
+            transactionRetiringReferencesMilliseconds += (yield* Clock.currentTimeMillis) - transactionStageStartedAt;
+          }),
+        );
+        let observedTransactionMilliseconds = 0;
+        const observedTransaction = observeResolutionTransaction(transaction, milliseconds => {
+          observedTransactionMilliseconds = milliseconds;
+        });
+        const gated = writerGate ? writerGate(observedTransaction) : observedTransaction;
+        const protectedTransaction = persistentCapacityProtector
+          ? persistentCapacityProtector(
+              persistentUnresolvedReferenceCapacityBoundary(persistentFull.snapshotId, unresolved),
+              gated,
+            )
+          : gated;
+        const transactionStartedAt = yield* Clock.currentTimeMillis;
+        yield* protectedTransaction;
+        transactionMilliseconds += (yield* Clock.currentTimeMillis) - transactionStartedAt;
+        unresolvedCursor = batchEnd;
+        unresolvedBatchRows = nextPersistentUnresolvedReferenceBatchRows(
+          unresolvedBatchRows,
+          observedTransactionMilliseconds,
+          preparationReferencesTotal,
+        );
+        yield* reportResolutionProgress();
+        yield* Effect.yieldNow;
+      }
     });
     yield* reportResolutionProgress();
     yield* Effect.yieldNow;
@@ -654,11 +813,15 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       yield* Effect.yieldNow;
     }
     passesCompleted += 1;
-    if (resolvedInPass === 0 || aliasesInPass === 0) break;
+    if (resolvedInPass === 0 || aliasesInPass === 0) {
+      yield* flushUnresolvedReferenceEdges();
+      break;
+    }
   }
   return {
     aliasesDiscovered,
     elapsedMilliseconds: (yield* Clock.currentTimeMillis) - startedAt,
+    longestTransactionMilliseconds,
     matchingMilliseconds,
     pagesCompleted,
     passesCompleted,

@@ -225,6 +225,8 @@ describe('code graph build-status properties', () => {
             changedFactBytesCompleted: sample.cachedFactBytes,
             crossGenerationShardFilesCompleted: 0,
             exactGenerationShardFilesCompleted: sample.exactGenerationShardFiles,
+            materializedShardCacheDeferredFilesCompleted: 0,
+            materializedShardCacheDeferredRawFactBytesCompleted: 0,
             materializedShardReplayBytesCompleted: sample.materializedShardReplayBytes,
             rawFactReplayBytesCompleted: sample.rawFactReplayBytes,
             rows: {
@@ -285,6 +287,19 @@ describe('code graph build-status properties', () => {
             ...materializing.materialization,
             metrics: {
               ...materializing.materialization!.metrics!,
+              materializedShardCacheDeferredRawFactBytesCompleted:
+                materializing.materialization!.metrics!.rawFactReplayBytesCompleted! + 1,
+            },
+          },
+        }),
+      ).toBeUndefined();
+      expect(
+        parseCodeGraphBuildStatus({
+          ...materializing,
+          materialization: {
+            ...materializing.materialization,
+            metrics: {
+              ...materializing.materialization!.metrics!,
               subphaseMilliseconds: {
                 ...materializing.materialization!.metrics!.subphaseMilliseconds!,
                 shardPersistence: -1,
@@ -319,6 +334,7 @@ describe('code graph build-status properties', () => {
       const activity = {
         aliasesDiscovered: 0,
         elapsedMilliseconds: 500_000,
+        longestTransactionMilliseconds: 75_000,
         matchingMilliseconds: 100_000,
         pageCompleted: 1,
         pageTotal: 2,
@@ -346,6 +362,12 @@ describe('code graph build-status properties', () => {
               transactionStageMilliseconds: {...sample, writingEdges: -1},
             },
           },
+        }),
+      ).toBeUndefined();
+      expect(
+        parseCodeGraphBuildStatus({
+          ...resolving,
+          resolution: {activity: {...activity, longestTransactionMilliseconds: -1}},
         }),
       ).toBeUndefined();
     },

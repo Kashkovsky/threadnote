@@ -43,6 +43,7 @@ import {
   prepareFreshFactCacheChunks,
   storeFreshFactRows,
   prepareMaterializedShardCacheChunks,
+  prepareMaterializedShardCacheBatchChunks,
   writeMaterializedShardCacheRows,
 } from './store_cache.js';
 import {validatedSnapshotLeaseDuration} from './store_maintenance_core.js';
@@ -53,7 +54,6 @@ import {
   authorizeRemovedViewCleanup,
   updateRemovedViewCleanup,
 } from './store_reconciliation.js';
-import {preflightRemovedViewCleanupSchema} from './store_schema_migration.js';
 import {acquireSnapshotLease, retainViewSnapshotLease, validateViewSnapshotLease} from './store_leases.js';
 import {prepareActivationTables} from './store_staging_core.js';
 import {initializeSchema} from './store_schema_initialization.js';
@@ -84,6 +84,7 @@ type CodeGraphStoreLifecycleMethods = Pick<
   | 'activateCleanSnapshotAlias'
   | 'cacheFacts'
   | 'cacheMaterializedFileShards'
+  | 'cacheMaterializedFileShardBatches'
   | 'associateMaterializedFileShardBatches'
   | 'promote'
   | 'observeView'
@@ -111,6 +112,35 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
     scheduleRoutinePhysicalCleanup,
     ensureSchemaInitialized,
   } = runtime;
+  const cacheMaterializedFileShardBatches: CodeGraphStoreLifecycleMethods['cacheMaterializedFileShardBatches'] = (
+    databasePath,
+    batches,
+    persistentCapacityProtector,
+  ) =>
+    Effect.gen(function* () {
+      if (batches.length === 0) return;
+      const chunks = yield* Effect.try({
+        catch: cause => cacheCapacityPlanningError('materialized file shards', cause),
+        try: () => prepareMaterializedShardCacheBatchChunks(batches, new Date().toISOString()),
+      });
+      yield* prepare(databasePath);
+      yield* useDatabase(
+        databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* ensureSchemaInitialized(databasePath, sql);
+        }),
+      );
+      for (const chunk of chunks) {
+        yield* writeMaterializedShardCacheRows({
+          databasePath,
+          persistentCapacityProtector,
+          rows: chunk.rows,
+          withWriterGate,
+        });
+      }
+    }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shard batches', cause)));
+
   return {
     shrinkMemory: databasePath =>
       useDatabase(
@@ -135,7 +165,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             // Keep hot upper B-tree pages resident for the one long-lived
             // indexing writer. Read/query sessions retain SQLite's small
             // default cache, so concurrent agents do not multiply this
-            // bounded 64 KiB budget.
+            // bounded 32 MiB writer budget.
             if (options.sqliteWriterTuning) {
               yield* configureSqliteWriterConnection(
                 sql,
@@ -155,7 +185,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           const session = {
             databasePath,
             detachedCleanupRequest,
-            schemaInitialized: false,
+            schemaInitialized: false as boolean,
             sql,
             ...options,
           } satisfies CodeGraphDatabaseSessionShape;
@@ -167,7 +197,18 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             // therefore self-heals on the next ordinary index without
             // making graph queries pay cleanup latency.
             if (options?.cleanupCompletedBuildRows && (yield* tableExists(sql, 'snapshots'))) {
-              yield* preflightRemovedViewCleanupSchema(sql);
+              // Initialize once under the checkout writer gate before cleanup.
+              // The receipt makes the ordinary path bounded, and marking this
+              // session avoids replaying the same admission when the indexing
+              // effect calls store.initialize immediately afterward.
+              yield* ensureSchemaInitialized(databasePath, sql).pipe(
+                Effect.mapError(cause =>
+                  cause instanceof CodeGraphStoreError
+                    ? cause
+                    : storeError('initialize code graph database session', cause),
+                ),
+                Effect.asVoid,
+              );
               const cleanup = yield* drainCompletedPersistentBuildRows(
                 sql,
                 undefined,
@@ -510,6 +551,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           });
         }
       }).pipe(Effect.mapError(cause => storeError('cache materialized code graph file shards', cause))),
+    cacheMaterializedFileShardBatches,
     associateMaterializedFileShardBatches: (
       databasePath,
       snapshotId,

@@ -76,6 +76,13 @@ import {
   temporaryActivationInventoryCapacity,
   temporaryIncrementalActivationCapacity,
 } from './store_temporary_capacity.js';
+import {restoreCodeGraphQueryIndexesAfterColdBuild} from './store_cold_index_deferral.js';
+import {
+  finalizePersistentMaterializationSpool,
+  persistentMaterializationStorageObservation,
+  removePersistentMaterializationSpool,
+} from './store_materialization_spool_lifecycle.js';
+import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
 
 type CodeGraphStoreDataMethods = Pick<
   CodeGraphStoreShape,
@@ -191,7 +198,13 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('prepare staged code graph activation', cause)),
       ),
-    finalizePersistentMaterializationPlan: (databasePath, expectedBatchCount, persistentCapacityProtector) =>
+    finalizePersistentMaterializationPlan: (
+      databasePath,
+      expectedBatchCount,
+      persistentCapacityProtector,
+      onSecondaryIndexProgress,
+      materializationSpool,
+    ) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
@@ -204,6 +217,19 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                   new CodeGraphStoreError('Persistent full-build materialization is not active.'),
                 );
               }
+              const spoolPath = materializationSpool
+                ? yield* finalizePersistentMaterializationSpool(
+                    runtime,
+                    databasePath,
+                    sql,
+                    mode.snapshotId,
+                    mode.ownerToken,
+                    expectedBatchCount,
+                    materializationSpool,
+                    effect => withWriterGate(databasePath, effect),
+                    persistentCapacityProtector,
+                  )
+                : undefined;
               const boundary: CodeGraphDirectPersistentCapacityBoundary = {
                 finalFactBytes: 0,
                 operation: 'register persistent code graph materialization plan',
@@ -215,6 +241,25 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
                 finalizePersistentMaterializationPlan(sql, mode.snapshotId, mode.ownerToken, expectedBatchCount),
               );
               yield* persistentCapacityProtector ? persistentCapacityProtector(boundary, transaction) : transaction;
+              yield* restoreCodeGraphQueryIndexesAfterColdBuild({
+                onProgress: onSecondaryIndexProgress,
+                ...(spoolPath && materializationSpool?.onStorageObservation
+                  ? {
+                      observeTransaction: () =>
+                        Effect.sync(() =>
+                          materializationSpool.onStorageObservation?.(
+                            persistentMaterializationStorageObservation(databasePath, spoolPath),
+                          ),
+                        ),
+                    }
+                  : {}),
+                ownerToken: mode.ownerToken,
+                persistentCapacityProtector,
+                snapshotId: mode.snapshotId,
+                sql,
+                writerGate: effect => withWriterGate(databasePath, effect),
+              });
+              if (spoolPath) yield* removePersistentMaterializationSpool(runtime, spoolPath);
             }),
           ),
         ),
@@ -549,6 +594,18 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             options?.cleanupMode,
           ),
         );
+        for (const snapshotId of result.spoolCleanupSnapshotIds) {
+          const spoolPath = yield* Effect.try({
+            catch: () => new CodeGraphStoreError('Retired materialization spool identity is invalid.'),
+            try: () =>
+              codeGraphMaterializationSpoolPath(
+                runtime.path,
+                {repositoryRoot: runtime.path.dirname(databasePath)},
+                snapshotId,
+              ),
+          });
+          yield* removePersistentMaterializationSpool(runtime, spoolPath);
+        }
         if (result.reclaimable > 0) {
           yield* scheduleRoutinePhysicalCleanup(databasePath);
         }

@@ -174,14 +174,14 @@ export const resolvePersistedFullReferencePage = Effect.fn('codeGraph.resolvePer
 ) {
   const decoded = yield* decodePersistedReferencePage(page);
   const metadata = yield* sql.unsafe<PersistedReferenceMetadataRow>(
-    `SELECT edge.*, reference.alias_lookup_keys_json,
+    `SELECT reference.edge_id AS id, reference.source_id, reference.source_name,
+         reference.relation, NULL AS target_id, reference.target_name,
+         reference.provenance, reference.confidence, reference.evidence_path,
+         reference.evidence_span_json, reference.alias_lookup_keys_json,
          reference.resolution_domain, reference.exported_only
        FROM building_references AS reference
-       CROSS JOIN edges AS edge
-         ON edge.snapshot_id = reference.snapshot_id AND edge.id = reference.edge_id
        WHERE reference.snapshot_id = ?
          AND reference.edge_id > ? AND reference.edge_id <= ?
-         AND edge.target_id IS NULL
        ORDER BY reference.edge_id`,
     [snapshotId, cursor, batchEnd],
   );

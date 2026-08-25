@@ -9,6 +9,7 @@ import {
   assertExternalPerformanceEvidence,
   assertExternalRepositoryEvidence,
   assertProductionReleaseEvidence,
+  createCodeGraphProductionRatchet,
   enforceCodeGraphBenchmarkBudget,
   enforceCodeGraphBenchmarkRatchet,
   externalSamplerMeasurements,
@@ -23,6 +24,7 @@ import {
 } from '../../scripts/benchmark-code-graph.js';
 import {PRODUCTION_LARGE_CODE_GRAPH_PROFILE} from '../../scripts/code-graph-fixture.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
+import {CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM} from '../../src/code_graph/materialized_shard_cache_admission.js';
 import {
   retainedPerformanceArtifactFromHarness,
   validateRetainedPerformancePayload,
@@ -201,6 +203,7 @@ describe('code graph release evidence', () => {
         activity: {
           aliasesDiscovered: 13,
           elapsedMilliseconds: 1_000,
+          longestTransactionMilliseconds: 125,
           matchingMilliseconds: 700,
           pageCompleted: 2,
           pageTotal: 2,
@@ -236,6 +239,7 @@ describe('code graph release evidence', () => {
     );
     expect(Object.fromEntries([...measurements].filter(([name]) => name.includes('reference-resolution-')))).toEqual({
       'cold-reference-resolution-aliases-discovered-n1': 13,
+      'cold-reference-resolution-longest-transaction-n1': 125,
       'cold-reference-resolution-matching-n1': 700,
       'cold-reference-resolution-pages-n1': 5,
       'cold-reference-resolution-passes-n1': 3,
@@ -623,6 +627,45 @@ describe('code graph release evidence', () => {
     ).toThrow(/cold-materialization/);
   });
 
+  it('requires transaction-observed main and sorted-sidecar storage high-water evidence', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v1',
+    );
+    const withValues = (values: Readonly<Record<string, number>>) => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        values[measurement.name] === undefined
+          ? measurement
+          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]!]),
+      ),
+    });
+
+    expect(() =>
+      assertProductionReleaseEvidence(withValues({'cold-materialization-sidecar-database-high-water-n1': 0})),
+    ).toThrow(/cold sorted-sidecar database high-water/);
+    expect(() =>
+      assertProductionReleaseEvidence(withValues({'cold-materialization-sidecar-journal-high-water-n1': 0})),
+    ).toThrow(/cold sorted-sidecar journal high-water/);
+    expect(() =>
+      assertProductionReleaseEvidence(withValues({'cold-materialization-sidecar-wal-high-water-n1': 1})),
+    ).toThrow(/cold sorted-sidecar WAL exclusion/);
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withValues({
+          'one-file-reindex-materialization-durable-journal-high-water-n1': 0,
+          'one-file-reindex-materialization-durable-wal-high-water-n1': 0,
+        }),
+      ),
+    ).toThrow(/one-file-reindex materialization journal\/WAL high-water/);
+  });
+
   it.each([
     'production-shape-file-target-attainment',
     'production-shape-repository-file-target-attainment',
@@ -715,17 +758,38 @@ describe('code graph release evidence', () => {
         {name: 'cold-materialization-temp-filesystem-available-n1', unit: 'bytes'},
         {name: 'cold-materialization-durable-filesystem-available-n1', unit: 'bytes'},
         {name: 'cold-materialization-filesystems-shared-n1', unit: 'count'},
+        {name: 'cold-materialization-materialized-shard-cache-deferred-files-n1', unit: 'count'},
+        {name: 'cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-materialized-shard-replay-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
         {name: 'cold-materialization-deduplicated-edge-rows-n1', unit: 'count'},
         {name: 'cold-materialization-deduplicated-reference-rows-n1', unit: 'count'},
+        {name: 'cold-materialization-durable-database-growth-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-durable-filesystem-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-durable-journal-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-durable-wal-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-sidecar-database-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-sidecar-journal-high-water-n1', unit: 'bytes'},
+        {name: 'cold-materialization-sidecar-wal-high-water-n1', unit: 'bytes'},
         {name: 'one-file-reindex-materialization-deduplicated-edge-rows-n1', unit: 'count'},
         {name: 'one-file-reindex-materialization-deduplicated-reference-rows-n1', unit: 'count'},
+        {name: 'cold-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
+        {name: 'same-overlay-reference-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
+        {name: 'one-file-reindex-materialization-stage-restoring-indexes-n1', unit: 'milliseconds'},
         {name: 'same-overlay-reference-materialization-attributed-files-n1', unit: 'count'},
+        {name: 'same-overlay-reference-materialization-cached-fact-bytes-total-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-cached-fact-replay-bytes-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-changed-fact-bytes-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-cross-generation-shard-files-n1', unit: 'count'},
         {name: 'same-overlay-reference-materialization-exact-generation-shard-files-n1', unit: 'count'},
+        {
+          name: 'same-overlay-reference-materialization-materialized-shard-cache-deferred-files-n1',
+          unit: 'count',
+        },
+        {
+          name: 'same-overlay-reference-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1',
+          unit: 'bytes',
+        },
         {name: 'same-overlay-reference-materialization-materialized-shard-replay-bytes-n1', unit: 'bytes'},
         {name: 'same-overlay-reference-materialization-raw-fact-replay-bytes-n1', unit: 'bytes'},
       ]),
@@ -738,11 +802,20 @@ describe('code graph release evidence', () => {
         changedFactBytesCompleted: 2,
         crossGenerationShardFilesCompleted: 0,
         durableAvailableBytes: 20,
+        durableDatabaseGrowthHighWaterBytes: 60,
+        durableFilesystemHighWaterBytes: 70,
+        durableJournalHighWaterBytes: 80,
+        durableSidecarDatabaseHighWaterBytes: 90,
+        durableSidecarJournalHighWaterBytes: 100,
+        durableSidecarWalHighWaterBytes: 0,
+        durableWalHighWaterBytes: 110,
         estimateBasis: 'cached-fact-bytes',
         estimatedDurableFilesystemRequiredBytes: 30,
         estimatedTemporaryFilesystemRequiredBytes: 40,
         filesystemsShared: false,
         exactGenerationShardFilesCompleted: 3,
+        materializedShardCacheDeferredFilesCompleted: 2,
+        materializedShardCacheDeferredRawFactBytesCompleted: 4,
         materializedShardReplayBytesCompleted: 8,
         rawFactReplayBytesCompleted: 4,
         temporaryAvailableBytes: 50,
@@ -756,12 +829,21 @@ describe('code graph release evidence', () => {
         ['cold-materialization-changed-fact-bytes-n1', 2],
         ['cold-materialization-cross-generation-shard-files-n1', 0],
         ['cold-materialization-exact-generation-shard-files-n1', 3],
+        ['cold-materialization-materialized-shard-cache-deferred-files-n1', 2],
+        ['cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1', 4],
         ['cold-materialization-materialized-shard-replay-bytes-n1', 8],
         ['cold-materialization-raw-fact-replay-bytes-n1', 4],
         ['cold-materialization-estimated-temp-filesystem-required-n1', 40],
         ['cold-materialization-estimated-durable-filesystem-required-n1', 30],
         ['cold-materialization-temp-filesystem-available-n1', 50],
         ['cold-materialization-durable-filesystem-available-n1', 20],
+        ['cold-materialization-durable-database-growth-high-water-n1', 60],
+        ['cold-materialization-durable-filesystem-high-water-n1', 70],
+        ['cold-materialization-durable-journal-high-water-n1', 80],
+        ['cold-materialization-durable-wal-high-water-n1', 110],
+        ['cold-materialization-sidecar-database-high-water-n1', 90],
+        ['cold-materialization-sidecar-journal-high-water-n1', 100],
+        ['cold-materialization-sidecar-wal-high-water-n1', 0],
         ['cold-materialization-filesystems-shared-n1', 0],
       ]),
     );
@@ -815,6 +897,545 @@ describe('code graph release evidence', () => {
         }),
       ).toThrow(new RegExp(`${prefix} materialization replay-byte equation`));
     }
+  });
+
+  it('requires query-index restoration for full builds and excludes it from sparse overlays', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v2',
+    );
+    const withDuration = (name: string, value: number): BenchmarkArtifactV1 => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        measurement.name === name ? benchmarkMeasurement(name, measurement.unit, [value]) : measurement,
+      ),
+    });
+
+    expect(() => assertProductionReleaseEvidence(artifact)).not.toThrow();
+    expect(() =>
+      assertProductionReleaseEvidence(withDuration('cold-materialization-stage-restoring-indexes-n1', 0)),
+    ).toThrow(/cold full-build query-index restoration/);
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withDuration('same-overlay-reference-materialization-stage-restoring-indexes-n1', 0),
+      ),
+    ).toThrow(/same-overlay-reference full-build query-index restoration/);
+
+    fc.assert(
+      fc.property(fc.integer({max: 60_000, min: 1}), duration => {
+        expect(() =>
+          assertProductionReleaseEvidence(
+            withDuration('one-file-reindex-materialization-stage-restoring-indexes-n1', duration),
+          ),
+        ).toThrow(/one-file reindex query-index restoration exclusion/);
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('requires large full builds to defer the complete duplicate materialized-shard cache', () => {
+    const artifact = benchmarkArtifact(
+      requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+      {
+        coldMaterializationStorageMode: 'direct-persistent',
+        oneFileReindexMaterializationMode: 'incremental-overlay',
+        sameOverlayReferenceMaterializationMode: 'full',
+        sqliteVersion: '3.49.1',
+      },
+      'code-graph-production-large-v2',
+    );
+    const withValues = (values: Readonly<Record<string, number>>): BenchmarkArtifactV1 => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        values[measurement.name] === undefined
+          ? measurement
+          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]!]),
+      ),
+    });
+
+    expect(() => assertProductionReleaseEvidence(artifact)).not.toThrow();
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withValues({'cold-materialization-materialized-shard-cache-deferred-files-n1': 0}),
+      ),
+    ).toThrow(/cold large-build materialized-shard cache deferral/);
+    expect(() =>
+      assertProductionReleaseEvidence(
+        withValues({
+          'cold-materialization-cached-fact-replay-bytes-n1':
+            CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 1,
+          'cold-materialization-cached-fact-bytes-total-n1':
+            CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM,
+          'cold-materialization-materialized-shard-cache-deferred-files-n1': 0,
+          'cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1': 0,
+          'cold-materialization-raw-fact-replay-bytes-n1':
+            CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM,
+        }),
+      ),
+    ).not.toThrow();
+    fc.assert(
+      fc.property(
+        fc.integer({max: CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM, min: 0}),
+        deferredRawFactBytes => {
+          expect(() =>
+            assertProductionReleaseEvidence(
+              withValues({
+                'cold-materialization-cached-fact-bytes-total-n1': deferredRawFactBytes,
+                'cold-materialization-cached-fact-replay-bytes-n1': deferredRawFactBytes + 1,
+                'cold-materialization-materialized-shard-cache-deferred-raw-fact-bytes-n1': deferredRawFactBytes,
+                'cold-materialization-raw-fact-replay-bytes-n1': deferredRawFactBytes,
+              }),
+            ),
+          ).toThrow(/cold bounded-build materialized-shard cache persistence/);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('generates exhaustive independent ratchets from governed production observations', () => {
+    const governed = (coldIndexMilliseconds: number, sampledPhase: string): BenchmarkArtifactV1 =>
+      benchmarkArtifact(
+        [
+          ...requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
+          benchmarkMeasurement('cold-index', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('cold-registration-lock-and-database-setup', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('same-overlay-reference-registration-lock-and-database-setup', 'milliseconds', [
+            coldIndexMilliseconds + 10,
+          ]),
+          benchmarkMeasurement('cold-materialization-stage-preparing-rows-n1', 'milliseconds', [100]),
+          benchmarkMeasurement('cold-hosted-subphase-n1', 'milliseconds', [1_000]),
+          benchmarkMeasurement('cold-hosted-microphase-n1', 'milliseconds', [128]),
+          benchmarkMeasurement('cold-zero-duration-n1', 'milliseconds', [0]),
+          benchmarkMeasurement('hosted-sampler-samples-n1', 'count', [coldIndexMilliseconds]),
+          benchmarkMeasurement('one-file-reindex-index', 'milliseconds', [29_000]),
+          benchmarkMeasurement('one-file-reindex-post-committed-scan-overlay-and-workspace', 'milliseconds', [4_900]),
+          benchmarkMeasurement('one-file-reindex-registration-lock-and-database-setup', 'milliseconds', [4_900]),
+          benchmarkMeasurement(`${sampledPhase}-external-process-cpu-n1`, 'milliseconds', [17]),
+        ],
+        {
+          benchmarkDiskFilesystem: 'apfs',
+          benchmarkDiskLocation: 'internal',
+          benchmarkDiskMedium: 'solid-state',
+          benchmarkFilesystemsShared: true,
+          benchmarkGoverned: true,
+          benchmarkMinimumFreeBytes: 120 * 1_073_741_824,
+          benchmarkPrimaryAvailableBytesAtStart: 140 * 1_073_741_824,
+          benchmarkReferenceAvailableBytesAtStart: 140 * 1_073_741_824,
+          benchmarkReferenceDiskFilesystem: 'apfs',
+          benchmarkReferenceDiskLocation: 'internal',
+          benchmarkReferenceDiskMedium: 'solid-state',
+          coldEdges: 3,
+          coldFiles: 2,
+          coldMaterializationStorageMode: 'direct-persistent',
+          coldSymbols: 5,
+          effectiveParserMemoryBytes: 64 * 1_073_741_824,
+          effectiveParserWorkers: 4,
+          oneFileReindexMaterializationMode: 'incremental-overlay',
+          oneFileReindexMaterializationStorageMode: 'unreported',
+          primaryQueryStructuralDigestCold: '1'.repeat(64),
+          primaryQueryStructuralDigestIncremental: '2'.repeat(64),
+          primaryQueryStructuralDigestSameOverlayReference: '2'.repeat(64),
+          retrievalMode: 'lexical-only',
+          runnerClass: 'governed-test',
+          runtimePlatform: 'darwin',
+          sameOverlayReferenceMaterializationMode: 'full',
+          sameOverlayReferenceMaterializationStorageMode: 'direct-persistent',
+          sqlitePageSizeBytes: 8192,
+          sqliteVersion: '3.49.1',
+          structuralGraphDigestCold: coldIndexMilliseconds.toString(16).padStart(64, '0'),
+          structuralGraphDigestIncremental: (coldIndexMilliseconds + 1).toString(16).padStart(64, '0'),
+          structuralGraphDigestSameOverlayReference: (coldIndexMilliseconds + 1).toString(16).padStart(64, '0'),
+          vectorEnabled: false,
+        },
+        'code-graph-production-large-v2',
+      );
+    const artifacts = [
+      governed(100, 'cold-scanning-progress'),
+      governed(105, 'cold-materializing-progress'),
+      governed(110, 'cold-resolving-references'),
+    ];
+    const ratchet = createCodeGraphProductionRatchet(artifacts);
+
+    const cleanRebuilds = artifacts.map((artifact, index) => ({
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        benchmarkValidatedManagedExecutableSha256: (index + 1).toString(16).repeat(64),
+        benchmarkValidatedManagedPayloadManifestSha256: (index + 4).toString(16).repeat(64),
+      },
+    }));
+
+    expect(() => createCodeGraphProductionRatchet(artifacts.slice(0, 2))).toThrow(/at least three artifacts/);
+    expect(createCodeGraphProductionRatchet(cleanRebuilds)).toEqual(ratchet);
+    expect(
+      createCodeGraphProductionRatchet(
+        artifacts.map((artifact, index) => ({
+          ...artifact,
+          environment: {
+            ...artifact.environment,
+            cpu: `governed-pool-cpu-${index}`,
+            memoryBytes: artifact.environment.memoryBytes + index * 1_073_741_824,
+            operatingSystem: `macOS 27.${index}`,
+          },
+          metadata: {
+            ...artifact.metadata,
+            effectiveParserMemoryBytes:
+              (artifact.metadata.effectiveParserMemoryBytes as number) + index * 1_073_741_824,
+          },
+        })),
+      ),
+    ).toEqual(ratchet);
+    expect(ratchet.environment).toEqual({
+      architecture: artifacts[0]!.environment.architecture,
+      dirty: false,
+      fixtureHash: artifacts[0]!.environment.fixtureHash,
+      node: artifacts[0]!.environment.node,
+      packageManager: artifacts[0]!.environment.packageManager,
+      runner: artifacts[0]!.environment.runner,
+      runnerVersion: artifacts[0]!.environment.runnerVersion,
+    });
+    fc.assert(
+      fc.property(fc.array(fc.stringMatching(/^[0-9a-f]{64}$/u), {maxLength: 6, minLength: 6}), rebuildDigests => {
+        const rebuilt = artifacts.map((artifact, index) => ({
+          ...artifact,
+          metadata: {
+            ...artifact.metadata,
+            benchmarkValidatedManagedExecutableSha256: rebuildDigests[index * 2]!,
+            benchmarkValidatedManagedPayloadManifestSha256: rebuildDigests[index * 2 + 1]!,
+          },
+        }));
+        expect(createCodeGraphProductionRatchet(rebuilt)).toEqual(ratchet);
+      }),
+      {numRuns: 25},
+    );
+    expect(() =>
+      createCodeGraphProductionRatchet([
+        ...artifacts.slice(0, 2),
+        {
+          ...artifacts[2]!,
+          metadata: {
+            ...artifacts[2]!.metadata,
+            benchmarkValidatedManagedReleaseMetadataSha256: 'f'.repeat(64),
+          },
+        },
+      ]),
+    ).toThrow(/exact source\/runtime\/storage contract/);
+    expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 210, unit: 'milliseconds'});
+    expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).toMatchObject({
+      p95Maximum: 400,
+    });
+    expect(ratchet.measurements['cold-hosted-subphase-n1']).toMatchObject({p95Maximum: 1_750});
+    expect(ratchet.measurements['cold-hosted-microphase-n1']).toMatchObject({p95Maximum: 428});
+    expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).not.toHaveProperty('minimum');
+    expect(ratchet.measurements['cold-zero-duration-n1']).toMatchObject({p95Maximum: 300, unit: 'milliseconds'});
+    expect(ratchet.measurements['hosted-sampler-samples-n1']).toMatchObject({minimum: 1, unit: 'count'});
+    expect(ratchet.measurements['hosted-sampler-samples-n1']).not.toHaveProperty('maximum');
+    expect(ratchet.measurements['cold-materialized-file-rows']).toMatchObject({maximum: 1, minimum: 1});
+    expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toMatchObject({p95Maximum: 1_048_576});
+    expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).not.toHaveProperty('minimum');
+    for (const registrationName of [
+      'cold-registration-lock-and-database-setup',
+      'same-overlay-reference-registration-lock-and-database-setup',
+    ]) {
+      const observedMaximum = Math.max(
+        ...artifacts.map(
+          artifact => artifact.measurements.find(measurement => measurement.name === registrationName)!.p50,
+        ),
+      );
+      expect(ratchet.measurements[registrationName]).toMatchObject({p95Maximum: Math.ceil(observedMaximum * 3)});
+    }
+    fc.assert(
+      fc.property(fc.integer({max: 10_000, min: 1}), samplerCount => {
+        const observed = {
+          ...artifacts[0]!,
+          measurements: artifacts[0]!.measurements.map(measurement =>
+            measurement.name === 'hosted-sampler-samples-n1'
+              ? benchmarkMeasurement(measurement.name, measurement.unit, [samplerCount])
+              : measurement,
+          ),
+        };
+        expect(() => enforceCodeGraphBenchmarkRatchet(observed, ratchet)).not.toThrow();
+      }),
+      {numRuns: 30},
+    );
+    const missingCoverage = {
+      ...artifacts[0]!,
+      measurements: artifacts[0]!.measurements.map(measurement =>
+        measurement.name === 'hosted-sampler-samples-n1'
+          ? benchmarkMeasurement(measurement.name, measurement.unit, [0])
+          : measurement,
+      ),
+    };
+    expect(() => enforceCodeGraphBenchmarkRatchet(missingCoverage, ratchet)).toThrow(/hosted-sampler-samples-n1/);
+    expect(ratchet.measurements['one-file-reindex-index']).toMatchObject({p95Maximum: 29_999});
+    expect(ratchet.measurements['one-file-reindex-registration-lock-and-database-setup']).toMatchObject({
+      p95Maximum: 4_999,
+    });
+    expect(ratchet.measurements['one-file-reindex-post-committed-scan-overlay-and-workspace']).toMatchObject({
+      p95Maximum: 4_999,
+    });
+    expect(ratchet.metadata).toMatchObject({
+      benchmarkDiskLocation: 'internal',
+      benchmarkReferenceDiskLocation: 'internal',
+    });
+    expect(ratchet.metadata).not.toHaveProperty('structuralGraphDigestCold');
+    const overTarget = artifacts.map(artifact => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        measurement.name === 'one-file-reindex-index'
+          ? benchmarkMeasurement(measurement.name, measurement.unit, [30_000])
+          : measurement,
+      ),
+    }));
+    expect(() => createCodeGraphProductionRatchet(overTarget)).toThrow(
+      /objective one-file-reindex-index has not been attained/,
+    );
+    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 8);
+    expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
+    expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-boundary-rss-n1'))).toBe(false);
+    expect(
+      Object.keys(ratchet.measurements).some(name => name.endsWith('-external-process-tree-maximum-sample-gap-n1')),
+    ).toBe(false);
+    expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-filesystem-available-n1'))).toBe(false);
+    expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toBeDefined();
+    expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
+    fc.assert(
+      fc.property(fc.integer({max: 200 * 1_073_741_824, min: 20 * 1_073_741_824}), availableBytes => {
+        const expandedCapacity = {
+          ...artifacts[0]!,
+          metadata: {
+            ...artifacts[0]!.metadata,
+            benchmarkPrimaryAvailableBytesAtStart: availableBytes,
+            benchmarkReferenceAvailableBytesAtStart: availableBytes,
+          },
+          measurements: artifacts[0]!.measurements.map(measurement =>
+            measurement.name.endsWith('-filesystem-available-n1')
+              ? benchmarkMeasurement(measurement.name, measurement.unit, [availableBytes])
+              : measurement,
+          ),
+        };
+        expect(() => enforceCodeGraphBenchmarkRatchet(expandedCapacity, ratchet)).not.toThrow();
+      }),
+      {numRuns: 30},
+    );
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        {
+          ...artifacts[0]!,
+          measurements: [
+            ...artifacts[0]!.measurements,
+            benchmarkMeasurement('future-stable-production-metric', 'count', [1]),
+          ],
+        },
+        ratchet,
+      ),
+    ).toThrow(/stable production measurement set changed.*future-stable-production-metric/u);
+    const scaledArtifacts = artifacts.map(artifact => ({
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        benchmarkMinimumFreeBytes: 20 * 1_073_741_824,
+        benchmarkPrimaryAvailableBytesAtStart: 30 * 1_073_741_824,
+        benchmarkReferenceAvailableBytesAtStart: 30 * 1_073_741_824,
+        profileSourceFiles: 3_000,
+        profileTargetEligibleFiles: 4_926,
+        profileTargetSymbols: 110_000,
+      },
+    }));
+    const scaledRatchet = createCodeGraphProductionRatchet(scaledArtifacts);
+    expect(scaledRatchet.metadata).toMatchObject({
+      benchmarkMinimumFreeBytes: 20 * 1_073_741_824,
+      profileSourceFiles: 3_000,
+      profileTargetEligibleFiles: 4_926,
+      profileTargetSymbols: 110_000,
+    });
+    for (const artifact of scaledArtifacts) {
+      expect(() => enforceCodeGraphBenchmarkRatchet(artifact, scaledRatchet)).not.toThrow();
+    }
+    const githubHostedArtifacts = scaledArtifacts.map(artifact => ({
+      ...artifact,
+      metadata: {
+        ...artifact.metadata,
+        benchmarkDiskFilesystem: 'overlayfs',
+        benchmarkDiskLocation: 'unknown',
+        benchmarkDiskMedium: 'virtual-or-network',
+        benchmarkReferenceDiskFilesystem: 'overlayfs',
+        benchmarkReferenceDiskLocation: 'unknown',
+        benchmarkReferenceDiskMedium: 'virtual-or-network',
+        runnerClass: 'github-hosted-linux-x64',
+        runtimePlatform: 'linux',
+      },
+    }));
+    const githubHostedRatchet = createCodeGraphProductionRatchet(githubHostedArtifacts);
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkDiskFilesystem');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkDiskLocation');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkDiskMedium');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskFilesystem');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskLocation');
+    expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskMedium');
+    expect(
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map((artifact, index) => {
+          const filesystem = ['overlayfs', 'ext4', 'unknown'][index]!;
+          return {
+            ...artifact,
+            metadata: {
+              ...artifact.metadata,
+              benchmarkDiskFilesystem: filesystem,
+              benchmarkDiskLocation: ['unknown', 'virtual-or-network', 'external'][index]!,
+              benchmarkDiskMedium: ['virtual-or-network', 'rotational', 'unknown'][index]!,
+              benchmarkReferenceDiskFilesystem: filesystem,
+              benchmarkReferenceDiskLocation: ['virtual-or-network', 'unknown', 'external'][index]!,
+              benchmarkReferenceDiskMedium: ['unknown', 'solid-state', 'rotational'][index]!,
+            },
+          };
+        }),
+      ),
+    ).toEqual(githubHostedRatchet);
+    fc.assert(
+      fc.property(
+        fc.constantFrom('unknown', 'overlayfs', 'ext4'),
+        fc.constantFrom('unknown', 'rotational', 'solid-state', 'virtual-or-network'),
+        fc.constantFrom('unknown', 'internal', 'external', 'virtual-or-network'),
+        (filesystem, medium, location) => {
+          expect(() =>
+            enforceCodeGraphBenchmarkRatchet(
+              {
+                ...githubHostedArtifacts[0]!,
+                metadata: {
+                  ...githubHostedArtifacts[0]!.metadata,
+                  benchmarkDiskFilesystem: filesystem,
+                  benchmarkDiskLocation: location,
+                  benchmarkDiskMedium: medium,
+                  benchmarkReferenceDiskFilesystem: filesystem,
+                  benchmarkReferenceDiskLocation: location,
+                  benchmarkReferenceDiskMedium: medium,
+                },
+              },
+              githubHostedRatchet,
+            ),
+          ).not.toThrow();
+        },
+      ),
+      {numRuns: 50},
+    );
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            filesystem: fc.constantFrom('unknown', 'overlayfs', 'ext4'),
+            location: fc.constantFrom('unknown', 'internal', 'external', 'virtual-or-network'),
+            medium: fc.constantFrom('unknown', 'rotational', 'solid-state', 'virtual-or-network'),
+            referenceLocation: fc.constantFrom('unknown', 'internal', 'external', 'virtual-or-network'),
+            referenceMedium: fc.constantFrom('unknown', 'rotational', 'solid-state', 'virtual-or-network'),
+          }),
+          {maxLength: githubHostedArtifacts.length, minLength: githubHostedArtifacts.length},
+        ),
+        observations => {
+          const rebuilt = githubHostedArtifacts.map((artifact, index) => ({
+            ...artifact,
+            metadata: {
+              ...artifact.metadata,
+              benchmarkDiskFilesystem: observations[index]!.filesystem,
+              benchmarkDiskLocation: observations[index]!.location,
+              benchmarkDiskMedium: observations[index]!.medium,
+              benchmarkReferenceDiskFilesystem: observations[index]!.filesystem,
+              benchmarkReferenceDiskLocation: observations[index]!.referenceLocation,
+              benchmarkReferenceDiskMedium: observations[index]!.referenceMedium,
+            },
+          }));
+          expect(createCodeGraphProductionRatchet(rebuilt)).toEqual(githubHostedRatchet);
+        },
+      ),
+      {numRuns: 30},
+    );
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkReferenceDiskMedium: 'unknown'},
+        })),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkGithubRunnerEnvironment: 'self-hosted'},
+        })),
+      ),
+    ).toThrow(/governed storage evidence/);
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkReferenceDiskMedium: 'rotational'},
+        })),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {
+            ...artifact.metadata,
+            benchmarkGithubRunnerEnvironment: 'self-hosted',
+            benchmarkReferenceDiskMedium: 'rotational',
+          },
+        })),
+      ),
+    ).toThrow(/governed storage evidence/);
+    expect(() =>
+      createCodeGraphProductionRatchet(
+        scaledArtifacts.map(artifact => ({
+          ...artifact,
+          metadata: {...artifact.metadata, benchmarkMinimumFreeBytes: 20 * 1_073_741_824 - 1},
+        })),
+      ),
+    ).toThrow(/governed storage evidence/);
+
+    const limit = ratchet.measurements['cold-index']!.p95Maximum!;
+    const regressed = {
+      ...artifacts[0]!,
+      measurements: artifacts[0]!.measurements.map(measurement =>
+        measurement.name === 'cold-index'
+          ? benchmarkMeasurement(measurement.name, measurement.unit, [limit + 1])
+          : measurement,
+      ),
+    };
+    expect(() => enforceCodeGraphBenchmarkRatchet(regressed, ratchet)).toThrow(/cold-index/);
+    fc.assert(
+      fc.property(fc.integer({max: 1_000, min: 2}), changedFileRows => {
+        const nondeterministic = {
+          ...artifacts[2]!,
+          measurements: artifacts[2]!.measurements.map(measurement =>
+            measurement.name === 'cold-materialized-file-rows'
+              ? benchmarkMeasurement(measurement.name, measurement.unit, [changedFileRows])
+              : measurement,
+          ),
+        };
+        expect(() => createCodeGraphProductionRatchet([...artifacts.slice(0, 2), nondeterministic])).toThrow(
+          /deterministic measurement cold-materialized-file-rows disagrees/,
+        );
+      }),
+      {numRuns: 50},
+    );
+    expect(() =>
+      createCodeGraphProductionRatchet([
+        ...artifacts.slice(0, 2),
+        {
+          ...artifacts[2]!,
+          metadata: {...artifacts[2]!.metadata, benchmarkPrimaryAvailableBytesAtStart: 119 * 1_073_741_824},
+        },
+      ]),
+    ).toThrow(/governed storage evidence/);
   });
 
   it('retains and requires sampler v4 recursive process-tree and open temporary-file evidence', () => {
@@ -1858,6 +2479,9 @@ function benchmarkArtifact(
       benchmarkMeasuredSourceCommit: commit,
       benchmarkMeasuredSourceLockfileSha256: 'a'.repeat(64),
       benchmarkMeasuredSourcePackageManifestSha256: 'b'.repeat(64),
+      benchmarkGithubRunnerArchitecture: 'X64',
+      benchmarkGithubRunnerEnvironment: 'github-hosted',
+      benchmarkGithubRunnerOperatingSystem: 'Linux',
       benchmarkSourceValidationMode: 'github-actions-clean-source',
       benchmarkValidatedManagedPayload: 'not-applicable-github-actions-clean-source',
       ...(suite.startsWith('code-graph-production-large-')
@@ -1890,19 +2514,30 @@ function requiredReleaseMeasurements(
       measurement.name === 'cold-activation-observed-stages-n1'
         ? 3
         : measurement.name.endsWith('-materialization-cached-fact-replay-bytes-n1')
-          ? 2
-          : measurement.name.startsWith('production-shape-')
-            ? 100
-            : measurement.name.startsWith('cold-activation-copying-') && measurement.name.endsWith('-observed-n1')
-              ? 0
-              : measurement.name.endsWith('-activation-observed-stages-n1')
-                ? 32
-                : measurement.name.endsWith('-external-sampler-version-n1')
-                  ? 4
-                  : measurement.name.endsWith('-external-process-tree-failures-n1') ||
-                      measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+          ? CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 2
+          : measurement.name.endsWith('-materialization-cached-fact-bytes-total-n1')
+            ? CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 1
+            : measurement.name.endsWith('-materialization-raw-fact-replay-bytes-n1') ||
+                measurement.name.endsWith('-materialized-shard-cache-deferred-raw-fact-bytes-n1')
+              ? CODE_GRAPH_MATERIALIZED_SHARD_CACHE_WRITE_RAW_FACT_BYTES_MAXIMUM + 1
+              : /-materialization-subphase-shard-(?:association|persistence|serialization)-n1$/u.test(measurement.name)
+                ? 0
+                : measurement.name.startsWith('production-shape-')
+                  ? 100
+                  : measurement.name.startsWith('cold-activation-copying-') && measurement.name.endsWith('-observed-n1')
                     ? 0
-                    : 1,
+                    : measurement.name.endsWith('-activation-observed-stages-n1')
+                      ? 32
+                      : measurement.name.endsWith('-external-sampler-version-n1')
+                        ? 4
+                        : measurement.name.endsWith('-materialization-sidecar-wal-high-water-n1')
+                          ? 0
+                          : measurement.name.endsWith('-external-process-tree-failures-n1') ||
+                              measurement.name.endsWith('-external-open-temp-process-tree-failures-n1')
+                            ? 0
+                            : measurement.name === 'one-file-reindex-materialization-stage-restoring-indexes-n1'
+                              ? 0
+                              : 1,
     ]),
   );
 }

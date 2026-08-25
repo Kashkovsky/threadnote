@@ -23,6 +23,7 @@ import {
   promoteReadySnapshotWithCapacity,
   sparseOverlayGraphContentIdentity,
   sparseOverlaySnapshotIdentity,
+  withIncrementalMaterializationStorageTelemetry,
   type CodeGraphCacheContentCoalescer,
 } from './indexer_materialization.js';
 import type {
@@ -230,6 +231,9 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
       };
       const preassessment = yield* assessReusableOverlayAdmissionCompatibility({
         admission,
+        baseRawFacts: base.files.map(file =>
+          input.languagePacks.postprocessFile(file, changedBaseCache.facts.get(file.path)!),
+        ),
         languagePacks: input.languagePacks,
         layout: input.layout,
         store: input.store,
@@ -258,6 +262,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         {
           building,
           committedBase,
+          committedBaseReceipt: base.receipt,
           force: false,
           incrementalOverlayEnabled: true,
           inventory,
@@ -285,24 +290,29 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
         total: incrementalAssessment.files.length,
         unit: 'files',
       }) ?? Effect.void;
-      const prepared = yield* input.store.preparePersistedIncrementalActivation(
+      const preparedMaterialization = yield* withIncrementalMaterializationStorageTelemetry(
+        input.fs,
         input.layout.databasePath,
-        base.snapshot.id,
-        incrementalAssessment.files,
-        incrementalAssessment.facts,
-        {
-          deletedPaths: incrementalAssessment.deletedPaths,
-          resolutionClosure: incrementalAssessment.resolutionClosure,
-        },
-        codeGraphDirectPersistentCapacityProtector({
-          capacityProtection: input.capacityProtection,
-          fs: input.fs,
-          identity: input.identity,
-          layout: input.layout,
-          onProgress: input.options.onProgress,
-          threadnoteHome: input.options.threadnoteHome,
-        }),
+        input.store.preparePersistedIncrementalActivation(
+          input.layout.databasePath,
+          base.snapshot.id,
+          incrementalAssessment.files,
+          incrementalAssessment.facts,
+          {
+            deletedPaths: incrementalAssessment.deletedPaths,
+            resolutionClosure: incrementalAssessment.resolutionClosure,
+          },
+          codeGraphDirectPersistentCapacityProtector({
+            capacityProtection: input.capacityProtection,
+            fs: input.fs,
+            identity: input.identity,
+            layout: input.layout,
+            onProgress: input.options.onProgress,
+            threadnoteHome: input.options.threadnoteHome,
+          }),
+        ),
       );
+      const prepared = preparedMaterialization.result;
       if (!prepared) return Option.none<CodeGraphIndexSummary>();
       yield* input.store.markBuilding(input.layout.databasePath, input.identity, building);
       const workspace = {
@@ -324,6 +334,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
           fs: input.fs,
           identity: input.identity,
           incrementalAssessment,
+          incrementalMaterializationStorageTelemetry: preparedMaterialization.storage,
           incrementalOverlayEnabled: true,
           incrementalPrepared: true,
           inventory,
@@ -387,14 +398,12 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
   'codeGraph.assessReusableOverlayAdmissionCompatibility',
 )(function* (input: {
   readonly admission: CodeGraphReusableOverlayAdmission;
+  readonly baseRawFacts: readonly CodeGraphFileFacts[];
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly store: CodeGraphStoreShape;
 }) {
-  if (
-    input.store.existingSnapshotFilePaths === undefined ||
-    input.store.loadSnapshotMaterializedFileShards === undefined
-  ) {
+  if (input.store.existingSnapshotFilePaths === undefined) {
     return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayPreassessment;
   }
   const base = input.admission.base;
@@ -408,21 +417,22 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
     input.admission.files,
     input.languagePacks,
   );
-  const baseShards = yield* input.store.loadSnapshotMaterializedFileShards(
-    input.layout.databasePath,
-    base.snapshot.id,
-    base.files,
-  );
-  if (
-    input.admission.files.some(file => !currentCache.facts.has(file.path)) ||
-    base.files.some(file => !baseShards.facts.has(file.path))
-  ) {
+  if (input.admission.files.some(file => !currentCache.facts.has(file.path))) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
   const currentRawFacts = input.admission.files.map(file =>
     input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
   );
-  const candidates = repositoryFactCandidatePaths(inventoryReceipt.attributionFiles, currentRawFacts);
+  const baseRawFactsByPath = new Map(input.baseRawFacts.map(file => [file.path, file]));
+  const orderedBaseRawFacts = base.files.map(file => baseRawFactsByPath.get(file.path));
+  if (orderedBaseRawFacts.some(file => file === undefined) || baseRawFactsByPath.size !== base.files.length) {
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const completeBaseRawFacts = orderedBaseRawFacts as readonly CodeGraphFileFacts[];
+  const candidates = repositoryFactCandidatePaths(inventoryReceipt.attributionFiles, [
+    ...completeBaseRawFacts,
+    ...currentRawFacts,
+  ]);
   const existingPaths = yield* input.store.existingSnapshotFilePaths(
     input.layout.databasePath,
     base.snapshot.id,
@@ -437,7 +447,19 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
   );
   const attributeWorkspace = createWorkspaceAttributor(input.admission.workspace);
   const currentFacts = attributeWorkspace(attributeRepository(currentRawFacts));
-  const baseFacts = base.files.map(file => baseShards.facts.get(file.path)!);
+  const attributedBaseRawFacts = attributeWorkspace(attributeRepository(completeBaseRawFacts));
+  // Materialized shards preserve exact prior batch attribution when present,
+  // but they are a derived optimization rather than an admission prerequisite.
+  // Reattribute the authoritative bounded raw base slice when a large clean
+  // build deliberately deferred that cache.
+  const baseShards =
+    input.store.loadSnapshotMaterializedFileShards === undefined
+      ? undefined
+      : yield* input.store.loadSnapshotMaterializedFileShards(input.layout.databasePath, base.snapshot.id, base.files);
+  const baseFacts =
+    baseShards !== undefined && base.files.every(file => baseShards.facts.has(file.path))
+      ? base.files.map(file => baseShards.facts.get(file.path)!)
+      : attributedBaseRawFacts;
   const baseFactsByPath = new Map(baseFacts.map(file => [file.path, file]));
   const resolutionSurfaceChanged = currentFacts.some(file => {
     const prior = baseFactsByPath.get(file.path);

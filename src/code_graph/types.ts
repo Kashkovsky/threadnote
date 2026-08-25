@@ -3,7 +3,7 @@ import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 13 as const;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 15 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
@@ -175,7 +175,9 @@ export interface CodeGraphMaterializationRows {
  * Cumulative wall time for attribution and adjacent final-batch preparation.
  * Attribution compute, shard serialization, persistence, and association are
  * mutually non-overlapping. The existing `attributing` stage remains an
- * inclusive per-batch timer; a final shard-association flush can follow it.
+ * inclusive cumulative timer; grouped shard persistence is recorded exactly
+ * once rather than being divided speculatively across its logical batches. A
+ * final shard-association flush can follow it.
  * Final-batch preparation spans the transition into row preparation. Keeping
  * them separate prevents codec and SQLite costs from hiding behind one
  * aggregate timer.
@@ -210,6 +212,7 @@ export interface CodeGraphMaterializationActivity {
     | 'committing'
     | 'loading-cache'
     | 'preparing-rows'
+    | 'restoring-indexes'
     | 'writing-analysis'
     | 'writing-candidates'
     | 'writing-edges'
@@ -247,6 +250,10 @@ export interface CodeGraphMaterializationMetrics {
   readonly loadingMilliseconds?: number;
   /** Exact UTF-8 bytes decoded from materialized shards, including inspected shards later discarded by batch fallback. */
   readonly materializedShardReplayBytesCompleted?: number;
+  /** Files intentionally kept on raw-fact replay instead of duplicating a large derived shard cache. */
+  readonly materializedShardCacheDeferredFilesCompleted?: number;
+  /** Raw-fact bytes covered by the intentional derived-shard cache deferral. */
+  readonly materializedShardCacheDeferredRawFactBytesCompleted?: number;
   readonly mode?: 'full' | 'incremental-clean' | 'incremental-overlay';
   /** Exact UTF-8 bytes decoded from raw parser-fact cache rows for attribution. */
   readonly rawFactReplayBytesCompleted?: number;
@@ -281,6 +288,14 @@ export interface CodeGraphMaterializationMetrics {
     readonly durableJournalHighWaterBytes?: number;
     readonly durableSharedMemoryBytes?: number;
     readonly durableSharedMemoryHighWaterBytes?: number;
+    /** Reconstructible sorted materialization sidecar and its transient rollback journal. */
+    readonly durableSidecarDatabaseBytes?: number;
+    readonly durableSidecarDatabaseHighWaterBytes?: number;
+    readonly durableSidecarJournalBytes?: number;
+    readonly durableSidecarJournalHighWaterBytes?: number;
+    /** Must remain zero because the spool contract uses DELETE journaling. */
+    readonly durableSidecarWalBytes?: number;
+    readonly durableSidecarWalHighWaterBytes?: number;
     readonly durableWalBytes?: number;
     readonly durableWalHighWaterBytes?: number;
     readonly estimateBasis?: 'cached-fact-bytes' | 'final-fact-bytes' | 'source-bytes-fallback';
@@ -313,6 +328,8 @@ export interface CodeGraphMaterializationMetrics {
 export interface CodeGraphResolutionActivity {
   readonly aliasesDiscovered: number;
   readonly elapsedMilliseconds: number;
+  /** Longest completed SQLite resolution transaction in this build. */
+  readonly longestTransactionMilliseconds?: number;
   readonly matchingMilliseconds: number;
   readonly pageCompleted: number;
   readonly pageTotal: number;

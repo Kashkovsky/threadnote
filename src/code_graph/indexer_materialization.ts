@@ -14,6 +14,7 @@ import {
   withCodeGraphDiskReservation,
 } from './disk_reservation.js';
 import {
+  codeGraphExtractionWindowSize,
   createCodeGraphExtractionCostModel,
   planCodeGraphExtractionLanes,
   takeCodeGraphExtractionWindow,
@@ -27,12 +28,13 @@ import {
   type BoundedCodeGraphFact,
 } from './fact_budget.js';
 import {CodeGraphIndexOperationError, sameOverlayState, WorktreeChangedDuringIndex} from './indexer_shared.js';
-import type {DirectPersistentCapacityProtection} from './indexer_types.js';
+import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './indexer_types.js';
 import {
   worktreeBuildRequestState,
   type CodeGraphContentBatchContext,
   type CodeGraphInventoryOptions,
 } from './inventory.js';
+import {codeGraphInventorySha256Hex} from './inventory_identity.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY, type CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {codeGraphDiskReservationLockPath, codeGraphDiskReservationRoot, type CodeGraphLayout} from './layout.js';
@@ -57,6 +59,7 @@ import {
   CODE_GRAPH_EXTRACTOR_SET_VERSION,
   type CodeGraphEdge,
   type CodeGraphFileFacts,
+  type CodeGraphMaterializationMetrics,
   type CodeGraphInventoryFile,
   type CodeGraphMaterializationRows,
   type CodeGraphProgress,
@@ -197,7 +200,7 @@ export function cacheContentBatch(options: {
   readonly threadnoteHome: string;
   readonly treeSitter: TreeSitterRuntimeShape;
 }): CodeGraphCacheContentCoalescer {
-  const windowSize = Math.max(1, options.parserPool.capacity * 2);
+  const windowSize = codeGraphExtractionWindowSize(options.parserPool.capacity);
   const extractionCostModel = createCodeGraphExtractionCostModel<ExtractionReuseGroup>();
   let extractionMilliseconds = 0;
   let extractionFactsBytesCompleted = 0;
@@ -788,12 +791,14 @@ export function snapshotIdentity(
   extractorSet: string,
   files: readonly {readonly contentHash: string; readonly path: string; readonly source: string}[],
 ): string {
-  const inventory = files
-    .map(file => `${file.path}\0${file.contentHash}\0${file.source}`)
-    .sort()
-    .join('\n');
-  return `cgsn_${sha256HexSync(
-    `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n${extractorSet}\n${inventory}`,
+  const prefix =
+    `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n` +
+    `${dirty ? identity.worktreeId : 'shared-commit'}\n${identity.headCommit}\n${dirty ? 'dirty' : 'clean'}\n` +
+    `${extractorSet}\n`;
+  return `cgsn_${codeGraphInventorySha256Hex(
+    prefix,
+    files,
+    file => `${file.path}\0${file.contentHash}\0${file.source}`,
   ).slice(0, 40)}`;
 }
 
@@ -841,12 +846,11 @@ export function graphContentIdentity(
     readonly path: string;
   }[],
 ): string {
-  const inventory = files
-    .map(file => `${file.path}\0${file.contentHash}\0${file.language ?? ''}\0${file.mode ?? ''}`)
-    .sort()
-    .join('\n');
-  return `cgc_${sha256HexSync(
-    `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n${inventory}`,
+  const prefix = `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n`;
+  return `cgc_${codeGraphInventorySha256Hex(
+    prefix,
+    files,
+    file => `${file.path}\0${file.contentHash}\0${file.language ?? ''}\0${file.mode ?? ''}`,
   ).slice(0, 40)}`;
 }
 
@@ -1186,6 +1190,8 @@ export interface CodeGraphMaterializationReplayMetrics {
   readonly cachedFactReplayBytesCompleted: number;
   readonly crossGenerationShardFilesCompleted: number;
   readonly exactGenerationShardFilesCompleted: number;
+  readonly materializedShardCacheDeferredFilesCompleted: number;
+  readonly materializedShardCacheDeferredRawFactBytesCompleted: number;
   readonly materializedShardReplayBytesCompleted: number;
   readonly rawFactReplayBytesCompleted: number;
 }
@@ -1194,6 +1200,8 @@ export interface CodeGraphMaterializationReplayObservation {
   readonly attributedFiles?: number;
   readonly crossGenerationShardFiles?: number;
   readonly exactGenerationShardFiles?: number;
+  readonly materializedShardCacheDeferredFiles?: number;
+  readonly materializedShardCacheDeferredRawFactBytes?: number;
   readonly materializedShardReplayBytes?: number;
   readonly rawFactReplayBytes?: number;
 }
@@ -1204,6 +1212,8 @@ export function emptyMaterializationReplayMetrics(): CodeGraphMaterializationRep
     cachedFactReplayBytesCompleted: 0,
     crossGenerationShardFilesCompleted: 0,
     exactGenerationShardFilesCompleted: 0,
+    materializedShardCacheDeferredFilesCompleted: 0,
+    materializedShardCacheDeferredRawFactBytesCompleted: 0,
     materializedShardReplayBytesCompleted: 0,
     rawFactReplayBytesCompleted: 0,
   };
@@ -1232,6 +1242,14 @@ export function addMaterializationReplayMetrics(
     exactGenerationShardFilesCompleted: saturatingAdd(
       current.exactGenerationShardFilesCompleted,
       observation.exactGenerationShardFiles ?? 0,
+    ),
+    materializedShardCacheDeferredFilesCompleted: saturatingAdd(
+      current.materializedShardCacheDeferredFilesCompleted,
+      observation.materializedShardCacheDeferredFiles ?? 0,
+    ),
+    materializedShardCacheDeferredRawFactBytesCompleted: saturatingAdd(
+      current.materializedShardCacheDeferredRawFactBytesCompleted,
+      observation.materializedShardCacheDeferredRawFactBytes ?? 0,
     ),
     materializedShardReplayBytesCompleted,
     rawFactReplayBytesCompleted,
@@ -1432,34 +1450,256 @@ export function materializationRowsWithStoreProgress(
   }
 }
 
-interface MaterializationStorageFiles {
+export interface MaterializationStorageFiles {
   readonly databaseBytes: number;
   readonly journalBytes: number;
   readonly sharedMemoryBytes: number;
+  readonly sidecarDatabaseBytes: number;
+  readonly sidecarJournalBytes: number;
+  readonly sidecarSharedMemoryBytes: number;
+  readonly sidecarWalBytes: number;
   readonly totalBytes: number;
   readonly walBytes: number;
+}
+
+export interface MaterializationStorageTelemetry {
+  readonly durableDatabaseFileBytes: number;
+  readonly durableDatabaseFileHighWaterBytes: number;
+  readonly durableDatabaseGrowthBytes: number;
+  readonly durableDatabaseGrowthHighWaterBytes: number;
+  readonly durableDatabaseStartBytes: number;
+  readonly durableFilesystemBytes: number;
+  readonly durableFilesystemHighWaterBytes: number;
+  readonly durableJournalBytes: number;
+  readonly durableJournalHighWaterBytes: number;
+  readonly durableSharedMemoryBytes: number;
+  readonly durableSharedMemoryHighWaterBytes: number;
+  readonly durableSidecarDatabaseBytes?: number;
+  readonly durableSidecarDatabaseHighWaterBytes?: number;
+  readonly durableSidecarJournalBytes?: number;
+  readonly durableSidecarJournalHighWaterBytes?: number;
+  readonly durableSidecarWalBytes?: number;
+  readonly durableSidecarWalHighWaterBytes?: number;
+  readonly durableWalBytes: number;
+  readonly durableWalHighWaterBytes: number;
+}
+
+export function initialMaterializationStorageTelemetry(
+  current: MaterializationStorageFiles,
+  includeSidecar: boolean,
+): MaterializationStorageTelemetry {
+  return {
+    durableDatabaseFileBytes: current.databaseBytes,
+    durableDatabaseFileHighWaterBytes: current.databaseBytes,
+    durableDatabaseGrowthBytes: 0,
+    durableDatabaseGrowthHighWaterBytes: 0,
+    durableDatabaseStartBytes: current.databaseBytes,
+    durableFilesystemBytes: current.totalBytes,
+    durableFilesystemHighWaterBytes: current.totalBytes,
+    durableJournalBytes: current.journalBytes,
+    durableJournalHighWaterBytes: current.journalBytes,
+    durableSharedMemoryBytes: current.sharedMemoryBytes,
+    durableSharedMemoryHighWaterBytes: current.sharedMemoryBytes,
+    ...(includeSidecar
+      ? {
+          durableSidecarDatabaseBytes: current.sidecarDatabaseBytes,
+          durableSidecarDatabaseHighWaterBytes: current.sidecarDatabaseBytes,
+          durableSidecarJournalBytes: current.sidecarJournalBytes,
+          durableSidecarJournalHighWaterBytes: current.sidecarJournalBytes,
+          durableSidecarWalBytes: current.sidecarWalBytes,
+          durableSidecarWalHighWaterBytes: current.sidecarWalBytes,
+        }
+      : {}),
+    durableWalBytes: current.walBytes,
+    durableWalHighWaterBytes: current.walBytes,
+  };
+}
+
+export function observeMaterializationStorage(
+  previous: MaterializationStorageTelemetry,
+  current: MaterializationStorageFiles,
+): MaterializationStorageTelemetry {
+  const durableDatabaseGrowthBytes = Math.max(0, current.databaseBytes - previous.durableDatabaseStartBytes);
+  return {
+    ...previous,
+    durableDatabaseFileBytes: current.databaseBytes,
+    durableDatabaseFileHighWaterBytes: Math.max(previous.durableDatabaseFileHighWaterBytes, current.databaseBytes),
+    durableDatabaseGrowthBytes,
+    durableDatabaseGrowthHighWaterBytes: Math.max(
+      previous.durableDatabaseGrowthHighWaterBytes,
+      durableDatabaseGrowthBytes,
+    ),
+    durableFilesystemBytes: current.totalBytes,
+    durableFilesystemHighWaterBytes: Math.max(previous.durableFilesystemHighWaterBytes, current.totalBytes),
+    durableJournalBytes: current.journalBytes,
+    durableJournalHighWaterBytes: Math.max(previous.durableJournalHighWaterBytes, current.journalBytes),
+    durableSharedMemoryBytes: current.sharedMemoryBytes,
+    durableSharedMemoryHighWaterBytes: Math.max(previous.durableSharedMemoryHighWaterBytes, current.sharedMemoryBytes),
+    ...(previous.durableSidecarDatabaseBytes === undefined
+      ? {}
+      : {
+          durableSidecarDatabaseBytes: current.sidecarDatabaseBytes,
+          durableSidecarDatabaseHighWaterBytes: Math.max(
+            previous.durableSidecarDatabaseHighWaterBytes ?? 0,
+            current.sidecarDatabaseBytes,
+          ),
+          durableSidecarJournalBytes: current.sidecarJournalBytes,
+          durableSidecarJournalHighWaterBytes: Math.max(
+            previous.durableSidecarJournalHighWaterBytes ?? 0,
+            current.sidecarJournalBytes,
+          ),
+          durableSidecarWalBytes: current.sidecarWalBytes,
+          durableSidecarWalHighWaterBytes: Math.max(
+            previous.durableSidecarWalHighWaterBytes ?? 0,
+            current.sidecarWalBytes,
+          ),
+        }),
+    durableWalBytes: current.walBytes,
+    durableWalHighWaterBytes: Math.max(previous.durableWalHighWaterBytes, current.walBytes),
+  };
+}
+
+/**
+ * Capture durable-storage growth around a bounded incremental publication.
+ * Incremental staging bypasses the full-materialization loop, so it must
+ * establish and close its own high-water interval instead of inheriting the
+ * full-build sampler.
+ */
+export function withIncrementalMaterializationStorageTelemetry<A, E, R>(
+  fs: FileSystem.FileSystem,
+  databasePath: string,
+  transaction: Effect.Effect<A, E, R>,
+): Effect.Effect<{readonly result: A; readonly storage: MaterializationStorageTelemetry}, E, R> {
+  return Effect.gen(function* () {
+    const before = yield* materializationStorageFiles(fs, databasePath);
+    const initial = initialMaterializationStorageTelemetry(before, false);
+    const result = yield* transaction;
+    const after = yield* materializationStorageFiles(fs, databasePath);
+    return {result, storage: observeMaterializationStorage(initial, after)};
+  });
+}
+
+export function applyIncrementalMaterialization(input: {
+  readonly assessment: Extract<IncrementalOverlayAssessment, {readonly mode: 'eligible'}>;
+  readonly baseSnapshotId: string;
+  readonly databasePath: string;
+  readonly fs: FileSystem.FileSystem;
+  readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
+  readonly prepared: boolean;
+  readonly storage?: MaterializationStorageTelemetry;
+  readonly store: CodeGraphStoreShape;
+}) {
+  return Effect.gen(function* () {
+    if (input.prepared) return {result: true, storage: input.storage};
+    if (input.assessment.reuse === 'persisted-base') {
+      return yield* withIncrementalMaterializationStorageTelemetry(
+        input.fs,
+        input.databasePath,
+        input.store.preparePersistedIncrementalActivation(
+          input.databasePath,
+          input.baseSnapshotId,
+          input.assessment.files,
+          input.assessment.facts,
+          {
+            deletedPaths: input.assessment.deletedPaths,
+            resolutionClosure: input.assessment.resolutionClosure,
+          },
+          input.persistentCapacityProtector,
+        ),
+      );
+    }
+    return {
+      result: yield* input.store.replaceStagedModifiedFiles(
+        input.databasePath,
+        input.baseSnapshotId,
+        input.assessment.files,
+        input.assessment.facts,
+        input.persistentCapacityProtector,
+      ),
+      storage: undefined,
+    };
+  });
+}
+
+export function incrementalMaterializationMetrics(
+  assessment: Extract<IncrementalOverlayAssessment, {readonly mode: 'eligible'}>,
+  storage: MaterializationStorageTelemetry,
+  dirty: boolean,
+): CodeGraphMaterializationMetrics {
+  const sourceBytesTotal = assessment.files.reduce((total, file) => total + file.size, 0);
+  return {
+    attributedFilesCompleted: assessment.files.length,
+    batchesCompleted: 1,
+    batchesTotal: 1,
+    mode: dirty ? 'incremental-overlay' : 'incremental-clean',
+    sourceBytesCompleted: sourceBytesTotal,
+    sourceBytesTotal,
+    storage: {
+      ...storage,
+      materializationMode: 'direct-persistent',
+      temporaryDatabaseBytes: 0,
+      temporaryDatabaseHighWaterBytes: 0,
+    },
+  };
 }
 
 export function materializationStorageFiles(
   fs: FileSystem.FileSystem,
   databasePath: string,
+  sidecarDatabasePaths: readonly string[] = [],
 ): Effect.Effect<MaterializationStorageFiles, never> {
   const bytes = (file: string) =>
     fs.stat(file).pipe(
       Effect.map(info => Math.min(Number(info.size), Number.MAX_SAFE_INTEGER)),
       Effect.catch(() => Effect.succeed(0)),
     );
+  const sidecarFiles = sidecarDatabasePaths.flatMap(sidecar => [
+    bytes(sidecar),
+    bytes(`${sidecar}-journal`),
+    bytes(`${sidecar}-shm`),
+    bytes(`${sidecar}-wal`),
+  ]);
   return Effect.all(
-    [bytes(databasePath), bytes(`${databasePath}-journal`), bytes(`${databasePath}-shm`), bytes(`${databasePath}-wal`)],
-    {concurrency: 4},
+    [
+      bytes(databasePath),
+      bytes(`${databasePath}-journal`),
+      bytes(`${databasePath}-shm`),
+      bytes(`${databasePath}-wal`),
+      ...sidecarFiles,
+    ],
+    {concurrency: 8},
   ).pipe(
-    Effect.map(([databaseBytes, journalBytes, sharedMemoryBytes, walBytes]) => ({
-      databaseBytes,
-      journalBytes,
-      sharedMemoryBytes,
-      totalBytes: databaseBytes + journalBytes + sharedMemoryBytes + walBytes,
-      walBytes,
-    })),
+    Effect.map(([databaseBytes, journalBytes, sharedMemoryBytes, walBytes, ...sidecars]) => {
+      let sidecarDatabaseBytes = 0;
+      let sidecarJournalBytes = 0;
+      let sidecarSharedMemoryBytes = 0;
+      let sidecarWalBytes = 0;
+      for (let index = 0; index < sidecars.length; index += 4) {
+        sidecarDatabaseBytes += sidecars[index] ?? 0;
+        sidecarJournalBytes += sidecars[index + 1] ?? 0;
+        sidecarSharedMemoryBytes += sidecars[index + 2] ?? 0;
+        sidecarWalBytes += sidecars[index + 3] ?? 0;
+      }
+      return {
+        databaseBytes,
+        journalBytes,
+        sharedMemoryBytes,
+        sidecarDatabaseBytes,
+        sidecarJournalBytes,
+        sidecarSharedMemoryBytes,
+        sidecarWalBytes,
+        totalBytes:
+          databaseBytes +
+          journalBytes +
+          sharedMemoryBytes +
+          walBytes +
+          sidecarDatabaseBytes +
+          sidecarJournalBytes +
+          sidecarSharedMemoryBytes +
+          sidecarWalBytes,
+        walBytes,
+      };
+    }),
   );
 }
 

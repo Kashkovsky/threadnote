@@ -118,7 +118,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             const requestedBuildRequest = yield* worktreeBuildRequestObservation(
               initialIdentity,
               request.threadnoteHome,
-            );
+            ).pipe(Effect.provideService(Crypto.Crypto, crypto));
             const requestedOverlay = requestedBuildRequest.state;
             yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
             const requestKey = request.force
@@ -225,7 +225,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         const currentBuildRequest = yield* worktreeBuildRequestObservation(
                           identity,
                           options.threadnoteHome,
-                        );
+                        ).pipe(Effect.provideService(Crypto.Crypto, crypto));
                         const currentOverlay = currentBuildRequest.state;
                         if (!sameOverlayState(currentOverlay, requestedOverlay)) {
                           return yield* Effect.fail(new WorktreeChangedDuringIndex());

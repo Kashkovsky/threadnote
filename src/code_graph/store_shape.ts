@@ -16,7 +16,9 @@ import type {
   CodeGraphEdgeCursor,
   CodeGraphPersistentBuildClaim,
   CodeGraphLanguagePackProvenance,
+  CodeGraphMaterializationSpoolContext,
   CodeGraphMaterializedShardAssociationBatch,
+  CodeGraphMaterializedShardCacheBatch,
   CodeGraphRemovedViewCleanupAuthorizationResult,
   CodeGraphRemovedViewCleanupEntry,
   CodeGraphRemovedViewCleanupStoreOptions,
@@ -31,6 +33,7 @@ import type {
   CodeGraphReusableCleanBaseSlice,
   CodeGraphReusableReexport,
   CodeGraphReusableReexportSeed,
+  CodeGraphSecondaryIndexRestorationProgressCallback,
   CodeGraphRoutineMaintenanceOptions,
   CodeGraphRoutineMaintenanceResult,
   CodeGraphSnapshotLeaseAcquireOptions,
@@ -125,6 +128,11 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphCacheFactInput[],
     extractorSet: string,
     derivationIdentity: string,
+    persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly cacheMaterializedFileShardBatches: (
+    databasePath: string,
+    batches: readonly CodeGraphMaterializedShardCacheBatch[],
     persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly associateMaterializedFileShardBatches: (
@@ -225,6 +233,8 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     expectedBatchCount: number,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+    onSecondaryIndexProgress?: CodeGraphSecondaryIndexRestorationProgressCallback,
+    materializationSpool?: CodeGraphMaterializationSpoolContext,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly preparePersistedIncrementalActivation: (
     databasePath: string,
@@ -550,6 +560,7 @@ export interface CodeGraphStoreShape {
     batches: readonly CodeGraphStagingBatch[],
     onProgress?: CodeGraphStagingBatchProgressCallback,
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
+    materializationSpool?: CodeGraphMaterializationSpoolContext,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly stageWorkspaceCatalog: (
     databasePath: string,

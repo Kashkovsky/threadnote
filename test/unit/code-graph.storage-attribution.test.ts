@@ -3,11 +3,14 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
-import {afterEach, describe, expect} from 'vitest';
+import {afterEach, describe, expect, it} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {inspectCodeGraphStorage} from '../../src/code_graph/storage.js';
-import {readCodeGraphStorageSemanticAttribution} from '../../src/code_graph/storage_attribution.js';
+import {
+  codeGraphStorageSemanticGroup,
+  readCodeGraphStorageSemanticAttribution,
+} from '../../src/code_graph/storage_attribution.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {rm} from '../helpers/effect-filesystem.js';
 
@@ -18,6 +21,11 @@ afterEach(async () => {
 });
 
 describe('code graph semantic storage attribution', () => {
+  it('classifies the schema initialization receipt as lifecycle storage', () => {
+    expect(codeGraphStorageSemanticGroup('schema_initialization_receipt')).toBe('lifecycle');
+    expect(codeGraphStorageSemanticGroup('sqlite_autoindex_schema_initialization_receipt_1')).toBe('lifecycle');
+  });
+
   effectIt.effect('separates exact B-tree groups from bounded logical active-snapshot payload', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

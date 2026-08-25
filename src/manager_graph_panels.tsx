@@ -1419,6 +1419,8 @@ function graphMaterializationStageLabel(stage: GraphMaterializationStage): strin
       return 'attributing facts';
     case 'preparing-rows':
       return 'preparing rows';
+    case 'restoring-indexes':
+      return 'restoring query indexes';
     case 'writing-analysis':
       return 'writing analysis summary';
     case 'writing-symbols':

@@ -15,6 +15,8 @@ export interface CommandOptions {
   readonly allowFailure?: boolean;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /** @internal Permit one explicitly selected private index for a Git child. */
+  readonly trustedGitIndexFile?: string;
   readonly input?: Uint8Array;
   /** Set to zero to collect output without a byte ceiling. */
   readonly maxOutputBytes?: number;
@@ -235,7 +237,7 @@ const executeCommand = Effect.fn('CommandExecutor.execute')(function* (
       });
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
         cwd: options.cwd,
-        env: commandEnvironment(executable, options.env, environment),
+        env: commandEnvironment(executable, options.env, environment, options.trustedGitIndexFile),
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: options.input ? Stream.make(options.input) : 'ignore',
@@ -319,7 +321,7 @@ const executeBinaryCommand = Effect.fn('CommandExecutor.executeBinary')(function
       });
       const handle = yield* ChildProcess.make(invocation.executable, [...invocation.args], {
         cwd: options.cwd,
-        env: commandEnvironment(executable, options.env, environment),
+        env: commandEnvironment(executable, options.env, environment, options.trustedGitIndexFile),
         forceKillAfter: 1000,
         shell: invocation.shell,
         stdin: options.input ? Stream.make(options.input) : 'ignore',
@@ -616,9 +618,14 @@ export function commandEnvironment(
   executable: string,
   env: NodeJS.ProcessEnv | undefined,
   systemEnvironment: NodeJS.ProcessEnv,
+  trustedGitIndexFile?: string,
 ): NodeJS.ProcessEnv | undefined {
   const sanitized = withoutTelemetrySessionEnvironment(env ?? systemEnvironment);
-  return isGitExecutable(executable) ? withoutGitEnvironment(sanitized) : sanitized;
+  if (!isGitExecutable(executable)) return sanitized;
+  const gitEnvironment = withoutGitEnvironment(sanitized);
+  return trustedGitIndexFile === undefined
+    ? gitEnvironment
+    : {...gitEnvironment, GIT_INDEX_FILE: trustedGitIndexFile, GIT_OPTIONAL_LOCKS: '1'};
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {

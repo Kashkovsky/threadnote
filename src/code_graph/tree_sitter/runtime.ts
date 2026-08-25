@@ -1,5 +1,5 @@
 import {Context, Effect, Exit, FileSystem, Layer, Option, Path, Semaphore} from 'effect';
-import {Language, Parser, type Node} from 'web-tree-sitter';
+import {Language, Parser, Query, type Node} from 'web-tree-sitter';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {fromPromise} from '../../effect/errors.js';
 import {SystemInfo} from '../../effect/system.js';
@@ -12,6 +12,7 @@ export const TREE_SITTER_RUNTIME_CACHE_IDENTITY = `web-tree-sitter:0.26.11:${RUN
 
 export interface ParsedTreeSitterSource {
   readonly language: Language;
+  readonly query: (source: string) => Query;
   readonly root: Node;
 }
 
@@ -49,6 +50,7 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
         ),
       );
       const languages = new Map<string, Effect.Effect<Language, TreeSitterRuntimeError>>();
+      const queries = new Map<string, Query>();
       const languageCacheLock = yield* Semaphore.make(1);
 
       const loadLanguage = (asset: VerifiedLanguageAsset) =>
@@ -112,7 +114,18 @@ export class TreeSitterRuntime extends Context.Service<TreeSitterRuntime, TreeSi
                   if (Option.isNone(tree))
                     throw new TreeSitterRuntimeError('Tree-sitter did not return a syntax tree.');
                   try {
-                    return use({language, root: tree.value.rootNode});
+                    return use({
+                      language,
+                      query: querySource => {
+                        const key = `${asset.relativePath}\0${querySource}`;
+                        const existing = queries.get(key);
+                        if (existing !== undefined) return existing;
+                        const compiled = new Query(language, querySource);
+                        queries.set(key, compiled);
+                        return compiled;
+                      },
+                      root: tree.value.rootNode,
+                    });
                   } finally {
                     tree.value.delete();
                   }

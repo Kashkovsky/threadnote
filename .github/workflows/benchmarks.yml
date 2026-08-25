@@ -12,6 +12,7 @@ on:
       - 'scripts/benchmark-code-graph-workset.ts'
       - 'scripts/benchmark-code-graph-heavy-tail.ts'
       - 'scripts/generate-code-graph-heavy-tail-ratchet.ts'
+      - 'scripts/generate-code-graph-production-ratchet.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
       - 'scripts/benchmark-recall-vectors.ts'
       - 'scripts/code-graph-fixture.ts'
