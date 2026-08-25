@@ -12,7 +12,7 @@
     "bootstrap-external-open-temp-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 69
+      "minimum": 1
     },
     "bootstrap-external-open-temp-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -22,7 +22,7 @@
     "bootstrap-external-open-temp-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 69
+      "minimum": 1
     },
     "bootstrap-external-process-count-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -32,12 +32,12 @@
     "bootstrap-external-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2613
+      "p95Maximum": 3135
     },
     "bootstrap-external-process-physical-read-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 849920
+      "p95Maximum": 1048576
     },
     "bootstrap-external-process-physical-write-n1": {
       "samplesMinimum": 1,
@@ -47,7 +47,7 @@
     "bootstrap-external-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 69
+      "minimum": 1
     },
     "bootstrap-external-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -57,7 +57,7 @@
     "bootstrap-external-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 69
+      "minimum": 1
     },
     "bootstrap-external-rss-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -73,27 +73,27 @@
     "bootstrap-external-sqlite-temp-combined-peak-observed-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "bootstrap-external-sqlite-temp-linked-peak-observed-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "bootstrap-external-sqlite-temp-open-process-tree-peak-observed-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "bootstrap-external-storage-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 69
+      "minimum": 1
     },
     "build-status-sidecar-disk": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 11983
+      "p95Maximum": 1048576
     },
     "cold-activation-checkpointing-snapshot-duration-n1": {
       "samplesMinimum": 1,
@@ -266,7 +266,7 @@
     "cold-activation-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 4600
+      "p95Maximum": 5520
     },
     "cold-activation-recording-completion-duration-n1": {
       "samplesMinimum": 1,
@@ -288,7 +288,7 @@
     "cold-activation-validating-input-duration-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2802
+      "p95Maximum": 3363
     },
     "cold-activation-validating-input-observed-n1": {
       "samplesMinimum": 1,
@@ -322,7 +322,7 @@
     "cold-external-open-temp-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5818
+      "minimum": 1
     },
     "cold-external-open-temp-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -332,7 +332,7 @@
     "cold-external-open-temp-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5818
+      "minimum": 1
     },
     "cold-external-process-count-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -342,12 +342,12 @@
     "cold-external-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 271525
+      "p95Maximum": 325830
     },
     "cold-external-process-physical-read-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-external-process-physical-write-n1": {
       "samplesMinimum": 1,
@@ -357,7 +357,7 @@
     "cold-external-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5818
+      "minimum": 1
     },
     "cold-external-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -367,7 +367,7 @@
     "cold-external-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5818
+      "minimum": 1
     },
     "cold-external-rss-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -388,7 +388,7 @@
     "cold-external-sqlite-temp-linked-peak-observed-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-external-sqlite-temp-open-process-tree-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -398,7 +398,7 @@
     "cold-external-storage-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5818
+      "minimum": 1
     },
     "cold-index": {
       "samplesMinimum": 1,
@@ -413,27 +413,27 @@
     "cold-inventory-and-extraction-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 79941
+      "p95Maximum": 95929
     },
     "cold-inventory-cache-persistence-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 5023
+      "p95Maximum": 6028
     },
     "cold-inventory-parser-extraction-summed-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 12720
+      "p95Maximum": 15264
     },
     "cold-inventory-parser-fact-serialization-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3543
+      "p95Maximum": 4252
     },
     "cold-inventory-source-reading-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 840
+      "p95Maximum": 1007
     },
     "cold-language-category-count": {
       "samplesMinimum": 1,
@@ -470,7 +470,7 @@
     "cold-materialization-changed-fact-bytes-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-materialization-cross-generation-shard-files-n1": {
       "samplesMinimum": 1,
@@ -503,7 +503,7 @@
     "cold-materialization-durable-journal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-materialization-durable-wal-high-water-n1": {
       "samplesMinimum": 1,
@@ -550,12 +550,12 @@
     "cold-materialization-materialized-shard-replay-bytes-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-materialization-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 76225
+      "p95Maximum": 91470
     },
     "cold-materialization-raw-fact-replay-bytes-n1": {
       "samplesMinimum": 1,
@@ -570,17 +570,17 @@
     "cold-materialization-sidecar-journal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 288890
+      "p95Maximum": 1048576
     },
     "cold-materialization-sidecar-wal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-materialization-stage-attributing-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2377
+      "p95Maximum": 2852
     },
     "cold-materialization-stage-committing-n1": {
       "samplesMinimum": 1,
@@ -590,7 +590,7 @@
     "cold-materialization-stage-loading-cache-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 9699
+      "p95Maximum": 11639
     },
     "cold-materialization-stage-preparing-rows-n1": {
       "samplesMinimum": 1,
@@ -600,7 +600,7 @@
     "cold-materialization-stage-restoring-indexes-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3842
+      "p95Maximum": 4610
     },
     "cold-materialization-stage-writing-analysis-n1": {
       "samplesMinimum": 1,
@@ -645,12 +645,12 @@
     "cold-materialization-subphase-attribution-compute-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2368
+      "p95Maximum": 2842
     },
     "cold-materialization-subphase-fact-batch-preparation-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 4077
+      "p95Maximum": 4892
     },
     "cold-materialization-subphase-shard-association-n1": {
       "samplesMinimum": 1,
@@ -778,7 +778,7 @@
     "cold-maximum-progress-heartbeat-gap-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 19620
+      "p95Maximum": 23544
     },
     "cold-post-committed-scan-overlay-and-workspace": {
       "samplesMinimum": 1,
@@ -844,7 +844,7 @@
     "cold-reference-resolution-matching-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 11799
+      "p95Maximum": 14159
     },
     "cold-reference-resolution-pages-n1": {
       "samplesMinimum": 1,
@@ -859,7 +859,7 @@
     "cold-reference-resolution-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 35676
+      "p95Maximum": 42811
     },
     "cold-reference-resolution-references-examined-n1": {
       "samplesMinimum": 1,
@@ -874,17 +874,17 @@
     "cold-reference-resolution-transaction-stage-preparing-batch-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 1690
+      "p95Maximum": 2028
     },
     "cold-reference-resolution-transaction-stage-retiring-references-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2617
+      "p95Maximum": 3140
     },
     "cold-reference-resolution-transaction-stage-updating-analysis-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 400
+      "p95Maximum": 450
     },
     "cold-reference-resolution-transaction-stage-writing-aliases-n1": {
       "samplesMinimum": 1,
@@ -894,12 +894,12 @@
     "cold-reference-resolution-transaction-stage-writing-edges-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 4744
+      "p95Maximum": 5693
     },
     "cold-reference-resolution-transactions-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 13419
+      "p95Maximum": 16103
     },
     "cold-registration-lock-and-database-setup": {
       "samplesMinimum": 1,
@@ -909,7 +909,7 @@
     "cold-registration-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 610
+      "p95Maximum": 732
     },
     "cold-resolved-fact-accounting": {
       "samplesMinimum": 1,
@@ -939,7 +939,7 @@
     "cold-sqlite-journal-peak-observed": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-sqlite-main-peak-observed": {
       "samplesMinimum": 1,
@@ -949,12 +949,12 @@
     "cold-sqlite-shm-peak-observed": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 286720
+      "p95Maximum": 1048576
     },
     "cold-sqlite-temp-database-pages-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "cold-sqlite-temp-peak-observed": {
       "samplesMinimum": 1,
@@ -1002,7 +1002,7 @@
     "derived-index-unclassified-disk": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 619
+      "p95Maximum": 1048576
     },
     "first-repository-status-read": {
       "samplesMinimum": 1,
@@ -1077,7 +1077,7 @@
     "incremental-sqlite-journal-peak-observed": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "incremental-sqlite-main-peak-observed": {
       "samplesMinimum": 1,
@@ -1087,7 +1087,7 @@
     "incremental-sqlite-shm-peak-observed": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 286720
+      "p95Maximum": 1048576
     },
     "incremental-sqlite-temp-peak-observed": {
       "samplesMinimum": 1,
@@ -1119,12 +1119,12 @@
     "mcp-explain-structured-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 847
+      "p95Maximum": 1048576
     },
     "mcp-explain-text-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 194
+      "p95Maximum": 1048576
     },
     "mcp-explain-truncated": {
       "samplesMinimum": 1,
@@ -1156,12 +1156,12 @@
     "mcp-impact-structured-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 917
+      "p95Maximum": 1048576
     },
     "mcp-impact-text-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 277
+      "p95Maximum": 1048576
     },
     "mcp-impact-truncated": {
       "samplesMinimum": 1,
@@ -1193,12 +1193,12 @@
     "mcp-neighbors-structured-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 3783
+      "p95Maximum": 1048576
     },
     "mcp-neighbors-text-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 1193
+      "p95Maximum": 1048576
     },
     "mcp-neighbors-truncated": {
       "samplesMinimum": 1,
@@ -1230,12 +1230,12 @@
     "mcp-node-structured-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 1468
+      "p95Maximum": 1048576
     },
     "mcp-node-text-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 364
+      "p95Maximum": 1048576
     },
     "mcp-node-truncated": {
       "samplesMinimum": 1,
@@ -1267,12 +1267,12 @@
     "mcp-path-structured-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 2100
+      "p95Maximum": 1048576
     },
     "mcp-path-text-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 658
+      "p95Maximum": 1048576
     },
     "mcp-path-truncated": {
       "samplesMinimum": 1,
@@ -1304,12 +1304,12 @@
     "mcp-query-structured-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 23865
+      "p95Maximum": 1048576
     },
     "mcp-query-text-output": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 7747
+      "p95Maximum": 1048576
     },
     "mcp-query-truncated": {
       "samplesMinimum": 1,
@@ -1492,7 +1492,7 @@
     "one-file-reindex-activation-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 622
+      "p95Maximum": 746
     },
     "one-file-reindex-activation-recording-completion-duration-n1": {
       "samplesMinimum": 1,
@@ -1531,7 +1531,7 @@
     "one-file-reindex-external-open-temp-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 83
+      "minimum": 1
     },
     "one-file-reindex-external-open-temp-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -1541,7 +1541,7 @@
     "one-file-reindex-external-open-temp-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 83
+      "minimum": 1
     },
     "one-file-reindex-external-process-count-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -1551,12 +1551,12 @@
     "one-file-reindex-external-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3675
+      "p95Maximum": 4410
     },
     "one-file-reindex-external-process-physical-read-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "one-file-reindex-external-process-physical-write-n1": {
       "samplesMinimum": 1,
@@ -1566,7 +1566,7 @@
     "one-file-reindex-external-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 83
+      "minimum": 1
     },
     "one-file-reindex-external-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -1576,7 +1576,7 @@
     "one-file-reindex-external-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 83
+      "minimum": 1
     },
     "one-file-reindex-external-rss-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -1597,7 +1597,7 @@
     "one-file-reindex-external-sqlite-temp-linked-peak-observed-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "one-file-reindex-external-sqlite-temp-open-process-tree-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -1607,7 +1607,7 @@
     "one-file-reindex-external-storage-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 83
+      "minimum": 1
     },
     "one-file-reindex-incremental-work-attribution-context-files-n1": {
       "samplesMinimum": 1,
@@ -1636,7 +1636,7 @@
     "one-file-reindex-incremental-work-fact-bytes-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 156125
+      "p95Maximum": 1048576
     },
     "one-file-reindex-incremental-work-inventory-files-inspected-n1": {
       "samplesMinimum": 1,
@@ -1659,7 +1659,7 @@
     "one-file-reindex-incremental-work-source-bytes-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 7999
+      "p95Maximum": 1048576
     },
     "one-file-reindex-incremental-work-total-files-n1": {
       "samplesMinimum": 1,
@@ -1680,7 +1680,7 @@
     "one-file-reindex-inventory-and-extraction-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 457
+      "p95Maximum": 535
     },
     "one-file-reindex-inventory-cache-persistence-n1": {
       "samplesMinimum": 1,
@@ -1728,7 +1728,7 @@
     "one-file-reindex-materialization-durable-database-growth-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "one-file-reindex-materialization-durable-filesystem-high-water-n1": {
       "samplesMinimum": 1,
@@ -1738,7 +1738,7 @@
     "one-file-reindex-materialization-durable-journal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "one-file-reindex-materialization-durable-wal-high-water-n1": {
       "samplesMinimum": 1,
@@ -1748,7 +1748,7 @@
     "one-file-reindex-materialization-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 357
+      "p95Maximum": 385
     },
     "one-file-reindex-materialization-stage-attributing-n1": {
       "samplesMinimum": 1,
@@ -1842,7 +1842,7 @@
     "one-file-reindex-maximum-progress-heartbeat-gap-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 942
+      "p95Maximum": 1130
     },
     "one-file-reindex-post-committed-scan-overlay-and-workspace": {
       "samplesMinimum": 1,
@@ -1948,7 +1948,7 @@
     "one-file-reindex-registration-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 647
+      "p95Maximum": 776
     },
     "one-file-reindex-resolved-fact-accounting": {
       "samplesMinimum": 1,
@@ -1968,12 +1968,12 @@
     "one-file-reindex-sqlite-durable-database-pages-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "one-file-reindex-sqlite-temp-database-pages-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "one-file-reindex-vector-index": {
       "samplesMinimum": 1,
@@ -2203,7 +2203,7 @@
     "same-overlay-reference-activation-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3194
+      "p95Maximum": 3833
     },
     "same-overlay-reference-activation-recording-completion-duration-n1": {
       "samplesMinimum": 1,
@@ -2225,7 +2225,7 @@
     "same-overlay-reference-activation-validating-input-duration-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2803
+      "p95Maximum": 3363
     },
     "same-overlay-reference-activation-validating-input-observed-n1": {
       "samplesMinimum": 1,
@@ -2242,7 +2242,7 @@
     "same-overlay-reference-external-open-temp-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5639
+      "minimum": 1
     },
     "same-overlay-reference-external-open-temp-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -2252,7 +2252,7 @@
     "same-overlay-reference-external-open-temp-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5639
+      "minimum": 1
     },
     "same-overlay-reference-external-process-count-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -2262,12 +2262,12 @@
     "same-overlay-reference-external-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 264088
+      "p95Maximum": 316905
     },
     "same-overlay-reference-external-process-physical-read-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-external-process-physical-write-n1": {
       "samplesMinimum": 1,
@@ -2277,7 +2277,7 @@
     "same-overlay-reference-external-process-tree-attempts-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5639
+      "minimum": 1
     },
     "same-overlay-reference-external-process-tree-failures-n1": {
       "samplesMinimum": 1,
@@ -2287,7 +2287,7 @@
     "same-overlay-reference-external-process-tree-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5639
+      "minimum": 1
     },
     "same-overlay-reference-external-rss-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -2308,7 +2308,7 @@
     "same-overlay-reference-external-sqlite-temp-linked-peak-observed-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-external-sqlite-temp-open-process-tree-peak-observed-n1": {
       "samplesMinimum": 1,
@@ -2318,7 +2318,7 @@
     "same-overlay-reference-external-storage-samples-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 5639
+      "minimum": 1
     },
     "same-overlay-reference-inventory-and-extraction": {
       "samplesMinimum": 1,
@@ -2328,27 +2328,27 @@
     "same-overlay-reference-inventory-and-extraction-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 80003
+      "p95Maximum": 96003
     },
     "same-overlay-reference-inventory-cache-persistence-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 5037
+      "p95Maximum": 6044
     },
     "same-overlay-reference-inventory-parser-extraction-summed-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 14316
+      "p95Maximum": 17180
     },
     "same-overlay-reference-inventory-parser-fact-serialization-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3776
+      "p95Maximum": 4531
     },
     "same-overlay-reference-inventory-source-reading-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 848
+      "p95Maximum": 1018
     },
     "same-overlay-reference-materialization": {
       "samplesMinimum": 1,
@@ -2374,7 +2374,7 @@
     "same-overlay-reference-materialization-changed-fact-bytes-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 119562
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-materialization-cross-generation-shard-files-n1": {
       "samplesMinimum": 1,
@@ -2407,7 +2407,7 @@
     "same-overlay-reference-materialization-durable-journal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-materialization-durable-wal-high-water-n1": {
       "samplesMinimum": 1,
@@ -2454,12 +2454,12 @@
     "same-overlay-reference-materialization-materialized-shard-replay-bytes-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-materialization-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 75503
+      "p95Maximum": 90603
     },
     "same-overlay-reference-materialization-raw-fact-replay-bytes-n1": {
       "samplesMinimum": 1,
@@ -2474,17 +2474,17 @@
     "same-overlay-reference-materialization-sidecar-journal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 288890
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-materialization-sidecar-wal-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-materialization-stage-attributing-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2423
+      "p95Maximum": 2907
     },
     "same-overlay-reference-materialization-stage-committing-n1": {
       "samplesMinimum": 1,
@@ -2494,7 +2494,7 @@
     "same-overlay-reference-materialization-stage-loading-cache-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 9887
+      "p95Maximum": 11864
     },
     "same-overlay-reference-materialization-stage-preparing-rows-n1": {
       "samplesMinimum": 1,
@@ -2504,7 +2504,7 @@
     "same-overlay-reference-materialization-stage-restoring-indexes-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3564
+      "p95Maximum": 4277
     },
     "same-overlay-reference-materialization-stage-writing-analysis-n1": {
       "samplesMinimum": 1,
@@ -2549,12 +2549,12 @@
     "same-overlay-reference-materialization-subphase-attribution-compute-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2413
+      "p95Maximum": 2895
     },
     "same-overlay-reference-materialization-subphase-fact-batch-preparation-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 3768
+      "p95Maximum": 4521
     },
     "same-overlay-reference-materialization-subphase-shard-association-n1": {
       "samplesMinimum": 1,
@@ -2586,7 +2586,7 @@
     "same-overlay-reference-maximum-progress-heartbeat-gap-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 19353
+      "p95Maximum": 23224
     },
     "same-overlay-reference-post-committed-scan-overlay-and-workspace": {
       "samplesMinimum": 1,
@@ -2621,7 +2621,7 @@
     "same-overlay-reference-reference-resolution-matching-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 11074
+      "p95Maximum": 13289
     },
     "same-overlay-reference-reference-resolution-pages-n1": {
       "samplesMinimum": 1,
@@ -2636,7 +2636,7 @@
     "same-overlay-reference-reference-resolution-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 35483
+      "p95Maximum": 42579
     },
     "same-overlay-reference-reference-resolution-references-examined-n1": {
       "samplesMinimum": 1,
@@ -2651,17 +2651,17 @@
     "same-overlay-reference-reference-resolution-transaction-stage-preparing-batch-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 1798
+      "p95Maximum": 2157
     },
     "same-overlay-reference-reference-resolution-transaction-stage-retiring-references-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2958
+      "p95Maximum": 3549
     },
     "same-overlay-reference-reference-resolution-transaction-stage-updating-analysis-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 454
+      "p95Maximum": 531
     },
     "same-overlay-reference-reference-resolution-transaction-stage-writing-aliases-n1": {
       "samplesMinimum": 1,
@@ -2671,12 +2671,12 @@
     "same-overlay-reference-reference-resolution-transaction-stage-writing-edges-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 5077
+      "p95Maximum": 6092
     },
     "same-overlay-reference-reference-resolution-transactions-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 16033
+      "p95Maximum": 19239
     },
     "same-overlay-reference-registration-lock-and-database-setup": {
       "samplesMinimum": 1,
@@ -2686,7 +2686,7 @@
     "same-overlay-reference-registration-process-cpu-n1": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 364
+      "p95Maximum": 396
     },
     "same-overlay-reference-resolved-fact-accounting": {
       "samplesMinimum": 1,
@@ -2711,7 +2711,7 @@
     "same-overlay-reference-sqlite-journal-peak-observed": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-sqlite-main-peak-observed": {
       "samplesMinimum": 1,
@@ -2721,12 +2721,12 @@
     "same-overlay-reference-sqlite-shm-peak-observed": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 327680
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-sqlite-temp-database-pages-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "same-overlay-reference-sqlite-wal-peak-observed": {
       "samplesMinimum": 1,
@@ -2751,7 +2751,7 @@
     "sqlite-journal-disk": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "sqlite-main-disk": {
       "samplesMinimum": 1,
@@ -2761,12 +2761,12 @@
     "sqlite-shm-disk": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 40960
+      "p95Maximum": 1048576
     },
     "sqlite-wal-disk": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 20580
+      "p95Maximum": 1048576
     },
     "structural-graph-digest-parity": {
       "samplesMinimum": 1,
@@ -2777,7 +2777,7 @@
     "vector-index-disk": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 0
+      "p95Maximum": 1048576
     },
     "vector-rows": {
       "samplesMinimum": 1,

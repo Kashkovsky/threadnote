@@ -285,11 +285,15 @@ CI fixture, developer gate, ratchet input, or ratchet-generator target.
 Each non-deterministic limit starts from the maximum of the three seed jobs with 25% relative headroom; millisecond
 metrics also receive 100 ms absolute hosted-VM scheduling headroom. That absolute allowance is material only below
 400 ms, so single-observation micro-timing jitter cannot block development while the 25% ceiling still governs the
-end-to-end cold and incremental timings. Cold registration alone receives a 2x ceiling because retained same-behavior
-hosted observations showed larger cold database-setup variance, while the end-to-end cold limit remains tight. Explicit
-user-facing objectives still cap generated limits. Deterministic graph shape, proportional-work, parity, and zero failure
-counters remain exact. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every artifact as
-diagnostics but are not gates; complete-operation external process-tree RSS peaks remain ratcheted.
+end-to-end cold and incremental timings. Single-observation detailed `-n1` timers receive 50% relative headroom after
+same-behavior hosted runs showed that internal transaction and heartbeat splits can vary by more than 25% even when
+their end-to-end phases remain stable; explicit objectives and aggregate phase timings retain their tighter caps. Cold
+registration alone receives a 2x ceiling because retained same-behavior hosted observations showed larger cold
+database-setup variance, while the end-to-end cold limit remains tight. Deterministic graph shape, proportional-work,
+parity, and zero failure counters remain exact. Sampler attempt/sample counts are lower-bounded because longer runs
+legitimately produce more samples. Zero and sub-MiB byte observations receive a 1 MiB materiality floor; larger disk and
+memory values retain 25% headroom. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every
+artifact as diagnostics but are not gates; complete-operation external process-tree RSS peaks remain ratcheted.
 Filesystem-available byte observations are diagnostic rather than upper bounds: the governed preflight and ratchet
 metadata enforce the 20 GiB minimum, while additional free space can never fail the gate.
 

@@ -6862,6 +6862,7 @@ const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
 ]);
 
 const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.25;
+const PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM = 0.5;
 // Hosted VM scheduling can move a single sub-100 ms observation by tens of
 // milliseconds even when the source and output are identical. Keep those
 // diagnostic micro-timings governed, but give them an absolute 100 ms noise
@@ -6869,6 +6870,10 @@ const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.25;
 // including the end-to-end cold and incremental objectives this ratchet exists
 // to protect.
 const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 100;
+// A zero-byte seed can still observe a tiny SQLite journal or filesystem
+// bookkeeping file on another hosted VM. Govern storage growth from the first
+// material MiB instead of treating a 512-byte observation as a regression.
+const PRODUCTION_RATCHET_BYTE_NOISE_HEADROOM = 1_048_576;
 const PRODUCTION_RATCHET_MINIMUM_FREE_BYTES = 120 * 1_073_741_824;
 // Keep the permanent lexical CI ratchet production-shaped but small enough to
 // run in parallel with ordinary checks. Full-size and vector observations keep
@@ -7164,6 +7169,11 @@ function productionMeasurementRatchet(
   const minimum = Math.min(...values);
   const maximum = Math.max(...values);
   const base = {samplesMinimum: 1, unit} as const;
+  if (productionCoverageMeasurement(name, unit)) {
+    // A longer operation legitimately produces more sampler attempts. Coverage
+    // is lower-bounded; the separately ratcheted failure counters remain zero.
+    return {...base, minimum: 1};
+  }
   if (productionDeterministicMeasurement(name, unit)) {
     if (minimum !== maximum) {
       throw new ScriptError(
@@ -7173,15 +7183,19 @@ function productionMeasurementRatchet(
     return {...base, maximum, minimum};
   }
   if (unit === 'milliseconds') {
+    const objective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
     const relativeHeadroom =
-      name === 'cold-registration-lock-and-database-setup' ? 1 : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
+      name === 'cold-registration-lock-and-database-setup'
+        ? 1
+        : name.endsWith('-n1') && objective === undefined
+          ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM
+          : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
     const observedLimit =
       maximum === 0
         ? PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM
         : Math.ceil(
             Math.max(maximum * (1 + relativeHeadroom), maximum + PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM),
           );
-    const objective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
     if (objective !== undefined && maximum > objective) {
       throw new ScriptError(`Production ratchet objective ${name} has not been attained.`);
     }
@@ -7191,13 +7205,23 @@ function productionMeasurementRatchet(
     };
   }
   if (unit === 'bytes') {
-    return {...base, p95Maximum: maximum === 0 ? 0 : Math.ceil(maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM))};
+    return {
+      ...base,
+      p95Maximum: Math.max(
+        PRODUCTION_RATCHET_BYTE_NOISE_HEADROOM,
+        Math.ceil(maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM)),
+      ),
+    };
   }
   if (unit === 'operations_per_second') {
     return {...base, minimum: Math.floor(minimum * (1 - PRODUCTION_RATCHET_RELATIVE_HEADROOM) * 1_000) / 1_000};
   }
   if (unit === 'percent') return {...base, minimum};
   return {...base, maximum: Math.ceil(maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM))};
+}
+
+function productionCoverageMeasurement(name: string, unit: BenchmarkMeasurementUnit): boolean {
+  return unit === 'count' && (name.endsWith('-attempts-n1') || name.endsWith('-samples-n1'));
 }
 
 function productionDeterministicMeasurement(name: string, unit: BenchmarkMeasurementUnit): boolean {
