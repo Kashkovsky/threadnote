@@ -1006,6 +1006,7 @@ describe('code graph release evidence', () => {
           ...requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
           benchmarkMeasurement('cold-index', 'milliseconds', [coldIndexMilliseconds]),
           benchmarkMeasurement('cold-materialization-stage-preparing-rows-n1', 'milliseconds', [100]),
+          benchmarkMeasurement('cold-zero-duration-n1', 'milliseconds', [0]),
           benchmarkMeasurement('one-file-reindex-index', 'milliseconds', [29_000]),
           benchmarkMeasurement('one-file-reindex-post-committed-scan-overlay-and-workspace', 'milliseconds', [4_900]),
           benchmarkMeasurement('one-file-reindex-registration-lock-and-database-setup', 'milliseconds', [4_900]),
@@ -1119,11 +1120,12 @@ describe('code graph release evidence', () => {
         },
       ]),
     ).toThrow(/exact source\/runtime\/storage contract/);
-    expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 127, unit: 'milliseconds'});
+    expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 138, unit: 'milliseconds'});
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).toMatchObject({
-      p95Maximum: 115,
+      p95Maximum: 125,
     });
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).not.toHaveProperty('minimum');
+    expect(ratchet.measurements['cold-zero-duration-n1']).toMatchObject({p95Maximum: 25, unit: 'milliseconds'});
     expect(ratchet.measurements['cold-materialized-file-rows']).toMatchObject({maximum: 1, minimum: 1});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toMatchObject({p95Maximum: 2});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).not.toHaveProperty('minimum');
@@ -1150,8 +1152,13 @@ describe('code graph release evidence', () => {
     expect(() => createCodeGraphProductionRatchet(overTarget)).toThrow(
       /objective one-file-reindex-index has not been attained/,
     );
-    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 1);
+    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 6);
     expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
+    expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-boundary-rss-n1'))).toBe(false);
+    expect(
+      Object.keys(ratchet.measurements).some(name => name.endsWith('-external-process-tree-maximum-sample-gap-n1')),
+    ).toBe(false);
+    expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toBeDefined();
     expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
     expect(() =>
       enforceCodeGraphBenchmarkRatchet(
@@ -1208,6 +1215,25 @@ describe('code graph release evidence', () => {
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskFilesystem');
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskLocation');
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskMedium');
+    expect(
+      createCodeGraphProductionRatchet(
+        githubHostedArtifacts.map((artifact, index) => {
+          const filesystem = ['overlayfs', 'ext4', 'unknown'][index]!;
+          return {
+            ...artifact,
+            metadata: {
+              ...artifact.metadata,
+              benchmarkDiskFilesystem: filesystem,
+              benchmarkDiskLocation: ['unknown', 'virtual-or-network', 'external'][index]!,
+              benchmarkDiskMedium: ['virtual-or-network', 'rotational', 'unknown'][index]!,
+              benchmarkReferenceDiskFilesystem: filesystem,
+              benchmarkReferenceDiskLocation: ['virtual-or-network', 'unknown', 'external'][index]!,
+              benchmarkReferenceDiskMedium: ['unknown', 'solid-state', 'rotational'][index]!,
+            },
+          };
+        }),
+      ),
+    ).toEqual(githubHostedRatchet);
     fc.assert(
       fc.property(
         fc.constantFrom('unknown', 'overlayfs', 'ext4'),
@@ -1234,6 +1260,36 @@ describe('code graph release evidence', () => {
         },
       ),
       {numRuns: 50},
+    );
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            filesystem: fc.constantFrom('unknown', 'overlayfs', 'ext4'),
+            location: fc.constantFrom('unknown', 'internal', 'external', 'virtual-or-network'),
+            medium: fc.constantFrom('unknown', 'rotational', 'solid-state', 'virtual-or-network'),
+            referenceLocation: fc.constantFrom('unknown', 'internal', 'external', 'virtual-or-network'),
+            referenceMedium: fc.constantFrom('unknown', 'rotational', 'solid-state', 'virtual-or-network'),
+          }),
+          {maxLength: githubHostedArtifacts.length, minLength: githubHostedArtifacts.length},
+        ),
+        observations => {
+          const rebuilt = githubHostedArtifacts.map((artifact, index) => ({
+            ...artifact,
+            metadata: {
+              ...artifact.metadata,
+              benchmarkDiskFilesystem: observations[index]!.filesystem,
+              benchmarkDiskLocation: observations[index]!.location,
+              benchmarkDiskMedium: observations[index]!.medium,
+              benchmarkReferenceDiskFilesystem: observations[index]!.filesystem,
+              benchmarkReferenceDiskLocation: observations[index]!.referenceLocation,
+              benchmarkReferenceDiskMedium: observations[index]!.referenceMedium,
+            },
+          }));
+          expect(createCodeGraphProductionRatchet(rebuilt)).toEqual(githubHostedRatchet);
+        },
+      ),
+      {numRuns: 30},
     );
     expect(() =>
       createCodeGraphProductionRatchet(

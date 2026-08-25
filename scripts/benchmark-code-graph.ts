@@ -6861,8 +6861,8 @@ const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
   'percent',
 ]);
 
-const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.15;
-const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 5;
+const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.25;
+const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 25;
 const PRODUCTION_RATCHET_MINIMUM_FREE_BYTES = 120 * 1_073_741_824;
 // Keep the permanent lexical CI ratchet production-shaped but small enough to
 // run in parallel with ordinary checks. Full-size and vector observations keep
@@ -6958,13 +6958,22 @@ function productionRatchetMeasurements(
   artifact: BenchmarkArtifactV1,
 ): readonly BenchmarkArtifactV1['measurements'][number][] {
   const retained = artifact.measurements.filter(
-    measurement => !dynamicExternalSamplerPhaseMeasurement(measurement.name),
+    measurement =>
+      !dynamicExternalSamplerPhaseMeasurement(measurement.name) &&
+      !unstableProductionRatchetMeasurement(measurement.name),
   );
   const names = retained.map(measurement => measurement.name);
   if (new Set(names).size !== names.length) {
     throw new ScriptError('Production ratchet artifacts require unique assessed measurement names.');
   }
   return retained;
+}
+
+function unstableProductionRatchetMeasurement(name: string): boolean {
+  // Boundary RSS is the allocator/GC state at one instrumentation instant, not
+  // a phase peak. Retain it in evidence, but govern memory with the external
+  // process-tree RSS peaks that cover the complete operation.
+  return name.endsWith('-boundary-rss-n1') || name.endsWith('-external-process-tree-maximum-sample-gap-n1');
 }
 
 function dynamicExternalSamplerPhaseMeasurement(name: string): boolean {
@@ -7043,6 +7052,7 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
 
 function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): string {
   const metadata = artifact.metadata;
+  const githubHostedStorageAttested = productionRatchetGithubHostedStorageAttested(metadata);
   const minimumFreeBytes = metadata.benchmarkMinimumFreeBytes;
   const primaryAvailableBytes = metadata.benchmarkPrimaryAvailableBytesAtStart;
   const referenceAvailableBytes = metadata.benchmarkReferenceAvailableBytesAtStart;
@@ -7066,7 +7076,10 @@ function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): str
   }
   return JSON.stringify({
     commit: artifact.environment.commit,
-    filesystem: metadata.benchmarkDiskFilesystem,
+    // The reviewed GitHub-hosted runner contract is the storage authority for
+    // reduced CI observations. Do not reintroduce unstable guest filesystem
+    // hints into cross-run seed identity after excluding them from metadata.
+    filesystem: githubHostedStorageAttested ? 'github-hosted-attested' : metadata.benchmarkDiskFilesystem,
     lockfileSha256: metadata.benchmarkMeasuredSourceLockfileSha256,
     minimumFreeBytes,
     packageManifestSha256: metadata.benchmarkMeasuredSourcePackageManifestSha256,
@@ -7147,14 +7160,13 @@ function productionMeasurementRatchet(
     return {...base, maximum, minimum};
   }
   if (unit === 'milliseconds') {
+    const relativeHeadroom =
+      name === 'cold-registration-lock-and-database-setup' ? 1 : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
     const observedLimit =
       maximum === 0
-        ? 0
+        ? PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM
         : Math.ceil(
-            Math.max(
-              maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM),
-              maximum + PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM,
-            ),
+            Math.max(maximum * (1 + relativeHeadroom), maximum + PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM),
           );
     const objective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
     if (objective !== undefined && maximum > objective) {

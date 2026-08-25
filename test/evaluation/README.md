@@ -275,6 +275,20 @@ or incremental run, `p50`, `p95`, and `p99` are schema-compatible copies of that
 estimates; cite it as “one observation (n=1),” never as p95. Distribution labels are valid only for measurements with
 multiple samples.
 
+The pull-request production ratchet is deliberately reduced and path-scoped. It runs one lexical observation with
+3,000 generated source files, 110,000 target symbols, four parser workers, and a 20 GiB free-space floor only when
+graph-affecting sources or the ratchet contract change. Its checked baseline comes from three same-commit matrix jobs,
+each on a fresh GitHub-hosted Linux runner; the reviewed hosted-runner class, not unstable guest block-device or runner
+name hints, binds the gate. The full pinned IntelliJ fixture remains manual release/website evidence only: it is not a
+CI fixture, developer gate, ratchet input, or ratchet-generator target.
+
+Each non-deterministic limit starts from the maximum of the three seed jobs with 25% relative headroom; millisecond
+metrics also receive 25 ms absolute clock/VM headroom. Cold registration alone receives a 2x ceiling because retained
+same-behavior hosted observations showed larger cold database-setup variance, while the end-to-end cold limit remains
+tight. Explicit user-facing objectives still cap generated limits. Deterministic graph shape, proportional-work, parity,
+and zero failure counters remain exact. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every
+artifact as diagnostics but are not gates; complete-operation external process-tree RSS peaks remain ratcheted.
+
 Cold, one-file, and independent-rebuild inventory evidence also retains cumulative source-reading wall time, summed
 parser-extraction time, parser-fact serialization wall time, and cache-persistence wall time. Summed parser time can
 exceed inventory wall time when workers overlap; it is not a phase-duration substitute. Production-large and
