@@ -191,11 +191,7 @@ function initializePrivateIndex(
       ['-c', 'core.untrackedCache=true', '-C', identity.repoRoot, 'update-index', '--untracked-cache'],
       {maxOutputBytes: 16_384, timeoutMs: 30_000, trustedGitIndexFile: privateIndex},
     );
-    yield* runCommandEffect(
-      'git',
-      ['-c', 'core.fsmonitor=true', '-C', identity.repoRoot, 'fsmonitor--daemon', 'start'],
-      {maxOutputBytes: 16_384, timeoutMs: 30_000},
-    );
+    yield* ensureFsmonitorDaemon(identity);
     yield* runCommandEffect(
       'git',
       ['-c', 'core.fsmonitor=true', '-C', identity.repoRoot, 'update-index', '--fsmonitor'],
@@ -209,6 +205,26 @@ function initializePrivateIndex(
     ),
   );
 }
+
+const fsmonitorDaemon = (identity: RepositoryIdentity, operation: 'start' | 'status') =>
+  runCommandEffect('git', ['-c', 'core.fsmonitor=true', '-C', identity.repoRoot, 'fsmonitor--daemon', operation], {
+    allowFailure: true,
+    maxOutputBytes: 16_384,
+    timeoutMs: 30_000,
+  });
+
+const ensureFsmonitorDaemon = Effect.fn('codeGraph.ensureFsmonitorDaemon')(function* (identity: RepositoryIdentity) {
+  const observed = yield* fsmonitorDaemon(identity, 'status');
+  if (observed.exitCode === 0) return;
+  // Another process may start the repository daemon after the failed status
+  // observation. Git 2.39 reports that idempotent `start` race as exit 128, so
+  // stderr text is not a stable contract: re-observe the daemon instead.
+  yield* fsmonitorDaemon(identity, 'start');
+  const verified = yield* fsmonitorDaemon(identity, 'status');
+  if (verified.exitCode !== 0) {
+    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git fsmonitor daemon is unavailable.'));
+  }
+});
 
 function ensurePrivateCacheDirectory(
   fs: FileSystem.FileSystem,

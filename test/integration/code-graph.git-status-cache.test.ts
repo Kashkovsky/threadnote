@@ -46,15 +46,20 @@ describe('code graph private Git status cache', () => {
 
       expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
       expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(1);
+      expect(fsmonitorOperations(calls, 'start')).toHaveLength(0);
       assertPrivateStatusCall(calls.at(-1), home);
 
       expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
       expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(1);
       assertPrivateStatusCall(calls.at(-1), home);
 
       writeFileSync(sourceIndex, 'source-index-v2');
       expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
       expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(4);
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'start')).toHaveLength(0);
       assertPrivateStatusCall(calls.at(-1), home);
       expect(calls.every(call => !call.args.includes('--no-optional-locks') || call.args.includes('rev-parse'))).toBe(
         true,
@@ -107,7 +112,110 @@ describe('code graph private Git status cache', () => {
       provideTestLayer(ApplicationLayer),
     );
   });
+
+  it.effect('accepts a concurrent fsmonitor start after verifying the final daemon state', () => {
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = mkdtempSync(join(tmpdir(), 'threadnote-git-status-fsmonitor-race-'));
+      const repository = join(root, 'repository');
+      const gitDirectory = join(repository, '.git');
+      const sourceIndex = join(gitDirectory, 'index');
+      const home = join(root, 'home');
+      mkdirSync(gitDirectory, {recursive: true});
+      mkdirSync(home, {recursive: true});
+      writeFileSync(sourceIndex, 'source-index-v1');
+      const calls: Array<{args: readonly string[]; options?: CommandOptions}> = [];
+      let fsmonitorStatusCalls = 0;
+      const base = yield* CommandExecutor;
+      const command = CommandExecutor.of({
+        ...base,
+        execute: (executable, args, options) => {
+          expect(executable).toBe('git');
+          calls.push({args, options});
+          if (args.includes('rev-parse')) return Effect.succeed(result(`${sourceIndex}\n`));
+          if (args.includes('update-index')) return Effect.succeed(result(''));
+          if (args.includes('fsmonitor--daemon') && args.includes('status')) {
+            fsmonitorStatusCalls += 1;
+            return Effect.succeed(result('', fsmonitorStatusCalls === 1 ? 1 : 0));
+          }
+          if (args.includes('fsmonitor--daemon') && args.includes('start')) {
+            return Effect.succeed(result('', 128));
+          }
+          if (args.includes('status')) return Effect.succeed(result(' M src/index.ts\0'));
+          return Effect.fail(commandFailure(args));
+        },
+      });
+      const observe = () =>
+        worktreeStatusWithPrivateCache(repositoryIdentity(repository), home, STATUS_ARGUMENTS, {
+          minimumIndexBytes: 1,
+        }).pipe(Effect.provideService(CommandExecutor, command));
+
+      expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'start')).toHaveLength(1);
+      expect(calls.filter(call => call.args.includes('--no-optional-locks') && call.args.includes('status'))).toEqual(
+        [],
+      );
+
+      expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'start')).toHaveLength(1);
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+      ),
+      provideTestLayer(ApplicationLayer),
+    );
+  });
+
+  it.effect('falls back when fsmonitor remains unavailable after the start attempt', () => {
+    let root: string | undefined;
+    return Effect.gen(function* () {
+      root = mkdtempSync(join(tmpdir(), 'threadnote-git-status-fsmonitor-unavailable-'));
+      const repository = join(root, 'repository');
+      const gitDirectory = join(repository, '.git');
+      const sourceIndex = join(gitDirectory, 'index');
+      const home = join(root, 'home');
+      mkdirSync(gitDirectory, {recursive: true});
+      mkdirSync(home, {recursive: true});
+      writeFileSync(sourceIndex, 'source-index-v1');
+      const calls: Array<{args: readonly string[]; options?: CommandOptions}> = [];
+      const base = yield* CommandExecutor;
+      const command = CommandExecutor.of({
+        ...base,
+        execute: (executable, args, options) => {
+          expect(executable).toBe('git');
+          calls.push({args, options});
+          if (args.includes('rev-parse')) return Effect.succeed(result(`${sourceIndex}\n`));
+          if (args.includes('update-index')) return Effect.succeed(result(''));
+          if (args.includes('fsmonitor--daemon')) return Effect.succeed(result('', 1));
+          if (args.includes('status')) return Effect.succeed(result('?? src/new.ts\0'));
+          return Effect.fail(commandFailure(args));
+        },
+      });
+
+      const observed = yield* worktreeStatusWithPrivateCache(repositoryIdentity(repository), home, STATUS_ARGUMENTS, {
+        minimumIndexBytes: 1,
+      }).pipe(Effect.provideService(CommandExecutor, command));
+
+      expect(observed.stdout).toBe('?? src/new.ts\0');
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'start')).toHaveLength(1);
+      const fallback = calls.at(-1);
+      expect(fallback?.args.slice(0, 3)).toEqual(['--no-optional-locks', '-C', repository]);
+      expect(fallback?.options?.trustedGitIndexFile).toBeUndefined();
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
+      ),
+      provideTestLayer(ApplicationLayer),
+    );
+  });
 });
+
+function fsmonitorOperations(calls: ReadonlyArray<{readonly args: readonly string[]}>, operation: 'start' | 'status') {
+  return calls.filter(call => call.args.includes('fsmonitor--daemon') && call.args.includes(operation));
+}
 
 function assertPrivateStatusCall(
   call: {args: readonly string[]; options?: CommandOptions} | undefined,
@@ -133,8 +241,8 @@ function repositoryIdentity(repoRoot: string): RepositoryIdentity {
   };
 }
 
-function result(stdout: string) {
-  return {exitCode: 0, stderr: '', stdout};
+function result(stdout: string, exitCode = 0) {
+  return {exitCode, stderr: '', stdout};
 }
 
 function commandFailure(args: readonly string[]) {
