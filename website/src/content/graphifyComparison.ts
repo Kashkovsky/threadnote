@@ -45,7 +45,7 @@ export const graphifyVerifiedDifferences = [
     threadnote:
       'Models exact commits plus isolated staged, unstaged, renamed, deleted, and untracked worktree overlays; compatible commits can reuse a ready anchor.',
     graphify:
-      'Uses code extraction caches plus update, watch, and Git-hook workflows; semantic document or media refresh can be tracked separately.',
+      'Uses code extraction caches plus update and watch workflows, with GRAPHIFY_OUT for separate or shared destinations. Its installed Git hooks deliberately skip linked-worktree rebuilds so the canonical graph remains with the primary checkout.',
   },
   {
     dimension: 'Retrieval model',

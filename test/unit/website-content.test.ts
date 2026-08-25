@@ -2225,6 +2225,9 @@ Make the bottleneck observable.
     expect(graphifyPage).toContain('both stay on local AST work and spend no provider tokens');
     expect(differenceCopy).toContain('installed local embedding model');
     expect(differenceCopy).toContain('without a hosted embedding service or provider-token spend');
+    expect(differenceCopy).toContain('graphify_out');
+    expect(differenceCopy).toContain('deliberately skip linked-worktree rebuilds');
+    expect(differenceCopy).toContain('primary checkout');
     expect(graphifyPage).toContain('embedding model for semantic vector seeds');
     expect(graphifyPage).toMatch(/outside this structural\s+timing arm/);
     expect(graphifyPage).toContain('A graph file is not the finish line');
