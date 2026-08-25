@@ -14,6 +14,7 @@ import {
   setAutoUpdatePolicy,
   stateAfterFailedAutoUpdateSpawn,
   terminalAutoUpdateState,
+  threadnoteUpdateCommandMode,
   type AutoUpdateState,
   type AutoUpdateWorkerResult,
 } from '../../src/auto_update.js';
@@ -23,6 +24,18 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const AutoUpdateTestLayer = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 
 describe('automatic update state', () => {
+  it('treats JSON as an output modifier for release checks without weakening mode conflicts', () => {
+    fc.assert(
+      fc.property(fc.boolean(), fc.boolean(), (beta, stable) => {
+        expect(threadnoteUpdateCommandMode({beta, check: true, json: true, stable})).toBe('release');
+      }),
+    );
+    expect(threadnoteUpdateCommandMode({json: true})).toBe('status');
+    expect(threadnoteUpdateCommandMode({json: true, status: true})).toBe('status');
+    expect(threadnoteUpdateCommandMode({auto: 'off', json: true})).toBe('invalid');
+    expect(threadnoteUpdateCommandMode({check: true, json: true, status: true})).toBe('invalid');
+  });
+
   effectIt.effect('defaults to notify and persists explicit policy changes atomically', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

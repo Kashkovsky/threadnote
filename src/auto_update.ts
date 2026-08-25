@@ -71,6 +71,8 @@ export interface AutoUpdateStatus extends AutoUpdateState {
   readonly policySource: 'default' | 'environment' | 'file';
 }
 
+export type ThreadnoteUpdateCommandMode = 'invalid' | 'policy' | 'release' | 'status';
+
 export type AutoUpdateWorkerResult =
   | {readonly result: 'busy' | 'current' | 'disabled' | 'failed'}
   | {readonly repairRequired: boolean; readonly result: 'updated'};
@@ -198,9 +200,26 @@ export const runAutoUpdateStatusCommand = Effect.fn('autoUpdate.statusCommand')(
 });
 
 export function runThreadnoteUpdateCommand(config: RuntimeConfig, options: UpdateOptions) {
+  const mode = threadnoteUpdateCommandMode(options);
+  if (mode === 'invalid') {
+    return Effect.fail(
+      applicationError(
+        'validate update command',
+        new Error('Choose one update mode: automatic-update policy, status, or release installation.'),
+      ),
+    );
+  }
+  if (mode === 'policy') {
+    return runAutoUpdatePolicyCommand(options.auto === 'on' ? 'automatic' : 'notify', options.dryRun);
+  }
+  if (mode === 'status') return runAutoUpdateStatusCommand(options.json === true);
+  return runUpdate(config, options);
+}
+
+/** @internal Pure update-mode dispatcher used by CLI regression tests. */
+export function threadnoteUpdateCommandMode(options: UpdateOptions): ThreadnoteUpdateCommandMode {
   const policyMode = options.auto !== undefined;
-  const statusMode = options.status === true || options.json === true;
-  const updateOnlyOption = Boolean(
+  const releaseMode = Boolean(
     options.allowUntrustedSource ||
     options.beta ||
     options.check ||
@@ -211,19 +230,15 @@ export function runThreadnoteUpdateCommand(config: RuntimeConfig, options: Updat
     options.stable ||
     options.yes,
   );
-  if ((policyMode && statusMode) || ((policyMode || statusMode) && updateOnlyOption)) {
-    return Effect.fail(
-      applicationError(
-        'validate update command',
-        new Error('Choose one update mode: automatic-update policy, status, or release installation.'),
-      ),
-    );
-  }
-  if (options.auto) {
-    return runAutoUpdatePolicyCommand(options.auto === 'on' ? 'automatic' : 'notify', options.dryRun);
-  }
-  if (statusMode) return runAutoUpdateStatusCommand(options.json === true);
-  return runUpdate(config, options);
+  // `--json` predates an explicit status subcommand as a convenient status
+  // shorthand. When paired with `--check`, however, it modifies that release
+  // check's output instead of selecting a second command mode.
+  const statusMode = options.status === true || (options.json === true && options.check !== true);
+  const selectedModeCount = Number(policyMode) + Number(statusMode) + Number(releaseMode);
+  if (selectedModeCount > 1) return 'invalid';
+  if (policyMode) return 'policy';
+  if (statusMode) return 'status';
+  return 'release';
 }
 
 /**

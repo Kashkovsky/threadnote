@@ -1772,7 +1772,7 @@ threadnote update --check`,
           },
           {
             type: 'paragraph',
-            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
+            text: "The beta channel is an inclusive preview channel: it selects the newest immutable Threadnote release across stable and prerelease builds, so an invoked update can graduate an older beta to a fresher stable without --stable. After that graduation, ordinary updates follow stable; use --beta to re-enter preview selection. Use --stable to request stable explicitly, even when it is numerically lower than an installed prerelease. Add --json to --check for a versioned machine-readable result. Updates verify immutable release assets, promote atomically, preserve ~/.threadnote data and verified model files, then repair Threadnote-owned integrations. Cursor Marketplace plugin updates remain owned by Cursor and the organization's policy.",
           },
           {
             type: 'paragraph',
