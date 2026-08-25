@@ -562,24 +562,30 @@ describe('code graph benchmark sampler artifact', () => {
     'captures a live recursive process tree without command metadata',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'threadnote-benchmark-process-tree-'));
+      const parentReady = join(root, 'parent-ready');
+      const parentStop = join(root, 'parent-stop');
+      const samplerStop = join(root, 'sampler-stop');
+      let parent: ReturnType<typeof Bun.spawn> | undefined;
+      let sampler: ReturnType<typeof Bun.spawn> | undefined;
       try {
         const phase = join(root, 'phase');
         const output = join(root, 'output.json');
         const checkpoint = join(root, 'checkpoint.json');
         const ready = join(root, 'ready.json');
-        const stop = join(root, 'stop');
         await writeFile(phase, 'scanning');
-        const parent = Bun.spawn({
-          cmd: [
-            process.execPath,
-            '-e',
-            "const child=Bun.spawn([process.execPath,'-e','await Bun.sleep(500)']); await child.exited;",
-          ],
+        const childProgram = `while (!(await Bun.file(${JSON.stringify(parentStop)}).exists())) await Bun.sleep(10);`;
+        const parentProgram = [
+          `const child=Bun.spawn([process.execPath,'-e',${JSON.stringify(childProgram)}]);`,
+          `await Bun.write(${JSON.stringify(parentReady)},'ready');`,
+          'await child.exited;',
+        ].join('');
+        parent = Bun.spawn({
+          cmd: [process.execPath, '-e', parentProgram],
           stderr: 'ignore',
           stdout: 'ignore',
         });
-        await Bun.sleep(50);
-        const sampler = Bun.spawn({
+        await waitForText(parentReady, 5_000);
+        sampler = Bun.spawn({
           cmd: [
             process.execPath,
             fileURLToPath(new URL('../../scripts/code-graph-benchmark-sampler.ts', import.meta.url)),
@@ -592,7 +598,7 @@ describe('code graph benchmark sampler artifact', () => {
             '--phase',
             phase,
             '--stop',
-            stop,
+            samplerStop,
             '--output',
             output,
             '--checkpoint-output',
@@ -607,8 +613,8 @@ describe('code graph benchmark sampler artifact', () => {
           stderr: 'pipe',
           stdout: 'ignore',
         });
-        await waitForText(ready);
-        await writeFile(stop, 'complete');
+        await waitForText(ready, 5_000);
+        await writeFile(samplerStop, 'complete');
         expect(await sampler.exited).toBe(0);
         const artifact = parseCodeGraphBenchmarkSamplerArtifact(JSON.parse(await readFile(output, 'utf8')));
         expect(artifact.processTelemetry).toMatchObject({
@@ -625,12 +631,17 @@ describe('code graph benchmark sampler artifact', () => {
           Object.values(artifact.phases).reduce((total, sample) => total + (sample.processSampleFailures ?? 0), 0),
         ).toBe(0);
         expect(JSON.stringify(artifact)).not.toContain('command');
+        await writeFile(parentStop, 'complete');
         await parent.exited;
       } finally {
+        await writeFile(samplerStop, 'complete').catch(() => undefined);
+        if (sampler) await sampler.exited;
+        await writeFile(parentStop, 'complete').catch(() => undefined);
+        if (parent) await parent.exited;
         await rm(root, {force: true, recursive: true});
       }
     },
-    2_000,
+    10_000,
   );
 
   it.skipIf(!['darwin', 'linux'].includes(process.platform))(
