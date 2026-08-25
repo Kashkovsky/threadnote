@@ -114,22 +114,29 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
     yield* pruneRetiredSnapshotRows(runWrite, snapshot.id);
   }
   yield* runWrite(
-    sql.withTransaction(
-      Effect.gen(function* () {
-        yield* upsertRepository(sql, identity);
-        const existing = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
-        if (existing[0]) {
-          const current = snapshotFromRow(existing[0]);
-          if (
-            !persistentSnapshotBuildIdentityMatches(current, snapshot) ||
-            !['building', 'failed'].includes(current.state)
-          ) {
-            return yield* Effect.fail(
-              new CodeGraphStoreError('Persistent build claim does not match the existing snapshot identity.'),
-            );
-          }
-        } else {
-          yield* sql`
+    Effect.gen(function* () {
+      // Revalidate the schema in the same checkout-writer critical section
+      // that publishes this build. A cold build may defer global query indexes
+      // after this claim's initial schema check but before its snapshot row is
+      // visible; publishing without this second check leaves the new build able
+      // to reach endpoint validation while those indexes are absent.
+      yield* initializeSchema(sql);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* upsertRepository(sql, identity);
+          const existing = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
+          if (existing[0]) {
+            const current = snapshotFromRow(existing[0]);
+            if (
+              !persistentSnapshotBuildIdentityMatches(current, snapshot) ||
+              !['building', 'failed'].includes(current.state)
+            ) {
+              return yield* Effect.fail(
+                new CodeGraphStoreError('Persistent build claim does not match the existing snapshot identity.'),
+              );
+            }
+          } else {
+            yield* sql`
           INSERT INTO snapshots (
             id, repository_id, worktree_id, commit_id, graph_content_id, base_snapshot_id, extractor_set,
             dirty, overlay_fingerprint, state, file_count, symbol_count, edge_count, started_at
@@ -140,15 +147,15 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
             ${snapshot.overlayFingerprint ?? null}, 'building', 0, 0, 0, ${new Date().toISOString()}
           )
         `;
-        }
-        yield* sql`
+          }
+          yield* sql`
           INSERT INTO snapshot_build_owners (snapshot_id, owner_token, claimed_at)
           VALUES (${snapshot.id}, ${ownerToken}, ${new Date().toISOString()})
           ON CONFLICT(snapshot_id) DO UPDATE SET
             owner_token = excluded.owner_token,
             claimed_at = excluded.claimed_at
         `;
-        yield* sql`
+          yield* sql`
           INSERT INTO snapshot_build_owner_instances (
             snapshot_id, owner_token, build_id, process_id, process_start_identity, logical_snapshot_id
           ) VALUES (
@@ -162,8 +169,9 @@ const claimPersistentSnapshotBuild = Effect.fn('codeGraph.claimPersistentSnapsho
             process_start_identity = excluded.process_start_identity,
             logical_snapshot_id = excluded.logical_snapshot_id
         `;
-      }),
-    ),
+        }),
+      );
+    }),
   );
 });
 

@@ -8,8 +8,12 @@ import {
   type CodeGraphDirectPersistentCapacityBoundary,
 } from '../../src/code_graph/disk_capacity.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {codeGraphColdIndexDeferralEligible} from '../../src/code_graph/store_cold_index_deferral.js';
+import {
+  codeGraphColdIndexDeferralEligible,
+  deferCodeGraphQueryIndexesForColdBuild,
+} from '../../src/code_graph/store_cold_index_deferral.js';
 import type {CodeGraphDirectPersistentCapacityProtector} from '../../src/code_graph/store_models.js';
+import {claimPersistentSnapshotBuild} from '../../src/code_graph/store_persistent_build.js';
 import {
   CODE_GRAPH_QUERY_INDEX_DEFINITIONS,
   inspectCodeGraphQueryIndexes,
@@ -191,6 +195,76 @@ describe('code graph cold query-index deferral', () => {
           fixture.databasePath,
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient;
+            expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toEqual([]);
+            expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(true);
+          }),
+          {writerLockPath: fixture.writerLockPath},
+        );
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('revalidates indexes atomically when a claim races cold deferral', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* coldIndexFixture('claim-race');
+        const store = yield* CodeGraphStore;
+        yield* store.withSession(
+          fixture.databasePath,
+          Effect.gen(function* () {
+            yield* store.initialize(fixture.databasePath);
+            const firstOwnerToken = yield* claimPersistentBuildForTest(
+              store,
+              fixture.databasePath,
+              fixture.identity,
+              fixture.snapshot,
+            );
+            // A known batch count keeps the first build's preparation eager so
+            // the test can place deferral exactly inside the second claim.
+            yield* store.prepareActivation(
+              fixture.databasePath,
+              [fixture.file],
+              fixture.snapshot.id,
+              1,
+              firstOwnerToken,
+            );
+
+            const sql = yield* SqlClient.SqlClient;
+            const secondIdentity = {...fixture.identity, worktreeId: 'v'.repeat(64)};
+            const secondSnapshot = {
+              ...fixture.snapshot,
+              id: 'claim-race-second-snapshot',
+              worktreeId: secondIdentity.worktreeId,
+            };
+            let writerAcquisitions = 0;
+            let deferredBetweenSchemaCheckAndPublication = false;
+            const writerGate = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+              Effect.suspend(() => {
+                writerAcquisitions += 1;
+                if (writerAcquisitions !== 3) return effect;
+                return deferCodeGraphQueryIndexesForColdBuild(sql, fixture.snapshot.id, firstOwnerToken).pipe(
+                  Effect.tap(deferred =>
+                    Effect.sync(() => {
+                      deferredBetweenSchemaCheckAndPublication = deferred;
+                    }),
+                  ),
+                  Effect.andThen(effect),
+                );
+              });
+
+            yield* claimPersistentSnapshotBuild(
+              secondIdentity,
+              secondSnapshot,
+              'claim-race-owner-token',
+              {
+                logicalSnapshotId: `cgsn_${'0'.repeat(40)}`,
+                owner: {buildId: '11111111-1111-1111', processId: process.pid},
+              },
+              writerGate,
+            );
+
+            expect(writerAcquisitions).toBe(3);
+            expect(deferredBetweenSchemaCheckAndPublication).toBe(true);
             expect((yield* inspectCodeGraphQueryIndexes(sql)).missing).toEqual([]);
             expect(yield* codeGraphSchemaInitializationReceiptCurrent(sql)).toBe(true);
           }),
