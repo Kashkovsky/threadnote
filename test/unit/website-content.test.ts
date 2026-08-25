@@ -2220,6 +2220,11 @@ Make the bottleneck observable.
     expect(graphifyPage).toContain('These are parity, not reasons to choose one');
     expect(graphifyPage).toContain('Full IntelliJ result pending');
     expect(graphifyPage).toContain('No provisional ratio is published');
+    expect(graphifyPage).toContain('both stay on local AST work and spend no provider tokens');
+    expect(differenceCopy).toContain('installed local embedding model');
+    expect(differenceCopy).toContain('without a hosted embedding service or provider-token spend');
+    expect(graphifyPage).toContain('embedding model for semantic vector seeds');
+    expect(graphifyPage).toContain('outside this structural timing arm');
     expect(graphifyPage).toContain("performanceEvidence.state === 'verified'");
     expect(graphifyPage).not.toMatch(/Graphify-exclusive|Graphify only|Threadnote-exclusive|Threadnote only/);
 

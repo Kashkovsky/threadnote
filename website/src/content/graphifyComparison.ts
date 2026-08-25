@@ -50,7 +50,7 @@ export const graphifyVerifiedDifferences = [
   {
     dimension: 'Retrieval model',
     threadnote:
-      'Combines exact and lexical retrieval with local vector seeds, then returns bounded current-snapshot evidence and stable follow-up identifiers.',
+      'Combines exact and lexical retrieval with an installed local embedding model for vector seeds—without a hosted embedding service or provider-token spend—then returns bounded current-snapshot evidence and stable follow-up identifiers.',
     graphify:
       'Uses graph traversal and term or trigram matching for query, path, explain, neighbors, and impact workflows; its package explicitly is not a vector index.',
   },

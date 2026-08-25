@@ -195,6 +195,12 @@ export default function GraphifyPerformancePage() {
           The fixture commit is shared; product-native storage and execution models are not forced into an artificial
           common implementation. A bounded failure is evidence too and will be reported as such.
         </p>
+        <p className="comparison-note">
+          The common structural stopwatch compares Threadnote lexical-only indexing with Graphify code-only extraction;
+          both stay on local AST work and spend no provider tokens. Separately, Threadnote can add its installed local
+          embedding model for semantic vector seeds without calling a hosted embedding service. Graphify&apos;s model-backed
+          document and media paths are useful product capabilities, but they are outside this structural timing arm.
+        </p>
       </section>
 
       <section className="content-section content-section--cta">
