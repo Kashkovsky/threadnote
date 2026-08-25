@@ -4,6 +4,7 @@ import {
   CODE_GRAPH_RESOLUTION_PASS_MAXIMUM,
   codeGraphResolutionPassAdmitted,
   nextPersistentUnresolvedReferenceBatchRows,
+  persistentUnresolvedReferenceMaximumBatchRows,
 } from '../../src/code_graph/store_resolution.js';
 import {
   aggregatePersistentReferenceResolutionCapacityBoundaries,
@@ -15,27 +16,56 @@ import {
 } from '../../src/code_graph/store_resolution_core.js';
 
 describe('code graph resolution pass bounds', () => {
-  it('adapts unresolved publication from the proven page size without exceeding 20k hydrated rows', () => {
+  it('adapts unresolved publication without exceeding the workload-specific hydrated-row ceiling', () => {
     fc.assert(
-      fc.property(fc.array(fc.integer({max: 60_000, min: 0}), {maxLength: 64}), durations => {
-        let current = 1_500;
-        for (const duration of durations) {
-          const next = nextPersistentUnresolvedReferenceBatchRows(current, duration);
-          expect(Number.isSafeInteger(next)).toBe(true);
-          expect(next).toBeGreaterThanOrEqual(250);
-          expect(next).toBeLessThanOrEqual(20_000);
-          expect(next).toBeLessThanOrEqual(current * 2);
-          if (duration >= 2_000 && duration <= 5_000) expect(next).toBe(current);
-          else if (duration > 5_000) expect(next).toBeLessThanOrEqual(current);
-          else expect(next).toBeGreaterThanOrEqual(current);
-          current = next;
-        }
+      fc.property(
+        fc.integer({max: 1_000_000, min: 0}),
+        fc.array(fc.integer({max: 60_000, min: 0}), {maxLength: 64}),
+        (referenceRows, durations) => {
+          const maximum = persistentUnresolvedReferenceMaximumBatchRows(referenceRows);
+          let current = 1_500;
+          for (const duration of durations) {
+            const next = nextPersistentUnresolvedReferenceBatchRows(current, duration, referenceRows);
+            expect(Number.isSafeInteger(next)).toBe(true);
+            expect(next).toBeGreaterThanOrEqual(250);
+            expect(next).toBeLessThanOrEqual(maximum);
+            expect(next).toBeLessThanOrEqual(current * 2);
+            if (duration >= 2_000 && duration <= 5_000) expect(next).toBe(current);
+            else if (duration > 5_000) expect(next).toBeLessThanOrEqual(current);
+            else expect(next).toBeGreaterThanOrEqual(current);
+            current = next;
+          }
+        },
+      ),
+      {numRuns: 250},
+    );
+    const growth = (referenceRows: number) => {
+      let current = 1_500;
+      return Array.from(
+        {length: 4},
+        () => (current = nextPersistentUnresolvedReferenceBatchRows(current, 0, referenceRows)),
+      );
+    };
+    expect(growth(149_999)).toEqual([3_000, 6_000, 10_000, 10_000]);
+    expect(growth(150_000)).toEqual([3_000, 6_000, 12_000, 20_000]);
+  });
+
+  it('selects the wider ceiling only for finite safe large-graph reference counts', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 149_999, min: 0}), referenceRows => {
+        expect(persistentUnresolvedReferenceMaximumBatchRows(referenceRows)).toBe(10_000);
       }),
       {numRuns: 250},
     );
-    let current = 1_500;
-    const growth = Array.from({length: 4}, () => (current = nextPersistentUnresolvedReferenceBatchRows(current, 0)));
-    expect(growth).toEqual([3_000, 6_000, 12_000, 20_000]);
+    fc.assert(
+      fc.property(fc.integer({max: Number.MAX_SAFE_INTEGER, min: 150_000}), referenceRows => {
+        expect(persistentUnresolvedReferenceMaximumBatchRows(referenceRows)).toBe(20_000);
+      }),
+      {numRuns: 250},
+    );
+    for (const invalid of [-1, Number.NaN, Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY, 149_999.5]) {
+      expect(persistentUnresolvedReferenceMaximumBatchRows(invalid)).toBe(10_000);
+    }
   });
 
   it('admits exactly the finite non-negative pass prefix', () => {

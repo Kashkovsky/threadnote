@@ -51,19 +51,35 @@ export const CODE_GRAPH_RESOLUTION_PASS_MAXIMUM = 32;
 
 // Unresolved publication hydrates complete edge payloads for the capacity
 // reservation, unlike the insert-select activation copier. Retain the proven
-// 1,500-row first transaction, then permit measured 2x growth while keeping a
-// 20k hard ceiling on both memory and writer-lock exposure; the adaptive
-// controller shrinks after transactions exceed five seconds.
+// 1,500-row first transaction and 10k ceiling for ordinary graphs. Above the
+// measured 150k-reference crossover, permit 2x growth to 20k; the larger JVM
+// sample benefited while the reduced production fixture did not. The adaptive
+// controller still shrinks after transactions exceed five seconds.
 const PERSISTENT_UNRESOLVED_REFERENCE_INITIAL_BATCH_ROWS = 1_500;
 
-const PERSISTENT_UNRESOLVED_REFERENCE_MAXIMUM_BATCH_ROWS = 20_000;
+const PERSISTENT_UNRESOLVED_REFERENCE_LARGE_GRAPH_ROWS = 150_000;
+
+const PERSISTENT_UNRESOLVED_REFERENCE_STANDARD_MAXIMUM_BATCH_ROWS = 10_000;
+
+const PERSISTENT_UNRESOLVED_REFERENCE_LARGE_MAXIMUM_BATCH_ROWS = 20_000;
+
+/** @internal Deterministic workload boundary retained for state-machine properties. */
+export function persistentUnresolvedReferenceMaximumBatchRows(referenceRows: number): number {
+  return Number.isSafeInteger(referenceRows) && referenceRows >= PERSISTENT_UNRESOLVED_REFERENCE_LARGE_GRAPH_ROWS
+    ? PERSISTENT_UNRESOLVED_REFERENCE_LARGE_MAXIMUM_BATCH_ROWS
+    : PERSISTENT_UNRESOLVED_REFERENCE_STANDARD_MAXIMUM_BATCH_ROWS;
+}
 
 /** @internal Pure adaptive boundary retained for state-machine properties. */
-export function nextPersistentUnresolvedReferenceBatchRows(currentRows: number, milliseconds: number): number {
+export function nextPersistentUnresolvedReferenceBatchRows(
+  currentRows: number,
+  milliseconds: number,
+  referenceRows: number,
+): number {
   return nextPersistentActivationBatchRows(
     currentRows,
     milliseconds,
-    PERSISTENT_UNRESOLVED_REFERENCE_MAXIMUM_BATCH_ROWS,
+    persistentUnresolvedReferenceMaximumBatchRows(referenceRows),
   );
 }
 
@@ -615,6 +631,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
         unresolvedBatchRows = nextPersistentUnresolvedReferenceBatchRows(
           unresolvedBatchRows,
           observedTransactionMilliseconds,
+          preparationReferencesTotal,
         );
         yield* reportResolutionProgress();
         yield* Effect.yieldNow;
