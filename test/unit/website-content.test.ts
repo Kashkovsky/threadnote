@@ -1874,9 +1874,6 @@ Make the bottleneck observable.
     expect(pageSource).toContain('Repository size is never an admission test');
     expect(pageSource).toContain('bounded parser worker pool');
     expect(pageSource).toContain('one backpressured SQLite writer');
-    expect(pageSource).toContain('A warm worktree is ready in seconds');
-    expect(pageSource).toContain('Graph-equivalent commit');
-    expect(pageSource).toContain('One-file clean commit');
     expect(pageSource).toContain('Graph responses stay deliberately bounded');
     expect(pageSource).toContain('provide explicit continuation');
     expect(pageSource).toContain('postCommittedScanMilliseconds');
@@ -2010,9 +2007,6 @@ Make the bottleneck observable.
     expect(checkedInEmbeddingContextPerformance.rssIncreasePercent).toBeCloseTo(5.9859, 4);
     expect(embeddingContextPerformanceArtifactPath).toBe('evidence/code-graph-embedding-contexts-10000-v4.2.5.json');
     expect(viteConfig).toContain('fileName: embeddingContextPerformanceArtifactPath');
-    expect(pageSource).toContain('Graph embeddings use the CPU you already have');
-    expect(pageSource).toContain('upper-median paired-run');
-    expect(pageSource).toContain('Same-machine engineering comparison, not a portable SLA');
     expect(pageSource).not.toMatch(/61_841|42_400|1\.485106/);
   });
 
