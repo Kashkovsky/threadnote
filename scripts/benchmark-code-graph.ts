@@ -6973,7 +6973,14 @@ function unstableProductionRatchetMeasurement(name: string): boolean {
   // Boundary RSS is the allocator/GC state at one instrumentation instant, not
   // a phase peak. Retain it in evidence, but govern memory with the external
   // process-tree RSS peaks that cover the complete operation.
-  return name.endsWith('-boundary-rss-n1') || name.endsWith('-external-process-tree-maximum-sample-gap-n1');
+  return (
+    name.endsWith('-boundary-rss-n1') ||
+    name.endsWith('-external-process-tree-maximum-sample-gap-n1') ||
+    // Available capacity is a lower-bound admission condition, never an upper
+    // performance bound. The governed preflight and metadata retain the 20 GiB
+    // floor; more free space must not fail the ratchet.
+    name.endsWith('-filesystem-available-n1')
+  );
 }
 
 function dynamicExternalSamplerPhaseMeasurement(name: string): boolean {

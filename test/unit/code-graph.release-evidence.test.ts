@@ -1152,14 +1152,34 @@ describe('code graph release evidence', () => {
     expect(() => createCodeGraphProductionRatchet(overTarget)).toThrow(
       /objective one-file-reindex-index has not been attained/,
     );
-    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 6);
+    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 8);
     expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
     expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-boundary-rss-n1'))).toBe(false);
     expect(
       Object.keys(ratchet.measurements).some(name => name.endsWith('-external-process-tree-maximum-sample-gap-n1')),
     ).toBe(false);
+    expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-filesystem-available-n1'))).toBe(false);
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toBeDefined();
     expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
+    fc.assert(
+      fc.property(fc.integer({max: 200 * 1_073_741_824, min: 20 * 1_073_741_824}), availableBytes => {
+        const expandedCapacity = {
+          ...artifacts[0]!,
+          metadata: {
+            ...artifacts[0]!.metadata,
+            benchmarkPrimaryAvailableBytesAtStart: availableBytes,
+            benchmarkReferenceAvailableBytesAtStart: availableBytes,
+          },
+          measurements: artifacts[0]!.measurements.map(measurement =>
+            measurement.name.endsWith('-filesystem-available-n1')
+              ? benchmarkMeasurement(measurement.name, measurement.unit, [availableBytes])
+              : measurement,
+          ),
+        };
+        expect(() => enforceCodeGraphBenchmarkRatchet(expandedCapacity, ratchet)).not.toThrow();
+      }),
+      {numRuns: 30},
+    );
     expect(() =>
       enforceCodeGraphBenchmarkRatchet(
         {

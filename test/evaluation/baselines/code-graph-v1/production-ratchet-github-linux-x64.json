@@ -495,11 +495,6 @@
       "unit": "bytes",
       "p95Maximum": 1124884480
     },
-    "cold-materialization-durable-filesystem-available-n1": {
-      "samplesMinimum": 1,
-      "unit": "bytes",
-      "p95Maximum": 112820316160
-    },
     "cold-materialization-durable-filesystem-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
@@ -671,11 +666,6 @@
       "samplesMinimum": 1,
       "unit": "milliseconds",
       "p95Maximum": 25
-    },
-    "cold-materialization-temp-filesystem-available-n1": {
-      "samplesMinimum": 1,
-      "unit": "bytes",
-      "p95Maximum": 112820316160
     },
     "cold-materialized-edge-rows": {
       "samplesMinimum": 1,
@@ -2409,11 +2399,6 @@
       "unit": "bytes",
       "p95Maximum": 1139374080
     },
-    "same-overlay-reference-materialization-durable-filesystem-available-n1": {
-      "samplesMinimum": 1,
-      "unit": "bytes",
-      "p95Maximum": 111617182720
-    },
     "same-overlay-reference-materialization-durable-filesystem-high-water-n1": {
       "samplesMinimum": 1,
       "unit": "bytes",
@@ -2585,11 +2570,6 @@
       "samplesMinimum": 1,
       "unit": "milliseconds",
       "p95Maximum": 25
-    },
-    "same-overlay-reference-materialization-temp-filesystem-available-n1": {
-      "samplesMinimum": 1,
-      "unit": "bytes",
-      "p95Maximum": 111617182720
     },
     "same-overlay-reference-materialized-lookup-key-rows-n1": {
       "samplesMinimum": 1,

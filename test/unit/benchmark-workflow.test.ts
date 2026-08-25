@@ -140,6 +140,13 @@ describe('platform benchmark workflow', () => {
         '.github/workflows/code-graph-production-ratchet.yml',
         'scripts/benchmark-code-graph.ts',
         'src/code_graph/**',
+        'src/effect/errors.ts',
+        'src/effect/file_durability.ts',
+        'src/effect/time.ts',
+        'src/process_diagnostics.ts',
+        'src/telemetry/session.ts',
+        'src/utils.ts',
+        'src/worker_protocol.ts',
         'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
       ]),
     );

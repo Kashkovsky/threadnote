@@ -288,6 +288,8 @@ same-behavior hosted observations showed larger cold database-setup variance, wh
 tight. Explicit user-facing objectives still cap generated limits. Deterministic graph shape, proportional-work, parity,
 and zero failure counters remain exact. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every
 artifact as diagnostics but are not gates; complete-operation external process-tree RSS peaks remain ratcheted.
+Filesystem-available byte observations are diagnostic rather than upper bounds: the governed preflight and ratchet
+metadata enforce the 20 GiB minimum, while additional free space can never fail the gate.
 
 Cold, one-file, and independent-rebuild inventory evidence also retains cumulative source-reading wall time, summed
 parser-extraction time, parser-fact serialization wall time, and cache-persistence wall time. Summed parser time can
