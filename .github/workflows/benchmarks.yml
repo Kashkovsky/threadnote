@@ -148,47 +148,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  code-graph-production-ratchet-seed:
-    name: Code graph reduced production ratchet seed · Linux
-    if: github.event_name == 'pull_request' && github.head_ref == 'codex/materialization-sorted-spool'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ env.BUN_VERSION }}
-
-      - run: bun install --frozen-lockfile
-
-      - name: Capture three governed reduced production observations
-        env:
-          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
-          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
-          THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '4'
-        run: |
-          bun run bench:code-graph -- --profile production-large --profile-files 3000 --profile-symbols 110000 --minimum-free-gib 20 --samples 1 --warmups 0 --quiet --output artifacts/code-graph-production-ratchet-seed-1.json
-          bun run bench:code-graph -- --profile production-large --profile-files 3000 --profile-symbols 110000 --minimum-free-gib 20 --samples 1 --warmups 0 --quiet --output artifacts/code-graph-production-ratchet-seed-2.json
-          bun run bench:code-graph -- --profile production-large --profile-files 3000 --profile-symbols 110000 --minimum-free-gib 20 --samples 1 --warmups 0 --quiet --output artifacts/code-graph-production-ratchet-seed-3.json
-
-      - name: Generate the reviewed ratchet candidate
-        run: >-
-          bun run bench:code-graph:production:ratchet --
-          artifacts/code-graph-production-ratchet-seed-1.json
-          artifacts/code-graph-production-ratchet-seed-2.json
-          artifacts/code-graph-production-ratchet-seed-3.json
-          --output artifacts/code-graph-production-ratchet-candidate.json
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: code-graph-production-ratchet-seed-Linux-${{ runner.arch }}
-          path: artifacts/
-          if-no-files-found: error
-          retention-days: 14
-
   code-graph:
     name: Code graph · ${{ matrix.os }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

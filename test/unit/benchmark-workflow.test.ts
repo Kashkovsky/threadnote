@@ -127,6 +127,37 @@ describe('platform benchmark workflow', () => {
     }
   });
 
+  it('runs one reduced production ratchet only for graph-affecting pull requests', () => {
+    const ratchetWorkflow = load(readFileSync('.github/workflows/code-graph-production-ratchet.yml', 'utf8'), {
+      schema: JSON_SCHEMA,
+    }) as BenchmarkWorkflow;
+    const paths = ratchetWorkflow.on.pull_request?.paths ?? [];
+    const job = ratchetWorkflow.jobs.ratchet!;
+    const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
+
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        '.github/workflows/code-graph-production-ratchet.yml',
+        'scripts/benchmark-code-graph.ts',
+        'src/code_graph/**',
+        'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
+      ]),
+    );
+    expect(paths).not.toContain('src/recall/**');
+    expect(paths.join('\n').toLowerCase()).not.toContain('intellij');
+    expect(job['runs-on']).toBe('ubuntu-24.04');
+    expect(job['timeout-minutes']).toBe(15);
+    expect(command.match(/--samples 1/g)).toHaveLength(1);
+    expect(command).toContain('--profile production-large');
+    expect(command).toContain('--profile-files 3000');
+    expect(command).toContain('--profile-symbols 110000');
+    expect(command).toContain('--minimum-free-gib 20');
+    expect(command).toContain(
+      '--ratchet test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
+    );
+    expect(command).not.toContain('bench:code-graph:production:ratchet');
+  });
+
   it('prepares one verified model artifact before every vector benchmark lane', () => {
     const workflow = load(readFileSync('.github/workflows/benchmarks.yml', 'utf8'), {
       schema: JSON_SCHEMA,
