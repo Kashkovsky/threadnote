@@ -356,6 +356,9 @@ export default function PerformancePage() {
             <a className="button button--ghost" href={docsArticleHref('graph-monorepos')}>
               Large-repository docs
             </a>
+            <a className="button button--ghost" href={siteHref('performance/graphify/')}>
+              Compare with Graphify
+            </a>
           </div>
         </div>
         <ProvenanceCard artifact={artifact} />

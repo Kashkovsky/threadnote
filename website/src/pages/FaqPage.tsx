@@ -2,82 +2,6 @@ import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
-const SHOW_GRAPHIFY_COMPARISON = import.meta.env.VITE_SHOW_GRAPHIFY_COMPARISON === 'true';
-
-const comparisonRows = [
-  {
-    topic: 'Primary job',
-    threadnote: 'Persistent engineering context: durable memory plus current-source code intelligence',
-    graphify: 'Generate, analyze, and explore a knowledge graph over a mixed project corpus',
-  },
-  {
-    topic: 'Runtime & setup',
-    threadnote: 'One standalone JavaScript runtime with CLI, MCP, parsers, SQLite, and local AI included; no Python',
-    graphify: 'Python 3.10+ package; MCP, Office, video, and several parsers or exporters use optional extras',
-  },
-  {
-    topic: 'Source languages',
-    threadnote:
-      'Compiler-backed TypeScript/JavaScript plus bundled, verified structural AST packs for Java/Kotlin/Scala, Swift/Objective-C, Python/Go/Rust/C/C++/C#, Ruby/PHP, Bash/PowerShell/HCL, Dart/Elixir/Julia/Lua/Solidity/Zig, Verilog/SystemVerilog, and Vue/Svelte component markup; Fortran, Apex, and Razor use bounded deterministic text structure',
-    graphify:
-      'Not TypeScript-only: v0.9.29 and v0.9.31 declare Java, Kotlin, Swift, and many more; the project lists 36 tree-sitter grammars',
-  },
-  {
-    topic: 'Documents & media',
-    threadnote:
-      'Extracts Markdown and text, PDF text and links, OpenXML/OpenDocument/EPUB text, notebooks, diagrams, and schema formats locally; image, audio, and video assets are searchable by filename and deterministic metadata, not OCR or transcription',
-    graphify:
-      'Has implemented passes for docs, PDFs, images, Office files, and media; semantic inputs require an assistant or configured model',
-  },
-  {
-    topic: 'Large repositories',
-    threadnote:
-      'Pages graph and vector generations through SQLite with no eligible-repository admission cap; per-artifact corpus safety budgets keep oversized files as searchable metadata-only nodes instead of rejecting the repository',
-    graphify:
-      'The default graph.json is hydrated into NetworkX and has a configurable 512 MiB load guard; larger limits increase in-memory work',
-  },
-  {
-    topic: 'Git & worktrees',
-    threadnote:
-      'Aliases graph-equivalent commits, builds compatible clean deltas, and isolates staged, unstaged, deleted, renamed, and untracked overlays',
-    graphify:
-      'Uses content-hash caching, update/watch workflows, and a post-commit hook; docs and images may need a manual update',
-  },
-  {
-    topic: 'Search & evidence',
-    threadnote:
-      'Exact and lexical retrieval plus local vector seeds; scoped query, stable-ID node/neighbor round-trips, shortest path, explain, and Git-diff impact preserve five authority tiers and return current-snapshot evidence',
-    graphify:
-      'Term/trigram retrieval and traversal with query, path, explain, neighbors, communities, and PR impact; no vector store by design',
-  },
-  {
-    topic: 'Graph analysis',
-    threadnote:
-      'Deterministic components, stable community drill-down, structural n-ary groups, hubs and god nodes, surprising links, confidence audits, suggested questions, and explicit partial-coverage warnings; rationale comments become first-class graph nodes',
-    graphify:
-      'Provides Leiden communities, god nodes, surprising links, rationale nodes, confidence analysis, hyperedges, and generated reports',
-  },
-  {
-    topic: 'Reports & exports',
-    threadnote:
-      'Writes deterministic Markdown architecture reports and streams JSON, GraphML, HTML, or SVG from a pinned SQLite snapshot',
-    graphify:
-      'Exports interactive HTML, JSON, SVG, GraphML, Obsidian, wiki and call-flow artifacts, Cypher, Neo4j, and FalkorDB targets',
-  },
-  {
-    topic: 'Beyond the graph',
-    threadnote: 'Memory lifecycle, local AI, team sharing, Manager, Obsidian, seeding, and handoffs',
-    graphify: 'Graph artifacts, audits, visualization, corpus ingestion, and an optional MCP server',
-  },
-  {
-    topic: 'Best fit',
-    threadnote:
-      'Large, active repositories where current-source analysis and team memory must stay correct across agents, sessions, and worktrees',
-    graphify:
-      'Optional model-backed media semantics, Leiden clustering, SCIP input, PR triage, and a larger family of downstream graph targets',
-  },
-];
-
 const questions = [
   {
     question: 'Is Threadnote a hosted memory service?',
@@ -134,18 +58,10 @@ const questions = [
     answer:
       'Yes. Vault notes enter recall only through allowlisted sources, and memories leave Threadnote only through an explicitly configured projection with selected URIs. Generated files are one-way, scrubbed, and drift-protected.',
   },
-  {
-    question: 'Can Threadnote and Graphify be installed together?',
-    answer:
-      'Yes. Threadnote 4 does not depend on Graphify and does not read or overwrite graphify-out. Threadnote now covers broad polyglot structural extraction, deterministic corpus ingestion, community and n-ary group analysis, confidence audits, reports, and portable exports while retaining worktree-correct SQLite paging, local vectors, and persistent team memory. Graphify still offers optional model-backed media semantics, Leiden clustering, SCIP and remote PR workflows, and more specialized downstream graph targets. Use the strengths you need, or both.',
-    comparisonOnly: true,
-  },
 ];
 
 export default function FaqPage() {
   setDocumentMeta('FAQ', 'Threadnote 4 frequently asked questions about local data, AI, sharing, and large monorepos.');
-
-  const visibleQuestions = questions.filter(item => !item.comparisonOnly || SHOW_GRAPHIFY_COMPARISON);
 
   return (
     <SiteShell page="faq" fullBleed>
@@ -167,7 +83,7 @@ export default function FaqPage() {
           <h2>What teams ask before installing.</h2>
         </header>
         <div className="faq-list">
-          {visibleQuestions.map((item, index) => (
+          {questions.map((item, index) => (
             <details key={item.question} open={index === 0}>
               <summary>
                 <span>{String(index + 1).padStart(2, '0')}</span>
@@ -179,85 +95,6 @@ export default function FaqPage() {
           ))}
         </div>
       </section>
-
-      {SHOW_GRAPHIFY_COMPARISON ? (
-        <section className="comparison-section" id="graphify">
-          <header className="section-heading section-heading--split">
-            <div>
-              <span className="eyebrow">Threadnote vs Graphify</span>
-              <h2>Threadnote keeps active monorepos correct. Graphify maximizes optional integrations.</h2>
-            </div>
-            <p>
-              Threadnote’s first native graph was informed by experience using Graphify, but 4.0 is an independent
-              implementation. It now combines polyglot AST packs, deterministic corpus and topology analysis, portable
-              exports, paged storage, explicit Git and worktree state, local semantic retrieval, and durable memory in
-              one self-contained runtime.
-            </p>
-          </header>
-          <div className="comparison-intro">
-            <article className="comparison-product comparison-product--threadnote">
-              <span>Threadnote 4</span>
-              <h3>The worktree-aware engineering context layer</h3>
-              <p>
-                Choose it when a large repository keeps changing and current-source evidence, architecture signals,
-                decisions, handoffs, and team knowledge must remain available across sessions and agents.
-              </p>
-            </article>
-            <div className="comparison-plus" aria-hidden="true">
-              <span>or</span>
-              <small>often, both</small>
-            </div>
-            <article className="comparison-product comparison-product--graphify">
-              <span>Graphify</span>
-              <h3>The broad corpus graph suite</h3>
-              <p>
-                Choose it for optional model-backed document and media semantics, Leiden clustering, SCIP and remote PR
-                workflows, and its larger family of specialized generated graph targets.
-              </p>
-            </article>
-          </div>
-          <div className="comparison-table-wrap">
-            <table className="comparison-table">
-              <thead>
-                <tr>
-                  <th>Dimension</th>
-                  <th>Threadnote 4</th>
-                  <th>Graphify</th>
-                </tr>
-              </thead>
-              <tbody>
-                {comparisonRows.map(row => (
-                  <tr key={row.topic}>
-                    <th>{row.topic}</th>
-                    <td>{row.threadnote}</td>
-                    <td>{row.graphify}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="comparison-note">
-            Graphify details were checked against its public v0.9.29 and v0.9.31 package source on 31 July 2026, not
-            inferred from the product copy alone. Capabilities can evolve independently.{' '}
-            <a
-              href="https://github.com/Graphify-Labs/graphify/tree/4fe11092ccbe9f543608f140c790f68d5d83cae4"
-              target="_blank"
-              rel="noreferrer"
-            >
-              Inspect the reviewed Graphify source <span aria-hidden="true">↗</span>
-            </a>{' '}
-            or{' '}
-            <a
-              href="https://graphify.net/knowledge-graph-for-ai-coding-assistants.html"
-              target="_blank"
-              rel="noreferrer"
-            >
-              read its own overview <span aria-hidden="true">↗</span>
-            </a>
-            .
-          </p>
-        </section>
-      ) : null}
 
       <section className="content-section content-section--cta">
         <div className="cta-panel cta-panel--compact">

@@ -49,6 +49,7 @@ class RouteErrorBoundary extends Component<{readonly children: ReactNode}, {read
 const pageLoaders: Readonly<Record<SitePage, () => Promise<PageModule>>> = {
   home: () => import('./pages/LandingPage'),
   performance: () => import('./pages/PerformancePage'),
+  'performance-graphify': () => import('./pages/GraphifyPerformancePage'),
   docs: () => import('./pages/DocsPage'),
   'whats-new': () => import('./pages/WhatsNewPage'),
   'pro-tips': () => import('./pages/ProTipsPage'),
@@ -66,6 +67,8 @@ function declaredInitialPage(): SitePage {
     case 'docs':
       return page;
     case 'performance':
+      return page;
+    case 'performance-graphify':
       return page;
     case 'whats-new':
       return page;

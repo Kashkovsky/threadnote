@@ -76,6 +76,7 @@ describe('website and standalone release boundary', () => {
     for (const entry of [
       'index.html',
       'performance/index.html',
+      'performance/graphify/index.html',
       'docs/index.html',
       'whats-new/index.html',
       'pro-tips/index.html',
@@ -307,6 +308,7 @@ describe('website and standalone release boundary', () => {
     const entries = [
       ['index.html', '/', 'og.png'],
       ['performance/index.html', '/performance/', 'og.png'],
+      ['performance/graphify/index.html', '/performance/graphify/', 'og.png'],
       ['docs/index.html', '/docs/', 'og.png'],
       ['whats-new/index.html', '/whats-new/', 'whats-new-og.png'],
       ['pro-tips/index.html', '/pro-tips/', 'og.png'],

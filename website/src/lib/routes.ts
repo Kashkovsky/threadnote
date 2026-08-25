@@ -1,6 +1,7 @@
 export const sitePagePaths = {
   home: '',
   performance: 'performance',
+  'performance-graphify': 'performance/graphify',
   docs: 'docs',
   'whats-new': 'whats-new',
   'pro-tips': 'pro-tips',

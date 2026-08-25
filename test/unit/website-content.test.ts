@@ -33,6 +33,11 @@ import {
   managerOperationsVisualKinds,
 } from '../../website/src/components/ManagerOperationsVisual.js';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../../website/src/content/landing.js';
+import {
+  graphifyReviewedSource,
+  graphifySharedCapabilities,
+  graphifyVerifiedDifferences,
+} from '../../website/src/content/graphifyComparison.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
 import {
   checkedInEmbeddingContextPerformance,
@@ -413,6 +418,7 @@ describe('Threadnote 4 website content', () => {
     const routes = [
       'index.html',
       'performance/index.html',
+      'performance/graphify/index.html',
       'docs/index.html',
       'whats-new/index.html',
       'pro-tips/index.html',
@@ -422,7 +428,7 @@ describe('Threadnote 4 website content', () => {
 
     await Promise.all(routes.map(route => access(join(root, 'website', route))));
     const config = await readFile(join(root, 'website', 'vite.config.ts'), 'utf8');
-    for (const route of ['performance', 'docs', 'whatsNew', 'proTips', 'managerDemo', 'faq']) {
+    for (const route of ['performance', 'performanceGraphify', 'docs', 'whatsNew', 'proTips', 'managerDemo', 'faq']) {
       expect(config).toContain(`${route}:`);
     }
   });
@@ -433,6 +439,7 @@ describe('Threadnote 4 website content', () => {
         'components/SiteShell.tsx',
         'pages/LandingPage.tsx',
         'pages/PerformancePage.tsx',
+        'pages/GraphifyPerformancePage.tsx',
         'pages/DocsPage.tsx',
         'pages/WhatsNewPage.tsx',
         'pages/ProTipsPage.tsx',
@@ -1020,6 +1027,7 @@ The body remains ordinary **Markdown**.
     const routes = [
       ['', 'home'],
       ['performance', 'performance'],
+      ['performance/graphify', 'performance-graphify'],
       ['docs', 'docs'],
       ['whats-new', 'whats-new'],
       ['pro-tips', 'pro-tips'],
@@ -1047,6 +1055,9 @@ The body remains ordinary **Markdown**.
     expect(sitePageForPathname('/threadnote/docs/nested/extra/', '/threadnote/')).toBeUndefined();
     expect(sitePageForPathname('/other/docs/', '/threadnote/')).toBeUndefined();
     expect(siteCanonicalUrlForPathname('/performance/', '/')).toBe('https://threadnote.io/performance/');
+    expect(siteCanonicalUrlForPathname('/threadnote/performance/graphify/', '/threadnote/')).toBe(
+      'https://threadnote.io/performance/graphify/',
+    );
     expect(siteCanonicalUrlForPathname('/threadnote/docs/', '/threadnote/')).toBe('https://threadnote.io/docs/');
     expect(siteCanonicalUrlForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe(
       'https://threadnote.io/docs/worksets/',
@@ -1255,6 +1266,8 @@ Make the bottleneck observable.
     expect(performancePage).toContain('Historical worktree study');
     expect(performancePage).not.toContain('Threadnote 4.2.5 candidate evidence');
     expect(performancePage).not.toContain('Measured in Threadnote 4.0.1');
+    expect(performancePage).toContain("siteHref('performance/graphify/')");
+    expect(performancePage).toContain('Compare with Graphify');
     expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
@@ -1265,10 +1278,9 @@ Make the bottleneck observable.
       resolveDocs = resolve;
     });
     const loaders = Object.fromEntries(
-      (['home', 'performance', 'docs', 'whats-new', 'pro-tips', 'manager-demo', 'faq'] as const).map(page => [
-        page,
-        page === 'docs' ? () => deferredDocs : async () => page,
-      ]),
+      (
+        ['home', 'performance', 'performance-graphify', 'docs', 'whats-new', 'pro-tips', 'manager-demo', 'faq'] as const
+      ).map(page => [page, page === 'docs' ? () => deferredDocs : async () => page]),
     ) as Record<SitePage, () => Promise<string>>;
     const cache = createSitePageModuleCache(loaders);
     let currentRoute = 'home';
@@ -2163,46 +2175,60 @@ Make the bottleneck observable.
     }
   });
 
-  it('labels synthetic Manager data and retains the hidden Graphify comparison behind an opt-in flag', async () => {
-    const [managerSource, faqSource, faqHtml] = await Promise.all([
+  it('labels synthetic Manager data and publishes a parity-first Graphify performance subpage', async () => {
+    const [managerSource, faqSource, graphifyPage, graphifyHtml, mainSource, shellSource, sitemap] = await Promise.all([
       readFile(join(root, 'website', 'src', 'components', 'ManagerMock.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'faq', 'index.html'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'GraphifyPerformancePage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'performance', 'graphify', 'index.html'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'main.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
     ]);
+    const sharedCopy = JSON.stringify(graphifySharedCapabilities).toLowerCase();
+    const differenceCopy = JSON.stringify(graphifyVerifiedDifferences).toLowerCase();
 
     expect(managerSource).toContain('Mock data — no local files read');
-    expect(faqHtml).not.toContain('Graphify');
-    expect(faqSource).toContain(
-      "const SHOW_GRAPHIFY_COMPARISON = import.meta.env.VITE_SHOW_GRAPHIFY_COMPARISON === 'true'",
-    );
-    expect(faqSource).toContain('{SHOW_GRAPHIFY_COMPARISON ? (');
-    expect(faqSource).toContain('!item.comparisonOnly || SHOW_GRAPHIFY_COMPARISON');
-    expect(faqSource).toContain('Threadnote vs Graphify');
-    expect(faqSource.indexOf('The practical questions')).toBeLessThan(faqSource.indexOf('Threadnote vs Graphify'));
-    expect(faqSource).toContain('Not TypeScript-only');
-    expect(faqSource).toContain('36 tree-sitter grammars');
-    expect(faqSource).toContain('512 MiB load guard');
-    expect(faqSource).toContain('no eligible-repository admission cap');
-    expect(faqSource).toContain('per-artifact corpus safety budgets');
-    expect(faqSource).toContain('searchable metadata-only nodes');
-    expect(faqSource).toContain('semantic inputs require an assistant or configured model');
+    expect(faqSource).not.toMatch(/Graphify|SHOW_GRAPHIFY_COMPARISON|comparisonOnly/);
     expect(faqSource).toContain('Will every new worktree rebuild its graph from scratch?');
     expect(faqSource).toContain('Agents never query partial rows from an unpromoted snapshot');
     expect(faqSource).toContain('optional vectors and whole-graph summaries finish in the background');
-    expect(faqSource).toContain('analyze_code_graph');
-    expect(faqSource).toContain('stable community drill-down, structural n-ary groups, hubs and god nodes');
-    expect(faqSource).toContain('PDF text and links');
-    expect(faqSource).toContain('not OCR or transcription');
-    expect(faqSource).toContain('JSON, GraphML, HTML, or SVG');
-    expect(faqSource).toContain('Leiden communities');
-    expect(faqSource).toContain('hyperedges');
-    expect(faqSource).not.toContain(
-      'Broader language and multimodal analysis, including documents, papers, and diagrams',
-    );
-    expect(faqSource).toContain(
-      'https://github.com/Graphify-Labs/graphify/tree/4fe11092ccbe9f543608f140c790f68d5d83cae4',
-    );
-    expect(faqSource).toContain('https://graphify.net/knowledge-graph-for-ai-coding-assistants.html');
+
+    expect(graphifyReviewedSource).toEqual({
+      commit: '282976b2f4066b55cf2fa346c3d5568f7ac044e2',
+      reviewedAt: '2026-08-25',
+      version: 'v0.9.49',
+      sourceUrl: 'https://github.com/Graphify-Labs/graphify/tree/282976b2f4066b55cf2fa346c3d5568f7ac044e2',
+      packageUrl: 'https://pypi.org/project/graphifyy/0.9.49/',
+    });
+    for (const sharedTerm of [
+      'communities',
+      'hubs and god nodes',
+      'surprising links',
+      'confidence audits',
+      'n-ary',
+      'hyperedge-style',
+      'reports',
+      'json',
+      'graphml',
+      'html',
+      'svg',
+    ]) {
+      expect(sharedCopy).toContain(sharedTerm);
+      expect(differenceCopy).not.toContain(sharedTerm);
+    }
+    expect(graphifyPage).toContain('These are parity, not reasons to choose one');
+    expect(graphifyPage).toContain('Full IntelliJ result pending');
+    expect(graphifyPage).toContain('No provisional ratio is published');
+    expect(graphifyPage).toContain("performanceEvidence.state === 'verified'");
+    expect(graphifyPage).not.toMatch(/Graphify-exclusive|Graphify only|Threadnote-exclusive|Threadnote only/);
+
+    expect(graphifyHtml).toContain('<link rel="canonical" href="https://threadnote.io/performance/graphify/" />');
+    expect(graphifyHtml).toContain('<body data-page="performance-graphify">');
+    expect(mainSource).toContain("'performance-graphify': () => import('./pages/GraphifyPerformancePage')");
+    expect(shellSource).toContain("['performance', 'performance-graphify']");
+    expect(shellSource).toContain("siteHref('performance/graphify/')");
+    expect(sitemap).toContain('<loc>https://threadnote.io/performance/graphify/</loc>');
   });
 
   it('documents the separate whole-graph analysis and corpus/export contracts', () => {

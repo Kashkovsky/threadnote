@@ -96,6 +96,7 @@ export default defineConfig({
       input: {
         home: `${siteRoot}/index.html`,
         performance: `${siteRoot}/performance/index.html`,
+        performanceGraphify: `${siteRoot}/performance/graphify/index.html`,
         docs: `${siteRoot}/docs/index.html`,
         whatsNew: `${siteRoot}/whats-new/index.html`,
         proTips: `${siteRoot}/pro-tips/index.html`,
