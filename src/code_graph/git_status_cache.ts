@@ -1,15 +1,18 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
-import {runCommandEffect} from '../effect/command.js';
+import {sha256HexSync} from '../crypto/sha256.js';
+import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import type {RepositoryIdentity} from './types.js';
 
-export const CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION = 1 as const;
+export const CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION = 2 as const;
 // Avoid a persistent Git monitor and private-index setup for repositories
 // whose ordinary status scan is already cheaper than cache initialization.
 export const CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MINIMUM = 8 * 1_048_576;
 export const CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MAXIMUM = 512 * 1_048_576;
 
 const RECEIPT_BYTES_MAXIMUM = 1_024;
+const SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM = 128 * 1_048_576;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const STATUS_CACHE_LOCK_OPTIONS = {
   retryIntervalMilliseconds: 100,
   staleAfterMilliseconds: 120_000,
@@ -21,10 +24,11 @@ export interface CodeGraphGitStatusCacheReceipt {
   readonly sourceIndexDevice: number;
   readonly sourceIndexInode: number;
   readonly sourceIndexModifiedAtMilliseconds: number;
+  readonly sourceIndexSemanticSha256?: string;
   readonly version: typeof CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION;
 }
 
-type CodeGraphGitIndexIdentity = Omit<CodeGraphGitStatusCacheReceipt, 'version'>;
+type CodeGraphGitIndexIdentity = Omit<CodeGraphGitStatusCacheReceipt, 'sourceIndexSemanticSha256' | 'version'>;
 
 export interface CodeGraphGitStatusCacheOptions {
   readonly minimumIndexBytes?: number;
@@ -116,15 +120,30 @@ function runCachedStatus(
   return Effect.gen(function* () {
     yield* ensurePrivateCacheDirectory(fs, path, privateHome, cacheRoot);
     const privateIndex = path.join(cacheRoot, 'index');
-    const receiptPath = path.join(cacheRoot, 'receipt-v1.json');
+    const receiptPath = path.join(cacheRoot, 'receipt-v2.json');
     const receipt = yield* readReceipt(fs, receiptPath);
-    const reusable =
-      receipt !== undefined &&
-      sameCodeGraphGitIndexIdentity(receipt, sourceIdentity) &&
-      (yield* privateRegularFileWithinBound(fs, privateIndex));
+    const privateIndexAvailable = yield* privateRegularFileWithinBound(fs, privateIndex);
+    const metadataReusable =
+      receipt !== undefined && sameCodeGraphGitIndexIdentity(receipt, sourceIdentity) && privateIndexAvailable;
+    let sourceIndexSemanticSha256: string | undefined;
+    let reusable = metadataReusable;
+    // Git may atomically rewrite its real index for stat-cache housekeeping
+    // without changing staged entries or index flags. Preserve the warmed
+    // private fsmonitor index across that metadata-only churn, but fail closed
+    // to initialization when the bounded semantic observation is unavailable
+    // or names different staged content.
+    if (!reusable && privateIndexAvailable && receipt?.sourceIndexSemanticSha256 !== undefined) {
+      sourceIndexSemanticSha256 = Option.getOrUndefined(
+        yield* observeSourceIndexSemanticSha256(fs, identity, sourceIndex, sourceIdentity).pipe(Effect.option),
+      );
+      reusable = sourceIndexSemanticSha256 === receipt.sourceIndexSemanticSha256;
+    }
     if (!reusable) {
       yield* rejectSymbolicTarget(fs, receiptPath);
       yield* fs.remove(receiptPath, {force: true});
+      sourceIndexSemanticSha256 ??= Option.getOrUndefined(
+        yield* observeSourceIndexSemanticSha256(fs, identity, sourceIndex, sourceIdentity).pipe(Effect.option),
+      );
       yield* initializePrivateIndex(fs, path, identity, sourceIndex, sourceIdentity, privateIndex);
     }
 
@@ -152,12 +171,34 @@ function runCachedStatus(
     if (finalSourceIdentity === undefined || !sameCodeGraphGitIndexIdentity(finalSourceIdentity, sourceIdentity)) {
       return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index changed during observation.'));
     }
-    if (!reusable) {
-      yield* writeReceipt(fs, path, receiptPath, {...sourceIdentity, version: 1});
+    if (!metadataReusable) {
+      yield* writeReceipt(fs, path, receiptPath, {
+        ...sourceIdentity,
+        ...(sourceIndexSemanticSha256 === undefined ? {} : {sourceIndexSemanticSha256}),
+        version: CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION,
+      });
     }
     return result;
   });
 }
+
+const observeSourceIndexSemanticSha256 = Effect.fn('codeGraph.observeSourceIndexSemanticSha256')(function* (
+  fs: FileSystem.FileSystem,
+  identity: RepositoryIdentity,
+  sourceIndex: string,
+  expectedIdentity: CodeGraphGitIndexIdentity,
+) {
+  const stagedEntries = yield* runBinaryCommandEffect(
+    'git',
+    ['--no-optional-locks', '-C', identity.repoRoot, 'ls-files', '--stage', '-v', '-z'],
+    {maxOutputBytes: SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM, timeoutMs: 30_000},
+  );
+  const finalIdentity = codeGraphGitIndexIdentity(yield* fs.stat(sourceIndex));
+  if (finalIdentity === undefined || !sameCodeGraphGitIndexIdentity(finalIdentity, expectedIdentity)) {
+    return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index changed during semantic observation.'));
+  }
+  return sha256HexSync(stagedEntries.stdout);
+});
 
 function initializePrivateIndex(
   fs: FileSystem.FileSystem,
@@ -298,7 +339,7 @@ function writeReceipt(
   receiptPath: string,
   receipt: CodeGraphGitStatusCacheReceipt,
 ) {
-  const temporary = path.join(path.dirname(receiptPath), '.receipt-v1.tmp');
+  const temporary = path.join(path.dirname(receiptPath), '.receipt-v2.tmp');
   const content = `${JSON.stringify(receipt)}\n`;
   return rejectSymbolicTarget(fs, receiptPath).pipe(
     Effect.andThen(rejectSymbolicTarget(fs, temporary)),
@@ -323,7 +364,10 @@ export function parseCodeGraphGitStatusCacheReceipt(value: string): CodeGraphGit
       candidate.indexBytes! > CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MAXIMUM ||
       !validNonNegativeSafeInteger(candidate.sourceIndexDevice) ||
       !validNonNegativeSafeInteger(candidate.sourceIndexInode) ||
-      !validNonNegativeSafeInteger(candidate.sourceIndexModifiedAtMilliseconds)
+      !validNonNegativeSafeInteger(candidate.sourceIndexModifiedAtMilliseconds) ||
+      (candidate.sourceIndexSemanticSha256 !== undefined &&
+        (typeof candidate.sourceIndexSemanticSha256 !== 'string' ||
+          !SHA256_PATTERN.test(candidate.sourceIndexSemanticSha256)))
     ) {
       return undefined;
     }
@@ -332,6 +376,9 @@ export function parseCodeGraphGitStatusCacheReceipt(value: string): CodeGraphGit
       sourceIndexDevice: candidate.sourceIndexDevice!,
       sourceIndexInode: candidate.sourceIndexInode!,
       sourceIndexModifiedAtMilliseconds: candidate.sourceIndexModifiedAtMilliseconds!,
+      ...(candidate.sourceIndexSemanticSha256 === undefined
+        ? {}
+        : {sourceIndexSemanticSha256: candidate.sourceIndexSemanticSha256}),
       version: CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION,
     };
   } catch {
