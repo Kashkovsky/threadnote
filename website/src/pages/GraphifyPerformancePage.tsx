@@ -204,6 +204,52 @@ export default function GraphifyPerformancePage() {
         </p>
       </section>
 
+      <section className="comparison-section" id="queryability-contract">
+        <header className="section-heading section-heading--split">
+          <div>
+            <span className="eyebrow">Queryability contract</span>
+            <h2>A graph file is not the finish line.</h2>
+          </div>
+          <p>
+            The terminal comparison must show that an agent can load and query the result—not merely that extraction
+            eventually wrote bytes. Construction, admission, cold hydration, and warm traversal are reported separately.
+          </p>
+        </header>
+        <div className="performance-proof-grid">
+          <article>
+            <span className="performance-check" />
+            <small>default admission</small>
+            <h3>Test the supported defaults first</h3>
+            <p>
+              Graphify&apos;s default 512 MiB graph-file guard is exercised without an override. A size rejection is a
+              measured product outcome, not a discarded setup failure.
+            </p>
+          </article>
+          <article>
+            <span className="performance-check" />
+            <small>cold load</small>
+            <h3>Measure the monolithic hydration cost</h3>
+            <p>
+              If resource admission permits a raised-cap probe, timing and peak memory include reading and parsing the
+              JSON plus hydrating its nodes and links into NetworkX before the first answer.
+            </p>
+          </article>
+          <article>
+            <span className="performance-check" />
+            <small>warm use</small>
+            <h3>Require useful query output</h3>
+            <p>
+              Exact-symbol, natural structural, and affected-node queries must return bounded content from one warm
+              process. These local graph queries spend no model-provider tokens.
+            </p>
+          </article>
+        </div>
+        <p className="comparison-note">
+          A safety-cap termination or a graph too large for the predeclared raised-cap admission is retained as evidence
+          with its exact boundary. It is not generalized into a claim that no machine could ever load the file.
+        </p>
+      </section>
+
       <section className="content-section content-section--cta">
         <div className="cta-panel cta-panel--compact">
           <span className="eyebrow">Keep reading the evidence</span>

@@ -2227,6 +2227,12 @@ Make the bottleneck observable.
     expect(differenceCopy).toContain('without a hosted embedding service or provider-token spend');
     expect(graphifyPage).toContain('embedding model for semantic vector seeds');
     expect(graphifyPage).toMatch(/outside this structural\s+timing arm/);
+    expect(graphifyPage).toContain('A graph file is not the finish line');
+    expect(graphifyPage).toContain('default 512 MiB graph-file guard');
+    expect(graphifyPage).toContain('hydrating its nodes and links into NetworkX');
+    expect(graphifyPage).toContain('Exact-symbol, natural structural, and affected-node queries');
+    expect(graphifyPage).toContain('spend no model-provider tokens');
+    expect(graphifyPage).toContain('not generalized into a claim that no machine could ever load the file');
     expect(graphifyPage).toContain("performanceEvidence.state === 'verified'");
     expect(graphifyPage).not.toMatch(/Graphify-exclusive|Graphify only|Threadnote-exclusive|Threadnote only/);
 
