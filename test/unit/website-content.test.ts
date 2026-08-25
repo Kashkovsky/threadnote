@@ -2224,7 +2224,7 @@ Make the bottleneck observable.
     expect(differenceCopy).toContain('installed local embedding model');
     expect(differenceCopy).toContain('without a hosted embedding service or provider-token spend');
     expect(graphifyPage).toContain('embedding model for semantic vector seeds');
-    expect(graphifyPage).toContain('outside this structural timing arm');
+    expect(graphifyPage).toMatch(/outside this structural\s+timing arm/);
     expect(graphifyPage).toContain("performanceEvidence.state === 'verified'");
     expect(graphifyPage).not.toMatch(/Graphify-exclusive|Graphify only|Threadnote-exclusive|Threadnote only/);
 
