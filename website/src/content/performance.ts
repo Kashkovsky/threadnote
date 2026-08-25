@@ -14,7 +14,23 @@ const retainedManagerNodeBudget = 500;
 const retainedManagerEdgeBudget = 1_500;
 const retainedWorktreeIsolationTopology = 'bounded-synthetic-linked-worktrees-in-measured-primary-home';
 const retainedWorktreeIsolationIndexedFiles = 2;
+const retainedPerformanceTargetMilliseconds = new Map<string, number>([
+  ['cold-index', 60 * 60_000],
+  ['one-file-reindex-index', 30_000],
+  ['one-file-reindex-registration-lock-and-database-setup', 5_000],
+  ['one-file-reindex-post-committed-scan-overlay-and-workspace', 5_000],
+]);
 const threadnote4ReleaseRefPattern = /^refs\/tags\/v(4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?)$/;
+const threadnote4ReleaseVersionPattern = /^v4\.\d+\.\d+(?:-(?:beta|rc)\.\d+)?$/;
+
+function threadnote4ReleaseVersion(metadata: Record<string, unknown>): string {
+  const releaseMatch = threadnote4ReleaseRefPattern.exec(metadataString(metadata, 'releaseEvidenceRef'));
+  const releaseVersion = releaseMatch?.[1];
+  if (releaseVersion === undefined) {
+    throw new Error('Performance harness release evidence does not name a Threadnote 4 release tag.');
+  }
+  return releaseVersion;
+}
 
 export type PerformanceControlLanguage = (typeof performanceControlLanguages)[number];
 
@@ -98,7 +114,18 @@ export type RetainedPerformanceArtifact = Readonly<{
     }>;
     incremental: Readonly<{
       totalMilliseconds: number;
+      registrationMilliseconds: number;
+      postCommittedScanMilliseconds: number;
+      attributionContextFiles: number;
+      baseFactsLoaded: number;
       changedFiles: number;
+      deletedFiles: number;
+      factBytes: number;
+      inventoryFilesInspected: number;
+      plannedRows: number;
+      probedDependencyPaths: number;
+      sourceBytes: number;
+      totalFiles: number;
     }>;
     independentRebuild: Readonly<{
       totalMilliseconds: number;
@@ -213,6 +240,49 @@ export type PerformanceEvidence =
       artifact: RetainedPerformanceArtifact;
     }>;
 
+export type RetainedPerformanceObjective = Readonly<{
+  measurement: string;
+  label: string;
+  observedMilliseconds: number;
+  targetMilliseconds: number;
+  passed: boolean;
+}>;
+
+const retainedPerformanceTargetLabels = new Map<string, string>([
+  ['cold-index', 'Cold index'],
+  ['one-file-reindex-index', 'One-file incremental'],
+  ['one-file-reindex-registration-lock-and-database-setup', 'One-file registration'],
+  ['one-file-reindex-post-committed-scan-overlay-and-workspace', 'Post-committed scan'],
+]);
+
+export function retainedPerformanceObjectiveResults(
+  artifact: RetainedPerformanceArtifact,
+): readonly RetainedPerformanceObjective[] {
+  const observedMilliseconds = new Map<string, number>([
+    ['cold-index', artifact.phases.cold.totalMilliseconds],
+    ['one-file-reindex-index', artifact.phases.incremental.totalMilliseconds],
+    ['one-file-reindex-registration-lock-and-database-setup', artifact.phases.incremental.registrationMilliseconds],
+    [
+      'one-file-reindex-post-committed-scan-overlay-and-workspace',
+      artifact.phases.incremental.postCommittedScanMilliseconds,
+    ],
+  ]);
+  return [...retainedPerformanceTargetMilliseconds].map(([measurement, targetMilliseconds]) => {
+    const observed = observedMilliseconds.get(measurement);
+    const label = retainedPerformanceTargetLabels.get(measurement);
+    if (observed === undefined || label === undefined) {
+      throw new Error(`Performance objective ${measurement} is not mapped to retained evidence.`);
+    }
+    return {
+      measurement,
+      label,
+      observedMilliseconds: observed,
+      targetMilliseconds,
+      passed: observed < targetMilliseconds,
+    };
+  });
+}
+
 export const retainedPerformanceArtifactFieldPaths = [
   'schemaVersion',
   'status',
@@ -270,7 +340,18 @@ export const retainedPerformanceArtifactFieldPaths = [
   'phases.cold.resolutionMilliseconds',
   'phases.cold.activationMilliseconds',
   'phases.incremental.totalMilliseconds',
+  'phases.incremental.registrationMilliseconds',
+  'phases.incremental.postCommittedScanMilliseconds',
+  'phases.incremental.attributionContextFiles',
+  'phases.incremental.baseFactsLoaded',
   'phases.incremental.changedFiles',
+  'phases.incremental.deletedFiles',
+  'phases.incremental.factBytes',
+  'phases.incremental.inventoryFilesInspected',
+  'phases.incremental.plannedRows',
+  'phases.incremental.probedDependencyPaths',
+  'phases.incremental.sourceBytes',
+  'phases.incremental.totalFiles',
   'phases.independentRebuild.totalMilliseconds',
   'queries.sampleCount',
   'queries.p50Milliseconds',
@@ -461,7 +542,10 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'lockfileSha256',
     'packageManifestSha256',
   ]);
-  stringAt(threadnote, 'version', 'source.threadnote');
+  const threadnoteVersion = stringAt(threadnote, 'version', 'source.threadnote');
+  if (!threadnote4ReleaseVersionPattern.test(threadnoteVersion)) {
+    throw new Error('Performance evidence source.threadnote.version must be a Threadnote 4 release version.');
+  }
   digestAt(threadnote, 'commit', 'source.threadnote', sha40Pattern);
   digestAt(threadnote, 'lockfileSha256', 'source.threadnote');
   digestAt(threadnote, 'packageManifestSha256', 'source.threadnote');
@@ -567,9 +651,45 @@ function validateVerifiedArtifact(input: unknown): RetainedPerformanceArtifact {
     'activationMilliseconds',
   ]);
   for (const key of Object.keys(cold)) positiveNumberAt(cold, key, 'phases.cold');
-  const incremental = recordAt(phases.incremental, 'phases.incremental', ['totalMilliseconds', 'changedFiles']);
+  const incremental = recordAt(phases.incremental, 'phases.incremental', [
+    'totalMilliseconds',
+    'registrationMilliseconds',
+    'postCommittedScanMilliseconds',
+    'attributionContextFiles',
+    'baseFactsLoaded',
+    'changedFiles',
+    'deletedFiles',
+    'factBytes',
+    'inventoryFilesInspected',
+    'plannedRows',
+    'probedDependencyPaths',
+    'sourceBytes',
+    'totalFiles',
+  ]);
   positiveNumberAt(incremental, 'totalMilliseconds', 'phases.incremental');
+  positiveNumberAt(incremental, 'registrationMilliseconds', 'phases.incremental');
+  positiveNumberAt(incremental, 'postCommittedScanMilliseconds', 'phases.incremental');
+  const totalFiles = positiveNumberAt(incremental, 'totalFiles', 'phases.incremental', true);
+  const attributionContextFiles = numberAt(incremental, 'attributionContextFiles', 'phases.incremental', true);
+  const baseFactsLoaded = numberAt(incremental, 'baseFactsLoaded', 'phases.incremental', true);
+  const probedDependencyPaths = numberAt(incremental, 'probedDependencyPaths', 'phases.incremental', true);
+  numberAt(incremental, 'deletedFiles', 'phases.incremental', true);
+  positiveNumberAt(incremental, 'factBytes', 'phases.incremental', true);
+  positiveNumberAt(incremental, 'plannedRows', 'phases.incremental', true);
+  positiveNumberAt(incremental, 'sourceBytes', 'phases.incremental', true);
+  const inventoryFilesInspected = numberAt(incremental, 'inventoryFilesInspected', 'phases.incremental', true);
+  if (inventoryFilesInspected > totalFiles) {
+    throw new Error('Performance evidence phases.incremental.inventoryFilesInspected cannot exceed totalFiles.');
+  }
   literalAt(incremental, 'changedFiles', 'phases.incremental', 1);
+  if (
+    totalFiles > 1 &&
+    [inventoryFilesInspected, attributionContextFiles, baseFactsLoaded, probedDependencyPaths].some(
+      value => value >= totalFiles,
+    )
+  ) {
+    throw new Error('Performance evidence one-file work must remain below a repository-wide scan.');
+  }
   const rebuild = recordAt(phases.independentRebuild, 'phases.independentRebuild', ['totalMilliseconds']);
   positiveNumberAt(rebuild, 'totalMilliseconds', 'phases.independentRebuild');
 
@@ -817,11 +937,7 @@ function validateHarnessRuntimeProvenance(
   positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadBytes', 'harness.metadata', true);
   positiveNumberAt(metadata, 'benchmarkValidatedManagedPayloadFileCount', 'harness.metadata', true);
   const managedVersion = metadataString(metadata, 'benchmarkValidatedManagedVersion');
-  const releaseMatch = threadnote4ReleaseRefPattern.exec(metadataString(metadata, 'releaseEvidenceRef'));
-  if (!releaseMatch) {
-    throw new Error('Performance harness release evidence does not name a Threadnote 4 release tag.');
-  }
-  const releaseVersion = releaseMatch[1];
+  const releaseVersion = threadnote4ReleaseVersion(metadata);
   if (
     managedVersion !== `${releaseVersion}-local.g${commit}` &&
     managedVersion !== `${releaseVersion}.local.g${commit}`
@@ -853,6 +969,18 @@ function validateHarnessMeasurements(
     ['cold-reference-resolution', 'milliseconds'],
     ['cold-activation-lexical-only', 'milliseconds'],
     ['one-file-reindex-index', 'milliseconds'],
+    ['one-file-reindex-registration-lock-and-database-setup', 'milliseconds'],
+    ['one-file-reindex-post-committed-scan-overlay-and-workspace', 'milliseconds'],
+    ['one-file-reindex-incremental-work-attribution-context-files-n1', 'count'],
+    ['one-file-reindex-incremental-work-base-facts-loaded-n1', 'count'],
+    ['one-file-reindex-incremental-work-changed-files-n1', 'count'],
+    ['one-file-reindex-incremental-work-deleted-files-n1', 'count', false],
+    ['one-file-reindex-incremental-work-fact-bytes-n1', 'bytes'],
+    ['one-file-reindex-incremental-work-inventory-files-inspected-n1', 'count'],
+    ['one-file-reindex-incremental-work-planned-rows-n1', 'count'],
+    ['one-file-reindex-incremental-work-probed-dependency-paths-n1', 'count', false],
+    ['one-file-reindex-incremental-work-source-bytes-n1', 'bytes'],
+    ['one-file-reindex-incremental-work-total-files-n1', 'count'],
     ['same-overlay-full-rebuild-index', 'milliseconds'],
     ['hot-exact-lexical-query', 'milliseconds'],
     ['cold-materialized-file-rows', 'count'],
@@ -1167,7 +1295,7 @@ export function retainedPerformanceArtifactFromHarness(
     },
     source: {
       threadnote: {
-        version: metadataString(metadata, 'benchmarkValidatedManagedVersion'),
+        version: `v${threadnote4ReleaseVersion(metadata)}`,
         commit: harness.environment.commit,
         lockfileSha256: binding.currentLockfileSha256,
         packageManifestSha256: binding.currentPackageManifestSha256,
@@ -1238,7 +1366,25 @@ export function retainedPerformanceArtifactFromHarness(
         resolutionMilliseconds: duration('cold-reference-resolution'),
         activationMilliseconds: duration('cold-activation-lexical-only'),
       },
-      incremental: {totalMilliseconds: duration('one-file-reindex-index'), changedFiles: 1},
+      incremental: {
+        totalMilliseconds: duration('one-file-reindex-index'),
+        registrationMilliseconds: duration('one-file-reindex-registration-lock-and-database-setup'),
+        postCommittedScanMilliseconds: duration('one-file-reindex-post-committed-scan-overlay-and-workspace'),
+        attributionContextFiles: count('one-file-reindex-incremental-work-attribution-context-files-n1'),
+        baseFactsLoaded: count('one-file-reindex-incremental-work-base-facts-loaded-n1'),
+        changedFiles: count('one-file-reindex-incremental-work-changed-files-n1'),
+        deletedFiles: measurement('one-file-reindex-incremental-work-deleted-files-n1', 'count', false).maximum,
+        factBytes: bytes('one-file-reindex-incremental-work-fact-bytes-n1'),
+        inventoryFilesInspected: count('one-file-reindex-incremental-work-inventory-files-inspected-n1'),
+        plannedRows: count('one-file-reindex-incremental-work-planned-rows-n1'),
+        probedDependencyPaths: measurement(
+          'one-file-reindex-incremental-work-probed-dependency-paths-n1',
+          'count',
+          false,
+        ).maximum,
+        sourceBytes: bytes('one-file-reindex-incremental-work-source-bytes-n1'),
+        totalFiles: count('one-file-reindex-incremental-work-total-files-n1'),
+      },
       independentRebuild: {totalMilliseconds: duration('same-overlay-full-rebuild-index')},
     },
     queries: {

@@ -38,6 +38,7 @@ import {
 } from '../../website/src/lib/docsSearch.js';
 import {
   retainedPerformanceArtifactFieldPaths,
+  retainedPerformanceObjectiveResults,
   validateRetainedPerformancePayload,
 } from '../../website/src/content/performance.js';
 import {checkedInPerformanceEvidence} from '../../website/src/content/performanceHighlights.js';
@@ -184,6 +185,18 @@ function verifiedPerformanceFixture(): Record<string, unknown> {
     harnessMeasurement('cold-reference-resolution', 'milliseconds', 1_000),
     harnessMeasurement('cold-activation-lexical-only', 'milliseconds', 2_000),
     harnessMeasurement('one-file-reindex-index', 'milliseconds', 300),
+    harnessMeasurement('one-file-reindex-registration-lock-and-database-setup', 'milliseconds', 80),
+    harnessMeasurement('one-file-reindex-post-committed-scan-overlay-and-workspace', 'milliseconds', 20),
+    harnessMeasurement('one-file-reindex-incremental-work-attribution-context-files-n1', 'count', 1),
+    harnessMeasurement('one-file-reindex-incremental-work-base-facts-loaded-n1', 'count', 1),
+    harnessMeasurement('one-file-reindex-incremental-work-changed-files-n1', 'count', 1),
+    harnessMeasurement('one-file-reindex-incremental-work-deleted-files-n1', 'count', 0),
+    harnessMeasurement('one-file-reindex-incremental-work-fact-bytes-n1', 'bytes', 1_200),
+    harnessMeasurement('one-file-reindex-incremental-work-inventory-files-inspected-n1', 'count', 1),
+    harnessMeasurement('one-file-reindex-incremental-work-planned-rows-n1', 'count', 12),
+    harnessMeasurement('one-file-reindex-incremental-work-probed-dependency-paths-n1', 'count', 2),
+    harnessMeasurement('one-file-reindex-incremental-work-source-bytes-n1', 'bytes', 500),
+    harnessMeasurement('one-file-reindex-incremental-work-total-files-n1', 'count', 90),
     harnessMeasurement('same-overlay-full-rebuild-index', 'milliseconds', 9_500),
     harnessMeasurement('hot-exact-lexical-query', 'milliseconds', 8, {
       p50: 5,
@@ -1005,6 +1018,8 @@ describe('Threadnote 4 website content', () => {
     expect(performancePage).toContain('never merged into a universal latency percentile');
     expect(performancePage).toContain('The release-run adapter verified all');
     expect(performancePage).toContain('source-mismatched evidence');
+    expect(performancePage).toContain('{artifact.source.threadnote.version} release commit');
+    expect(performancePage).not.toContain('v4.3.1 release commit');
     expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
@@ -1068,10 +1083,150 @@ describe('Threadnote 4 website content', () => {
           sha256: sha256Hex(artifactBytes),
           generatedAt: '2026-08-02T20:00:00Z',
         },
-        source: {threadnote: {commit: 'b'.repeat(40)}},
+        source: {threadnote: {commit: 'b'.repeat(40), version: 'v4.3.1'}},
+        phases: {
+          incremental: {
+            attributionContextFiles: 1,
+            baseFactsLoaded: 1,
+            changedFiles: 1,
+            deletedFiles: 0,
+            factBytes: 1_200,
+            inventoryFilesInspected: 1,
+            plannedRows: 12,
+            postCommittedScanMilliseconds: 20,
+            probedDependencyPaths: 2,
+            registrationMilliseconds: 80,
+            sourceBytes: 500,
+            totalFiles: 90,
+            totalMilliseconds: 300,
+          },
+        },
         graph: {referenceCandidates: 700},
       },
     });
+  });
+
+  it('derives every supported Threadnote 4 release version from exact release provenance', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          channel: fc.option(fc.constantFrom('beta', 'rc'), {nil: undefined}),
+          channelVersion: fc.integer({max: 99, min: 0}),
+          minor: fc.integer({max: 99, min: 0}),
+          patch: fc.integer({max: 99, min: 0}),
+        }),
+        ({channel, channelVersion, minor, patch}) => {
+          const version = `4.${minor}.${patch}${channel === undefined ? '' : `-${channel}.${channelVersion}`}`;
+          const fixture = verifiedPerformanceFixture();
+          const sourceCommit = String((fixture.environment as Record<string, unknown>).commit);
+          (fixture.metadata as Record<string, unknown>).releaseEvidenceRef = `refs/tags/v${version}`;
+          (fixture.metadata as Record<string, unknown>).benchmarkValidatedManagedVersion =
+            `${version}-local.g${sourceCommit}`;
+          const artifactBytes = fixtureBytes(fixture);
+          const evidence = bindRetainedPerformanceArtifact({
+            artifactBytes,
+            artifactPublicUrl: performanceArtifactPublicUrl('/'),
+            binding: fixtureBinding(artifactBytes),
+            currentLockfileSha256: fixtureLockfileSha256,
+            currentPackageManifestSha256: fixturePackageManifestSha256,
+            currentSourceTreeSha256: 'f'.repeat(64),
+          });
+
+          expect(evidence.state).toBe('verified');
+          if (evidence.state === 'verified') expect(evidence.artifact.source.threadnote.version).toBe(`v${version}`);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
+  it('classifies every retained performance target at its exclusive boundary', () => {
+    const targets = [
+      ['cold-index', 60 * 60_000],
+      ['one-file-reindex-index', 30_000],
+      ['one-file-reindex-registration-lock-and-database-setup', 5_000],
+      ['one-file-reindex-post-committed-scan-overlay-and-workspace', 5_000],
+    ] as const;
+    fc.assert(
+      fc.property(fc.constantFrom(...targets), fc.integer({min: -1_000, max: 1_000}), ([name, limit], delta) => {
+        const fixture = verifiedPerformanceFixture();
+        const measurement = (fixture.measurements as Record<string, unknown>[]).find(row => row.name === name);
+        if (measurement === undefined) throw new TestError(`Missing fixture measurement ${name}.`);
+        const observed = limit + delta;
+        for (const field of ['maximum', 'mean', 'minimum', 'p50', 'p95', 'p99'] as const) {
+          measurement[field] = observed;
+        }
+        const artifactBytes = fixtureBytes(fixture);
+        const evidence = bindRetainedPerformanceArtifact({
+          artifactBytes,
+          artifactPublicUrl: performanceArtifactPublicUrl('/'),
+          binding: fixtureBinding(artifactBytes),
+          currentLockfileSha256: fixtureLockfileSha256,
+          currentPackageManifestSha256: fixturePackageManifestSha256,
+          currentSourceTreeSha256: 'f'.repeat(64),
+        });
+        expect(evidence.state).toBe('verified');
+        if (evidence.state !== 'verified') return;
+        const objective = retainedPerformanceObjectiveResults(evidence.artifact).find(
+          candidate => candidate.measurement === name,
+        );
+        expect(objective).toMatchObject({
+          observedMilliseconds: observed,
+          passed: observed < limit,
+          targetMilliseconds: limit,
+        });
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('rejects one-file evidence whose assessed work expands to the whole repository', () => {
+    for (const name of [
+      'one-file-reindex-incremental-work-attribution-context-files-n1',
+      'one-file-reindex-incremental-work-base-facts-loaded-n1',
+      'one-file-reindex-incremental-work-inventory-files-inspected-n1',
+      'one-file-reindex-incremental-work-probed-dependency-paths-n1',
+    ] as const) {
+      const fixture = verifiedPerformanceFixture();
+      const measurement = (fixture.measurements as Record<string, unknown>[]).find(row => row.name === name);
+      if (measurement === undefined) throw new TestError(`Missing fixture measurement ${name}.`);
+      for (const field of ['maximum', 'mean', 'minimum', 'p50', 'p95', 'p99'] as const) measurement[field] = 90;
+      const artifactBytes = fixtureBytes(fixture);
+
+      expect(() =>
+        bindRetainedPerformanceArtifact({
+          artifactBytes,
+          artifactPublicUrl: performanceArtifactPublicUrl('/'),
+          binding: fixtureBinding(artifactBytes),
+          currentLockfileSha256: fixtureLockfileSha256,
+          currentPackageManifestSha256: fixturePackageManifestSha256,
+          currentSourceTreeSha256: 'f'.repeat(64),
+        }),
+      ).toThrow('Performance evidence one-file work must remain below a repository-wide scan.');
+    }
+  });
+
+  it('retains zero dependency probes for a body-only one-file edit', () => {
+    const fixture = verifiedPerformanceFixture();
+    const measurement = (fixture.measurements as Record<string, unknown>[]).find(
+      row => row.name === 'one-file-reindex-incremental-work-probed-dependency-paths-n1',
+    );
+    if (measurement === undefined) throw new TestError('Missing dependency-probe fixture measurement.');
+    for (const field of ['maximum', 'mean', 'minimum', 'p50', 'p95', 'p99'] as const) measurement[field] = 0;
+    const artifactBytes = fixtureBytes(fixture);
+    const evidence = bindRetainedPerformanceArtifact({
+      artifactBytes,
+      artifactPublicUrl: performanceArtifactPublicUrl('/'),
+      binding: fixtureBinding(artifactBytes),
+      currentLockfileSha256: fixtureLockfileSha256,
+      currentPackageManifestSha256: fixturePackageManifestSha256,
+      currentSourceTreeSha256: 'f'.repeat(64),
+    });
+
+    expect(evidence.state).toBe('verified');
+    if (evidence.state === 'verified') {
+      expect(evidence.artifact.phases.incremental.probedDependencyPaths).toBe(0);
+    }
   });
 
   it('keeps harness and website validation fail-closed under the same adversarial mutations', () => {
@@ -1411,6 +1566,7 @@ describe('Threadnote 4 website content', () => {
         'artifact.url',
         'artifact.sha256',
         'artifact.generatedAt',
+        'source.threadnote.version',
         'source.threadnote.commit',
         'source.threadnote.lockfileSha256',
         'source.threadnote.packageManifestSha256',
@@ -1429,6 +1585,18 @@ describe('Threadnote 4 website content', () => {
         'inventory.languages.bazel',
         'phases.cold.materializationMilliseconds',
         'phases.incremental.totalMilliseconds',
+        'phases.incremental.registrationMilliseconds',
+        'phases.incremental.postCommittedScanMilliseconds',
+        'phases.incremental.attributionContextFiles',
+        'phases.incremental.baseFactsLoaded',
+        'phases.incremental.changedFiles',
+        'phases.incremental.deletedFiles',
+        'phases.incremental.factBytes',
+        'phases.incremental.inventoryFilesInspected',
+        'phases.incremental.plannedRows',
+        'phases.incremental.probedDependencyPaths',
+        'phases.incremental.sourceBytes',
+        'phases.incremental.totalFiles',
         'phases.independentRebuild.totalMilliseconds',
         'queries.p95Milliseconds',
         'controls.java.stableNodeId',
@@ -1462,6 +1630,11 @@ describe('Threadnote 4 website content', () => {
     expect(pageSource).toContain('One-file clean commit');
     expect(pageSource).toContain('Graph responses stay deliberately bounded');
     expect(pageSource).toContain('provide explicit continuation');
+    expect(pageSource).toContain('postCommittedScanMilliseconds');
+    expect(pageSource).toContain('changed/fanout work from a repository-wide scan');
+    expect(pageSource).toContain('plannedRows');
+    expect(pageSource).toContain('sourceBytes');
+    expect(pageSource).toContain('factBytes');
     expect(pageSource).toContain('Your agents will love it');
     expect(pageSource).not.toMatch(/232_750|2_658_990|7_308_099|33_285_996_544/);
     expect(evidenceSource).toContain('derives every displayed measurement and provenance field from this one artifact');
