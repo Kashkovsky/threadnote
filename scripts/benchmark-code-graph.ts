@@ -6862,7 +6862,13 @@ const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
 ]);
 
 const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.25;
-const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 25;
+// Hosted VM scheduling can move a single sub-100 ms observation by tens of
+// milliseconds even when the source and output are identical. Keep those
+// diagnostic micro-timings governed, but give them an absolute 100 ms noise
+// allowance. The 25% relative limit still dominates every timing above 400 ms,
+// including the end-to-end cold and incremental objectives this ratchet exists
+// to protect.
+const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 100;
 const PRODUCTION_RATCHET_MINIMUM_FREE_BYTES = 120 * 1_073_741_824;
 // Keep the permanent lexical CI ratchet production-shaped but small enough to
 // run in parallel with ordinary checks. Full-size and vector observations keep

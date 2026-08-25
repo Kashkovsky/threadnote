@@ -1120,12 +1120,12 @@ describe('code graph release evidence', () => {
         },
       ]),
     ).toThrow(/exact source\/runtime\/storage contract/);
-    expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 138, unit: 'milliseconds'});
+    expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 210, unit: 'milliseconds'});
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).toMatchObject({
-      p95Maximum: 125,
+      p95Maximum: 200,
     });
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).not.toHaveProperty('minimum');
-    expect(ratchet.measurements['cold-zero-duration-n1']).toMatchObject({p95Maximum: 25, unit: 'milliseconds'});
+    expect(ratchet.measurements['cold-zero-duration-n1']).toMatchObject({p95Maximum: 100, unit: 'milliseconds'});
     expect(ratchet.measurements['cold-materialized-file-rows']).toMatchObject({maximum: 1, minimum: 1});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toMatchObject({p95Maximum: 2});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).not.toHaveProperty('minimum');

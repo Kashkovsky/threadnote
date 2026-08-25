@@ -283,11 +283,13 @@ name hints, binds the gate. The full pinned IntelliJ fixture remains manual rele
 CI fixture, developer gate, ratchet input, or ratchet-generator target.
 
 Each non-deterministic limit starts from the maximum of the three seed jobs with 25% relative headroom; millisecond
-metrics also receive 25 ms absolute clock/VM headroom. Cold registration alone receives a 2x ceiling because retained
-same-behavior hosted observations showed larger cold database-setup variance, while the end-to-end cold limit remains
-tight. Explicit user-facing objectives still cap generated limits. Deterministic graph shape, proportional-work, parity,
-and zero failure counters remain exact. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every
-artifact as diagnostics but are not gates; complete-operation external process-tree RSS peaks remain ratcheted.
+metrics also receive 100 ms absolute hosted-VM scheduling headroom. That absolute allowance is material only below
+400 ms, so single-observation micro-timing jitter cannot block development while the 25% ceiling still governs the
+end-to-end cold and incremental timings. Cold registration alone receives a 2x ceiling because retained same-behavior
+hosted observations showed larger cold database-setup variance, while the end-to-end cold limit remains tight. Explicit
+user-facing objectives still cap generated limits. Deterministic graph shape, proportional-work, parity, and zero failure
+counters remain exact. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every artifact as
+diagnostics but are not gates; complete-operation external process-tree RSS peaks remain ratcheted.
 Filesystem-available byte observations are diagnostic rather than upper bounds: the governed preflight and ratchet
 metadata enforce the 20 GiB minimum, while additional free space can never fail the gate.
 
