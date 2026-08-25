@@ -143,11 +143,11 @@ export default function GraphifyPerformancePage() {
         <header className="section-heading section-heading--split">
           <div>
             <span className="eyebrow">Scale evidence</span>
-            <h2>One result is retained. One is still running.</h2>
+            <h2>One result completed. One never reached an artifact.</h2>
           </div>
           <p>
-            No provisional ratio is published. Each product’s result must reach a terminal state under its frozen run
-            contract before the page compares elapsed time, resources, or correctness.
+            The Graphify observation is a right-censored lower bound, not an invented eventual completion time. Its
+            operator stop and absent artifact are reported as practical non-admission under the frozen run contract.
           </p>
         </header>
 
@@ -182,13 +182,22 @@ export default function GraphifyPerformancePage() {
             <span>vs</span>
             <small>same fixture</small>
           </div>
-          <article className="comparison-product comparison-product--graphify comparison-product--pending">
+          <article className="comparison-product comparison-product--graphify">
             <span>Graphify {graphifyReviewedSource.version}</span>
-            <h3>Full IntelliJ result pending</h3>
+            <h3>No graph after 5h 32m 40s</h3>
             <p>
-              A guarded cold run against pinned IntelliJ Community commit 3cbdad9ee6c8 is active. Timing, resource, and
-              correctness claims stay blank until the terminal result and raw evidence are reviewed.
+              The guarded code-only run was operator-terminated after exceeding a five-hour developer-utility threshold.
+              Per-file AST progress completed, but neither a graph nor a write-temp appeared, so no supported query
+              could be exercised.
             </p>
+            <a
+              className="text-link"
+              href={siteHref('graphify-intellij-evidence.json')}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Inspect retained Graphify evidence <Icon name="arrow" aria-hidden="true" />
+            </a>
           </article>
         </div>
         <p className="comparison-note">
@@ -203,13 +212,13 @@ export default function GraphifyPerformancePage() {
           timing arm.
         </p>
         <p className="comparison-note">
-          Interruption cost is auxiliary scalability evidence, separate from terminal throughput. At the 25 August 2026
-          16:27 UTC checkpoint, the Graphify run had spent 4h 46m 36s overall—including 2h 23m 5s after its final AST
-          progress line—at one busy CPU core, 11.8 GB current resident memory, and 14.8 GB peak process-tree resident
-          memory, without a <code>graph.json</code> or atomic write-temp file. Its 3.4 GB per-file AST cache could avoid
-          reparsing every unchanged file after a restart, but the in-memory merge, graph-build, and serialization work
-          had no persisted resume point. Stopping then would discard that multi-hour post-AST work and require the graph
-          to be reconstructed from cached extraction records.
+          At the stop, Graphify had kept one CPU core busy after its final per-file AST progress line, with 11.8 GB
+          current resident memory, a 14.8 GB process-tree peak, zero swap growth, and no sampler failures. Its 3.7 GB
+          per-file AST cache survived, but no persisted checkpoint could resume the in-memory cross-file resolution and
+          downstream graph construction. The <code>SIGINT</code> stack located current work in{' '}
+          <code>disambiguate_ambiguous_candidates</code>, where <code>set(test_cands)</code> was rebuilt inside a
+          candidate loop. That is a source-visible superlinear risk and the exact interruption point—not proof that one
+          line consumed the entire silent interval.
         </p>
       </section>
 
@@ -227,35 +236,36 @@ export default function GraphifyPerformancePage() {
         <div className="performance-proof-grid">
           <article>
             <span className="performance-check" />
-            <small>default admission</small>
-            <h3>Test the supported defaults first</h3>
+            <small>default admission · not reached</small>
+            <h3>No graph file reached the loader</h3>
             <p>
-              Graphify&apos;s default 512 MiB graph-file guard is exercised without an override. A size rejection is a
-              measured product outcome, not a discarded setup failure.
+              Construction produced neither <code>graph.json</code> nor a write-temp, so Graphify&apos;s supported
+              default 512 MiB file guard had no artifact to admit or reject.
             </p>
           </article>
           <article>
             <span className="performance-check" />
-            <small>cold load</small>
-            <h3>Measure the monolithic hydration cost</h3>
+            <small>cold load · not reached</small>
+            <h3>No artifact could be hydrated</h3>
             <p>
-              If resource admission permits a raised-cap probe, timing and peak memory include reading and parsing the
-              JSON plus hydrating its nodes and links into NetworkX before the first answer.
+              The predeclared raised-cap probe could not read, parse, or hydrate nodes and links into NetworkX because
+              the construction stage never published its monolithic JSON input.
             </p>
           </article>
           <article>
             <span className="performance-check" />
-            <small>warm use</small>
-            <h3>Require useful query output</h3>
+            <small>warm use · not reached</small>
+            <h3>No warm query process existed</h3>
             <p>
-              Exact-symbol, natural structural, and affected-node queries must return bounded content from one warm
-              process. These local graph queries spend no model-provider tokens.
+              Exact-symbol, natural structural, and affected-node controls remained unrun. Reporting them as query
+              failures would be inaccurate; the graph never reached the prerequisite queryability boundary.
             </p>
           </article>
         </div>
         <p className="comparison-note">
-          A safety-cap termination or a graph too large for the predeclared raised-cap admission is retained as evidence
-          with its exact boundary. It is not generalized into a claim that no machine could ever load the file.
+          This result establishes practical non-admission for pinned IntelliJ Community on the tested machine and
+          no-token configuration. It does not claim Graphify could never finish on another machine or with an unknown
+          longer wait; it records that an agent had no usable graph after more than five ordinary work hours.
         </p>
       </section>
 

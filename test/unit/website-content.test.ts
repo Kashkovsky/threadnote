@@ -2172,15 +2172,17 @@ Make the bottleneck observable.
   });
 
   it('labels synthetic Manager data and publishes a parity-first Graphify performance subpage', async () => {
-    const [managerSource, faqSource, graphifyPage, graphifyHtml, mainSource, shellSource, sitemap] = await Promise.all([
-      readFile(join(root, 'website', 'src', 'components', 'ManagerMock.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'src', 'pages', 'GraphifyPerformancePage.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'performance', 'graphify', 'index.html'), 'utf8'),
-      readFile(join(root, 'website', 'src', 'main.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
-    ]);
+    const [managerSource, faqSource, graphifyPage, graphifyHtml, mainSource, shellSource, sitemap, evidenceSource] =
+      await Promise.all([
+        readFile(join(root, 'website', 'src', 'components', 'ManagerMock.tsx'), 'utf8'),
+        readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+        readFile(join(root, 'website', 'src', 'pages', 'GraphifyPerformancePage.tsx'), 'utf8'),
+        readFile(join(root, 'website', 'performance', 'graphify', 'index.html'), 'utf8'),
+        readFile(join(root, 'website', 'src', 'main.tsx'), 'utf8'),
+        readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
+        readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
+        readFile(join(root, 'website', 'public', 'graphify-intellij-evidence.json'), 'utf8'),
+      ]);
     const sharedCopy = JSON.stringify(graphifySharedCapabilities).toLowerCase();
     const differenceCopy = JSON.stringify(graphifyVerifiedDifferences).toLowerCase();
 
@@ -2214,8 +2216,8 @@ Make the bottleneck observable.
       expect(differenceCopy).not.toContain(sharedTerm);
     }
     expect(graphifyPage).toContain('These are parity, not reasons to choose one');
-    expect(graphifyPage).toContain('Full IntelliJ result pending');
-    expect(graphifyPage).toContain('No provisional ratio is published');
+    expect(graphifyPage).toContain('No graph after 5h 32m 40s');
+    expect(graphifyPage).toContain('right-censored lower bound');
     expect(graphifyPage).toContain('both stay on local AST work and spend no provider tokens');
     expect(differenceCopy).toContain('installed local embedding model');
     expect(differenceCopy).toContain('without a hosted embedding service or provider-token spend');
@@ -2225,13 +2227,21 @@ Make the bottleneck observable.
     expect(graphifyPage).toContain('embedding model for semantic vector seeds');
     expect(graphifyPage).toMatch(/outside this structural\s+timing arm/);
     expect(graphifyPage).toContain('A graph file is not the finish line');
-    expect(graphifyPage).toContain('default 512 MiB graph-file guard');
-    expect(graphifyPage).toContain('hydrating its nodes and links into NetworkX');
-    expect(graphifyPage).toContain('Exact-symbol, natural structural, and affected-node queries');
-    expect(graphifyPage).toContain('spend no model-provider tokens');
-    expect(graphifyPage).toContain('not generalized into a claim that no machine could ever load the file');
+    expect(graphifyPage).toContain('default 512 MiB file guard had no artifact');
+    expect(graphifyPage).toContain('hydrate nodes and links into NetworkX');
+    expect(graphifyPage).toContain('Exact-symbol, natural structural, and affected-node controls remained unrun');
+    expect(graphifyPage).toContain('does not claim Graphify could never finish on another machine');
+    expect(graphifyPage).toContain("siteHref('graphify-intellij-evidence.json')");
     expect(graphifyPage).toContain("performanceEvidence.state === 'verified'");
     expect(graphifyPage).not.toMatch(/Graphify-exclusive|Graphify only|Threadnote-exclusive|Threadnote only/);
+
+    expect(JSON.parse(evidenceSource)).toMatchObject({
+      result: 'operator-terminated-practical-non-admission',
+      decision: {naturalTimeout: false, resourceCapTriggered: false, rightCensored: true},
+      observations: {graphJsonExists: false, queryabilityReached: false, swapGrowthBytesPeak: 0},
+      progress: {interruptStackFunction: 'disambiguate_ambiguous_candidates', interruptStackLine: 260},
+      restartBoundary: {perFileAstCachePersisted: true, postParseResumeArtifactPersisted: false},
+    });
 
     expect(graphifyHtml).toContain('<link rel="canonical" href="https://threadnote.io/performance/graphify/" />');
     expect(graphifyHtml).toContain('<body data-page="performance-graphify">');

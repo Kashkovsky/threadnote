@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "result": "operator-terminated-practical-non-admission",
+  "scope": {
+    "product": "graphifyy",
+    "version": "0.9.49",
+    "sourceCommit": "282976b2f4066b55cf2fa346c3d5568f7ac044e2",
+    "fixture": "IntelliJ Community",
+    "fixtureCommit": "3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c",
+    "configuration": "code-only, no-cluster, four workers, no network or provider tokens"
+  },
+  "decision": {
+    "requestedAt": "2026-08-25T17:12:33Z",
+    "completedAt": "2026-08-25T17:13:25.168Z",
+    "thresholdSeconds": 18000,
+    "reason": "The five-hour developer-utility threshold was exceeded without a durable or queryable graph artifact.",
+    "rightCensored": true,
+    "terminationSignal": "SIGINT",
+    "naturalTimeout": false,
+    "resourceCapTriggered": false
+  },
+  "observations": {
+    "elapsedSeconds": 19959.939,
+    "threadnoteMergedHeadColdSeconds": 3521.219520875,
+    "elapsedMultipleOfThreadnoteBeforeArtifact": 5.668,
+    "parentRssBytesBeforeTermination": 12079448064,
+    "processTreeRssPeakBytes": 14798143488,
+    "processTreeCpuMilliseconds": 20309960,
+    "outputBytesPeak": 3669647360,
+    "memoryFreePercentMinimum": 82,
+    "systemFreeBytesMinimum": 145703051264,
+    "swapGrowthBytesPeak": 0,
+    "processSampleFailures": 0,
+    "temporaryOpenFailures": 0,
+    "graphJsonExists": false,
+    "atomicGraphWriteTempExists": false,
+    "queryabilityReached": false
+  },
+  "progress": {
+    "detectedCodeFiles": 191249,
+    "perFileAstProgressReached": 191249,
+    "finalPerFileAstProgressObservedAt": "2026-08-25T14:04:16Z",
+    "interruptStackFile": "graphify/paths.py",
+    "interruptStackLine": 260,
+    "interruptStackFunction": "disambiguate_ambiguous_candidates",
+    "interruptStackExpression": "[c for c in candidates if c not in set(test_cands)]",
+    "interpretation": "The terminal stack locates the work at interruption in cross-file candidate disambiguation and exposes repeated set construction inside a candidate loop. One interrupt stack is not proof that this line consumed the entire silent interval."
+  },
+  "restartBoundary": {
+    "perFileAstCacheBytes": 3669647360,
+    "perFileAstCachePersisted": true,
+    "postParseResumeArtifactPersisted": false,
+    "interpretation": "A restart could reuse cached per-file extraction records, but it could not resume the in-memory cross-file resolution and downstream graph construction reached by this run."
+  },
+  "artifacts": {
+    "guardStateSha256": "f7e4b7f824aeba578d204c03870631fb17c8b20af951d5e6fea3d57e10ffe8c5",
+    "wallOverrideStateSha256": "efe7a7ee3ecd325b188bfee59d2db290a46454f61f4dddf5aab523539f11f516",
+    "samplerFinalSha256": "6e868e3b2132b94e30e2504cf58958b8ceefe4f3ff97e3cf983ce2628a5aac83",
+    "commandLogSha256": "332b87b30af514e342111c201ac4accaf8fd08f464b196cf2537e58a8f7be2ae"
+  }
+}
