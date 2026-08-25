@@ -202,6 +202,15 @@ export default function GraphifyPerformancePage() {
           model-backed document and media paths are useful product capabilities, but they are outside this structural
           timing arm.
         </p>
+        <p className="comparison-note">
+          Interruption cost is auxiliary scalability evidence, separate from terminal throughput. At the 25 August 2026
+          16:27 UTC checkpoint, the Graphify run had spent 4h 46m 36s overall—including 2h 23m 5s after its final AST
+          progress line—at one busy CPU core, 11.8 GB current resident memory, and 14.8 GB peak process-tree resident
+          memory, without a <code>graph.json</code> or atomic write-temp file. Its 3.4 GB per-file AST cache could avoid
+          reparsing every unchanged file after a restart, but the in-memory merge, graph-build, and serialization work
+          had no persisted resume point. Stopping then would discard that multi-hour post-AST work and require the graph
+          to be reconstructed from cached extraction records.
+        </p>
       </section>
 
       <section className="comparison-section" id="queryability-contract">
