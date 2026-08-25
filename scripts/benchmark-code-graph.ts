@@ -7188,12 +7188,11 @@ function productionMeasurementRatchet(
     const fullBuildRegistration =
       name === 'cold-registration-lock-and-database-setup' ||
       name === 'same-overlay-reference-registration-lock-and-database-setup';
-    const relativeHeadroom =
-      fullBuildRegistration
-        ? 2
-        : detailedTiming
-          ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM
-          : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
+    const relativeHeadroom = fullBuildRegistration
+      ? 2
+      : detailedTiming
+        ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM
+        : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
     const absoluteHeadroom = detailedTiming
       ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_NOISE_HEADROOM
       : PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM;
