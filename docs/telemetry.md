@@ -52,7 +52,8 @@ The current versioned allowlist is limited to:
   embedding, model work, storage waits, and other explicitly instrumented subsystems;
 - an automatic-update worker completion includes one closed result: `busy`, `current`, `disabled`, `failed`, or
   `updated`. An `updated` result also includes a boolean saying whether post-update local setup repair still requires
-  attention; it does not include installed versions or installation identity;
+  attention. A `failed` result also retains the existing bounded failure outcome and safe typed failure class; it does
+  not include installed versions or installation identity;
 - one terminal graph-build lifecycle observation: a successful build includes clean/dirty build kind; closed
   materialization mode, fallback reason, resolution-closure, and efficiency classifications; coarse
   changed/deleted/delta/extracted/reused/staged/total file-count buckets; cached/changed/final fact-byte buckets; and

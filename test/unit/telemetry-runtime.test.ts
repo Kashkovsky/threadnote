@@ -3,7 +3,10 @@ import fc from 'fast-check';
 import {Cause, Deferred, Effect, Exit, Fiber, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
+import {completeAutoUpdateWorkerExit} from '../../src/auto_update.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
+import {FileLockTimeout} from '../../src/effect/file_lock.js';
+import {HttpRequestFailed} from '../../src/effect/http.js';
 import {
   anonymousTelemetryTestLayer,
   emitAnonymousTelemetryEvent,
@@ -28,6 +31,49 @@ interface CapturedSpan {
 }
 
 describe('anonymous telemetry runtime', () => {
+  effectIt.effect('classifies automatic-update failures while preserving their original Exit', () => {
+    const capture = capturingTracer();
+    const failures = [
+      new HttpRequestFailed({
+        cause: new Error('private network failure'),
+        message: 'private request failure',
+        method: 'GET',
+        url: 'https://private.example/release.tar.gz',
+      }),
+      new FileLockTimeout('/private/threadnote-install.lock'),
+    ] as const;
+
+    return Effect.gen(function* () {
+      for (const failure of failures) {
+        const exit = yield* Effect.exit(
+          withAnonymousTelemetry(
+            {component: 'cli', operation: 'auto-update-worker'},
+            completeAutoUpdateWorkerExit(Exit.fail(failure)),
+          ),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(failure);
+      }
+
+      expect(capture.spans).toHaveLength(2);
+      expect(capture.spans.map(span => spanAttributes(span))).toEqual([
+        expect.objectContaining({
+          'error.type': 'HttpRequestFailed',
+          'threadnote.auto_update.result': 'failed',
+          'threadnote.operation': 'auto-update-worker',
+          'threadnote.outcome': 'failure',
+        }),
+        expect.objectContaining({
+          'error.type': 'FileLockTimeout',
+          'threadnote.auto_update.result': 'failed',
+          'threadnote.operation': 'auto-update-worker',
+          'threadnote.outcome': 'failure',
+        }),
+      ]);
+      expect(JSON.stringify(capture.spans.map(span => spanAttributes(span)))).not.toContain('private');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
   effectIt.effect('executes once, preserves a failure Exit, and emits only a successful sanitized envelope', () => {
     const capture = capturingTracer();
     const privateFailure = new TestError('secret at /Users/private/repository/store.sqlite');

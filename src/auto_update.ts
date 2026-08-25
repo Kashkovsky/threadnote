@@ -82,6 +82,20 @@ export function autoUpdateWorkerTelemetryFields(result: AutoUpdateWorkerResult):
   };
 }
 
+/** @internal Records the worker result before preserving its original Exit. */
+export function completeAutoUpdateWorkerExit<E>(
+  exit: Exit.Exit<AutoUpdateWorkerResult, E>,
+): Effect.Effect<AutoUpdateWorkerResult, E> {
+  const result = Exit.isSuccess(exit)
+    ? exit.value
+    : Cause.hasInterruptsOnly(exit.cause)
+      ? undefined
+      : ({result: 'failed'} as const);
+  return (
+    result === undefined ? Effect.void : recordAnonymousTelemetryFields(autoUpdateWorkerTelemetryFields(result))
+  ).pipe(Effect.andThen(Exit.isSuccess(exit) ? Effect.succeed(exit.value) : Effect.failCause(exit.cause)));
+}
+
 export const readAutoUpdateStatus = Effect.fn('autoUpdate.readStatus')(function* () {
   const fs = yield* FileSystem.FileSystem;
   const statePath = yield* autoUpdateStatePath();
@@ -218,20 +232,29 @@ export function runThreadnoteUpdateCommand(config: RuntimeConfig, options: Updat
  * durable result and emits a best-effort desktop notification.
  */
 export const runAutoUpdateWorker = Effect.fn('autoUpdate.runWorker')(function* (config: RuntimeConfig) {
-  const result = yield* Effect.suspend(() => {
-    if (!isStandaloneThreadnoteBuild()) return Effect.succeed<AutoUpdateWorkerResult>({result: 'disabled'});
-    return Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const lockPath = yield* autoUpdateLockPath();
-      return yield* withExclusiveFileLock(fs, lockPath, AUTO_UPDATE_LOCK_OPTIONS, runOwnedAutoUpdate(config)).pipe(
-        Effect.catch(error =>
-          error instanceof FileLockTimeout ? Effect.succeed({result: 'busy'} as const) : Effect.fail(error),
-        ),
-      );
-    });
-  });
-  yield* recordAnonymousTelemetryFields(autoUpdateWorkerTelemetryFields(result));
-  return result;
+  const exit = yield* Effect.exit(
+    Effect.suspend(() => {
+      if (!isStandaloneThreadnoteBuild()) return Effect.succeed<AutoUpdateWorkerResult>({result: 'disabled'});
+      return Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const lockPath = yield* autoUpdateLockPath();
+        const owned = yield* withExclusiveFileLock(
+          fs,
+          lockPath,
+          AUTO_UPDATE_LOCK_OPTIONS,
+          Effect.exit(runOwnedAutoUpdate(config)),
+        ).pipe(
+          Effect.catch(error =>
+            error instanceof FileLockTimeout
+              ? Effect.succeed(Exit.succeed<AutoUpdateWorkerResult>({result: 'busy'}))
+              : Effect.fail(error),
+          ),
+        );
+        return Exit.isSuccess(owned) ? owned.value : yield* Effect.failCause(owned.cause);
+      });
+    }),
+  );
+  return yield* completeAutoUpdateWorkerExit(exit);
 });
 
 export const triggerAutoUpdateIfEnabled = Effect.fn('autoUpdate.triggerIfEnabled')(function* (
@@ -456,7 +479,7 @@ function runOwnedAutoUpdate(config: RuntimeConfig) {
         }),
       );
     }
-    return {result: 'failed'} as const;
+    return yield* Effect.failCause(update.cause);
   });
 }
 
