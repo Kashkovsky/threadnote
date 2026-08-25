@@ -27,6 +27,9 @@ describe('code graph private Git status cache', () => {
       const identity = repositoryIdentity(repository);
       const base = yield* CommandExecutor;
       const calls: Array<{args: readonly string[]; options?: CommandOptions}> = [];
+      // Distinct invalid UTF-8 bytes would both decode to the replacement
+      // character, so this also guards the raw-byte digest boundary.
+      let sourceIndexSemanticIdentity = Uint8Array.of(0x80);
       const command = CommandExecutor.of({
         ...base,
         execute: (executable, args, options) => {
@@ -37,6 +40,18 @@ describe('code graph private Git status cache', () => {
           if (args.includes('fsmonitor--daemon')) return Effect.succeed(result(''));
           if (args.includes('status')) return Effect.succeed(result(' M src/index.ts\0'));
           return Effect.fail(commandFailure(args));
+        },
+        executeBytes: (executable, args, options) => {
+          expect(executable).toBe('git');
+          calls.push({args, options});
+          if (args.includes('ls-files')) {
+            return Effect.succeed({
+              exitCode: 0,
+              stderr: '',
+              stdout: sourceIndexSemanticIdentity,
+            });
+          }
+          return Effect.die(new Error(`Unexpected binary command: ${args.join(' ')}`));
         },
       });
       const observe = () =>
@@ -55,15 +70,27 @@ describe('code graph private Git status cache', () => {
       expect(fsmonitorOperations(calls, 'status')).toHaveLength(1);
       assertPrivateStatusCall(calls.at(-1), home);
 
-      writeFileSync(sourceIndex, 'source-index-v2');
+      writeFileSync(sourceIndex, 'source-index-metadata-refresh');
+      expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
+      expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(2);
+      expect(fsmonitorOperations(calls, 'status')).toHaveLength(1);
+
+      sourceIndexSemanticIdentity = Uint8Array.of(0x81);
+      writeFileSync(sourceIndex, 'source-index-staged-change');
       expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
       expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(4);
       expect(fsmonitorOperations(calls, 'status')).toHaveLength(2);
       expect(fsmonitorOperations(calls, 'start')).toHaveLength(0);
+      expect(calls.filter(call => call.args.includes('ls-files'))).toHaveLength(3);
       assertPrivateStatusCall(calls.at(-1), home);
-      expect(calls.every(call => !call.args.includes('--no-optional-locks') || call.args.includes('rev-parse'))).toBe(
-        true,
-      );
+      expect(
+        calls.every(
+          call =>
+            !call.args.includes('--no-optional-locks') ||
+            call.args.includes('rev-parse') ||
+            call.args.includes('ls-files'),
+        ),
+      ).toBe(true);
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => (root === undefined ? undefined : rmSync(root, {force: true, recursive: true}))),
