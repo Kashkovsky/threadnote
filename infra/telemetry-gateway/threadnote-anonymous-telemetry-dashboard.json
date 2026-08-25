@@ -1644,7 +1644,7 @@
         "type": "tempo",
         "uid": "${DS_TEMPO}"
       },
-      "description": "Automatic-update worker completions by closed result. Failures are split by privacy-safe error type; successful replacements show whether repair was required.",
+      "description": "Automatic update worker results, including whether a successful replacement required repair.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1694,7 +1694,7 @@
             "uid": "${DS_TEMPO}"
           },
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"auto-update-worker\" && span.threadnote.auto_update.result != nil } | count_over_time() by (span.threadnote.auto_update.result, span.threadnote.auto_update.repair_required, span.error.type)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && (resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4) && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"auto-update-worker\" && span.threadnote.auto_update.result != nil } | count_over_time() by (span.threadnote.auto_update.result, span.threadnote.auto_update.repair_required)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"

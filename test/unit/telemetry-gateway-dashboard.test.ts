@@ -526,7 +526,7 @@ describe('Threadnote Grafana dashboard', () => {
       expect(automaticUpdateQuery).toContain('span.threadnote.operation = "auto-update-worker"');
       expect(automaticUpdateQuery).toContain('span.threadnote.auto_update.result != nil');
       expect(automaticUpdateQuery).toContain(
-        'by (span.threadnote.auto_update.result, span.threadnote.auto_update.repair_required, span.error.type)',
+        'by (span.threadnote.auto_update.result, span.threadnote.auto_update.repair_required)',
       );
 
       const scopedAttribute = /(?:resource|span)\.([A-Za-z_][A-Za-z0-9_.]*)/gu;
