@@ -22,6 +22,19 @@ import {
 } from '../../src/remote_memory/portability.js';
 
 const COMPATIBILITY_END = '2027-12-31T23:59:59.000Z';
+const PORTABLE_SEGMENT_CHARACTERS = [...'abcdefghijklmnopqrstuvwxyz0123456789'] as const;
+
+/**
+ * Every generated value is portable by construction: single characters are
+ * never reserved, while longer values carry a fixed prefix that cannot match
+ * a Windows device name. The alphabet also excludes separators and controls.
+ */
+const portableSegmentArbitrary = fc.oneof(
+  fc.constantFrom(...PORTABLE_SEGMENT_CHARACTERS),
+  fc
+    .array(fc.constantFrom(...PORTABLE_SEGMENT_CHARACTERS), {maxLength: 8})
+    .map(characters => `seg-${characters.join('')}`),
+);
 
 describe('remote memory Git beta portability', () => {
   it('classifies existing divergence, duplicates, invalid content, scrubber blocks, and unmapped sources', () => {
@@ -86,6 +99,21 @@ describe('remote memory Git beta portability', () => {
       switch: 'explicit_required',
       verification: 'failed',
     });
+  });
+
+  it('keeps Windows-reserved source paths blocked from cross-platform materialization', () => {
+    const reserved = source('prn', 'portable', 'Reserved project path.');
+    const plan = planGitBetaImport({
+      aliasCompatibilityEndsAt: COMPATIBILITY_END,
+      dryRun: false,
+      records: [reserved],
+      shareId: 'share-1',
+    });
+
+    expect(plan.entries).toEqual([expect.objectContaining({classification: 'invalid', reason: 'invalid_source_uri'})]);
+    expect(() => materializeGitBetaImport(plan, [reserved])).toThrow(
+      'A blocking Git beta import plan cannot be materialized for apply.',
+    );
   });
 
   it('materializes unchanged records so apply can add missing aliases, and rejects rehashed plan tampering', () => {
@@ -199,9 +227,6 @@ describe('remote memory Git beta portability', () => {
   });
 
   it('is input-order invariant and export/import preserves canonical hashes', () => {
-    const segment = fc
-      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'), {minLength: 1, maxLength: 12})
-      .map(characters => characters.join(''));
     const body = fc
       .tuple(
         fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'),
@@ -210,7 +235,7 @@ describe('remote memory Git beta portability', () => {
       .map(([first, rest]) => [first, ...rest].join(''));
     fc.assert(
       fc.property(
-        fc.uniqueArray(fc.record({body, project: segment, topic: segment}), {
+        fc.uniqueArray(fc.record({body, project: portableSegmentArbitrary, topic: portableSegmentArbitrary}), {
           maxLength: 20,
           minLength: 1,
           selector: value => `${value.project}/${value.topic}`,
