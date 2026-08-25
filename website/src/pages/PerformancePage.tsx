@@ -1,6 +1,5 @@
 import {Icon} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
-import {checkedInEmbeddingContextPerformance} from '../content/embeddingContextPerformance';
 import {
   performanceControlLanguages,
   retainedPerformanceArtifactFieldPaths,
@@ -9,7 +8,6 @@ import {
 } from '../content/performance';
 import {performanceEvidence} from '../content/performanceEvidence';
 import {checkedInPerformanceEvidence} from '../content/performanceHighlights';
-import {checkedInWorktreeReadinessEvidence} from '../content/worktreeReadiness';
 import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
@@ -28,14 +26,6 @@ function formatDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${milliseconds.toFixed(1)} ms`;
   if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)} s`;
   return `${(milliseconds / 60_000).toFixed(1)} min`;
-}
-
-function formatReadinessDuration(milliseconds: number): string {
-  return `${(milliseconds / 1_000).toFixed(2)} s`;
-}
-
-function formatEmbeddingDuration(milliseconds: number): string {
-  return `${(milliseconds / 1_000).toFixed(2)} s`;
 }
 
 const pipeline = [
@@ -489,167 +479,6 @@ export default function PerformancePage() {
             </li>
           ))}
         </ol>
-      </section>
-
-      <section className="performance-worktrees">
-        <div className="performance-worktrees__copy">
-          <span className="eyebrow">Historical tuning study</span>
-          <h2>Graph embeddings use the CPU you already have.</h2>
-          <p>
-            {artifact ? (
-              <>The current exact {artifact.source.threadnote.version} release run is the headline evidence above. </>
-            ) : null}
-            This narrower CPU-only study was captured during Threadnote 4.2.5 candidate development. On a clean{' '}
-            {checkedInEmbeddingContextPerformance.environment.cpu} runner with{' '}
-            {checkedInEmbeddingContextPerformance.environment.cpuMathCores} CPU math cores and a CPU-only BGE model,{' '}
-            {formatInteger(checkedInEmbeddingContextPerformance.scope.rounds)} Williams-order rounds compared 1, 2, 4,
-            and 8 contexts on a generated {formatInteger(checkedInEmbeddingContextPerformance.scope.scaleSymbols)}
-            -symbol-scale graph build. Eight contexts cut the upper-median cold index from{' '}
-            {formatEmbeddingDuration(
-              checkedInEmbeddingContextPerformance.results[0].coldIndexMilliseconds.median,
-            )} to {formatEmbeddingDuration(checkedInEmbeddingContextPerformance.winner.coldIndexMilliseconds.median)}.
-          </p>
-          <ul>
-            <li>
-              <Icon name="check" aria-hidden="true" /> {checkedInEmbeddingContextPerformance.winner.contexts} contexts
-              won all {formatInteger(checkedInEmbeddingContextPerformance.scope.rounds)} paired rounds with a{' '}
-              {checkedInEmbeddingContextPerformance.winner.pairedMedianSpeedup.toFixed(2)}× upper-median paired-run
-              speedup
-            </li>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Ordered symbol-to-vector digests matched across all{' '}
-              {formatInteger(checkedInEmbeddingContextPerformance.scope.observations)} observations; upper-median
-              sampled embedding process-tree RSS rose about{' '}
-              {checkedInEmbeddingContextPerformance.rssIncreasePercent.toFixed(0)}%
-            </li>
-            <li>
-              <Icon name="check" aria-hidden="true" /> GPU or unknown-offload models and ordinary recall and query
-              embeddings remain single-context by default
-            </li>
-          </ul>
-          <p className="performance-worktrees__evidence">
-            Same-machine engineering comparison, not a portable SLA.{' '}
-            <a href={siteHref(checkedInEmbeddingContextPerformance.artifactPath)} target="_blank" rel="noreferrer">
-              Inspect all observations and provenance
-            </a>
-            .
-          </p>
-        </div>
-        <div
-          className="performance-worktrees__diagram"
-          aria-label="Historical CPU graph embedding study from Threadnote 4.2.5 candidate development"
-        >
-          <div className="performance-worktrees__base">
-            <span>Serial baseline · 1 context</span>
-            <strong>
-              {formatEmbeddingDuration(checkedInEmbeddingContextPerformance.results[0].coldIndexMilliseconds.median)}{' '}
-              cold ·{' '}
-              {formatEmbeddingDuration(checkedInEmbeddingContextPerformance.results[0].coldVectorMilliseconds.median)}{' '}
-              vectors
-            </strong>
-            <code>{checkedInEmbeddingContextPerformance.environment.model.id}</code>
-          </div>
-          <div className="performance-worktrees__branches">
-            {checkedInEmbeddingContextPerformance.results.slice(1).map(result => (
-              <article key={result.contexts}>
-                <span>{result.contexts} contexts</span>
-                <strong>{formatEmbeddingDuration(result.coldIndexMilliseconds.median)} cold</strong>
-                <small>
-                  {result.pairedMedianSpeedup.toFixed(2)}× upper-median paired speedup ·{' '}
-                  {formatEmbeddingDuration(result.coldVectorMilliseconds.median)} vectors
-                </small>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="performance-worktrees">
-        <div className="performance-worktrees__copy">
-          <span className="eyebrow">Historical worktree study</span>
-          <h2>A warm worktree is ready in seconds—not another full build.</h2>
-          <p>
-            {artifact ? (
-              <>
-                The current exact {artifact.source.threadnote.version} release run above measures one-file incremental
-                behavior at IntelliJ scale.{' '}
-              </>
-            ) : null}
-            This earlier same-machine study was captured when warm-worktree reuse was introduced in v4.0.1. On the same
-            pinned {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)}-file Threadnote checkout and M1 Max
-            runner, five alternating samples compared v4.0.1 with its immediate pre-feature parent. The graph shape and
-            a controlled query matched in every pair.
-          </p>
-          <ul>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Graph-equivalent commits alias the ready content without staging
-              files
-            </li>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Compatible clean commits materialize only their bounded delta
-            </li>
-            <li>
-              <Icon name="check" aria-hidden="true" /> Exact lexical queries become usable before optional enrichment
-            </li>
-          </ul>
-          <p className="performance-worktrees__evidence">
-            Same-machine engineering comparison, not a portable SLA.{' '}
-            <a href={siteHref(checkedInWorktreeReadinessEvidence.artifactPath)} target="_blank" rel="noreferrer">
-              Inspect all raw samples and provenance
-            </a>
-            .
-          </p>
-        </div>
-        <div
-          className="performance-worktrees__diagram"
-          aria-label="Historical warm-worktree readiness study from Threadnote 4.0.1"
-        >
-          <div className="performance-worktrees__base">
-            <span>Historical warm anchor · v4.0.1</span>
-            <strong>
-              {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)} files ·{' '}
-              {formatInteger(checkedInWorktreeReadinessEvidence.scale.symbols)} symbols
-            </strong>
-            <code>{checkedInWorktreeReadinessEvidence.source.candidate.commit.slice(0, 12)}</code>
-          </div>
-          <div className="performance-worktrees__branches">
-            <article>
-              <span>Graph-equivalent commit</span>
-              <strong>
-                {formatReadinessDuration(
-                  checkedInWorktreeReadinessEvidence.graphEquivalentCommit.candidate.medianMilliseconds,
-                )}{' '}
-                median
-              </strong>
-              <small>
-                {checkedInWorktreeReadinessEvidence.graphEquivalentCommit.medianSpeedup.toFixed(1)}× faster · 0 files
-                staged
-              </small>
-            </article>
-            <article>
-              <span>One-file clean commit</span>
-              <strong>
-                {formatReadinessDuration(checkedInWorktreeReadinessEvidence.oneFileChange.candidate.medianMilliseconds)}{' '}
-                median
-              </strong>
-              <small>
-                {checkedInWorktreeReadinessEvidence.oneFileChange.medianSpeedup.toFixed(1)}× faster · 1 file staged
-              </small>
-            </article>
-            <article>
-              <span>Immediate predecessor</span>
-              <strong>
-                {formatReadinessDuration(
-                  checkedInWorktreeReadinessEvidence.graphEquivalentCommit.baseline.medianMilliseconds,
-                )}
-                –{formatReadinessDuration(checkedInWorktreeReadinessEvidence.oneFileChange.baseline.medianMilliseconds)}
-              </strong>
-              <small>
-                full materialization · {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)} files staged
-              </small>
-            </article>
-          </div>
-        </div>
       </section>
 
       <section className="performance-section performance-surfaces">

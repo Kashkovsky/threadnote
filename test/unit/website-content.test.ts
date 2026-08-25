@@ -1261,9 +1261,11 @@ Make the bottleneck observable.
     expect(performancePage).toContain('source-mismatched evidence');
     expect(performancePage).toContain('{artifact.source.threadnote.version} release commit');
     expect(performancePage).not.toContain('v4.3.1 release commit');
-    expect(performancePage).toContain('The current exact {artifact.source.threadnote.version} release run');
-    expect(performancePage).toContain('Historical tuning study');
-    expect(performancePage).toContain('Historical worktree study');
+    expect(performancePage).not.toContain('Historical tuning study');
+    expect(performancePage).not.toContain('Historical worktree study');
+    expect(performancePage).not.toContain('checkedInEmbeddingContextPerformance');
+    expect(performancePage).not.toContain('checkedInWorktreeReadinessEvidence');
+    expect(performancePage).not.toMatch(/4\.0\.1|4\.2\.5/);
     expect(performancePage).not.toContain('Threadnote 4.2.5 candidate evidence');
     expect(performancePage).not.toContain('Measured in Threadnote 4.0.1');
     expect(performancePage).toContain("siteHref('performance/graphify/')");
