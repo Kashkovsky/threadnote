@@ -1193,10 +1193,20 @@ Make the bottleneck observable.
   });
 
   it('shows checked-in public measurements instead of placeholder performance cards', async () => {
-    const [performancePage, landingPage] = await Promise.all([
+    const [performancePage, landingPage, retainedArtifactBytes, retainedBindingBytes] = await Promise.all([
       readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'performance-evidence.json')),
+      readFile(join(root, 'website', 'performance', 'evidence.binding.json'), 'utf8'),
     ]);
+    const retainedArtifact = JSON.parse(retainedArtifactBytes.toString('utf8')) as {
+      environment: {commit: string; dirty: boolean};
+      metadata: {releaseEvidenceRef: string; releaseEvidenceSha: string; releaseEvidenceSourceMode: string};
+    };
+    const retainedBinding = JSON.parse(retainedBindingBytes) as {
+      artifactSha256: string;
+      sourceThreadnoteCommit: string;
+    };
 
     expect(checkedInPerformanceEvidence.source).toMatchObject({
       repository: 'JetBrains/intellij-community',
@@ -1212,6 +1222,15 @@ Make the bottleneck observable.
     expect(checkedInPerformanceEvidence.query.hotSearchAndAdjacencyMilliseconds).toBe(43.7);
     expect(checkedInPerformanceEvidence.lexicalStorage.writeSpeedup).toBeGreaterThan(2.7);
     expect(checkedInPerformanceEvidence.lexicalStorage.parityPassed).toBe(true);
+    expect(retainedArtifact).toMatchObject({
+      environment: {commit: retainedBinding.sourceThreadnoteCommit, dirty: false},
+      metadata: {
+        releaseEvidenceRef: 'refs/tags/v4.3.3',
+        releaseEvidenceSha: retainedBinding.sourceThreadnoteCommit,
+        releaseEvidenceSourceMode: 'exact-release',
+      },
+    });
+    expect(sha256Hex(retainedArtifactBytes)).toBe(retainedBinding.artifactSha256);
     for (const artifactUrl of Object.values(checkedInPerformanceEvidence.artifacts)) {
       const target = new URL(artifactUrl).pathname.match(/^\/Kashkovsky\/threadnote\/blob\/([a-f0-9]{40})\/(.+)$/);
       expect(target).not.toBeNull();
@@ -1231,6 +1250,11 @@ Make the bottleneck observable.
     expect(performancePage).toContain('source-mismatched evidence');
     expect(performancePage).toContain('{artifact.source.threadnote.version} release commit');
     expect(performancePage).not.toContain('v4.3.1 release commit');
+    expect(performancePage).toContain('The current exact {artifact.source.threadnote.version} release run');
+    expect(performancePage).toContain('Historical tuning study');
+    expect(performancePage).toContain('Historical worktree study');
+    expect(performancePage).not.toContain('Threadnote 4.2.5 candidate evidence');
+    expect(performancePage).not.toContain('Measured in Threadnote 4.0.1');
     expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });

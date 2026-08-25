@@ -490,10 +490,14 @@ export default function PerformancePage() {
 
       <section className="performance-worktrees">
         <div className="performance-worktrees__copy">
-          <span className="eyebrow">Threadnote 4.2.5 candidate evidence</span>
+          <span className="eyebrow">Historical tuning study</span>
           <h2>Graph embeddings use the CPU you already have.</h2>
           <p>
-            On a clean {checkedInEmbeddingContextPerformance.environment.cpu} runner with{' '}
+            {artifact ? (
+              <>The current exact {artifact.source.threadnote.version} release run is the headline evidence above. </>
+            ) : null}
+            This narrower CPU-only study was captured during Threadnote 4.2.5 candidate development. On a clean{' '}
+            {checkedInEmbeddingContextPerformance.environment.cpu} runner with{' '}
             {checkedInEmbeddingContextPerformance.environment.cpuMathCores} CPU math cores and a CPU-only BGE model,{' '}
             {formatInteger(checkedInEmbeddingContextPerformance.scope.rounds)} Williams-order rounds compared 1, 2, 4,
             and 8 contexts on a generated {formatInteger(checkedInEmbeddingContextPerformance.scope.scaleSymbols)}
@@ -528,7 +532,10 @@ export default function PerformancePage() {
             .
           </p>
         </div>
-        <div className="performance-worktrees__diagram" aria-label="Threadnote 4.2.5 CPU graph embedding evidence">
+        <div
+          className="performance-worktrees__diagram"
+          aria-label="Historical CPU graph embedding study from Threadnote 4.2.5 candidate development"
+        >
           <div className="performance-worktrees__base">
             <span>Serial baseline · 1 context</span>
             <strong>
@@ -556,12 +563,19 @@ export default function PerformancePage() {
 
       <section className="performance-worktrees">
         <div className="performance-worktrees__copy">
-          <span className="eyebrow">Measured in Threadnote 4.0.1</span>
+          <span className="eyebrow">Historical worktree study</span>
           <h2>A warm worktree is ready in seconds—not another full build.</h2>
           <p>
-            On the same pinned {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)}-file Threadnote checkout
-            and M1 Max runner, five alternating samples compared v4.0.1 with its immediate pre-feature parent. The graph
-            shape and a controlled query matched in every pair.
+            {artifact ? (
+              <>
+                The current exact {artifact.source.threadnote.version} release run above measures one-file incremental
+                behavior at IntelliJ scale.{' '}
+              </>
+            ) : null}
+            This earlier same-machine study was captured when warm-worktree reuse was introduced in v4.0.1. On the same
+            pinned {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)}-file Threadnote checkout and M1 Max
+            runner, five alternating samples compared v4.0.1 with its immediate pre-feature parent. The graph shape and
+            a controlled query matched in every pair.
           </p>
           <ul>
             <li>
@@ -583,9 +597,12 @@ export default function PerformancePage() {
             .
           </p>
         </div>
-        <div className="performance-worktrees__diagram" aria-label="Threadnote 4.0.1 warm worktree readiness evidence">
+        <div
+          className="performance-worktrees__diagram"
+          aria-label="Historical warm-worktree readiness study from Threadnote 4.0.1"
+        >
           <div className="performance-worktrees__base">
-            <span>Measured warm anchor · v4.0.1</span>
+            <span>Historical warm anchor · v4.0.1</span>
             <strong>
               {formatInteger(checkedInWorktreeReadinessEvidence.scale.files)} files ·{' '}
               {formatInteger(checkedInWorktreeReadinessEvidence.scale.symbols)} symbols
