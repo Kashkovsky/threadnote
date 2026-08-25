@@ -6862,14 +6862,14 @@ const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
 ]);
 
 const PRODUCTION_RATCHET_RELATIVE_HEADROOM = 0.25;
-const PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM = 0.5;
-// Hosted VM scheduling can move a single sub-100 ms observation by tens of
-// milliseconds even when the source and output are identical. Keep those
-// diagnostic micro-timings governed, but give them an absolute 100 ms noise
-// allowance. The 25% relative limit still dominates every timing above 400 ms,
-// including the end-to-end cold and incremental objectives this ratchet exists
-// to protect.
+const PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM = 0.75;
+// Hosted VM scheduling can move short observations by tens or hundreds of
+// milliseconds even when source and output are identical. Aggregate/objective
+// timings get 100 ms absolute headroom; detailed single-observation splits get
+// 300 ms. The aggregate 25% limit still dominates above 400 ms, including the
+// end-to-end cold and incremental objectives this ratchet exists to protect.
 const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 100;
+const PRODUCTION_RATCHET_DETAILED_MILLISECOND_NOISE_HEADROOM = 300;
 // A zero-byte seed can still observe a tiny SQLite journal or filesystem
 // bookkeeping file on another hosted VM. Govern storage growth from the first
 // material MiB instead of treating a 512-byte observation as a regression.
@@ -7184,18 +7184,23 @@ function productionMeasurementRatchet(
   }
   if (unit === 'milliseconds') {
     const objective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
+    const detailedTiming = name.endsWith('-n1') && objective === undefined;
+    const fullBuildRegistration =
+      name === 'cold-registration-lock-and-database-setup' ||
+      name === 'same-overlay-reference-registration-lock-and-database-setup';
     const relativeHeadroom =
-      name === 'cold-registration-lock-and-database-setup'
-        ? 1
-        : name.endsWith('-n1') && objective === undefined
+      fullBuildRegistration
+        ? 2
+        : detailedTiming
           ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM
           : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
+    const absoluteHeadroom = detailedTiming
+      ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_NOISE_HEADROOM
+      : PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM;
     const observedLimit =
       maximum === 0
-        ? PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM
-        : Math.ceil(
-            Math.max(maximum * (1 + relativeHeadroom), maximum + PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM),
-          );
+        ? absoluteHeadroom
+        : Math.ceil(Math.max(maximum * (1 + relativeHeadroom), maximum + absoluteHeadroom));
     if (objective !== undefined && maximum > objective) {
       throw new ScriptError(`Production ratchet objective ${name} has not been attained.`);
     }

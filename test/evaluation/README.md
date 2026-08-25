@@ -282,14 +282,15 @@ each on a fresh GitHub-hosted Linux runner; the reviewed hosted-runner class, no
 name hints, binds the gate. The full pinned IntelliJ fixture remains manual release/website evidence only: it is not a
 CI fixture, developer gate, ratchet input, or ratchet-generator target.
 
-Each non-deterministic limit starts from the maximum of the three seed jobs with 25% relative headroom; millisecond
-metrics also receive 100 ms absolute hosted-VM scheduling headroom. That absolute allowance is material only below
-400 ms, so single-observation micro-timing jitter cannot block development while the 25% ceiling still governs the
-end-to-end cold and incremental timings. Single-observation detailed `-n1` timers receive 50% relative headroom after
+Each non-deterministic limit starts from the maximum of the three seed jobs with 25% relative headroom; aggregate and
+objective millisecond metrics also receive 100 ms absolute hosted-VM scheduling headroom. That absolute allowance is
+material only below 400 ms, so micro-timing jitter cannot block development while the 25% ceiling still governs the
+end-to-end cold and incremental timings. Single-observation detailed `-n1` timers receive 75% relative headroom after
 same-behavior hosted runs showed that internal transaction and heartbeat splits can vary by more than 25% even when
-their end-to-end phases remain stable; explicit objectives and aggregate phase timings retain their tighter caps. Cold
-registration alone receives a 2x ceiling because retained same-behavior hosted observations showed larger cold
-database-setup variance, while the end-to-end cold limit remains tight. Deterministic graph shape, proportional-work,
+their end-to-end phases remain stable; those detailed timers also receive 300 ms absolute headroom, while explicit
+objectives and aggregate phase timings retain their tighter caps. Full-build cold and same-overlay registration setup
+receive 3x ceilings because retained same-behavior hosted observations showed larger database-setup variance, while
+their end-to-end limits remain tight. Deterministic graph shape, proportional-work,
 parity, and zero failure counters remain exact. Sampler attempt/sample counts are lower-bounded because longer runs
 legitimately produce more samples. Zero and sub-MiB byte observations receive a 1 MiB materiality floor; larger disk and
 memory values retain 25% headroom. Phase-boundary RSS snapshots and external-sampler scheduling gaps stay in every

@@ -1005,8 +1005,13 @@ describe('code graph release evidence', () => {
         [
           ...requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
           benchmarkMeasurement('cold-index', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('cold-registration-lock-and-database-setup', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('same-overlay-reference-registration-lock-and-database-setup', 'milliseconds', [
+            coldIndexMilliseconds + 10,
+          ]),
           benchmarkMeasurement('cold-materialization-stage-preparing-rows-n1', 'milliseconds', [100]),
           benchmarkMeasurement('cold-hosted-subphase-n1', 'milliseconds', [1_000]),
+          benchmarkMeasurement('cold-hosted-microphase-n1', 'milliseconds', [128]),
           benchmarkMeasurement('cold-zero-duration-n1', 'milliseconds', [0]),
           benchmarkMeasurement('hosted-sampler-samples-n1', 'count', [coldIndexMilliseconds]),
           benchmarkMeasurement('one-file-reindex-index', 'milliseconds', [29_000]),
@@ -1124,16 +1129,28 @@ describe('code graph release evidence', () => {
     ).toThrow(/exact source\/runtime\/storage contract/);
     expect(ratchet.measurements['cold-index']).toMatchObject({p95Maximum: 210, unit: 'milliseconds'});
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).toMatchObject({
-      p95Maximum: 200,
+      p95Maximum: 400,
     });
-    expect(ratchet.measurements['cold-hosted-subphase-n1']).toMatchObject({p95Maximum: 1_500});
+    expect(ratchet.measurements['cold-hosted-subphase-n1']).toMatchObject({p95Maximum: 1_750});
+    expect(ratchet.measurements['cold-hosted-microphase-n1']).toMatchObject({p95Maximum: 428});
     expect(ratchet.measurements['cold-materialization-stage-preparing-rows-n1']).not.toHaveProperty('minimum');
-    expect(ratchet.measurements['cold-zero-duration-n1']).toMatchObject({p95Maximum: 100, unit: 'milliseconds'});
+    expect(ratchet.measurements['cold-zero-duration-n1']).toMatchObject({p95Maximum: 300, unit: 'milliseconds'});
     expect(ratchet.measurements['hosted-sampler-samples-n1']).toMatchObject({minimum: 1, unit: 'count'});
     expect(ratchet.measurements['hosted-sampler-samples-n1']).not.toHaveProperty('maximum');
     expect(ratchet.measurements['cold-materialized-file-rows']).toMatchObject({maximum: 1, minimum: 1});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toMatchObject({p95Maximum: 1_048_576});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).not.toHaveProperty('minimum');
+    for (const registrationName of [
+      'cold-registration-lock-and-database-setup',
+      'same-overlay-reference-registration-lock-and-database-setup',
+    ]) {
+      const observedMaximum = Math.max(
+        ...artifacts.map(
+          artifact => artifact.measurements.find(measurement => measurement.name === registrationName)!.p50,
+        ),
+      );
+      expect(ratchet.measurements[registrationName]).toMatchObject({p95Maximum: Math.ceil(observedMaximum * 3)});
+    }
     fc.assert(
       fc.property(fc.integer({max: 10_000, min: 1}), samplerCount => {
         const observed = {
