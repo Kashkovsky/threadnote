@@ -1,7 +1,8 @@
 import {TestError} from '../helpers/test-error.js';
 import {execFileSync} from '../helpers/node-child-process.js';
-import {access, readFile} from '../helpers/node-fs-promises.js';
+import {access, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
+import {tmpdir} from '../helpers/node-os.js';
 import fc from 'fast-check';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
@@ -11,6 +12,14 @@ import {
   performanceArtifactPublicUrl,
   sha256Hex,
 } from '../../scripts/site-performance-evidence.js';
+import {
+  loadWebsiteArticles,
+  orderWebsitePostsDescending,
+  parseWebsiteArticle,
+  renderWhatsNewIndexHtml,
+  renderWebsitePostHtml,
+  renderWebsitePostsSitemap,
+} from '../../scripts/site-articles.js';
 import {
   loadLatestMajorWebsiteReleases,
   parseStableReleaseVersion,
@@ -56,9 +65,13 @@ import {
   isSameDocumentNavigation,
   siteCanonicalUrlForPathname,
   sitePageForPathname,
+  whatsNewArticlePath,
+  whatsNewPostForPathname,
+  whatsNewReleasePath,
   type SitePage,
 } from '../../website/src/lib/routes.js';
 import {renderDocsArticleHtml, renderDocsSitemap} from '../../scripts/site-doc-pages.js';
+import {orderWebsiteUpdatesDescending} from '../../website/src/content/websiteArticles.js';
 import type {BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {proTips} from '../../website/src/content/proTips.js';
 import {EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS} from '../../src/evaluation/external_evidence.js';
@@ -512,6 +525,104 @@ describe('Threadnote 4 website content', () => {
     );
   });
 
+  it('validates authored Markdown articles and loads them newest first', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-website-articles-'));
+    const article = (publishedAt: string, slug: string, title: string) => `---
+author: Denys Kashkovskyi
+publishedAt: ${publishedAt}
+slug: ${slug}
+summary: ${title} has a standalone summary for readers and social previews.
+title: ${title}
+---
+
+An external-facing introduction.
+
+## Evidence first
+
+The body remains ordinary **Markdown**.
+`;
+    try {
+      await mkdir(join(repository, 'website', 'articles'), {recursive: true});
+      await writeFile(
+        join(repository, 'website', 'articles', '2026-08-25T09-00-00Z--earlier-story.md'),
+        article('2026-08-25T09:00:00Z', 'earlier-story', 'Earlier story'),
+      );
+      await writeFile(
+        join(repository, 'website', 'articles', '2026-08-26T14-30-00Z--evidence-before-rewrites.md'),
+        article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites'),
+      );
+
+      const loaded = await loadWebsiteArticles(repository);
+      expect(loaded.map(entry => entry.slug)).toEqual(['evidence-before-rewrites', 'earlier-story']);
+      expect(loaded[0]).toMatchObject({
+        author: 'Denys Kashkovskyi',
+        highlights: ['Evidence first'],
+        kind: 'article',
+        publishedAt: '2026-08-26T14:30:00Z',
+      });
+      expect(() =>
+        parseWebsiteArticle(
+          '2026-08-26T14-30-00Z--wrong-slug.md',
+          article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites'),
+        ),
+      ).toThrow('filename timestamp and slug must exactly match');
+      expect(() =>
+        parseWebsiteArticle(
+          '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
+          article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites').replace(
+            'title: Evidence before rewrites',
+            'category: engineering\ntitle: Evidence before rewrites',
+          ),
+        ),
+      ).toThrow('unknown frontmatter field');
+      expect(() =>
+        parseWebsiteArticle(
+          '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
+          article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites').replace(
+            'An external-facing introduction.',
+            'Publication placeholder: replace this before shipping.',
+          ),
+        ),
+      ).toThrow('publication placeholders are forbidden');
+      expect(() =>
+        parseWebsiteArticle(
+          '2026-02-31T14-30-00Z--evidence-before-rewrites.md',
+          article('2026-02-31T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites'),
+        ),
+      ).toThrow('publishedAt must be an exact UTC timestamp');
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
+  });
+
+  it('orders release and article updates deterministically without mutating the input', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({second: fc.integer({min: 0, max: 59}), stableId: fc.uuid()}), {maxLength: 80}),
+        updates => {
+          const input = updates.map(({second, stableId}) => ({
+            publishedAt: `2026-08-26T14:30:${String(second).padStart(2, '0')}Z`,
+            stableId,
+          }));
+          const before = structuredClone(input);
+          const ordered = orderWebsiteUpdatesDescending(input);
+
+          expect(input).toEqual(before);
+          expect(ordered).toHaveLength(input.length);
+          for (let index = 1; index < ordered.length; index += 1) {
+            const previous = ordered[index - 1]!;
+            const current = ordered[index]!;
+            expect(
+              Date.parse(previous.publishedAt) > Date.parse(current.publishedAt) ||
+                (previous.publishedAt === current.publishedAt && previous.stableId <= current.stableId),
+            ).toBe(true);
+          }
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   it('covers the complete 4.0 documentation map with unique article anchors', () => {
     const articles = docsSections.flatMap(section => section.articles);
     const articleIds = articles.map(article => article.id);
@@ -923,12 +1034,28 @@ describe('Threadnote 4 website content', () => {
     expect(sitePageForPathname('/threadnote', '/threadnote/')).toBe('home');
     expect(sitePageForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe('docs');
     expect(docsArticleIdForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe('worksets');
+    expect(sitePageForPathname('/threadnote/whats-new/articles/evidence-before-rewrites/', '/threadnote/')).toBe(
+      'whats-new',
+    );
+    expect(whatsNewPostForPathname('/threadnote/whats-new/articles/evidence-before-rewrites/', '/threadnote/')).toEqual(
+      {kind: 'article', slug: 'evidence-before-rewrites'},
+    );
+    expect(whatsNewPostForPathname('/threadnote/whats-new/releases/v4.3.8/', '/threadnote/')).toEqual({
+      kind: 'release',
+      version: 'v4.3.8',
+    });
     expect(sitePageForPathname('/threadnote/docs/nested/extra/', '/threadnote/')).toBeUndefined();
     expect(sitePageForPathname('/other/docs/', '/threadnote/')).toBeUndefined();
     expect(siteCanonicalUrlForPathname('/performance/', '/')).toBe('https://threadnote.io/performance/');
     expect(siteCanonicalUrlForPathname('/threadnote/docs/', '/threadnote/')).toBe('https://threadnote.io/docs/');
     expect(siteCanonicalUrlForPathname('/threadnote/docs/worksets/', '/threadnote/')).toBe(
       'https://threadnote.io/docs/worksets/',
+    );
+    expect(
+      siteCanonicalUrlForPathname('/threadnote/whats-new/articles/evidence-before-rewrites/', '/threadnote/'),
+    ).toBe('https://threadnote.io/whats-new/articles/evidence-before-rewrites/');
+    expect(siteCanonicalUrlForPathname('/threadnote/whats-new/releases/v4.3.8/', '/threadnote/')).toBe(
+      'https://threadnote.io/whats-new/releases/v4.3.8/',
     );
     expect(
       isSameDocumentNavigation(
@@ -960,6 +1087,30 @@ describe('Threadnote 4 website content', () => {
     );
   });
 
+  it('round-trips stable article and release post paths under every supported site base', () => {
+    const slug = fc
+      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789-'), {minLength: 1, maxLength: 48})
+      .map(parts => parts.join(''))
+      .filter(value => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value));
+
+    fc.assert(
+      fc.property(slug, fc.constantFrom('/', '/threadnote/'), (articleSlug, basePath) => {
+        const articlePathname = `${basePath}${whatsNewArticlePath(articleSlug)}`.replace(/\/+/g, '/');
+        const releasePathname = `${basePath}${whatsNewReleasePath('v4.3.8')}`.replace(/\/+/g, '/');
+        expect(sitePageForPathname(articlePathname, basePath)).toBe('whats-new');
+        expect(whatsNewPostForPathname(articlePathname, basePath)).toEqual({kind: 'article', slug: articleSlug});
+        expect(siteCanonicalUrlForPathname(articlePathname, basePath)).toBe(
+          `https://threadnote.io/${whatsNewArticlePath(articleSlug)}`,
+        );
+        expect(whatsNewPostForPathname(releasePathname, basePath)).toEqual({kind: 'release', version: 'v4.3.8'});
+        expect(siteCanonicalUrlForPathname(releasePathname, basePath)).toBe(
+          `https://threadnote.io/${whatsNewReleasePath('v4.3.8')}`,
+        );
+      }),
+      {numRuns: 100},
+    );
+  });
+
   it('renders crawler-visible metadata and sitemap entries for exact documentation articles', async () => {
     const worksets = docsSections.flatMap(section => section.articles).find(article => article.id === 'worksets');
     expect(worksets).toBeDefined();
@@ -979,6 +1130,66 @@ describe('Threadnote 4 website content', () => {
     expect(rendered).toContain(`content="${worksets!.summary}"`);
     expect(renderedSitemap).toContain('<loc>https://threadnote.io/docs/worksets/</loc>');
     expect(renderDocsSitemap(renderedSitemap, [worksets!])).toBe(renderedSitemap);
+  });
+
+  it('renders crawlable, authored article and release post pages with social metadata', async () => {
+    const article = parseWebsiteArticle(
+      '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
+      `---
+author: Denys Kashkovskyi
+publishedAt: 2026-08-26T14:30:00Z
+slug: evidence-before-rewrites
+summary: An evidence-led engineering story for readers outside the Threadnote project.
+title: Evidence before rewrites
+---
+
+The full article remains visible to crawlers before the client application starts.
+
+## Measure the system
+
+Make the bottleneck observable.
+`,
+    );
+    const release = loadLatestMajorWebsiteReleases(root)[0]!;
+    const releasePost = {
+      ...release,
+      author: 'Threadnote' as const,
+      kind: 'release' as const,
+      title: `Threadnote ${release.version.replace(/^v/, '')}`,
+    };
+    const [template, sitemap] = await Promise.all([
+      readFile(join(root, 'website', 'whats-new', 'index.html'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
+    ]);
+    const renderedArticle = renderWebsitePostHtml(template, article);
+    const renderedRelease = renderWebsitePostHtml(template, releasePost);
+    const renderedIndex = renderWhatsNewIndexHtml(template, [releasePost, article]);
+    const renderedSitemap = renderWebsitePostsSitemap(sitemap, [article, releasePost]);
+
+    expect(renderedArticle).toContain('<title>Evidence before rewrites — Threadnote</title>');
+    expect(renderedArticle).toContain(
+      '<link rel="canonical" href="https://threadnote.io/whats-new/articles/evidence-before-rewrites/" />',
+    );
+    expect(renderedArticle).toContain('<meta property="og:type" content="article" />');
+    expect(renderedArticle).toContain('<meta property="article:author" content="Denys Kashkovskyi" />');
+    expect(renderedArticle).toContain('"@type":"Article"');
+    expect(renderedArticle).toContain('"name":"Denys Kashkovskyi"');
+    expect(renderedArticle).toContain('<h1>Evidence before rewrites</h1>');
+    expect(renderedArticle).toContain('<h2>Measure the system</h2>');
+    expect(renderedArticle).toContain('Permanent public URL');
+    expect(renderedArticle).toContain('https://x.com/intent/post?');
+    expect(renderedArticle).toContain('https://www.linkedin.com/sharing/share-offsite/?url=');
+    expect(renderedRelease).toContain(
+      `<link rel="canonical" href="https://threadnote.io/whats-new/releases/${release.version}/" />`,
+    );
+    expect(renderedRelease).toContain('"@type":"TechArticle"');
+    expect(renderedSitemap).toContain('<loc>https://threadnote.io/whats-new/articles/evidence-before-rewrites/</loc>');
+    expect(renderedSitemap).toContain(`<loc>https://threadnote.io/whats-new/releases/${release.version}/</loc>`);
+    expect(renderWebsitePostsSitemap(renderedSitemap, [article, releasePost])).toBe(renderedSitemap);
+    expect(renderedIndex).toContain('data-threadnote-index');
+    expect(renderedIndex).toContain('<h1>Threadnote articles and releases</h1>');
+    const orderedTitles = orderWebsitePostsDescending([releasePost, article]).map(post => post.title);
+    expect(renderedIndex.indexOf(orderedTitles[0]!)).toBeLessThan(renderedIndex.indexOf(orderedTitles[1]!));
   });
 
   it('shows checked-in public measurements instead of placeholder performance cards', async () => {

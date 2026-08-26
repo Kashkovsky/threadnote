@@ -39,6 +39,14 @@ export function docsArticlePath(articleId: string): string {
   return `docs/${encodeURIComponent(articleId)}/`;
 }
 
+export function whatsNewArticlePath(slug: string): string {
+  return `whats-new/articles/${encodeURIComponent(slug)}/`;
+}
+
+export function whatsNewReleasePath(version: string): string {
+  return `whats-new/releases/${encodeURIComponent(version)}/`;
+}
+
 export function docsArticleIdForPathname(pathname: string, basePath: string): string | undefined {
   const relativePath = siteRelativePathname(pathname, basePath);
   const match = relativePath?.match(/^docs\/([^/]+)$/);
@@ -51,16 +59,48 @@ export function docsArticleIdForPathname(pathname: string, basePath: string): st
   }
 }
 
+export type WhatsNewPostRoute =
+  Readonly<{kind: 'article'; slug: string}> | Readonly<{kind: 'release'; version: string}>;
+
+export function whatsNewPostForPathname(pathname: string, basePath: string): WhatsNewPostRoute | undefined {
+  const relativePath = siteRelativePathname(pathname, basePath);
+  const match = relativePath?.match(/^whats-new\/(articles|releases)\/([^/]+)$/);
+  if (!match?.[1] || !match[2]) return undefined;
+  try {
+    const id = decodeURIComponent(match[2]);
+    if (match[1] === 'articles' && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) {
+      return {kind: 'article', slug: id};
+    }
+    if (match[1] === 'releases' && /^v\d+\.\d+\.\d+$/.test(id)) {
+      return {kind: 'release', version: id};
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function sitePageForPathname(pathname: string, basePath: string): SitePage | undefined {
   const relativePath = siteRelativePathname(pathname, basePath);
   if (relativePath === undefined) return undefined;
 
-  return pagesByPath.get(relativePath) ?? (docsArticleIdForPathname(pathname, basePath) ? 'docs' : undefined);
+  return (
+    pagesByPath.get(relativePath) ??
+    (docsArticleIdForPathname(pathname, basePath) ? 'docs' : undefined) ??
+    (whatsNewPostForPathname(pathname, basePath) ? 'whats-new' : undefined)
+  );
 }
 
 export function siteCanonicalUrlForPathname(pathname: string, basePath: string): string {
   const docsArticleId = docsArticleIdForPathname(pathname, basePath);
   if (docsArticleId) return new URL(docsArticlePath(docsArticleId), 'https://threadnote.io/').href;
+  const whatsNewPost = whatsNewPostForPathname(pathname, basePath);
+  if (whatsNewPost?.kind === 'article') {
+    return new URL(whatsNewArticlePath(whatsNewPost.slug), 'https://threadnote.io/').href;
+  }
+  if (whatsNewPost?.kind === 'release') {
+    return new URL(whatsNewReleasePath(whatsNewPost.version), 'https://threadnote.io/').href;
+  }
   const page = sitePageForPathname(pathname, basePath) ?? 'home';
   const route = sitePagePaths[page];
   return new URL(route ? `${route}/` : '', 'https://threadnote.io/').href;

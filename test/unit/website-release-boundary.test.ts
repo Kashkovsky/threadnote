@@ -95,6 +95,7 @@ describe('website and standalone release boundary', () => {
 
     expect(manifest.scripts.build).not.toContain('site:');
     expect(manifest.scripts['site:build']).toBeDefined();
+    expect(manifest.scripts['site:build']).toContain('scripts/site-articles.ts');
     expect(manifest.scripts['site:check']).toContain('site:test');
   });
 
@@ -202,6 +203,7 @@ describe('website and standalone release boundary', () => {
     expect(pushTrigger).toContain("'package.json'");
     expect(pushTrigger).toContain("'website/**'");
     expect(pushTrigger).toContain("'scripts/site-doc-pages.ts'");
+    expect(pushTrigger).toContain("'scripts/site-articles.ts'");
     expect(pushTrigger).toContain("'scripts/site-performance-evidence.ts'");
     expect(pushTrigger).toContain("'scripts/site-release-notes.ts'");
     expect(pushTrigger).toContain("'src/evaluation/benchmark.ts'");
