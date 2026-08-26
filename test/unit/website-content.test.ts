@@ -642,7 +642,7 @@ The body remains ordinary **Markdown**.
         'Before You Rewrite It in Rust — Threadnote improved a cold graph build from 164 minutes to 57 minutes.',
       slug: 'before-you-rewrite-it-in-rust',
       summary:
-        'How Threadnote cut a 164-minute code-graph build below one hour—and made one-file updates proportional—without rewriting the engine in Rust.',
+        'How a 164-minute code-graph build became 57 minutes—and why the biggest wins came from deleting work, not changing languages.',
       title: 'Before You Rewrite It in Rust: What Threadnote Learned From a 164-Minute Code-Graph Build',
     });
     expect(article.body).not.toContain('# Before You Rewrite It in Rust');
