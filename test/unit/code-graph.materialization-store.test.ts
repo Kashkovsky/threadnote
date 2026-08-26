@@ -2095,20 +2095,29 @@ describe('code graph full-build materialization store', () => {
           database.exec('DROP TRIGGER reject_completed_receipt_cleanup');
           database.close(false);
         });
-        yield* Effect.gen(function* () {
+        const rowsDuringForegroundWork = yield* Effect.gen(function* () {
           const store = yield* CodeGraphStore;
-          yield* store.withSession(
+          return yield* store.withSession(
             fixture.databasePath,
-            store.cacheFacts(
-              fixture.databasePath,
-              [fixture.file],
-              [nextIndexFacts],
-              'next-index-cache',
-              unprotectedCacheWrite,
-            ),
+            Effect.gen(function* () {
+              const rows = yield* Effect.sync(() => readCompletedBuildRows(fixture.databasePath, snapshot.id));
+              yield* store.cacheFacts(
+                fixture.databasePath,
+                [fixture.file],
+                [nextIndexFacts],
+                'next-index-cache',
+                unprotectedCacheWrite,
+              );
+              return rows;
+            }),
             {cleanupCompletedBuildRows: true, writerLockPath},
           );
         }).pipe(provideTestLayer(ApplicationLayer));
+        expect(rowsDuringForegroundWork).toEqual({
+          batches: 1,
+          candidates: 0,
+          refs: 0,
+        });
         expect(readCompletedBuildRows(fixture.databasePath, snapshot.id)).toEqual({
           batches: 0,
           candidates: 0,
