@@ -10,6 +10,7 @@ on:
       - 'scripts/code-graph-benchmark-sampler.ts'
       - 'scripts/code-graph-fixture.ts'
       - 'scripts/generate-code-graph-language-catalog.ts'
+      - 'test/ci/code-graph-production-ratchet-scope.ts'
       - 'src/code_graph/**'
       - 'src/crypto/**'
       - 'src/effect/command.ts'
@@ -30,6 +31,7 @@ on:
       - 'src/worker_protocol.ts'
       - 'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json'
       - 'test/evaluation/fixtures/code-graph-v1/**'
+      - 'test/unit/code-graph.production-ratchet-scope.property.test.ts'
 
 permissions:
   contents: read
@@ -42,21 +44,53 @@ env:
   BUN_VERSION: 1.3.14
 
 jobs:
-  ratchet:
-    name: Governed reduced production profile · Linux
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  classify:
+    name: Classify production ratchet scope
+    runs-on: ubuntu-latest
+    outputs:
+      release_metadata_only: ${{ steps.scope.outputs.release_metadata_only }}
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
+      - id: scope
+        name: Skip only a strict release-metadata diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bun test/ci/code-graph-production-ratchet-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  ratchet:
+    name: Governed reduced production profile · Linux
+    needs: classify
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Record strict release-metadata skip
+        if: needs.classify.result == 'success' && needs.classify.outputs.release_metadata_only == 'true'
+        run: echo 'Governed benchmark skipped because only the top-level package version and release notes changed.'
+
+      - uses: actions/checkout@v7
+        if: needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'
+
+      - uses: oven-sh/setup-bun@v2
+        if: needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
       - run: bun install --frozen-lockfile
+        if: needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'
 
       - name: Gate the governed reduced production profile
+        if: needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'
         env:
           THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
           THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
@@ -74,7 +108,9 @@ jobs:
           --output artifacts/code-graph-production-ratchet-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: >-
+          always() &&
+          (needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true')
         with:
           name: code-graph-production-ratchet-Linux-${{ runner.arch }}
           path: artifacts/

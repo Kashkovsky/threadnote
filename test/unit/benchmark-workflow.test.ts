@@ -6,6 +6,7 @@ interface WorkflowJob {
   readonly env?: Readonly<Record<string, string>>;
   readonly if?: string;
   readonly needs?: string | readonly string[];
+  readonly outputs?: Readonly<Record<string, string>>;
   readonly permissions?: Readonly<Record<string, string>>;
   readonly 'runs-on'?: string;
   readonly steps?: readonly {
@@ -132,6 +133,7 @@ describe('platform benchmark workflow', () => {
       schema: JSON_SCHEMA,
     }) as BenchmarkWorkflow;
     const paths = ratchetWorkflow.on.pull_request?.paths ?? [];
+    const classifier = ratchetWorkflow.jobs.classify!;
     const job = ratchetWorkflow.jobs.ratchet!;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
 
@@ -139,6 +141,7 @@ describe('platform benchmark workflow', () => {
       expect.arrayContaining([
         '.github/workflows/code-graph-production-ratchet.yml',
         'scripts/benchmark-code-graph.ts',
+        'test/ci/code-graph-production-ratchet-scope.ts',
         'src/code_graph/**',
         'src/effect/errors.ts',
         'src/effect/file_durability.ts',
@@ -148,12 +151,36 @@ describe('platform benchmark workflow', () => {
         'src/utils.ts',
         'src/worker_protocol.ts',
         'test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
+        'test/unit/code-graph.production-ratchet-scope.property.test.ts',
       ]),
     );
     expect(paths).not.toContain('src/recall/**');
     expect(paths.join('\n').toLowerCase()).not.toContain('intellij');
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(15);
+    expect(job.needs).toBe('classify');
+    expect(job.if).toBe('always()');
+    expect(classifier.outputs?.release_metadata_only).toBe('${{ steps.scope.outputs.release_metadata_only }}');
+    expect(classifier.steps?.find(step => step.id === 'scope')).toMatchObject({
+      name: 'Skip only a strict release-metadata diff',
+      run: 'bun test/ci/code-graph-production-ratchet-scope.ts --base "$BASE_SHA" --head "$HEAD_SHA"',
+    });
+    const guardedSteps = job.steps?.filter(
+      step =>
+        step.uses === 'actions/checkout@v7' ||
+        step.uses === 'oven-sh/setup-bun@v2' ||
+        step.run === 'bun install --frozen-lockfile' ||
+        step.name === 'Gate the governed reduced production profile',
+    );
+    expect(guardedSteps).toHaveLength(4);
+    for (const step of guardedSteps ?? []) {
+      expect(step.if).toBe(
+        "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
+      );
+    }
+    expect(job.steps?.find(step => step.uses === 'actions/upload-artifact@v7')?.if).toContain(
+      "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
+    );
     expect(command.match(/--samples 1/g)).toHaveLength(1);
     expect(command).toContain('--profile production-large');
     expect(command).toContain('--profile-files 3000');
