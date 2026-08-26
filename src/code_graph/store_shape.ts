@@ -580,7 +580,7 @@ export interface CodeGraphStoreShape {
 export interface CodeGraphDatabaseSessionOptions {
   /** @internal Open a non-creating, query-only SQLite connection without WAL bootstrap writes. */
   readonly readOnly?: boolean;
-  /** @internal Ordinary index sessions opportunistically reclaim completed build-only rows. */
+  /** @internal Ordinary index sessions reclaim a bounded page of completed build-only rows after foreground work. */
   readonly cleanupCompletedBuildRows?: boolean;
   /** @internal Observes the point at which gated background cleanup may open SQLite. */
   readonly onCompletedBuildCleanupConnection?: () => Effect.Effect<void, never>;

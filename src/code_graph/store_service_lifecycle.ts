@@ -190,14 +190,16 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             ...options,
           } satisfies CodeGraphDatabaseSessionShape;
           return yield* Effect.gen(function* () {
+            let completedBuildCleanup = Effect.void;
             // Indexing sessions identify themselves with the checkout-wide
-            // writer lock. Reclaim one bounded page from every completed
-            // build table before normal work, then let a best-effort fiber
-            // continue. A process killed immediately after the ready CAS
-            // therefore self-heals on the next ordinary index without
-            // making graph queries pay cleanup latency.
+            // writer lock. Validate the schema before normal work, but defer
+            // completed-build reclamation until the session effect exits.
+            // Build-only rows are unreachable after publication, so putting
+            // their bounded maintenance after admission keeps worktree
+            // registration proportional without weakening cleanup or making
+            // graph queries pay the latency.
             if (options?.cleanupCompletedBuildRows && (yield* tableExists(sql, 'snapshots'))) {
-              // Initialize once under the checkout writer gate before cleanup.
+              // Initialize once under the checkout writer gate before work.
               // The receipt makes the ordinary path bounded, and marking this
               // session avoids replaying the same admission when the indexing
               // effect calls store.initialize immediately afterward.
@@ -209,17 +211,19 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 ),
                 Effect.asVoid,
               );
-              const cleanup = yield* drainCompletedPersistentBuildRows(
-                sql,
-                undefined,
-                write => withWriterGate(databasePath, write),
-                1,
-              ).pipe(Effect.option);
-              if (Option.isSome(cleanup) && cleanup.value.remaining) {
-                yield* scheduleCompletedBuildCleanup(databasePath);
-              }
+              completedBuildCleanup = Effect.gen(function* () {
+                const cleanup = yield* drainCompletedPersistentBuildRows(
+                  sql,
+                  undefined,
+                  write => withWriterGate(databasePath, write),
+                  1,
+                ).pipe(Effect.option);
+                if (Option.isSome(cleanup) && cleanup.value.remaining) {
+                  yield* scheduleCompletedBuildCleanup(databasePath);
+                }
+              });
             }
-            return yield* effect;
+            return yield* effect.pipe(Effect.ensuring(completedBuildCleanup));
           }).pipe(Effect.provideService(CodeGraphDatabaseSession, session));
         }),
         options?.readOnly === true,
