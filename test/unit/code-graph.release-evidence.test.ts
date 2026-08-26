@@ -2421,7 +2421,18 @@ describe('code graph release evidence', () => {
     expect(verifyRef?.run).toContain('test "$resolved" = "$RELEASE_SHA"');
     const upload = production.steps?.find(step => step.id === 'upload-production-large');
     expect(upload?.with).toMatchObject({'if-no-files-found': 'error', 'retention-days': 90});
+    expect(upload?.with?.path).toContain('code-graph-production-large-admission-*.json');
+    expect(upload?.with?.path).toContain('code-graph-production-large-n1-*.json');
+    const admission = production.steps?.find(step => step.id === 'classify_production_large_admission');
+    expect(admission?.run).toContain('not-admitted-insufficient-capacity');
+    expect(admission?.run).toContain('available_bytes >= required_bytes');
+    const admissionEnforcement = production.steps?.find(step => step.name === 'Enforce production-large admission');
+    expect(admissionEnforcement?.if).toContain("outputs.admitted != 'true'");
+    expect(admissionEnforcement?.run).toContain('exit 1');
     const capture = production.steps?.find(step => step.name?.includes('Capture one production-large'));
+    expect(production.steps?.indexOf(admission!)).toBeLessThan(production.steps?.indexOf(capture!) ?? 0);
+    expect(capture?.if).toContain("steps.classify_production_large_admission.outputs.admitted == 'true'");
+    expect(capture?.run).toContain('--minimum-free-gib 120');
     expect(capture?.env).toMatchObject({
       THREADNOTE_BENCHMARK_RELEASE_REF: '${{ inputs.release_ref }}',
       THREADNOTE_BENCHMARK_RELEASE_SHA: '${{ inputs.release_sha }}',

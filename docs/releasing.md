@@ -64,8 +64,9 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    validation/checks section.
 2. Merge the release source and ensure ordinary CI is green.
 3. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
-   graph correctness and performance. The tag starts one separate exact-tag `code-graph-production-large-n1`
-   observation automatically; do not dispatch a duplicate production-large run for that tag.
+   graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
+   and, only on an admitted runner, one `code-graph-production-large-n1` observation automatically. Do not dispatch a
+   duplicate hosted run for that tag; if the runner is not admitted, use a separately governed capable environment.
 4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
 5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
    `v4.0.1`.
@@ -84,11 +85,17 @@ not combine them into a synthetic percentile. The current beta closeout contract
 [`4.1.0-beta.2-release-evidence.md`](./4.1.0-beta.2-release-evidence.md).
 
 Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication
-never waits for it. The evidence job has a hard 30-minute ceiling: its measured phase gets 20 minutes, leaving bounded
-time to upload the latest privacy-safe checkpoint and summary. Incomplete release observations are reported but never delay publication;
+never waits for it. Before fixture construction, the workflow pins benchmark temporary storage to the runner-temp
+filesystem and records whether that filesystem satisfies the unchanged 120 GiB governed admission floor. A runner
+that does not satisfy the floor does not start the benchmark: the exact-tag capacity classification is retained, and
+the independent evidence workflow fails so a missing observation cannot look successful. This failure does not affect
+release publication. This fallback does not name or assume a self-hosted runner. Configure a capable runner explicitly
+before changing `runs-on`; do not add a speculative label.
+On an admitted runner, the evidence job has a hard 30-minute ceiling: its measured phase gets 20
+minutes, leaving bounded time to upload the latest privacy-safe checkpoint and summary. Incomplete admitted release observations are reported but never delay publication;
 scheduled or explicitly requested strict runs still fail when the profile does not complete inside the same bound.
-Aggregate phase/materialization evidence, failure checkpoints, exact source commit, and upload digest are retained for
-90 days. Treat a successful result as `n=1` same-runner evidence, not as a portable p95. The heavy-tail job remains
+Capacity classifications, aggregate phase/materialization evidence, failure checkpoints, exact source commit, and
+upload digest are retained for 90 days. Treat a successful completed result as `n=1` same-runner evidence, not as a portable p95. The heavy-tail job remains
 separate parser/cache coverage and must not be used as a substitute for production-scale materialization evidence.
 
 Completed release evidence remains provenance-strict: the artifact must name the Threadnote 4 tag and exact matching commit,

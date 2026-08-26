@@ -27,7 +27,7 @@ env:
 
 jobs:
   code-graph-production-large:
-    name: Code graph production-large · n=1 · pinned Linux class
+    name: Code graph production-large admission and bounded capture · pinned Linux class
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -54,11 +54,77 @@ jobs:
 
       - run: bun install --frozen-lockfile
 
+      - id: classify_production_large_admission
+        name: Classify governed production-large runner capacity
+        shell: bash
+        env:
+          ADMISSION_ARTIFACT: artifacts/code-graph-production-large-admission-${{ runner.os }}-${{ runner.arch }}-${{ inputs.release_sha || github.sha }}.json
+          MINIMUM_FREE_GIB: 120
+          RUNNER_ARCHITECTURE: ${{ runner.arch }}
+          RUNNER_ENVIRONMENT_CLASS: ${{ runner.environment }}
+          RUNNER_OPERATING_SYSTEM: ${{ runner.os }}
+          SOURCE_REF: ${{ inputs.release_ref || github.ref }}
+          SOURCE_SHA: ${{ inputs.release_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts "$RUNNER_TEMP/threadnote-production-large-admission"
+          required_bytes=$((MINIMUM_FREE_GIB * 1024 * 1024 * 1024))
+          available_kib=$(df -Pk "$RUNNER_TEMP/threadnote-production-large-admission" | awk 'END {print $4}')
+          available_bytes=$((available_kib * 1024))
+          filesystem=$(df -Pk "$RUNNER_TEMP/threadnote-production-large-admission" | awk 'END {print $1}')
+          admitted=false
+          classification=not-admitted-insufficient-capacity
+          if (( available_bytes >= required_bytes )); then
+            admitted=true
+            classification=admitted
+          fi
+          jq -n \
+            --arg classification "$classification" \
+            --arg sourceRef "$SOURCE_REF" \
+            --arg sourceSha "$SOURCE_SHA" \
+            --arg runnerArchitecture "$RUNNER_ARCHITECTURE" \
+            --arg runnerEnvironment "$RUNNER_ENVIRONMENT_CLASS" \
+            --arg runnerName "$RUNNER_NAME" \
+            --arg runnerOperatingSystem "$RUNNER_OPERATING_SYSTEM" \
+            --arg filesystem "$filesystem" \
+            --argjson availableBytes "$available_bytes" \
+            --argjson minimumFreeBytes "$required_bytes" \
+            '{
+              type: "threadnote-production-large-admission",
+              version: 1,
+              classification: $classification,
+              source: {ref: $sourceRef, sha: $sourceSha},
+              runner: {
+                architecture: $runnerArchitecture,
+                environment: $runnerEnvironment,
+                name: $runnerName,
+                operatingSystem: $runnerOperatingSystem
+              },
+              storage: {
+                probe: "runner-temp",
+                filesystem: $filesystem,
+                availableBytes: $availableBytes,
+                minimumFreeBytes: $minimumFreeBytes
+              }
+            }' > "$ADMISSION_ARTIFACT"
+          {
+            echo "admitted=$admitted"
+            echo "available_bytes=$available_bytes"
+            echo "classification=$classification"
+            echo "minimum_free_bytes=$required_bytes"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$admitted" != true ]]; then
+            echo "::warning title=Production-large evidence not admitted::Runner temp has ${available_bytes} bytes free; governed capture requires ${required_bytes} bytes."
+          fi
+
       - id: capture_production_large
         name: Capture one production-large observation with phase and storage telemetry
+        if: steps.classify_production_large_admission.outputs.admitted == 'true'
         continue-on-error: true
         timeout-minutes: 20
         env:
+          SQLITE_TMPDIR: ${{ runner.temp }}
+          TMPDIR: ${{ runner.temp }}
           THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
           THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
           THREADNOTE_BENCHMARK_RELEASE_REF: ${{ inputs.release_ref }}
@@ -66,6 +132,7 @@ jobs:
         run: >-
           bun run bench:code-graph --
           --profile production-large
+          --minimum-free-gib 120
           --samples 1
           --warmups 0
           --output artifacts/code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.release_sha || github.sha }}.json
@@ -75,8 +142,10 @@ jobs:
         if: always()
         timeout-minutes: 5
         with:
-          name: code-graph-production-large-n1-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
-          path: artifacts/code-graph-production-large-n1-*.json
+          name: code-graph-production-large-evidence-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: |
+            artifacts/code-graph-production-large-admission-*.json
+            artifacts/code-graph-production-large-n1-*.json
           if-no-files-found: error
           retention-days: 90
 
@@ -86,12 +155,17 @@ jobs:
         env:
           ARTIFACT_DIGEST: ${{ steps.upload-production-large.outputs.artifact-digest }}
           ARTIFACT_URL: ${{ steps.upload-production-large.outputs.artifact-url }}
+          ADMISSION_AVAILABLE_BYTES: ${{ steps.classify_production_large_admission.outputs.available_bytes }}
+          ADMISSION_CLASSIFICATION: ${{ steps.classify_production_large_admission.outputs.classification }}
+          ADMISSION_MINIMUM_FREE_BYTES: ${{ steps.classify_production_large_admission.outputs.minimum_free_bytes }}
           SOURCE_REF: ${{ inputs.release_ref || github.ref }}
           SOURCE_SHA: ${{ inputs.release_sha || github.sha }}
           MEASUREMENT_OUTCOME: ${{ steps.capture_production_large.outcome }}
           STRICT_EVIDENCE: ${{ inputs.strict }}
         run: |
-          if [[ "$STRICT_EVIDENCE" == "true" ]]; then
+          if [[ "$ADMISSION_CLASSIFICATION" != "admitted" ]]; then
+            evidence_policy='benchmark not attempted; capacity classification retained and this independent evidence workflow fails'
+          elif [[ "$STRICT_EVIDENCE" == "true" ]]; then
             evidence_policy='must complete for this evidence workflow to pass'
           else
             evidence_policy='bounded observation retained without blocking release publication'
@@ -101,6 +175,9 @@ jobs:
             echo
             echo "- Source ref: \`${SOURCE_REF}\`"
             echo "- Source commit: \`${SOURCE_SHA}\`"
+            echo "- Admission classification: \`${ADMISSION_CLASSIFICATION:-classification-unavailable}\`"
+            echo "- Runner-temp available bytes: \`${ADMISSION_AVAILABLE_BYTES:-unknown}\`"
+            echo "- Required free bytes: \`${ADMISSION_MINIMUM_FREE_BYTES:-unknown}\`"
             echo "- Measurement outcome: \`${MEASUREMENT_OUTCOME}\`"
             echo "- Evidence policy: ${evidence_policy}"
             echo "- Retained artifact digest: \`${ARTIFACT_DIGEST:-not-produced}\`"
@@ -110,8 +187,19 @@ jobs:
             echo '- Workspace policy: package-manager exclusion never removes active source from graph eligibility.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Enforce production-large admission
+        if: always() && steps.classify_production_large_admission.outputs.admitted != 'true'
+        env:
+          ADMISSION_AVAILABLE_BYTES: ${{ steps.classify_production_large_admission.outputs.available_bytes }}
+          ADMISSION_CLASSIFICATION: ${{ steps.classify_production_large_admission.outputs.classification }}
+          ADMISSION_MINIMUM_FREE_BYTES: ${{ steps.classify_production_large_admission.outputs.minimum_free_bytes }}
+        shell: bash
+        run: |
+          echo "::error::Production-large evidence admission was ${ADMISSION_CLASSIFICATION:-classification-unavailable}: ${ADMISSION_AVAILABLE_BYTES:-unknown} bytes free, ${ADMISSION_MINIMUM_FREE_BYTES:-unknown} required."
+          exit 1
+
       - name: Enforce strict evidence completion
-        if: inputs.strict && steps.capture_production_large.outcome != 'success'
+        if: inputs.strict && steps.classify_production_large_admission.outputs.admitted == 'true' && steps.capture_production_large.outcome != 'success'
         env:
           MEASUREMENT_OUTCOME: ${{ steps.capture_production_large.outcome }}
         shell: bash
