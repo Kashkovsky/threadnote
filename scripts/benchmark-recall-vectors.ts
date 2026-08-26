@@ -15,6 +15,7 @@ import {
   vectorIndexDatabaseFilename,
   type VectorIndexProgress,
 } from '../src/search/vector-index.js';
+import {assessRecallVectorPerformance} from './recall-vector-performance-budget.js';
 import {assessVectorDatabaseStorage, createCompactedSqliteSnapshot} from './recall-vector-storage-budget.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;
@@ -155,7 +156,19 @@ const program = Effect.scoped(
       {compactedBytes: incrementalCompactedBytes, databaseBytes: incrementalDatabaseBytes},
     );
     const sortedQueryDurations = queryDurations.sort((left, right) => left - right);
+    const initialBuildMilliseconds = Number(initialFinishedAt - initialStartedAt) / NANOSECONDS_PER_MILLISECOND;
+    const incrementalBuildMilliseconds =
+      Number(incrementalFinishedAt - incrementalStartedAt) / NANOSECONDS_PER_MILLISECOND;
+    const semanticQueryP95Milliseconds = percentile(sortedQueryDurations, 0.95);
+    const performanceBudget = assessRecallVectorPerformance(options.documents, {
+      incrementalBuildMilliseconds,
+      initialBuildMilliseconds,
+      semanticQueryP95Milliseconds,
+    });
     const result = {
+      budgets: {
+        performance: performanceBudget,
+      },
       database: {
         bytesAfterIncremental: incrementalDatabaseBytes,
         bytesAfterInitial: initialDatabaseBytes,
@@ -178,18 +191,18 @@ const program = Effect.scoped(
       scenarios: {
         incrementalBuild: {
           embeddedChunks: incremental.embeddedChunkCount,
-          milliseconds: Number(incrementalFinishedAt - incrementalStartedAt) / NANOSECONDS_PER_MILLISECOND,
+          milliseconds: incrementalBuildMilliseconds,
           peakRssBytes: incrementalPeakRssBytes,
           reusedChunks: incremental.reusedChunkCount,
         },
         initialBuild: {
           embeddedChunks: initial.embeddedChunkCount,
-          milliseconds: Number(initialFinishedAt - initialStartedAt) / NANOSECONDS_PER_MILLISECOND,
+          milliseconds: initialBuildMilliseconds,
           peakRssBytes: initialPeakRssBytes,
         },
         semanticQuery: {
           p50Milliseconds: percentile(sortedQueryDurations, 0.5),
-          p95Milliseconds: percentile(sortedQueryDurations, 0.95),
+          p95Milliseconds: semanticQueryP95Milliseconds,
           peakRssBytes: queryRssAfterBytes,
           resultCount: Math.min(VECTOR_QUERY_RESULT_LIMIT, options.documents),
           rssDeltaBytes: Math.max(0, queryRssAfterBytes - queryRssBeforeBytes),
@@ -207,17 +220,18 @@ const program = Effect.scoped(
       yield* fs.writeFileString(options.output, `${JSON.stringify(result, undefined, 2)}\n`);
     }
     if (options.failOnBudget) {
-      const scale = options.documents / DEFAULT_DOCUMENT_COUNT;
-      const boundedScale = Math.max(1, scale);
-      if (result.scenarios.semanticQuery.p95Milliseconds > boundedScale * 750) {
+      if (!performanceBudget.semanticQueryWithinBudget) {
         return yield* Effect.fail(new ScriptError('Semantic vector query exceeded its linear scale budget.'));
       }
-      if (result.scenarios.initialBuild.milliseconds > boundedScale * 15_000) {
+      if (!performanceBudget.initialBuildWithinBudget) {
         return yield* Effect.fail(new ScriptError('Initial vector build exceeded its linear scale budget.'));
       }
-      if (result.scenarios.incrementalBuild.milliseconds > boundedScale * 3_000) {
-        return yield* Effect.fail(new ScriptError('Incremental vector build exceeded its linear scale budget.'));
+      if (!performanceBudget.incrementalBuildWithinBudget) {
+        return yield* Effect.fail(
+          new ScriptError('Incremental vector build exceeded its linear or same-runner normalized budget.'),
+        );
       }
+      const boundedScale = Math.max(1, options.documents / DEFAULT_DOCUMENT_COUNT);
       if (result.scenarios.initialBuild.peakRssBytes > boundedScale * 768 * MEBIBYTE) {
         return yield* Effect.fail(new ScriptError('Initial vector build exceeded its bounded-memory budget.'));
       }
