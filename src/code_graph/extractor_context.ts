@@ -1,16 +1,55 @@
-import {createPackageAttributorFromIndex, createResolutionAttributorFromIndex, discoverPackages} from './extractor.js';
+import {
+  createPackageAttributorFromIndex,
+  createResolutionAttributorFromIndex,
+  discoverPackages,
+  discoverResolutionAliases,
+} from './extractor.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from './types.js';
+
+export interface RepositoryFactAttributionContext {
+  readonly attribute: (
+    existingPaths: ReadonlySet<string>,
+  ) => (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[];
+  readonly candidatePaths: (facts: readonly CodeGraphFileFacts[]) => readonly string[];
+}
+
+/** Exact manifest paths consumed by repository-level fact attribution. */
+export function isRepositoryFactAttributionContextPath(path: string): boolean {
+  return /package\.json$/i.test(path) || /(?:^|\/)tsconfig\.json$/i.test(path);
+}
 
 /** Attribute changed facts from bounded context plus exact path-membership evidence. */
 export function createRepositoryFactAttributorFromContext(
   contextFiles: readonly CodeGraphInventoryFile[],
   existingPaths: ReadonlySet<string>,
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
-  const packages = discoverPackages(contextFiles);
+  return createRepositoryFactAttributionContext(contextFiles).attribute(existingPaths);
+}
+
+/**
+ * Parse package and resolution manifests once, then reuse that immutable
+ * context for both candidate discovery and exact path-backed attribution.
+ */
+export function createRepositoryFactAttributionContext(
+  contextFiles: readonly CodeGraphInventoryFile[],
+): RepositoryFactAttributionContext {
+  const attributionFiles = contextFiles.filter(file => isRepositoryFactAttributionContextPath(file.path));
+  const packages = discoverPackages(attributionFiles);
+  const aliases = discoverResolutionAliases(attributionFiles, {});
   const attributePackages = createPackageAttributorFromIndex(packages);
-  const attributeResolution = createResolutionAttributorFromIndex(contextFiles, packages, existingPaths);
-  return facts => attributeResolution(attributePackages(facts));
+  const attribute = (existingPaths: ReadonlySet<string>) => {
+    const attributeResolution = createResolutionAttributorFromIndex(attributionFiles, packages, existingPaths, aliases);
+    return (facts: readonly CodeGraphFileFacts[]) => attributeResolution(attributePackages(facts));
+  };
+  return {
+    attribute,
+    candidatePaths: (facts: readonly CodeGraphFileFacts[]) => {
+      const candidates = new RecordingExistingPaths();
+      attribute(candidates)(facts);
+      return [...candidates].sort(compareCodeUnits);
+    },
+  };
 }
 
 /** Record every repository-membership dependency for one exact batch probe. */
@@ -18,9 +57,7 @@ export function repositoryFactCandidatePaths(
   contextFiles: readonly CodeGraphInventoryFile[],
   facts: readonly CodeGraphFileFacts[],
 ): readonly string[] {
-  const candidates = new RecordingExistingPaths();
-  createRepositoryFactAttributorFromContext(contextFiles, candidates)(facts);
-  return [...candidates].sort(compareCodeUnits);
+  return createRepositoryFactAttributionContext(contextFiles).candidatePaths(facts);
 }
 
 class RecordingExistingPaths extends Set<string> {

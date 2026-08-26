@@ -71,7 +71,7 @@ interface ResolutionAliasScope {
   readonly root: string;
 }
 
-interface ResolutionAliasIndex {
+export interface ResolutionAliasIndex {
   readonly observer: CodeGraphResolutionObserver;
   readonly scopeBySourcePath: Map<string, ResolutionAliasScope | undefined>;
   readonly scopes: readonly ResolutionAliasScope[];
@@ -160,13 +160,13 @@ export function createResolutionAttributorFromIndex(
   files: readonly CodeGraphInventoryFile[],
   packages: PackageIndex,
   existingPaths: ReadonlySet<string> = new Set(files.map(file => file.path)),
+  aliases: ResolutionAliasIndex = discoverResolutionAliases(files, {}),
 ): (facts: readonly CodeGraphFileFacts[]) => readonly CodeGraphFileFacts[] {
   const packageNameCounts = new Map<string, number>();
   for (const candidate of packages.all) {
     packageNameCounts.set(candidate.name, (packageNameCounts.get(candidate.name) ?? 0) + 1);
   }
   const duplicatePackages = new Set([...packageNameCounts].filter(([, count]) => count > 1).map(([name]) => name));
-  const aliases = discoverResolutionAliases(files, {});
   const resolutionCache: ResolutionCache = {importedSymbols: new Map(), modulePaths: new Map()};
   return facts => {
     const factsByPath = new Map(facts.map(file => [file.path, file]));
@@ -1282,7 +1282,7 @@ function packageForPath(path: string, packages: PackageIndex): string | undefine
   }
 }
 
-function discoverResolutionAliases(
+export function discoverResolutionAliases(
   files: readonly CodeGraphInventoryFile[],
   observer: CodeGraphResolutionObserver,
 ): ResolutionAliasIndex {
