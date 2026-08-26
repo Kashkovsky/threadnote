@@ -11,6 +11,7 @@ export interface PublishedReleaseRef extends StableReleaseVersion {
 }
 
 export interface WebsiteRelease extends PublishedReleaseRef {
+  readonly body: string;
   readonly summary: string;
   readonly highlights: readonly string[];
   readonly releaseUrl: string;
@@ -177,6 +178,7 @@ export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly
     if (!summary) throw new ScriptError(`${releaseNotePath} needs an introductory release summary.`);
     return {
       ...release,
+      body: markdown,
       highlights,
       releaseUrl: `https://github.com/Kashkovsky/threadnote/releases/tag/${release.version}`,
       summary,

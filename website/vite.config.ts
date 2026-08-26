@@ -1,5 +1,6 @@
 import react from '@vitejs/plugin-react';
 import {defineConfig, type Plugin} from 'vite';
+import {loadWebsiteArticles} from '../scripts/site-articles.ts';
 import {loadRetainedPerformanceEvidence} from '../scripts/site-performance-evidence.ts';
 import {loadLatestMajorWebsiteReleases} from '../scripts/site-release-notes.ts';
 import {embeddingContextPerformanceArtifactPath} from './src/content/embeddingContextPerformance.ts';
@@ -12,6 +13,8 @@ const virtualEvidenceId = 'virtual:threadnote-performance-evidence';
 const resolvedVirtualEvidenceId = `\0${virtualEvidenceId}`;
 const virtualReleaseNotesId = 'virtual:threadnote-release-notes';
 const resolvedVirtualReleaseNotesId = `\0${virtualReleaseNotesId}`;
+const virtualArticlesId = 'virtual:threadnote-articles';
+const resolvedVirtualArticlesId = `\0${virtualArticlesId}`;
 const worktreeReadinessArtifactSource =
   `${repositoryRoot}/test/evaluation/candidates/threadnote-4.0.1/benchmarks/` +
   'darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json';
@@ -43,6 +46,18 @@ const releaseNotesPlugin: Plugin = {
   },
 };
 
+const articlesPlugin: Plugin = {
+  name: 'threadnote-articles',
+  resolveId(id: string) {
+    return id === virtualArticlesId ? resolvedVirtualArticlesId : undefined;
+  },
+  async load(id: string) {
+    if (id !== resolvedVirtualArticlesId) return undefined;
+    const articles = await loadWebsiteArticles(repositoryRoot);
+    return `export default ${JSON.stringify(articles)};`;
+  },
+};
+
 const worktreeReadinessEvidencePlugin: Plugin = {
   name: 'threadnote-worktree-readiness-evidence',
   async generateBundle() {
@@ -68,6 +83,7 @@ export default defineConfig({
     react(),
     performanceEvidencePlugin,
     releaseNotesPlugin,
+    articlesPlugin,
     worktreeReadinessEvidencePlugin,
     embeddingContextPerformanceEvidencePlugin,
   ],

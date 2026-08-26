@@ -1,4 +1,4 @@
-import {docsArticlePath, siteCanonicalUrlForPathname} from './routes.js';
+import {docsArticlePath, siteCanonicalUrlForPathname, whatsNewArticlePath, whatsNewReleasePath} from './routes.js';
 
 const base = import.meta.env.BASE_URL;
 
@@ -9,6 +9,14 @@ export function siteHref(path = ''): string {
 
 export function docsArticleHref(articleId: string): string {
   return siteHref(docsArticlePath(articleId));
+}
+
+export function whatsNewArticleHref(slug: string): string {
+  return siteHref(whatsNewArticlePath(slug));
+}
+
+export function whatsNewReleaseHref(version: string): string {
+  return siteHref(whatsNewReleasePath(version));
 }
 
 export const githubUrl = 'https://github.com/Kashkovsky/threadnote';
