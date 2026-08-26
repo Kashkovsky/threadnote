@@ -2980,6 +2980,37 @@ p {
   color: var(--violet);
 }
 
+.comparison-hero {
+  border-bottom-color: rgba(146, 125, 255, 0.34);
+}
+
+.comparison-parity .performance-proof-grid,
+.comparison-scale .comparison-intro {
+  margin-bottom: 0;
+}
+
+.comparison-product .text-link {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  margin-top: 22px;
+  color: var(--teal);
+  font-size: var(--font-size-min);
+}
+
+.comparison-product .text-link svg {
+  width: 15px;
+  height: 15px;
+}
+
+.comparison-product--pending {
+  border-top-color: var(--amber);
+}
+
+.comparison-product--pending > span {
+  color: var(--amber);
+}
+
 .faq-section {
   max-width: 1000px;
 }

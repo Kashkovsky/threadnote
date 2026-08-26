@@ -4,14 +4,14 @@ import type {SitePage} from '../lib/routes';
 import {ThreadnoteMark} from './Brand';
 import {Icon} from './Icons';
 
-const navItems: Array<{page: SitePage; label: string; href: string}> = [
-  {page: 'home', label: 'Product', href: ''},
-  {page: 'performance', label: 'Performance', href: 'performance/'},
-  {page: 'docs', label: 'Docs', href: 'docs/'},
-  {page: 'whats-new', label: "What's new", href: 'whats-new/'},
-  {page: 'pro-tips', label: 'Pro tips', href: 'pro-tips/'},
-  {page: 'manager-demo', label: 'Manager demo', href: 'manager-demo/'},
-  {page: 'faq', label: 'FAQ', href: 'faq/'},
+const navItems: Array<{activePages: readonly SitePage[]; label: string; href: string}> = [
+  {activePages: ['home'], label: 'Product', href: ''},
+  {activePages: ['performance', 'performance-graphify'], label: 'Performance', href: 'performance/'},
+  {activePages: ['docs'], label: 'Docs', href: 'docs/'},
+  {activePages: ['whats-new'], label: "What's new", href: 'whats-new/'},
+  {activePages: ['pro-tips'], label: 'Pro tips', href: 'pro-tips/'},
+  {activePages: ['manager-demo'], label: 'Manager demo', href: 'manager-demo/'},
+  {activePages: ['faq'], label: 'FAQ', href: 'faq/'},
 ];
 
 export function SiteShell({
@@ -59,7 +59,11 @@ export function SiteShell({
           </button>
           <nav id="site-nav" className={`site-nav${menuOpen ? ' site-nav--open' : ''}`} aria-label="Primary navigation">
             {navItems.map(item => (
-              <a key={item.page} href={siteHref(item.href)} aria-current={page === item.page ? 'page' : undefined}>
+              <a
+                key={item.href}
+                href={siteHref(item.href)}
+                aria-current={item.activePages.includes(page) ? 'page' : undefined}
+              >
                 {item.label}
               </a>
             ))}
@@ -102,6 +106,7 @@ export function SiteShell({
         <div className="site-footer__links">
           <a href={siteHref('docs/')}>Documentation</a>
           <a href={siteHref('performance/')}>Performance</a>
+          <a href={siteHref('performance/graphify/')}>Threadnote vs Graphify</a>
           <a href={siteHref('whats-new/')}>What's new</a>
           <a href={siteHref('pro-tips/')}>Pro tips</a>
           <a href={siteHref('faq/')}>FAQ</a>

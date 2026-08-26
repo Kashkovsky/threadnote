@@ -4,9 +4,17 @@ import {CodeBlock} from '../components/CodeBlock';
 import {Icon, type IconName} from '../components/Icons';
 import {SiteShell} from '../components/SiteShell';
 import {graphAnalyzeScenario, graphInspectScenario, heroScenario} from '../content/landing';
+import {performanceEvidence} from '../content/performanceEvidence';
 import {docsArticleHref, githubUrl, setDocumentMeta, siteHref} from '../lib/site';
 
 const ThreadScene = lazy(() => import('../visuals/ThreadScene'));
+
+function formatMeasuredDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${milliseconds.toFixed(1)} ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(3)} s`;
+  const minutes = Math.floor(milliseconds / 60_000);
+  return `${minutes}m ${((milliseconds % 60_000) / 1_000).toFixed(3)}s`;
+}
 
 const features: Array<{
   icon: IconName;
@@ -131,6 +139,7 @@ const graphCapabilities = [
 function GraphSearchShowcase() {
   const [mode, setMode] = useState<'analyze' | 'inspect'>('inspect');
   const scenario = mode === 'inspect' ? graphInspectScenario : graphAnalyzeScenario;
+  const performanceArtifact = performanceEvidence.state === 'verified' ? performanceEvidence.artifact : undefined;
 
   return (
     <section className="graph-showcase" id="graph-search">
@@ -196,11 +205,22 @@ function GraphSearchShowcase() {
       <a className="graph-showcase__performance-cta" href={siteHref('performance/')}>
         <div>
           <span className="eyebrow">Large repositories · fast worktrees</span>
-          <h3>See how Threadnote 4.0.1 reuses a warm graph instead of rebuilding every new worktree.</h3>
+          <h3>Inspect the exact-release evidence behind proportional graph updates.</h3>
         </div>
         <p>
-          A same-machine, five-sample comparison measured 13.2× faster graph-equivalent readiness and 9.9× faster
-          one-file readiness. The separate public IntelliJ evidence still covers 232,750 files and polyglot controls.
+          {performanceArtifact ? (
+            <>
+              {performanceArtifact.source.threadnote.version} indexed{' '}
+              {performanceArtifact.inventory.indexedFiles.toLocaleString('en-US')} IntelliJ files in{' '}
+              {formatMeasuredDuration(performanceArtifact.phases.cold.totalMilliseconds)}. Its one-file update took{' '}
+              {formatMeasuredDuration(performanceArtifact.phases.incremental.totalMilliseconds)}, including{' '}
+              {formatMeasuredDuration(performanceArtifact.phases.incremental.registrationMilliseconds)} registration and{' '}
+              {formatMeasuredDuration(performanceArtifact.phases.incremental.postCommittedScanMilliseconds)}
+              post-scan, with exact independent-rebuild parity.
+            </>
+          ) : (
+            'Current exact-release performance evidence is pending; older release measurements are not substituted.'
+          )}
         </p>
         <Icon name="arrow" aria-hidden="true" />
       </a>

@@ -3,10 +3,13 @@ import {execFileSync} from '../helpers/node-child-process.js';
 import {access, mkdir, mkdtemp, readFile, rm, stat, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   assertPerformanceSourceClean,
   assertPerformanceSourcesMatchCommit,
+  canonicalPerformanceRuntimePackageManifest,
+  measuredPerformanceSourcePathspecs,
 } from '../../scripts/site-performance-evidence.js';
 import {loadLatestMajorWebsiteReleases} from '../../scripts/site-release-notes.js';
 
@@ -76,6 +79,7 @@ describe('website and standalone release boundary', () => {
     for (const entry of [
       'index.html',
       'performance/index.html',
+      'performance/graphify/index.html',
       'docs/index.html',
       'whats-new/index.html',
       'pro-tips/index.html',
@@ -118,11 +122,50 @@ describe('website and standalone release boundary', () => {
     });
     expect(evidenceBuild).toContain('writePerformanceArtifactBinding');
     expect(evidenceBuild).toContain('assertPerformanceSourceClean');
-    expect(evidenceBuild).toContain("':(exclude)scripts/site-performance-evidence.ts'");
+    expect(evidenceBuild).toContain("'scripts/site-articles.ts'");
+    expect(evidenceBuild).toContain("'scripts/site-performance-evidence.ts'");
+    expect(evidenceBuild).toContain("!name.startsWith('site:')");
+    expect(measuredPerformanceSourcePathspecs).toContain('bun.lock');
+    expect(measuredPerformanceSourcePathspecs).toContain(':(exclude)package.json');
     expect(standaloneBuild).toContain(
       "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;",
     );
     expect(standaloneBuild).not.toContain('site-performance-evidence');
+  });
+
+  it('normalizes arbitrary site package scripts without weakening runtime package fields', () => {
+    const manifest = {
+      dependencies: {effect: '4.0.0-rc.112'},
+      name: 'threadnote',
+      scripts: {build: 'bun scripts/build.ts', 'site:build': 'bun --bun vite build', test: 'bun test'},
+      version: '4.3.8',
+    };
+    const before = structuredClone(manifest);
+    const baseline = canonicalPerformanceRuntimePackageManifest(JSON.stringify(manifest));
+
+    fc.assert(
+      fc.property(fc.dictionary(fc.string({maxLength: 32, minLength: 1}), fc.string({maxLength: 120})), siteScripts => {
+        const additions = Object.fromEntries(
+          Object.entries(siteScripts).map(([name, command]) => [`site:${name}`, command]),
+        );
+        expect(
+          canonicalPerformanceRuntimePackageManifest(
+            JSON.stringify({...manifest, scripts: {...manifest.scripts, ...additions}}),
+          ),
+        ).toBe(baseline);
+      }),
+      {numRuns: 100},
+    );
+
+    expect(manifest).toEqual(before);
+    expect(
+      canonicalPerformanceRuntimePackageManifest(JSON.stringify({...manifest, dependencies: {effect: '4.0.0-rc.113'}})),
+    ).not.toBe(baseline);
+    expect(
+      canonicalPerformanceRuntimePackageManifest(
+        JSON.stringify({...manifest, scripts: {...manifest.scripts, build: 'bun scripts/other-build.ts'}}),
+      ),
+    ).not.toBe(baseline);
   });
 
   it('rejects tracked, staged, and untracked changes in performance-bound source paths', async () => {
@@ -166,6 +209,10 @@ describe('website and standalone release boundary', () => {
       git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', ...arguments_);
     try {
       await mkdir(join(repository, 'src'));
+      await writeFile(
+        join(repository, 'package.json'),
+        '{"name":"threadnote","scripts":{"site:build":"bun --bun vite build"},"version":"4.3.8"}\n',
+      );
       await writeFile(join(repository, 'src', 'governed.ts'), 'export const value = 1;\n');
       git('init');
       git('add', '.');
@@ -182,6 +229,73 @@ describe('website and standalone release boundary', () => {
       commit('commit', '-m', 'runtime drift');
       expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).toThrow(
         'runtime sources changed after the retained performance run',
+      );
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
+  });
+
+  it('accepts committed site generators while rejecting post-benchmark dependency drift', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-performance-site-only-'));
+    const git = (...arguments_: string[]) =>
+      execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+    const commit = (...arguments_: string[]) =>
+      git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', ...arguments_);
+    try {
+      await mkdir(join(repository, 'scripts'));
+      await mkdir(join(repository, 'src'));
+      await writeFile(join(repository, 'bun.lock'), 'lockfileVersion = 1\n');
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({
+          dependencies: {effect: '4.0.0-rc.112'},
+          name: 'threadnote',
+          scripts: {build: 'bun scripts/build.ts', 'site:build': 'bun --bun vite build'},
+          version: '4.3.8',
+        })}\n`,
+      );
+      await writeFile(join(repository, 'scripts', 'site-doc-pages.ts'), 'export const pages = true;\n');
+      await writeFile(join(repository, 'scripts', 'site-release-notes.ts'), 'export const releases = true;\n');
+      await writeFile(join(repository, 'src', 'runtime.ts'), 'export const runtime = true;\n');
+      git('init');
+      git('add', '.');
+      commit('commit', '-m', 'benchmark source');
+      const sourceCommit = git('rev-parse', 'HEAD');
+
+      await writeFile(join(repository, 'scripts', 'site-articles.ts'), 'export const articles = true;\n');
+      await writeFile(join(repository, 'scripts', 'site-release-notes.ts'), 'export const releases = {body: true};\n');
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({
+          dependencies: {effect: '4.0.0-rc.112'},
+          name: 'threadnote',
+          scripts: {
+            build: 'bun scripts/build.ts',
+            'site:build': 'bun --bun vite build && bun scripts/site-articles.ts',
+          },
+          version: '4.3.8',
+        })}\n`,
+      );
+      git('add', '.');
+      commit('commit', '-m', 'site article infrastructure');
+      expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).not.toThrow();
+
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({
+          dependencies: {effect: '4.0.0-rc.113'},
+          name: 'threadnote',
+          scripts: {
+            build: 'bun scripts/build.ts',
+            'site:build': 'bun --bun vite build && bun scripts/site-articles.ts',
+          },
+          version: '4.3.8',
+        })}\n`,
+      );
+      git('add', 'package.json');
+      commit('commit', '-m', 'dependency drift');
+      expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).toThrow(
+        'package manifest changed outside site-only scripts',
       );
     } finally {
       await rm(repository, {force: true, recursive: true});
@@ -307,6 +421,7 @@ describe('website and standalone release boundary', () => {
     const entries = [
       ['index.html', '/', 'og.png'],
       ['performance/index.html', '/performance/', 'og.png'],
+      ['performance/graphify/index.html', '/performance/graphify/', 'og.png'],
       ['docs/index.html', '/docs/', 'og.png'],
       ['whats-new/index.html', '/whats-new/', 'whats-new-og.png'],
       ['pro-tips/index.html', '/pro-tips/', 'og.png'],

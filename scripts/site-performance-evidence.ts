@@ -35,9 +35,22 @@ export const performanceSourcePathspecs = [
   'tsconfig.json',
 ] as const;
 
+export const performanceSiteOnlyGeneratorPaths = [
+  'scripts/site-articles.ts',
+  'scripts/site-doc-pages.ts',
+  'scripts/site-performance-evidence.ts',
+  'scripts/site-release-notes.ts',
+] as const;
+
 export const measuredPerformanceSourcePathspecs = [
   ...performanceSourcePathspecs,
-  ':(exclude)scripts/site-performance-evidence.ts',
+  ':(exclude)package.json',
+  ...performanceSiteOnlyGeneratorPaths.map(path => `:(exclude)${path}`),
+] as const;
+
+const cleanPerformanceSourcePathspecs = [
+  ...performanceSourcePathspecs,
+  ...performanceSiteOnlyGeneratorPaths.map(path => `:(exclude)${path}`),
 ] as const;
 
 export type PerformanceArtifactBinding = Readonly<{
@@ -99,6 +112,38 @@ export function sha256Hex(bytes: Uint8Array | string): string {
   const hasher = new Bun.CryptoHasher('sha256');
   hasher.update(bytes);
   return hasher.digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (!value || typeof value !== 'object') throw new ScriptError('Package manifest contains a non-JSON value.');
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+    .join(',')}}`;
+}
+
+export function canonicalPerformanceRuntimePackageManifest(manifestBytes: Uint8Array | string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(typeof manifestBytes === 'string' ? manifestBytes : new TextDecoder().decode(manifestBytes));
+  } catch {
+    throw new ScriptError('Threadnote package manifest is not valid JSON.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ScriptError('Threadnote package manifest must be an object.');
+  }
+  const manifest = {...(parsed as Record<string, unknown>)};
+  const scripts = manifest.scripts;
+  if (scripts && typeof scripts === 'object' && !Array.isArray(scripts)) {
+    manifest.scripts = Object.fromEntries(
+      Object.entries(scripts as Record<string, unknown>).filter(([name]) => !name.startsWith('site:')),
+    );
+  }
+  return canonicalJson(manifest);
 }
 
 function parseRetainedPerformanceArtifactBytes(artifactBytes: Uint8Array): RetainedPerformancePayload {
@@ -170,22 +215,38 @@ function requireSuccessfulGit(result: ReturnType<typeof Bun.spawnSync>, operatio
 }
 
 export function assertPerformanceSourceClean(repositoryRoot: string): void {
-  const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...measuredPerformanceSourcePathspecs]);
+  const unstaged = runGit(repositoryRoot, ['diff', '--quiet', '--', ...cleanPerformanceSourcePathspecs]);
   if (unstaged.exitCode === 1) {
     throw new ScriptError('Performance-bound sources contain tracked working-tree modifications.');
   }
   requireSuccessfulGit(unstaged, 'inspect tracked performance-source modifications');
 
-  const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...measuredPerformanceSourcePathspecs]);
+  const staged = runGit(repositoryRoot, ['diff', '--cached', '--quiet', '--', ...cleanPerformanceSourcePathspecs]);
   if (staged.exitCode === 1) {
     throw new ScriptError('Performance-bound sources contain staged modifications.');
   }
   requireSuccessfulGit(staged, 'inspect staged performance-source modifications');
 
-  const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...measuredPerformanceSourcePathspecs]);
+  const untracked = runGit(repositoryRoot, ['ls-files', '--others', '-z', '--', ...cleanPerformanceSourcePathspecs]);
   requireSuccessfulGit(untracked, 'inspect untracked performance sources');
   if ((untracked.stdout?.byteLength ?? 0) > 0) {
     throw new ScriptError('Performance-bound sources contain untracked files.');
+  }
+}
+
+function gitFileAt(repositoryRoot: string, revision: string, path: string): Uint8Array {
+  const result = runGit(repositoryRoot, ['show', `${revision}:${path}`]);
+  requireSuccessfulGit(result, `read ${path} at ${revision}`);
+  return result.stdout ?? new Uint8Array();
+}
+
+export function assertPerformancePackageManifestMatchesCommit(repositoryRoot: string, sourceCommit: string): void {
+  const current = canonicalPerformanceRuntimePackageManifest(gitFileAt(repositoryRoot, 'HEAD', 'package.json'));
+  const measured = canonicalPerformanceRuntimePackageManifest(gitFileAt(repositoryRoot, sourceCommit, 'package.json'));
+  if (current !== measured) {
+    throw new ScriptError(
+      'Threadnote package manifest changed outside site-only scripts after the retained performance run; publish fresh evidence.',
+    );
   }
 }
 
@@ -210,6 +271,7 @@ export function assertPerformanceSourcesMatchCommit(repositoryRoot: string, sour
       'Threadnote runtime sources changed after the retained performance run; publish fresh evidence.',
     );
   }
+  assertPerformancePackageManifestMatchesCommit(repositoryRoot, sourceCommit);
 }
 
 function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPerformancePayload): void {
@@ -294,17 +356,18 @@ export async function computePerformanceSourceTreeSha256(repositoryRoot: string)
   return hasher.digest('hex');
 }
 
-async function currentSourceDependencyHashes(repositoryRoot: string): Promise<{
+async function currentSourceDependencyHashes(
+  repositoryRoot: string,
+  sourceCommit: string,
+): Promise<{
   readonly lockfileSha256: string;
   readonly packageManifestSha256: string;
 }> {
-  const [lockfile, packageManifest] = await Promise.all([
-    Bun.file(`${repositoryRoot}/bun.lock`).arrayBuffer(),
-    Bun.file(`${repositoryRoot}/package.json`).arrayBuffer(),
-  ]);
+  const lockfile = await Bun.file(`${repositoryRoot}/bun.lock`).arrayBuffer();
+  const packageManifest = gitFileAt(repositoryRoot, sourceCommit, 'package.json');
   return {
     lockfileSha256: sha256Hex(new Uint8Array(lockfile)),
-    packageManifestSha256: sha256Hex(new Uint8Array(packageManifest)),
+    packageManifestSha256: sha256Hex(packageManifest),
   };
 }
 
@@ -335,7 +398,7 @@ export async function loadRetainedPerformanceEvidence(
   const [artifactBuffer, currentSourceTreeSha256, dependencyHashes] = await Promise.all([
     artifactFile.arrayBuffer(),
     computePerformanceSourceTreeSha256(repositoryRoot),
-    currentSourceDependencyHashes(repositoryRoot),
+    currentSourceDependencyHashes(repositoryRoot, binding.sourceThreadnoteCommit),
   ]);
   const artifactBytes = new Uint8Array(artifactBuffer);
   verifyReleaseEvidenceSource(repositoryRoot, parseRetainedPerformanceArtifactBytes(artifactBytes));
@@ -363,7 +426,7 @@ export async function writePerformanceArtifactBinding(repositoryRoot: string): P
   verifyReleaseEvidenceSource(repositoryRoot, payload);
   const [sourceTreeSha256, dependencyHashes] = await Promise.all([
     computePerformanceSourceTreeSha256(repositoryRoot),
-    currentSourceDependencyHashes(repositoryRoot),
+    currentSourceDependencyHashes(repositoryRoot, payload.environment.commit),
   ]);
   const binding = validatePerformanceArtifactBinding({
     schemaVersion: 1,
