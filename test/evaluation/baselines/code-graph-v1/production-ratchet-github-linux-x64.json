@@ -1612,14 +1612,12 @@
     "one-file-reindex-incremental-work-attribution-context-files-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 1035,
-      "minimum": 1035
+      "maximum": 1035
     },
     "one-file-reindex-incremental-work-base-facts-loaded-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 1,
-      "minimum": 1
+      "maximum": 1
     },
     "one-file-reindex-incremental-work-changed-files-n1": {
       "samplesMinimum": 1,
@@ -1641,20 +1639,17 @@
     "one-file-reindex-incremental-work-inventory-files-inspected-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 1,
-      "minimum": 1
+      "maximum": 1
     },
     "one-file-reindex-incremental-work-planned-rows-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 989,
-      "minimum": 989
+      "maximum": 989
     },
     "one-file-reindex-incremental-work-probed-dependency-paths-n1": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 0,
-      "minimum": 0
+      "maximum": 0
     },
     "one-file-reindex-incremental-work-source-bytes-n1": {
       "samplesMinimum": 1,

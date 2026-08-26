@@ -1138,6 +1138,17 @@ describe('code graph release evidence', () => {
     expect(ratchet.measurements['hosted-sampler-samples-n1']).toMatchObject({minimum: 1, unit: 'count'});
     expect(ratchet.measurements['hosted-sampler-samples-n1']).not.toHaveProperty('maximum');
     expect(ratchet.measurements['cold-materialized-file-rows']).toMatchObject({maximum: 1, minimum: 1});
+    const nonIncreasingWorkMeasurements = [
+      'one-file-reindex-incremental-work-attribution-context-files-n1',
+      'one-file-reindex-incremental-work-base-facts-loaded-n1',
+      'one-file-reindex-incremental-work-inventory-files-inspected-n1',
+      'one-file-reindex-incremental-work-planned-rows-n1',
+      'one-file-reindex-incremental-work-probed-dependency-paths-n1',
+    ];
+    for (const name of nonIncreasingWorkMeasurements) {
+      expect(ratchet.measurements[name]).toMatchObject({maximum: 1, unit: 'count'});
+      expect(ratchet.measurements[name]).not.toHaveProperty('minimum');
+    }
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toMatchObject({p95Maximum: 1_048_576});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).not.toHaveProperty('minimum');
     for (const registrationName of [
@@ -1206,6 +1217,16 @@ describe('code graph release evidence', () => {
     expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-filesystem-available-n1'))).toBe(false);
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toBeDefined();
     expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
+    for (const name of nonIncreasingWorkMeasurements) {
+      const withWork = (value: number): BenchmarkArtifactV1 => ({
+        ...artifacts[0]!,
+        measurements: artifacts[0]!.measurements.map(measurement =>
+          measurement.name === name ? benchmarkMeasurement(name, 'count', [value]) : measurement,
+        ),
+      });
+      expect(() => enforceCodeGraphBenchmarkRatchet(withWork(0), ratchet)).not.toThrow();
+      expect(() => enforceCodeGraphBenchmarkRatchet(withWork(2), ratchet)).toThrow(new RegExp(name));
+    }
     fc.assert(
       fc.property(fc.integer({max: 200 * 1_073_741_824, min: 20 * 1_073_741_824}), availableBytes => {
         const expandedCapacity = {

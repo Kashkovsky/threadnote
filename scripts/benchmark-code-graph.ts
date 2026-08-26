@@ -7174,6 +7174,12 @@ function productionMeasurementRatchet(
     // is lower-bounded; the separately ratcheted failure counters remain zero.
     return {...base, minimum: 1};
   }
+  if (productionNonIncreasingWorkMeasurement(name, unit)) {
+    // These counters measure the bounded work needed for the same parity-
+    // checked one-file result. Less work is an improvement; retain the
+    // observed ceiling without freezing a lower bound that would reject it.
+    return {...base, maximum};
+  }
   if (productionDeterministicMeasurement(name, unit)) {
     if (minimum !== maximum) {
       throw new ScriptError(
@@ -7222,6 +7228,15 @@ function productionMeasurementRatchet(
   }
   if (unit === 'percent') return {...base, minimum};
   return {...base, maximum: Math.ceil(maximum * (1 + PRODUCTION_RATCHET_RELATIVE_HEADROOM))};
+}
+
+function productionNonIncreasingWorkMeasurement(name: string, unit: BenchmarkMeasurementUnit): boolean {
+  return (
+    unit === 'count' &&
+    /^one-file-reindex-incremental-work-(?:attribution-context-files|base-facts-loaded|inventory-files-inspected|planned-rows|probed-dependency-paths)-n1$/u.test(
+      name,
+    )
+  );
 }
 
 function productionCoverageMeasurement(name: string, unit: BenchmarkMeasurementUnit): boolean {
