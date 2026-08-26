@@ -9,7 +9,11 @@ import {
   assertPerformanceSourceClean,
   assertPerformanceSourcesMatchCommit,
   canonicalPerformanceRuntimePackageManifest,
+  computePerformanceSourceTreeSha256AtCommit,
+  loadRetainedPerformanceEvidence,
   measuredPerformanceSourcePathspecs,
+  performanceSourceDependencyHashesAtCommit,
+  writePerformanceArtifactBinding,
 } from '../../scripts/site-performance-evidence.js';
 import {loadLatestMajorWebsiteReleases} from '../../scripts/site-release-notes.js';
 
@@ -296,6 +300,155 @@ describe('website and standalone release boundary', () => {
       commit('commit', '-m', 'dependency drift');
       expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).toThrow(
         'package manifest changed outside site-only scripts',
+      );
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
+  });
+
+  it('keeps retained source identity bound to the measured commit after later runtime changes', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-performance-history-'));
+    const git = (...arguments_: string[]) =>
+      execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+    const commit = (...arguments_: string[]) =>
+      git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', ...arguments_);
+    try {
+      await mkdir(join(repository, 'src'));
+      await writeFile(join(repository, 'bun.lock'), 'lockfileVersion = 1\n');
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({dependencies: {effect: '4.0.0-rc.111'}, name: 'threadnote', version: '4.3.8'})}\n`,
+      );
+      await writeFile(join(repository, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
+      git('init');
+      git('add', '.');
+      commit('commit', '-m', 'measured runtime');
+      const sourceCommit = git('rev-parse', 'HEAD');
+      const measuredSourceTree = computePerformanceSourceTreeSha256AtCommit(repository, sourceCommit);
+      const measuredDependencies = performanceSourceDependencyHashesAtCommit(repository, sourceCommit);
+
+      await writeFile(join(repository, 'bun.lock'), 'lockfileVersion = 2\n');
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({dependencies: {effect: '4.0.0-rc.112'}, name: 'threadnote', version: '4.3.8'})}\n`,
+      );
+      await writeFile(join(repository, 'src', 'runtime.ts'), 'export const runtime = 2;\n');
+      git('add', '.');
+      commit('commit', '-m', 'later runtime');
+      const laterCommit = git('rev-parse', 'HEAD');
+
+      expect(computePerformanceSourceTreeSha256AtCommit(repository, sourceCommit)).toBe(measuredSourceTree);
+      expect(performanceSourceDependencyHashesAtCommit(repository, sourceCommit)).toEqual(measuredDependencies);
+      expect(computePerformanceSourceTreeSha256AtCommit(repository, laterCommit)).not.toBe(measuredSourceTree);
+      expect(performanceSourceDependencyHashesAtCommit(repository, laterCommit)).not.toEqual(measuredDependencies);
+      expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).toThrow(
+        'runtime sources changed after the retained performance run',
+      );
+      expect(() => computePerformanceSourceTreeSha256AtCommit(repository, '0'.repeat(40))).toThrow(
+        'source commit 0000000000000000000000000000000000000000 is unavailable',
+      );
+    } finally {
+      await rm(repository, {force: true, recursive: true});
+    }
+  });
+
+  it('loads the exact historical artifact after a later runtime and dependency commit', async () => {
+    const temporaryRoot = await mkdtemp(join(tmpdir(), 'threadnote-performance-load-history-'));
+    const repository = join(temporaryRoot, 'repository');
+    try {
+      const sourceHead = execFileSync('git', ['rev-parse', 'HEAD'], {cwd: root, encoding: 'utf8'}).trim();
+      execFileSync('git', ['clone', '--shared', '--no-checkout', root, repository], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const git = (...arguments_: string[]) =>
+        execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+      const commit = (...arguments_: string[]) =>
+        git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', ...arguments_);
+      git('checkout', '--detach', sourceHead);
+      const manifest = JSON.parse(await readFile(join(repository, 'package.json'), 'utf8')) as Record<string, unknown>;
+      await writeFile(join(repository, 'src', 'later-runtime.ts'), 'export const laterRuntime = true;\n');
+      await writeFile(join(repository, 'bun.lock'), 'later dependency lock\n');
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({...manifest, dependencies: {...(manifest.dependencies as object), effect: 'later'}})}\n`,
+      );
+      git('add', '.');
+      commit('commit', '-m', 'later runtime and dependencies');
+
+      const evidence = await loadRetainedPerformanceEvidence(repository, '/');
+      expect(evidence.state).toBe('verified');
+      if (evidence.state !== 'verified') throw new Error('Expected retained performance evidence.');
+      expect(evidence.artifact.source.threadnote).toMatchObject({
+        commit: 'f1e4102a78e4df2127fca0c4d59da39ffb5f70a6',
+        version: 'v4.3.8',
+      });
+      expect(evidence.artifact.artifact.sha256).toBe(
+        'b56994fe99c3d68be80f79315b88d4420a7241a76de72c317d2fc3d84de23b39',
+      );
+      await expect(writePerformanceArtifactBinding(repository)).rejects.toThrow(
+        'runtime sources changed after the retained performance run',
+      );
+    } finally {
+      await rm(temporaryRoot, {force: true, recursive: true});
+    }
+  });
+
+  it('keeps measured hashes invariant across arbitrary subsequent runtime commits', async () => {
+    const repository = await mkdtemp(join(tmpdir(), 'threadnote-performance-history-property-'));
+    const git = (...arguments_: string[]) =>
+      execFileSync('git', arguments_, {cwd: repository, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+    const commit = (...arguments_: string[]) =>
+      git('-c', 'user.name=Threadnote Test', '-c', 'user.email=threadnote@example.invalid', ...arguments_);
+    try {
+      await mkdir(join(repository, 'src'));
+      await writeFile(join(repository, 'bun.lock'), 'baseline lock\n');
+      await writeFile(
+        join(repository, 'package.json'),
+        `${JSON.stringify({dependencies: {effect: 'baseline'}, name: 'threadnote', version: '4.3.8'})}\n`,
+      );
+      await writeFile(join(repository, 'src', 'runtime.ts'), 'export const baseline = true;\n');
+      git('init');
+      git('add', '.');
+      commit('commit', '-m', 'measured runtime');
+      const sourceCommit = git('rev-parse', 'HEAD');
+      const measuredSourceTree = computePerformanceSourceTreeSha256AtCommit(repository, sourceCommit);
+      const measuredDependencies = performanceSourceDependencyHashesAtCommit(repository, sourceCommit);
+      let sequence = 0;
+
+      await fc.assert(
+        fc.asyncProperty(
+          fc.record({
+            dependency: fc.string({maxLength: 32}),
+            lockfile: fc.string({maxLength: 80}),
+            runtime: fc.string({maxLength: 80}),
+          }),
+          async change => {
+            sequence += 1;
+            await writeFile(join(repository, 'bun.lock'), `${change.lockfile}\nproperty-run = ${sequence}\n`);
+            await writeFile(
+              join(repository, 'package.json'),
+              `${JSON.stringify({
+                dependencies: {effect: change.dependency},
+                name: 'threadnote',
+                propertyRun: sequence,
+                version: '4.3.8',
+              })}\n`,
+            );
+            await writeFile(
+              join(repository, 'src', 'runtime.ts'),
+              `${change.runtime}\nexport const propertyRun = ${sequence};\n`,
+            );
+            git('add', '.');
+            commit('commit', '-m', `later runtime ${sequence}`);
+
+            expect(computePerformanceSourceTreeSha256AtCommit(repository, sourceCommit)).toBe(measuredSourceTree);
+            expect(performanceSourceDependencyHashesAtCommit(repository, sourceCommit)).toEqual(measuredDependencies);
+            expect(() => assertPerformanceSourcesMatchCommit(repository, sourceCommit)).toThrow(
+              'runtime sources changed after the retained performance run',
+            );
+          },
+        ),
+        {numRuns: 10},
       );
     } finally {
       await rm(repository, {force: true, recursive: true});
