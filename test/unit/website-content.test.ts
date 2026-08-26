@@ -589,6 +589,35 @@ The body remains ordinary **Markdown**.
     }
   });
 
+  it('binds the performance journey article to its exact author and retained evidence', async () => {
+    const fileName = '2026-08-26T14-37-18Z--before-you-rewrite-it-in-rust.md';
+    const source = await readFile(join(root, 'website', 'articles', fileName), 'utf8');
+    const article = parseWebsiteArticle(fileName, source);
+
+    expect(article).toMatchObject({
+      author: 'Denys Kashkovskyi',
+      publishedAt: '2026-08-26T14:37:18Z',
+      slug: 'before-you-rewrite-it-in-rust',
+      summary:
+        'How Threadnote cut a 164-minute code-graph build below one hour—and made one-file updates proportional—without rewriting the engine in Rust.',
+      title: 'Before You Rewrite It in Rust: What Threadnote Learned From a 164-Minute Code-Graph Build',
+    });
+    expect(article.body).not.toContain('# Before You Rewrite It in Rust');
+    expect(article.body).not.toContain('By Denys Kashkovskyi');
+    expect(source).toContain(
+      'https://threadnote.io/graphify-intellij-evidence.bd4686d2fce1fe369c73ac77ebe65604bcb3af6fb4564691d10dfb296aca61b1.json',
+    );
+    expect(source).toContain(
+      'https://threadnote.io/performance-evidence.b56994fe99c3d68be80f79315b88d4420a7241a76de72c317d2fc3d84de23b39.json',
+    );
+    expect(source).toContain('f1e4102a78e4df2127fca0c4d59da39ffb5f70a6');
+    expect(source).toContain('3,426,563.136875 milliseconds');
+    expect(source).toContain('10,748.486666 milliseconds');
+    expect(source).toContain('4,851.893916 milliseconds');
+    expect(source).toContain('53.179375 milliseconds');
+    expect(source).not.toMatch(/\b(?:TODO|TBD)\b|publication placeholder|\{\{[^}]+}}|<insert\b/i);
+  });
+
   it('orders release and article updates deterministically without mutating the input', () => {
     fc.assert(
       fc.property(
