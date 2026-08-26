@@ -67,6 +67,9 @@ describe('Git index semantic fingerprint', () => {
     expect(
       codeGraphGitIndexSemanticSha256(buildGitIndex(2, base, {data: Uint8Array.of(1), signature: 'link'}), 'sha1'),
     ).toBeUndefined();
+    expect(
+      codeGraphGitIndexSemanticSha256(buildGitIndex(2, base, {data: Uint8Array.of(1), signature: '1BAD'}), 'sha1'),
+    ).toBeUndefined();
 
     const corrupt = plain.slice();
     corrupt[12] = corrupt[12]! ^ 1;

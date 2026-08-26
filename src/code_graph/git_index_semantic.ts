@@ -99,10 +99,11 @@ export function codeGraphGitIndexSemanticSha256(
     const extensionBytes = view.getUint32(offset + 4, false);
     const extensionEnd = offset + GIT_INDEX_OPTIONAL_EXTENSION_HEADER_BYTES + extensionBytes;
     if (extensionEnd > contentEnd) return undefined;
-    // Lowercase signatures are required extensions. Split and sparse indexes
-    // change entry interpretation, so this bounded parser deliberately asks
-    // Git for the canonical view instead of guessing.
-    if (signature[0]! >= 0x61 && signature[0]! <= 0x7a) return undefined;
+    // Only uppercase signatures are optional. Lowercase signatures are
+    // required extensions; split and sparse indexes change entry
+    // interpretation. Invalid or required formats deliberately ask Git for
+    // the canonical view instead of guessing.
+    if (signature[0]! < 0x41 || signature[0]! > 0x5a) return undefined;
     offset = extensionEnd;
   }
   if (offset !== contentEnd) return undefined;
