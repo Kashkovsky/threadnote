@@ -15,6 +15,7 @@ on:
       - 'scripts/generate-code-graph-production-ratchet.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
       - 'scripts/benchmark-recall-vectors.ts'
+      - 'scripts/recall-vector-performance-budget.ts'
       - 'scripts/code-graph-fixture.ts'
       - 'scripts/code-graph-heavy-tail-fixture.ts'
       - 'test/evaluation/baselines/code-graph-v1/heavy-tail-scheduler-ratchet.json'
@@ -107,10 +108,11 @@ jobs:
           --output artifacts/recall-vectors-pr-10000-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: recall-vector-benchmark-pr-10000-Linux-${{ runner.arch }}
-          path: artifacts/
-          if-no-files-found: error
+          path: artifacts/recall-vectors-pr-10000-Linux-${{ runner.arch }}.json
+          if-no-files-found: warn
           retention-days: 14
 
   code-graph-pr-scale:
