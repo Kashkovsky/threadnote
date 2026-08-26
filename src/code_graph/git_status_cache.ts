@@ -189,10 +189,13 @@ const observeSourceIndexSemanticSha256 = Effect.fn('codeGraph.observeSourceIndex
   sourceIndex: string,
   expectedIdentity: CodeGraphGitIndexIdentity,
 ) {
-  const direct = yield* fs.readFile(sourceIndex).pipe(
-    Effect.map(bytes => codeGraphGitIndexSemanticSha256(bytes, identity.objectFormat)),
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
+  const direct =
+    expectedIdentity.indexBytes <= SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM
+      ? yield* fs.readFile(sourceIndex).pipe(
+          Effect.map(bytes => codeGraphGitIndexSemanticSha256(bytes, identity.objectFormat)),
+          Effect.catch(() => Effect.succeed(undefined)),
+        )
+      : undefined;
   const semanticSha256 =
     direct ??
     sha256HexSync(
