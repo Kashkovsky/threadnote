@@ -5,6 +5,14 @@ import type {CodeGraphCacheFactInput} from './fact_budget.js';
 import type {CodeGraphWorkspace} from './languages/types.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import type {
+  CodeGraphEffectiveFileHashMatches,
+  CodeGraphEffectiveFilePathObservation,
+  CodeGraphEffectiveSnapshotCitationEvidence,
+  CodeGraphEffectiveSnapshotCitationEvidenceRequest,
+  CodeGraphEffectiveSymbolLocatorMatches,
+  CodeGraphSymbolSemanticLocatorV1,
+} from './citation_primitives.js';
+import type {
   CodeGraphActivationProgressCallback,
   CodeGraphActiveViewIdentity,
   CodeGraphAnalysisEdgeAggregatePage,
@@ -114,6 +122,7 @@ export interface CodeGraphStoreShape {
     identity: RepositoryIdentity,
     snapshot: CodeGraphSnapshot,
     baseSnapshotId: string,
+    currentSnapshotReceipt: CodeGraphReusableBaseReceiptInput,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheFacts: (
     databasePath: string,
@@ -481,6 +490,36 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     paths: readonly string[],
   ) => Effect.Effect<readonly string[] | undefined, CodeGraphStoreError>;
+  /** Bounded effective sparse-overlay-plus-base file observations, aligned to unique input paths. */
+  readonly effectiveSnapshotFilesByPaths: (
+    databasePath: string,
+    snapshotId: string,
+    paths: readonly string[],
+  ) => Effect.Effect<readonly CodeGraphEffectiveFilePathObservation[], CodeGraphStoreError>;
+  /** Bounded effective file relocation candidates, aligned to unique input hashes. */
+  readonly effectiveSnapshotFilesByContentHashes: (
+    databasePath: string,
+    snapshotId: string,
+    contentHashes: readonly string[],
+    limitPerHash: number,
+  ) => Effect.Effect<readonly CodeGraphEffectiveFileHashMatches[], CodeGraphStoreError>;
+  /** Bounded, exact, path-independent effective symbol candidates. */
+  readonly effectiveSnapshotSymbolsBySemanticLocators: (
+    databasePath: string,
+    snapshotId: string,
+    locators: readonly CodeGraphSymbolSemanticLocatorV1[],
+    limitPerLocator: number,
+  ) => Effect.Effect<readonly CodeGraphEffectiveSymbolLocatorMatches[], CodeGraphStoreError>;
+  /**
+   * All bounded citation observations in one read-only database session.
+   * Callers observing a displaced/workset snapshot must hold its snapshot lease
+   * for the full call and independently verify current-worktree identity.
+   */
+  readonly effectiveSnapshotCitationEvidence: (
+    databasePath: string,
+    snapshotId: string,
+    request: CodeGraphEffectiveSnapshotCitationEvidenceRequest,
+  ) => Effect.Effect<CodeGraphEffectiveSnapshotCitationEvidence, CodeGraphStoreError>;
   readonly snapshotProjectClosureFiles?: (
     databasePath: string,
     snapshotId: string,

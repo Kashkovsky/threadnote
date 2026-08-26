@@ -134,6 +134,11 @@ export function fromWorksetProjection(result: CodeGraphWorksetEvidenceProjection
   ];
   return {
     cards,
+    citationValidationFence: {
+      generation: result.workset.generation,
+      kind: 'workset',
+      workset: result.workset.name,
+    },
     ...(result.continuation === undefined ? {} : {continuation: result.continuation}),
     contracts,
     coverage: {
@@ -181,6 +186,11 @@ export function fromRepositoryQuery(result: CodeGraphQueryResult): ContextBriefG
   };
   return {
     cards,
+    citationValidationFence: {
+      kind: 'repository',
+      repositoryId: result.repository.repositoryId,
+      snapshotId: result.snapshot.id,
+    },
     contracts,
     coverage: {
       complete: true,

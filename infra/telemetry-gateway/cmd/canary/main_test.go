@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestCanaryPostsAndProvesFrozenV1V2V3AndCurrentV4(t *testing.T) {
+func TestCanaryPostsAndProvesFrozenV1ThroughV4AndCurrentV5(t *testing.T) {
 	started := time.Unix(1_700_000_000, 0)
 	traces := canaryTestTraces()
 	byTraceID := make(map[string]canaryTrace, len(traces))
@@ -111,6 +111,55 @@ func TestGraphCanaryEnvelopesCarryTheCompleteTerminalSurface(t *testing.T) {
 				t.Fatalf("v%d graph canary is missing %s", schemaVersion, key)
 			}
 		}
+	}
+}
+
+func TestV5CanaryEnvelopesCarryEveryContextBriefPhaseAndCompleteResultSurface(t *testing.T) {
+	traces := []canaryTrace{
+		fixedTrace(5, canaryTraceContextGraphCheckpoint),
+		fixedTrace(5, canaryTraceContextMemoryCheckpoint),
+		fixedTrace(5, canaryTraceContextCitationCheckpoint),
+		fixedTrace(5, canaryTraceContextProjectionCheckpoint),
+		fixedTrace(5, canaryTraceContextCompletion),
+	}
+	for _, trace := range traces {
+		t.Run(trace.label(), func(t *testing.T) {
+			request := decodeCanaryEnvelope(t, trace)
+			resource := request.ResourceSpans[0].Resource
+			if resource == nil || !hasIntAttribute(resource.Attributes, "threadnote.telemetry.schema_version", 5) {
+				t.Fatal("v5 canary resource did not declare schema version 5")
+			}
+			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+			if !hasStringAttribute(span.Attributes, "threadnote.operation", "context_brief") ||
+				!hasStringAttribute(span.Attributes, "threadnote.context_brief.scope", "workset") ||
+				!hasIntAttribute(span.Attributes, "threadnote.phase.elapsed_ms", 1) {
+				t.Fatal("v5 context brief canary is missing its base surface")
+			}
+			if trace.kind == canaryTraceContextCitationCheckpoint || trace.kind == canaryTraceContextCompletion {
+				for _, key := range []string{
+					"threadnote.context_brief.cache_hits_bucket",
+					"threadnote.context_brief.citation_coverage",
+					"threadnote.context_brief.citation_result",
+					"threadnote.context_brief.citation_unknown_reason",
+					"threadnote.context_brief.citations_bucket",
+					"threadnote.context_brief.cited_memories_bucket",
+					"threadnote.context_brief.exact_citations_bucket",
+					"threadnote.context_brief.relocated_citations_bucket",
+					"threadnote.context_brief.repositories_validated_bucket",
+					"threadnote.context_brief.stale_citations_bucket",
+					"threadnote.context_brief.unknown_citations_bucket",
+				} {
+					if !hasAttribute(span.Attributes, key) {
+						t.Fatalf("v5 context brief canary is missing %s", key)
+					}
+				}
+			}
+			if trace.kind == canaryTraceContextProjectionCheckpoint || trace.kind == canaryTraceContextCompletion {
+				if !hasBoolAttribute(span.Attributes, "threadnote.context_brief.output_truncated", false) {
+					t.Fatal("v5 context brief canary is missing its projection result")
+				}
+			}
+		})
 	}
 }
 
@@ -327,6 +376,21 @@ func fixedTrace(schemaVersion uint64, kind canaryTraceKind) canaryTrace {
 	case kind == canaryTraceQueryCompletion:
 		marker = 8
 		sessionID = "tns_707172737475767778797a7b7c7d7e7f"
+	case kind == canaryTraceContextGraphCheckpoint:
+		marker = 9
+		sessionID = "tns_808182838485868788898a8b8c8d8e8f"
+	case kind == canaryTraceContextMemoryCheckpoint:
+		marker = 10
+		sessionID = "tns_909192939495969798999a9b9c9d9e9f"
+	case kind == canaryTraceContextCitationCheckpoint:
+		marker = 11
+		sessionID = "tns_a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+	case kind == canaryTraceContextProjectionCheckpoint:
+		marker = 12
+		sessionID = "tns_b0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+	case kind == canaryTraceContextCompletion:
+		marker = 13
+		sessionID = "tns_c0c1c2c3c4c5c6c7c8c9cacbcccdcecf"
 	}
 	return canaryTrace{
 		ids: canaryIDs{
@@ -349,6 +413,11 @@ func canaryTestTraces() []canaryTrace {
 		fixedTrace(4, canaryTraceAutoUpdate),
 		fixedTrace(4, canaryTraceQueryCheckpoint),
 		fixedTrace(4, canaryTraceQueryCompletion),
+		fixedTrace(5, canaryTraceContextGraphCheckpoint),
+		fixedTrace(5, canaryTraceContextMemoryCheckpoint),
+		fixedTrace(5, canaryTraceContextCitationCheckpoint),
+		fixedTrace(5, canaryTraceContextProjectionCheckpoint),
+		fixedTrace(5, canaryTraceContextCompletion),
 	}
 }
 

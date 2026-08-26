@@ -236,6 +236,9 @@ jobs:
       - name: Bounded cross-repository workset quality smoke
         run: bun run eval:code-graph-workset -- --sizes 1,8
 
+      - name: Actual-runtime memory citation and Context Brief gate
+        run: bun run eval:context-brief-citations:runtime
+
       - name: Recall-v2 category and safety gate
         run: >-
           bun run eval:recall:v2 --

@@ -1,0 +1,132 @@
+{
+  "expectedContractHash": "79bc7cc8e209e0abc54879c80921913f3e6d42263cdfb21576bf206eef6625e6",
+  "id": "context-brief-citations-runtime-v1",
+  "scenarios": [
+    {
+      "currentCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "currentSnapshotId": "cgsn_5555555555555555555555555555555555555555",
+      "equivalenceKey": "exact-clean-incremental",
+      "execution": "clean",
+      "expectedFreshness": "fresh",
+      "expectedRecallCount": 1,
+      "expectedStatus": "exact",
+      "expectedWarning": "none",
+      "id": "exact-across-newer-snapshot",
+      "kind": "exact",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "currentSnapshotId": "cgsn_6666666666666666666666666666666666666666",
+      "equivalenceKey": "exact-clean-incremental",
+      "expectedFreshness": "fresh",
+      "expectedRecallCount": 1,
+      "expectedStatus": "exact",
+      "expectedWarning": "none",
+      "execution": "incremental",
+      "id": "exact-incremental-snapshot",
+      "kind": "exact",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "cccccccccccccccccccccccccccccccccccccccc",
+      "currentSnapshotId": "cgsn_7777777777777777777777777777777777777777",
+      "execution": "clean",
+      "expectedFreshness": "fresh",
+      "expectedRecallCount": 1,
+      "expectedStatus": "relocated",
+      "expectedWarning": "stale-link",
+      "id": "relocated-file",
+      "kind": "relocated",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "dddddddddddddddddddddddddddddddddddddddd",
+      "currentSnapshotId": "cgsn_8888888888888888888888888888888888888888",
+      "execution": "clean",
+      "expectedFreshness": "stale",
+      "expectedRecallCount": 1,
+      "expectedStatus": "changed",
+      "expectedWarning": "stale-memory",
+      "id": "changed-file",
+      "kind": "changed",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "currentSnapshotId": "cgsn_9999999999999999999999999999999999999999",
+      "execution": "clean",
+      "expectedFreshness": "stale",
+      "expectedRecallCount": 1,
+      "expectedStatus": "deleted",
+      "expectedWarning": "stale-memory",
+      "id": "deleted-from-complete-inventory",
+      "kind": "deleted",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "ffffffffffffffffffffffffffffffffffffffff",
+      "currentSnapshotId": "cgsn_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "execution": "clean",
+      "expectedFreshness": "unknown",
+      "expectedRecallCount": 1,
+      "expectedStatus": "unknown",
+      "expectedWarning": "unknown-memory-freshness",
+      "id": "ambiguous-relocation",
+      "kind": "ambiguous",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "3333333333333333333333333333333333333333",
+      "currentSnapshotId": "cgsn_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "execution": "clean",
+      "expectedFreshness": "unknown",
+      "expectedRecallCount": 1,
+      "expectedStatus": "unknown",
+      "expectedWarning": "unknown-memory-freshness",
+      "id": "incomplete-graph-abstention",
+      "kind": "incomplete",
+      "snapshotState": "current-incomplete"
+    },
+    {
+      "currentCommit": "4444444444444444444444444444444444444444",
+      "currentSnapshotId": "cgsn_cccccccccccccccccccccccccccccccccccccccc",
+      "execution": "clean",
+      "expectedFreshness": "unknown",
+      "expectedRecallCount": 1,
+      "expectedStatus": "unknown",
+      "expectedWarning": "unknown-memory-freshness",
+      "id": "cross-repository-abstention",
+      "kind": "cross-repository",
+      "snapshotState": "current-complete"
+    },
+    {
+      "currentCommit": "5555555555555555555555555555555555555555",
+      "currentSnapshotId": "cgsn_dddddddddddddddddddddddddddddddddddddddd",
+      "execution": "clean",
+      "expectedFreshness": "unknown",
+      "expectedRecallCount": 1,
+      "expectedWarning": "unknown-memory-freshness",
+      "id": "legacy-v1-recall-continuity",
+      "kind": "legacy-v1",
+      "snapshotState": "current-complete"
+    }
+  ],
+  "source": {
+    "content": "export function value() {\n  return \"runtime\";\n}\n",
+    "expectedCitationId": "tncc_48aa75324a821631f5060ed1ab9f89cddcdd84bc",
+    "extractorSet": "runtime-eval-v1",
+    "foreignRepositoryId": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "graphContentId": "cgc_4444444444444444444444444444444444444444",
+    "path": "src/value.ts",
+    "repositoryId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "sourceCommit": "2222222222222222222222222222222222222222",
+    "sourceSnapshotId": "cgsn_3333333333333333333333333333333333333333"
+  },
+  "thresholds": {
+    "maximumBriefP95Milliseconds": 1500,
+    "maximumEstimatedTokens": 1500,
+    "maximumValidationP95Milliseconds": 250
+  },
+  "version": 1
+}

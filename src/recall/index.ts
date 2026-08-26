@@ -179,7 +179,7 @@ interface IndexedRecallSource {
   readonly source: RecallIndexSource;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 8;
+const RECALL_INDEX_DATABASE_VERSION = 9;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -1073,7 +1073,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             return {
               candidate,
               documentLength: recallDocumentTerms(candidate).length,
-              exactSearchText: normalizeRecallSearchText(redactSensitiveText(content)),
+              exactSearchText: recallExactSearchText(candidate),
               postings,
               source,
             } satisfies IndexedRecallSource;
@@ -1526,6 +1526,29 @@ function indexCandidate(uri: string, content: string, canonicalResource: boolean
     validFrom: memory?.metadata.validFrom,
     validTo: memory?.metadata.validTo,
   };
+}
+
+/**
+ * Exact search is a user-content surface, not a serialization search. Keep the
+ * parsed body and intentional low-entropy discovery fields while excluding
+ * machine headers such as citation IDs, hashes, snapshots, and repository IDs.
+ */
+function recallExactSearchText(candidate: RecallCandidate): string {
+  const fields = candidate.fields;
+  return normalizeRecallSearchText(
+    redactSensitiveText(
+      [
+        candidate.text,
+        fields?.title,
+        fields?.topic,
+        fields?.project,
+        fields?.workspaceScope,
+        ...(fields?.keywords ?? []),
+      ]
+        .filter((value): value is string => value !== undefined && value.length > 0)
+        .join('\n'),
+    ),
+  );
 }
 
 function memoryRelations(memory: ReturnType<typeof parseMemoryDocument>): readonly MemoryRelation[] | undefined {

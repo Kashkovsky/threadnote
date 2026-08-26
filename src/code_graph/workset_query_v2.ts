@@ -1,6 +1,6 @@
-import {Clock, Effect, FileSystem} from 'effect';
+import {Clock, Effect, FileSystem, Option, Path} from 'effect';
 import {readSeedManifest, requireWorkset} from '../manifest.js';
-import type {ProjectManifest, RuntimeConfig} from '../types.js';
+import type {ProjectManifest, ResolvedWorkset, RuntimeConfig, SeedManifest} from '../types.js';
 import {expandPath} from '../utils.js';
 import {
   CodeGraphQueryService,
@@ -477,62 +477,138 @@ export const continueCodeGraphWorksetQueryV2 = Effect.fn('codeGraphWorksetV2.con
  * building a graph. A caller-scoped matching worktree wins; otherwise sibling
  * worktrees remain an explicit ambiguity instead of leaking evidence.
  */
+export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2.resolveQualifiedRefTargets')(
+  function* (config: RuntimeConfig, refs: readonly string[], callerCwd?: string) {
+    for (const ref of refs) {
+      if (!isCodeGraphQualifiedRefHandle(ref)) throw new Error('Qualified code graph reference is invalid.');
+    }
+    if (refs.length === 0) return [] as readonly ResolvedCodeGraphQualifiedRefTargetV1[];
+    const uniqueRefs = [...new Set(refs)];
+    const records = yield* Effect.forEach(
+      uniqueRefs,
+      ref => resolveCodeGraphQualifiedRef(config.agentContextHome, {ref}),
+      {concurrency: 4},
+    );
+    const recordsByRef = new Map(records.map(record => [record.ref, record]));
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const queryService = yield* CodeGraphQueryService;
+    const manifest = yield* readSeedManifest(config.manifestPath);
+    const caller = callerCwd === undefined ? undefined : yield* expandPath(callerCwd);
+    const requestedRepositoryIds = new Set(records.map(record => record.repositoryId));
+    const publishedRoutes = yield* Effect.forEach(
+      resolveManifestWorksets(manifest),
+      workset =>
+        Effect.option(readPublishedQualifiedRefRoute(config.agentContextHome, workset.name, fs, path)).pipe(
+          Effect.map(published => ({published: Option.getOrUndefined(published), workset})),
+        ),
+      {concurrency: 4},
+    );
+    const publishedPaths = publishedRoutes.flatMap(({published, workset}) => {
+      if (
+        published === undefined ||
+        !codeGraphWorksetCatalogGenerationMatches(workset, codeGraphWorksetManifestDigest(workset), published)
+      ) {
+        return [];
+      }
+      const projectsByKey = new Map(workset.projects.map(project => [safeLabel(project.name), project]));
+      return published.members.flatMap(member => {
+        if (!requestedRepositoryIds.has(member.repositoryId)) return [];
+        const project = projectsByKey.get(member.repositoryKey);
+        return project === undefined ? [] : [project.path];
+      });
+    });
+    const orderedPaths = [...(caller === undefined ? [] : [caller]), ...publishedPaths];
+    const uniquePaths: string[] = [];
+    const seenPaths = new Set<string>();
+    for (const candidate of orderedPaths) {
+      const cwd = yield* expandPath(candidate);
+      if (seenPaths.has(cwd)) continue;
+      seenPaths.add(cwd);
+      uniquePaths.push(cwd);
+    }
+    const matches = yield* Effect.forEach(
+      uniquePaths,
+      cwd =>
+        Effect.gen(function* () {
+          if (!(yield* fs.exists(cwd))) return undefined;
+          const status = yield* queryService.status(
+            config.agentContextHome,
+            cwd,
+            CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
+          );
+          return status.readySnapshot === undefined ? undefined : ({cwd, status} as const);
+        }).pipe(Effect.catch(() => Effect.succeed(undefined))),
+      {concurrency: 4},
+    );
+    const available = matches.filter((value): value is NonNullable<typeof value> => value !== undefined);
+    const availableByRepository = new Map<string, typeof available>();
+    for (const candidate of available) {
+      const repositoryId = candidate.status.identity.repositoryId;
+      const group = availableByRepository.get(repositoryId) ?? [];
+      group.push(candidate);
+      availableByRepository.set(repositoryId, group);
+    }
+    return refs.map(ref => {
+      const record = recordsByRef.get(ref)!;
+      const repositoryMatches = availableByRepository.get(record.repositoryId) ?? [];
+      const selected =
+        repositoryMatches.find(candidate => candidate.cwd === caller) ??
+        (repositoryMatches.length === 1 ? repositoryMatches[0] : undefined);
+      if (selected === undefined) {
+        throw new Error(
+          repositoryMatches.length === 0
+            ? 'The qualified graph reference repository has no caller-scoped or published ready worktree.'
+            : 'The qualified graph reference matches multiple worktrees; pass --cwd for the intended sibling.',
+        );
+      }
+      return {
+        cwd: selected.cwd,
+        nodeId: record.nodeId,
+        ref: record.ref,
+        repositoryId: record.repositoryId,
+        status: selected.status,
+      } satisfies ResolvedCodeGraphQualifiedRefTargetV1;
+    });
+  },
+);
+
+function resolveManifestWorksets(manifest: SeedManifest): readonly ResolvedWorkset[] {
+  const projectsByName = new Map(manifest.projects.map(project => [project.name.toLowerCase(), project]));
+  return (manifest.worksets ?? []).map(workset => {
+    const projects: ProjectManifest[] = [];
+    const unresolvedProjects: string[] = [];
+    for (const name of workset.projects) {
+      const project = projectsByName.get(name.toLowerCase());
+      if (project === undefined) unresolvedProjects.push(name);
+      else projects.push(project);
+    }
+    return {name: workset.name, projects, unresolvedProjects};
+  });
+}
+
+function readPublishedQualifiedRefRoute(
+  threadnoteHome: string,
+  worksetName: string,
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+): Effect.Effect<CodeGraphWorksetCatalogPublishedGenerationV1 | undefined, unknown> {
+  const captured = readPublishedCodeGraphWorksetCatalogGeneration(threadnoteHome, worksetName).pipe(
+    Effect.provideService(FileSystem.FileSystem, fs),
+    Effect.provideService(Path.Path, path),
+  );
+  // The catalog reader's inferred generic environment is intentionally broad;
+  // this adapter has captured the only concrete services used by that read.
+  return captured as Effect.Effect<CodeGraphWorksetCatalogPublishedGenerationV1 | undefined, unknown>;
+}
+
+/** Resolve one qualified handle through the same batched routing boundary. */
 export const resolveCodeGraphQualifiedRefTarget = Effect.fn('codeGraphWorksetV2.resolveQualifiedRefTarget')(function* (
   config: RuntimeConfig,
   ref: string,
   callerCwd?: string,
 ) {
-  if (!isCodeGraphQualifiedRefHandle(ref)) throw new Error('Qualified code graph reference is invalid.');
-  const record = yield* resolveCodeGraphQualifiedRef(config.agentContextHome, {ref});
-  const fs = yield* FileSystem.FileSystem;
-  const queryService = yield* CodeGraphQueryService;
-  const manifest = yield* readSeedManifest(config.manifestPath);
-  const orderedPaths = [
-    ...(callerCwd === undefined ? [] : [yield* expandPath(callerCwd)]),
-    ...manifest.projects.map(project => project.path),
-  ];
-  const uniquePaths: string[] = [];
-  const seenPaths = new Set<string>();
-  for (const candidate of orderedPaths) {
-    const cwd = yield* expandPath(candidate);
-    if (seenPaths.has(cwd)) continue;
-    seenPaths.add(cwd);
-    uniquePaths.push(cwd);
-  }
-  const matches = yield* Effect.forEach(
-    uniquePaths,
-    cwd =>
-      Effect.gen(function* () {
-        if (!(yield* fs.exists(cwd))) return undefined;
-        const status = yield* queryService.status(
-          config.agentContextHome,
-          cwd,
-          CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
-        );
-        return status.identity.repositoryId === record.repositoryId && status.readySnapshot !== undefined
-          ? ({cwd, status} as const)
-          : undefined;
-      }).pipe(Effect.catch(() => Effect.succeed(undefined))),
-    {concurrency: 4},
-  );
-  const available = matches.filter((value): value is NonNullable<typeof value> => value !== undefined);
-  const caller = callerCwd === undefined ? undefined : yield* expandPath(callerCwd);
-  const selected =
-    available.find(candidate => candidate.cwd === caller) ?? (available.length === 1 ? available[0] : undefined);
-  if (selected === undefined) {
-    throw new Error(
-      available.length === 0
-        ? 'The qualified graph reference repository has no configured ready worktree.'
-        : 'The qualified graph reference matches multiple worktrees; pass --cwd for the intended sibling.',
-    );
-  }
-  return {
-    cwd: selected.cwd,
-    nodeId: record.nodeId,
-    ref: record.ref,
-    repositoryId: record.repositoryId,
-    status: selected.status,
-  } satisfies ResolvedCodeGraphQualifiedRefTargetV1;
+  return (yield* resolveCodeGraphQualifiedRefTargets(config, [ref], callerCwd))[0]!;
 });
 
 interface PreparedCoreInput extends CodeGraphWorksetQueryV2InputV1 {

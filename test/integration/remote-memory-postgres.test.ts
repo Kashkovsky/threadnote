@@ -1,7 +1,8 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {formatMemoryDocument} from '../../src/memory_document.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
 import {formatRemoteMemoryLogicalKey, REMOTE_MEMORY_REVISION_VERSION} from '../../src/memory_domain/revisions.js';
@@ -11,6 +12,7 @@ import {RemoteMemoryIndexer} from '../../src/remote_memory/indexer.js';
 import {migrateRemoteMemoryDatabase} from '../../src/remote_memory/migrations.js';
 import type {OAuthPrincipalClaims} from '../../src/remote_memory/oauth.js';
 import {PostgresRemoteMemoryOperatorAdapter} from '../../src/remote_memory/operator_postgres.js';
+import type {RemoteMemoryPortableRecordV1} from '../../src/remote_memory/portability.js';
 import {
   PostgresRemoteControlPlane,
   type RemoteMemoryProvisioningInput,
@@ -505,6 +507,61 @@ postgresDescribe('remote memory PostgreSQL service', () => {
     expect(Number(persisted.receipts[0]?.count)).toBe(1);
     expect(persisted.audits).toEqual([{policy_version: 'system:migration-v1', share_policy_version: 'share-v2'}]);
     expect(await indexer.runPass({batchSize: 1})).toEqual({failed: 0, processed: 1});
+  });
+
+  it('enforces citation sharing policy at direct adapter ingress while preserving clean v4 on export', async () => {
+    const operator = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
+    const suffix = crypto.randomUUID();
+    const clean = operatorPortableRecord(
+      SHARE_A_MULTI_MEMBER,
+      `direct-citation-clean-${suffix}`,
+      operatorCitationContent(`direct-citation-clean-${suffix}`, operatorCitation()),
+    );
+
+    await expect(operator.applyGitBetaImport(operatorImportInput(clean, SHARE_A_MULTI_MEMBER))).resolves.toEqual([
+      {sourceUri: clean.aliases[0], status: 'imported', targetUri: clean.uri, version: 1},
+    ]);
+    const exported = await operator.exportRecords(SHARE_A_MULTI_MEMBER);
+    const exportedClean = exported.find(record => record.uri === clean.uri);
+    expect(exportedClean).toEqual(clean);
+    expect(parseMemoryDocument(clean.uri, exportedClean!.canonicalContent)?.metadata).toMatchObject({
+      codeCitations: [operatorCitation()],
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+    });
+
+    const blocked = [
+      operatorPortableRecord(
+        SHARE_A_MULTI_MEMBER,
+        `direct-citation-dirty-${suffix}`,
+        operatorCitationContent(`direct-citation-dirty-${suffix}`, operatorCitation({sourceDirty: true})),
+      ),
+      operatorPortableRecord(
+        SHARE_A_MULTI_MEMBER,
+        `direct-citation-local-${suffix}`,
+        operatorCitationContent(`direct-citation-local-${suffix}`, operatorCitation({repositoryIdentityKind: 'local'})),
+      ),
+      operatorPortableRecord(
+        SHARE_A_MULTI_MEMBER,
+        `direct-citation-malformed-${suffix}`,
+        operatorMalformedCitationContent(`direct-citation-malformed-${suffix}`),
+      ),
+    ];
+    for (const record of blocked) {
+      await expect(operator.applyGitBetaImport(operatorImportInput(record, SHARE_A_MULTI_MEMBER))).rejects.toThrow(
+        'code-citation sharing policy',
+      );
+    }
+    const blockedHeads = await withTenant(
+      fixture.migratorSql,
+      TENANT_A,
+      transaction => transaction<{topic: string}[]>`
+        SELECT topic FROM remote_memory.memory_heads
+        WHERE tenant_id = ${TENANT_A} AND share_id = ${SHARE_A_MULTI_MEMBER}
+          AND topic LIKE ${`direct-citation-%-${suffix}`}
+        ORDER BY topic
+      `,
+    );
+    expect(blockedHeads).toEqual([{topic: clean.topic}]);
   });
 
   it('commits one immutable CAS winner, replays exact outcomes, and recalls through the recent-write overlay', async () => {
@@ -1259,6 +1316,45 @@ postgresDescribe('remote memory PostgreSQL service', () => {
       ),
     ).rejects.toMatchObject({code: '23503'});
   });
+
+  it('fails closed when direct adapter export encounters dirty, local-identity, or malformed citations', async () => {
+    const operator = new PostgresRemoteMemoryOperatorAdapter(fixture.migratorSql);
+    const suffix = crypto.randomUUID();
+    const scenarios = [
+      {
+        content: operatorCitationContent(`000-forged-export-dirty-${suffix}`, operatorCitation({sourceDirty: true})),
+        shareId: SHARE_A,
+        tenantId: TENANT_A,
+        topic: `000-forged-export-dirty-${suffix}`,
+      },
+      {
+        content: operatorCitationContent(
+          `000-forged-export-local-${suffix}`,
+          operatorCitation({repositoryIdentityKind: 'local'}),
+        ),
+        shareId: SHARE_A_SECONDARY,
+        tenantId: TENANT_A,
+        topic: `000-forged-export-local-${suffix}`,
+      },
+      {
+        content: operatorMalformedCitationContent(`000-forged-export-malformed-${suffix}`),
+        shareId: SHARE_B,
+        tenantId: TENANT_B,
+        topic: `000-forged-export-malformed-${suffix}`,
+      },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      await insertForgedPortableRow(
+        fixture.migratorSql,
+        scenario.tenantId,
+        scenario.shareId,
+        scenario.topic,
+        scenario.content,
+      );
+      await expect(operator.exportRecords(scenario.shareId)).rejects.toThrow('code-citation sharing policy');
+    }
+  });
 });
 
 const tenantScopedTableNames = [
@@ -1371,6 +1467,131 @@ function rememberFixture(
     topic: input.topic,
     version: 1,
   };
+}
+
+function operatorCitation(
+  overrides: {readonly repositoryIdentityKind?: 'local' | 'remote'; readonly sourceDirty?: boolean} = {},
+) {
+  return createMemoryCodeCitation({
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+    path: 'src/remote_memory/operator_postgres.ts',
+    repositoryId: 'b'.repeat(64),
+    repositoryIdentityKind: overrides.repositoryIdentityKind ?? 'remote',
+    sourceCommit: 'c'.repeat(40),
+    sourceDirty: overrides.sourceDirty ?? false,
+    sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  });
+}
+
+function operatorCitationContent(topic: string, citation: ReturnType<typeof operatorCitation>): string {
+  return formatMemoryDocument(
+    'MEMORY',
+    {
+      codeCitations: [citation],
+      kind: 'durable',
+      project: PROJECT,
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-08-26T20:00:00.000Z',
+      topic,
+    },
+    'Direct operator portability must enforce the canonical citation sharing policy.',
+  );
+}
+
+function operatorMalformedCitationContent(topic: string): string {
+  return formatMemoryDocument(
+    'MEMORY',
+    {
+      kind: 'durable',
+      project: PROJECT,
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-08-26T20:00:00.000Z',
+      topic,
+    },
+    'Malformed citation metadata must not cross the direct operator boundary.',
+  ).replace(
+    `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+    `schema_version: ${MEMORY_SCHEMA_VERSION}\n  code_citation: {not-json}`,
+  );
+}
+
+function operatorPortableRecord(
+  shareId: string,
+  topic: string,
+  canonicalContent: string,
+): RemoteMemoryPortableRecordV1 {
+  return {
+    aliases: [`threadnote://user/import/memories/shared/team/durable/projects/${PROJECT}/${topic}.md`],
+    canonicalContent,
+    contentHash: sha256HexSync(canonicalContent),
+    kind: 'durable',
+    project: PROJECT,
+    topic,
+    uri: formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId, topic}),
+    version: 1,
+  };
+}
+
+function operatorImportInput(record: RemoteMemoryPortableRecordV1, shareId: string) {
+  const planDigest = sha256HexSync(`direct-operator:${record.uri}`);
+  return {
+    aliasCompatibilityEndsAt: '2099-01-01T00:00:00.000Z',
+    planDigest,
+    planId: `tnmi_${planDigest.slice(0, 32)}`,
+    records: [record],
+    shareId,
+  };
+}
+
+async function insertForgedPortableRow(
+  sql: Sql,
+  tenantId: string,
+  shareId: string,
+  topic: string,
+  content: string,
+): Promise<void> {
+  const headId = crypto.randomUUID();
+  const revisionId = crypto.randomUUID();
+  const uri = formatRemoteMemoryUri({kind: 'durable', project: PROJECT, shareId, topic});
+  await withTenant(sql, tenantId, async transaction => {
+    await transaction`
+      INSERT INTO remote_memory.principals(tenant_id, id, status)
+      VALUES (${tenantId}, 'system:forged-export-test', 'active')
+      ON CONFLICT (tenant_id, id) DO NOTHING
+    `;
+    const generations = await transaction<{share_generation: string | number}[]>`
+      UPDATE remote_memory.shares SET share_generation = share_generation + 1
+      WHERE tenant_id = ${tenantId} AND id = ${shareId} AND status = 'active'
+      RETURNING share_generation
+    `;
+    const generation = generations[0]?.share_generation;
+    if (generation === undefined) throw new Error('Forged export test share is not active.');
+    await transaction`
+      INSERT INTO remote_memory.memory_heads(
+        tenant_id, share_id, id, kind, project, topic, canonical_uri, status
+      ) VALUES (${tenantId}, ${shareId}, ${headId}, 'durable', ${PROJECT}, ${topic}, ${uri}, 'active')
+    `;
+    await transaction`
+      INSERT INTO remote_memory.memory_revisions(
+        tenant_id, share_id, id, head_id, generation, status, markdown_body, content_hash,
+        oauth_principal_id, operation_id
+      ) VALUES (
+        ${tenantId}, ${shareId}, ${revisionId}, ${headId}, ${generation}, 'active', ${content},
+        ${sha256HexSync(content)}, 'system:forged-export-test', ${`forged-export:${topic}`}
+      )
+    `;
+    await transaction`
+      UPDATE remote_memory.memory_heads SET current_revision_id = ${revisionId}
+      WHERE tenant_id = ${tenantId} AND share_id = ${shareId} AND id = ${headId}
+    `;
+  });
 }
 
 async function withTenant<A>(sql: Sql, tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {

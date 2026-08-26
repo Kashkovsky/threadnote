@@ -1,8 +1,7 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {parseMemoryDocument} from '../memory_document.js';
 import {parseRemoteShareAddress} from '../memory_domain/address.js';
-import {inspectRemoteMemoryContent} from '../memory_domain/content.js';
+import {parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
 import {PostgresRemoteControlPlane, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
@@ -61,6 +60,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
     readonly shareId: string;
   }): Promise<readonly GitBetaImportApplyOutcomeV1[]> => {
     validateApplyInput(input);
+    for (const record of input.records) validatePortableRecord(record, input.shareId);
     const tenantId = await this.controlPlane.tenantForShare(input.shareId);
     if (!tenantId) throw new Error('The remote memory share does not exist or is inactive.');
     return this.withTenant(tenantId, async transaction => {
@@ -113,16 +113,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
 
   readonly exportRecords = async (shareId: string): Promise<readonly RemoteMemoryPortableRecordV1[]> => {
     const rows = await this.portableRows(shareId);
-    return rows.map(row => ({
-      aliases: sortedAliases(row.aliases),
-      canonicalContent: row.markdown_body,
-      contentHash: row.content_hash,
-      kind: remoteMemoryKind(row.kind),
-      project: row.project,
-      topic: row.topic,
-      uri: row.canonical_uri,
-      version: REMOTE_MEMORY_PORTABILITY_VERSION,
-    }));
+    return rows.map(row => portableRecordFromRow(row, shareId));
   };
 
   async close(): Promise<void> {
@@ -327,26 +318,51 @@ function validatePortableRecord(record: RemoteMemoryPortableRecordV1, shareId: s
   ) {
     throw new Error('Portable record identity mismatch.');
   }
-  const inspection = inspectRemoteMemoryContent(record.canonicalContent);
-  if (!inspection.allowed || inspection.canonicalContent !== record.canonicalContent) {
+  const document = parseRemoteCanonicalMemoryDocument({
+    content: record.canonicalContent,
+    kind: record.kind,
+    project: record.project,
+    topic: record.topic,
+    uri: record.uri,
+  });
+  if (document.content !== record.canonicalContent) {
     throw new Error('Portable record does not pass canonical content policy.');
   }
   if (sha256HexSync(record.canonicalContent) !== record.contentHash) {
     throw new Error('Portable record content hash mismatch.');
   }
-  const document = parseMemoryDocument(record.uri, record.canonicalContent);
-  if (
-    !document ||
-    document.headerTitle !== 'MEMORY' ||
-    document.metadata.kind !== record.kind ||
-    document.metadata.project !== address.project ||
-    document.metadata.topic !== address.topic
-  ) {
-    throw new Error('Portable record Markdown metadata mismatch.');
-  }
   if (record.aliases.length === 0) throw new Error('Git beta imports require a source alias.');
   for (const alias of record.aliases) validateGitBetaAlias(alias);
   return address;
+}
+
+function portableRecordFromRow(row: PortableRecordRow, shareId: string): RemoteMemoryPortableRecordV1 {
+  const kind = remoteMemoryKind(row.kind);
+  const address = parseRemoteShareAddress(row.canonical_uri);
+  if (address.shareId !== shareId) throw new Error('The remote memory export row belongs to another share.');
+  const document = parseRemoteCanonicalMemoryDocument({
+    content: row.markdown_body,
+    kind,
+    project: row.project,
+    topic: row.topic,
+    uri: row.canonical_uri,
+  });
+  if (document.content !== row.markdown_body) {
+    throw new Error('The remote memory export row does not use canonical content bytes.');
+  }
+  if (sha256HexSync(document.content) !== row.content_hash) {
+    throw new Error('The remote memory export row content hash does not match its contents.');
+  }
+  return {
+    aliases: sortedAliases(row.aliases),
+    canonicalContent: document.content,
+    contentHash: row.content_hash,
+    kind,
+    project: row.project,
+    topic: row.topic,
+    uri: address.canonicalUri,
+    version: REMOTE_MEMORY_PORTABILITY_VERSION,
+  };
 }
 
 function validateGitBetaAlias(alias: string): void {

@@ -166,6 +166,15 @@ describe('dependency-aware CI workflow', () => {
     ]);
   });
 
+  it('runs the actual-runtime citation gate on quality-relevant changes', () => {
+    const ci = workflow('.github/workflows/ci.yml');
+    const recallQuality = ci.jobs['recall-quality']!;
+
+    expect(stepForRun(recallQuality, 'bun run eval:context-brief-citations:runtime').name).toBe(
+      'Actual-runtime memory citation and Context Brief gate',
+    );
+  });
+
   it('gates quality, Windows, bytecode, and self-contained release matrices independently', () => {
     const jobs = workflow('.github/workflows/ci.yml').jobs;
 

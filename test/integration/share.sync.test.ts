@@ -3,6 +3,8 @@ import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
+import {formatMemoryDocument} from '../../src/memory_document.js';
 import {
   clearAutoShareStateForTest,
   listShareConflicts,
@@ -732,6 +734,99 @@ describe('share sync git handling', () => {
     );
     await expect(readFile(pendingPath, 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
   }, 10000);
+
+  it('blocks unshareable citations from outbound conflict resolution and inbound take shared', async () => {
+    const {config, home, root, seed, worktree} = await makeShareRepo();
+    const {store} = await nativeStoreFixture(root);
+    const relativePath = 'durable/projects/threadnote/cited.md';
+    const id = `default:${relativePath}`;
+    const uri = 'threadnote://user/denys/memories/shared/default/durable/projects/threadnote/cited.md';
+    const sharedContent = citedMemory('shared inbound');
+    const unshareableSharedContent = citedMemory('unshareable shared inbound', {
+      repositoryIdentityKind: 'local',
+    });
+    const localContent = citedMemory('local edit', {sourceDirty: true});
+    await mkdir(dirname(join(seed, relativePath)), {recursive: true});
+    await writeFile(join(seed, relativePath), `${sharedContent}\n`, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add cited shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(sharedContent);
+    await writeCanonicalResource(store, uri, localContent);
+
+    const pendingPath = join(home, 'share', 'auto-sync-pending-reindexes.json');
+    await writeFile(
+      pendingPath,
+      `${JSON.stringify(
+        {
+          teams: {
+            default: [{path: join(worktree, relativePath), relativePath, status: 'added'}],
+          },
+          version: 1,
+        },
+        undefined,
+        2,
+      )}\n`,
+      'utf8',
+    );
+
+    await expect(resolveShareConflict(config, id, {push: false, take: 'local'})).rejects.toThrow(
+      'dirty worktree cannot be shared',
+    );
+    const mergedPath = join(root, 'merged-citation.md');
+    await writeFile(mergedPath, citedMemory('merged file', {repositoryIdentityKind: 'local'}), 'utf8');
+    await expect(resolveShareConflict(config, id, {fromFile: mergedPath, push: false})).rejects.toThrow(
+      'portable remote repository identity',
+    );
+    await expect(
+      resolveShareConflict(config, id, {
+        mergedContent: malformedCitedMemory('MCP merged content'),
+        push: false,
+      }),
+    ).rejects.toThrow('malformed code citation metadata');
+
+    await expect(readFile(join(worktree, relativePath), 'utf8')).resolves.toBe(`${sharedContent}\n`);
+    await expect(readFile(pendingPath, 'utf8')).resolves.toContain(relativePath);
+
+    await writeFile(join(worktree, relativePath), `${unshareableSharedContent}\n`, 'utf8');
+    await expect(resolveShareConflict(config, id, {take: 'shared'})).rejects.toThrow(
+      'portable remote repository identity',
+    );
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(localContent);
+    await expect(readFile(pendingPath, 'utf8')).resolves.toContain(relativePath);
+  }, 10000);
+
+  it('blocks dirty, local-identity, and malformed citations at shared Git ingress', async () => {
+    const scenarios = [
+      {content: citedMemory('dirty inbound', {sourceDirty: true}), message: 'dirty worktree cannot be shared'},
+      {
+        content: citedMemory('local inbound', {repositoryIdentityKind: 'local'}),
+        message: 'portable remote repository identity',
+      },
+      {
+        content: ['not a memory', '  code_citation: {not-json}', '', 'malformed CR-only inbound'].join('\r'),
+        message: 'malformed code citation metadata',
+      },
+    ];
+
+    for (const [index, scenario] of scenarios.entries()) {
+      const {config, root, seed} = await makeShareRepo();
+      const {store} = await nativeStoreFixture(root);
+      const relativePath = `durable/projects/threadnote/cited-inbound-${index}.md`;
+      const uri = `threadnote://user/denys/memories/shared/default/${relativePath}`;
+      await mkdir(dirname(join(seed, relativePath)), {recursive: true});
+      await writeFile(join(seed, relativePath), `${scenario.content}\n`, 'utf8');
+      await git(['add', relativePath], seed);
+      await git(['commit', '-m', `add blocked cited shared memory ${index}`], seed);
+      await git(['push', 'origin', 'main'], seed);
+
+      await runShareSync(config, {push: false});
+      await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).rejects.toMatchObject({code: 'ENOENT'});
+      const conflicts = await runEffect(listShareConflicts(config, {team: 'default'}));
+      expect(conflicts).toEqual([expect.objectContaining({reason: expect.stringContaining(scenario.message)})]);
+    }
+  }, 30000);
 
   it('resolves a pending modified conflict by taking shared content', async () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();
@@ -1483,3 +1578,51 @@ describe('share sync git handling', () => {
     expect(pending.teams.default[0]?.previousRevision).toBeUndefined();
   });
 });
+
+function citedMemory(
+  body: string,
+  overrides: {readonly repositoryIdentityKind?: 'local' | 'remote'; readonly sourceDirty?: boolean} = {},
+): string {
+  const citation = createMemoryCodeCitation({
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+    path: 'src/share_conflicts.ts',
+    repositoryId: 'b'.repeat(64),
+    repositoryIdentityKind: overrides.repositoryIdentityKind ?? 'remote',
+    sourceCommit: 'c'.repeat(40),
+    sourceDirty: overrides.sourceDirty ?? false,
+    sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  });
+  return formatMemoryDocument(
+    'MEMORY',
+    {
+      codeCitations: [citation],
+      kind: 'durable',
+      project: 'threadnote',
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-08-26T20:00:00.000Z',
+      topic: 'share-conflict-citations',
+    },
+    body,
+  );
+}
+
+function malformedCitedMemory(body: string): string {
+  return [
+    'MEMORY',
+    'kind: durable',
+    'status: active',
+    'project: threadnote',
+    'topic: share-conflict-citations',
+    'source_agent_client: codex',
+    'timestamp: 2026-08-26T20:00:00.000Z',
+    `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+    '  code_citation: {not-json}',
+    '',
+    body,
+  ].join('\n');
+}

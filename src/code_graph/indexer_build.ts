@@ -13,6 +13,7 @@ import {
   assessIncrementalOverlay,
   assessReusableCleanBaseCompatibility,
   createCachedCodeGraphFactsAttributor,
+  currentSnapshotReusableBaseReceipt,
   overlayFallbackDescription,
   reusableBaseFileSetFingerprint,
 } from './indexer_incremental.js';
@@ -623,6 +624,11 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
             input.identity,
             alias,
             candidate.snapshot.id,
+            currentSnapshotReusableBaseReceipt(
+              input.inventory,
+              workspace,
+              input.languagePacks.activePackProvenance(input.inventory.files.map(file => file.path)),
+            ),
           );
           yield* input.onProgress?.({phase: 'activating', snapshotId: alias.id, subphase: 'promoting'}) ?? Effect.void;
           yield* verifyCommittedIndexInput({
@@ -1762,14 +1768,10 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       unit: 'files',
     }) ?? Effect.void;
   }
-  const reusableBaseReceipt = incrementalApplied
-    ? undefined
-    : {
-        fileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.files),
-        ...(input.inventory.reuseReceipt ? {inventory: {...input.inventory.reuseReceipt, workspace}} : {}),
-        packProvenance,
-        workspaceFingerprint: workspace.fingerprint,
-      };
+  const reusableBaseReceipt =
+    incrementalApplied && input.inventory.dirty
+      ? undefined
+      : currentSnapshotReusableBaseReceipt(input.inventory, workspace, packProvenance);
   yield* input.onProgress?.({phase: 'resolving', subphase: 'references'}) ?? Effect.void;
   const resolution = yield* input.store.resolveStagedReferences(
     input.layout.databasePath,

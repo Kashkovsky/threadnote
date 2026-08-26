@@ -127,6 +127,14 @@ export class CodeGraphQueryService extends Context.Service<
       expected: RepositoryIdentityExpectation,
       options?: CodeGraphStatusOptions,
     ) => Effect.Effect<CodeGraphStatus, unknown>;
+    /** @internal Keep status, lease, evidence reads, and the final fence on one SQLite session. */
+    readonly withStatusSession?: <A, E, R>(
+      threadnoteHome: string,
+      cwd: string,
+      expected: RepositoryIdentityExpectation | undefined,
+      options: CodeGraphStatusOptions,
+      use: (status: CodeGraphStatus) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | unknown, R>;
   }
 >()('threadnote/codeGraph/CodeGraphQuery') {
   static readonly layer = Layer.effect(
@@ -665,6 +673,32 @@ export class CodeGraphQueryService extends Context.Service<
               const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
               if (options?.requestMaintenance !== false) yield* requestMaintenance(threadnoteHome, identity);
               return status;
+            }),
+          ),
+        withStatusSession: (threadnoteHome, cwd, expected, options, use) =>
+          withRepositoryServices(
+            Effect.gen(function* () {
+              const identity = yield* expected === undefined
+                ? withCodeGraphQueryTelemetryStage(
+                    options.telemetry,
+                    'graph.query.status',
+                    'query-repository-identity',
+                    resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd),
+                  ).pipe(Effect.map(observation => observation.identity))
+                : withCodeGraphQueryTelemetryStage(
+                    options.telemetry,
+                    'graph.query.status',
+                    'query-repository-identity',
+                    resolveRepositoryIdentityForExpectation(cwd, expected),
+                  );
+              yield* options.afterIdentityObserved?.(identity) ?? Effect.void;
+              const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
+              const result = yield* store.withSession(
+                layout.databasePath,
+                statusForIdentity(threadnoteHome, identity, options, true).pipe(Effect.flatMap(use)),
+              );
+              if (options.requestMaintenance !== false) yield* requestMaintenance(threadnoteHome, identity);
+              return result;
             }),
           ),
       });

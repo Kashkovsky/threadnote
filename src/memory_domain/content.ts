@@ -7,6 +7,10 @@ import {
   parseMemoryDocument,
   type MemoryRecord,
 } from '../memory_document.js';
+import {
+  memoryCodeCitationSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from '../memory_code_citation_policy.js';
 import {applyScrubber, type ScrubberPattern} from '../scrubber.js';
 
 export const REMOTE_MEMORY_CONTENT_CONTRACT_VERSION = 1 as const;
@@ -85,6 +89,12 @@ export function parseRemoteCanonicalMemoryDocument(input: {
   }
   const record = parseMemoryDocument(input.uri, inspection.canonicalContent);
   if (!record) return invalidDocument('content is not canonical Threadnote Markdown');
+  const citationBlocker = memoryCodeCitationSharingBlocker(record.metadata);
+  if (citationBlocker) {
+    return invalidDocument(
+      `content blocked by code-citation sharing policy: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}`,
+    );
+  }
   if (record.metadata.kind !== input.kind) return invalidDocument('document kind does not match the mutation kind');
   if (record.metadata.project !== input.project) return invalidDocument('document project does not match the address');
   if (record.metadata.topic !== input.topic) return invalidDocument('document topic does not match the address');

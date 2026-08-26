@@ -413,7 +413,93 @@ func validTelemetryV4FailedQueryCheckpoint() *collectortracepb.ExportTraceServic
 	return request
 }
 
-func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2V3AndClosedV4(t *testing.T) {
+func validTelemetryV5ContextBriefRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryRequest()
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(5)
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue("context_brief")
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.phase", "context.brief.projection"),
+		stringKeyValue("threadnote.phase.outcome", "success"),
+		&commonpb.KeyValue{Key: "threadnote.phase.elapsed_ms", Value: intAnyValue(1)},
+		stringKeyValue("threadnote.context_brief.scope", "workset"),
+		stringKeyValue("threadnote.context_brief.citation_coverage", "partial"),
+		stringKeyValue("threadnote.context_brief.citation_result", "mixed"),
+		stringKeyValue("threadnote.context_brief.citation_unknown_reason", "mixed"),
+		stringKeyValue("threadnote.context_brief.cache_hits_bucket", "2^2"),
+		stringKeyValue("threadnote.context_brief.citations_bucket", "2^3"),
+		stringKeyValue("threadnote.context_brief.cited_memories_bucket", "2^2"),
+		stringKeyValue("threadnote.context_brief.exact_citations_bucket", "2^2"),
+		stringKeyValue("threadnote.context_brief.relocated_citations_bucket", "2^1"),
+		stringKeyValue("threadnote.context_brief.repositories_validated_bucket", "2^1"),
+		stringKeyValue("threadnote.context_brief.stale_citations_bucket", "2^0"),
+		stringKeyValue("threadnote.context_brief.unknown_citations_bucket", "2^0"),
+		boolKeyValue("threadnote.context_brief.output_truncated", false),
+	)
+	return request
+}
+
+func validTelemetryV5ContextBriefCheckpoint(phase string) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV5ContextBriefRequest()
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+	spanAttribute(request, "threadnote.phase").Value = stringAnyValue(phase)
+	switch phase {
+	case "context.brief.citation-validation":
+		removeSpanAttribute(request, "threadnote.context_brief.output_truncated")
+	case "context.brief.projection":
+		removeContextBriefCitationSurface(request)
+	default:
+		removeContextBriefCitationSurface(request)
+		removeSpanAttribute(request, "threadnote.context_brief.output_truncated")
+	}
+	return request
+}
+
+func validTelemetryV5ContextBriefLivenessCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV5ContextBriefRequest()
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+	for _, key := range []string{
+		"threadnote.duration_ms",
+		"threadnote.outcome",
+		"threadnote.phase",
+		"threadnote.phase.outcome",
+		"threadnote.phase.elapsed_ms",
+		"threadnote.context_brief.output_truncated",
+	} {
+		removeSpanAttribute(request, key)
+	}
+	removeContextBriefCitationSurface(request)
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		&commonpb.KeyValue{Key: "threadnote.operation.elapsed_ms", Value: intAnyValue(30_000)},
+	)
+	return request
+}
+
+func validTelemetryV5FailedContextBriefRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV5ContextBriefRequest()
+	spanAttribute(request, "threadnote.outcome").Value = stringAnyValue("failure")
+	spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+	removeContextBriefCitationSurface(request)
+	removeSpanAttribute(request, "threadnote.context_brief.output_truncated")
+	request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+		request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+		stringKeyValue("error.type", "UnknownError"),
+	)
+	return request
+}
+
+func removeContextBriefCitationSurface(request *collectortracepb.ExportTraceServiceRequest) {
+	for _, key := range append([]string{
+		"threadnote.context_brief.citation_coverage",
+		"threadnote.context_brief.citation_result",
+		"threadnote.context_brief.citation_unknown_reason",
+	}, contextBriefCitationBucketAttributes...) {
+		removeSpanAttribute(request, key)
+	}
+}
+
+func TestCanonicalTelemetryPayloadAcceptsFrozenV1ThroughV4AndClosedV5(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -449,6 +535,16 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2V3AndClosedV4(t *testing.T) {
 		validTelemetryV4QueryCheckpoint("graph.query.snapshot", "local"),
 		validTelemetryV4QueryCheckpoint("graph.query.execute", "local"),
 		validTelemetryV4QueryCheckpoint("graph.query.execute", "workset"),
+		telemetryRequestWithSchema(validTelemetryV2Request(), 5),
+		validTelemetryAutoUpdateRequest(5, false),
+		telemetryRequestWithSchema(validTelemetryV4QueryRequest(), 5),
+		validTelemetryV5ContextBriefRequest(),
+		validTelemetryV5ContextBriefCheckpoint("context.brief.graph"),
+		validTelemetryV5ContextBriefCheckpoint("context.brief.memory"),
+		validTelemetryV5ContextBriefCheckpoint("context.brief.citation-validation"),
+		validTelemetryV5ContextBriefCheckpoint("context.brief.projection"),
+		validTelemetryV5ContextBriefLivenessCheckpoint(),
+		validTelemetryV5FailedContextBriefRequest(),
 	} {
 		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
 		if marshalError != nil {
@@ -462,7 +558,7 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2V3AndClosedV4(t *testing.T) {
 			t.Fatal("valid canonical telemetry was changed")
 		}
 	}
-	for _, schemaVersion := range []int64{3, 4} {
+	for _, schemaVersion := range []int64{3, 4, 5} {
 		for _, result := range []string{"busy", "current", "disabled", "failed"} {
 			request := validTelemetryAutoUpdateResultRequest(schemaVersion, result)
 			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
@@ -476,6 +572,79 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1V2V3AndClosedV4(t *testing.T) {
 	}
 }
 
+func telemetryRequestWithSchema(request *collectortracepb.ExportTraceServiceRequest, schemaVersion int64) *collectortracepb.ExportTraceServiceRequest {
+	resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(schemaVersion)
+	return request
+}
+
+func TestCanonicalTelemetryPayloadAcceptsEveryClosedV5ContextBriefResult(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		coverage string
+		result   string
+		buckets  map[string]string
+		reason   string
+	}{
+		{coverage: "none", result: "none", buckets: map[string]string{
+			"threadnote.context_brief.cache_hits_bucket": "0", "threadnote.context_brief.citations_bucket": "0",
+			"threadnote.context_brief.cited_memories_bucket": "0", "threadnote.context_brief.exact_citations_bucket": "0",
+			"threadnote.context_brief.relocated_citations_bucket": "0", "threadnote.context_brief.repositories_validated_bucket": "0",
+			"threadnote.context_brief.stale_citations_bucket": "0", "threadnote.context_brief.unknown_citations_bucket": "0",
+		}},
+		{coverage: "complete", result: "exact-only", buckets: map[string]string{
+			"threadnote.context_brief.exact_citations_bucket": "2^3", "threadnote.context_brief.relocated_citations_bucket": "0",
+			"threadnote.context_brief.stale_citations_bucket": "0", "threadnote.context_brief.unknown_citations_bucket": "0",
+		}},
+		{coverage: "complete", result: "relocated", buckets: map[string]string{
+			"threadnote.context_brief.exact_citations_bucket": "2^2", "threadnote.context_brief.relocated_citations_bucket": "2^2",
+			"threadnote.context_brief.stale_citations_bucket": "0", "threadnote.context_brief.unknown_citations_bucket": "0",
+		}},
+		{coverage: "complete", result: "stale", buckets: map[string]string{
+			"threadnote.context_brief.exact_citations_bucket": "2^2", "threadnote.context_brief.relocated_citations_bucket": "2^1",
+			"threadnote.context_brief.stale_citations_bucket": "2^1", "threadnote.context_brief.unknown_citations_bucket": "0",
+		}},
+		{coverage: "partial", result: "unknown", reason: "unsupported", buckets: map[string]string{
+			"threadnote.context_brief.exact_citations_bucket": "2^2", "threadnote.context_brief.relocated_citations_bucket": "2^1",
+			"threadnote.context_brief.stale_citations_bucket": "0", "threadnote.context_brief.unknown_citations_bucket": "2^1",
+		}},
+		{coverage: "partial", result: "mixed", reason: "mixed", buckets: map[string]string{
+			"threadnote.context_brief.exact_citations_bucket": "2^2", "threadnote.context_brief.relocated_citations_bucket": "2^1",
+			"threadnote.context_brief.stale_citations_bucket": "2^0", "threadnote.context_brief.unknown_citations_bucket": "2^0",
+		}},
+		{coverage: "unavailable", result: "unknown", reason: "snapshot-unavailable", buckets: map[string]string{
+			"threadnote.context_brief.exact_citations_bucket": "0", "threadnote.context_brief.relocated_citations_bucket": "0",
+			"threadnote.context_brief.stale_citations_bucket": "0", "threadnote.context_brief.unknown_citations_bucket": "2^3",
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.coverage+"/"+test.result, func(t *testing.T) {
+			request := validTelemetryV5ContextBriefRequest()
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue(test.coverage)
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue(test.result)
+			for key, value := range test.buckets {
+				spanAttribute(request, key).Value = stringAnyValue(value)
+			}
+			if test.reason == "" {
+				removeSpanAttribute(request, "threadnote.context_brief.citation_unknown_reason")
+			} else {
+				spanAttribute(request, "threadnote.context_brief.citation_unknown_reason").Value = stringAnyValue(test.reason)
+			}
+			removeSpanAttribute(request, "threadnote.phase.outcome")
+			removeSpanAttribute(request, "threadnote.phase.elapsed_ms")
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError != nil {
+				t.Fatalf("valid Context Brief result was rejected: %v", validationError)
+			}
+		})
+	}
+}
+
 func TestFrozenTelemetrySchemaArtifactsRemainByteForByte(t *testing.T) {
 	for _, fixture := range []struct {
 		name   string
@@ -486,6 +655,7 @@ func TestFrozenTelemetrySchemaArtifactsRemainByteForByte(t *testing.T) {
 		{name: "v2", data: telemetrySchemaV2JSON, digest: "584061cf487c7fcef250d7ffa1ffaff96cbd0c8bd76da3d33d084f95cfcb68dd"},
 		{name: "v3", data: telemetrySchemaV3JSON, digest: "595f5d2f30fb58d4804b4b42dc2c2e81c84f57f53412ebcf3dbd6c052ed36217"},
 		{name: "v4", data: telemetrySchemaV4JSON, digest: "2753788350ad94da58fe265e904be54bc670ef2bed962a25fffedc238b479d5c"},
+		{name: "v5", data: telemetrySchemaV5JSON, digest: "12b359d02303dfcfe3c679000988a35028d1689ea92e725a73288eb3560a1b6e"},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
 			digest := sha256.Sum256(fixture.data)
@@ -496,12 +666,12 @@ func TestFrozenTelemetrySchemaArtifactsRemainByteForByte(t *testing.T) {
 	}
 }
 
-func TestV3AndV4RetainTheCompleteTerminalGraphBuildContract(t *testing.T) {
+func TestV3ThroughV5RetainTheCompleteTerminalGraphBuildContract(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, schemaVersion := range []int64{3, 4} {
+	for _, schemaVersion := range []int64{3, 4, 5} {
 		request := validTelemetryV2Request()
 		resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(schemaVersion)
 		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
@@ -531,7 +701,7 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(1)
 		}},
 		{name: "unknown schema version", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
-			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(5)
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(6)
 		}},
 		{name: "wrong schema version type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = stringAnyValue("2")
@@ -577,7 +747,7 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 	}
 }
 
-func TestCanonicalTelemetryPayloadRejectsInvalidV3AndV4AutoUpdateShapes(t *testing.T) {
+func TestCanonicalTelemetryPayloadRejectsInvalidV3ThroughV5AutoUpdateShapes(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -609,7 +779,7 @@ func TestCanonicalTelemetryPayloadRejectsInvalidV3AndV4AutoUpdateShapes(t *testi
 			removeSpanAttribute(request, "threadnote.auto_update.repair_required")
 		}},
 	}
-	for _, schemaVersion := range []int64{3, 4} {
+	for _, schemaVersion := range []int64{3, 4, 5} {
 		for _, test := range tests {
 			t.Run(fmt.Sprintf("v%d/%s", schemaVersion, test.name), func(t *testing.T) {
 				request := validTelemetryAutoUpdateRequest(schemaVersion, false)
@@ -842,6 +1012,235 @@ func TestCanonicalTelemetryPayloadRejectsArbitraryPrivateV4GraphQueryClassificat
 			} else {
 				spanAttribute(request, key).Value = stringAnyValue(private)
 			}
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				return false
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				return false
+			}
+		}
+		return true
+	}
+	if propertyError := quick.Check(property, &quick.Config{MaxCount: 32}); propertyError != nil {
+		t.Fatal(propertyError)
+	}
+}
+
+func TestSchemaV4RejectsEveryV5OnlyContextBriefField(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, keyValue := range validTelemetryV5ContextBriefRequest().ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes {
+		if keyValue == nil || !strings.HasPrefix(keyValue.Key, "threadnote.context_brief.") {
+			continue
+		}
+		t.Run(keyValue.Key, func(t *testing.T) {
+			request := validTelemetryV4CompletionRequest()
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				proto.Clone(keyValue).(*commonpb.KeyValue),
+			)
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				t.Fatal("schema v4 accepted a v5-only Context Brief field")
+			}
+		})
+	}
+	for _, phase := range []string{
+		"context.brief.graph",
+		"context.brief.memory",
+		"context.brief.citation-validation",
+		"context.brief.projection",
+	} {
+		t.Run(phase, func(t *testing.T) {
+			request := validTelemetryV4CompletionRequest()
+			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+			span.Attributes = append(span.Attributes,
+				stringKeyValue("threadnote.phase", phase),
+				stringKeyValue("threadnote.phase.outcome", "success"),
+				&commonpb.KeyValue{Key: "threadnote.phase.elapsed_ms", Value: intAnyValue(1)},
+			)
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				t.Fatal("schema v4 accepted a v5-only Context Brief phase")
+			}
+		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsInvalidV5ContextBriefShapes(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		request func() *collectortracepb.ExportTraceServiceRequest
+		mutate  func(*collectortracepb.ExportTraceServiceRequest)
+	}{
+		{name: "v5 surface under v4", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(4)
+		}},
+		{name: "missing scope", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.context_brief.scope")
+		}},
+		{name: "wrong scope type", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.scope").Value = intAnyValue(1)
+		}},
+		{name: "unknown coverage", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("private-coverage")
+		}},
+		{name: "unknown result", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("private-result")
+		}},
+		{name: "unknown reason", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_unknown_reason").Value = stringAnyValue("private-reason")
+		}},
+		{name: "exact result with unknown reason", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("exact-only")
+		}},
+		{name: "unknown result without reason", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("unknown")
+			removeSpanAttribute(request, "threadnote.context_brief.citation_unknown_reason")
+		}},
+		{name: "missing citation bucket", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.context_brief.cache_hits_bucket")
+		}},
+		{name: "wrong citation bucket type", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citations_bucket").Value = intAnyValue(8)
+		}},
+		{name: "out of range citation bucket", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citations_bucket").Value = stringAnyValue("2^53")
+		}},
+		{name: "wrong truncation type", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.output_truncated").Value = stringAnyValue("false")
+		}},
+		{name: "completion without truncation", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.context_brief.output_truncated")
+		}},
+		{name: "completion with non-projection phase", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase").Value = stringAnyValue("context.brief.citation-validation")
+		}},
+		{name: "none coverage with citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("none")
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("none")
+			removeSpanAttribute(request, "threadnote.context_brief.citation_unknown_reason")
+		}},
+		{name: "none result with nonempty complete coverage", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("complete")
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("none")
+			removeSpanAttribute(request, "threadnote.context_brief.citation_unknown_reason")
+			spanAttribute(request, "threadnote.context_brief.unknown_citations_bucket").Value = stringAnyValue("0")
+		}},
+		{name: "complete coverage with unknown citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("complete")
+		}},
+		{name: "partial coverage without known citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			for _, key := range []string{"threadnote.context_brief.exact_citations_bucket", "threadnote.context_brief.relocated_citations_bucket", "threadnote.context_brief.stale_citations_bucket"} {
+				spanAttribute(request, key).Value = stringAnyValue("0")
+			}
+		}},
+		{name: "unavailable coverage with exact citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("unavailable")
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("unknown")
+		}},
+		{name: "exact-only result with relocated citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("complete")
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("exact-only")
+			removeSpanAttribute(request, "threadnote.context_brief.citation_unknown_reason")
+			spanAttribute(request, "threadnote.context_brief.stale_citations_bucket").Value = stringAnyValue("0")
+			spanAttribute(request, "threadnote.context_brief.unknown_citations_bucket").Value = stringAnyValue("0")
+		}},
+		{name: "relocated result without relocated citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.citation_coverage").Value = stringAnyValue("complete")
+			spanAttribute(request, "threadnote.context_brief.citation_result").Value = stringAnyValue("relocated")
+			removeSpanAttribute(request, "threadnote.context_brief.citation_unknown_reason")
+			spanAttribute(request, "threadnote.context_brief.relocated_citations_bucket").Value = stringAnyValue("0")
+			spanAttribute(request, "threadnote.context_brief.stale_citations_bucket").Value = stringAnyValue("0")
+			spanAttribute(request, "threadnote.context_brief.unknown_citations_bucket").Value = stringAnyValue("0")
+		}},
+		{name: "status bucket larger than citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.exact_citations_bucket").Value = stringAnyValue("2^4")
+		}},
+		{name: "cache bucket larger than citations", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.cache_hits_bucket").Value = stringAnyValue("2^4")
+		}},
+		{name: "context fields on another operation", request: validTelemetryV5ContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.operation").Value = stringAnyValue("health")
+		}},
+		{name: "citation checkpoint with truncation", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV5ContextBriefCheckpoint("context.brief.citation-validation")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				boolKeyValue("threadnote.context_brief.output_truncated", false),
+			)
+		}},
+		{name: "projection checkpoint with citation result", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV5ContextBriefCheckpoint("context.brief.projection")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.context_brief.citation_coverage", "complete"),
+			)
+		}},
+		{name: "graph checkpoint with result", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV5ContextBriefCheckpoint("context.brief.graph")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.context_brief.citation_result", "none"),
+			)
+		}},
+		{name: "failed completion with result", request: validTelemetryV5FailedContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(
+				request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.context_brief.citation_coverage", "unavailable"),
+			)
+		}},
+		{name: "liveness checkpoint without elapsed time", request: validTelemetryV5ContextBriefLivenessCheckpoint, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.operation.elapsed_ms")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := test.request()
+			test.mutate(request)
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				t.Fatal("invalid schema v5 Context Brief telemetry was accepted")
+			}
+		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsArbitraryPrivateV5ContextBriefClassifications(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	property := func(value string) bool {
+		digest := sha256.Sum256([]byte(value))
+		private := "private-" + hex.EncodeToString(digest[:])
+		for _, key := range []string{
+			"threadnote.context_brief.scope",
+			"threadnote.context_brief.citation_coverage",
+			"threadnote.context_brief.citation_result",
+			"threadnote.context_brief.citation_unknown_reason",
+		} {
+			request := validTelemetryV5ContextBriefRequest()
+			spanAttribute(request, key).Value = stringAnyValue(private)
 			payload, marshalError := proto.Marshal(request)
 			if marshalError != nil {
 				return false

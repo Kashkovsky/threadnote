@@ -39,6 +39,25 @@ import {
   persistedIncrementalSymbolDeletionsStatement,
 } from './store_incremental_plan.js';
 
+const recordLayeredSnapshotInventoryReceipt = Effect.fn('codeGraph.recordLayeredSnapshotInventoryReceipt')(function* (
+  sql: SqlClient.SqlClient,
+  snapshot: CodeGraphSnapshot,
+  receipt: CodeGraphReusableBaseReceiptInput,
+  createdAt: string,
+) {
+  yield* sql`
+      INSERT INTO snapshot_reuse_receipts (
+        snapshot_id, format_version, resolution_surface_version, extractor_set,
+        workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
+        reexport_count, inventory_receipt_json, created_at
+      ) VALUES (
+        ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+        ${receipt.workspaceFingerprint}, ${receipt.fileSetFingerprint}, 0, 0, 0,
+        ${encodeCodeGraphInventoryReuseReceipt(receipt.inventory)}, ${createdAt}
+      )
+    `;
+});
+
 /** Exact read-only admission shared by cleanup writers and both health paths. */
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
@@ -418,6 +437,9 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           FROM activation_symbol_lookup
         `;
       }
+      if (activated && baseSnapshotId && !snapshot.dirty && reusableBaseReceipt) {
+        yield* recordLayeredSnapshotInventoryReceipt(sql, snapshot, reusableBaseReceipt, new Date().toISOString());
+      }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (activated) {
         const completedAt = new Date().toISOString();
@@ -715,6 +737,9 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
       yield* recordSnapshotExtractorGeneration(sql, snapshot.id);
       if (snapshotPackProvenance !== undefined) {
         yield* recordSnapshotPackProvenance(sql, snapshot.id, snapshotPackProvenance);
+      }
+      if (existing[0]?.state !== 'ready' && !snapshot.dirty && reusableBaseReceipt) {
+        yield* recordLayeredSnapshotInventoryReceipt(sql, snapshot, reusableBaseReceipt, completedAt);
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (existing[0]?.state !== 'ready') {

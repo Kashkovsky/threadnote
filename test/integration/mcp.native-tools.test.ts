@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {createHash} from '../helpers/node-crypto.js';
 import {existsSync} from '../helpers/node-fs.js';
-import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from '../helpers/node-fs-promises.js';
+import {mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {execFileSync} from '../helpers/node-child-process.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
@@ -9,6 +9,8 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
 import {renderSessionStartRecallQueue} from '../../src/hooks.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 
 interface TextContent {
@@ -2661,6 +2663,249 @@ describe('Threadnote MCP toolsets', () => {
             topic: 'evidence-enforcement',
           }),
         ).resolves.toContain('requires at least one evidence pointer');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('preserves v4 citations and rejects malformed or future schemas through archive_context', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const activeDirectory = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'active',
+          'threadnote',
+        );
+        const archivedDirectory = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'handoffs',
+          'archived',
+          'threadnote',
+        );
+        await mkdir(activeDirectory, {recursive: true});
+        const citation = createMemoryCodeCitation({
+          extractorSet: 'native-code-graph-13',
+          fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+          path: 'src/mcp_server_recall.ts',
+          repositoryId: 'b'.repeat(64),
+          repositoryIdentityKind: 'remote',
+          sourceCommit: 'c'.repeat(40),
+          sourceDirty: false,
+          sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+          target: {kind: 'file'},
+          version: 1,
+        });
+        const validTopic = 'public-archive-citation';
+        const validUri = `threadnote://user/test-user/memories/handoffs/active/threadnote/${validTopic}.md`;
+        const validPath = join(activeDirectory, `${validTopic}.md`);
+        const validContent = formatMemoryDocument(
+          'HANDOFF',
+          {
+            codeCitations: [citation],
+            kind: 'handoff',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            sourceCommit: citation.sourceCommit,
+            sourceObservedAt: '2026-08-26T20:00:00.000Z',
+            status: 'active',
+            timestamp: '2026-08-26T20:00:00.000Z',
+            topic: validTopic,
+          },
+          'Public MCP archive must retain precise source evidence.',
+        );
+        await writeFile(validPath, validContent, 'utf8');
+
+        await expect(
+          callText(client, 'archive_context', {
+            kind: 'handoff',
+            project: 'threadnote',
+            topic: validTopic,
+            uri: validUri,
+          }),
+        ).resolves.toContain(`Archived original memory: ${validUri}`);
+        expect(existsSync(validPath)).toBe(false);
+        const archivedFiles = await readdir(archivedDirectory);
+        expect(archivedFiles).toHaveLength(1);
+        const archivedPath = join(archivedDirectory, archivedFiles[0]!);
+        const archivedContent = await readFile(archivedPath, 'utf8');
+        const archived = parseMemoryDocument(
+          `threadnote://user/test-user/memories/handoffs/archived/threadnote/${archivedFiles[0]}`,
+          archivedContent,
+        );
+        expect(archived?.metadata).toMatchObject({
+          archivedFrom: validUri,
+          codeCitations: [citation],
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceCommit: citation.sourceCommit,
+          sourceObservedAt: '2026-08-26T20:00:00.000Z',
+          status: 'archived',
+        });
+        expect(archived?.metadata.citationErrors).toBeUndefined();
+        expect(archived?.body).toBe(
+          ['Archived original Threadnote memory.', '', 'Public MCP archive must retain precise source evidence.'].join(
+            '\n',
+          ),
+        );
+        expect(archived?.body).not.toContain(citation.id);
+        expect(archived?.body).not.toContain(citation.fileContentHash.value);
+
+        const blocked = [
+          {
+            message: 'newer than supported',
+            topic: 'public-archive-future',
+            versionLine: `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          },
+          {
+            message: 'newer than supported',
+            topic: 'public-archive-indented-future',
+            versionLine: `  schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          },
+          {
+            message: 'newer than supported',
+            newline: '\r',
+            topic: 'public-archive-cr-future',
+            versionLine: `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          },
+          {
+            extraLine: '  code_citation: {not-json}',
+            message: 'malformed code citation metadata (invalid-json)',
+            topic: 'public-archive-malformed',
+            versionLine: `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+          },
+        ];
+        for (const candidate of blocked) {
+          const uri = `threadnote://user/test-user/memories/handoffs/active/threadnote/${candidate.topic}.md`;
+          const path = join(activeDirectory, `${candidate.topic}.md`);
+          const content = [
+            'HANDOFF',
+            'kind: handoff',
+            'status: active',
+            'project: threadnote',
+            `topic: ${candidate.topic}`,
+            candidate.versionLine,
+            ...(candidate.extraLine ? [candidate.extraLine] : []),
+            '',
+            'Blocked archive content must remain untouched.',
+          ].join(candidate.newline ?? '\n');
+          await writeFile(path, content, 'utf8');
+
+          await expect(
+            callErrorText(client, 'archive_context', {
+              kind: 'handoff',
+              project: 'threadnote',
+              topic: candidate.topic,
+              uri,
+            }),
+          ).resolves.toContain(candidate.message);
+          await expect(readFile(path, 'utf8')).resolves.toBe(content);
+        }
+        await expect(readdir(archivedDirectory)).resolves.toEqual(archivedFiles);
+      },
+      {toolset: 'full'},
+    );
+  });
+
+  it('requires remember_context replaceUri for same-topic schema rewrites and citation clearing', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const directory = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+        );
+        await mkdir(directory, {recursive: true});
+        const futureTopic = 'remember-implicit-future';
+        const futurePath = join(directory, `${futureTopic}.md`);
+        const future = [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: threadnote',
+          `topic: ${futureTopic}`,
+          `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          'future_writer_field: preserve-me',
+          '',
+          'Future-owned content must remain unchanged.',
+        ].join('\n');
+        await writeFile(futurePath, future, 'utf8');
+
+        await expect(
+          callErrorText(client, 'remember_context', {
+            project: 'threadnote',
+            text: 'Implicit future overwrite.',
+            topic: futureTopic,
+          }),
+        ).resolves.toContain('newer than supported');
+        await expect(readFile(futurePath, 'utf8')).resolves.toBe(future);
+
+        const citationTopic = 'remember-implicit-citation-clear';
+        const citationUri = `threadnote://user/test-user/memories/durable/projects/threadnote/${citationTopic}.md`;
+        const citationPath = join(directory, `${citationTopic}.md`);
+        const citation = createMemoryCodeCitation({
+          extractorSet: 'native-code-graph-13',
+          fileContentHash: {algorithm: 'sha256', value: '1'.repeat(64)},
+          path: 'src/mcp_server_memory.ts',
+          repositoryId: '2'.repeat(64),
+          repositoryIdentityKind: 'remote',
+          sourceCommit: '3'.repeat(40),
+          sourceDirty: false,
+          sourceSnapshotId: `cgsn_${'4'.repeat(40)}`,
+          target: {kind: 'file'},
+          version: 1,
+        });
+        const cited = formatMemoryDocument(
+          'MEMORY',
+          {
+            codeCitations: [citation],
+            kind: 'durable',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-26T20:00:00.000Z',
+            topic: citationTopic,
+          },
+          'Citation-bearing MCP memory.',
+        );
+        await writeFile(citationPath, cited, 'utf8');
+
+        await expect(
+          callErrorText(client, 'remember_context', {
+            project: 'threadnote',
+            text: 'Implicit citation clear.',
+            topic: citationTopic,
+          }),
+        ).resolves.toContain(`replaceUri: "${citationUri}"`);
+        await expect(readFile(citationPath, 'utf8')).resolves.toBe(cited);
+
+        const replaced = await callText(client, 'remember_context', {
+          project: 'threadnote',
+          replaceUri: citationUri,
+          text: 'Explicit citation clear.',
+          topic: citationTopic,
+        });
+        expect(replaced).toContain('Cleared 1 prior code citation(s)');
+        const updated = parseMemoryDocument(citationUri, await readFile(citationPath, 'utf8'));
+        expect(updated?.body).toBe('Explicit citation clear.');
+        expect(updated?.metadata.codeCitations).toBeUndefined();
       },
       {toolset: 'core'},
     );

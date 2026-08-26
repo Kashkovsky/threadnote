@@ -2,6 +2,7 @@ import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from '../helpers/node-
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
+import * as yaml from 'js-yaml';
 import {afterEach, describe, expect, it} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
@@ -19,6 +20,12 @@ import {
   syncObsidianSourcesBeforeRecall,
 } from '../../src/obsidian_source.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
+import {
+  createMemoryCodeCitation,
+  formatMemoryCodeCitation,
+  MEMORY_SCHEMA_VERSION,
+} from '../../src/memory_code_citation.js';
+import {formatMemoryDocument} from '../../src/memory_document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -130,25 +137,28 @@ describe('Obsidian zero-plugin bridge', () => {
     await runEffect(
       Effect.gen(function* () {
         const store = yield* ResourceStore;
+        const citation = projectionCitation();
         yield* store.write(
           {account: config.account, home: config.agentContextHome, user: config.user},
           memoryUri,
-          [
+          formatMemoryDocument(
             'MEMORY',
-            'schema_version: 3',
-            'memory_id: tn_bridge',
-            'kind: durable',
-            'status: active',
-            'project: threadnote',
-            'topic: obsidian-bridge',
-            'source_agent_client: codex',
-            'timestamp: 2026-07-27T00:00:00.000Z',
-            'created_at: 2026-07-27T00:00:00.000Z',
-            'updated_at: 2026-07-27T00:00:00.000Z',
-            'visibility: personal',
-            '',
+            {
+              codeCitations: [citation],
+              createdAt: '2026-07-27T00:00:00.000Z',
+              kind: 'durable',
+              memoryId: 'tn_bridge',
+              project: 'threadnote',
+              schemaVersion: MEMORY_SCHEMA_VERSION,
+              sourceAgentClient: 'codex',
+              status: 'active',
+              timestamp: '2026-07-27T00:00:00.000Z',
+              topic: 'obsidian-bridge',
+              updatedAt: '2026-07-27T00:00:00.000Z',
+              visibility: 'personal',
+            },
             'Obsidian is a surface; Threadnote remains authoritative.',
-          ].join('\n'),
+          ),
           {mode: 'upsert'},
         );
         yield* store.write(
@@ -205,6 +215,10 @@ describe('Obsidian zero-plugin bridge', () => {
     expect(projectedContent).toContain('threadnote_id: tn_bridge');
     expect(projectedContent).toContain('threadnote_uri: threadnote://user/tester/memories/');
     expect(projectedContent).toContain('Threadnote is authoritative');
+    expect(projectionFrontmatter(projectedContent)).toMatchObject({
+      code_citations: [formatMemoryCodeCitation(projectionCitation())],
+      threadnote_memory_schema: MEMORY_SCHEMA_VERSION,
+    });
     expect(await readdir(projectedDirectory)).not.toEqual(
       expect.arrayContaining([expect.stringMatching(/^unselected-obsidian-bridge--/)]),
     );
@@ -261,4 +275,71 @@ describe('Obsidian zero-plugin bridge', () => {
       ),
     ).rejects.toThrow();
   });
+
+  it('projects closed citation errors without copying malformed citation payloads', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-obsidian-citation-error-'));
+    temporaryDirectories.push(root);
+    const home = join(root, 'home');
+    const vault = join(root, 'vault');
+    const config = runtime(home);
+    const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/malformed-citation.md';
+    await mkdir(vault, {recursive: true});
+    await runEffect(
+      Effect.gen(function* () {
+        const store = yield* ResourceStore;
+        yield* store.write(
+          {account: config.account, home: config.agentContextHome, user: config.user},
+          uri,
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            'topic: malformed-citation',
+            'source_agent_client: codex',
+            'timestamp: 2026-08-26T20:00:00.000Z',
+            `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+            'memory_id: tn_bad',
+            'code_citation: {not-json}',
+            '',
+            'The projection exposes only the bounded parse error.',
+          ].join('\n'),
+          {mode: 'upsert'},
+        );
+      }),
+    );
+    await runEffect(runObsidianProjectionAdd(config, {apply: true, folder: 'Threadnote', id: 'memory', vault}));
+    await runEffect(runObsidianProjectionPublish(config, {apply: true, id: 'memory', uris: [uri]}));
+
+    const projected = await readFile(
+      join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable', 'malformed-citation--tn_bad.md'),
+      'utf8',
+    );
+    expect(projectionFrontmatter(projected)).toMatchObject({
+      code_citation_errors: [{index: 0, reason: 'invalid-json'}],
+      threadnote_memory_schema: MEMORY_SCHEMA_VERSION,
+    });
+    expect(projected).not.toContain('{not-json}');
+  });
 });
+
+function projectionCitation() {
+  return createMemoryCodeCitation({
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+    path: 'src/obsidian_projection.ts',
+    repositoryId: 'b'.repeat(64),
+    repositoryIdentityKind: 'remote',
+    sourceCommit: 'c'.repeat(40),
+    sourceDirty: false,
+    sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  });
+}
+
+function projectionFrontmatter(content: string): Record<string, unknown> {
+  const match = /^---\n([\s\S]*?)\n---/u.exec(content);
+  if (!match?.[1]) throw new Error('Projected memory is missing YAML frontmatter.');
+  return yaml.load(match[1]) as Record<string, unknown>;
+}

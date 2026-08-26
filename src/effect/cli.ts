@@ -1232,6 +1232,10 @@ const sessionStartHook = Command.make(
 const remember = Command.make(
   'remember',
   {
+    codeRefs: repeatedString(
+      'code-ref',
+      'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
+    ),
     dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
     kind: defaultChoice(
       'kind',
@@ -1454,6 +1458,10 @@ const handoff = Command.make(
   {
     blockers: optionalString('blockers', 'Known blockers'),
     ci: optionalString('ci', 'Captured CI status snapshot'),
+    codeRefs: repeatedString(
+      'code-ref',
+      'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
+    ),
     dryRun: boolean('dry-run', 'Print handoff without storing'),
     issue: optionalString('issue', 'Related issue reference'),
     nextStep: optionalString('next-step', 'Suggested next step'),

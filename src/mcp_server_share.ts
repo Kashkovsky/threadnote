@@ -26,6 +26,10 @@ import {
 } from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {canonicalMemoryDocumentContent} from './memory_document.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
 import {type RuntimeConfig, argumentError, mcpErrorResult} from './mcp_server_common.js';
 import {
   readMemoryRecordsByUri,
@@ -188,6 +192,12 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
         isError: true,
       };
     }
+    const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, sourceText);
+    if (citationBlocker) {
+      return argumentError(
+        `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+      );
+    }
     const stripped = stripPersonalProvenance(sourceText);
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
 
@@ -228,12 +238,17 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
           config.agentContextHome,
           [sourceUri, targetUri],
           Effect.gen(function* () {
-            const [currentSource] = yield* readMemoryRecordsByUri(config, [sourceUri]);
-            if (!currentSource) {
+            const currentReadResult = yield* runNativeReadTool(config, [sourceUri]);
+            const currentSourceText = textFromCallToolResult(currentReadResult);
+            if (currentReadResult.isError === true || !currentSourceText) {
               return {kind: 'source_missing' as const};
             }
+            const currentCitationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, currentSourceText);
+            if (currentCitationBlocker) {
+              return {blocker: currentCitationBlocker, kind: 'citation_blocked' as const};
+            }
             const currentScrub = applyScrubber(
-              stripPersonalProvenance(canonicalMemoryDocumentContent(currentSource.content)),
+              stripPersonalProvenance(canonicalMemoryDocumentContent(currentSourceText)),
               {
                 redact: options.redact === true,
               },
@@ -272,8 +287,13 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
             const gitMessages = yield* publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {
               push: options.push,
             });
-            const [sourceBeforeRemoval] = yield* readMemoryRecordsByUri(config, [sourceUri]);
-            if (!sourceBeforeRemoval || sourceBeforeRemoval.content !== currentSource.content) {
+            const sourceBeforeRemovalResult = yield* runNativeReadTool(config, [sourceUri]);
+            const sourceBeforeRemovalText = textFromCallToolResult(sourceBeforeRemovalResult);
+            if (
+              sourceBeforeRemovalResult.isError === true ||
+              canonicalMemoryDocumentContent(sourceBeforeRemovalText) !==
+                canonicalMemoryDocumentContent(currentSourceText)
+            ) {
               return {
                 gitMessages,
                 kind: 'source_changed' as const,
@@ -293,6 +313,11 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
     );
     if (publication.kind === 'source_missing') {
       return argumentError(`Could not resolve local memory content for ${sourceUri} before publishing.`);
+    }
+    if (publication.kind === 'citation_blocked') {
+      return argumentError(
+        `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(publication.blocker)}.`,
+      );
     }
     if (publication.kind === 'blocked') {
       return argumentError(

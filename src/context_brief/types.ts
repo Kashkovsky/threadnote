@@ -1,9 +1,13 @@
-import type {CodeGraphProvenance, CodeGraphRelation} from '../code_graph/types.js';
+import type {CodeGraphProvenance, CodeGraphRelation, CodeGraphSpan} from '../code_graph/types.js';
 import type {AgentToolResponseMeasurement} from '../evaluation/agent-response.js';
+import type {MemoryCodeCitationV1} from '../memory_code_citation.js';
 import type {MemoryAuthority, MemoryTrust} from '../memory_document.js';
 
-export const CONTEXT_BRIEF_VERSION = 1 as const;
-export const CONTEXT_BRIEF_PROJECTOR_VERSION = 1 as const;
+export const CONTEXT_BRIEF_VERSION = 2 as const;
+export const CONTEXT_BRIEF_PROJECTOR_VERSION = 2 as const;
+export const CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION = 1 as const;
+export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS = 8 as const;
+export const CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES = 96 as const;
 export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
 export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
@@ -11,6 +15,69 @@ export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impa
 export type ContextBriefMode = (typeof CONTEXT_BRIEF_MODES)[number];
 export type ContextBriefFreshness = 'fresh' | 'stale' | 'unknown';
 export type ContextBriefPreciseEvidenceStatus = 'exact' | 'relocated' | 'changed' | 'deleted' | 'unknown';
+
+export type ContextBriefCitationValidationReasonV2 =
+  | 'ambiguous-relocation'
+  | 'citation-limit'
+  | 'exact'
+  | 'extractor-mismatch'
+  | 'graph-incomplete'
+  | 'graph-stale'
+  | 'malformed-citation'
+  | 'relocated'
+  | 'repository-ambiguous'
+  | 'repository-unavailable'
+  | 'source-changed'
+  | 'source-deleted'
+  | 'validation-error';
+
+/** @internal Detailed compiler receipt; public Context Briefs project only bounded audit fields. */
+export interface ContextBriefCitationValidationReceiptV2 {
+  readonly candidateCount: number;
+  readonly citationId: string;
+  readonly coverage: 'current-complete' | 'incomplete';
+  readonly kind: MemoryCodeCitationV1['target']['kind'] | 'malformed';
+  /** Wall-clock time at which this validation result was observed. */
+  readonly observedAt: string;
+  readonly observedLocator?: {
+    readonly kind: string;
+    readonly language: string;
+    readonly name: string;
+    readonly qualifiedName: string;
+  };
+  readonly observedNodeId?: string;
+  readonly observedPath?: string;
+  readonly observedSpan?: CodeGraphSpan;
+  readonly reason: ContextBriefCitationValidationReasonV2;
+  readonly repositoryId?: string;
+  readonly snapshotCommit?: string;
+  /** Snapshot publication time, distinct from the validation observation. */
+  readonly snapshotCompletedAt?: string;
+  readonly snapshotId?: string;
+  readonly sourcePath?: string;
+  readonly status: ContextBriefPreciseEvidenceStatus;
+  readonly strategy: 'content-hash' | 'file-path' | 'node-id' | 'none' | 'semantic-locator';
+  readonly validatorVersion: typeof CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION;
+}
+
+/** Bounded public audit receipt. Repository, snapshot, commit, and full-path details stay private. */
+export interface ContextBriefCitationReceiptV2 {
+  readonly citationId: string;
+  readonly observedNodeId?: string;
+  readonly reason: ContextBriefCitationValidationReasonV2;
+  readonly relocationHint?: string;
+  readonly status: ContextBriefPreciseEvidenceStatus;
+}
+
+export interface ContextBriefCitationSummaryV2 {
+  readonly coverage: 'current-complete' | 'incomplete';
+  readonly exact: number;
+  readonly relocated: number;
+  /** Changed and deleted citations share the safety-equivalent stale bucket. */
+  readonly stale: number;
+  readonly unknown: number;
+  readonly validatorVersion: typeof CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION;
+}
 
 export type ContextBriefScopeV1 =
   | {
@@ -60,6 +127,19 @@ export interface ContextBriefSnapshotV1 {
   readonly snapshotId: string;
 }
 
+/** @internal Point-in-time graph identity carried only between compiler phases. */
+export type ContextBriefCitationValidationFenceV2 =
+  | {
+      readonly kind: 'repository';
+      readonly repositoryId: string;
+      readonly snapshotId: string;
+    }
+  | {
+      readonly generation: {readonly digest: string; readonly id: string};
+      readonly kind: 'workset';
+      readonly workset: string;
+    };
+
 export interface ContextBriefGraphCardV1 {
   readonly id: string;
   readonly rank: number;
@@ -102,6 +182,8 @@ export interface ContextBriefGraphCoverageV1 {
 
 export interface ContextBriefGraphEvidenceV1 {
   readonly cards: readonly ContextBriefGraphCardV1[];
+  /** @internal Prevents citation validation from mixing graph generations. */
+  readonly citationValidationFence?: ContextBriefCitationValidationFenceV2;
   readonly continuation?: {readonly cursor: string; readonly remainingEstimate: number};
   readonly contracts: readonly ContextBriefGraphContractV1[];
   readonly coverage: ContextBriefGraphCoverageV1;
@@ -117,6 +199,9 @@ export interface ContextBriefGraphEvidenceV1 {
 
 export interface ContextBriefMemoryCandidateV1 {
   readonly authority?: MemoryAuthority;
+  /** Private compiler input; the public projection emits only compact validation receipts. */
+  readonly codeCitations: readonly MemoryCodeCitationV1[];
+  readonly citationErrorCount: number;
   readonly excerpt: string;
   readonly kind: 'durable' | 'handoff';
   readonly project?: string;
@@ -127,13 +212,28 @@ export interface ContextBriefMemoryCandidateV1 {
   readonly uri: string;
 }
 
-export interface ContextBriefMemoryEvidenceV1 extends ContextBriefMemoryCandidateV1 {
+export interface ContextBriefMemoryEvidenceV1 extends Omit<
+  ContextBriefMemoryCandidateV1,
+  'citationErrorCount' | 'codeCitations'
+> {
+  readonly citationErrorCount?: number;
+  readonly citationReceipts?: readonly ContextBriefCitationReceiptV2[];
+  readonly citationSummary?: ContextBriefCitationSummaryV2;
   readonly freshness: ContextBriefFreshness;
+  readonly freshnessBasis: 'code-citations' | 'source-commit';
   readonly preciseStatus?: ContextBriefPreciseEvidenceStatus;
+}
+
+export interface ContextBriefMemoryCitationValidationV2 {
+  /** Private compiler-only cache count; never projected into the public brief. */
+  readonly cacheHits?: number;
+  readonly receipts: readonly ContextBriefCitationValidationReceiptV2[];
+  readonly uri: string;
 }
 
 export interface ContextBriefMemoryRetrievalV1 {
   readonly candidates: readonly ContextBriefMemoryCandidateV1[];
+  readonly citationValidations?: readonly ContextBriefMemoryCitationValidationV2[];
   readonly consideredCandidates: number;
   readonly gaps: readonly string[];
   readonly trust: {
@@ -144,7 +244,8 @@ export interface ContextBriefMemoryRetrievalV1 {
 
 export interface ContextBriefContextIssueV1 {
   readonly id: string;
-  readonly kind: 'candidate-conflict' | 'stale-memory' | 'unknown-memory-freshness';
+  readonly kind:
+    'candidate-conflict' | 'invalid-code-citation' | 'stale-link' | 'stale-memory' | 'unknown-memory-freshness';
   readonly rank: number;
   readonly summary: string;
   readonly uris: readonly string[];
@@ -270,6 +371,11 @@ export interface ProjectedContextBriefV1 {
   readonly structuredContent: ContextBriefV1;
   readonly text: string;
 }
+
+/** Public semantic aliases for the v2 response while v1 type names remain source-compatible. */
+export type ContextBriefV2 = ContextBriefV1;
+export type ContextBriefLogicalResultV2 = ContextBriefLogicalResultV1;
+export type ProjectedContextBriefV2 = ProjectedContextBriefV1;
 
 const UTF8 = new TextEncoder();
 const REQUEST_KEYS = new Set(['budgetTokens', 'mode', 'scope', 'task']);

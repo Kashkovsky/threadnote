@@ -2,7 +2,9 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
-import {formatMemoryDocument} from '../../src/memory_document.js';
+import {parseRemoteCanonicalMemoryDocument} from '../../src/memory_domain/content.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
 import {
   applyGitBetaImportOperator,
   planGitBetaImportOperator,
@@ -195,6 +197,127 @@ describe('remote memory Git beta portability', () => {
     expect(() => verifyRemoteMemoryExportPlan(rehashed)).toThrow('path does not match');
   });
 
+  it('round-trips clean schema-v4 citations through Git-beta import and remote export', () => {
+    const citation = portabilityCitation();
+    const sourceRecord: GitBetaMemorySourceV1 = {
+      content: formatMemoryDocument(
+        'MEMORY',
+        {
+          codeCitations: [citation],
+          kind: 'durable',
+          project: 'threadnote',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'codex',
+          status: 'active',
+          timestamp: '2026-08-26T20:00:00.000Z',
+          topic: 'cited-portability',
+        },
+        'Canonical portability preserves immutable evidence.',
+      ),
+      sourceUri:
+        'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/cited-portability.md',
+      version: 1,
+    };
+    const importPlan = planGitBetaImport({
+      aliasCompatibilityEndsAt: COMPATIBILITY_END,
+      dryRun: false,
+      records: [sourceRecord],
+      shareId: 'share-1',
+    });
+
+    const records = materializeGitBetaImport(importPlan, [sourceRecord]);
+    const exportPlan = planRemoteMemoryExport(records);
+    expect(records[0]?.canonicalContent).toBe(sourceRecord.content);
+    expect(exportPlan.files[0]?.canonicalContent).toBe(sourceRecord.content);
+    expect(
+      parseMemoryDocument(exportPlan.files[0]!.sourceUri, exportPlan.files[0]!.canonicalContent)?.metadata,
+    ).toMatchObject({codeCitations: [citation], schemaVersion: MEMORY_SCHEMA_VERSION});
+    expect(() => verifyRemoteMemoryExportPlan(exportPlan)).not.toThrow();
+  });
+
+  it('blocks dirty, local-identity, and malformed citations at ingress, canonical parsing, export, and verify', () => {
+    const scenarios = [
+      {
+        blocker: 'dirty-source',
+        content: portabilityCitationContent('dirty-citation', portabilityCitation({sourceDirty: true})),
+        topic: 'dirty-citation',
+      },
+      {
+        blocker: 'local-repository-identity',
+        content: portabilityCitationContent('local-citation', portabilityCitation({repositoryIdentityKind: 'local'})),
+        topic: 'local-citation',
+      },
+      {
+        blocker: 'malformed-citation',
+        content: portabilityMalformedCitationContent('malformed-citation'),
+        topic: 'malformed-citation',
+      },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      const gitSource: GitBetaMemorySourceV1 = {
+        content: scenario.content,
+        sourceUri: `threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/${scenario.topic}.md`,
+        version: 1,
+      };
+      const importPlan = planGitBetaImport({
+        aliasCompatibilityEndsAt: COMPATIBILITY_END,
+        dryRun: false,
+        records: [gitSource],
+        shareId: 'share-1',
+      });
+      expect(importPlan.entries).toEqual([
+        expect.objectContaining({classification: 'blocked', reason: `blocked:${scenario.blocker}`}),
+      ]);
+
+      const uri = formatRemoteMemoryUri({
+        kind: 'durable',
+        project: 'threadnote',
+        shareId: 'share-1',
+        topic: scenario.topic,
+      });
+      expect(() =>
+        parseRemoteCanonicalMemoryDocument({
+          content: scenario.content,
+          kind: 'durable',
+          project: 'threadnote',
+          topic: scenario.topic,
+          uri,
+        }),
+      ).toThrow('code-citation sharing policy');
+
+      const portableRecord: RemoteMemoryPortableRecordV1 = {
+        aliases: [],
+        canonicalContent: scenario.content,
+        contentHash: sha256HexSync(scenario.content),
+        kind: 'durable',
+        project: 'threadnote',
+        topic: scenario.topic,
+        uri,
+        version: 1,
+      };
+      expect(() => planRemoteMemoryExport([portableRecord])).toThrow('code-citation sharing policy');
+
+      const files = [
+        {
+          aliases: [],
+          canonicalContent: scenario.content,
+          contentHash: sha256HexSync(scenario.content),
+          relativePath: `durable/projects/threadnote/${scenario.topic}.md`,
+          sourceUri: uri,
+          version: 1 as const,
+        },
+      ];
+      const forgedPlan = {
+        bundleDigest: sha256HexSync(stableJson({files, sourceMutation: 'none', version: 1})),
+        files,
+        sourceMutation: 'none' as const,
+        version: 1 as const,
+      };
+      expect(() => verifyRemoteMemoryExportPlan(forgedPlan)).toThrow('code-citation sharing policy');
+    }
+  });
+
   it('preserves terminal handoff lifecycle in the exit-export path', () => {
     const uri = formatRemoteMemoryUri({kind: 'handoff', project: 'threadnote', shareId: 'share-1', topic: 'done'});
     const canonicalContent = formatMemoryDocument(
@@ -384,6 +507,59 @@ function source(
     sourceUri: `threadnote://user/${user}/memories/shared/${team}/durable/projects/${project}/${topic}.md`,
     version: 1,
   };
+}
+
+function portabilityCitation(
+  overrides: {readonly repositoryIdentityKind?: 'local' | 'remote'; readonly sourceDirty?: boolean} = {},
+) {
+  return createMemoryCodeCitation({
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+    path: 'src/remote_memory/portability.ts',
+    repositoryId: 'b'.repeat(64),
+    repositoryIdentityKind: overrides.repositoryIdentityKind ?? 'remote',
+    sourceCommit: 'c'.repeat(40),
+    sourceDirty: overrides.sourceDirty ?? false,
+    sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  });
+}
+
+function portabilityCitationContent(topic: string, citation: ReturnType<typeof portabilityCitation>): string {
+  return formatMemoryDocument(
+    'MEMORY',
+    {
+      codeCitations: [citation],
+      kind: 'durable',
+      project: 'threadnote',
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-08-26T20:00:00.000Z',
+      topic,
+    },
+    'Unshareable citation provenance must not cross a remote boundary.',
+  );
+}
+
+function portabilityMalformedCitationContent(topic: string): string {
+  return formatMemoryDocument(
+    'MEMORY',
+    {
+      kind: 'durable',
+      project: 'threadnote',
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-08-26T20:00:00.000Z',
+      topic,
+    },
+    'Malformed citation metadata must not cross a remote boundary.',
+  ).replace(
+    `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+    `schema_version: ${MEMORY_SCHEMA_VERSION}\n  code_citation: {not-json}`,
+  );
 }
 
 function existing(

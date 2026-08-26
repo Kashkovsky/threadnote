@@ -64,9 +64,13 @@ export interface CodeGraphInventoryFile {
 }
 
 export interface CodeGraphSpan {
+  /** One-based UTF-16 column in `line`, matching TypeScript source positions. */
   readonly column: number;
+  /** One-based exclusive UTF-16 column in `endLine`. */
   readonly endColumn: number;
+  /** One-based line containing the exclusive end position. */
   readonly endLine: number;
+  /** One-based line containing the inclusive start position. */
   readonly line: number;
 }
 

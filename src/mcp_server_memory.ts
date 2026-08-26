@@ -33,7 +33,18 @@ import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
 import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {ResourceStore, type ResourceStoreMutation} from './effect/resource-store.js';
-import {canonicalMemoryDocumentContent, formatMemoryDocument, type MemoryMetadata} from './memory_document.js';
+import {
+  assertMemoryDocumentSchemaWritable,
+  canonicalMemoryDocumentContent,
+  formatMemoryDocument,
+  memoryArchiveBody,
+  type MemoryMetadata,
+} from './memory_document.js';
+import {
+  memoryCodeCitationSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
+import {MEMORY_SCHEMA_VERSION} from './memory_code_citation.js';
 import {
   canonicalResourceUri,
   parseResourceId,
@@ -158,7 +169,7 @@ export function registerCompactTool(server: EffectMcpServerAdapter, config: Runt
   );
 }
 
-function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
+export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     return yield* withMemoryUriLocks(
@@ -173,13 +184,27 @@ function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAction) {
         if (source.content !== action.expectedContent) {
           return argumentError(`Memory ${action.uri} changed after compact_context planned it. Re-run the plan.`);
         }
+        const schemaRewriteError = memorySchemaRewriteError(source.content);
+        if (schemaRewriteError) {
+          return argumentError(schemaRewriteError.message);
+        }
+        if (source.metadata.citationErrors && source.metadata.citationErrors.length > 0) {
+          const reasons = [...new Set(source.metadata.citationErrors.map(error => error.reason))].sort().join(', ');
+          return argumentError(
+            `Cannot archive ${action.uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`,
+          );
+        }
         const archiveResult = yield* writeDurableMemory(config, {
-          bodyText: ['Archived original Threadnote memory.', '', source.content].join('\n'),
+          bodyText: memoryArchiveBody(source.body),
           metadata: {
             archivedFrom: action.uri,
+            codeCitations: source.metadata.codeCitations,
             kind: action.kind,
             project: action.project,
+            schemaVersion: source.metadata.schemaVersion,
             sourceAgentClient: 'mcp',
+            sourceCommit: source.metadata.sourceCommit,
+            sourceObservedAt: source.metadata.sourceObservedAt,
             status: 'archived',
             timestamp: new Date().toISOString(),
             topic: action.topic,
@@ -419,6 +444,7 @@ export interface WriteDurableMemoryParams {
 }
 
 interface PreparedPersonalMemoryWrite {
+  readonly expectedReplaceContent?: string;
   readonly finalMetadata: MemoryMetadata;
   readonly isInPlaceUpdate: boolean;
   readonly memory: string;
@@ -438,11 +464,28 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
         if (params.operation === 'replace' && !params.replaceUri) {
           return argumentError('A replace write requires replaceUri.');
         }
-        if (params.replaceUri && params.expectedReplaceContentHash) {
-          const [currentTarget] = yield* readMemoryRecordsByUri(config, [params.replaceUri as string]);
+        const [currentReplaceTarget] = params.replaceUri
+          ? yield* readMemoryRecordsByUri(config, [params.replaceUri])
+          : [];
+        if (params.replaceUri) {
+          if (!currentReplaceTarget) {
+            return argumentError(`Memory ${params.replaceUri} no longer exists.`);
+          }
+          const schemaRewriteError = memorySchemaRewriteError(currentReplaceTarget.content);
+          if (schemaRewriteError) return argumentError(schemaRewriteError.message);
           if (
-            !currentTarget ||
-            (yield* sha256Hex(canonicalMemoryDocumentContent(currentTarget.content))) !==
+            prepared.expectedReplaceContent !== undefined &&
+            currentReplaceTarget.content !== prepared.expectedReplaceContent
+          ) {
+            return argumentError(
+              `Memory ${params.replaceUri} changed while its replacement was being prepared. Retry the update.`,
+            );
+          }
+        }
+        if (params.replaceUri && params.expectedReplaceContentHash) {
+          if (
+            !currentReplaceTarget ||
+            (yield* sha256Hex(canonicalMemoryDocumentContent(currentReplaceTarget.content))) !==
               params.expectedReplaceContentHash
           ) {
             return argumentError(
@@ -463,9 +506,25 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
         }
         const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
         const destinationExists = yield* resourceExists(ov, config, memoryUri);
-        if (params.operation === 'replace' && destinationExists && params.replaceUri !== memoryUri) {
-          const [destinationRecord] = yield* readMemoryRecordsByUri(config, [memoryUri]);
-          if (destinationRecord?.metadata.candidateId !== params.metadata.candidateId) {
+        const [destinationRecord] = destinationExists ? yield* readMemoryRecordsByUri(config, [memoryUri]) : [];
+        if (destinationExists && !destinationRecord) {
+          return argumentError(`Existing destination ${memoryUri} is not a readable canonical memory.`);
+        }
+        if (destinationRecord) {
+          const schemaRewriteError = memorySchemaRewriteError(destinationRecord.content);
+          if (schemaRewriteError) return argumentError(schemaRewriteError.message);
+        }
+        if (destinationExists && !params.replaceUri) {
+          return argumentError(
+            `Memory ${memoryUri} already exists. Pass replaceUri: "${memoryUri}" to update it explicitly.`,
+          );
+        }
+        if (destinationExists && params.replaceUri !== memoryUri) {
+          const sameReviewedCandidate =
+            params.operation === 'replace' &&
+            params.metadata.candidateId !== undefined &&
+            destinationRecord?.metadata.candidateId === params.metadata.candidateId;
+          if (!sameReviewedCandidate) {
             return argumentError(`Replacement destination already contains another memory: ${memoryUri}.`);
           }
         }
@@ -537,6 +596,18 @@ export function writeCursorCloudSharedMemory(
           const [existingTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
           if (params.replaceUri && !existingTarget) {
             return argumentError(`Shared memory ${targetUri} no longer exists.`);
+          }
+          if (params.replaceUri && existingTarget) {
+            const schemaRewriteError = memorySchemaRewriteError(existingTarget.content);
+            if (schemaRewriteError) return argumentError(schemaRewriteError.message);
+            if (
+              prepared.expectedReplaceContent !== undefined &&
+              existingTarget.content !== prepared.expectedReplaceContent
+            ) {
+              return argumentError(
+                `Memory ${targetUri} changed while its replacement was being prepared. Retry the update.`,
+              );
+            }
           }
           const metadata: MemoryMetadata = {
             ...prepared.finalMetadata,
@@ -614,6 +685,10 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
   params: Pick<WriteDurableMemoryParams, 'bodyText' | 'metadata' | 'replaceUri'>,
 ) {
   const [replaced] = params.replaceUri ? yield* readMemoryRecordsByUri(config, [params.replaceUri]) : [];
+  if (replaced) {
+    const schemaRewriteError = memorySchemaRewriteError(replaced.content);
+    if (schemaRewriteError) return yield* Effect.fail(schemaRewriteError);
+  }
   const metadata: MemoryMetadata = {
     ...params.metadata,
     createdAt:
@@ -628,7 +703,7 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
         params.metadata.candidateId ??
           `${params.metadata.project ?? ''}\n${params.metadata.topic ?? ''}\n${params.bodyText}`,
       )).slice(0, 20)}`,
-    schemaVersion: Math.max(3, params.metadata.schemaVersion ?? 0),
+    schemaVersion: Math.max(MEMORY_SCHEMA_VERSION, params.metadata.schemaVersion ?? 0),
     updatedAt: params.metadata.updatedAt ?? params.metadata.timestamp,
     visibility: 'personal',
   };
@@ -641,8 +716,23 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
   const finalMetadata: MemoryMetadata = isInPlaceUpdate ? {...metadata, supersedes: undefined} : candidateMetadata;
   const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
-  return {finalMetadata, isInPlaceUpdate, memory, memoryUri} satisfies PreparedPersonalMemoryWrite;
+  return {
+    expectedReplaceContent: replaced?.content,
+    finalMetadata,
+    isInPlaceUpdate,
+    memory,
+    memoryUri,
+  } satisfies PreparedPersonalMemoryWrite;
 });
+
+function memorySchemaRewriteError(content: string): Error | undefined {
+  try {
+    assertMemoryDocumentSchemaWritable(content);
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
 
 const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryReplacement')(function* (
   config: RuntimeConfig,
@@ -665,6 +755,12 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
     topic: params.metadata.topic ?? inferred?.topic,
   };
   const rawMemory = formatMemoryDocument('MEMORY', metadata, params.bodyText);
+  const citationBlocker = memoryCodeCitationSharingBlocker(metadata);
+  if (citationBlocker) {
+    return argumentError(
+      `Refusing to update shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    );
+  }
   const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
   if (scrub.blocker) {
     return argumentError(

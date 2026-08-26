@@ -36,10 +36,7 @@ export interface ContextBriefPreciseCodeObservationV1 {
   readonly snapshotCommit: string;
 }
 
-/**
- * Pure validator boundary for future structured memory citations. Current
- * memory metadata does not fabricate these fields from prose.
- */
+/** Pure classification boundary shared by citation validation and focused tests. */
 export function validateContextBriefPreciseCodeEvidence(input: {
   readonly evidence: ContextBriefPreciseCodeEvidenceV1;
   readonly observation?: ContextBriefPreciseCodeObservationV1;
@@ -60,12 +57,21 @@ export function validateContextBriefPreciseCodeEvidence(input: {
   return 'exact';
 }
 
-/** A precise changed/deleted observation can only preserve or downgrade freshness, never upgrade it. */
+/** Precise cited bytes supersede commit-only freshness; unknown evidence never guesses. */
 export function reconcileContextBriefMemoryFreshness(
   coarse: ContextBriefFreshness,
   precise: ContextBriefPreciseEvidenceStatus,
 ): ContextBriefFreshness {
-  return precise === 'changed' || precise === 'deleted' ? 'stale' : coarse;
+  switch (precise) {
+    case 'changed':
+    case 'deleted':
+      return 'stale';
+    case 'unknown':
+      return 'unknown';
+    case 'exact':
+    case 'relocated':
+      return 'fresh';
+  }
 }
 
 /** Coarse freshness is intentionally unknown unless exactly one ready repository snapshot resolved. */
@@ -74,7 +80,9 @@ export function classifyMemoryFreshness(
   resolvedSnapshots: readonly ContextBriefSnapshotV1[],
 ): ContextBriefFreshness {
   if (sourceCommit === undefined || !COMMIT.test(sourceCommit) || resolvedSnapshots.length !== 1) return 'unknown';
-  return resolvedSnapshots[0]!.commit === sourceCommit ? 'fresh' : 'stale';
+  const snapshot = resolvedSnapshots[0]!;
+  if (snapshot.dirty || snapshot.freshness !== 'fresh') return 'unknown';
+  return snapshot.commit === sourceCommit ? 'fresh' : 'stale';
 }
 
 /** Local lexical retrieval only: no hosted service, model, or interpretation of memory body text. */
@@ -114,6 +122,8 @@ export const retrieveContextBriefMemoryEvidence = Effect.fn('contextBrief.retrie
     const sourceCommit = boundedSourceCommit(record.metadata.sourceCommit);
     candidates.push({
       ...(record.metadata.authority === undefined ? {} : {authority: record.metadata.authority}),
+      citationErrorCount: record.metadata.citationErrors?.length ?? 0,
+      codeCitations: record.metadata.codeCitations ?? [],
       excerpt:
         record.metadata.kind === 'handoff' ? handoffEvidenceExcerpt(record.body) : memoryEvidenceExcerpt(record.body),
       kind: record.metadata.kind,

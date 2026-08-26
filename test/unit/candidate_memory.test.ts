@@ -299,6 +299,24 @@ describe('candidate review persistence', () => {
     expect(auditPath).toContain('/threadnote/candidates/v1/audit.jsonl');
   });
 
+  it('loads CandidateReview v1 with empty citations instead of dropping the review', async () => {
+    const review = await run(buildCandidateReview(input, [], new Date('2026-07-23T10:00:00.000Z')));
+    const {codeCitations: _v2Citations, ...legacy} = review;
+    const reviewDirectory = join(directory, 'threadnote', 'candidates', 'v1', 'reviews');
+    await mkdir(reviewDirectory, {recursive: true});
+    await writeFile(
+      join(reviewDirectory, `${review.reviewId}.json`),
+      `${JSON.stringify({...legacy, version: 1})}\n`,
+      'utf8',
+    );
+
+    await expect(run(loadCandidateReview(directory, review.reviewId))).resolves.toMatchObject({
+      codeCitations: [],
+      reviewId: review.reviewId,
+      version: 2,
+    });
+  });
+
   it('serializes concurrent decisions for one review and deduplicates audit writes', async () => {
     const trace: string[] = [];
     const locked = (name: string) =>

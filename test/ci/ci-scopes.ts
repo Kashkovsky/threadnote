@@ -70,10 +70,12 @@ function isDocumentationOnlyPath(path: string): boolean {
 function isQualityPath(path: string): boolean {
   return (
     path.startsWith('src/code_graph/') ||
+    path.startsWith('src/context_brief/') ||
     path.startsWith('src/crypto/') ||
     path.startsWith('src/effect/ai/') ||
     path.startsWith('src/evaluation/') ||
     path.startsWith('src/models/') ||
+    path.startsWith('src/memory_code_citation') ||
     path.startsWith('src/recall/') ||
     path === 'src/effect/command.ts' ||
     path === 'src/effect/digest.ts' ||
@@ -89,7 +91,7 @@ function isQualityPath(path: string): boolean {
       path,
     ) ||
     path.startsWith('training/') ||
-    /^scripts\/(?:benchmark-(?:code-graph|recall|target|worktree-readiness)|capture-recall|code-graph|evaluate-(?:code-graph|recall)|recall-vector-storage-budget|training\/|.*reranker)/u.test(
+    /^scripts\/(?:benchmark-(?:code-graph|recall|target|worktree-readiness)|capture-recall|code-graph|evaluate-(?:code-graph|context-brief-citations|recall)|recall-vector-storage-budget|training\/|.*reranker)/u.test(
       path,
     )
   );

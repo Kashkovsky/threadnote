@@ -468,7 +468,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         }
         return Option.map(promotionLease, lease => lease.token);
       }).pipe(Effect.mapError(cause => storeError('activate staged code graph snapshot', cause))),
-    activateCleanSnapshotAlias: (databasePath, identity, snapshot, baseSnapshotId) =>
+    activateCleanSnapshotAlias: (databasePath, identity, snapshot, baseSnapshotId, currentSnapshotReceipt) =>
       prepare(databasePath).pipe(
         Effect.andThen(
           useDatabase(
@@ -476,7 +476,10 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             Effect.gen(function* () {
               const sql = yield* SqlClient.SqlClient;
               yield* ensureSchemaInitialized(databasePath, sql);
-              yield* withWriterGate(databasePath, activateCleanSnapshotAlias(sql, identity, snapshot, baseSnapshotId));
+              yield* withWriterGate(
+                databasePath,
+                activateCleanSnapshotAlias(sql, identity, snapshot, baseSnapshotId, currentSnapshotReceipt),
+              );
             }),
           ),
         ),

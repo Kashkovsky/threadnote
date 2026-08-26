@@ -33,6 +33,13 @@ Store reusable decisions and contracts with `kind: durable`; store status, check
 routine durable knowledge and handoffs directly; use `review_session_context` only for additional session-extracted
 candidates, which require explicit approval. Before pausing or ending meaningful work, leave a concise handoff.
 
+When a consequential memory claim depends on current source, pass repository-relative paths or returned `cgs_`/`cgr_`
+handles through `codeRefs` (MCP) or repeatable `--code-ref` flags (CLI). Citation capture requires an already-ready
+exact-current graph and never starts indexing. Do not cite every touched file automatically. On replacement, omitted
+code references clear old citations; recapture only after reviewing the edited prose and current code. Existing
+uncited memories remain recallable and use conservative coarse or unknown freshness. See
+[Memory-to-code citations](memory-code-citations.md).
+
 Prefer Threadnote MCP tools and use the `threadnote` CLI as fallback. If storage or indexing fails, run
 `threadnote doctor --dry-run`, report the diagnostic, and continue safe independent work. Never store secrets,
 credentials, customer data, or raw production logs. Confirm with the user before publishing durable memory; never
