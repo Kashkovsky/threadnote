@@ -48,6 +48,9 @@ export const measuredPerformanceSourcePathspecs = [
   ...performanceSiteOnlyGeneratorPaths.map(path => `:(exclude)${path}`),
 ] as const;
 
+const measuredPerformanceSourceTreeRoots = performanceSourcePathspecs.filter(path => path !== 'package.json');
+const measuredPerformanceSourceTreeExclusions = new Set<string>(performanceSiteOnlyGeneratorPaths);
+
 const cleanPerformanceSourcePathspecs = [
   ...performanceSourcePathspecs,
   ...performanceSiteOnlyGeneratorPaths.map(path => `:(exclude)${path}`),
@@ -161,13 +164,14 @@ export function bindRetainedPerformanceArtifact(input: {
   readonly artifactBytes: Uint8Array;
   readonly artifactPublicUrl: string;
   readonly binding: unknown;
+  // Legacy field names retained for callers; all three values describe binding.sourceThreadnoteCommit, never HEAD.
   readonly currentLockfileSha256: string;
   readonly currentPackageManifestSha256: string;
   readonly currentSourceTreeSha256: string;
 }): PerformanceEvidence {
   const binding = validatePerformanceArtifactBinding(input.binding);
   if (!sha256Pattern.test(input.currentSourceTreeSha256)) {
-    throw new ScriptError('Current performance source-tree digest is invalid.');
+    throw new ScriptError('Measured performance source-tree digest is invalid.');
   }
   const actualArtifactSha256 = sha256Hex(input.artifactBytes);
   if (actualArtifactSha256 !== binding.artifactSha256) {
@@ -176,7 +180,7 @@ export function bindRetainedPerformanceArtifact(input: {
     );
   }
   if (input.currentSourceTreeSha256 !== binding.sourceTreeSha256) {
-    throw new ScriptError('Retained performance evidence does not match the current Threadnote source tree.');
+    throw new ScriptError('Retained performance evidence does not match its measured Threadnote source tree.');
   }
 
   const payload = parseRetainedPerformanceArtifactBytes(input.artifactBytes);
@@ -210,6 +214,18 @@ function requireSuccessfulGit(result: ReturnType<typeof Bun.spawnSync>, operatio
   if (result.exitCode !== 0) {
     throw new ScriptError(
       `Could not ${operation}: ${decodeOutput(result.stderr) || `git exited with ${result.exitCode}`}.`,
+    );
+  }
+}
+
+function assertPerformanceSourceCommitAvailable(repositoryRoot: string, sourceCommit: string): void {
+  if (!sha40Pattern.test(sourceCommit)) {
+    throw new ScriptError('Retained performance source commit must be a lowercase 40-character Git commit.');
+  }
+  const commit = runGit(repositoryRoot, ['cat-file', '-e', `${sourceCommit}^{commit}`]);
+  if (commit.exitCode !== 0) {
+    throw new ScriptError(
+      `Retained performance source commit ${sourceCommit} is unavailable; use a full Git checkout for the website build.`,
     );
   }
 }
@@ -252,12 +268,7 @@ export function assertPerformancePackageManifestMatchesCommit(repositoryRoot: st
 
 export function assertPerformanceSourcesMatchCommit(repositoryRoot: string, sourceCommit: string): void {
   assertPerformanceSourceClean(repositoryRoot);
-  const commit = runGit(repositoryRoot, ['cat-file', '-e', `${sourceCommit}^{commit}`]);
-  if (commit.exitCode !== 0) {
-    throw new ScriptError(
-      `Retained performance source commit ${sourceCommit} is unavailable; use a full Git checkout for the website build.`,
-    );
-  }
+  assertPerformanceSourceCommitAvailable(repositoryRoot, sourceCommit);
   const changed = runGit(repositoryRoot, [
     'diff',
     '--quiet',
@@ -324,11 +335,28 @@ function verifyReleaseEvidenceSource(repositoryRoot: string, payload: RetainedPe
   }
 }
 
-export async function computePerformanceSourceTreeSha256(repositoryRoot: string): Promise<string> {
-  assertPerformanceSourceClean(repositoryRoot);
-  const listed = runGit(repositoryRoot, ['ls-files', '--stage', '-z', '--', ...measuredPerformanceSourcePathspecs]);
+type PerformanceSourceTreeEntry = Readonly<{
+  mode: string;
+  objectId: string;
+  path: string;
+}>;
+
+function performanceSourceTreeEntriesAtCommit(
+  repositoryRoot: string,
+  sourceCommit: string,
+): readonly PerformanceSourceTreeEntry[] {
+  assertPerformanceSourceCommitAvailable(repositoryRoot, sourceCommit);
+  const listed = runGit(repositoryRoot, [
+    'ls-tree',
+    '-r',
+    '-z',
+    '--full-tree',
+    sourceCommit,
+    '--',
+    ...measuredPerformanceSourceTreeRoots,
+  ]);
   if (listed.exitCode !== 0) {
-    throw new ScriptError(`Could not inventory performance-bound sources: ${decodeOutput(listed.stderr)}.`);
+    throw new ScriptError(`Could not inventory measured performance sources: ${decodeOutput(listed.stderr)}.`);
   }
   const entries = new TextDecoder()
     .decode(listed.stdout)
@@ -339,34 +367,84 @@ export async function computePerformanceSourceTreeSha256(repositoryRoot: string)
       if (tabIndex === -1) throw new ScriptError('Git returned an invalid performance source entry.');
       const metadata = entry.slice(0, tabIndex).split(' ');
       const mode = metadata[0];
+      const type = metadata[1];
+      const objectId = metadata[2];
       const path = entry.slice(tabIndex + 1);
-      if (!mode || !path) throw new ScriptError('Git returned an incomplete performance source entry.');
-      return {mode, path};
+      if (!mode || type !== 'blob' || !objectId || !sha40Pattern.test(objectId) || !path) {
+        throw new ScriptError('Git returned an incomplete performance source entry.');
+      }
+      return {mode, objectId, path};
     })
+    .filter(entry => !measuredPerformanceSourceTreeExclusions.has(entry.path))
     .sort((left, right) => left.path.localeCompare(right.path));
   if (entries.length === 0) throw new ScriptError('Performance source inventory is empty.');
+  return entries;
+}
+
+function hashPerformanceSourceTreeEntries(
+  repositoryRoot: string,
+  entries: readonly PerformanceSourceTreeEntry[],
+): string {
+  const batch = Bun.spawnSync({
+    cmd: ['git', 'cat-file', '--batch'],
+    cwd: repositoryRoot,
+    stdin: new TextEncoder().encode(`${entries.map(entry => entry.objectId).join('\n')}\n`),
+    stderr: 'pipe',
+    stdout: 'pipe',
+  });
+  requireSuccessfulGit(batch, 'read measured performance source blobs');
+  const output = batch.stdout ?? new Uint8Array();
 
   const hasher = new Bun.CryptoHasher('sha256');
+  let offset = 0;
   for (const entry of entries) {
-    const bytes = new Uint8Array(await Bun.file(`${repositoryRoot}/${entry.path}`).arrayBuffer());
-    hasher.update(`${entry.mode}\0${entry.path}\0${bytes.byteLength}\0`);
-    hasher.update(bytes);
+    const headerEnd = output.indexOf(10, offset);
+    if (headerEnd === -1) throw new ScriptError('Git returned an incomplete performance source blob header.');
+    const [objectId, type, sizeText] = new TextDecoder().decode(output.subarray(offset, headerEnd)).split(' ');
+    const size = Number(sizeText);
+    if (objectId !== entry.objectId || type !== 'blob' || !Number.isSafeInteger(size) || size < 0) {
+      throw new ScriptError('Git returned an invalid performance source blob header.');
+    }
+    const blobStart = headerEnd + 1;
+    const blobEnd = blobStart + size;
+    if (blobEnd >= output.byteLength || output[blobEnd] !== 10) {
+      throw new ScriptError('Git returned an incomplete performance source blob.');
+    }
+    hasher.update(`${entry.mode}\0${entry.path}\0${size}\0`);
+    hasher.update(output.subarray(blobStart, blobEnd));
     hasher.update('\0');
+    offset = blobEnd + 1;
   }
+  if (offset !== output.byteLength) throw new ScriptError('Git returned unexpected performance source blob data.');
   return hasher.digest('hex');
 }
 
-async function currentSourceDependencyHashes(
+export function computePerformanceSourceTreeSha256AtCommit(repositoryRoot: string, sourceCommit: string): string {
+  return hashPerformanceSourceTreeEntries(
+    repositoryRoot,
+    performanceSourceTreeEntriesAtCommit(repositoryRoot, sourceCommit),
+  );
+}
+
+export async function computePerformanceSourceTreeSha256(repositoryRoot: string): Promise<string> {
+  assertPerformanceSourceClean(repositoryRoot);
+  const head = runGit(repositoryRoot, ['rev-parse', '--verify', 'HEAD^{commit}']);
+  requireSuccessfulGit(head, 'resolve the current performance source commit');
+  return computePerformanceSourceTreeSha256AtCommit(repositoryRoot, decodeOutput(head.stdout));
+}
+
+export function performanceSourceDependencyHashesAtCommit(
   repositoryRoot: string,
   sourceCommit: string,
-): Promise<{
+): {
   readonly lockfileSha256: string;
   readonly packageManifestSha256: string;
-}> {
-  const lockfile = await Bun.file(`${repositoryRoot}/bun.lock`).arrayBuffer();
+} {
+  assertPerformanceSourceCommitAvailable(repositoryRoot, sourceCommit);
+  const lockfile = gitFileAt(repositoryRoot, sourceCommit, 'bun.lock');
   const packageManifest = gitFileAt(repositoryRoot, sourceCommit, 'package.json');
   return {
-    lockfileSha256: sha256Hex(new Uint8Array(lockfile)),
+    lockfileSha256: sha256Hex(lockfile),
     packageManifestSha256: sha256Hex(packageManifest),
   };
 }
@@ -394,11 +472,12 @@ export async function loadRetainedPerformanceEvidence(
     throw new ScriptError('Retained performance binding is not valid JSON.');
   }
   const binding = validatePerformanceArtifactBinding(bindingInput);
-  assertPerformanceSourcesMatchCommit(repositoryRoot, binding.sourceThreadnoteCommit);
-  const [artifactBuffer, currentSourceTreeSha256, dependencyHashes] = await Promise.all([
+  // This page publishes historical release evidence. Later runtime changes must not rewrite its source identity;
+  // new bindings remain strict against the current clean HEAD in writePerformanceArtifactBinding below.
+  const [artifactBuffer, measuredSourceTreeSha256, dependencyHashes] = await Promise.all([
     artifactFile.arrayBuffer(),
-    computePerformanceSourceTreeSha256(repositoryRoot),
-    currentSourceDependencyHashes(repositoryRoot, binding.sourceThreadnoteCommit),
+    computePerformanceSourceTreeSha256AtCommit(repositoryRoot, binding.sourceThreadnoteCommit),
+    performanceSourceDependencyHashesAtCommit(repositoryRoot, binding.sourceThreadnoteCommit),
   ]);
   const artifactBytes = new Uint8Array(artifactBuffer);
   verifyReleaseEvidenceSource(repositoryRoot, parseRetainedPerformanceArtifactBytes(artifactBytes));
@@ -408,7 +487,7 @@ export async function loadRetainedPerformanceEvidence(
     binding,
     currentLockfileSha256: dependencyHashes.lockfileSha256,
     currentPackageManifestSha256: dependencyHashes.packageManifestSha256,
-    currentSourceTreeSha256,
+    currentSourceTreeSha256: measuredSourceTreeSha256,
   });
 }
 
@@ -426,7 +505,7 @@ export async function writePerformanceArtifactBinding(repositoryRoot: string): P
   verifyReleaseEvidenceSource(repositoryRoot, payload);
   const [sourceTreeSha256, dependencyHashes] = await Promise.all([
     computePerformanceSourceTreeSha256(repositoryRoot),
-    currentSourceDependencyHashes(repositoryRoot, payload.environment.commit),
+    performanceSourceDependencyHashesAtCommit(repositoryRoot, payload.environment.commit),
   ]);
   const binding = validatePerformanceArtifactBinding({
     schemaVersion: 1,

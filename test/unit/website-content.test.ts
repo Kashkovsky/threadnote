@@ -1670,7 +1670,7 @@ Make the bottleneck observable.
         currentPackageManifestSha256: fixturePackageManifestSha256,
         currentSourceTreeSha256: '8'.repeat(64),
       }),
-    ).toThrow('does not match the current Threadnote source tree');
+    ).toThrow('does not match its measured Threadnote source tree');
   });
 
   it('rejects partial, extra, and mixed retained result payloads', () => {
