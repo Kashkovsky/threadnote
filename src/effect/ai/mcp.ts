@@ -1259,10 +1259,34 @@ function repairMcpJsonRpcObject(
   instructions: string | undefined,
 ): Record<string, unknown> {
   let transformed = parsed;
-  if (instructions !== undefined && mcpInitializeResponse(parsed)) {
-    transformed = {...parsed, result: {...parsed.result, instructions}};
+  if (mcpInitializeResponse(parsed)) {
+    const capabilities = mcpRecord(parsed.result.capabilities);
+    const resources = mcpRecord(capabilities?.resources);
+    // RC.112 advertises subscriptions when resources are registered, but
+    // Threadnote does not yet emit notifications/resources/updated across its
+    // mutation paths. Keep the wire capability truthful until that complete
+    // lifecycle exists instead of accepting inert subscriptions.
+    const repairedResources = resources === undefined ? undefined : {...resources, subscribe: false};
+    const repairedCapabilities =
+      capabilities === undefined || repairedResources === undefined
+        ? capabilities
+        : {...capabilities, resources: repairedResources};
+    const repairedResult = {
+      ...parsed.result,
+      ...(repairedCapabilities === undefined ? {} : {capabilities: repairedCapabilities}),
+      ...(instructions === undefined ? {} : {instructions}),
+    };
+    if (instructions !== undefined || (resources !== undefined && resources.subscribe !== false)) {
+      transformed = {...parsed, result: repairedResult};
+    }
   }
   return unwrapEffectRpcMcpError(transformed);
+}
+
+function mcpRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : undefined;
 }
 
 function mcpInitializeResponse(parsed: Record<string, unknown>): parsed is Record<string, unknown> & {

@@ -283,10 +283,7 @@ describe('Threadnote MCP toolsets', () => {
   it('advertises bounded Threadnote resource discovery without enumerating private memories', async () => {
     await withMcpClient(
       async client => {
-        expect(client.getServerCapabilities()?.resources).toEqual({listChanged: true, subscribe: true});
-        const subscribedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/subscribed.md';
-        await expect(client.subscribeResource({uri: subscribedUri})).resolves.toEqual({});
-        await expect(client.unsubscribeResource({uri: subscribedUri})).resolves.toEqual({});
+        expect(client.getServerCapabilities()?.resources).toEqual({listChanged: true, subscribe: false});
         await expect(client.listResources()).resolves.toEqual({resources: []});
 
         const templates = await client.listResourceTemplates();

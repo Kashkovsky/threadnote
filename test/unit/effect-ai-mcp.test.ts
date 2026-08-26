@@ -40,11 +40,22 @@ const initializeResponse = JSON.stringify({
   id: 1,
   jsonrpc: '2.0',
   result: {
-    capabilities: {tools: {}},
+    capabilities: {resources: {listChanged: true, subscribe: true}, tools: {}},
     protocolVersion: '2025-06-18',
     serverInfo: {name: 'threadnote', version: '4.0.0'},
   },
 });
+
+const repairedInitializeResponse = {
+  id: 1,
+  jsonrpc: '2.0',
+  result: {
+    capabilities: {resources: {listChanged: true, subscribe: false}, tools: {}},
+    instructions: 'Use Threadnote context.',
+    protocolVersion: '2025-06-18',
+    serverInfo: {name: 'threadnote', version: '4.0.0'},
+  },
+};
 
 describe('Effect MCP initialization instructions', () => {
   it('parses the string initialize response once and passes later large frames through unchanged', () => {
@@ -59,9 +70,7 @@ describe('Effect MCP initialization instructions', () => {
     expect(parseCalls).toBe(1);
     expect(passedThrough).toBe(largeFrame);
     expect(typeof initialized).toBe('string');
-    expect(JSON.parse(initialized as string)).toMatchObject({
-      result: {instructions: 'Use Threadnote context.'},
-    });
+    expect(JSON.parse(initialized as string)).toEqual(repairedInitializeResponse);
   });
 
   it('preserves Uint8Array output and identity for later large frames', () => {
@@ -79,9 +88,7 @@ describe('Effect MCP initialization instructions', () => {
     expect(parseCalls).toBe(0);
     expect(passedThrough).toBe(largeFrame);
     expect(initialized).toBeInstanceOf(Uint8Array);
-    expect(JSON.parse(new TextDecoder().decode(initialized as Uint8Array))).toMatchObject({
-      result: {instructions: 'Use Threadnote context.'},
-    });
+    expect(JSON.parse(new TextDecoder().decode(initialized as Uint8Array))).toEqual(repairedInitializeResponse);
   });
 
   it('unwraps only Effect RPC envelopes carrying recognized MCP protocol errors', () => {

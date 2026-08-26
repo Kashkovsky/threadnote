@@ -102,7 +102,7 @@ async function initialize(
     id: 1,
     jsonrpc: '2.0',
     result: {
-      capabilities: {tools: {listChanged: true}},
+      capabilities: {resources: {listChanged: true, subscribe: false}, tools: {listChanged: true}},
       instructions: 'Remote fixture instructions.',
       protocolVersion,
       serverInfo: {name: 'threadnote-memory-fixture', version: '1.0.0'},
