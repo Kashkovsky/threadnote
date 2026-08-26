@@ -1,5 +1,4 @@
 import {TestError} from '../helpers/test-error.js';
-import {execFileSync} from '../helpers/node-child-process.js';
 import {access, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -40,11 +39,6 @@ import {
 } from '../../website/src/content/graphifyComparison.js';
 import {managerDemoShares, managerDemoTabs} from '../../website/src/content/managerDemo.js';
 import {
-  checkedInEmbeddingContextPerformance,
-  embeddingContextPerformanceArtifactPath,
-  summarizeEmbeddingContextValues,
-} from '../../website/src/content/embeddingContextPerformance.js';
-import {
   createDocsSearchIndex,
   DOCS_SEARCH_MAXIMUM_LENGTH,
   DOCS_SEARCH_MAXIMUM_TERMS,
@@ -55,13 +49,6 @@ import {
   retainedPerformanceObjectiveResults,
   validateRetainedPerformancePayload,
 } from '../../website/src/content/performance.js';
-import {checkedInPerformanceEvidence} from '../../website/src/content/performanceHighlights.js';
-import {
-  checkedInWorktreeReadinessEvidence,
-  summarizeWorktreeReadinessDurations,
-  worktreeReadinessArtifactPath,
-  worktreeReadinessSpeedup,
-} from '../../website/src/content/worktreeReadiness.js';
 import {
   docsArticleIdForPathname,
   docsArticlePath,
@@ -827,8 +814,9 @@ The body remains ordinary **Markdown**.
     expect(landingSource).toContain('JSON, GraphML, HTML, or SVG');
     expect(landingSource).toContain('Open the Manager demo');
     expect(landingSource).toContain("siteHref('performance/')");
-    expect(landingSource).toContain('reuses a warm graph instead of rebuilding every new worktree');
-    expect(landingSource).toContain('same-machine, five-sample comparison measured 13.2× faster');
+    expect(landingSource).toContain('exact-release evidence behind proportional graph updates');
+    expect(landingSource).toContain('with exact independent-rebuild parity');
+    expect(landingSource).not.toMatch(/13\.2×|9\.9×/);
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
   });
@@ -1203,74 +1191,95 @@ Make the bottleneck observable.
     expect(renderedIndex.indexOf(orderedTitles[0]!)).toBeLessThan(renderedIndex.indexOf(orderedTitles[1]!));
   });
 
-  it('shows checked-in public measurements instead of placeholder performance cards', async () => {
-    const [performancePage, landingPage, retainedArtifactBytes, retainedBindingBytes] = await Promise.all([
+  it('binds exact v4.3.8 evidence and never substitutes retired performance studies', async () => {
+    const [performancePage, landingPage, viteConfig, retainedArtifactBytes, retainedBindingBytes] = await Promise.all([
       readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
       readFile(join(root, 'website', 'public', 'performance-evidence.json')),
       readFile(join(root, 'website', 'performance', 'evidence.binding.json'), 'utf8'),
     ]);
-    const retainedArtifact = JSON.parse(retainedArtifactBytes.toString('utf8')) as {
+    const retainedArtifactInput = JSON.parse(retainedArtifactBytes.toString('utf8')) as {
       environment: {commit: string; dirty: boolean};
       metadata: {releaseEvidenceRef: string; releaseEvidenceSha: string; releaseEvidenceSourceMode: string};
+      measurements: Array<{name: string; p50: number}>;
     };
+    const retainedArtifact = validateRetainedPerformancePayload(retainedArtifactInput);
     const retainedBinding = JSON.parse(retainedBindingBytes) as {
       artifactSha256: string;
       sourceThreadnoteCommit: string;
     };
+    const measurement = (name: string) => {
+      const matches = retainedArtifact.measurements.filter(candidate => candidate.name === name);
+      expect(matches).toHaveLength(1);
+      return matches[0]!.p50;
+    };
 
-    expect(checkedInPerformanceEvidence.source).toMatchObject({
-      repository: 'JetBrains/intellij-community',
-      repositoryCommit: '3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c',
-      repositoryCommitUrl:
-        'https://github.com/JetBrains/intellij-community/tree/3cbdad9ee6c8a5135fc0f01cc90114fc25c0655c',
-    });
-    expect(checkedInPerformanceEvidence.scale).toMatchObject({
-      indexedFiles: 232_750,
-      symbols: 2_666_762,
-      relationships: 7_340_596,
-    });
-    expect(checkedInPerformanceEvidence.query.hotSearchAndAdjacencyMilliseconds).toBe(43.7);
-    expect(checkedInPerformanceEvidence.lexicalStorage.writeSpeedup).toBeGreaterThan(2.7);
-    expect(checkedInPerformanceEvidence.lexicalStorage.parityPassed).toBe(true);
     expect(retainedArtifact).toMatchObject({
       environment: {commit: retainedBinding.sourceThreadnoteCommit, dirty: false},
       metadata: {
-        releaseEvidenceRef: 'refs/tags/v4.3.3',
+        releaseEvidenceRef: 'refs/tags/v4.3.8',
         releaseEvidenceSha: retainedBinding.sourceThreadnoteCommit,
         releaseEvidenceSourceMode: 'exact-release',
       },
     });
+    expect(retainedBinding.sourceThreadnoteCommit).toBe('f1e4102a78e4df2127fca0c4d59da39ffb5f70a6');
+    expect(retainedBinding.artifactSha256).toBe('b56994fe99c3d68be80f79315b88d4420a7241a76de72c317d2fc3d84de23b39');
     expect(sha256Hex(retainedArtifactBytes)).toBe(retainedBinding.artifactSha256);
-    for (const artifactUrl of Object.values(checkedInPerformanceEvidence.artifacts)) {
-      const target = new URL(artifactUrl).pathname.match(/^\/Kashkovsky\/threadnote\/blob\/([a-f0-9]{40})\/(.+)$/);
-      expect(target).not.toBeNull();
-      if (!target) continue;
-      expect(() =>
-        execFileSync('git', ['cat-file', '-e', `${target[1]}:${target[2]}`], {cwd: root, stdio: 'pipe'}),
-      ).not.toThrow();
-      expect(() =>
-        execFileSync('git', ['merge-base', '--is-ancestor', target[1], 'HEAD'], {cwd: root, stdio: 'pipe'}),
-      ).not.toThrow();
-    }
-    expect(performancePage).not.toMatch(/>Pending<|pending artifact|evidence pending/i);
-    expect(performancePage).toContain('aria-label={`Open the pinned');
-    expect(performancePage).toContain('Threadnote 4.1 also gates large-worktree safety');
-    expect(performancePage).toContain('never merged into a universal latency percentile');
+    expect(measurement('cold-index')).toBe(3_426_563.136875);
+    expect(measurement('one-file-reindex-index')).toBe(10_748.486666);
+    expect(measurement('one-file-reindex-registration-lock-and-database-setup')).toBe(4_851.893916);
+    expect(measurement('one-file-reindex-post-committed-scan-overlay-and-workspace')).toBe(53.179375);
+
+    expect(performancePage).toContain('Current evidence pending');
+    expect(performancePage).toContain('Historical observations are not');
+    expect(performancePage).toContain('rather than falling back to results from an older release');
     expect(performancePage).toContain('The release-run adapter verified all');
     expect(performancePage).toContain('source-mismatched evidence');
     expect(performancePage).toContain('{artifact.source.threadnote.version} release commit');
     expect(performancePage).not.toContain('v4.3.1 release commit');
     expect(performancePage).not.toContain('Historical tuning study');
     expect(performancePage).not.toContain('Historical worktree study');
-    expect(performancePage).not.toContain('checkedInEmbeddingContextPerformance');
-    expect(performancePage).not.toContain('checkedInWorktreeReadinessEvidence');
+    expect(performancePage).not.toContain('checkedInPerformanceEvidence');
     expect(performancePage).not.toMatch(/4\.0\.1|4\.2\.5/);
     expect(performancePage).not.toContain('Threadnote 4.2.5 candidate evidence');
     expect(performancePage).not.toContain('Measured in Threadnote 4.0.1');
+    expect(performancePage).toContain('Evidence discipline');
+    expect(performancePage).toContain('v4.3.4 observation 1');
+    expect(performancePage).toContain('v4.3.4 observation 2');
+    expect(performancePage).toContain('Registration open by 212 ms');
+    expect(performancePage).toContain('Registration open by 191 ms');
+    expect(performancePage).toContain('v4.3.5 observation 1');
+    expect(performancePage).toContain('Registration open by 234 ms');
+    expect(performancePage).toContain('v4.3.6 observation 1');
+    expect(performancePage).toContain('Registration open by 178 ms');
+    expect(performancePage).toContain('v4.3.7 observation 1');
+    expect(performancePage).toContain('Registration open by 255 ms');
+    expect(performancePage).toContain('All four targets passed');
+    expect(performancePage).toContain('no unchanged run');
+    expect(performancePage).toContain('Correctness held while diagnosis narrowed');
+    expect(performancePage).toContain('Final closure stays pending until the exact release adapter verifies');
+    expect(performancePage).toContain('only the final v4.3.8 artifact is publicly bound on this page');
+    expect(performancePage).toContain('Exact-current graph query p95');
+    expect(performancePage).toContain('Includes exact Git/worktree observation');
+    expect(performancePage).toContain('git status --porcelain');
+    expect(performancePage).toContain('the four headline target');
+    expect(performancePage).toContain('c25e1dc8cdbc96e5aa0e4803f37bc949e9b4220e109ecf0245171471d5f8bc9d');
+    expect(performancePage).toContain('0f3ba956f491d4de39d81101ddfaae029eb097146cea29ce3f848f69bbf79fad');
+    expect(performancePage).toContain('cc337e8778eb8e2d0590b995f43985f21f6da3ec50ec2bdb53d201cbce1110f7');
+    expect(performancePage).toContain('731f8694ac4e4617601ba814dacba7d95729ad32a7537c7dea1bfd2d7efcd569');
+    expect(performancePage).toContain('899faf6380b2fb6a69078b5cd79837451453be02541df4956854da1df6414a97');
     expect(performancePage).toContain("siteHref('performance/graphify/')");
     expect(performancePage).toContain('Compare with Graphify');
-    expect(landingPage).toContain('public IntelliJ evidence still covers 232,750 files');
+    expect(landingPage).toContain("performanceEvidence.state === 'verified'");
+    expect(landingPage).toContain('exact-release evidence behind proportional graph updates');
+    expect(landingPage).toContain('with exact independent-rebuild parity');
+    expect(landingPage).not.toMatch(/13\.2×|9\.9×|Threadnote 4\.0\.1/);
+    expect(viteConfig).not.toMatch(
+      /worktreeReadiness|embeddingContextPerformance|threadnote-4\.0\.1|threadnote-4\.2\.5/,
+    );
+    expect(viteConfig).toContain('performance-evidence.${evidence.artifact.artifact.sha256}.json');
+    expect(viteConfig).toContain('performanceArtifactRelativePath');
     expect(landingPage).not.toMatch(/values stay visibly pending|retained artifact is complete/i);
   });
 
@@ -1887,175 +1896,6 @@ Make the bottleneck observable.
     expect(evidenceSource).not.toContain('export function validateBoundRetainedPerformanceArtifact');
   });
 
-  it('derives the v4.0.1 worktree speedups from retained raw samples and exact provenance', async () => {
-    const artifactFile = join(
-      root,
-      'test',
-      'evaluation',
-      'candidates',
-      'threadnote-4.0.1',
-      'benchmarks',
-      'darwin-arm64-m1-max',
-      'code-graph-worktree-readiness-2026-08-04.json',
-    );
-    const [artifactBytes, viteConfig] = await Promise.all([
-      readFile(artifactFile),
-      readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
-    ]);
-    const artifact = JSON.parse(artifactBytes.toString('utf8')) as {
-      source: {
-        candidate: {commit: string; ref: string};
-        baseline: {commit: string};
-        harness: {commit: string; path: string; sha256: string};
-      };
-      scenarios: {
-        graphEquivalentCommit: {candidate: {observations: Array<{stagedFiles: number}>}};
-        oneFileChange: {candidate: {observations: Array<{stagedFiles: number}>}};
-      };
-    };
-    const harnessBytes = execFileSync(
-      'git',
-      ['show', `${artifact.source.harness.commit}:${artifact.source.harness.path}`],
-      {cwd: root},
-    );
-
-    expect(artifact.source).toMatchObject({
-      candidate: {commit: '55c4bf3f35c0d6ddd43a4d686f5e9d0c6b9a670b', ref: 'v4.0.1'},
-      baseline: {commit: '4c8911e868096bb0aa57b3dd8078bd339f396d92'},
-      harness: {
-        commit: '4e5f224527e67b4785ece5fa6f4f2e72849bb661',
-        path: 'scripts/benchmark-worktree-readiness.ts',
-      },
-    });
-    expect(sha256Hex(harnessBytes)).toBe(artifact.source.harness.sha256);
-    expect(
-      artifact.scenarios.graphEquivalentCommit.candidate.observations.every(sample => sample.stagedFiles === 0),
-    ).toBe(true);
-    expect(artifact.scenarios.oneFileChange.candidate.observations.every(sample => sample.stagedFiles === 1)).toBe(
-      true,
-    );
-    expect(checkedInWorktreeReadinessEvidence).toMatchObject({
-      samples: 5,
-      scale: {edges: 90_807, files: 597, symbols: 30_793},
-      source: {candidate: {ref: 'v4.0.1'}},
-    });
-    expect(checkedInWorktreeReadinessEvidence.graphEquivalentCommit.medianSpeedup).toBeCloseTo(13.1702, 4);
-    expect(checkedInWorktreeReadinessEvidence.oneFileChange.medianSpeedup).toBeCloseTo(9.9441, 4);
-    expect(worktreeReadinessArtifactPath).toBe('evidence/code-graph-worktree-readiness-v4.0.1.json');
-    expect(viteConfig).toContain('fileName: worktreeReadinessArtifactPath');
-    expect(viteConfig).toContain('this.emitFile');
-  });
-
-  it('derives the v4.2.5 CPU embedding results from retained raw samples and exact provenance', async () => {
-    const artifactFile = join(
-      root,
-      'test',
-      'evaluation',
-      'candidates',
-      'threadnote-4.2.5',
-      'benchmarks',
-      'darwin-arm64-m1-max',
-      'code-graph-embedding-contexts-10000-2026-08-14.json',
-    );
-    const [artifactBytes, pageSource, viteConfig] = await Promise.all([
-      readFile(artifactFile),
-      readFile(join(root, 'website', 'src', 'pages', 'PerformancePage.tsx'), 'utf8'),
-      readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
-    ]);
-    const artifact = JSON.parse(artifactBytes.toString('utf8')) as {
-      observations: readonly unknown[];
-      source: {harness: {commit: string; path: string; sha256: string}; threadnoteCommit: string};
-    };
-    const harnessBytes = execFileSync(
-      'git',
-      ['show', `${artifact.source.harness.commit}:${artifact.source.harness.path}`],
-      {cwd: root},
-    );
-
-    expect(artifact.source).toMatchObject({
-      threadnoteCommit: '304738cccc51ac5fd944b7e3fe7139a79ee180ff',
-      harness: {
-        commit: '304738cccc51ac5fd944b7e3fe7139a79ee180ff',
-        path: 'scripts/benchmark-code-graph-embedding-contexts.ts',
-      },
-    });
-    expect(sha256Hex(harnessBytes)).toBe(artifact.source.harness.sha256);
-    expect(artifact.observations).toHaveLength(16);
-    expect(checkedInEmbeddingContextPerformance).toMatchObject({
-      environment: {
-        cpu: 'Apple M1 Max',
-        cpuMathCores: 8,
-        model: {id: 'bge-small-en-v1.5-q8'},
-        modelGpuLayers: 0,
-      },
-      promotion: {candidate: 8, eligibleForReviewedDefaultChange: true, roundWinsAgainstOne: 4},
-      scope: {observations: 16, rounds: 4, scaleSymbols: 10_000},
-    });
-    expect(
-      checkedInEmbeddingContextPerformance.results.map(result => ({
-        cold: result.coldIndexMilliseconds.median,
-        contexts: result.contexts,
-        speedup: result.pairedMedianSpeedup,
-        vectors: result.coldVectorMilliseconds.median,
-      })),
-    ).toEqual([
-      {cold: 61_841.63025, contexts: 1, speedup: 1, vectors: 50_721.883667},
-      {cold: 49_046.387666, contexts: 2, speedup: 1.253911843830802, vectors: 37_847.605625},
-      {cold: 45_736.534709, contexts: 4, speedup: 1.412931081545555, vectors: 34_026.777709},
-      {cold: 42_400.637875, contexts: 8, speedup: 1.4851069914475903, vectors: 30_992.511291},
-    ]);
-    expect(checkedInEmbeddingContextPerformance.rssIncreasePercent).toBeCloseTo(5.9859, 4);
-    expect(embeddingContextPerformanceArtifactPath).toBe('evidence/code-graph-embedding-contexts-10000-v4.2.5.json');
-    expect(viteConfig).toContain('fileName: embeddingContextPerformanceArtifactPath');
-    expect(pageSource).not.toMatch(/61_841|42_400|1\.485106/);
-  });
-
-  it('summarizes embedding-context observations independently of input order', () => {
-    fc.assert(
-      fc.property(fc.array(fc.integer({min: 0, max: 10_000_000}), {maxLength: 25, minLength: 1}), values => {
-        const summary = summarizeEmbeddingContextValues(values);
-        const reversed = summarizeEmbeddingContextValues([...values].reverse());
-        const sorted = [...values].sort((left, right) => left - right);
-        const percentile = (quantile: number) =>
-          sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))]!;
-
-        expect(summary).toEqual(reversed);
-        expect(summary).toEqual({
-          maximum: sorted.at(-1),
-          median: percentile(0.5),
-          minimum: sorted[0],
-          p25: percentile(0.25),
-          p75: percentile(0.75),
-        });
-      }),
-    );
-  });
-
-  it('summarizes worktree-readiness samples independently of input order', () => {
-    fc.assert(
-      fc.property(fc.array(fc.integer({min: 1, max: 10_000_000}), {maxLength: 25, minLength: 1}), values => {
-        const summary = summarizeWorktreeReadinessDurations(values);
-        const reversed = summarizeWorktreeReadinessDurations([...values].reverse());
-        const sorted = [...values].sort((left, right) => left - right);
-        const middle = Math.floor(sorted.length / 2);
-        const expectedMedian = sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
-
-        expect(summary).toEqual(reversed);
-        expect(summary).toEqual({
-          maximumMilliseconds: sorted.at(-1),
-          medianMilliseconds: expectedMedian,
-          minimumMilliseconds: sorted[0],
-          samples: values.length,
-        });
-      }),
-    );
-    fc.assert(
-      fc.property(fc.integer({min: 1, max: 1_000_000}), fc.integer({min: 2, max: 100}), (candidate, multiplier) => {
-        expect(worktreeReadinessSpeedup(candidate * multiplier, candidate)).toBe(multiplier);
-      }),
-    );
-  });
-
   it('documents explicit publishing, Cursor Marketplace, and supported hook boundaries', () => {
     const content = JSON.stringify(docsSections);
     const cursorPluginArticle = docsSections
@@ -2172,17 +2012,35 @@ Make the bottleneck observable.
   });
 
   it('labels synthetic Manager data and publishes a parity-first Graphify performance subpage', async () => {
-    const [managerSource, faqSource, graphifyPage, graphifyHtml, mainSource, shellSource, sitemap, evidenceSource] =
-      await Promise.all([
-        readFile(join(root, 'website', 'src', 'components', 'ManagerMock.tsx'), 'utf8'),
-        readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
-        readFile(join(root, 'website', 'src', 'pages', 'GraphifyPerformancePage.tsx'), 'utf8'),
-        readFile(join(root, 'website', 'performance', 'graphify', 'index.html'), 'utf8'),
-        readFile(join(root, 'website', 'src', 'main.tsx'), 'utf8'),
-        readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
-        readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
-        readFile(join(root, 'website', 'public', 'graphify-intellij-evidence.json'), 'utf8'),
-      ]);
+    const [
+      managerSource,
+      faqSource,
+      graphifyPage,
+      graphifyHtml,
+      mainSource,
+      shellSource,
+      sitemap,
+      evidenceSource,
+      addressedEvidenceSource,
+    ] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'components', 'ManagerMock.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'GraphifyPerformancePage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'performance', 'graphify', 'index.html'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'main.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'components', 'SiteShell.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'sitemap.xml'), 'utf8'),
+      readFile(join(root, 'website', 'public', 'graphify-intellij-evidence.json'), 'utf8'),
+      readFile(
+        join(
+          root,
+          'website',
+          'public',
+          'graphify-intellij-evidence.bd4686d2fce1fe369c73ac77ebe65604bcb3af6fb4564691d10dfb296aca61b1.json',
+        ),
+        'utf8',
+      ),
+    ]);
     const sharedCopy = JSON.stringify(graphifySharedCapabilities).toLowerCase();
     const differenceCopy = JSON.stringify(graphifyVerifiedDifferences).toLowerCase();
 
@@ -2217,31 +2075,77 @@ Make the bottleneck observable.
     }
     expect(graphifyPage).toContain('These are parity, not reasons to choose one');
     expect(graphifyPage).toContain('No graph after 5h 32m 40s');
+    expect(graphifyPage).toContain('Right-censored artifact non-arrival');
     expect(graphifyPage).toContain('right-censored lower bound');
-    expect(graphifyPage).toContain('both stay on local AST work and spend no provider tokens');
+    expect(graphifyPage).toContain('both stay on deterministic local extraction and spend no provider tokens');
+    expect(graphifyPage).toContain('still consumes local CPU or GPU, memory, and energy');
     expect(differenceCopy).toContain('installed local embedding model');
     expect(differenceCopy).toContain('without a hosted embedding service or provider-token spend');
+    expect(differenceCopy).toContain('37 tree-sitter grammars');
     expect(differenceCopy).toContain('graphify_out');
     expect(differenceCopy).toContain('deliberately skip linked-worktree rebuilds');
     expect(differenceCopy).toContain('primary checkout');
     expect(graphifyPage).toContain('embedding model for semantic vector seeds');
-    expect(graphifyPage).toMatch(/outside this structural\s+timing arm/);
+    expect(graphifyPage).toContain('this structural timing arm');
     expect(graphifyPage).toContain('A graph file is not the finish line');
     expect(graphifyPage).toContain('default 512 MiB file guard had no artifact');
     expect(graphifyPage).toContain('hydrate nodes and links into NetworkX');
     expect(graphifyPage).toContain('Exact-symbol, natural structural, and affected-node controls remained unrun');
     expect(graphifyPage).toContain('does not claim Graphify could never finish on another machine');
-    expect(graphifyPage).toContain("siteHref('graphify-intellij-evidence.json')");
+    expect(graphifyPage).toContain('graphify extract . --code-only --no-cluster --timing --max-workers 4');
+    expect(graphifyPage).toContain('formatInteger(artifact.inventory.indexedFiles)');
+    expect(graphifyPage).toContain('exact v4.3.8 comparator artifact passes its source and digest');
+    expect(graphifyPage).toContain('Graphify reported 191,249 code files');
+    expect(graphifyPage).toContain('neither a completion-time nor a throughput');
+    expect(graphifyPage).toContain('found no durable checkpoint');
+    expect(graphifyPage).toContain(
+      'graphify-intellij-evidence.bd4686d2fce1fe369c73ac77ebe65604bcb3af6fb4564691d10dfb296aca61b1.json',
+    );
     expect(graphifyPage).toContain("performanceEvidence.state === 'verified'");
+    expect(graphifyPage).toContain('verifiedArtifact?.source.threadnote.version === threadnoteComparator.version');
+    expect(graphifyPage).toContain('20,309.960 CPU-seconds');
+    expect(graphifyPage).toContain('Parent RSS was 12.1 GB immediately before termination');
+    expect(graphifyPage).toContain('separately retained operator launcher');
+    expect(graphifyPage).toContain('bound benchmark artifact does not serialize that field');
     expect(graphifyPage).not.toMatch(/Graphify-exclusive|Graphify only|Threadnote-exclusive|Threadnote only/);
 
-    expect(JSON.parse(evidenceSource)).toMatchObject({
-      result: 'operator-terminated-practical-non-admission',
+    const graphifyEvidence = JSON.parse(evidenceSource) as {
+      threadnoteComparator: {artifactSha256: string; commit: string; version: string};
+    };
+    expect(graphifyEvidence).toMatchObject({
+      result: 'operator-terminated-right-censored-artifact-non-arrival',
+      scope: {package: 'graphifyy', product: 'Graphify'},
+      runner: {cpu: 'Apple M1 Max', pythonVersion: '3.12.5', workers: 4},
+      run: {startedAt: '2026-08-25T11:40:45.238Z', completedAt: '2026-08-25T17:13:25.168Z'},
+      threadnoteComparator: {
+        artifactSha256: 'b56994fe99c3d68be80f79315b88d4420a7241a76de72c317d2fc3d84de23b39',
+        commit: 'f1e4102a78e4df2127fca0c4d59da39ffb5f70a6',
+        version: 'v4.3.8',
+      },
       decision: {naturalTimeout: false, resourceCapTriggered: false, rightCensored: true},
-      observations: {graphJsonExists: false, queryabilityReached: false, swapGrowthBytesPeak: 0},
+      observations: {
+        graphJsonExists: false,
+        parentRssBytesBeforeTermination: 12_079_448_064,
+        processTreeCpuMilliseconds: 20_309_960,
+        queryabilityReached: false,
+        swapGrowthBytesPeak: 0,
+      },
       progress: {interruptStackFunction: 'disambiguate_ambiguous_candidates', interruptStackLine: 260},
+      comparisonBoundary: {
+        completionTimeRatioClaimed: false,
+        graphifyDetectedCodeFiles: 191_249,
+        threadnoteOperatorLauncherSha256: '3d8edfd86376f6aaaa9efbf3989cbcea5a02f414e82a653637c9b2eea061c9cd',
+        threadnoteParserWorkerEvidence: 'separately-retained-operator-launcher',
+        threadnoteParserWorkers: 4,
+        threadnoteIndexedFiles: 225_852,
+      },
       restartBoundary: {perFileAstCachePersisted: true, postParseResumeArtifactPersisted: false},
     });
+    expect(graphifyPage).toContain(`artifactSha256: '${graphifyEvidence.threadnoteComparator.artifactSha256}'`);
+    expect(graphifyPage).toContain(`commit: '${graphifyEvidence.threadnoteComparator.commit}'`);
+    expect(graphifyPage).toContain(`version: '${graphifyEvidence.threadnoteComparator.version}'`);
+    expect(addressedEvidenceSource).toBe(evidenceSource);
+    expect(sha256Hex(evidenceSource)).toBe('bd4686d2fce1fe369c73ac77ebe65604bcb3af6fb4564691d10dfb296aca61b1');
 
     expect(graphifyHtml).toContain('<link rel="canonical" href="https://threadnote.io/performance/graphify/" />');
     expect(graphifyHtml).toContain('<body data-page="performance-graphify">');
@@ -2275,7 +2179,8 @@ Make the bottleneck observable.
     expect(content).toContain('materializes changed, renamed, and deleted paths');
     expect(content).toContain('Agents cannot query partial rows from an unpromoted snapshot');
     expect(content).toContain('optional vector enrichment and whole-graph summaries continue in the background');
-    expect(content).toContain('same-machine v4.0.1 worktree-readiness comparison');
+    expect(content).toContain('current headline claims to one exact-release large-repository artifact');
+    expect(content).not.toContain('same-machine v4.0.1 worktree-readiness comparison');
     expect(JSON.stringify(proTips)).toContain('a graph-equivalent commit can reuse ready content');
   });
 

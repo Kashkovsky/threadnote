@@ -9,7 +9,7 @@ export const graphifyReviewedSource = {
 export const graphifySharedCapabilities = [
   {
     title: 'Architecture signals',
-    body: 'Both expose communities, hubs and god nodes, and surprising links. The algorithms and identifiers differ, but the investigative workflow is shared.',
+    body: 'Both expose communities, hubs and god nodes—unusually high-degree nodes that can reveal coupling—and surprising links. The algorithms and identifiers differ, but the investigative workflow is shared.',
   },
   {
     title: 'Relationships beyond pairs',
@@ -53,6 +53,13 @@ export const graphifyVerifiedDifferences = [
       'Combines exact and lexical retrieval with an installed local embedding model for vector seeds—without a hosted embedding service or provider-token spend—then returns bounded current-snapshot evidence and stable follow-up identifiers.',
     graphify:
       'Uses graph traversal and term or trigram matching for query, path, explain, neighbors, and impact workflows; its package explicitly is not a vector index.',
+  },
+  {
+    dimension: 'Language and format breadth',
+    threadnote:
+      'Combines compiler-backed TypeScript/JavaScript, bundled structural language packs, schemas, configuration, documentation, and corpus formats under one provenance-aware graph contract.',
+    graphify:
+      'Ships 37 Tree-sitter grammars plus specialist format handlers, then can extend beyond code through optional model-backed document and media ingestion.',
   },
   {
     dimension: 'Document and media semantics',

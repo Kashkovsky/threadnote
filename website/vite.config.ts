@@ -1,10 +1,11 @@
 import react from '@vitejs/plugin-react';
 import {defineConfig, type Plugin} from 'vite';
 import {loadWebsiteArticles} from '../scripts/site-articles.ts';
-import {loadRetainedPerformanceEvidence} from '../scripts/site-performance-evidence.ts';
+import {
+  loadRetainedPerformanceEvidence,
+  performanceArtifactRelativePath,
+} from '../scripts/site-performance-evidence.ts';
 import {loadLatestMajorWebsiteReleases} from '../scripts/site-release-notes.ts';
-import {embeddingContextPerformanceArtifactPath} from './src/content/embeddingContextPerformance.ts';
-import {worktreeReadinessArtifactPath} from './src/content/worktreeReadiness.ts';
 
 const repositoryRoot = process.cwd();
 const siteRoot = `${repositoryRoot}/website`;
@@ -15,14 +16,8 @@ const virtualReleaseNotesId = 'virtual:threadnote-release-notes';
 const resolvedVirtualReleaseNotesId = `\0${virtualReleaseNotesId}`;
 const virtualArticlesId = 'virtual:threadnote-articles';
 const resolvedVirtualArticlesId = `\0${virtualArticlesId}`;
-const worktreeReadinessArtifactSource =
-  `${repositoryRoot}/test/evaluation/candidates/threadnote-4.0.1/benchmarks/` +
-  'darwin-arm64-m1-max/code-graph-worktree-readiness-2026-08-04.json';
-const embeddingContextPerformanceArtifactSource =
-  `${repositoryRoot}/test/evaluation/candidates/threadnote-4.2.5/benchmarks/` +
-  'darwin-arm64-m1-max/code-graph-embedding-contexts-10000-2026-08-14.json';
 
-const performanceEvidencePlugin = {
+const performanceEvidencePlugin: Plugin = {
   name: 'threadnote-performance-evidence',
   resolveId(id: string) {
     return id === virtualEvidenceId ? resolvedVirtualEvidenceId : undefined;
@@ -31,6 +26,16 @@ const performanceEvidencePlugin = {
     if (id !== resolvedVirtualEvidenceId) return undefined;
     const evidence = await loadRetainedPerformanceEvidence(repositoryRoot, siteBase);
     return `export default ${JSON.stringify(evidence)};`;
+  },
+  async generateBundle() {
+    const evidence = await loadRetainedPerformanceEvidence(repositoryRoot, siteBase);
+    if (evidence.state !== 'verified') return;
+    const source = await Bun.file(`${repositoryRoot}/${performanceArtifactRelativePath}`).text();
+    this.emitFile({
+      fileName: `performance-evidence.${evidence.artifact.artifact.sha256}.json`,
+      source,
+      type: 'asset',
+    });
   },
 };
 
@@ -58,35 +63,10 @@ const articlesPlugin: Plugin = {
   },
 };
 
-const worktreeReadinessEvidencePlugin: Plugin = {
-  name: 'threadnote-worktree-readiness-evidence',
-  async generateBundle() {
-    const source = await Bun.file(worktreeReadinessArtifactSource).text();
-    JSON.parse(source);
-    this.emitFile({fileName: worktreeReadinessArtifactPath, source, type: 'asset'});
-  },
-};
-
-const embeddingContextPerformanceEvidencePlugin: Plugin = {
-  name: 'threadnote-embedding-context-performance-evidence',
-  async generateBundle() {
-    const source = await Bun.file(embeddingContextPerformanceArtifactSource).text();
-    JSON.parse(source);
-    this.emitFile({fileName: embeddingContextPerformanceArtifactPath, source, type: 'asset'});
-  },
-};
-
 export default defineConfig({
   root: siteRoot,
   base: siteBase,
-  plugins: [
-    react(),
-    performanceEvidencePlugin,
-    releaseNotesPlugin,
-    articlesPlugin,
-    worktreeReadinessEvidencePlugin,
-    embeddingContextPerformanceEvidencePlugin,
-  ],
+  plugins: [react(), performanceEvidencePlugin, releaseNotesPlugin, articlesPlugin],
   build: {
     outDir: `${siteRoot}/../site-dist`,
     emptyOutDir: true,

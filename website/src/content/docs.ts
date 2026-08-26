@@ -1399,7 +1399,7 @@ threadnote graph export --format svg --output code-graph.svg`,
           },
           {
             type: 'paragraph',
-            text: 'The [Performance page](../performance/) documents the bounded indexing architecture. It keeps the comprehensive exact-HEAD large-repository evidence contract separate from a checked-in same-machine v4.0.1 worktree-readiness comparison with raw samples, exact commits, materialization modes, and graph/query parity.',
+            text: 'The [Performance page](../performance/) documents the bounded indexing architecture and binds its current headline claims to one exact-release large-repository artifact. Narrow historical studies remain checked-in engineering records instead of being presented as current product results.',
           },
         ],
       },

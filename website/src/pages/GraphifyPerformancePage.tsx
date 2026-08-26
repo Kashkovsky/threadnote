@@ -9,6 +9,11 @@ import {performanceEvidence} from '../content/performanceEvidence';
 import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
+const threadnoteComparator = {
+  artifactSha256: 'b56994fe99c3d68be80f79315b88d4420a7241a76de72c317d2fc3d84de23b39',
+  commit: 'f1e4102a78e4df2127fca0c4d59da39ffb5f70a6',
+  version: 'v4.3.8',
+} as const;
 
 function formatInteger(value: number): string {
   return integerFormatter.format(value);
@@ -27,7 +32,13 @@ export default function GraphifyPerformancePage() {
     'A source-reviewed Threadnote and Graphify comparison with shared graph capabilities, verified workflow differences, and separately labeled performance evidence.',
   );
 
-  const artifact = performanceEvidence.state === 'verified' ? performanceEvidence.artifact : undefined;
+  const verifiedArtifact = performanceEvidence.state === 'verified' ? performanceEvidence.artifact : undefined;
+  const artifact =
+    verifiedArtifact?.source.threadnote.version === threadnoteComparator.version &&
+    verifiedArtifact.source.threadnote.commit === threadnoteComparator.commit &&
+    verifiedArtifact.artifact.sha256 === threadnoteComparator.artifactSha256
+      ? verifiedArtifact
+      : undefined;
 
   return (
     <SiteShell page="performance-graphify" fullBleed>
@@ -143,11 +154,12 @@ export default function GraphifyPerformancePage() {
         <header className="section-heading section-heading--split">
           <div>
             <span className="eyebrow">Scale evidence</span>
-            <h2>One result completed. One never reached an artifact.</h2>
+            <h2>Right-censored artifact non-arrival.</h2>
           </div>
           <p>
-            The Graphify observation is a right-censored lower bound, not an invented eventual completion time. Its
-            operator stop and absent artifact are reported as practical non-admission under the frozen run contract.
+            The Graphify observation is a right-censored lower bound, not an invented eventual completion time. The
+            operator sent <code>SIGINT</code> after the recorded five-hour utility threshold had been exceeded; the
+            frozen command had not produced a supported terminal graph.
           </p>
         </header>
 
@@ -186,13 +198,15 @@ export default function GraphifyPerformancePage() {
             <span>Graphify {graphifyReviewedSource.version}</span>
             <h3>No graph after 5h 32m 40s</h3>
             <p>
-              The guarded code-only run was operator-terminated after exceeding a five-hour developer-utility threshold.
-              Per-file AST progress completed, but neither a graph nor a write-temp appeared, so no supported query
-              could be exercised.
+              The guarded code-only run was operator-terminated at 5:32:39.939. Per-file AST progress completed, but
+              neither <code>graph.json</code> nor its atomic write-temp existed, so no supported query surface could be
+              exercised.
             </p>
             <a
               className="text-link"
-              href={siteHref('graphify-intellij-evidence.json')}
+              href={siteHref(
+                'graphify-intellij-evidence.bd4686d2fce1fe369c73ac77ebe65604bcb3af6fb4564691d10dfb296aca61b1.json',
+              )}
               target="_blank"
               rel="noreferrer"
             >
@@ -201,21 +215,41 @@ export default function GraphifyPerformancePage() {
           </article>
         </div>
         <p className="comparison-note">
-          The fixture commit is shared; product-native storage and execution models are not forced into an artificial
-          common implementation. A bounded failure is evidence too and will be reported as such.
+          Both observations used the same Apple M1 Max, 64 GiB memory, internal APFS SSD, and fixture commit. Graphify
+          records four workers in its public summary. Threadnote&apos;s separately retained operator launcher also set
+          four workers (SHA-256 <code>3d8edfd8…</code>), but its bound benchmark artifact does not serialize that field.
+          Threadnote used Bun 1.3.14; the Graphify package <code>graphifyy</code> 0.9.49 used Python 3.12.5. Its exact
+          product command was <code>graphify extract . --code-only --no-cluster --timing --max-workers 4</code> inside a
+          no-network sandbox.
         </p>
         <p className="comparison-note">
           The common structural stopwatch compares Threadnote lexical-only indexing with Graphify code-only extraction;
-          both stay on local AST work and spend no provider tokens. Separately, Threadnote can add its installed local
-          embedding model for semantic vector seeds without calling a hosted embedding service. Graphify&apos;s
-          model-backed document and media paths are useful product capabilities, but they are outside this structural
-          timing arm.
+          both stay on deterministic local extraction and spend no provider tokens. Separately, Threadnote can add its
+          installed local embedding model for semantic vector seeds without calling a hosted embedding service. That
+          still consumes local CPU or GPU, memory, and energy. Graphify&apos;s model-backed document and media paths are
+          useful product capabilities, but they are outside this structural timing arm.
         </p>
+        {artifact ? (
+          <p className="comparison-note">
+            The products did not admit identical work: Threadnote indexed{' '}
+            {formatInteger(artifact.inventory.indexedFiles)} of {formatInteger(artifact.inventory.eligibleFiles)}{' '}
+            eligible files, while Graphify reported 191,249 code files and separately skipped 25,799 non-code, 52,519
+            unclassified, and 65 sensitive-path files. Their native discovery contracts are part of the products, so the
+            5.825× elapsed multiple before Graphify artifact arrival is neither a completion-time nor a throughput
+            ratio.
+          </p>
+        ) : (
+          <p className="comparison-note">
+            Graphify&apos;s native inventory remains available in its retained evidence. Cross-product file counts and
+            elapsed context stay hidden unless the exact v4.3.8 comparator artifact passes its source and digest checks.
+          </p>
+        )}
         <p className="comparison-note">
-          At the stop, Graphify had kept one CPU core busy after its final per-file AST progress line, with 11.8 GB
-          current resident memory, a 14.8 GB process-tree peak, zero swap growth, and no sampler failures. Its 3.7 GB
-          per-file AST cache survived, but no persisted checkpoint could resume the in-memory cross-file resolution and
-          downstream graph construction. The <code>SIGINT</code> stack located current work in{' '}
+          Across the full 5:32:39.939 observation, Graphify&apos;s process tree accumulated 20,309.960 CPU-seconds—about
+          1.018 CPU cores on average. Parent RSS was 12.1 GB immediately before termination, process-tree peak RSS was
+          14.8 GB, swap growth remained zero, and no sampler failed. Its 3.7 GB per-file AST cache survived. Source
+          review of v0.9.49 found no durable checkpoint for resuming the in-memory cross-file resolution and downstream
+          graph construction reached by this run. The <code>SIGINT</code> stack located current work in{' '}
           <code>disambiguate_ambiguous_candidates</code>, where <code>set(test_cands)</code> was rebuilt inside a
           candidate loop. That is a source-visible superlinear risk and the exact interruption point—not proof that one
           line consumed the entire silent interval.
@@ -263,9 +297,9 @@ export default function GraphifyPerformancePage() {
           </article>
         </div>
         <p className="comparison-note">
-          This result establishes practical non-admission for pinned IntelliJ Community on the tested machine and
-          no-token configuration. It does not claim Graphify could never finish on another machine or with an unknown
-          longer wait; it records that an agent had no usable graph after more than five ordinary work hours.
+          Under this frozen workflow, no supported terminal graph or query surface arrived before the operator stop. It
+          does not claim Graphify could never finish on another machine or with an unknown longer wait; it records that
+          an agent had no usable graph after more than five ordinary work hours.
         </p>
       </section>
 

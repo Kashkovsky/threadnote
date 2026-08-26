@@ -7,7 +7,6 @@ import {
   type RetainedPerformanceArtifact,
 } from '../content/performance';
 import {performanceEvidence} from '../content/performanceEvidence';
-import {checkedInPerformanceEvidence} from '../content/performanceHighlights';
 import {docsArticleHref, setDocumentMeta, siteHref} from '../lib/site';
 
 const integerFormatter = new Intl.NumberFormat('en-US');
@@ -26,6 +25,13 @@ function formatDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${milliseconds.toFixed(1)} ms`;
   if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(1)} s`;
   return `${(milliseconds / 60_000).toFixed(1)} min`;
+}
+
+function formatMeasuredDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${milliseconds.toFixed(1)} ms`;
+  if (milliseconds < 60_000) return `${(milliseconds / 1_000).toFixed(3)} s`;
+  const minutes = Math.floor(milliseconds / 60_000);
+  return `${minutes}m ${((milliseconds % 60_000) / 1_000).toFixed(3)}s`;
 }
 
 const pipeline = [
@@ -107,49 +113,41 @@ const retainedProofGroups = [
   },
 ] as const;
 
-const checkedInProofGroups = [
-  {
-    label: 'Pinned public scale',
-    body: 'The repository name, exact clean checkout commit, graph counts, database size, runner, and measurement scopes are retained together.',
-  },
-  {
-    label: 'Separated query cost',
-    body: 'Hot indexed SQL is reported separately from exact Git observation, process startup, MCP serialization, and strict second observations.',
-  },
-  {
-    label: 'Polyglot controls',
-    body: 'Java, Kotlin, TypeScript, and Bazel / Starlark queries were exercised against the same pinned IntelliJ Community snapshot.',
-  },
-  {
-    label: 'Focused parity checks',
-    body: 'The separate 100k-symbol lexical run retains canonical, posting-count, and query parity while measuring write time and storage.',
-  },
-] as const;
-
 type EvidenceCard = Readonly<{label: string; value: string; detail: string}>;
+
+const production431Baseline = {
+  coldMilliseconds: 9_857_300,
+  oneFileMilliseconds: 184_400,
+  registrationMilliseconds: 50_400,
+  postScanMilliseconds: 37_100,
+} as const;
+
+function reductionPercent(baseline: number, observed: number): string {
+  return `${((1 - observed / baseline) * 100).toFixed(1)}% lower`;
+}
 
 function scaleCards(artifact: RetainedPerformanceArtifact | undefined): readonly EvidenceCard[] {
   if (!artifact) {
     return [
       {
         label: 'Indexed files',
-        value: formatInteger(checkedInPerformanceEvidence.scale.indexedFiles),
-        detail: 'Pinned public IntelliJ checkout',
+        value: 'Pending',
+        detail: 'Exact-release artifact required',
       },
       {
         label: 'Symbols',
-        value: formatInteger(checkedInPerformanceEvidence.scale.symbols),
-        detail: 'Searchable declarations and structural nodes',
+        value: 'Pending',
+        detail: 'No historical fallback is promoted',
       },
       {
         label: 'Relationships',
-        value: formatInteger(checkedInPerformanceEvidence.scale.relationships),
-        detail: 'Provenance-bearing graph edges',
+        value: 'Pending',
+        detail: 'No mixed-source evidence',
       },
       {
         label: 'Graph database',
-        value: formatBytes(checkedInPerformanceEvidence.scale.databaseBytes),
-        detail: 'Observed SQLite footprint',
+        value: 'Pending',
+        detail: 'Current evidence unavailable',
       },
     ];
   }
@@ -177,49 +175,49 @@ function phaseCards(artifact: RetainedPerformanceArtifact | undefined): readonly
   if (!artifact) {
     return [
       {
-        label: 'Approx. hot SQL work',
-        value: formatDuration(checkedInPerformanceEvidence.query.hotSearchAndAdjacencyMilliseconds),
-        detail: 'Separately sampled indexed search + adjacency SQL, summed',
+        label: 'Cold index',
+        value: 'Pending',
+        detail: 'Exact-release evidence required',
       },
       {
-        label: 'Exact-current query',
-        value: formatDuration(checkedInPerformanceEvidence.query.exactCurrentCliMilliseconds),
-        detail: 'CLI including Git observation + startup',
+        label: 'One-file incremental',
+        value: 'Pending',
+        detail: 'Exact-release evidence required',
       },
       {
-        label: 'Whole-graph summary',
-        value: `${checkedInPerformanceEvidence.analysis.persistedSummaryMinimumMilliseconds}–${checkedInPerformanceEvidence.analysis.persistedSummaryMaximumMilliseconds} ms`,
-        detail: 'Persisted analysis read',
+        label: 'Independent rebuild',
+        value: 'Pending',
+        detail: 'Same-overlay parity evidence required',
       },
       {
-        label: 'Lexical index build',
-        value: `${checkedInPerformanceEvidence.lexicalStorage.writeSpeedup.toFixed(1)}× faster`,
-        detail: '100k-symbol write phase vs previous index format · identical results',
+        label: 'Exact-current graph query p95',
+        value: 'Pending',
+        detail: 'Retained samples required',
       },
     ];
   }
   return [
     {
       label: 'Cold index',
-      value: formatDuration(artifact.phases.cold.totalMilliseconds),
+      value: formatMeasuredDuration(artifact.phases.cold.totalMilliseconds),
       detail: 'Clean exact-HEAD run',
     },
     {
       label: 'One-file incremental',
-      value: formatDuration(artifact.phases.incremental.totalMilliseconds),
+      value: formatMeasuredDuration(artifact.phases.incremental.totalMilliseconds),
       detail:
-        `Registration ${formatDuration(artifact.phases.incremental.registrationMilliseconds)} · ` +
-        `post-scan ${formatDuration(artifact.phases.incremental.postCommittedScanMilliseconds)}`,
+        `Registration ${formatMeasuredDuration(artifact.phases.incremental.registrationMilliseconds)} · ` +
+        `post-scan ${formatMeasuredDuration(artifact.phases.incremental.postCommittedScanMilliseconds)}`,
     },
     {
       label: 'Independent rebuild',
-      value: formatDuration(artifact.phases.independentRebuild.totalMilliseconds),
+      value: formatMeasuredDuration(artifact.phases.independentRebuild.totalMilliseconds),
       detail: 'Identical dirty overlay',
     },
     {
-      label: 'Graph query p95',
+      label: 'Exact-current graph query p95',
       value: formatDuration(artifact.queries.p95Milliseconds),
-      detail: `${formatInteger(artifact.queries.sampleCount)} retained samples`,
+      detail: `Includes exact Git/worktree observation · ${formatInteger(artifact.queries.sampleCount)} retained samples`,
     },
   ];
 }
@@ -227,52 +225,17 @@ function phaseCards(artifact: RetainedPerformanceArtifact | undefined): readonly
 function ProvenanceCard({artifact}: {artifact: RetainedPerformanceArtifact | undefined}) {
   if (!artifact) {
     return (
-      <aside className="performance-run-card performance-run-card--observed">
+      <aside className="performance-run-card performance-run-card--observed" aria-live="polite">
         <header>
           <div>
             <span className="status-dot" />
-            <strong>Checked-in engineering evidence</strong>
+            <strong>Current evidence pending</strong>
           </div>
-          <small>{checkedInPerformanceEvidence.measuredAt.slice(0, 10)}</small>
+          <small>fail closed</small>
         </header>
-        <a
-          href={checkedInPerformanceEvidence.source.repositoryCommitUrl}
-          target="_blank"
-          rel="noreferrer"
-          aria-label={`Open the pinned ${checkedInPerformanceEvidence.source.repository} repository commit on GitHub`}
-        >
-          <span>Pinned public repository</span>
-          <strong>{checkedInPerformanceEvidence.source.repository}</strong>
-          <code>{checkedInPerformanceEvidence.source.repositoryCommit.slice(0, 16)}…</code>
-        </a>
-        <dl>
-          <div>
-            <dt>Threadnote source</dt>
-            <dd>{checkedInPerformanceEvidence.source.threadnoteCommit.slice(0, 12)}</dd>
-          </div>
-          <div>
-            <dt>Public repository</dt>
-            <dd>{checkedInPerformanceEvidence.source.repositoryCommit.slice(0, 12)}</dd>
-          </div>
-          <div>
-            <dt>Runner</dt>
-            <dd>{checkedInPerformanceEvidence.source.runner}</dd>
-          </div>
-        </dl>
         <p>
-          Review the checked-in, privacy-reviewed{' '}
-          <a href={checkedInPerformanceEvidence.artifacts.query} target="_blank" rel="noreferrer">
-            query evidence
-          </a>
-          ,{' '}
-          <a href={checkedInPerformanceEvidence.artifacts.analysis} target="_blank" rel="noreferrer">
-            analysis evidence
-          </a>{' '}
-          and{' '}
-          <a href={checkedInPerformanceEvidence.artifacts.lexicalStorage} target="_blank" rel="noreferrer">
-            lexical-storage evidence
-          </a>
-          .
+          This build did not receive a complete, source-matched exact-release artifact. Historical observations are not
+          substituted for current product evidence.
         </p>
       </aside>
     );
@@ -326,7 +289,7 @@ export default function PerformancePage() {
   const objectives = artifact ? retainedPerformanceObjectiveResults(artifact) : [];
   const passedObjectiveCount = objectives.filter(objective => objective.passed).length;
   const surfaces = surfaceCards(artifact);
-  const proofGroups = artifact ? retainedProofGroups : checkedInProofGroups;
+  const proofGroups = retainedProofGroups;
 
   return (
     <SiteShell page="performance" fullBleed>
@@ -371,9 +334,9 @@ export default function PerformancePage() {
             <h2>Public evidence, honest boundaries.</h2>
           </div>
           <p>
-            The large-repository measurements come from one pinned IntelliJ Community snapshot. Focused optimization
-            measurements use separate checked-in artifacts and are labeled by scope instead of being presented as one
-            universal end-to-end run.
+            The large-repository measurements come from one pinned IntelliJ Community snapshot. Focused and failed
+            release observations are retained separately and labeled by scope instead of being presented as one
+            universal end-to-end run; only the final v4.3.8 artifact is publicly bound on this page.
           </p>
         </header>
 
@@ -399,12 +362,11 @@ export default function PerformancePage() {
           <div>
             {performanceControlLanguages.map(language => {
               const control = artifact?.controls[language];
-              const checkedInControl = checkedInPerformanceEvidence.controls[language];
               return (
                 <article key={language}>
                   <span>{language === 'bazel' ? 'Bazel / Starlark' : language}</span>
-                  <strong>{formatDuration(control?.milliseconds ?? checkedInControl.milliseconds)}</strong>
-                  <small>{control?.path ?? `Public IntelliJ MCP query · ${checkedInControl.query}`}</small>
+                  <strong>{control ? formatDuration(control.milliseconds) : 'Pending'}</strong>
+                  <small>{control?.path ?? 'Exact-release control evidence required'}</small>
                 </article>
               );
             })}
@@ -415,8 +377,8 @@ export default function PerformancePage() {
           <header>
             <span className="eyebrow">Measured execution paths</span>
             <p>
-              Every timing has one named scope. Hot SQLite work, exact Git observation, process startup, and browser
-              rendering are not blended into a more flattering number.
+              Every timing has one named scope. The exact-current graph query includes worktree/Git observation and
+              graph retrieval; CLI, MCP, and browser startup remain outside that retained sample.
             </p>
           </header>
           <div>
@@ -431,28 +393,156 @@ export default function PerformancePage() {
         </div>
 
         {artifact ? (
-          <div className="performance-phase-panel">
-            <header>
-              <span className="eyebrow">Release engineering targets</span>
-              <p>
-                {passedObjectiveCount} of {objectives.length} targets passed on this exact pinned run. Open targets stay
-                visible; they do not invalidate complete, correct evidence.
-              </p>
-            </header>
-            <div>
-              {objectives.map(objective => (
-                <article key={objective.measurement}>
-                  <span>{objective.label}</span>
-                  <strong>{objective.passed ? 'Passed' : 'Open'}</strong>
+          <>
+            <div className="performance-phase-panel">
+              <header>
+                <span className="eyebrow">Release engineering targets</span>
+                <p>
+                  {passedObjectiveCount} of {objectives.length} targets passed on this exact pinned run. Open targets
+                  stay visible; they do not invalidate complete, correct evidence.
+                </p>
+              </header>
+              <div>
+                {objectives.map(objective => (
+                  <article key={objective.measurement}>
+                    <span>{objective.label}</span>
+                    <strong>{objective.passed ? 'Passed' : 'Open'}</strong>
+                    <small>
+                      {formatMeasuredDuration(objective.observedMilliseconds)} observed · target under{' '}
+                      {formatMeasuredDuration(objective.targetMilliseconds)}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            </div>
+            <div className="performance-phase-panel">
+              <header>
+                <span className="eyebrow">From production v4.3.1 to v4.3.8</span>
+                <p>
+                  Same pinned IntelliJ commit and runner. The historical v4.3.1 values are the rounded retained
+                  production observation recorded in{' '}
+                  <a href="https://github.com/Kashkovsky/threadnote/issues/203" target="_blank" rel="noreferrer">
+                    issue #203
+                  </a>
+                  ; v4.3.8 values come from the exact bound artifact above.
+                </p>
+              </header>
+              <div>
+                <article>
+                  <span>Cold index</span>
+                  <strong>
+                    {reductionPercent(production431Baseline.coldMilliseconds, artifact.phases.cold.totalMilliseconds)}
+                  </strong>
+                  <small>164m 17.3s → {formatMeasuredDuration(artifact.phases.cold.totalMilliseconds)}</small>
+                </article>
+                <article>
+                  <span>One-file incremental</span>
+                  <strong>
+                    {reductionPercent(
+                      production431Baseline.oneFileMilliseconds,
+                      artifact.phases.incremental.totalMilliseconds,
+                    )}
+                  </strong>
+                  <small>184.4s → {formatMeasuredDuration(artifact.phases.incremental.totalMilliseconds)}</small>
+                </article>
+                <article>
+                  <span>Registration</span>
+                  <strong>
+                    {reductionPercent(
+                      production431Baseline.registrationMilliseconds,
+                      artifact.phases.incremental.registrationMilliseconds,
+                    )}
+                  </strong>
+                  <small>50.4s → {formatMeasuredDuration(artifact.phases.incremental.registrationMilliseconds)}</small>
+                </article>
+                <article>
+                  <span>Post-committed scan</span>
+                  <strong>
+                    {reductionPercent(
+                      production431Baseline.postScanMilliseconds,
+                      artifact.phases.incremental.postCommittedScanMilliseconds,
+                    )}
+                  </strong>
                   <small>
-                    {formatDuration(objective.observedMilliseconds)} observed · target under{' '}
-                    {formatDuration(objective.targetMilliseconds)}
+                    37.1s → {formatMeasuredDuration(artifact.phases.incremental.postCommittedScanMilliseconds)}
                   </small>
                 </article>
-              ))}
+              </div>
             </div>
-          </div>
+          </>
         ) : null}
+
+        <div className="performance-phase-panel">
+          <header>
+            <span className="eyebrow">Evidence discipline</span>
+            <p>
+              Four release versions produced five exact-release observations that missed the hard registration target.
+              All are disclosed here; no unchanged run was added merely to wait for a favorable sample.
+            </p>
+          </header>
+          <div>
+            <article>
+              <span>v4.3.4 observation 1</span>
+              <strong>Registration open by 212 ms</strong>
+              <small title="Artifact SHA-256 c25e1dc8cdbc96e5aa0e4803f37bc949e9b4220e109ecf0245171471d5f8bc9d">
+                58m 47.730s cold · 11.618s one-file · 5.212s registration · 57ms post-scan · SHA-256 c25e1dc8…
+              </small>
+            </article>
+            <article>
+              <span>v4.3.4 observation 2</span>
+              <strong>Registration open by 191 ms</strong>
+              <small title="Artifact SHA-256 0f3ba956f491d4de39d81101ddfaae029eb097146cea29ce3f848f69bbf79fad">
+                57m 38.761s cold · 9.876s one-file · 5.191s registration · 54.6ms post-scan · SHA-256 0f3ba956…
+              </small>
+            </article>
+            <article>
+              <span>v4.3.5 observation 1</span>
+              <strong>Registration open by 234 ms</strong>
+              <small title="Artifact SHA-256 cc337e8778eb8e2d0590b995f43985f21f6da3ec50ec2bdb53d201cbce1110f7">
+                58m 33.894s cold · 11.791s one-file · 5.234s registration · 56.8ms post-scan · SHA-256 cc337e87…
+              </small>
+            </article>
+            <article>
+              <span>v4.3.6 observation 1</span>
+              <strong>Registration open by 178 ms</strong>
+              <small title="Artifact SHA-256 731f8694ac4e4617601ba814dacba7d95729ad32a7537c7dea1bfd2d7efcd569">
+                58m 46.774s cold · 11.818s one-file · 5.178s registration · 57.2ms post-scan · SHA-256 731f8694…
+              </small>
+            </article>
+            <article>
+              <span>v4.3.7 observation 1</span>
+              <strong>Registration open by 255 ms</strong>
+              <small title="Artifact SHA-256 899faf6380b2fb6a69078b5cd79837451453be02541df4956854da1df6414a97">
+                59m 43.019s cold · 12.169s one-file · 5.255s registration · 58.3ms post-scan · SHA-256 899faf63…
+              </small>
+            </article>
+            {artifact ? (
+              <article>
+                <span>{artifact.source.threadnote.version} exact release</span>
+                <strong>All four targets passed</strong>
+                <small title={`Artifact SHA-256 ${artifact.artifact.sha256}`}>
+                  {formatMeasuredDuration(artifact.phases.cold.totalMilliseconds)} cold ·{' '}
+                  {formatMeasuredDuration(artifact.phases.incremental.totalMilliseconds)} one-file ·{' '}
+                  {formatMeasuredDuration(artifact.phases.incremental.registrationMilliseconds)} registration ·{' '}
+                  {formatMeasuredDuration(artifact.phases.incremental.postCommittedScanMilliseconds)} post-scan ·
+                  SHA-256 {artifact.artifact.sha256.slice(0, 8)}…
+                </small>
+              </article>
+            ) : null}
+            <article>
+              <span>What the evidence established</span>
+              <strong>Correctness held while diagnosis narrowed</strong>
+              <small>
+                Every failed observation retained parity, proportional work, transaction bounds, polyglot controls, and
+                zero required failure counters. v4.3.7 isolated the remaining registration cost to reusable receipt
+                payload work.{' '}
+                {artifact
+                  ? `${artifact.source.threadnote.version} cleared it without weakening those controls.`
+                  : 'Final closure stays pending until the exact release adapter verifies its source and digest.'}
+              </small>
+            </article>
+          </div>
+        </div>
       </section>
 
       <section className="performance-pipeline">
@@ -533,6 +623,13 @@ export default function PerformancePage() {
                 promoted into a universal latency promise.
               </p>
               <p>
+                Auxiliary audit note: after the headline cold and one-file phases had completed, a separate read-only{' '}
+                <code>git status --porcelain</code> inspected fixture metadata for 4.6 seconds during the independent
+                same-overlay rebuild. It changed no files and was outside the measured process tree. Treat the
+                independent-rebuild wall/resource fields as having that bounded external I/O; the four headline target
+                timings preceded it.
+              </p>
+              <p>
                 For that {formatInteger(artifact.phases.incremental.changedFiles)}-file overlay, the harness recorded:{' '}
                 {formatInteger(artifact.phases.incremental.inventoryFilesInspected)} inventory files inspected;{' '}
                 {formatInteger(artifact.phases.incremental.baseFactsLoaded)} base facts loaded;{' '}
@@ -547,29 +644,16 @@ export default function PerformancePage() {
               </p>
             </>
           ) : (
-            <>
-              <p>
-                A comprehensive release-run adapter still requires {retainedPerformanceArtifactFieldPaths.length}{' '}
-                retained fields and fails closed on malformed or mixed evidence. Until that artifact is available, this
-                page shows narrower checked-in engineering measurements with their exact scope instead of empty cards.
-              </p>
-              <p>
-                The checked-in IntelliJ observation covers{' '}
-                {formatInteger(checkedInPerformanceEvidence.scale.indexedFiles)} files and polyglot Java, Kotlin,
-                TypeScript, and Bazel controls.
-              </p>
-            </>
+            <p>
+              A comprehensive release-run adapter requires {retainedPerformanceArtifactFieldPaths.length} retained
+              fields and fails closed on malformed, missing, mixed, or source-mismatched evidence. Current cards remain
+              pending rather than falling back to results from an older release.
+            </p>
           )}
           <p>
-            The separate 100k-symbol lexical artifact records{' '}
-            {checkedInPerformanceEvidence.lexicalStorage.storageReductionPercent.toFixed(1)}% less allocated storage
-            than Threadnote's previous lexical index format, with canonical, query, and posting-count parity.
-          </p>
-          <p>
-            Threadnote 4.1 also gates large-worktree safety with separate production-shape, parser-heavy-tail,
-            interruption, concurrency, and low-disk evidence. Those retained runs validate bounded behavior and recovery
-            on their stated runner; they are never merged into a universal latency percentile or a promise that every
-            repository has the same wall time.
+            Permanent development ratchets use reduced deterministic fixtures so ordinary pull requests do not rebuild
+            IntelliJ. They preserve correctness, proportional-work, storage, resource, and failure controls; exact
+            IntelliJ observations remain manual release evidence and are never promoted into a universal percentile.
           </p>
         </div>
       </section>
