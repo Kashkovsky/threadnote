@@ -2248,6 +2248,16 @@ Make the bottleneck observable.
     );
   });
 
+  it('wraps inline post code without disabling code-block or table scrolling', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+
+    expect(styles).toMatch(
+      /\.post-detail__body :not\(pre\) > code\s*{[^}]*overflow-wrap: anywhere;[^}]*word-break: break-word;/s,
+    );
+    expect(styles).toMatch(/\.post-detail__body pre\s*{[^}]*overflow-x: auto;/s);
+    expect(styles).toMatch(/\.post-detail__body table\s*{[^}]*overflow-x: auto;/s);
+  });
+
   it('keeps every explicit site text size at or above the shared 12px minimum', async () => {
     const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
     const explicitPixelSizes = [...styles.matchAll(/(?:font-size:\s*|font:\s*)(\d+(?:\.\d+)?)px/g)].map(match =>

@@ -2724,6 +2724,11 @@ p {
   border-radius: 4px;
 }
 
+.post-detail__body :not(pre) > code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .post-detail__body pre {
   padding: 22px;
   overflow-x: auto;
