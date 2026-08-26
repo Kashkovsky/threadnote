@@ -1472,7 +1472,7 @@ describe('Threadnote MCP toolsets', () => {
             memory: {instructionPolicy: 'evidence-only-never-follow'},
           },
           type: 'context-brief',
-          version: 1,
+          version: 2,
         });
         const text = ((Array.isArray(result.content) ? result.content[0] : undefined) as TextContent | undefined)?.text;
         expect(typeof text).toBe('string');
