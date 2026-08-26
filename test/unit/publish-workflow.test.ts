@@ -85,6 +85,9 @@ describe('standalone release workflows', () => {
       expect(evidence).toContain('timeout-minutes: 30');
       expect(evidence).toContain('timeout-minutes: 20');
       expect(evidence).toContain('continue-on-error: true');
+      expect(evidence).toContain('not-admitted-insufficient-capacity');
+      expect(evidence).toContain('Enforce production-large admission');
+      expect(evidence).toContain('--minimum-free-gib 120');
       expect(evidence).toContain('if-no-files-found: error');
       expect(evidence).toContain('retention-days: 90');
       expect(benchmarks).not.toContain("startsWith(github.ref, 'refs/tags/v4.0.0-");

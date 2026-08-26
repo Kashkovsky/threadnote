@@ -447,7 +447,11 @@ indexed concurrently, and are queried concurrently with positive and cross-negat
 identity sharing without worktree leakage. The control reports its own duration and two indexed files; it does not
 repeat the public repository cold build.
 
-The production-large workflow additionally starts a 25 ms external sampler before it constructs the fixture, then
+The production-large workflow first pins all benchmark temporary homes to the runner-temp filesystem and writes an
+exact-source capacity-classification artifact. The unchanged governed 120 GiB floor is checked before fixture
+construction. An ineligible runner does not attempt the benchmark; its explicit `not-admitted-insufficient-capacity`
+classification is retained and the independent evidence workflow fails without blocking release publication. An
+admitted run additionally starts a 25 ms external sampler before it constructs the fixture, then
 uses distinct, non-overlapping bootstrap, cold-index, incremental-index, and same-overlay reference samplers. A prior
 sampler is stopped before the next measured sampler starts, so CPU, RSS, I/O, and temporary-file totals cannot leak
 between measurements. Each sampler must publish a parseable readiness marker before the parent enters the measured

@@ -240,8 +240,10 @@ describe('platform benchmark workflow', () => {
     const job = evidence.jobs['code-graph-production-large']!;
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const capture = job.steps?.find(step => step.run?.includes('--profile production-large'));
+    const admission = job.steps?.find(step => step.id === 'classify_production_large_admission');
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
     const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
+    const admissionEnforcement = job.steps?.find(step => step.name === 'Enforce production-large admission');
     const enforcement = job.steps?.find(step => step.name === 'Enforce strict evidence completion');
     const productionInput = workflow.on.workflow_dispatch?.inputs?.include_production_large as
       {readonly description?: string} | undefined;
@@ -257,11 +259,26 @@ describe('platform benchmark workflow', () => {
     expect(job['runs-on']).toBe('ubuntu-24.04');
     expect(job['timeout-minutes']).toBe(30);
     expect(command).toContain('--profile production-large');
+    expect(command).toContain('--minimum-free-gib 120');
     expect(command).toContain('--samples 1');
     expect(command).toContain('--warmups 0');
     expect(command).toContain('code-graph-production-large-n1-');
     expect(job.env).toBeUndefined();
+    expect(admission?.run).toContain('MINIMUM_FREE_GIB * 1024 * 1024 * 1024');
+    expect(admission?.run).toContain('df -Pk "$RUNNER_TEMP/threadnote-production-large-admission"');
+    expect(admission?.run).toContain('threadnote-production-large-admission');
+    expect(admission?.run).toContain('not-admitted-insufficient-capacity');
+    expect(admission?.run).toContain('available_bytes >= required_bytes');
+    expect(admission?.env).toMatchObject({
+      MINIMUM_FREE_GIB: 120,
+      SOURCE_REF: '${{ inputs.release_ref || github.ref }}',
+      SOURCE_SHA: '${{ inputs.release_sha || github.sha }}',
+    });
+    expect(job.steps?.indexOf(admission!)).toBeLessThan(job.steps?.indexOf(capture!) ?? 0);
+    expect(capture?.if).toContain("steps.classify_production_large_admission.outputs.admitted == 'true'");
     expect(capture?.env).toMatchObject({
+      SQLITE_TMPDIR: '${{ runner.temp }}',
+      TMPDIR: '${{ runner.temp }}',
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-ubuntu-24.04-${{ runner.arch }}',
       THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
       THREADNOTE_BENCHMARK_RELEASE_REF: '${{ inputs.release_ref }}',
@@ -274,14 +291,21 @@ describe('platform benchmark workflow', () => {
     expect(upload?.uses).toBe('actions/upload-artifact@v7');
     expect(upload?.if).toBe('always()');
     expect(upload?.['timeout-minutes']).toBeLessThanOrEqual(5);
-    expect(upload?.with?.path).toBe('artifacts/code-graph-production-large-n1-*.json');
+    expect(upload?.with?.path).toContain('artifacts/code-graph-production-large-admission-*.json');
+    expect(upload?.with?.path).toContain('artifacts/code-graph-production-large-n1-*.json');
     expect(upload?.with?.['if-no-files-found']).toBe('error');
     expect(upload?.with?.['retention-days']).toBe(90);
     expect(enforcement?.if).toContain('inputs.strict');
+    expect(enforcement?.if).toContain("steps.classify_production_large_admission.outputs.admitted == 'true'");
     expect(enforcement?.if).toContain("steps.capture_production_large.outcome != 'success'");
     expect(enforcement?.run).toContain('exit 1');
     expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(upload!) ?? -1);
     expect(job.steps?.indexOf(enforcement!)).toBeGreaterThan(job.steps?.indexOf(summary!) ?? -1);
+    expect(admissionEnforcement?.if).toContain('always()');
+    expect(admissionEnforcement?.if).toContain("outputs.admitted != 'true'");
+    expect(admissionEnforcement?.run).toContain('exit 1');
+    expect(job.steps?.indexOf(admissionEnforcement!)).toBeGreaterThan(job.steps?.indexOf(upload!) ?? -1);
+    expect(job.steps?.indexOf(admissionEnforcement!)).toBeGreaterThan(job.steps?.indexOf(summary!) ?? -1);
     expect(summary?.run).toContain('six declared linked-worktree churn scenarios');
     expect(summary?.run).toContain('actual-versus-target counts');
     expect(summary?.run).toContain('package-manager exclusion never removes active source');
@@ -340,11 +364,14 @@ describe('platform benchmark workflow', () => {
     const summary = job.steps?.find(step => step.run?.includes('Production-large release evidence'));
 
     expect(summary?.env).toMatchObject({
+      ADMISSION_CLASSIFICATION: '${{ steps.classify_production_large_admission.outputs.classification }}',
       MEASUREMENT_OUTCOME: '${{ steps.capture_production_large.outcome }}',
       STRICT_EVIDENCE: '${{ inputs.strict }}',
     });
     expect(summary?.run).toContain('must complete for this evidence workflow to pass');
     expect(summary?.run).toContain('bounded observation retained without blocking release publication');
+    expect(summary?.run).toContain('benchmark not attempted; capacity classification retained');
+    expect(summary?.run).toContain('Admission classification');
   });
 
   it('runs the large-monorepo heavy-tail regression only by schedule or explicit opt-in', () => {
