@@ -73,36 +73,36 @@ export interface ResourceStoreMultiGrepMatch extends ResourceStoreGrepMatch {
   readonly term: string;
 }
 
-export class ResourceAccessDenied extends Schema.TaggedErrorClass<ResourceAccessDenied>()('ResourceAccessDenied', {
+export class ResourceAccessDenied extends Schema.TaggedError<ResourceAccessDenied>()('ResourceAccessDenied', {
   message: Schema.String,
   uri: Schema.String,
 }) {}
 
-export class ResourceAlreadyExists extends Schema.TaggedErrorClass<ResourceAlreadyExists>()('ResourceAlreadyExists', {
+export class ResourceAlreadyExists extends Schema.TaggedError<ResourceAlreadyExists>()('ResourceAlreadyExists', {
   message: Schema.String,
   uri: Schema.String,
 }) {}
 
-export class ResourceConflict extends Schema.TaggedErrorClass<ResourceConflict>()('ResourceConflict', {
+export class ResourceConflict extends Schema.TaggedError<ResourceConflict>()('ResourceConflict', {
   actualFingerprint: Schema.String,
   expectedFingerprint: Schema.String,
   message: Schema.String,
   uri: Schema.String,
 }) {}
 
-export class ResourceIoFailed extends Schema.TaggedErrorClass<ResourceIoFailed>()('ResourceIoFailed', {
+export class ResourceIoFailed extends Schema.TaggedError<ResourceIoFailed>()('ResourceIoFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   operation: Schema.String,
   uri: Schema.String,
 }) {}
 
-export class ResourceNotFound extends Schema.TaggedErrorClass<ResourceNotFound>()('ResourceNotFound', {
+export class ResourceNotFound extends Schema.TaggedError<ResourceNotFound>()('ResourceNotFound', {
   message: Schema.String,
   uri: Schema.String,
 }) {}
 
-export class ResourcePathUnsafe extends Schema.TaggedErrorClass<ResourcePathUnsafe>()('ResourcePathUnsafe', {
+export class ResourcePathUnsafe extends Schema.TaggedError<ResourcePathUnsafe>()('ResourcePathUnsafe', {
   message: Schema.String,
   path: Schema.String,
   uri: Schema.String,

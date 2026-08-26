@@ -66,7 +66,7 @@ const ProvisioningInput = z
   })
   .strict();
 
-class RemoteMemoryOperatorInvocationError extends Schema.TaggedErrorClass<RemoteMemoryOperatorInvocationError>()(
+class RemoteMemoryOperatorInvocationError extends Schema.TaggedError<RemoteMemoryOperatorInvocationError>()(
   'RemoteMemoryOperatorInvocationError',
   {message: Schema.String},
 ) {}

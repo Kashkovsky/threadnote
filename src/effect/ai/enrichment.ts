@@ -27,7 +27,7 @@ export interface MemoryEnrichmentInput {
   readonly topic?: string;
 }
 
-export class AiMemoryEnrichmentFailed extends Schema.TaggedErrorClass<AiMemoryEnrichmentFailed>()(
+export class AiMemoryEnrichmentFailed extends Schema.TaggedError<AiMemoryEnrichmentFailed>()(
   'AiMemoryEnrichmentFailed',
   {
     cause: Schema.Defect(),

@@ -3,7 +3,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Cause, Deferred, Effect, Exit, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
-import {McpSchema} from 'effect/unstable/ai';
+import {McpProtocol, McpSchema} from 'effect/unstable/ai';
 import {RpcServer} from 'effect/unstable/rpc';
 import {describe, expect, it, vi} from 'vitest';
 import {
@@ -16,6 +16,7 @@ import {
   mcpProgressNotificationForCurrentRequest,
   mcpProgressHeartbeatMilliseconds,
   mcpRequestIdKey,
+  mcpStdioSerialization,
   MCP_PROGRESS_HEARTBEAT_MILLISECONDS,
   MCP_PROGRESS_MESSAGE_MAX_BYTES,
   MCP_PROGRESS_METADATA_KEY,
@@ -89,7 +90,7 @@ describe('Effect MCP initialization instructions', () => {
     const invalidParams = JSON.stringify({
       error: {
         _tag: 'Cause',
-        code: 0,
+        code: -32602,
         data: [
           {
             _tag: 'Fail',
@@ -244,6 +245,112 @@ describe('Effect MCP initialization instructions', () => {
     ];
 
     for (const frame of frames) expect(transform(frame)).toBe(frame);
+  });
+});
+
+describe('Effect MCP stdio protocol revisions', () => {
+  const protocols = [
+    McpProtocol.v2025_11_25,
+    McpProtocol.v2025_06_18,
+    McpProtocol.v2025_03_26,
+    McpProtocol.v2024_11_05,
+  ] as const;
+
+  it.each([
+    ['2024-11-05', false],
+    ['2025-03-26', true],
+    ['2025-06-18', false],
+    ['2025-11-25', false],
+  ] as const)('negotiates %s and applies its JSON-RPC batch policy', (protocolVersion, acceptsBatch) => {
+    const parser = mcpStdioSerialization(protocols).makeUnsafe();
+    const encode = (value: unknown) => new TextEncoder().encode(`${JSON.stringify(value)}\n`);
+    const initialized = parser.decode(
+      encode({
+        id: 1,
+        jsonrpc: '2.0',
+        method: 'initialize',
+        params: {capabilities: {}, clientInfo: {name: 'stdio-revision-test', version: '1.0.0'}, protocolVersion},
+      }),
+    );
+    const decodedBatch = parser.decode(
+      encode([
+        {id: 2, jsonrpc: '2.0', method: 'tools/list', params: {}},
+        {id: 3, jsonrpc: '2.0', method: 'tools/list', params: {}},
+      ]),
+    ) as readonly {readonly id?: unknown; readonly tag?: unknown}[];
+
+    expect(initialized).toEqual([
+      expect.objectContaining({id: 1, payload: expect.objectContaining({protocolVersion}), tag: 'initialize'}),
+    ]);
+    expect(decodedBatch).toEqual(
+      acceptsBatch
+        ? [expect.objectContaining({id: 2, tag: 'tools/list'}), expect.objectContaining({id: 3, tag: 'tools/list'})]
+        : [expect.objectContaining({id: null, tag: 'invalid/json-rpc-batch'})],
+    );
+  });
+
+  it('encodes a rejected stdio batch as one Invalid Request response', () => {
+    const parser = mcpStdioSerialization(protocols).makeUnsafe();
+    const encoded = parser.encode({
+      _tag: 'Exit',
+      exit: {_tag: 'Failure', cause: [{_tag: 'Fail', error: {message: 'JSON-RPC batches are not supported'}}]},
+      requestId: null,
+    } as never);
+
+    expect(typeof encoded).toBe('string');
+    expect(JSON.parse(encoded as string)).toMatchObject({
+      error: {code: -32_600, message: 'JSON-RPC batches are not supported'},
+      id: null,
+      jsonrpc: '2.0',
+    });
+  });
+
+  it('uses the newest advertised policy for an unsupported offered revision', () => {
+    const parser = mcpStdioSerialization(protocols).makeUnsafe();
+    const encode = (value: unknown) => new TextEncoder().encode(`${JSON.stringify(value)}\n`);
+    parser.decode(
+      encode({
+        id: 1,
+        jsonrpc: '2.0',
+        method: 'initialize',
+        params: {
+          capabilities: {},
+          clientInfo: {name: 'unknown-revision-test', version: '1.0.0'},
+          protocolVersion: '2099-01-01',
+        },
+      }),
+    );
+
+    expect(
+      parser.decode(
+        encode([
+          {id: 2, jsonrpc: '2.0', method: 'tools/list', params: {}},
+          {id: 3, jsonrpc: '2.0', method: 'tools/list', params: {}},
+        ]),
+      ),
+    ).toEqual([expect.objectContaining({id: null, tag: 'invalid/json-rpc-batch'})]);
+  });
+
+  it('does not relabel an unrelated null-id failure as a rejected batch', () => {
+    const parser = mcpStdioSerialization(protocols).makeUnsafe();
+    const encoded = parser.encode({
+      _tag: 'Exit',
+      exit: {
+        _tag: 'Failure',
+        cause: [
+          {
+            _tag: 'Fail',
+            error: {_tag: 'InvalidRequest', code: -32_600, message: 'Unrelated null-id failure'},
+          },
+        ],
+      },
+      requestId: null,
+    } as never);
+
+    expect(JSON.parse(encoded as string)).toMatchObject({
+      error: {code: -32_600, message: 'Unrelated null-id failure'},
+      jsonrpc: '2.0',
+    });
   });
 });
 
@@ -701,7 +808,7 @@ describe('Effect MCP tool progress', () => {
     initializedClients.add(11);
     const queued = [{progressToken: 'client-11-token'}];
 
-    // The Effect beta.102 queue reads recipients only when it drains. The
+    // The Effect 4.0.0-rc.112 queue reads recipients only when it drains. The
     // stdio registry therefore has to reject a foreign add after enqueue, not
     // merely check the set before the notification is offered.
     initializedClients.add(22);
@@ -903,8 +1010,11 @@ function fakeEffectMcpServer(): EffectMcpServer {
 
 function fixtureMcpServerClient(clientId: number): McpSchema.McpServerClient['Service'] {
   return McpSchema.McpServerClient.of({
+    clientCapabilities: {},
     clientId,
+    clientInfo: {name: 'effect-ai-mcp-test', version: '1.0.0'},
     getClient: Effect.never as McpSchema.McpServerClient['Service']['getClient'],
     initializePayload: {} as McpSchema.McpServerClient['Service']['initializePayload'],
+    protocolVersion: '2025-06-18',
   });
 }

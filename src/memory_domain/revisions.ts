@@ -80,7 +80,7 @@ export type RemoteMutationDecisionV1 =
       readonly version: typeof REMOTE_MEMORY_REVISION_VERSION;
     };
 
-export class InvalidRemoteMutation extends Schema.TaggedErrorClass<InvalidRemoteMutation>()('InvalidRemoteMutation', {
+export class InvalidRemoteMutation extends Schema.TaggedError<InvalidRemoteMutation>()('InvalidRemoteMutation', {
   message: Schema.String,
 }) {}
 

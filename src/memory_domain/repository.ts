@@ -16,7 +16,7 @@ export const REMOTE_MEMORY_REPOSITORY_ERROR_CODES = [
 
 export type RemoteMemoryRepositoryErrorCode = (typeof REMOTE_MEMORY_REPOSITORY_ERROR_CODES)[number];
 
-export class RemoteMemoryRepositoryError extends Schema.TaggedErrorClass<RemoteMemoryRepositoryError>()(
+export class RemoteMemoryRepositoryError extends Schema.TaggedError<RemoteMemoryRepositoryError>()(
   'RemoteMemoryRepositoryError',
   {
     code: Schema.Literals(REMOTE_MEMORY_REPOSITORY_ERROR_CODES),

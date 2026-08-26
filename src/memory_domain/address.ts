@@ -33,12 +33,12 @@ export interface RemoteMemoryAddressResolutionV1 {
   readonly version: typeof REMOTE_MEMORY_ALIAS_VERSION;
 }
 
-export class InvalidRemoteMemoryAddress extends Schema.TaggedErrorClass<InvalidRemoteMemoryAddress>()(
+export class InvalidRemoteMemoryAddress extends Schema.TaggedError<InvalidRemoteMemoryAddress>()(
   'InvalidRemoteMemoryAddress',
   {input: Schema.String, message: Schema.String, reason: Schema.String},
 ) {}
 
-export class InvalidRemoteMemoryAlias extends Schema.TaggedErrorClass<InvalidRemoteMemoryAlias>()(
+export class InvalidRemoteMemoryAlias extends Schema.TaggedError<InvalidRemoteMemoryAlias>()(
   'InvalidRemoteMemoryAlias',
   {input: Schema.String, message: Schema.String, reason: Schema.String},
 ) {}

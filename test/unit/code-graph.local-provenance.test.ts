@@ -938,9 +938,10 @@ function mapOpenedFile(
   read: FileSystem.File['read'],
   mapInfo: (info: FileSystem.File.Info) => FileSystem.File.Info = info => info,
 ): FileSystem.File {
+  const descriptor = (opened as FileSystem.File & {readonly fd?: unknown}).fd;
   return {
     [FileSystem.FileTypeId]: FileSystem.FileTypeId,
-    fd: opened.fd,
+    ...(typeof descriptor === 'number' ? {fd: descriptor} : {}),
     read,
     readAlloc: size => opened.readAlloc(size),
     seek: (offset, from) => opened.seek(offset, from),
@@ -949,7 +950,7 @@ function mapOpenedFile(
     truncate: length => opened.truncate(length),
     write: buffer => opened.write(buffer),
     writeAll: buffer => opened.writeAll(buffer),
-  };
+  } as FileSystem.File;
 }
 
 function escapeRegularExpression(value: string): string {

@@ -144,9 +144,10 @@ function parseCliBoolean(value: string | undefined): boolean | undefined {
 }
 
 /**
- * Preserve Commander-compatible string values while Effect 4's beta lexer
- * still tokenizes dash-prefixed values as flags and splits inline values at
- * every equals sign. Remove this shim once the upstream lexer preserves both.
+ * Preserve Commander-compatible string values while Effect 4.0.0-rc.112 still
+ * tokenizes dash-prefixed values as flags. The RC lexer preserves inline
+ * equals values; normalizing both forms here keeps one reversible string-value
+ * path until the remaining dash-prefixed-value gap is fixed upstream.
  */
 export function normalizeCliArguments(args: readonly string[]): readonly string[] {
   const normalized: string[] = [];

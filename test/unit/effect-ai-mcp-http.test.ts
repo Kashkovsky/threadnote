@@ -21,7 +21,7 @@ interface McpHttpFixture {
   readonly handler: (request: Request) => Promise<Response>;
 }
 
-function makeFixture(): McpHttpFixture {
+function makeFixture(allowedOrigins?: ReadonlyArray<string>): McpHttpFixture {
   const server = new EffectMcpServerAdapter('threadnote-memory-fixture', '1.0.0', 'Remote fixture instructions.');
   server.registerTool(
     HTTP_CONTEXT_TOOL,
@@ -54,6 +54,7 @@ function makeFixture(): McpHttpFixture {
   );
   const httpLayer = server
     .httpLayer({
+      allowedOrigins,
       path: '/mcp',
       resolveRequestContext: request => {
         if (request.headers.authorization !== 'Bearer fixture-token') {
@@ -76,16 +77,24 @@ function makeFixture(): McpHttpFixture {
   return HttpRouter.toWebHandler(httpLayer, {disableLogger: true});
 }
 
-async function initialize(fixture: McpHttpFixture): Promise<string> {
-  const response = await rpcRequest(fixture, {
-    id: 1,
-    method: 'initialize',
-    params: {
-      capabilities: {},
-      clientInfo: {name: 'threadnote-http-fixture', version: '1.0.0'},
-      protocolVersion: MCP_PROTOCOL_VERSION,
+async function initialize(
+  fixture: McpHttpFixture,
+  protocolVersion = MCP_PROTOCOL_VERSION,
+  origin?: string,
+): Promise<string> {
+  const response = await rpcRequest(
+    fixture,
+    {
+      id: 1,
+      method: 'initialize',
+      params: {
+        capabilities: {},
+        clientInfo: {name: 'threadnote-http-fixture', version: '1.0.0'},
+        protocolVersion,
+      },
     },
-  });
+    {origin, protocolVersion},
+  );
   expect(response.status).toBe(200);
   const sessionId = response.headers.get('mcp-session-id');
   expect(sessionId).toBeTruthy();
@@ -95,7 +104,7 @@ async function initialize(fixture: McpHttpFixture): Promise<string> {
     result: {
       capabilities: {tools: {listChanged: true}},
       instructions: 'Remote fixture instructions.',
-      protocolVersion: MCP_PROTOCOL_VERSION,
+      protocolVersion,
       serverInfo: {name: 'threadnote-memory-fixture', version: '1.0.0'},
     },
   });
@@ -107,7 +116,8 @@ async function rpcRequest(
   message: Readonly<Record<string, unknown>> | readonly Readonly<Record<string, unknown>>[],
   options: {
     readonly principal?: string;
-    readonly protocolVersion?: string;
+    readonly origin?: string;
+    readonly protocolVersion?: string | null;
     readonly requestId?: string;
     readonly sessionId?: string;
     readonly token?: string;
@@ -117,11 +127,14 @@ async function rpcRequest(
     accept: 'application/json, text/event-stream',
     authorization: `Bearer ${options.token ?? 'fixture-token'}`,
     'content-type': 'application/json',
-    'mcp-protocol-version': options.protocolVersion ?? MCP_PROTOCOL_VERSION,
     'x-policy-version': 'policy-v1',
     'x-principal': options.principal ?? 'fixture-principal',
     'x-request-id': options.requestId ?? 'fixture-request',
   };
+  if (options.protocolVersion !== null) {
+    headers['mcp-protocol-version'] = options.protocolVersion ?? MCP_PROTOCOL_VERSION;
+  }
+  if (options.origin !== undefined) headers.origin = options.origin;
   if (options.sessionId !== undefined) headers['mcp-session-id'] = options.sessionId;
   const body = Array.isArray(message) ? message.map(item => ({jsonrpc: '2.0', ...item})) : {jsonrpc: '2.0', ...message};
   return fixture.handler(
@@ -213,6 +226,33 @@ describe('Effect MCP Streamable HTTP transport', () => {
     }
   });
 
+  it('rejects browser origins by default and admits only an explicit allowlist', async () => {
+    const origin = 'https://browser.example.test';
+    const rejectedFixture = makeFixture();
+    const allowedFixture = makeFixture([origin]);
+    try {
+      const rejected = await rpcRequest(
+        rejectedFixture,
+        {
+          id: 1,
+          method: 'initialize',
+          params: {
+            capabilities: {},
+            clientInfo: {name: 'browser-fixture', version: '1.0.0'},
+            protocolVersion: MCP_PROTOCOL_VERSION,
+          },
+        },
+        {origin},
+      );
+      const sessionId = await initialize(allowedFixture, MCP_PROTOCOL_VERSION, origin);
+
+      expect(rejected.status).toBe(403);
+      expect(sessionId).not.toBe('');
+    } finally {
+      await Promise.all([rejectedFixture.dispose(), allowedFixture.dispose()]);
+    }
+  });
+
   it('serializes branded resource failures as their MCP protocol error over HTTP', async () => {
     const fixture = makeFixture();
     try {
@@ -237,14 +277,15 @@ describe('Effect MCP Streamable HTTP transport', () => {
   it('repairs every branded resource failure in an HTTP JSON-RPC batch', async () => {
     const fixture = makeFixture();
     try {
-      const sessionId = await initialize(fixture);
+      const protocolVersion = '2025-03-26';
+      const sessionId = await initialize(fixture, protocolVersion);
       const response = await rpcRequest(
         fixture,
         [
           {id: 2, method: 'resources/read', params: {uri: 'threadnote://not-canonical'}},
           {id: 'three', method: 'resources/read', params: {uri: 'threadnote://also-not-canonical'}},
         ],
-        {sessionId},
+        {protocolVersion, sessionId},
       );
 
       expect(response.status).toBe(200);
@@ -264,6 +305,69 @@ describe('Effect MCP Streamable HTTP transport', () => {
       await fixture.dispose();
     }
   });
+
+  it.each(['2024-11-05', '2025-06-18', '2025-11-25'])('rejects JSON-RPC batches for %s', async protocolVersion => {
+    const fixture = makeFixture();
+    try {
+      const sessionId = await initialize(fixture, protocolVersion);
+      const response = await rpcRequest(
+        fixture,
+        [
+          {id: 2, method: 'tools/list', params: {}},
+          {id: 3, method: 'tools/list', params: {}},
+        ],
+        {protocolVersion, sessionId},
+      );
+
+      expect(response.status).toBe(400);
+    } finally {
+      await fixture.dispose();
+    }
+  });
+
+  it.each(['2024-11-05', '2025-03-26'])(
+    'accepts %s session requests without a version header',
+    async protocolVersion => {
+      const fixture = makeFixture();
+      try {
+        const sessionId = await initialize(fixture, protocolVersion);
+        const response = await rpcRequest(
+          fixture,
+          {id: 2, method: 'tools/list', params: {}},
+          {
+            protocolVersion: null,
+            sessionId,
+          },
+        );
+
+        expect(response.status).toBe(200);
+      } finally {
+        await fixture.dispose();
+      }
+    },
+  );
+
+  it.each(['2025-06-18', '2025-11-25'])(
+    'requires the %s version header after initialization',
+    async protocolVersion => {
+      const fixture = makeFixture();
+      try {
+        const sessionId = await initialize(fixture, protocolVersion);
+        const response = await rpcRequest(
+          fixture,
+          {id: 2, method: 'tools/list', params: {}},
+          {
+            protocolVersion: null,
+            sessionId,
+          },
+        );
+
+        expect(response.status).toBe(400);
+      } finally {
+        await fixture.dispose();
+      }
+    },
+  );
 
   it('rejects unsupported cross-POST cancellation instead of falsely acknowledging it', async () => {
     const fixture = makeFixture();

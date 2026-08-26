@@ -39,8 +39,8 @@ describe('remote memory reference deployment', () => {
     expect(dockerfile).toContain('bun install --frozen-lockfile --production --ignore-scripts');
     expect(dockerfile).toContain('CMD ["bun", "src/standalone.ts", "remote-memory-service"]');
     expect(packageJson.dependencies).toMatchObject({
-      '@effect/platform-bun': '4.0.0-beta.102',
-      effect: '4.0.0-beta.102',
+      '@effect/platform-bun': '4.0.0-rc.112',
+      effect: '4.0.0-rc.112',
     });
   });
 

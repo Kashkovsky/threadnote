@@ -41,7 +41,7 @@ export interface RemoteMemoryContentPolicy {
   readonly additionalPatterns?: readonly ScrubberPattern[];
 }
 
-export class InvalidRemoteMemoryDocument extends Schema.TaggedErrorClass<InvalidRemoteMemoryDocument>()(
+export class InvalidRemoteMemoryDocument extends Schema.TaggedError<InvalidRemoteMemoryDocument>()(
   'InvalidRemoteMemoryDocument',
   {message: Schema.String, reason: Schema.String},
 ) {}

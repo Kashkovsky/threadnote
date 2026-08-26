@@ -1,6 +1,6 @@
 import * as BunStdio from '@effect/platform-bun/BunStdio';
 import {Cause, Context, Effect, Layer, Logger, Option, Schema, Sink, Stdio} from 'effect';
-import {McpSchema, McpServer} from 'effect/unstable/ai';
+import {McpProtocol, McpSchema, McpServer} from 'effect/unstable/ai';
 import * as HttpRouter from 'effect/unstable/http/HttpRouter';
 import * as HttpEffect from 'effect/unstable/http/HttpEffect';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
@@ -33,7 +33,14 @@ const MCP_PROGRESS_INTERVAL_MAX_MILLISECONDS = 300_000;
 const MCP_PROGRESS_ENCODER = new TextEncoder();
 const MCP_PROGRESS_DECODER = new TextDecoder();
 const MCP_PROGRESS_BRIDGED_SERVERS = new WeakSet<object>();
+const MCP_PROTOCOLS = [
+  McpProtocol.v2025_11_25,
+  McpProtocol.v2025_06_18,
+  McpProtocol.v2025_03_26,
+  McpProtocol.v2024_11_05,
+] as const;
 const MCP_PROGRESS_GENERATION_METADATA_KEY = 'threadnote.io/private/progress-generation';
+const MCP_INVALID_BATCH_METHOD = 'invalid/json-rpc-batch';
 const MCP_HTTP_CANCELLATION_UNSUPPORTED_MESSAGE =
   'Streamable HTTP cancellation is not supported until requests can be interrupted across POSTs.';
 
@@ -130,6 +137,7 @@ export type McpHttpRequestContextResolver = (
 ) => Effect.Effect<McpHttpRequestContext, HttpServerResponse.HttpServerResponse>;
 
 export interface McpHttpTransportOptions {
+  readonly allowedOrigins?: ReadonlyArray<string>;
   readonly path: HttpRouter.PathInput;
   readonly resolveRequestContext: McpHttpRequestContextResolver;
 }
@@ -190,6 +198,7 @@ const CurrentMcpRequestContext = Context.Reference<McpRequestContext>('threadnot
 
 interface McpProgressRequestAssociation {
   readonly generation: string;
+  readonly progressToken: McpSchema.ProgressToken;
   readonly progressTokenKey: string;
 }
 
@@ -285,47 +294,74 @@ export class EffectMcpServerRegistry {
               name: registration.name,
             }),
             handle: payload =>
-              Effect.flatMap(CurrentMcpToolProgress, progress =>
-                Effect.flatMap(CurrentMcpRequestContext, requestContext => {
-                  const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
-                    Effect.flatMap(parsed =>
-                      toolHandlerEffect(
-                        () => registration.handle(parsed, {progress, requestContext}),
-                        applicationServices,
-                      ).pipe(
-                        Effect.matchCauseEffect({
-                          onFailure: mcpToolFailureResult,
-                          onSuccess: result => Effect.succeed(mcpCallToolResultWithTelemetryMetadata(result)),
-                        }),
-                      ),
-                    ),
-                    Effect.catchCause(mcpToolFailureResult),
-                  );
-                  const loggedHandling =
-                    productionLogHome === undefined
-                      ? handling
-                      : withProductionLogging(
-                          productionLogHome,
-                          {
-                            component: 'mcp',
-                            operation: registration.name,
-                            reportedFailure: result => result.isError === true,
-                            reportedFailureType: 'McpToolError',
-                            writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
-                          },
-                          handling,
-                        );
-                  return withAnonymousTelemetry(
-                    {
-                      component: 'mcp',
-                      operation: registration.name,
-                      reportedFailure: result => result.isError === true,
-                      reportedFailureType: 'McpToolError',
-                      reportedOutcome: readAnonymousTelemetryReportedOutcome,
-                    },
-                    loggedHandling,
-                  ).pipe(Effect.provideContext(applicationServices));
-                }),
+              Effect.flatMap(CurrentMcpProgressRequestAssociation, association =>
+                Effect.flatMap(McpSchema.McpServerClient, client =>
+                  Effect.flatMap(CurrentMcpToolProgress, inheritedProgress => {
+                    // RC.112's live protocol handlers dispatch through the
+                    // internal tool core instead of public server.callTool.
+                    // Rehydrate Threadnote progress at this surviving Effect
+                    // context boundary; HTTP has no transport association and
+                    // therefore keeps the inherited disabled implementation.
+                    const progress =
+                      association === undefined
+                        ? inheritedProgress
+                        : makeMcpToolProgress(
+                            admitMcpProgressToken(
+                              association.progressToken,
+                              client.clientId,
+                              server.initializedClients,
+                            ),
+                            notification =>
+                              mcpProgressNotificationForCurrentRequest(notification).pipe(
+                                Effect.flatMap(outgoingNotification =>
+                                  mcpProgressCanRouteToClient(server.initializedClients, client.clientId)
+                                    ? server.notifications['notifications/progress'](outgoingNotification)
+                                    : Effect.void,
+                                ),
+                              ),
+                          );
+                    return Effect.flatMap(CurrentMcpRequestContext, requestContext => {
+                      const handling = Schema.decodeUnknownEffect(input, {errors: 'all'})(payload).pipe(
+                        Effect.flatMap(parsed =>
+                          toolHandlerEffect(
+                            () => registration.handle(parsed, {progress, requestContext}),
+                            applicationServices,
+                          ).pipe(
+                            Effect.matchCauseEffect({
+                              onFailure: mcpToolFailureResult,
+                              onSuccess: result => Effect.succeed(mcpCallToolResultWithTelemetryMetadata(result)),
+                            }),
+                          ),
+                        ),
+                        Effect.catchCause(mcpToolFailureResult),
+                      );
+                      const loggedHandling =
+                        productionLogHome === undefined
+                          ? handling
+                          : withProductionLogging(
+                              productionLogHome,
+                              {
+                                component: 'mcp',
+                                operation: registration.name,
+                                reportedFailure: result => result.isError === true,
+                                reportedFailureType: 'McpToolError',
+                                writeTimeoutMilliseconds: MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS,
+                              },
+                              handling,
+                            );
+                      return withAnonymousTelemetry(
+                        {
+                          component: 'mcp',
+                          operation: registration.name,
+                          reportedFailure: result => result.isError === true,
+                          reportedFailureType: 'McpToolError',
+                          reportedOutcome: readAnonymousTelemetryReportedOutcome,
+                        },
+                        loggedHandling,
+                      ).pipe(Effect.provideContext(applicationServices));
+                    });
+                  }),
+                ),
               ),
           });
         }
@@ -367,10 +403,12 @@ export class EffectMcpServerAdapter extends EffectMcpServerRegistry {
     // enforces one lifetime client, while Streamable HTTP must preserve SDK
     // client/session isolation for concurrent principals.
     const serverLayer = McpServer.layerHttp({
+      allowedOrigins: options.allowedOrigins,
       name: this.name,
       path: options.path,
+      protocols: MCP_PROTOCOLS,
       version: this.version,
-    }).pipe(Layer.provide(requestContextMiddleware.layer));
+    }).pipe(Layer.orDie, Layer.provide(requestContextMiddleware.layer));
     return this.registrationLayer({productionLogHome: this.productionLogHome}).pipe(Layer.provide(serverLayer));
   }
 }
@@ -469,6 +507,7 @@ interface McpActiveRequest {
   readonly externalId: string | number;
   readonly externalIdKey: string;
   readonly internalId: string;
+  progressToken?: McpSchema.ProgressToken;
   progressTokenKey?: string;
 }
 
@@ -586,11 +625,13 @@ export function makeMcpCancellationCompatibleProtocol(
           const activeRequest = registerRequest(clientId, externalRequest.id);
           const progressToken = callProgressToken(externalRequest);
           if (progressToken !== undefined && activeRequest.progressTokenKey === undefined) {
+            activeRequest.progressToken = progressToken;
             activeRequest.progressTokenKey = mcpProgressTokenKey(progressToken);
           }
-          if (activeRequest.progressTokenKey !== undefined) {
+          if (activeRequest.progressToken !== undefined && activeRequest.progressTokenKey !== undefined) {
             progressAssociation = {
               generation: activeRequest.internalId,
+              progressToken: activeRequest.progressToken,
               progressTokenKey: activeRequest.progressTokenKey,
             };
           }
@@ -672,28 +713,138 @@ function mcpStdioLayer(options: {
   readonly name: string;
   readonly version: string;
 }): Layer.Layer<McpServer.McpServer | McpSchema.McpServerClient, never, Stdio.Stdio> {
-  // Effect beta.102 stringifies notifications/cancelled.requestId before
+  // Effect 4.0.0-rc.112 still stringifies notifications/cancelled.requestId before
   // looking up the running RPC fiber. Move every external request id into a
   // private type-tagged namespace at the transport boundary so cancellation
   // addresses the same fiber without aliasing numeric and string twins. The
   // wrapper restores the original id type on ordinary responses and drops
   // terminal/chunk/progress frames after cancellation because the client has
   // already retired that request.
-  return McpServer.layer(options).pipe(
+  return McpServer.layer({...options, protocols: MCP_PROTOCOLS}).pipe(
+    Layer.orDie,
     Layer.provide(cancellationCompatibleProtocolLayer),
     Layer.provide(RpcServer.layerProtocolStdio),
-    Layer.provide(RpcSerialization.layerNdJsonRpc()),
+    Layer.provide(Layer.succeed(RpcSerialization.RpcSerialization, mcpStdioSerialization(MCP_PROTOCOLS))),
   );
+}
+
+/**
+ * @internal Mirrors Effect 4.0.0-rc.112's revision-aware stdio batch policy
+ * around Threadnote's cancellation protocol wrapper. The encoder additionally
+ * requires the exact synthetic batch failure, avoiding relabeling unrelated
+ * null-id protocol failures.
+ */
+export function mcpStdioSerialization(
+  protocols: readonly [McpProtocol.ProtocolAdapter, ...McpProtocol.ProtocolAdapter[]],
+): RpcSerialization.RpcSerialization['Service'] {
+  const serialization = RpcSerialization.jsonRpc({contentType: 'application/json-rpc'});
+  return RpcSerialization.RpcSerialization.of({
+    codecFor: serialization.codecFor,
+    contentType: serialization.contentType,
+    includesFraming: true,
+    makeUnsafe: () => {
+      const frames = RpcSerialization.ndjson.makeUnsafe();
+      const parser = serialization.makeUnsafe();
+      let selectedProtocol: McpProtocol.ProtocolAdapter | undefined;
+      return {
+        decode: data => {
+          const decoded: unknown[] = [];
+          for (const frame of frames.decode(data)) {
+            if (Array.isArray(frame)) {
+              if (
+                selectedProtocol?.transport.acceptsJsonRpcBatches !== true ||
+                frame.length === 0 ||
+                frame.some(mcpStdioInitializeMessage)
+              ) {
+                decoded.push({_tag: 'Request', headers: [], id: null, payload: null, tag: MCP_INVALID_BATCH_METHOD});
+                continue;
+              }
+            } else if (mcpStdioInitializeMessage(frame)) {
+              const offered = mcpStdioProtocolVersion(frame);
+              selectedProtocol = protocols.find(protocol => protocol.protocolVersion === offered) ?? protocols[0];
+            }
+            decoded.push(...parser.decode(JSON.stringify(frame)));
+          }
+          return decoded;
+        },
+        encode: response => {
+          if (mcpInvalidBatchExit(response)) {
+            return `${JSON.stringify({
+              error: {
+                _tag: 'Cause',
+                code: McpSchema.INVALID_REQUEST_ERROR_CODE,
+                data: response.exit.cause,
+                message: 'JSON-RPC batches are not supported',
+              },
+              id: null,
+              jsonrpc: '2.0',
+            })}\n`;
+          }
+          const encoded = parser.encode(response);
+          return encoded === undefined ? undefined : `${encoded}\n`;
+        },
+      };
+    },
+  });
+}
+
+function mcpStdioInitializeMessage(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && 'method' in value && value.method === 'initialize';
+}
+
+function mcpStdioProtocolVersion(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null || !('params' in value)) return undefined;
+  const params = value.params;
+  if (typeof params !== 'object' || params === null || !('protocolVersion' in params)) return undefined;
+  return typeof params.protocolVersion === 'string' ? params.protocolVersion : undefined;
+}
+
+function mcpInvalidBatchExit(response: unknown): response is {
+  readonly _tag: 'Exit';
+  readonly exit: {readonly _tag: 'Failure'; readonly cause: unknown};
+  readonly requestId: null;
+} {
+  if (
+    typeof response !== 'object' ||
+    response === null ||
+    !('_tag' in response) ||
+    response._tag !== 'Exit' ||
+    !('requestId' in response) ||
+    response.requestId !== null ||
+    !('exit' in response) ||
+    typeof response.exit !== 'object' ||
+    response.exit === null ||
+    !('_tag' in response.exit) ||
+    response.exit._tag !== 'Failure' ||
+    !('cause' in response.exit) ||
+    !Array.isArray(response.exit.cause) ||
+    response.exit.cause.length !== 1
+  ) {
+    return false;
+  }
+  const failure = response.exit.cause[0];
+  if (
+    typeof failure !== 'object' ||
+    failure === null ||
+    !('_tag' in failure) ||
+    failure._tag !== 'Fail' ||
+    !('error' in failure) ||
+    typeof failure.error !== 'object' ||
+    failure.error === null ||
+    !('message' in failure.error)
+  ) {
+    return false;
+  }
+  return failure.error.message === 'JSON-RPC batches are not supported';
 }
 
 export type EffectMcpServer = Context.Service.Shape<typeof McpServer.McpServer>;
 
 export function installCallToolProgressBridge(server: EffectMcpServer): boolean {
-  // Effect 4.0.0-beta.102 decodes CallTool._meta, but callTool forwards only
-  // request.arguments to addTool handlers. Keep the extension at that exact
-  // boundary so the request-local token follows the handler fiber and its
-  // canonical cancellation without changing the transport or timing out the
-  // mutating work performed by some tools.
+  // Effect 4.0.0-rc.112's live protocol handlers bypass public callTool, so
+  // registrationLayer rehydrates their progress from the transport context.
+  // Keep this wrapper for direct callTool consumers and, more importantly,
+  // install the lifetime-single-client recipient guard used by both paths.
   if (MCP_PROGRESS_BRIDGED_SERVERS.has(server)) return true;
   const callToolDescriptor = Object.getOwnPropertyDescriptor(server, 'callTool');
   const clientsDescriptor = Object.getOwnPropertyDescriptor(server, 'initializedClients');
@@ -738,7 +889,7 @@ export function installCallToolProgressBridge(server: EffectMcpServer): boolean 
         .pipe(Effect.provideService(CurrentMcpToolProgress, progress));
     });
   try {
-    // beta.102's canonical notification queue broadcasts at drain time. This
+    // Effect 4.0.0-rc.112's canonical notification queue broadcasts at drain time. This
     // adapter is permanently backed by layerStdio, so replace its recipient
     // registry with a non-replaceable lifetime-single-client set before any
     // request can enqueue progress. A late foreign add is ignored even if the
@@ -795,7 +946,7 @@ function isWritableDataProperty(descriptor: PropertyDescriptor | undefined): des
 }
 
 function mcpProgressCanRouteToClient(initializedClients: ReadonlySet<number>, clientId: number): boolean {
-  // Effect beta.102's canonical outgoing notification queue broadcasts to the
+  // Effect 4.0.0-rc.112's canonical outgoing notification queue broadcasts to the
   // complete initialized-client set. Threadnote's adapter is stdio-only, but
   // fail closed if the service is ever reused with another client so an opaque
   // request token cannot cross client boundaries.
@@ -1123,11 +1274,11 @@ function couldContainEffectRpcCause(input: string | Uint8Array): boolean {
   return false;
 }
 
-// Effect 4.0.0-beta.102's JSON-RPC serializer reads `code` from the outer
-// Fail reason instead of its typed error, so native MCP failures reach clients
-// as code 0. Repair only the exact single-Fail envelopes and protocol error
-// types Threadnote emits; unrelated results, defects, and Cause values pass
-// through byte-for-byte.
+// Effect 4.0.0-rc.112 preserves the typed MCP code on its outer Cause envelope,
+// but clients still require a plain JSON-RPC error object. Repair only the exact
+// single-Fail envelopes and branded protocol errors Threadnote emits. Keep the
+// beta-era code-0 case bounded for compatible stored/test envelopes; unrelated
+// results, defects, and Cause values pass through byte-for-byte.
 function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string, unknown> {
   const error = parsed.error;
   if (
@@ -1140,7 +1291,7 @@ function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string
     !('_tag' in error) ||
     error._tag !== 'Cause' ||
     !('code' in error) ||
-    error.code !== 0
+    typeof error.code !== 'number'
   ) {
     return parsed;
   }
@@ -1169,6 +1320,7 @@ function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string
   ) {
     return parsed;
   }
+  if (error.code !== 0 && error.code !== typed.code) return parsed;
   return {
     ...parsed,
     error: {
@@ -1209,7 +1361,7 @@ function isRecognizedMcpError(error: {readonly code: number} & Record<PropertyKe
     return !('_tag' in error) || error._tag === 'McpErrorBase';
   }
   return (
-    (error.code === -32_602 && error._tag === 'InvalidParams') ||
-    (error.code === -32_603 && error._tag === 'InternalError')
+    (error.code === -32_602 && (!('_tag' in error) || error._tag === 'InvalidParams')) ||
+    (error.code === -32_603 && (!('_tag' in error) || error._tag === 'InternalError'))
   );
 }

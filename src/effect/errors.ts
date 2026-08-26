@@ -1,6 +1,6 @@
 import {Effect, Schema} from 'effect';
 
-export class ApplicationError extends Schema.TaggedErrorClass<ApplicationError>()('ApplicationError', {
+export class ApplicationError extends Schema.TaggedError<ApplicationError>()('ApplicationError', {
   cause: Schema.Defect(),
   message: Schema.String,
   operation: Schema.String,

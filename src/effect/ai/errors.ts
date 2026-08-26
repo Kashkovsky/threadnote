@@ -1,6 +1,6 @@
 import {Schema} from 'effect';
 
-export class NativeRuntimeUnavailable extends Schema.TaggedErrorClass<NativeRuntimeUnavailable>()(
+export class NativeRuntimeUnavailable extends Schema.TaggedError<NativeRuntimeUnavailable>()(
   'NativeRuntimeUnavailable',
   {
     cause: Schema.Defect(),
@@ -8,7 +8,7 @@ export class NativeRuntimeUnavailable extends Schema.TaggedErrorClass<NativeRunt
   },
 ) {}
 
-export class UnsupportedNativeRuntime extends Schema.TaggedErrorClass<UnsupportedNativeRuntime>()(
+export class UnsupportedNativeRuntime extends Schema.TaggedError<UnsupportedNativeRuntime>()(
   'UnsupportedNativeRuntime',
   {
     cause: Schema.Defect(),
@@ -16,73 +16,73 @@ export class UnsupportedNativeRuntime extends Schema.TaggedErrorClass<Unsupporte
   },
 ) {}
 
-export class ModelNotInstalled extends Schema.TaggedErrorClass<ModelNotInstalled>()('ModelNotInstalled', {
+export class ModelNotInstalled extends Schema.TaggedError<ModelNotInstalled>()('ModelNotInstalled', {
   modelId: Schema.String,
   path: Schema.String,
   message: Schema.String,
 }) {}
 
-export class ModelManifestInvalid extends Schema.TaggedErrorClass<ModelManifestInvalid>()('ModelManifestInvalid', {
+export class ModelManifestInvalid extends Schema.TaggedError<ModelManifestInvalid>()('ModelManifestInvalid', {
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class ModelChecksumMismatch extends Schema.TaggedErrorClass<ModelChecksumMismatch>()('ModelChecksumMismatch', {
+export class ModelChecksumMismatch extends Schema.TaggedError<ModelChecksumMismatch>()('ModelChecksumMismatch', {
   actual: Schema.String,
   expected: Schema.String,
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class ModelDownloadFailed extends Schema.TaggedErrorClass<ModelDownloadFailed>()('ModelDownloadFailed', {
+export class ModelDownloadFailed extends Schema.TaggedError<ModelDownloadFailed>()('ModelDownloadFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class InsufficientDiskSpace extends Schema.TaggedErrorClass<InsufficientDiskSpace>()('InsufficientDiskSpace', {
+export class InsufficientDiskSpace extends Schema.TaggedError<InsufficientDiskSpace>()('InsufficientDiskSpace', {
   availableBytes: Schema.Number,
   message: Schema.String,
   modelId: Schema.String,
   requiredBytes: Schema.Number,
 }) {}
 
-export class ModelLoadFailed extends Schema.TaggedErrorClass<ModelLoadFailed>()('ModelLoadFailed', {
+export class ModelLoadFailed extends Schema.TaggedError<ModelLoadFailed>()('ModelLoadFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class InsufficientMemory extends Schema.TaggedErrorClass<InsufficientMemory>()('InsufficientMemory', {
+export class InsufficientMemory extends Schema.TaggedError<InsufficientMemory>()('InsufficientMemory', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class EmbeddingFailed extends Schema.TaggedErrorClass<EmbeddingFailed>()('EmbeddingFailed', {
+export class EmbeddingFailed extends Schema.TaggedError<EmbeddingFailed>()('EmbeddingFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class RerankingFailed extends Schema.TaggedErrorClass<RerankingFailed>()('RerankingFailed', {
+export class RerankingFailed extends Schema.TaggedError<RerankingFailed>()('RerankingFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class GenerationFailed extends Schema.TaggedErrorClass<GenerationFailed>()('GenerationFailed', {
+export class GenerationFailed extends Schema.TaggedError<GenerationFailed>()('GenerationFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class InvalidModelOutput extends Schema.TaggedErrorClass<InvalidModelOutput>()('InvalidModelOutput', {
+export class InvalidModelOutput extends Schema.TaggedError<InvalidModelOutput>()('InvalidModelOutput', {
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class InferenceInterrupted extends Schema.TaggedErrorClass<InferenceInterrupted>()('InferenceInterrupted', {
+export class InferenceInterrupted extends Schema.TaggedError<InferenceInterrupted>()('InferenceInterrupted', {
   message: Schema.String,
   modelId: Schema.String,
   operation: Schema.String,
