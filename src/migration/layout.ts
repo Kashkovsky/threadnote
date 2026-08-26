@@ -44,7 +44,7 @@ export interface StorageLayoutMigrationResult {
     | 'would_repair_marker';
 }
 
-export class StorageLayoutMigrationConflict extends Schema.TaggedErrorClass<StorageLayoutMigrationConflict>()(
+export class StorageLayoutMigrationConflict extends Schema.TaggedError<StorageLayoutMigrationConflict>()(
   'StorageLayoutMigrationConflict',
   {
     message: Schema.String,

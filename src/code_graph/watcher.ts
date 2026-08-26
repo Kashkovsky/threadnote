@@ -1067,7 +1067,7 @@ export const watchRepository = Effect.fn('codeGraph.watchRepository')(function* 
   yield* (reconciliationHooks.requestInitial ?? reconciliationHooks.requestAfterChange).pipe(
     Effect.catch(() => Effect.logWarning('Code graph initial maintenance scheduling failed; watch remains active.')),
   );
-  const changes = fs.watch(options.cwd).pipe(
+  const changes = fs.watch(options.cwd, {recursive: true}).pipe(
     Stream.filter(event => relevantWatchPath(path, options.cwd, event.path)),
     Stream.debounce('750 millis'),
     Stream.map(() => 'change' as const),

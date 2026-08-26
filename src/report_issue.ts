@@ -40,16 +40,13 @@ interface PreparedIssue {
   readonly title: string;
 }
 
-export class ReportIssueInvalid extends Schema.TaggedErrorClass<ReportIssueInvalid>()('ReportIssueInvalid', {
+export class ReportIssueInvalid extends Schema.TaggedError<ReportIssueInvalid>()('ReportIssueInvalid', {
   message: Schema.String,
 }) {}
 
-export class ReportIssueCreateFailed extends Schema.TaggedErrorClass<ReportIssueCreateFailed>()(
-  'ReportIssueCreateFailed',
-  {
-    message: Schema.String,
-  },
-) {}
+export class ReportIssueCreateFailed extends Schema.TaggedError<ReportIssueCreateFailed>()('ReportIssueCreateFailed', {
+  message: Schema.String,
+}) {}
 
 export const runReportIssue = Effect.fn('reportIssue.runReportIssue')(function* (
   config: RuntimeConfig,

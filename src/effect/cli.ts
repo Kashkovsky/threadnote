@@ -171,12 +171,15 @@ const defaultString = (name: string, description: string, value: string): Flag.F
 
 const boolean = (name: string, description: string): Flag.Flag<boolean> => {
   registerCliBooleanFlag(`--${name}`);
-  return describeFlag(Flag.boolean(name), description);
+  return describeFlag(Flag.boolean(name), description).pipe(Flag.withDefault(false));
 };
 
 const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
   registerCliBooleanFlag(`--no-${name}`);
-  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(Flag.map(value => !value));
+  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(
+    Flag.withDefault(false),
+    Flag.map(value => !value),
+  );
 };
 
 const optionalChoice = <const Choices extends readonly string[]>(
@@ -363,7 +366,7 @@ const update = Command.make(
 
 const autoUpdateWorker = Command.make('auto-update-worker', {}, () =>
   withRuntimeEffect(config => runAutoUpdateWorker(config).pipe(Effect.asVoid)),
-).pipe(Command.withDescription('Run one coordinated automatic update attempt'), Command.withHidden);
+).pipe(Command.withDescription('Run one coordinated automatic update attempt'), Command.unlisted);
 
 const postUpdate = Command.make(
   'post-update',
@@ -374,7 +377,7 @@ const postUpdate = Command.make(
     yes: boolean('yes', 'Accept applicable post-update actions without prompting'),
   },
   options => withRuntimeEffect(config => runPostUpdate(config, options)),
-).pipe(Command.withDescription('Run packaged post-update action prompts'), Command.withHidden);
+).pipe(Command.withDescription('Run packaged post-update action prompts'), Command.unlisted);
 
 const repair = Command.make(
   'repair',
@@ -1218,13 +1221,13 @@ const preCompactHook = Command.make(
   'pre-compact-hook',
   {dryRun: boolean('dry-run', 'Print the handoff payload without writing it')},
   options => withRuntimeEffect(config => runPreCompactHook(config, options)),
-).pipe(Command.withDescription('Store a handoff snapshot before context compaction'), Command.withHidden);
+).pipe(Command.withDescription('Store a handoff snapshot before context compaction'), Command.unlisted);
 
 const sessionStartHook = Command.make(
   'session-start-hook',
   {dryRun: boolean('dry-run', 'Print the planned native operation without running it')},
   options => withRuntimeEffect(config => runSessionStartHook(config, options)),
-).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.withHidden);
+).pipe(Command.withDescription('Print current repo handoff context at session start'), Command.unlisted);
 
 const remember = Command.make(
   'remember',
@@ -1306,7 +1309,7 @@ const migrateProjectNames = Command.make('migrate-projects', migrateProjectNames
 
 const migrateProjectNamesCompatibility = Command.make('migrate-project-names', migrateProjectNamesFlags, options =>
   withRuntimeEffect(config => runMigrateProjectNames(config, options)),
-).pipe(Command.withDescription('Compatibility name for migrate-projects'), Command.withHidden);
+).pipe(Command.withDescription('Compatibility name for migrate-projects'), Command.unlisted);
 
 const enrichMemories = Command.make(
   'enrich-memories',

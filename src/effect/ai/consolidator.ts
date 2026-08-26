@@ -20,7 +20,7 @@ export interface ResolvedEffectAiConfiguration {
   readonly configuration: EffectAiConfiguration;
 }
 
-export class AiConsolidationFailed extends Schema.TaggedErrorClass<AiConsolidationFailed>()('AiConsolidationFailed', {
+export class AiConsolidationFailed extends Schema.TaggedError<AiConsolidationFailed>()('AiConsolidationFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
 }) {}

@@ -10,7 +10,7 @@ export interface VectorSearchResult {
   readonly score: number;
 }
 
-export class VectorInvalid extends Schema.TaggedErrorClass<VectorInvalid>()('VectorInvalid', {
+export class VectorInvalid extends Schema.TaggedError<VectorInvalid>()('VectorInvalid', {
   message: Schema.String,
 }) {}
 

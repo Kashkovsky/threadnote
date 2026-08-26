@@ -129,18 +129,18 @@ interface RecoveryPreflight {
   readonly skippedLegacyEntries: ReadonlySet<string>;
 }
 
-export class HomeMigrationConflict extends Schema.TaggedErrorClass<HomeMigrationConflict>()('HomeMigrationConflict', {
+export class HomeMigrationConflict extends Schema.TaggedError<HomeMigrationConflict>()('HomeMigrationConflict', {
   message: Schema.String,
   path: Schema.String,
 }) {}
 
-export class HomeMigrationFailed extends Schema.TaggedErrorClass<HomeMigrationFailed>()('HomeMigrationFailed', {
+export class HomeMigrationFailed extends Schema.TaggedError<HomeMigrationFailed>()('HomeMigrationFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   operation: Schema.String,
 }) {}
 
-export class HomeMigrationInsufficientSpace extends Schema.TaggedErrorClass<HomeMigrationInsufficientSpace>()(
+export class HomeMigrationInsufficientSpace extends Schema.TaggedError<HomeMigrationInsufficientSpace>()(
   'HomeMigrationInsufficientSpace',
   {
     availableBytes: Schema.Number,
@@ -149,7 +149,7 @@ export class HomeMigrationInsufficientSpace extends Schema.TaggedErrorClass<Home
   },
 ) {}
 
-export class HomeMigrationUnsafe extends Schema.TaggedErrorClass<HomeMigrationUnsafe>()('HomeMigrationUnsafe', {
+export class HomeMigrationUnsafe extends Schema.TaggedError<HomeMigrationUnsafe>()('HomeMigrationUnsafe', {
   message: Schema.String,
   path: Schema.String,
 }) {}

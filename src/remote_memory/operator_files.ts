@@ -15,7 +15,7 @@ const MAX_IMPORT_FILE_BYTES = 1024 * 1024;
 const MAX_IMPORT_TOTAL_BYTES = 100 * 1024 * 1024;
 const MAX_JSON_BYTES = 4 * 1024 * 1024;
 
-export class RemoteMemoryOperatorFileError extends Schema.TaggedErrorClass<RemoteMemoryOperatorFileError>()(
+export class RemoteMemoryOperatorFileError extends Schema.TaggedError<RemoteMemoryOperatorFileError>()(
   'RemoteMemoryOperatorFileError',
   {message: Schema.String},
 ) {}

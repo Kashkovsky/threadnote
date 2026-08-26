@@ -1551,7 +1551,11 @@ describe('Manager Worksets API and human labels', () => {
           });
           expect(detail).toMatchObject({body: {job: {status: 'completed'}}, status: 200});
           expect(jobScope.state._tag).toBe('Open');
-          if (jobScope.state._tag === 'Open') expect(jobScope.state.finalizers.size).toBe(1);
+          if (jobScope.state._tag === 'Open') {
+            const finalizerCount =
+              Number(jobScope.state.finalizer !== undefined) + (jobScope.state.finalizers?.size ?? 0);
+            expect(finalizerCount).toBe(1);
+          }
         }
         const listed = yield* handleManagerWorksetRequest({
           body: Effect.succeed({}),

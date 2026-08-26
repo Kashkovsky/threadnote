@@ -38,21 +38,15 @@ export interface RecallSelectionInput {
   readonly query: string;
 }
 
-export class AiRecallExpansionFailed extends Schema.TaggedErrorClass<AiRecallExpansionFailed>()(
-  'AiRecallExpansionFailed',
-  {
-    cause: Schema.Defect(),
-    message: Schema.String,
-  },
-) {}
+export class AiRecallExpansionFailed extends Schema.TaggedError<AiRecallExpansionFailed>()('AiRecallExpansionFailed', {
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
 
-export class AiRecallSelectionFailed extends Schema.TaggedErrorClass<AiRecallSelectionFailed>()(
-  'AiRecallSelectionFailed',
-  {
-    cause: Schema.Defect(),
-    message: Schema.String,
-  },
-) {}
+export class AiRecallSelectionFailed extends Schema.TaggedError<AiRecallSelectionFailed>()('AiRecallSelectionFailed', {
+  cause: Schema.Defect(),
+  message: Schema.String,
+}) {}
 
 const RecallExpansionDraft = Schema.Struct({
   queries: Schema.Array(

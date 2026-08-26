@@ -119,12 +119,12 @@ export interface VectorIndexStatus {
   readonly reusedChunkCount?: number;
 }
 
-export class VectorIndexCorrupt extends Schema.TaggedErrorClass<VectorIndexCorrupt>()('VectorIndexCorrupt', {
+export class VectorIndexCorrupt extends Schema.TaggedError<VectorIndexCorrupt>()('VectorIndexCorrupt', {
   message: Schema.String,
   modelId: Schema.String,
 }) {}
 
-export class VectorCorpusGenerationChanged extends Schema.TaggedErrorClass<VectorCorpusGenerationChanged>()(
+export class VectorCorpusGenerationChanged extends Schema.TaggedError<VectorCorpusGenerationChanged>()(
   'VectorCorpusGenerationChanged',
   {
     message: Schema.String,

@@ -11,7 +11,7 @@ export interface ResourceId {
   readonly segments: readonly string[];
 }
 
-export class InvalidResourceId extends Schema.TaggedErrorClass<InvalidResourceId>()('InvalidResourceId', {
+export class InvalidResourceId extends Schema.TaggedError<InvalidResourceId>()('InvalidResourceId', {
   input: Schema.String,
   message: Schema.String,
   reason: Schema.String,

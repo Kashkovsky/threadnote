@@ -44,7 +44,7 @@ export interface LocalModelStoreLayerOptions {
   readonly onModelLockContention?: (event: LocalModelLockEvent) => Effect.Effect<void, never>;
 }
 
-export class ModelStoreIoFailed extends Schema.TaggedErrorClass<ModelStoreIoFailed>()('ModelStoreIoFailed', {
+export class ModelStoreIoFailed extends Schema.TaggedError<ModelStoreIoFailed>()('ModelStoreIoFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   modelId: Schema.String,

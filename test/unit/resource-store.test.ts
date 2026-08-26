@@ -205,18 +205,21 @@ describe('native ResourceStore', () => {
               ...fs,
               open: (filePath, options) =>
                 fs.open(filePath, options).pipe(
-                  Effect.map(opened => ({
-                    [FileSystem.FileTypeId]: FileSystem.FileTypeId,
-                    fd: opened.fd,
-                    read: buffer => opened.read(buffer),
-                    readAlloc: size => opened.readAlloc(size),
-                    seek: (offset, from) => opened.seek(offset, from),
-                    stat: opened.stat.pipe(Effect.map(withoutIdentity)),
-                    sync: opened.sync,
-                    truncate: length => opened.truncate(length),
-                    write: buffer => opened.write(buffer),
-                    writeAll: buffer => opened.writeAll(buffer),
-                  })),
+                  Effect.map(opened => {
+                    const descriptor = (opened as FileSystem.File & {readonly fd?: unknown}).fd;
+                    return {
+                      [FileSystem.FileTypeId]: FileSystem.FileTypeId,
+                      ...(typeof descriptor === 'number' ? {fd: descriptor} : {}),
+                      read: buffer => opened.read(buffer),
+                      readAlloc: size => opened.readAlloc(size),
+                      seek: (offset, from) => opened.seek(offset, from),
+                      stat: opened.stat.pipe(Effect.map(withoutIdentity)),
+                      sync: opened.sync,
+                      truncate: length => opened.truncate(length),
+                      write: buffer => opened.write(buffer),
+                      writeAll: buffer => opened.writeAll(buffer),
+                    } as FileSystem.File;
+                  }),
                 ),
               stat: filePath => fs.stat(filePath).pipe(Effect.map(withoutIdentity)),
             });

@@ -87,9 +87,9 @@
     "train:reranker:parity": "bun scripts/validate-recall-reranker-parity.ts"
   },
   "devDependencies": {
-    "@effect/ai-openai-compat": "4.0.0-beta.102",
-    "@effect/tsgo": "0.36.4",
-    "@effect/vitest": "4.0.0-beta.102",
+    "@effect/ai-openai-compat": "4.0.0-rc.112",
+    "@effect/tsgo": "0.37.0",
+    "@effect/vitest": "4.0.0-rc.112",
     "@fontsource-variable/jetbrains-mono": "5.3.0",
     "@fontsource-variable/spline-sans": "5.3.0",
     "@repomix/tree-sitter-wasms": "0.1.17",
@@ -110,7 +110,7 @@
     "husky": "^9.1.7",
     "js-yaml": "^5.2.2",
     "mitata": "1.0.34",
-    "oxlint": "^1.76.0",
+    "oxlint": "^1.80.0",
     "oxlint-tsgolint": "7.0.2001",
     "prettier": "^3.9.5",
     "react": "^19.2.8",
@@ -125,11 +125,11 @@
     "vitest": "^4.1.7"
   },
   "dependencies": {
-    "@effect/platform-bun": "4.0.0-beta.102",
-    "@effect/sql-sqlite-bun": "4.0.0-beta.102",
+    "@effect/platform-bun": "4.0.0-rc.112",
+    "@effect/sql-sqlite-bun": "4.0.0-rc.112",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "effect": "4.0.0-rc.112",
     "fflate": "0.8.3",
-    "effect": "4.0.0-beta.102",
     "jose": "6.2.3",
     "node-llama-cpp": "3.19.1",
     "postgres": "3.4.7",
@@ -143,10 +143,13 @@
     "zod": "4.4.3"
   },
   "overrides": {
-    "@effect/platform-node-shared": "4.0.0-beta.102",
+    "@effect/platform-node-shared": "4.0.0-rc.112",
     "@hono/node-server": "^2.0.12",
     "fast-uri": "3.1.5",
     "hono": "4.12.34",
     "ip-address": "10.4.0"
+  },
+  "patchedDependencies": {
+    "@effect/sql-sqlite-bun@4.0.0-rc.112": "patches/@effect%2Fsql-sqlite-bun@4.0.0-rc.112.patch"
   }
 }

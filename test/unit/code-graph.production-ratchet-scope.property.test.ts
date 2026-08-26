@@ -3,7 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {classifyCodeGraphProductionRatchetScope} from '../ci/code-graph-production-ratchet-scope.js';
 
 const baseManifest = {
-  dependencies: {effect: '4.0.0-beta.102'},
+  dependencies: {effect: '4.0.0-rc.112'},
   name: 'threadnote',
   scripts: {test: 'vitest run'},
   version: '4.3.6',

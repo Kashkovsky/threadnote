@@ -5,14 +5,14 @@ import * as HttpClientRequest from 'effect/unstable/http/HttpClientRequest';
 import type {HttpClientResponse} from 'effect/unstable/http/HttpClientResponse';
 import * as FetchHttpClient from 'effect/unstable/http/FetchHttpClient';
 
-export class HttpRequestFailed extends Schema.TaggedErrorClass<HttpRequestFailed>()('HttpRequestFailed', {
+export class HttpRequestFailed extends Schema.TaggedError<HttpRequestFailed>()('HttpRequestFailed', {
   cause: Schema.Defect(),
   message: Schema.String,
   method: Schema.String,
   url: Schema.String,
 }) {}
 
-export class HttpStatusError extends Schema.TaggedErrorClass<HttpStatusError>()('HttpStatusError', {
+export class HttpStatusError extends Schema.TaggedError<HttpStatusError>()('HttpStatusError', {
   message: Schema.String,
   method: Schema.String,
   status: Schema.Number,

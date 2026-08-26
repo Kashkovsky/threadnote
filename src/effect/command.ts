@@ -54,19 +54,19 @@ const CommandFields = {
   message: Schema.String,
 };
 
-export class CommandFailed extends Schema.TaggedErrorClass<CommandFailed>()('CommandFailed', {
+export class CommandFailed extends Schema.TaggedError<CommandFailed>()('CommandFailed', {
   ...CommandFields,
   exitCode: Schema.Number,
   stderr: Schema.String,
   stdout: Schema.String,
 }) {}
 
-export class CommandTimedOut extends Schema.TaggedErrorClass<CommandTimedOut>()('CommandTimedOut', {
+export class CommandTimedOut extends Schema.TaggedError<CommandTimedOut>()('CommandTimedOut', {
   ...CommandFields,
   timeoutMs: Schema.Number,
 }) {}
 
-export class CommandOutputLimitExceeded extends Schema.TaggedErrorClass<CommandOutputLimitExceeded>()(
+export class CommandOutputLimitExceeded extends Schema.TaggedError<CommandOutputLimitExceeded>()(
   'CommandOutputLimitExceeded',
   {
     ...CommandFields,
@@ -74,7 +74,7 @@ export class CommandOutputLimitExceeded extends Schema.TaggedErrorClass<CommandO
   },
 ) {}
 
-export class CommandSpawnFailed extends Schema.TaggedErrorClass<CommandSpawnFailed>()('CommandSpawnFailed', {
+export class CommandSpawnFailed extends Schema.TaggedError<CommandSpawnFailed>()('CommandSpawnFailed', {
   ...CommandFields,
   cause: Schema.Defect(),
 }) {}

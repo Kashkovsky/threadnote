@@ -70,7 +70,7 @@ interface WorkerFailure {
 
 type WorkerResponse = WorkerFailure | WorkerSuccess;
 
-export class LocalModelWorkerTransportError extends Schema.TaggedErrorClass<LocalModelWorkerTransportError>()(
+export class LocalModelWorkerTransportError extends Schema.TaggedError<LocalModelWorkerTransportError>()(
   'LocalModelWorkerTransportError',
   {
     message: Schema.String,

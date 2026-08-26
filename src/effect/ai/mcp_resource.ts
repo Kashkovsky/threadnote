@@ -6,8 +6,8 @@ import {MCP_RESOURCE_ERROR_DATA, MCP_RESOURCE_NOT_FOUND_ERROR_DATA} from './mcp.
 
 export const MCP_RESOURCE_READ_MAX_BYTES = 4_500;
 export const MCP_RESOURCE_MIME_TYPE = 'text/plain; charset=utf-8';
-// Effect beta.102 negotiates MCP 2025-06-18, whose resources contract uses
-// this server-error code for a resource that does not exist.
+// The MCP resources contract uses this server-error code for a resource that
+// does not exist across every protocol revision Threadnote advertises.
 export const MCP_RESOURCE_NOT_FOUND_CODE = -32_002;
 
 interface McpResourceConfig {

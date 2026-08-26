@@ -40,7 +40,7 @@ export const RemoteMemoryReceiptSchemaV1 = Schema.Struct({
 
 export type RemoteMemoryReceiptV1 = typeof RemoteMemoryReceiptSchemaV1.Type;
 
-export class InvalidRemoteMemoryReceipt extends Schema.TaggedErrorClass<InvalidRemoteMemoryReceipt>()(
+export class InvalidRemoteMemoryReceipt extends Schema.TaggedError<InvalidRemoteMemoryReceipt>()(
   'InvalidRemoteMemoryReceipt',
   {message: Schema.String},
 ) {}

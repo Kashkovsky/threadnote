@@ -569,6 +569,42 @@ describe('CodeGraphWatcher', () => {
     }).pipe(Effect.scoped),
   );
 
+  effectIt.effect('requests recursive filesystem events so nested source changes trigger refresh', () =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<string[]>([]);
+      let watchOptions: {readonly recursive?: boolean} | undefined;
+      const fiber = yield* watchRepository(
+        {
+          watch: (_root: string, observedOptions?: {readonly recursive?: boolean}) => {
+            watchOptions = observedOptions;
+            return Stream.make({path: 'src/nested/value.ts'});
+          },
+        } as never,
+        {
+          isAbsolute: (value: string) => value.startsWith('/'),
+          join: (...values: string[]) => values.join('/'),
+          relative: (from: string, to: string) => (to.startsWith(`${from}/`) ? to.slice(from.length + 1) : to),
+          sep: '/',
+        } as never,
+        options,
+        false,
+        () => Ref.update(events, current => [...current, 'refresh']),
+        {
+          periodicRefreshRequired: Effect.succeed(false),
+          requestAfterChange: Ref.update(events, current => [...current, 'change-maintenance']),
+          requestInitial: Effect.void,
+        },
+      ).pipe(Effect.forkScoped);
+
+      yield* TestClock.adjust('751 millis');
+      yield* Effect.yieldNow;
+
+      expect(watchOptions).toEqual({recursive: true});
+      expect(yield* Ref.get(events)).toEqual(['change-maintenance', 'refresh']);
+      yield* Fiber.interrupt(fiber);
+    }).pipe(Effect.scoped),
+  );
+
   effectIt.effect('suppresses change refresh when the cached overlay outcome is not eligible', () =>
     Effect.gen(function* () {
       const events = yield* Ref.make<string[]>([]);

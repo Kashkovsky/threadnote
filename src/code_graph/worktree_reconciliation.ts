@@ -31,7 +31,7 @@ export {type CodeGraphWorktreeReconciliationCandidate} from './store.js';
 
 export const CODE_GRAPH_WORKTREE_RECONCILIATION_CANDIDATE_LIMIT = 32;
 
-class CodeGraphWorktreeAuthorityChanged extends Schema.TaggedErrorClass<CodeGraphWorktreeAuthorityChanged>()(
+class CodeGraphWorktreeAuthorityChanged extends Schema.TaggedError<CodeGraphWorktreeAuthorityChanged>()(
   'CodeGraphWorktreeAuthorityChanged',
   {message: Schema.String},
 ) {}

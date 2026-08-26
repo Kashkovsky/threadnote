@@ -265,12 +265,15 @@ function runtimeConfig(): RuntimeConfig {
 
 function mcpServerClient(): McpSchema.McpServerClient['Service'] {
   return McpSchema.McpServerClient.of({
+    clientCapabilities: {},
     clientId: 0,
+    clientInfo: {name: 'analysis-handler-test', version: '1.0.0'},
     getClient: Effect.never,
     initializePayload: {
       capabilities: {},
       clientInfo: {name: 'analysis-handler-test', version: '1.0.0'},
       protocolVersion: '2025-06-18',
     },
+    protocolVersion: '2025-06-18',
   });
 }

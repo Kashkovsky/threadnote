@@ -40,6 +40,27 @@ describe('Effect CLI', () => {
     expect(disable.stdout).toContain('--apply');
   });
 
+  it('keeps regular and negated boolean flags optional with their historical defaults', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-boolean-defaults-'));
+    const environment = {
+      THREADNOTE_HOME: join(root, 'home'),
+      THREADNOTE_INSTALL_ROOT: join(root, 'install'),
+    };
+    try {
+      const textProcesses = await runCli(['processes'], environment);
+      const jsonProcesses = await runCli(['processes', '--json'], environment);
+      const defaultStart = await runCli(['install', '--dry-run'], environment);
+      const disabledStart = await runCli(['install', '--dry-run', '--no-start'], environment);
+
+      expect(textProcesses.stdout).toMatch(/^(?:PID|No live Threadnote processes found\.)/u);
+      expect(JSON.parse(jsonProcesses.stdout)).toMatchObject({schemaVersion: 1});
+      expect(defaultStart.stdout).toContain('no background server is required');
+      expect(disabledStart.stdout).not.toContain('no background server is required');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
   it('keeps automatic-update policy dry runs read-only and rejects mixed update modes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-auto-update-'));
     const environment = {
