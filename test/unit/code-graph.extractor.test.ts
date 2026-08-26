@@ -11,6 +11,7 @@ import {
   extractRepositoryFileFacts,
 } from '../../src/code_graph/extractor.js';
 import {
+  createRepositoryFactAttributionContext,
   createRepositoryFactAttributorFromContext,
   repositoryFactCandidatePaths,
 } from '../../src/code_graph/extractor_context.js';
@@ -218,17 +219,54 @@ describe('native code graph extraction', () => {
         const repositoryFiles = [...contextFiles, dependency, consumer];
         const rawConsumer = extractRepositoryFileFacts([consumer]);
         const candidates = repositoryFactCandidatePaths(contextFiles, rawConsumer);
+        const attribution = createRepositoryFactAttributionContext(contextFiles);
         const repositoryPaths = new Set(repositoryFiles.map(file => file.path));
         const existingCandidates = new Set(candidates.filter(path => repositoryPaths.has(path)));
 
+        const expected = createRepositoryFactAttributor(repositoryFiles)(rawConsumer);
         expect(createRepositoryFactAttributorFromContext(contextFiles, existingCandidates)(rawConsumer)).toEqual(
-          createRepositoryFactAttributor(repositoryFiles)(rawConsumer),
+          expected,
         );
+        expect(attribution.attribute(existingCandidates)(rawConsumer)).toEqual(expected);
+        expect(attribution.candidatePaths(rawConsumer)).toEqual(candidates);
+        expect(attribution.candidatePaths(rawConsumer)).toEqual(attribution.candidatePaths(rawConsumer));
         expect(existingCandidates.has(dependency.path)).toBe(true);
         expect(candidates.length).toBeLessThanOrEqual(16);
       }),
       {numRuns: 100},
     );
+  });
+
+  it('reuses parsed manifest context across candidate discovery and exact attribution', () => {
+    let manifestReads = 0;
+    const manifest = sourceFile('packages/app/package.json', '{"name":"app"}\n');
+    Object.defineProperty(manifest, 'content', {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        manifestReads += 1;
+        return '{"name":"app"}\n';
+      },
+    });
+    const dependency = sourceFile(
+      'packages/app/src/dependency.ts',
+      'export function dependency(): number { return 1; }\n',
+    );
+    const consumer = sourceFile(
+      'packages/app/src/consumer.ts',
+      'import {dependency} from "./dependency.js";\n' + 'export function consumer(): number { return dependency(); }\n',
+    );
+    const rawConsumer = extractRepositoryFileFacts([consumer]);
+    const expected = createRepositoryFactAttributor([manifest, dependency, consumer])(rawConsumer);
+    manifestReads = 0;
+    const attribution = createRepositoryFactAttributionContext([manifest]);
+    const parsedManifestReads = manifestReads;
+    const candidates = attribution.candidatePaths(rawConsumer);
+    const existing = new Set(candidates.filter(path => path === dependency.path));
+
+    expect(attribution.attribute(existing)(rawConsumer)).toEqual(expected);
+    expect(parsedManifestReads).toBe(2);
+    expect(manifestReads).toBe(parsedManifestReads);
   });
 
   it('indexes documentation without promoting prose similarity to a source dependency', () => {

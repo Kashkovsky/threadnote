@@ -19,6 +19,7 @@ import type {CodeGraphInventoryFile, RepositoryIdentity} from './types.js';
 import {codeGraphUtf8ByteLength} from './disk_capacity.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphAttributionContextFile} from './store_models.js';
+import {isRepositoryFactAttributionContextPath} from './extractor_context.js';
 
 const ATTRIBUTION_CONTEXT_FILES_MAXIMUM = 10_000;
 const ATTRIBUTION_CONTEXT_BYTES_MAXIMUM = 16 * 1_048_576;
@@ -30,7 +31,7 @@ export function codeGraphAttributionContextFilesForReceipt(
   const context: CodeGraphAttributionContextFile[] = [];
   let contentBytes = 0;
   for (const file of files) {
-    if (!languagePacks.isResolutionContext(file.path)) continue;
+    if (!languagePacks.isResolutionContext(file.path) || !isRepositoryFactAttributionContextPath(file.path)) continue;
     if (file.content === undefined || file.source !== 'commit') return undefined;
     const bytes = codeGraphUtf8ByteLength(file.content);
     if (
@@ -50,7 +51,7 @@ export function codeGraphAttributionContextFilesForReceipt(
  * matcher or inventory policy revision. Persisted inventory reuse is denied
  * across different contract hashes.
  */
-export const CODE_GRAPH_INVENTORY_REUSE_CONTRACT_VERSION = 1 as const;
+export const CODE_GRAPH_INVENTORY_REUSE_CONTRACT_VERSION = 2 as const;
 
 export const readCodeGraphInventoryReuseEnvironment = Effect.fn('codeGraph.readInventoryReuseEnvironment')(function* (
   identity: RepositoryIdentity,

@@ -2,7 +2,7 @@ import {Effect, FileSystem, Option} from 'effect';
 import type {CodeGraphBuildAnonymousTelemetryReporter} from './anonymous_telemetry.js';
 import {buildAndActivate, retiredSnapshotCleanupReporter, reuseReadySnapshot} from './indexer_build.js';
 import {assessIncrementalOverlay} from './indexer_incremental.js';
-import {createRepositoryFactAttributorFromContext, repositoryFactCandidatePaths} from './extractor_context.js';
+import {createRepositoryFactAttributionContext, type RepositoryFactAttributionContext} from './extractor_context.js';
 import {finalCodeGraphFactBatches} from './fact_budget.js';
 import {
   assessProjectClosureSeeds,
@@ -429,10 +429,8 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
   const completeBaseRawFacts = orderedBaseRawFacts as readonly CodeGraphFileFacts[];
-  const candidates = repositoryFactCandidatePaths(inventoryReceipt.attributionFiles, [
-    ...completeBaseRawFacts,
-    ...currentRawFacts,
-  ]);
+  const repositoryAttribution = createRepositoryFactAttributionContext(inventoryReceipt.attributionFiles);
+  const candidates = repositoryAttribution.candidatePaths([...completeBaseRawFacts, ...currentRawFacts]);
   const existingPaths = yield* input.store.existingSnapshotFilePaths(
     input.layout.databasePath,
     base.snapshot.id,
@@ -441,10 +439,7 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
   if (existingPaths === undefined) {
     return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
   }
-  const attributeRepository = createRepositoryFactAttributorFromContext(
-    inventoryReceipt.attributionFiles,
-    new Set(existingPaths),
-  );
+  const attributeRepository = repositoryAttribution.attribute(new Set(existingPaths));
   const attributeWorkspace = createWorkspaceAttributor(input.admission.workspace);
   const currentFacts = attributeWorkspace(attributeRepository(currentRawFacts));
   const attributedBaseRawFacts = attributeWorkspace(attributeRepository(completeBaseRawFacts));
@@ -476,6 +471,7 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
       currentFacts,
       languagePacks: input.languagePacks,
       layout: input.layout,
+      repositoryAttribution,
       store: input.store,
     });
   }
@@ -504,6 +500,7 @@ const assessSparseProjectClosure = Effect.fn('codeGraph.assessSparseProjectClosu
   readonly currentFacts: readonly CodeGraphFileFacts[];
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
+  readonly repositoryAttribution: RepositoryFactAttributionContext;
   readonly store: CodeGraphStoreShape;
 }) {
   if (input.store.snapshotProjectClosureFiles === undefined || input.store.existingSnapshotFilePaths === undefined) {
@@ -576,7 +573,7 @@ const assessSparseProjectClosure = Effect.fn('codeGraph.assessSparseProjectClosu
   }
   const rawFacts = affectedFiles.map(file => input.languagePacks.postprocessFile(file, cache.facts.get(file.path)!));
   const inventoryReceipt = base.receipt.inventory!;
-  const candidates = repositoryFactCandidatePaths(inventoryReceipt.attributionFiles, rawFacts);
+  const candidates = input.repositoryAttribution.candidatePaths(rawFacts);
   const existingPaths = yield* input.store.existingSnapshotFilePaths(
     input.layout.databasePath,
     base.snapshot.id,
@@ -585,10 +582,7 @@ const assessSparseProjectClosure = Effect.fn('codeGraph.assessSparseProjectClosu
   if (existingPaths === undefined) {
     return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
   }
-  const attributeRepository = createRepositoryFactAttributorFromContext(
-    inventoryReceipt.attributionFiles,
-    new Set(existingPaths),
-  );
+  const attributeRepository = input.repositoryAttribution.attribute(new Set(existingPaths));
   const attributeWorkspace = createWorkspaceAttributor(input.admission.workspace);
   const facts = attributeWorkspace(attributeRepository(rawFacts));
   if (finalCodeGraphFactBatches(facts).length !== 1) {
