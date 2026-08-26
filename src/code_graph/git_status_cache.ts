@@ -2,9 +2,10 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {codeGraphGitIndexSemanticSha256} from './git_index_semantic.js';
 import type {RepositoryIdentity} from './types.js';
 
-export const CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION = 2 as const;
+export const CODE_GRAPH_GIT_STATUS_CACHE_RECEIPT_VERSION = 3 as const;
 // Avoid a persistent Git monitor and private-index setup for repositories
 // whose ordinary status scan is already cheaper than cache initialization.
 export const CODE_GRAPH_GIT_STATUS_CACHE_INDEX_BYTES_MINIMUM = 8 * 1_048_576;
@@ -120,7 +121,7 @@ function runCachedStatus(
   return Effect.gen(function* () {
     yield* ensurePrivateCacheDirectory(fs, path, privateHome, cacheRoot);
     const privateIndex = path.join(cacheRoot, 'index');
-    const receiptPath = path.join(cacheRoot, 'receipt-v2.json');
+    const receiptPath = path.join(cacheRoot, 'receipt-v3.json');
     const receipt = yield* readReceipt(fs, receiptPath);
     const privateIndexAvailable = yield* privateRegularFileWithinBound(fs, privateIndex);
     const metadataReusable =
@@ -188,16 +189,27 @@ const observeSourceIndexSemanticSha256 = Effect.fn('codeGraph.observeSourceIndex
   sourceIndex: string,
   expectedIdentity: CodeGraphGitIndexIdentity,
 ) {
-  const stagedEntries = yield* runBinaryCommandEffect(
-    'git',
-    ['--no-optional-locks', '-C', identity.repoRoot, 'ls-files', '--stage', '-v', '-z'],
-    {maxOutputBytes: SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM, timeoutMs: 30_000},
-  );
+  const direct =
+    expectedIdentity.indexBytes <= SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM
+      ? yield* fs.readFile(sourceIndex).pipe(
+          Effect.map(bytes => codeGraphGitIndexSemanticSha256(bytes, identity.objectFormat)),
+          Effect.catch(() => Effect.succeed(undefined)),
+        )
+      : undefined;
+  const semanticSha256 =
+    direct ??
+    sha256HexSync(
+      (yield* runBinaryCommandEffect(
+        'git',
+        ['--no-optional-locks', '-C', identity.repoRoot, 'ls-files', '--stage', '-v', '-z'],
+        {maxOutputBytes: SEMANTIC_INDEX_OUTPUT_BYTES_MAXIMUM, timeoutMs: 30_000},
+      )).stdout,
+    );
   const finalIdentity = codeGraphGitIndexIdentity(yield* fs.stat(sourceIndex));
   if (finalIdentity === undefined || !sameCodeGraphGitIndexIdentity(finalIdentity, expectedIdentity)) {
     return yield* Effect.fail(new CodeGraphGitStatusCacheUnavailable('Git index changed during semantic observation.'));
   }
-  return sha256HexSync(stagedEntries.stdout);
+  return semanticSha256;
 });
 
 function initializePrivateIndex(
@@ -339,7 +351,7 @@ function writeReceipt(
   receiptPath: string,
   receipt: CodeGraphGitStatusCacheReceipt,
 ) {
-  const temporary = path.join(path.dirname(receiptPath), '.receipt-v2.tmp');
+  const temporary = path.join(path.dirname(receiptPath), '.receipt-v3.tmp');
   const content = `${JSON.stringify(receipt)}\n`;
   return rejectSymbolicTarget(fs, receiptPath).pipe(
     Effect.andThen(rejectSymbolicTarget(fs, temporary)),

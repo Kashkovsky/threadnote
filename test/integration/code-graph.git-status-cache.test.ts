@@ -23,13 +23,14 @@ describe('code graph private Git status cache', () => {
       const home = join(root, 'home');
       mkdirSync(gitDirectory, {recursive: true});
       mkdirSync(home, {recursive: true});
-      writeFileSync(sourceIndex, 'source-index-v1');
+      let sourceIndexObjectIdByte = 7;
+      let cacheExtensionBytes = 0;
+      const writeSourceIndex = () =>
+        writeFileSync(sourceIndex, testGitIndex(sourceIndexObjectIdByte, cacheExtensionBytes));
+      writeSourceIndex();
       const identity = repositoryIdentity(repository);
       const base = yield* CommandExecutor;
       const calls: Array<{args: readonly string[]; options?: CommandOptions}> = [];
-      // Distinct invalid UTF-8 bytes would both decode to the replacement
-      // character, so this also guards the raw-byte digest boundary.
-      let sourceIndexSemanticIdentity = Uint8Array.of(0x80);
       const command = CommandExecutor.of({
         ...base,
         execute: (executable, args, options) => {
@@ -41,18 +42,8 @@ describe('code graph private Git status cache', () => {
           if (args.includes('status')) return Effect.succeed(result(' M src/index.ts\0'));
           return Effect.fail(commandFailure(args));
         },
-        executeBytes: (executable, args, options) => {
-          expect(executable).toBe('git');
-          calls.push({args, options});
-          if (args.includes('ls-files')) {
-            return Effect.succeed({
-              exitCode: 0,
-              stderr: '',
-              stdout: sourceIndexSemanticIdentity,
-            });
-          }
-          return Effect.die(new Error(`Unexpected binary command: ${args.join(' ')}`));
-        },
+        executeBytes: (_executable, args) =>
+          Effect.die(new Error(`Direct index semantics unexpectedly fell back to: ${args.join(' ')}`)),
       });
       const observe = () =>
         worktreeStatusWithPrivateCache(identity, home, STATUS_ARGUMENTS, {minimumIndexBytes: 1}).pipe(
@@ -70,18 +61,20 @@ describe('code graph private Git status cache', () => {
       expect(fsmonitorOperations(calls, 'status')).toHaveLength(1);
       assertPrivateStatusCall(calls.at(-1), home);
 
-      writeFileSync(sourceIndex, 'source-index-metadata-refresh');
+      cacheExtensionBytes = 3;
+      writeSourceIndex();
       expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
       expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(2);
       expect(fsmonitorOperations(calls, 'status')).toHaveLength(1);
 
-      sourceIndexSemanticIdentity = Uint8Array.of(0x81);
-      writeFileSync(sourceIndex, 'source-index-staged-change');
+      sourceIndexObjectIdByte = 8;
+      cacheExtensionBytes = 5;
+      writeSourceIndex();
       expect((yield* observe()).stdout).toBe(' M src/index.ts\0');
       expect(calls.filter(call => call.args.includes('update-index'))).toHaveLength(4);
       expect(fsmonitorOperations(calls, 'status')).toHaveLength(2);
       expect(fsmonitorOperations(calls, 'start')).toHaveLength(0);
-      expect(calls.filter(call => call.args.includes('ls-files'))).toHaveLength(3);
+      expect(calls.filter(call => call.args.includes('ls-files'))).toHaveLength(0);
       assertPrivateStatusCall(calls.at(-1), home);
       expect(
         calls.every(
@@ -281,4 +274,29 @@ function commandFailure(args: readonly string[]) {
     stderr: 'unsupported private index',
     stdout: '',
   });
+}
+
+function testGitIndex(objectIdByte: number, cacheExtensionBytes: number): Uint8Array {
+  const path = new TextEncoder().encode('src/index.ts');
+  const unpaddedEntryBytes = 40 + 20 + 2 + path.byteLength + 1;
+  const entryBytes = Math.ceil(unpaddedEntryBytes / 8) * 8;
+  const extensionBytes = cacheExtensionBytes === 0 ? 0 : 8 + cacheExtensionBytes;
+  const contentBytes = 12 + entryBytes + extensionBytes;
+  const index = new Uint8Array(contentBytes + 20);
+  index.set(new TextEncoder().encode('DIRC'));
+  const view = new DataView(index.buffer);
+  view.setUint32(4, 2, false);
+  view.setUint32(8, 1, false);
+  view.setUint32(12 + 24, 0o100644, false);
+  index.fill(objectIdByte, 12 + 40, 12 + 60);
+  view.setUint16(12 + 60, path.byteLength, false);
+  index.set(path, 12 + 62);
+  if (cacheExtensionBytes > 0) {
+    const extensionOffset = 12 + entryBytes;
+    index.set(new TextEncoder().encode('TREE'), extensionOffset);
+    view.setUint32(extensionOffset + 4, cacheExtensionBytes, false);
+    index.fill(0x41, extensionOffset + 8, extensionOffset + 8 + cacheExtensionBytes);
+  }
+  index.set(new Bun.CryptoHasher('sha1').update(index.subarray(0, contentBytes)).digest(), contentBytes);
+  return index;
 }
