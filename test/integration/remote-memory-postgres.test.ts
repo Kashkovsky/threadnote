@@ -713,14 +713,20 @@ postgresDescribe('remote memory PostgreSQL service', () => {
         const rows = await withTenant(
           fixture.migratorSql,
           TENANT_A,
-          transaction => transaction<{reserved: boolean}[]>`
-            SELECT EXISTS(
-              SELECT 1 FROM remote_memory.idempotency_records
-              WHERE principal_id = ${PRINCIPAL_A} AND operation_id = ${input.operationId}
-            ) AS reserved
+          transaction => transaction<{blocked: boolean; reserved: boolean}[]>`
+            SELECT
+              EXISTS(
+                SELECT 1 FROM remote_memory.idempotency_records
+                WHERE principal_id = ${PRINCIPAL_A} AND operation_id = ${input.operationId}
+              ) AS reserved,
+              EXISTS(
+                SELECT 1 FROM pg_locks waiting
+                WHERE waiting.locktype = 'advisory' AND waiting.granted = false
+                  AND waiting.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+              ) AS blocked
           `,
         );
-        return rows[0]?.reserved === true;
+        return rows[0]?.reserved === true && rows[0]?.blocked === true;
       });
       controller.abort();
       expect(await settled).toMatchObject({kind: 'rejected'});
