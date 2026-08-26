@@ -1,0 +1,26 @@
+diff --git a/dist/SqliteClient.js b/dist/SqliteClient.js
+index bef1706779e0af97ab4f409d17e8b9e056beea64..27d84a5abd4dd2681286c37010e39c2a40ce6d78 100644
+--- a/dist/SqliteClient.js
++++ b/dist/SqliteClient.js
+@@ -145,7 +145,7 @@ export const make = options => Effect.gen(function* () {
+     acquirer,
+     compiler,
+     transactionAcquirer,
+-    beginTransaction: "BEGIN IMMEDIATE",
++    beginTransaction: options.readonly === true ? "BEGIN" : "BEGIN IMMEDIATE",
+     spanAttributes: [...(options.spanAttributes ? Object.entries(options.spanAttributes) : []), [ATTR_DB_SYSTEM_NAME, "sqlite"]],
+     transformRows
+   }), {
+diff --git a/src/SqliteClient.ts b/src/SqliteClient.ts
+index e54047a1122db25933d1f31d0a41c7cf09287c49..5bf79cf872b64539aa57402f20a528f0e249b5fb 100644
+--- a/src/SqliteClient.ts
++++ b/src/SqliteClient.ts
+@@ -235,7 +235,7 @@ export const make = (
+         acquirer,
+         compiler,
+         transactionAcquirer,
+-        beginTransaction: "BEGIN IMMEDIATE",
++        beginTransaction: options.readonly === true ? "BEGIN" : "BEGIN IMMEDIATE",
+         spanAttributes: [
+           ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
+           [ATTR_DB_SYSTEM_NAME, "sqlite"]

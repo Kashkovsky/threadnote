@@ -148,5 +148,8 @@
     "fast-uri": "3.1.5",
     "hono": "4.12.34",
     "ip-address": "10.4.0"
+  },
+  "patchedDependencies": {
+    "@effect/sql-sqlite-bun@4.0.0-rc.112": "patches/@effect%2Fsql-sqlite-bun@4.0.0-rc.112.patch"
   }
 }

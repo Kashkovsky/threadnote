@@ -413,6 +413,30 @@ describe('Effect MCP tool interruption', () => {
     expect(JSON.stringify(adapted)).toBe(JSON.stringify(source));
   });
 
+  it('normalizes optional structured fields with JSON wire semantics before SDK validation', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            optional: fc.option(fc.jsonValue(), {nil: undefined}),
+            required: fc.jsonValue(),
+          }),
+          {maxLength: 8},
+        ),
+        entries => {
+          const structuredContent = {entries};
+          const adapted = mcpCallToolResultWithTelemetryMetadata({
+            content: [{type: 'text', text: 'Structured result.'}],
+            structuredContent,
+          });
+
+          expect(adapted.structuredContent).toEqual(JSON.parse(JSON.stringify(structuredContent)));
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   effectIt.effect('re-fails transport cancellation instead of returning an isError payload', () =>
     Effect.gen(function* () {
       const fiber = yield* Effect.never.pipe(Effect.catchCause(mcpToolFailureResult), Effect.forkChild);

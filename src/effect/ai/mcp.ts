@@ -157,7 +157,16 @@ type ToolHandlerResult = ToolResult | Effect.Effect<ToolResult, unknown, Applica
 
 /** @internal Adapt the SDK result class without dropping private telemetry metadata. */
 export function mcpCallToolResultWithTelemetryMetadata(result: ToolResult): McpSchema.CallToolResult {
-  return copyAnonymousTelemetryMetadata(new McpSchema.CallToolResult(result as McpSchema.CallToolResult), result);
+  // Effect 4 validates structuredContent as Schema.Json when the result class is
+  // constructed. Threadnote tool projections use idiomatic optional object
+  // properties, whose undefined values are omitted by the JSON wire format.
+  // Apply that exact wire normalization before validation so the stricter SDK
+  // constructor observes the payload clients would actually receive.
+  const normalized =
+    result.structuredContent === undefined
+      ? result
+      : {...result, structuredContent: JSON.parse(JSON.stringify(result.structuredContent)) as unknown};
+  return copyAnonymousTelemetryMetadata(new McpSchema.CallToolResult(normalized as McpSchema.CallToolResult), result);
 }
 
 interface ResourceTemplateDefinition {
