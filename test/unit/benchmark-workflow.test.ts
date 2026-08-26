@@ -68,6 +68,7 @@ describe('platform benchmark workflow', () => {
         'scripts/benchmark-code-graph-workset.ts',
         'scripts/code-graph-benchmark-sampler.ts',
         'scripts/benchmark-recall-vectors.ts',
+        'scripts/recall-vector-performance-budget.ts',
         'scripts/evaluate-recall.ts',
         'src/code_graph/**',
         'src/effect/ai/**',
@@ -93,6 +94,14 @@ describe('platform benchmark workflow', () => {
     expect(recallCommand).toContain('bun run bench:recall:vectors');
     expect(recallCommand).toContain('--documents 10000');
     expect(recallCommand).toContain('--fail-on-budget');
+    const recallArtifactStep = recallJob.steps?.find(
+      step =>
+        step.uses === 'actions/upload-artifact@v7' &&
+        step.with?.name === 'recall-vector-benchmark-pr-10000-Linux-${{ runner.arch }}',
+    );
+    expect(recallArtifactStep?.if).toBe('always()');
+    expect(recallArtifactStep?.with?.['if-no-files-found']).toBe('warn');
+    expect(recallArtifactStep?.with?.path).toBe('artifacts/recall-vectors-pr-10000-Linux-${{ runner.arch }}.json');
     expect(worksetJob.if).toContain("github.event_name == 'schedule'");
     expect(worksetJob.if).toContain("github.event_name == 'workflow_dispatch'");
     expect(worksetJob['runs-on']).toBe('ubuntu-24.04');
