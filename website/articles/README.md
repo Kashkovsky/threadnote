@@ -7,6 +7,8 @@ Authored articles on Threadnote’s “What’s New” timeline live here as Mar
 author: Denys Kashkovskyi
 publishedAt: 2026-08-26T14:30:00Z
 slug: evidence-before-rewrites
+socialImage: evidence-before-rewrites-og.png
+socialImageAlt: Evidence before rewrites — an evidence-led Threadnote engineering story.
 summary: A concise, standalone description for cards, search results, and social previews.
 title: Evidence before rewrites
 ---
@@ -19,6 +21,9 @@ the frontmatter. This makes chronology reviewable in the repository while the ex
 URL at `/whats-new/articles/evidence-before-rewrites/`.
 
 `author`, `publishedAt`, `slug`, `summary`, and `title` are required. `authorUrl` is optional and must be a
-credential-free HTTPS URL. The site build rejects duplicate slugs, invalid timestamps, unknown frontmatter fields, and
-empty bodies. It emits crawler-readable HTML, canonical and social metadata, Article JSON-LD, and sitemap entries for
-every valid article.
+credential-free HTTPS URL. `socialImage` and `socialImageAlt` are optional but must be supplied together. A social image
+is a root-level lowercase PNG filename in `website/public/` and must be exactly 1200×630 pixels. Use a unique filename
+for each article so social-crawler caches cannot substitute an older release card. The site build rejects missing
+images, non-PNG headers, wrong dimensions, duplicate slugs, invalid timestamps, unknown frontmatter fields, and empty
+bodies. It emits crawler-readable HTML, canonical and social metadata, Article JSON-LD, and sitemap entries for every
+valid article.

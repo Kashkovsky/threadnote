@@ -1,6 +1,7 @@
+import {websiteDefaultSiteSocialImage, type WebsiteSocialImage} from '../content/websiteArticles.js';
 import {docsArticlePath, siteCanonicalUrlForPathname, whatsNewArticlePath, whatsNewReleasePath} from './routes.js';
 
-const base = import.meta.env.BASE_URL;
+const base = import.meta.env.BASE_URL ?? '/';
 
 export function siteHref(path = ''): string {
   const normalized = path.replace(/^\/+/, '');
@@ -22,7 +23,11 @@ export function whatsNewReleaseHref(version: string): string {
 export const githubUrl = 'https://github.com/Kashkovsky/threadnote';
 export const xUrl = 'https://x.com/threadnoteio';
 
-export function setDocumentMeta(title: string, description: string): void {
+export function setDocumentMeta(
+  title: string,
+  description: string,
+  socialImage: WebsiteSocialImage = websiteDefaultSiteSocialImage,
+): void {
   const pageTitle = `${title} — Threadnote`;
   const canonicalUrl = siteCanonicalUrlForPathname(window.location.pathname, base);
   document.title = pageTitle;
@@ -42,4 +47,18 @@ export function setDocumentMeta(title: string, description: string): void {
   if (twitterTitle) twitterTitle.content = pageTitle;
   const twitterDescription = document.querySelector<HTMLMetaElement>('meta[name="twitter:description"]');
   if (twitterDescription) twitterDescription.content = description;
+  const openGraphImage = document.querySelector<HTMLMetaElement>('meta[property="og:image"]');
+  if (openGraphImage) openGraphImage.content = socialImage.url;
+  const openGraphImageType = document.querySelector<HTMLMetaElement>('meta[property="og:image:type"]');
+  if (openGraphImageType) openGraphImageType.content = socialImage.type;
+  const openGraphImageWidth = document.querySelector<HTMLMetaElement>('meta[property="og:image:width"]');
+  if (openGraphImageWidth) openGraphImageWidth.content = String(socialImage.width);
+  const openGraphImageHeight = document.querySelector<HTMLMetaElement>('meta[property="og:image:height"]');
+  if (openGraphImageHeight) openGraphImageHeight.content = String(socialImage.height);
+  const openGraphImageAlt = document.querySelector<HTMLMetaElement>('meta[property="og:image:alt"]');
+  if (openGraphImageAlt) openGraphImageAlt.content = socialImage.alt;
+  const twitterImage = document.querySelector<HTMLMetaElement>('meta[name="twitter:image"]');
+  if (twitterImage) twitterImage.content = socialImage.url;
+  const twitterImageAlt = document.querySelector<HTMLMetaElement>('meta[name="twitter:image:alt"]');
+  if (twitterImageAlt) twitterImageAlt.content = socialImage.alt;
 }

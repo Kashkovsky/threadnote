@@ -8,21 +8,41 @@ import remarkGfm from 'remark-gfm';
 import {parse as parseYaml} from 'yaml';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {loadLatestMajorWebsiteReleases, type WebsiteRelease} from './site-release-notes.js';
-import {orderWebsiteUpdatesDescending, type WebsiteArticle} from '../website/src/content/websiteArticles.js';
+import {
+  orderWebsiteUpdatesDescending,
+  websiteArticleSocialImageHeight,
+  websiteArticleSocialImageWidth,
+  websiteDefaultPostSocialImage,
+  websiteSocialImageForArticle,
+  type WebsiteArticle,
+  type WebsiteSocialImage,
+} from '../website/src/content/websiteArticles.js';
 import {whatsNewArticlePath, whatsNewReleasePath} from '../website/src/lib/routes.js';
 
 const publicOrigin = 'https://threadnote.io/';
 const articleFilePattern = /^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)--([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const articleSlugPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const articleSocialImagePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*\.png$/;
 const exactTimestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const generatedSitemapStart = '  <!-- BEGIN GENERATED WHATS NEW POSTS -->';
 const generatedSitemapEnd = '  <!-- END GENERATED WHATS NEW POSTS -->';
-const articleMetadataKeys = new Set(['author', 'authorUrl', 'publishedAt', 'slug', 'summary', 'title']);
+const articleMetadataKeys = new Set([
+  'author',
+  'authorUrl',
+  'publishedAt',
+  'slug',
+  'socialImage',
+  'socialImageAlt',
+  'summary',
+  'title',
+]);
 
 type ArticleMetadata = Readonly<{
   author: string;
   authorUrl?: string;
   publishedAt: string;
+  socialImage?: string;
+  socialImageAlt?: string;
   slug: string;
   summary: string;
   title: string;
@@ -103,10 +123,35 @@ function parseArticleMetadata(
   if (authorUrl && authorUrl !== authorUrl.trim()) {
     throw articleError(fileName, 'frontmatter authorUrl must not have surrounding whitespace');
   }
+  const socialImageValue = raw.socialImage;
+  const socialImageAltValue = raw.socialImageAlt;
+  if ((socialImageValue === undefined) !== (socialImageAltValue === undefined)) {
+    throw articleError(fileName, 'frontmatter socialImage and socialImageAlt must be provided together');
+  }
+  if (socialImageValue !== undefined && (typeof socialImageValue !== 'string' || !socialImageValue.trim())) {
+    throw articleError(fileName, 'frontmatter socialImage must be a non-empty PNG filename when present');
+  }
+  if (socialImageAltValue !== undefined && (typeof socialImageAltValue !== 'string' || !socialImageAltValue.trim())) {
+    throw articleError(fileName, 'frontmatter socialImageAlt must be a non-empty string when present');
+  }
+  const socialImage = socialImageValue as string | undefined;
+  const socialImageAlt = socialImageAltValue as string | undefined;
+  if (socialImage && socialImage !== socialImage.trim()) {
+    throw articleError(fileName, 'frontmatter socialImage must not have surrounding whitespace');
+  }
+  if (socialImageAlt && socialImageAlt !== socialImageAlt.trim()) {
+    throw articleError(fileName, 'frontmatter socialImageAlt must not have surrounding whitespace');
+  }
 
   if (title.length > 140) throw articleError(fileName, 'frontmatter title must be at most 140 characters');
   if (summary.length > 280) throw articleError(fileName, 'frontmatter summary must be at most 280 characters');
   if (author.length > 100) throw articleError(fileName, 'frontmatter author must be at most 100 characters');
+  if (socialImage && !articleSocialImagePattern.test(socialImage)) {
+    throw articleError(fileName, 'frontmatter socialImage must be a root-level lowercase PNG filename');
+  }
+  if (socialImageAlt && socialImageAlt.length > 300) {
+    throw articleError(fileName, 'frontmatter socialImageAlt must be at most 300 characters');
+  }
   if (!articleSlugPattern.test(slug)) throw articleError(fileName, `frontmatter slug is not URL-safe: ${slug}`);
   const parsedPublishedAt = Date.parse(publishedAt);
   const canonicalPublishedAt = Number.isFinite(parsedPublishedAt)
@@ -138,7 +183,15 @@ function parseArticleMetadata(
 
   return {
     body: document[2].trim(),
-    metadata: {author, ...(authorUrl ? {authorUrl} : {}), publishedAt, slug, summary, title},
+    metadata: {
+      author,
+      ...(authorUrl ? {authorUrl} : {}),
+      publishedAt,
+      ...(socialImage && socialImageAlt ? {socialImage, socialImageAlt} : {}),
+      slug,
+      summary,
+      title,
+    },
   };
 }
 
@@ -148,6 +201,36 @@ export function parseWebsiteArticle(fileName: string, source: string): WebsiteAr
   }
   const {body, metadata} = parseArticleMetadata(fileName, source);
   return {...metadata, body, highlights: articleHighlights(body), kind: 'article'};
+}
+
+async function validateArticleSocialImage(
+  repositoryRoot: string,
+  fileName: string,
+  article: WebsiteArticle,
+): Promise<void> {
+  if (!article.socialImage) return;
+  const image = Bun.file(`${repositoryRoot}/website/public/${article.socialImage}`);
+  if (!(await image.exists())) {
+    throw articleError(fileName, `frontmatter socialImage does not exist in website/public: ${article.socialImage}`);
+  }
+  const header = new Uint8Array(await image.slice(0, 24).arrayBuffer());
+  const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  const hasPngSignature =
+    header.length === 24 &&
+    pngSignature.every((byte, index) => header[index] === byte) &&
+    String.fromCharCode(...header.slice(12, 16)) === 'IHDR';
+  if (!hasPngSignature) {
+    throw articleError(fileName, `frontmatter socialImage is not a valid PNG: ${article.socialImage}`);
+  }
+  const view = new DataView(header.buffer, header.byteOffset, header.byteLength);
+  const width = view.getUint32(16);
+  const height = view.getUint32(20);
+  if (width !== websiteArticleSocialImageWidth || height !== websiteArticleSocialImageHeight) {
+    throw articleError(
+      fileName,
+      `frontmatter socialImage must be ${websiteArticleSocialImageWidth}x${websiteArticleSocialImageHeight}, received ${width}x${height}`,
+    );
+  }
 }
 
 export async function loadWebsiteArticles(repositoryRoot: string): Promise<readonly WebsiteArticle[]> {
@@ -160,9 +243,14 @@ export async function loadWebsiteArticles(repositoryRoot: string): Promise<reado
   fileNames.sort();
 
   const articles = await Promise.all(
-    fileNames.map(async fileName =>
-      parseWebsiteArticle(fileName, await Bun.file(`${repositoryRoot}/website/articles/${fileName}`).text()),
-    ),
+    fileNames.map(async fileName => {
+      const article = parseWebsiteArticle(
+        fileName,
+        await Bun.file(`${repositoryRoot}/website/articles/${fileName}`).text(),
+      );
+      await validateArticleSocialImage(repositoryRoot, fileName, article);
+      return article;
+    }),
   );
   const slugs = new Set<string>();
   for (const article of articles) {
@@ -222,6 +310,7 @@ function postDetails(post: WebsitePost): {
   readonly canonicalUrl: string;
   readonly kindLabel: string;
   readonly pageTitle: string;
+  readonly socialImage: WebsiteSocialImage;
 } {
   if (post.kind === 'article') {
     return {
@@ -230,6 +319,7 @@ function postDetails(post: WebsitePost): {
       canonicalUrl: new URL(whatsNewArticlePath(post.slug), publicOrigin).href,
       kindLabel: 'Article',
       pageTitle: `${post.title} — Threadnote`,
+      socialImage: websiteSocialImageForArticle(post),
     };
   }
   return {
@@ -238,6 +328,7 @@ function postDetails(post: WebsitePost): {
     canonicalUrl: new URL(whatsNewReleasePath(post.version), publicOrigin).href,
     kindLabel: 'Release',
     pageTitle: `${post.title} — Threadnote`,
+    socialImage: websiteDefaultPostSocialImage,
   };
 }
 
@@ -334,6 +425,7 @@ function postStructuredData(post: WebsitePost): Readonly<Record<string, unknown>
     datePublished: post.publishedAt,
     description: post.summary,
     headline: post.title,
+    image: details.socialImage.url,
     mainEntityOfPage: details.canonicalUrl,
     publisher: {'@type': 'Organization', name: 'Threadnote', url: publicOrigin},
     url: details.canonicalUrl,
@@ -350,8 +442,22 @@ export function renderWebsitePostHtml(template: string, post: WebsitePost): stri
   html = replaceTagAttribute(html, 'meta', 'property', 'og:description', 'content', post.summary);
   html = replaceTagAttribute(html, 'meta', 'property', 'og:type', 'content', 'article');
   html = replaceTagAttribute(html, 'meta', 'property', 'og:url', 'content', details.canonicalUrl);
+  html = replaceTagAttribute(html, 'meta', 'property', 'og:image', 'content', details.socialImage.url);
+  html = replaceTagAttribute(html, 'meta', 'property', 'og:image:type', 'content', details.socialImage.type);
+  html = replaceTagAttribute(html, 'meta', 'property', 'og:image:width', 'content', String(details.socialImage.width));
+  html = replaceTagAttribute(
+    html,
+    'meta',
+    'property',
+    'og:image:height',
+    'content',
+    String(details.socialImage.height),
+  );
+  html = replaceTagAttribute(html, 'meta', 'property', 'og:image:alt', 'content', details.socialImage.alt);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:title', 'content', details.pageTitle);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:description', 'content', post.summary);
+  html = replaceTagAttribute(html, 'meta', 'name', 'twitter:image', 'content', details.socialImage.url);
+  html = replaceTagAttribute(html, 'meta', 'name', 'twitter:image:alt', 'content', details.socialImage.alt);
   if (!/<title>[^<]*<\/title>/i.test(html)) throw new ScriptError("What's New HTML template is missing its title");
   html = html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(details.pageTitle)}</title>`);
 
