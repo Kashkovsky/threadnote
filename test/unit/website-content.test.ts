@@ -573,6 +573,25 @@ The body remains ordinary **Markdown**.
         parseWebsiteArticle(
           '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
           article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites').replace(
+            'summary:',
+            'socialImage: evidence-before-rewrites-og.png\nsummary:',
+          ),
+        ),
+      ).toThrow('socialImage and socialImageAlt must be provided together');
+      expect(() =>
+        parseWebsiteArticle(
+          '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
+          article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites').replace(
+            'summary:',
+            'socialImage: ../evidence-before-rewrites.png\n' +
+              'socialImageAlt: Evidence before rewrites social card.\nsummary:',
+          ),
+        ),
+      ).toThrow('socialImage must be a root-level lowercase PNG filename');
+      expect(() =>
+        parseWebsiteArticle(
+          '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
+          article('2026-08-26T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites').replace(
             'An external-facing introduction.',
             'Publication placeholder: replace this before shipping.',
           ),
@@ -584,6 +603,27 @@ The body remains ordinary **Markdown**.
           article('2026-02-31T14:30:00Z', 'evidence-before-rewrites', 'Evidence before rewrites'),
         ),
       ).toThrow('publishedAt must be an exact UTC timestamp');
+
+      const socialArticleFile = '2026-08-27T10-00-00Z--social-story.md';
+      await writeFile(
+        join(repository, 'website', 'articles', socialArticleFile),
+        article('2026-08-27T10:00:00Z', 'social-story', 'Social story').replace(
+          'summary:',
+          'socialImage: social-story-og.png\n' + 'socialImageAlt: Social story article card.\nsummary:',
+        ),
+      );
+      await expect(loadWebsiteArticles(repository)).rejects.toThrow(
+        'socialImage does not exist in website/public: social-story-og.png',
+      );
+
+      await mkdir(join(repository, 'website', 'public'), {recursive: true});
+      await writeFile(
+        join(repository, 'website', 'public', 'social-story-og.png'),
+        Uint8Array.from([
+          0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1,
+        ]),
+      );
+      await expect(loadWebsiteArticles(repository)).rejects.toThrow('socialImage must be 1200x630, received 1x1');
     } finally {
       await rm(repository, {force: true, recursive: true});
     }
@@ -597,6 +637,9 @@ The body remains ordinary **Markdown**.
     expect(article).toMatchObject({
       author: 'Denys Kashkovskyi',
       publishedAt: '2026-08-26T14:37:18Z',
+      socialImage: 'before-you-rewrite-it-in-rust-og.png',
+      socialImageAlt:
+        'Before You Rewrite It in Rust — Threadnote improved a cold graph build from 164 minutes to 57 minutes.',
       slug: 'before-you-rewrite-it-in-rust',
       summary:
         'How Threadnote cut a 164-minute code-graph build below one hour—and made one-file updates proportional—without rewriting the engine in Rust.',
@@ -1167,6 +1210,8 @@ The body remains ordinary **Markdown**.
 author: Denys Kashkovskyi
 publishedAt: 2026-08-26T14:30:00Z
 slug: evidence-before-rewrites
+socialImage: evidence-before-rewrites-og.png
+socialImageAlt: Evidence before rewrites — a Threadnote engineering article.
 summary: An evidence-led engineering story for readers outside the Threadnote project.
 title: Evidence before rewrites
 ---
@@ -1199,6 +1244,23 @@ Make the bottleneck observable.
       '<link rel="canonical" href="https://threadnote.io/whats-new/articles/evidence-before-rewrites/" />',
     );
     expect(renderedArticle).toContain('<meta property="og:type" content="article" />');
+    expect(renderedArticle).toContain(
+      '<meta property="og:image" content="https://threadnote.io/evidence-before-rewrites-og.png" />',
+    );
+    expect(renderedArticle).toContain('<meta property="og:image:type" content="image/png" />');
+    expect(renderedArticle).toContain('<meta property="og:image:width" content="1200" />');
+    expect(renderedArticle).toContain('<meta property="og:image:height" content="630" />');
+    expect(renderedArticle).toContain(
+      '<meta property="og:image:alt" content="Evidence before rewrites — a Threadnote engineering article." />',
+    );
+    expect(renderedArticle).toContain(
+      '<meta name="twitter:image" content="https://threadnote.io/evidence-before-rewrites-og.png" />',
+    );
+    expect(renderedArticle).toContain(
+      '<meta name="twitter:image:alt" content="Evidence before rewrites — a Threadnote engineering article." />',
+    );
+    expect(renderedArticle).toContain('"image":"https://threadnote.io/evidence-before-rewrites-og.png"');
+    expect(renderedArticle).not.toContain('whats-new-og.png');
     expect(renderedArticle).toContain('<meta property="article:author" content="Denys Kashkovskyi" />');
     expect(renderedArticle).toContain('"@type":"Article"');
     expect(renderedArticle).toContain('"name":"Denys Kashkovskyi"');
@@ -1218,6 +1280,41 @@ Make the bottleneck observable.
     expect(renderedIndex).toContain('<h1>Threadnote articles and releases</h1>');
     const orderedTitles = orderWebsitePostsDescending([releasePost, article]).map(post => post.title);
     expect(renderedIndex.indexOf(orderedTitles[0]!)).toBeLessThan(renderedIndex.indexOf(orderedTitles[1]!));
+  });
+
+  it('maps every valid authored article image to exact crawler metadata', async () => {
+    const template = await readFile(join(root, 'website', 'whats-new', 'index.html'), 'utf8');
+    const article = parseWebsiteArticle(
+      '2026-08-26T14-30-00Z--evidence-before-rewrites.md',
+      `---
+author: Denys Kashkovskyi
+publishedAt: 2026-08-26T14:30:00Z
+slug: evidence-before-rewrites
+summary: An evidence-led engineering story.
+title: Evidence before rewrites
+---
+
+Measure the system before changing its implementation language.
+`,
+    );
+    const imageStem = fc
+      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789'), {minLength: 1, maxLength: 24})
+      .map(characters => characters.join(''));
+
+    fc.assert(
+      fc.property(imageStem, stem => {
+        const socialImage = `${stem}-article-card.png`;
+        const socialImageAlt = `Evidence card ${stem}`;
+        const rendered = renderWebsitePostHtml(template, {...article, socialImage, socialImageAlt});
+
+        expect(rendered).toContain(`<meta property="og:image" content="https://threadnote.io/${socialImage}" />`);
+        expect(rendered).toContain(`<meta name="twitter:image" content="https://threadnote.io/${socialImage}" />`);
+        expect(rendered).toContain(`<meta property="og:image:alt" content="${socialImageAlt}" />`);
+        expect(rendered).toContain(`"image":"https://threadnote.io/${socialImage}"`);
+        expect(rendered).not.toContain('whats-new-og.png');
+      }),
+      {numRuns: 100},
+    );
   });
 
   it('binds exact v4.3.8 evidence and never substitutes retired performance studies', async () => {

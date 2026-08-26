@@ -6,7 +6,12 @@ import releases from 'virtual:threadnote-release-notes';
 import {Icon} from '../components/Icons';
 import {PostShare} from '../components/PostShare';
 import {SiteShell} from '../components/SiteShell';
-import {orderWebsiteUpdatesDescending} from '../content/websiteArticles';
+import {
+  orderWebsiteUpdatesDescending,
+  websiteDefaultPostSocialImage,
+  websiteSocialImageForArticle,
+  type WebsiteSocialImage,
+} from '../content/websiteArticles';
 import {whatsNewArticlePath, whatsNewPostForPathname, whatsNewReleasePath} from '../lib/routes';
 import {docsArticleHref, setDocumentMeta, siteHref, whatsNewArticleHref, whatsNewReleaseHref} from '../lib/site';
 
@@ -26,6 +31,7 @@ type WebsiteUpdate = Readonly<{
   href: string;
   kind: 'article' | 'release';
   publishedAt: string;
+  socialImage: WebsiteSocialImage;
   stableId: string;
   summary: string;
   title: string;
@@ -42,6 +48,7 @@ function websiteUpdates(): readonly WebsiteUpdate[] {
       href: whatsNewArticleHref(article.slug),
       kind: 'article' as const,
       publishedAt: article.publishedAt,
+      socialImage: websiteSocialImageForArticle(article),
       stableId: `article:${article.slug}`,
       summary: article.summary,
       title: article.title,
@@ -55,6 +62,7 @@ function websiteUpdates(): readonly WebsiteUpdate[] {
       href: whatsNewReleaseHref(release.version),
       kind: 'release' as const,
       publishedAt: release.publishedAt,
+      socialImage: websiteDefaultPostSocialImage,
       stableId: `release:${release.version}`,
       summary: release.summary,
       title: `Threadnote ${release.version.replace(/^v/, '')}`,
@@ -75,8 +83,16 @@ function UpdateMeta({update}: {readonly update: WebsiteUpdate}) {
 
 function UpdateDetail({update}: {readonly update: WebsiteUpdate}) {
   useEffect(() => {
-    setDocumentMeta(update.title, update.summary);
-  }, [update.summary, update.title]);
+    setDocumentMeta(update.title, update.summary, update.socialImage);
+  }, [
+    update.socialImage.alt,
+    update.socialImage.height,
+    update.socialImage.type,
+    update.socialImage.url,
+    update.socialImage.width,
+    update.summary,
+    update.title,
+  ]);
 
   return (
     <SiteShell page="whats-new" fullBleed>
@@ -109,7 +125,11 @@ function WhatsNewIndex({updates}: {readonly updates: readonly WebsiteUpdate[]}) 
   const earlier = updates.slice(1);
 
   useEffect(() => {
-    setDocumentMeta("What's new", 'Threadnote articles, stable releases, engineering stories, and upgrade highlights.');
+    setDocumentMeta(
+      "What's new",
+      'Threadnote articles, stable releases, engineering stories, and upgrade highlights.',
+      websiteDefaultPostSocialImage,
+    );
   }, []);
 
   return (

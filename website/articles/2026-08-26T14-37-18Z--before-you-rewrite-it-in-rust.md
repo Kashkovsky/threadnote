@@ -2,6 +2,8 @@
 author: Denys Kashkovskyi
 publishedAt: 2026-08-26T14:37:18Z
 slug: before-you-rewrite-it-in-rust
+socialImage: before-you-rewrite-it-in-rust-og.png
+socialImageAlt: 'Before You Rewrite It in Rust — Threadnote improved a cold graph build from 164 minutes to 57 minutes.'
 summary: 'How Threadnote cut a 164-minute code-graph build below one hour—and made one-file updates proportional—without rewriting the engine in Rust.'
 title: 'Before You Rewrite It in Rust: What Threadnote Learned From a 164-Minute Code-Graph Build'
 ---
