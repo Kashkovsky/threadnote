@@ -30,6 +30,7 @@ import * as memory from '../../src/memory.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
+import {withSharedRepositoryLock} from '../../src/effect/share_lock.js';
 import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
@@ -779,6 +780,42 @@ describe('manager http API', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it('rejects a stale raw personal Manager save and preserves the current bytes', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const uri = 'threadnote://user/denys/memories/durable/projects/threadnote/manager-ui.md';
+    const memoryPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+      'manager-ui.md',
+    );
+    const openedContent = await readFile(memoryPath, 'utf8');
+    const concurrent = openedContent.replace('feature notes', 'concurrent notes');
+    const stale = openedContent.replace('feature notes', 'stale notes');
+    const server = await startServer(config, 'secret');
+    try {
+      await writeFile(memoryPath, concurrent);
+      const response = await fetch(`${server.url}/api/memory/save`, {
+        body: JSON.stringify({expectedContent: openedContent, replaceUri: uri, text: stale}),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(500);
+      expect(await response.json()).toMatchObject({error: expect.stringContaining('changed after it was opened')});
+      expect(await readFile(memoryPath, 'utf8')).toBe(concurrent);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('refuses raw personal Manager saves that read or introduce a future schema', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);
@@ -1178,6 +1215,194 @@ describe('manager http API', () => {
     }
   });
 
+  it('preserves the personal source when a staged Manager publish fails scrubber policy', async () => {
+    const fixture = await makeSharedManagerRuntime();
+    homes.push(fixture.config.agentContextHome);
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/scrubbed-source.md';
+    const personalRoot = join(
+      fixture.config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    const sourcePath = join(personalRoot, 'scrubbed-source.md');
+    const personalTargetPath = join(personalRoot, 'scrubbed-target.md');
+    const sharedCanonicalTargetPath = join(
+      fixture.config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'shared',
+      'default',
+      'durable',
+      'projects',
+      'threadnote',
+      'scrubbed-target.md',
+    );
+    const sharedWorktreeTargetPath = join(
+      fixture.config.agentContextHome,
+      'share',
+      'worktrees',
+      'default',
+      'durable',
+      'projects',
+      'threadnote',
+      'scrubbed-target.md',
+    );
+    const original = `${managerCitedMemory(
+      'Credential sk-abcdefghijklmnopqr1234 must remain personal.',
+      false,
+      'remote',
+    )}\n`;
+    await writeFile(sourcePath, original);
+    const server = await startServer(fixture.config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/memory/move`, {
+        body: JSON.stringify({
+          confirm: true,
+          kind: 'durable',
+          project: 'threadnote',
+          status: 'active',
+          team: 'default',
+          topic: 'scrubbed-target',
+          uri: sourceUri,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+
+      const responseBody = await response.text();
+      expect(response.status, responseBody).toBe(500);
+      expect(responseBody).toContain('possible API key');
+      expect(await readFile(sourcePath, 'utf8')).toBe(original);
+      expect(existsSync(personalTargetPath)).toBe(false);
+      expect(existsSync(sharedCanonicalTargetPath)).toBe(false);
+      expect(existsSync(sharedWorktreeTargetPath)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  effectIt.effect('rejects a staged publish when its original changes before the publication fence', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const fixture = yield* Effect.promise(makeSharedManagerRuntime);
+        homes.push(fixture.config.agentContextHome);
+        const fs = yield* FileSystem.FileSystem;
+        const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/racing-source.md';
+        const personalRoot = join(
+          fixture.config.agentContextHome,
+          'data',
+          'local',
+          'user',
+          'denys',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+        );
+        const sourcePath = join(personalRoot, 'racing-source.md');
+        const stagedPath = join(personalRoot, 'racing-target.md');
+        const sharedCanonicalTargetPath = join(
+          fixture.config.agentContextHome,
+          'data',
+          'local',
+          'user',
+          'denys',
+          'memories',
+          'shared',
+          'default',
+          'durable',
+          'projects',
+          'threadnote',
+          'racing-target.md',
+        );
+        const sharedWorktreeTargetPath = join(
+          fixture.config.agentContextHome,
+          'share',
+          'worktrees',
+          'default',
+          'durable',
+          'projects',
+          'threadnote',
+          'racing-target.md',
+        );
+        const original = `${managerCitedMemory('Original move body.', false, 'remote')}\n`;
+        const concurrent = original.replace('Original move body.', 'Concurrent source edit.');
+        yield* fs.writeFileString(sourcePath, original);
+        const server = yield* Effect.promise(() => startServer(fixture.config, 'secret'));
+        const repositoryLockAcquired = yield* Deferred.make<void>();
+        const releaseRepositoryLock = yield* Deferred.make<void>();
+        const repositoryLockOwner = yield* withSharedRepositoryLock(
+          fixture.config,
+          Deferred.succeed(repositoryLockAcquired, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseRepositoryLock)),
+          ),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(repositoryLockAcquired);
+
+        yield* Effect.gen(function* () {
+          const moveRequest = yield* Effect.promise(() =>
+            fetch(`${server.url}/api/memory/move`, {
+              body: JSON.stringify({
+                confirm: true,
+                kind: 'durable',
+                project: 'threadnote',
+                status: 'active',
+                team: 'default',
+                topic: 'racing-target',
+                uri: sourceUri,
+              }),
+              headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+              method: 'POST',
+            }),
+          ).pipe(Effect.forkScoped);
+          let staged = false;
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            staged = yield* fs.exists(stagedPath);
+            if (staged) break;
+            yield* Effect.sleep(10);
+          }
+          expect(staged).toBe(true);
+
+          const saveResponse = yield* Effect.promise(() =>
+            fetch(`${server.url}/api/memory/save`, {
+              body: JSON.stringify({expectedContent: original, replaceUri: sourceUri, text: concurrent}),
+              headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+              method: 'POST',
+            }),
+          );
+          expect(saveResponse.status, yield* Effect.promise(() => saveResponse.text())).toBe(200);
+
+          yield* Deferred.succeed(releaseRepositoryLock, undefined);
+          const moveResponse = yield* Fiber.join(moveRequest);
+          const moveBody = yield* Effect.promise(() => moveResponse.text());
+          expect(moveResponse.status, moveBody).toBe(500);
+          expect(moveBody).toContain('changed before publication');
+          expect(yield* fs.readFileString(sourcePath)).toBe(concurrent);
+          expect(yield* fs.exists(stagedPath)).toBe(false);
+          expect(yield* fs.exists(sharedCanonicalTargetPath)).toBe(false);
+          expect(yield* fs.exists(sharedWorktreeTargetPath)).toBe(false);
+        }).pipe(
+          Effect.ensuring(
+            Deferred.succeed(releaseRepositoryLock, undefined).pipe(
+              Effect.andThen(Fiber.await(repositoryLockOwner)),
+              Effect.andThen(Effect.promise(() => server.close())),
+              Effect.asVoid,
+            ),
+          ),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it('applies citation sharing policy and exact CAS to raw shared Manager saves', async () => {
     const fixture = await makeSharedManagerRuntime();
     homes.push(fixture.config.agentContextHome);
@@ -1214,6 +1439,7 @@ describe('manager http API', () => {
       });
       const refreshedMemory = (await refreshed.json()) as {readonly content: string};
       const malformed = cleanUpdate.replace(/^code_citation: .*$/mu, '  code_citation: {not-json}');
+      const nearCanonical = cleanUpdate.replace(/^code_citation:/mu, 'code_citation :');
       const blocked = [
         {reason: 'dirty worktree cannot be shared', text: managerCitedMemory('Dirty update.', true, 'remote')},
         {
@@ -1221,6 +1447,7 @@ describe('manager http API', () => {
           text: managerCitedMemory('Local identity update.', false, 'local'),
         },
         {reason: 'malformed code citation metadata', text: malformed},
+        {reason: 'malformed code citation metadata', text: nearCanonical},
         {
           reason: 'possible API key',
           text: managerCitedMemory('Secret sk-abcdefghijklmnopqr1234 must not cross the boundary.', false, 'remote'),

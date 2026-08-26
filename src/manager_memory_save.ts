@@ -42,7 +42,15 @@ export function assertManagerRawSharedMemorySave(
   }
 }
 
-export function assertManagerRawPersonalMemorySave(uri: string, existingContent: string, content: string): void {
+export function assertManagerRawPersonalMemorySave(
+  uri: string,
+  existingContent: string,
+  expectedContent: string | undefined,
+  content: string,
+): void {
+  if (expectedContent !== undefined && existingContent !== expectedContent) {
+    throw new Error(`${uri} changed after it was opened in Manager. Reload and retry.`);
+  }
   assertMemoryDocumentSchemaWritable(existingContent);
   assertMemoryDocumentSchemaWritable(content);
   const record = parseMemoryDocument(uri, content);

@@ -27,6 +27,15 @@ interface PortableRecordRow {
   readonly topic: string;
 }
 
+const MAX_GIT_BETA_IMPORT_RECORDS = 10_000;
+const MAX_GIT_BETA_IMPORT_RECORD_BYTES = 1024 * 1024;
+const MAX_GIT_BETA_IMPORT_TOTAL_BYTES = 100 * 1024 * 1024;
+const MAX_GIT_BETA_IMPORT_ALIASES_PER_RECORD = 16;
+const MAX_GIT_BETA_IMPORT_TOTAL_ALIASES = 10_000;
+const MAX_GIT_BETA_IMPORT_TOTAL_ALIAS_BYTES = 8 * 1024 * 1024;
+const MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS = 4096;
+const utf8 = new TextEncoder();
+
 /** Built-in operator adapter with one atomic revision/alias/import-receipt transaction. */
 export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperatorAdapter {
   readonly capabilities = remoteMemoryOperatorCapabilities([
@@ -290,19 +299,56 @@ function validateApplyInput(input: {
   ) {
     throw new Error('Git beta import alias compatibility end is invalid.');
   }
-  if (input.records.length > 10_000) throw new Error('Git beta import exceeds the record limit.');
+  if (!Array.isArray(input.records)) throw new Error('Git beta import records must be an array.');
+  if (input.records.length > MAX_GIT_BETA_IMPORT_RECORDS) {
+    throw new Error('Git beta import exceeds the record limit.');
+  }
   let totalBytes = 0;
+  let totalAliases = 0;
+  let totalAliasBytes = 0;
+  const uris = new Set<string>();
+  const aliases = new Set<string>();
   for (const record of input.records) {
-    const bytes = new TextEncoder().encode(record.canonicalContent).byteLength;
-    if (bytes > 1024 * 1024) throw new Error('A Git beta memory exceeds the import size limit.');
+    const recordAliases: unknown = record?.aliases;
+    if (
+      record === null ||
+      typeof record !== 'object' ||
+      typeof record.uri !== 'string' ||
+      typeof record.canonicalContent !== 'string' ||
+      !Array.isArray(recordAliases)
+    ) {
+      throw new Error('Git beta import contains an invalid record shape.');
+    }
+    if (recordAliases.length > MAX_GIT_BETA_IMPORT_ALIASES_PER_RECORD) {
+      throw new Error('A Git beta memory exceeds the alias count limit.');
+    }
+    totalAliases += recordAliases.length;
+    if (totalAliases > MAX_GIT_BETA_IMPORT_TOTAL_ALIASES) {
+      throw new Error('Git beta import exceeds the total alias count limit.');
+    }
+    for (const alias of recordAliases) {
+      if (typeof alias !== 'string') throw new Error('Git beta import contains an invalid record shape.');
+      if (alias.length > MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS) {
+        throw new Error('Git beta import alias is too long.');
+      }
+      totalAliasBytes += utf8.encode(alias).byteLength;
+      if (totalAliasBytes > MAX_GIT_BETA_IMPORT_TOTAL_ALIAS_BYTES) {
+        throw new Error('Git beta import exceeds the total alias size limit.');
+      }
+      if (aliases.has(alias)) throw new Error('Git beta import contains duplicate aliases.');
+      aliases.add(alias);
+    }
+    if (uris.has(record.uri)) throw new Error('Git beta import contains duplicate target URIs.');
+    uris.add(record.uri);
+    const bytes = utf8.encode(record.canonicalContent).byteLength;
+    if (bytes > MAX_GIT_BETA_IMPORT_RECORD_BYTES) {
+      throw new Error('A Git beta memory exceeds the import size limit.');
+    }
     totalBytes += bytes;
-    if (totalBytes > 100 * 1024 * 1024) throw new Error('Git beta import exceeds the total size limit.');
+    if (totalBytes > MAX_GIT_BETA_IMPORT_TOTAL_BYTES) {
+      throw new Error('Git beta import exceeds the total size limit.');
+    }
   }
-  if (new Set(input.records.map(record => record.uri)).size !== input.records.length) {
-    throw new Error('Git beta import contains duplicate target URIs.');
-  }
-  const aliases = input.records.flatMap(record => [...record.aliases]);
-  if (new Set(aliases).size !== aliases.length) throw new Error('Git beta import contains duplicate aliases.');
 }
 
 function validatePortableRecord(record: RemoteMemoryPortableRecordV1, shareId: string) {
@@ -366,7 +412,9 @@ function portableRecordFromRow(row: PortableRecordRow, shareId: string): RemoteM
 }
 
 function validateGitBetaAlias(alias: string): void {
-  if (alias.length > 4096) throw new Error('Git beta import alias is too long.');
+  if (alias.length > MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS) {
+    throw new Error('Git beta import alias is too long.');
+  }
   const resource = parseResourceId(alias);
   const [, memories, shared, team, kind, scope, project, file] = resource.segments;
   if (

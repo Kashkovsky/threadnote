@@ -1,7 +1,10 @@
+import {it as effectIt} from '@effect/vitest';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {mkdir, mkdtemp, readFile, readdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
-import {Effect} from 'effect';
+import {Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import * as yaml from 'js-yaml';
 import {afterEach, describe, expect, it} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
@@ -28,6 +31,7 @@ import {
 import {formatMemoryDocument} from '../../src/memory_document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -276,16 +280,20 @@ describe('Obsidian zero-plugin bridge', () => {
     ).rejects.toThrow();
   });
 
-  it('projects closed citation errors without copying malformed citation payloads', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'threadnote-obsidian-citation-error-'));
-    temporaryDirectories.push(root);
-    const home = join(root, 'home');
-    const vault = join(root, 'vault');
-    const config = runtime(home);
-    const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/malformed-citation.md';
-    await mkdir(vault, {recursive: true});
-    await runEffect(
+  effectIt.effect('projects closed citation errors without copying malformed citation payloads', () =>
+    TestClock.withLive(
       Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* Effect.acquireRelease(
+          fs.makeTempDirectory({prefix: 'threadnote-obsidian-citation-error-'}),
+          temporaryRoot => fs.remove(temporaryRoot, {force: true, recursive: true}).pipe(Effect.ignore),
+        );
+        const home = path.join(root, 'home');
+        const vault = path.join(root, 'vault');
+        const config = runtime(home);
+        const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/malformed-citation.md';
+        yield* fs.makeDirectory(vault, {recursive: true});
         const store = yield* ResourceStore;
         yield* store.write(
           {account: config.account, home: config.agentContextHome, user: config.user},
@@ -306,21 +314,20 @@ describe('Obsidian zero-plugin bridge', () => {
           ].join('\n'),
           {mode: 'upsert'},
         );
-      }),
-    );
-    await runEffect(runObsidianProjectionAdd(config, {apply: true, folder: 'Threadnote', id: 'memory', vault}));
-    await runEffect(runObsidianProjectionPublish(config, {apply: true, id: 'memory', uris: [uri]}));
+        yield* runObsidianProjectionAdd(config, {apply: true, folder: 'Threadnote', id: 'memory', vault});
+        yield* runObsidianProjectionPublish(config, {apply: true, id: 'memory', uris: [uri]});
 
-    const projected = await readFile(
-      join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable', 'malformed-citation--tn_bad.md'),
-      'utf8',
-    );
-    expect(projectionFrontmatter(projected)).toMatchObject({
-      code_citation_errors: [{index: 0, reason: 'invalid-json'}],
-      threadnote_memory_schema: MEMORY_SCHEMA_VERSION,
-    });
-    expect(projected).not.toContain('{not-json}');
-  });
+        const projected = yield* fs.readFileString(
+          path.join(vault, 'Threadnote', 'Memories', 'threadnote', 'durable', 'malformed-citation--tn_bad.md'),
+        );
+        expect(projectionFrontmatter(projected)).toMatchObject({
+          code_citation_errors: [{index: 0, reason: 'invalid-json'}],
+          threadnote_memory_schema: MEMORY_SCHEMA_VERSION,
+        });
+        expect(projected).not.toContain('{not-json}');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
 
 function projectionCitation() {

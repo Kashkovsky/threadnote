@@ -19,4 +19,24 @@ describe('memory code-citation sharing policy', () => {
     );
     expect(memoryCodeCitationContentSharingBlocker(uri, 'not a memory\n\ncode_citation: body text')).toBeUndefined();
   });
+
+  it.each(['\n', '\r\n', '\r'])('fails closed on near-canonical citation keys with %j line endings', newline => {
+    const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/near-canonical.md';
+    for (const citationLine of ['code_citation : {not-json}', 'code_citation\t: {not-json}']) {
+      const parseable = [
+        'MEMORY',
+        'kind: durable',
+        'project: threadnote',
+        'topic: near-canonical',
+        'schema_version: 4',
+        citationLine,
+        '',
+        'Body',
+      ].join(newline);
+      const unparseable = ['not a memory', citationLine, '', 'Body'].join(newline);
+
+      expect(memoryCodeCitationContentSharingBlocker(uri, parseable)).toBe('malformed-citation');
+      expect(memoryCodeCitationContentSharingBlocker(uri, unparseable)).toBe('malformed-citation');
+    }
+  });
 });

@@ -1,5 +1,19 @@
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
-import {Console, Crypto, Effect, Encoding, FileSystem, Layer, Option, Path, Ref, Result, Scope} from 'effect';
+import {
+  Cause,
+  Console,
+  Crypto,
+  Effect,
+  Encoding,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Ref,
+  Result,
+  Scope,
+} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
@@ -40,6 +54,8 @@ import {
 } from './memory.js';
 import {
   moveManagerSharedMemoryWithinTeam,
+  publishStagedManagerPersonalMemoryMove,
+  removeManagerPersonalMemorySource,
   removeManagerSharedMemorySource,
   storeManagerPersonalMemoryMove,
 } from './manager_memory_move.js';
@@ -1110,7 +1126,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
     const existing = yield* readManagedMemory(config, canonicalUri);
     yield* Effect.try({
       catch: managerOperationError,
-      try: () => assertManagerRawPersonalMemorySave(canonicalUri, existing.content, content),
+      try: () => assertManagerRawPersonalMemorySave(canonicalUri, existing.content, expectedContent, content),
     });
     yield* ensurePersonalDirectoryChain(config, ov, parentUri(canonicalUri));
     yield* writeMemoryFile(config, ov, canonicalUri, content, 'replace', false);
@@ -1167,14 +1183,44 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
         ),
       );
     }
+    if (personalTargetUri === sourceUri) {
+      const published = yield* runCaptured(() => runSharePublish(config, sourceUri, {team: targetTeam}), runEffect);
+      return {...published, targetUri: sharedMemoryUriFor(config, targetTeam, metadata)};
+    }
+    // Stage the reformatted personal destination without deleting the source.
+    // Publication owns/removes the stage; only after it succeeds do we CAS-
+    // remove the original. This keeps every pre-publication failure lossless.
     const saved = yield* runCaptured(
-      () => storeManagerPersonalMemoryMove(config, sourceUri, source.content, metadata, true),
+      () => storeManagerPersonalMemoryMove(config, sourceUri, source.content, metadata, false),
       runEffect,
     );
-    const published = yield* runCaptured(
-      () => runSharePublish(config, personalTargetUri, {team: targetTeam}),
-      runEffect,
+    const staged = yield* readManagedMemory(config, personalTargetUri);
+    const publishExit = yield* Effect.exit(
+      runCaptured(
+        () =>
+          publishStagedManagerPersonalMemoryMove(
+            config,
+            sourceUri,
+            source.content,
+            personalTargetUri,
+            staged.content,
+            targetTeam,
+          ),
+        runEffect,
+      ),
     );
+    if (Exit.isFailure(publishExit)) {
+      yield* removeManagerPersonalMemorySource(config, personalTargetUri, staged.content).pipe(
+        Effect.catch(cleanupError =>
+          Console.warn(`WARN could not clean up staged move ${personalTargetUri}: ${errorMessage(cleanupError)}`),
+        ),
+      );
+      if (Cause.hasInterrupts(publishExit.cause)) {
+        return yield* Effect.failCause(publishExit.cause);
+      }
+      return yield* Effect.fail(managerOperationError(Cause.squash(publishExit.cause)));
+    }
+    const published = publishExit.value;
     return {
       output: [saved.output, published.output].filter(Boolean).join('\n'),
       targetUri: sharedMemoryUriFor(config, targetTeam, metadata),

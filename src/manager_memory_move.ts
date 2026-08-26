@@ -1,5 +1,6 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
+import {withSharedRepositoryLock} from './effect/share_lock.js';
 import {readMemoryRecordsByUri, storeMemory} from './memory.js';
 import {assertMemoryRecordArchivable, formatMemoryDocument, type MemoryMetadata} from './memory_document.js';
 import type {MemoryRecord} from './memory_hygiene.js';
@@ -17,12 +18,15 @@ import {applyScrubber} from './scrubber.js';
 import {
   assertSharedWorktreeFileReady,
   ensureSharedDirectoryChain,
+  isInSharedNamespace,
   publishShareGitChange,
   removeMemoryUri,
   resolveTeam,
   resourceUriToWorktreeRelative,
+  runSharePublish as runSharePublishUnlocked,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
+  sharedUriFor,
   writeMemoryFile,
   writeSharedWorktreeFile,
 } from './share.js';
@@ -178,6 +182,61 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
       yield* publishShareGitChange(team.config.worktree, relativePath, `share: remove ${relativePath}`, {verb: 'rm'});
       yield* removeMemoryUri(config, NATIVE_RESOURCE_BACKEND, sourceUri, false);
     }),
+  );
+});
+
+/** Remove a personal move source only when its raw bytes still match the staged copy. */
+export const removeManagerPersonalMemorySource = Effect.fn('manager.removePersonalMemorySource')(function* (
+  config: RuntimeConfig,
+  sourceUri: string,
+  expectedSourceContent: string,
+) {
+  if (isInSharedNamespace(config, sourceUri)) {
+    return yield* Effect.fail(new MemoryOperationError(`${sourceUri} is not a personal memory.`));
+  }
+  const fs = yield* FileSystem.FileSystem;
+  return yield* withMemoryUriLocks(
+    fs,
+    config.agentContextHome,
+    [sourceUri],
+    Effect.gen(function* () {
+      const source = yield* readExactMoveSource(
+        config,
+        sourceUri,
+        expectedSourceContent,
+        'during its move; it was preserved',
+      );
+      yield* validateArchivable(source);
+      yield* removeMemoryUri(config, NATIVE_RESOURCE_BACKEND, sourceUri, false);
+    }),
+  );
+});
+
+/** Publish a staged personal move while fencing its original and both destinations. */
+export const publishStagedManagerPersonalMemoryMove = Effect.fn('manager.publishStagedPersonalMemoryMove')(function* (
+  config: RuntimeConfig,
+  sourceUri: string,
+  expectedSourceContent: string,
+  stagedUri: string,
+  expectedStagedContent: string,
+  teamName: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const sharedTargetUri = sharedUriFor(config, stagedUri, teamName);
+  return yield* withSharedRepositoryLock(
+    config,
+    withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      [sourceUri, stagedUri, sharedTargetUri],
+      Effect.gen(function* () {
+        yield* readExactMoveSource(config, sourceUri, expectedSourceContent, 'before publication; it was preserved');
+        yield* readExactMoveSource(config, stagedUri, expectedStagedContent, 'before publication');
+        yield* runSharePublishUnlocked(config, stagedUri, {team: teamName});
+        yield* readExactMoveSource(config, sourceUri, expectedSourceContent, 'during publication; it was preserved');
+        yield* removeMemoryUri(config, NATIVE_RESOURCE_BACKEND, sourceUri, false);
+      }),
+    ),
   );
 });
 

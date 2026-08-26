@@ -9,7 +9,6 @@ import {
 } from '../code_graph/citation_primitives.js';
 import {readContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
 import {decodeUtf8} from '../code_graph/inventory_content.js';
-import {previewCodeGraphInventory} from '../code_graph/inventory.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import type {CodeGraphStatus, CodeGraphSymbol, RepositoryIdentityExpectation} from '../code_graph/types.js';
@@ -270,30 +269,10 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         const locatorsByKey = new Map(
           evidence.symbolsBySemanticLocators.map(matches => [locatorKey(matches.locator), matches]),
         );
-        const requiresInventoryCoverageProof =
-          evidence.fileInventoryCoverage === 'incomplete' &&
-          citations.some(citation => {
-            const pathObservation = pathByPath.get(citation.path);
-            const relocation = hashesByHash.get(citation.fileContentHash.value);
-            return (
-              pathObservation?.file === undefined && relocation?.truncated === false && relocation.files.length === 0
-            );
-          });
-        const preview = requiresInventoryCoverageProof
-          ? yield* previewCodeGraphInventory(repository.status.identity).pipe(Effect.option)
-          : undefined;
-        const fileInventoryCoverage =
-          evidence.fileInventoryCoverage === 'complete' ||
-          (preview?._tag === 'Some' &&
-            preview.value.commit === snapshot.commit &&
-            preview.value.dirty === snapshot.dirty &&
-            preview.value.omittedUnsafeWorktreeFiles === 0 &&
-            preview.value.repositoryId === repository.status.identity.repositoryId &&
-            preview.value.worktreeId === repository.status.identity.worktreeId &&
-            preview.value.totals.eligible.files === snapshot.fileCount &&
-            preview.value.totals.skipped.files === 0)
-            ? ('complete' as const)
-            : ('incomplete' as const);
+        // Validation is deliberately snapshot-local. Only the persisted receipt
+        // may prove inventory completeness; a live preview would rescan the
+        // worktree and turn recall into an unbounded cold-index path.
+        const fileInventoryCoverage = evidence.fileInventoryCoverage;
         const repositoryRoot = yield* fs.realPath(repository.status.identity.repoRoot);
         type PreparedSource = ReturnType<typeof createCodeGraphSourceSpanCanonicalizer>;
         const sourceCache = new Map<string, PreparedSource>();

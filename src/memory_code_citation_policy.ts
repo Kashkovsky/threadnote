@@ -23,9 +23,14 @@ export function memoryCodeCitationContentSharingBlocker(
   uri: string,
   content: string,
 ): MemoryCodeCitationSharingBlocker | undefined {
+  const shapedHeader = inspectCodeCitationHeaderShape(content);
   const parsed = parseMemoryDocument(uri, content);
-  if (parsed) return memoryCodeCitationSharingBlocker(parsed.metadata);
-  return hasCodeCitationHeader(content) ? 'malformed-citation' : undefined;
+  if (parsed) {
+    const blocker = memoryCodeCitationSharingBlocker(parsed.metadata);
+    if (blocker) return blocker;
+    return shapedHeader.hasNonCanonical ? 'malformed-citation' : undefined;
+  }
+  return shapedHeader.hasCitationShape ? 'malformed-citation' : undefined;
 }
 
 export function memoryCodeCitationSharingBlockerMessage(blocker: MemoryCodeCitationSharingBlocker): string {
@@ -39,10 +44,20 @@ export function memoryCodeCitationSharingBlockerMessage(blocker: MemoryCodeCitat
   }
 }
 
-function hasCodeCitationHeader(content: string): boolean {
+function inspectCodeCitationHeaderShape(content: string): {
+  readonly hasCitationShape: boolean;
+  readonly hasNonCanonical: boolean;
+} {
   const canonical = content.trim().replace(/\r\n?/gu, '\n');
   const separatorIndex = canonical.indexOf('\n\n');
   const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
   const prefix = `${MEMORY_CODE_CITATION_HEADER}:`;
-  return header.split('\n').some(line => line.trimStart().startsWith(prefix));
+  let hasCitationShape = false;
+  let hasNonCanonical = false;
+  for (const line of header.split('\n')) {
+    if (!/^\s*code_citation\s*:/u.test(line)) continue;
+    hasCitationShape = true;
+    if (!line.startsWith(`${prefix} `)) hasNonCanonical = true;
+  }
+  return {hasCitationShape, hasNonCanonical};
 }
