@@ -6,6 +6,24 @@ import {
 } from '../../scripts/recall-vector-performance-budget.js';
 
 describe('recall vector performance budget', () => {
+  it('accepts the exact 60% boundary after a threefold common-runner slowdown', () => {
+    const initialBuildMilliseconds = 2_992;
+    const ratioBasisPoints = 6_000;
+    const slowdown = 3;
+    const ratio = ratioBasisPoints / 10_000;
+    const measurement = {
+      incrementalBuildMilliseconds: initialBuildMilliseconds * ratio * slowdown,
+      initialBuildMilliseconds: initialBuildMilliseconds * slowdown,
+      semanticQueryP95Milliseconds: 50,
+    };
+    const budget = assessRecallVectorPerformance(10_000, measurement);
+
+    expect(ratio).toBe(INCREMENTAL_BUILD_TO_INITIAL_RATIO_MAXIMUM);
+    expect(measurement.incrementalBuildMilliseconds).toBeGreaterThan(budget.incrementalBuildMaximumMilliseconds);
+    expect(budget.initialBuildWithinBudget).toBe(true);
+    expect(budget.incrementalBuildWithinBudget).toBe(true);
+  });
+
   it('normalizes the preserved failed sample against its same-runner initial build', () => {
     const budget = assessRecallVectorPerformance(10_000, {
       incrementalBuildMilliseconds: 3_899.673482,
@@ -86,6 +104,32 @@ describe('recall vector performance budget', () => {
       });
 
       expect(budget.incrementalBuildWithinBudget).toBe(false);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
+  it.prop(
+    'accepts reassociated equality without admitting a one-nanosecond ratio overrun',
+    {
+      initialBuildMilliseconds: FC.integer({max: 3_000, min: 2_501}),
+      slowdown: FC.integer({max: 5, min: 2}),
+    },
+    ({initialBuildMilliseconds, slowdown}) => {
+      const incrementalBuildMilliseconds =
+        initialBuildMilliseconds * INCREMENTAL_BUILD_TO_INITIAL_RATIO_MAXIMUM * slowdown;
+      const measurement = {
+        incrementalBuildMilliseconds,
+        initialBuildMilliseconds: initialBuildMilliseconds * slowdown,
+        semanticQueryP95Milliseconds: 50,
+      };
+
+      expect(assessRecallVectorPerformance(10_000, measurement).incrementalBuildWithinBudget).toBe(true);
+      expect(
+        assessRecallVectorPerformance(10_000, {
+          ...measurement,
+          incrementalBuildMilliseconds: incrementalBuildMilliseconds + 0.000_001,
+        }).incrementalBuildWithinBudget,
+      ).toBe(false);
     },
     {fastCheck: {numRuns: 200}},
   );
