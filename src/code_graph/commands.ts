@@ -233,7 +233,7 @@ export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function
     `${options.dryRun ? 'Would repair' : 'Repaired'} ${summary.databases} native code graph database(s): ` +
       `${summary.migratedDatabases} schema migration(s), ${summary.deferredDatabases} deferred, ` +
       `${summary.discarded} disposable rebuild(s), ${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
-      `${summary.removedTemporaryFiles} temporary vector file(s).`,
+      `${summary.removedTemporaryFiles} temporary graph file(s).`,
   );
   if (completion) {
     yield* Console.log(

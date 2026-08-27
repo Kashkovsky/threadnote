@@ -17,6 +17,17 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
     );
   }
   const now = yield* Clock.currentTimeMillis;
+  const retainedIncompleteSnapshots = yield* sql<{readonly id: string}>`
+    SELECT snapshot.id
+    FROM snapshots AS snapshot
+    WHERE snapshot.state IN ('building', 'failed')
+      AND EXISTS (
+        SELECT 1 FROM snapshot_leases AS lease
+        WHERE lease.snapshot_id = snapshot.id AND lease.expires_at > ${now}
+      )
+    ORDER BY snapshot.id
+  `;
+  const retainedIncompleteSnapshotIds = retainedIncompleteSnapshots.map(snapshot => snapshot.id);
   if (dryRun) {
     const candidates = yield* sql<{readonly count: number}>`
       SELECT COUNT(*) AS count
@@ -27,7 +38,10 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
           WHERE lease.snapshot_id = snapshot.id AND lease.expires_at > ${now}
         )
     `;
-    return {removedSnapshots: Number(candidates[0]?.count ?? 0)} satisfies CodeGraphDatabaseRepair;
+    return {
+      removedSnapshots: Number(candidates[0]?.count ?? 0),
+      retainedIncompleteSnapshotIds,
+    } satisfies CodeGraphDatabaseRepair;
   }
   const candidates = yield* sql<{readonly count: number}>`
     SELECT COUNT(*) AS count
@@ -57,7 +71,7 @@ const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: 
   );
   yield* pruneRetiredSnapshotRows();
   yield* sql.withTransaction(pruneUnreferencedFileBlobs(sql));
-  return {removedSnapshots} satisfies CodeGraphDatabaseRepair;
+  return {removedSnapshots, retainedIncompleteSnapshotIds} satisfies CodeGraphDatabaseRepair;
 });
 
 export {repairDatabase};

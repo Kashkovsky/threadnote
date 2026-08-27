@@ -113,6 +113,8 @@ type CodeGraphQuickCheck =
   {readonly health: CodeGraphDatabaseHealth; readonly state: 'checked'} | {readonly state: 'unreadable'};
 
 const OBSOLETE_GRAPH_FILE_PATTERN = /^graph-v([1-9]\d*)\.sqlite(?:-(wal|shm))?$/;
+const MATERIALIZATION_SPOOL_FILE_PATTERN =
+  /^materialization-spool-v1-(cgsn_[0-9a-f]{40}(?:-direct|-full-[0-9a-f]{16})?)\.sqlite(?:-(?:journal|shm|wal))?$/u;
 
 /**
  * Inventories obsolete checkout-local SQLite artifacts using directory metadata only.
@@ -369,6 +371,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                 return deep ? ('discard' as const) : ('deep-check-required' as const);
               }
               const incomplete = diagnosed.value.buildingSnapshots + diagnosed.value.failedSnapshots;
+              let retainedIncompleteSnapshotIds: readonly string[] = [];
               readySnapshots += diagnosed.value.readySnapshots;
               if (!deep && incomplete > 0) return 'deep-check-required' as const;
               if (!deep) return 'maintained' as const;
@@ -376,6 +379,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                 yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
                 const repaired = yield* store.repair(database, dryRun);
                 const removed = repaired?.removedSnapshots ?? 0;
+                retainedIncompleteSnapshotIds = repaired?.retainedIncompleteSnapshotIds ?? [];
                 removedIncompleteSnapshots += removed;
                 remainingIncompleteSnapshots += Math.max(0, incomplete - removed);
               }
@@ -388,6 +392,13 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                 yield* store.pruneCachedFacts(database, BUILTIN_LANGUAGE_PACK_REGISTRY.cacheIdentities);
               }
               yield* progress({phase: 'cleaning-vectors'});
+              removedTemporaryFiles += yield* cleanTemporaryMaterializationSpoolFiles(
+                fs,
+                path,
+                repositoryRoot,
+                new Set(retainedIncompleteSnapshotIds),
+                dryRun,
+              );
               removedTemporaryFiles += yield* cleanTemporaryVectorFiles(
                 fs,
                 path,
@@ -748,6 +759,45 @@ function cleanTemporaryVectorFiles(
     if (!(yield* fs.exists(directory))) return 0;
     const root = yield* fs.realPath(directory);
     return yield* cleanTemporaryVectorFilesContained(fs, path, root, root, dryRun);
+  });
+}
+
+/** @internal Exact basename parser shared with spool-repair property tests. */
+export function codeGraphTemporaryMaterializationSpoolSnapshotId(fileName: string): string | undefined {
+  return MATERIALIZATION_SPOOL_FILE_PATTERN.exec(fileName)?.[1];
+}
+
+function cleanTemporaryMaterializationSpoolFiles(
+  fs: FileSystem.FileSystem,
+  path: Path.Path,
+  repositoryRoot: string,
+  retainedIncompleteSnapshotIds: ReadonlySet<string>,
+  dryRun: boolean,
+): Effect.Effect<number, unknown> {
+  return Effect.gen(function* () {
+    if ((yield* fs.readLink(repositoryRoot).pipe(Effect.option))._tag === 'Some') return 0;
+    if (!(yield* fs.exists(repositoryRoot))) return 0;
+    const root = yield* fs.realPath(repositoryRoot);
+    let removed = 0;
+    for (const name of (yield* fs.readDirectory(root)).sort()) {
+      const snapshotId = codeGraphTemporaryMaterializationSpoolSnapshotId(name);
+      if (snapshotId === undefined || retainedIncompleteSnapshotIds.has(snapshotId)) continue;
+      const child = path.join(root, name);
+      if ((yield* fs.readLink(child).pipe(Effect.option))._tag === 'Some') continue;
+      const canonical = yield* fs.realPath(child).pipe(Effect.option);
+      if (
+        canonical._tag === 'None' ||
+        path.dirname(canonical.value) !== root ||
+        path.basename(canonical.value) !== name
+      ) {
+        continue;
+      }
+      const info = yield* fs.stat(canonical.value);
+      if (info.type !== 'File') continue;
+      removed += 1;
+      if (!dryRun) yield* fs.remove(canonical.value, {force: true});
+    }
+    return removed;
   });
 }
 

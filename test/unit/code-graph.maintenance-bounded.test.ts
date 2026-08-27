@@ -4,9 +4,11 @@ import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphRepair} from '../../src/code_graph/commands.js';
 import {
+  codeGraphTemporaryMaterializationSpoolSnapshotId,
   codeGraphDoctorCheck,
   diagnoseCodeGraphDatabaseReadOnly,
   repairCodeGraphIndexes,
@@ -96,6 +98,124 @@ describe('bounded code graph maintenance', () => {
     });
     expect(progress).toEqual(['checking:none', 'deferred:active-build']);
     expect(await Bun.file(databasePath).text()).toContain('must never be opened');
+  });
+
+  effectIt.effect('deep repair removes orphaned spools while preserving live leased build state', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-spool-'});
+      const checkoutId = 'a'.repeat(64);
+      const repositoryId = 'b'.repeat(64);
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const identity: RepositoryIdentity = {
+        caseMode: 'sensitive',
+        checkoutId,
+        displayName: 'repair-spool-fixture',
+        gitCommonDirectory: home,
+        headCommit: 'c'.repeat(40),
+        objectFormat: 'sha1',
+        repoRoot: home,
+        repositoryId,
+        worktreeId: 'd'.repeat(64),
+      };
+      const unleasedSnapshot = repairBuildingSnapshot(identity, '1');
+      const leasedIdentity = {...identity, worktreeId: 'e'.repeat(64)};
+      const leasedSnapshot = repairBuildingSnapshot(leasedIdentity, '2');
+      const orphanSnapshotId = `cgsn_${'3'.repeat(40)}-direct`;
+      const spoolPath = (snapshotId: string) =>
+        path.join(repositoryRoot, `materialization-spool-v1-${snapshotId}.sqlite`);
+      const ignoredPath = path.join(repositoryRoot, `materialization-spool-v2-${orphanSnapshotId}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.claimPersistentBuild(databasePath, identity, unleasedSnapshot, {
+        logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+        owner: {buildId: '11111111-1111-1111', processId: process.pid},
+      });
+      yield* store.claimPersistentBuild(databasePath, leasedIdentity, leasedSnapshot, {
+        logicalSnapshotId: `cgsn_${'2'.repeat(40)}`,
+        owner: {buildId: '22222222-2222-2222', processId: process.pid},
+      });
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database
+            .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+            .run('repair-spool-live-lease', leasedSnapshot.id, Date.now() + 60_000);
+        } finally {
+          database.close(false);
+        }
+      });
+      for (const file of [
+        spoolPath(unleasedSnapshot.id),
+        spoolPath(leasedSnapshot.id),
+        spoolPath(orphanSnapshotId),
+        ignoredPath,
+      ]) {
+        yield* fs.writeFile(file, new Uint8Array([1]));
+      }
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {mode: 'deep'});
+      expect(preview).toMatchObject({removedIncompleteSnapshots: 1, removedTemporaryFiles: 2});
+      for (const file of [
+        spoolPath(unleasedSnapshot.id),
+        spoolPath(leasedSnapshot.id),
+        spoolPath(orphanSnapshotId),
+        ignoredPath,
+      ]) {
+        expect(yield* fs.exists(file)).toBe(true);
+      }
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {mode: 'deep'});
+      expect(applied).toMatchObject({removedIncompleteSnapshots: 1, removedTemporaryFiles: 2});
+      expect(yield* fs.exists(spoolPath(unleasedSnapshot.id))).toBe(false);
+      expect(yield* fs.exists(spoolPath(orphanSnapshotId))).toBe(false);
+      expect(yield* fs.exists(spoolPath(leasedSnapshot.id))).toBe(true);
+      expect(yield* fs.exists(ignoredPath)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({buildingSnapshots: 1});
+
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.query('DELETE FROM snapshot_leases WHERE token = ?').run('repair-spool-live-lease');
+        } finally {
+          database.close(false);
+        }
+      });
+      const released = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {mode: 'deep'});
+      expect(released).toMatchObject({removedIncompleteSnapshots: 1, removedTemporaryFiles: 1});
+      expect(yield* fs.exists(spoolPath(leasedSnapshot.id))).toBe(false);
+      expect(yield* fs.exists(ignoredPath)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({buildingSnapshots: 0, integrity: 'ok'});
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it('recognizes exactly the canonical persistent spool filename family', () => {
+    const hexadecimal = (length: number) =>
+      fc
+        .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: length, minLength: length})
+        .map(value => value.join(''));
+    fc.assert(
+      fc.property(
+        hexadecimal(40),
+        fc.oneof(
+          fc.constant(''),
+          fc.constant('-direct'),
+          hexadecimal(16).map(value => `-full-${value}`),
+        ),
+        fc.constantFrom('', '-journal', '-shm', '-wal'),
+        (digest, mode, companion) => {
+          const snapshotId = `cgsn_${digest}${mode}`;
+          const fileName = `materialization-spool-v1-${snapshotId}.sqlite${companion}`;
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(fileName)).toBe(snapshotId);
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(`prefix-${fileName}`)).toBeUndefined();
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(`${fileName}.extra`)).toBeUndefined();
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(fileName.replace('-v1-', '-v2-'))).toBeUndefined();
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('recovers an orphaned checkout lock instead of deferring doctor forever', async () => {
@@ -820,6 +940,21 @@ function legacyReadySnapshot(identity: RepositoryIdentity, seed: string): CodeGr
     id: `cgsn_${seed.repeat(40)}`,
     repositoryId: identity.repositoryId,
     state: 'ready',
+    symbolCount: 0,
+    worktreeId: identity.worktreeId,
+  };
+}
+
+function repairBuildingSnapshot(identity: RepositoryIdentity, seed: string): CodeGraphSnapshot {
+  return {
+    commit: identity.headCommit,
+    dirty: false,
+    edgeCount: 0,
+    extractorSet: 'repair-spool-regression',
+    fileCount: 0,
+    id: `cgsn_${seed.repeat(40)}-direct`,
+    repositoryId: identity.repositoryId,
+    state: 'building',
     symbolCount: 0,
     worktreeId: identity.worktreeId,
   };

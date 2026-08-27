@@ -205,6 +205,8 @@ export interface CodeGraphDatabaseHealth {
 
 export interface CodeGraphDatabaseRepair {
   readonly removedSnapshots: number;
+  /** Incomplete snapshots whose live leases still protect resumable spool state. */
+  readonly retainedIncompleteSnapshotIds: readonly string[];
 }
 
 export type CodeGraphRoutineMaintenanceDiagnostic = 'orphan-provenance-cursor-recovered';
