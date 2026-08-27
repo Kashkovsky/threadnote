@@ -178,6 +178,15 @@ describe('code graph query budgets', () => {
           }),
         );
         const snapshotRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
+        const readyBaseRef = yield* Ref.make<CodeGraphSnapshot | undefined>(undefined);
+        const baseLookups = yield* Ref.make<readonly {databasePath: string; repositoryId: string; commit: string}[]>(
+          [],
+        );
+        const leaseEvents = yield* Ref.make<readonly string[]>([]);
+        const searchedSnapshotIds = yield* Ref.make<readonly string[]>([]);
+        const failPathSearch = yield* Ref.make(false);
+        const ensureCommitCalls = yield* Ref.make(0);
+        const readyBaseSnapshotId = `cgsn_${'2'.repeat(40)}`;
         const emptyStoreReads = () => ({
           leasesAcquired: 0,
           leasesReleased: 0,
@@ -193,16 +202,35 @@ describe('code graph query budgets', () => {
         const storeLayer = Layer.succeed(
           CodeGraphStore,
           CodeGraphStore.of({
-            acquireSnapshotLease: () => recordStoreRead('leasesAcquired').pipe(Effect.as('lease')),
-            edgesForNodes: () => Effect.succeed([]),
+            acquireSnapshotLease: (_databasePath: string, snapshotId: string) =>
+              recordStoreRead('leasesAcquired').pipe(
+                Effect.andThen(Ref.update(leaseEvents, current => [...current, `acquire:${snapshotId}`])),
+                Effect.as(`lease:${snapshotId}`),
+              ),
+            edgesForNodes: (_databasePath: string, snapshotId: string, ids: readonly string[]) =>
+              Effect.succeed(snapshotId === readyBaseSnapshotId && ids.includes(stableSeed.id) ? [stableEdge] : []),
             readySnapshot: () => recordStoreRead('readyByWorktree').pipe(Effect.andThen(Ref.get(snapshotRef))),
             readySnapshotById: () => recordStoreRead('readyById').pipe(Effect.andThen(Ref.get(snapshotRef))),
-            readySnapshotForCommit: () => Effect.succeed(undefined),
-            releaseSnapshotLease: () => recordStoreRead('leasesReleased'),
-            searchSymbolsByPaths: (_databasePath: string, _snapshotId: string, queries: readonly string[]) =>
-              Effect.succeed(queries.map(() => [])),
+            readySnapshotForCommit: (databasePath: string, repositoryId: string, commit: string) =>
+              Ref.update(baseLookups, current => [...current, {commit, databasePath, repositoryId}]).pipe(
+                Effect.andThen(Ref.get(readyBaseRef)),
+              ),
+            releaseSnapshotLease: (_databasePath: string, leaseToken: string) =>
+              recordStoreRead('leasesReleased').pipe(
+                Effect.andThen(Ref.update(leaseEvents, current => [...current, `release:${leaseToken}`])),
+              ),
+            searchSymbolsByPaths: (_databasePath: string, snapshotId: string, queries: readonly string[]) =>
+              Ref.update(searchedSnapshotIds, current => [...current, snapshotId]).pipe(
+                Effect.andThen(Ref.get(failPathSearch)),
+                Effect.flatMap(fail =>
+                  fail
+                    ? Effect.fail(new TestError('bounded impact read failed'))
+                    : Effect.succeed(queries.map(() => (snapshotId === readyBaseSnapshotId ? [stableSeed] : []))),
+                ),
+              ),
             snapshotPackProvenance: () => recordStoreRead('provenance').pipe(Effect.as([])),
-            symbolsByIds: () => Effect.succeed([]),
+            symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+              Effect.succeed([stableSeed, stableDependent].filter(node => ids.includes(node.id))),
             withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) =>
               Ref.update(sessionCalls, value => value + 1).pipe(Effect.andThen(effect)),
           } as unknown as CodeGraphStoreShape),
@@ -217,7 +245,10 @@ describe('code graph query budgets', () => {
           Layer.succeed(
             CodeGraphIndexer,
             CodeGraphIndexer.of({
-              ensureCommit: () => Effect.die(new TestError('query trigger test must not ensure a commit')),
+              ensureCommit: () =>
+                Ref.update(ensureCommitCalls, count => count + 1).pipe(
+                  Effect.andThen(Effect.fail(new TestError('query trigger test must not ensure a commit'))),
+                ),
               index: () => Effect.die(new TestError('query trigger test must not index')),
             }),
           ),
@@ -371,6 +402,7 @@ describe('code graph query budgets', () => {
             readyById: 0,
             readyByWorktree: 1,
           });
+          expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
           for (const refresh of [undefined, true] as const) {
             yield* Ref.set(storeReads, emptyStoreReads());
             const refreshedInspection = yield* query.inspect({
@@ -449,6 +481,91 @@ describe('code graph query budgets', () => {
           expect(boundedImpact.warnings).toContain(
             'The requested impact base has no ready current-format snapshot; deleted-path recovery was skipped without starting indexing.',
           );
+
+          const readyBase = {
+            ...snapshot,
+            commit: 'f'.repeat(40),
+            dirty: false,
+            id: readyBaseSnapshotId,
+            worktreeId: 'base-worktree',
+          } satisfies CodeGraphSnapshot;
+          yield* Ref.set(readyBaseRef, readyBase);
+          yield* Ref.set(baseLookups, []);
+          yield* Ref.set(leaseEvents, []);
+          yield* Ref.set(searchedSnapshotIds, []);
+          yield* Ref.set(storeReads, emptyStoreReads());
+          const readyBaseImpact = yield* query.inspect({
+            baseCommit: readyBase.commit,
+            baseCommitPolicy: 'ready-only',
+            cwd: fixtureRoot.repository,
+            depth: 1,
+            operation: 'impact',
+            query: 'changed paths',
+            refresh: false,
+            requestMaintenance: false,
+            seedQueries: ['deleted.ts'],
+            strictFreshness: true,
+            threadnoteHome: fixtureRoot.home,
+          });
+          expect(readyBaseImpact.nodes.map(node => node.id)).toContain(stableDependent.id);
+          expect(readyBaseImpact.warnings.join('\n')).toContain(`base snapshot ${readyBaseSnapshotId}`);
+          expect(readyBaseImpact.warnings.join('\n')).not.toContain('deleted-path recovery was skipped');
+          expect(yield* Ref.get(baseLookups)).toEqual([
+            {
+              commit: readyBase.commit,
+              databasePath: join(
+                fixtureRoot.home,
+                'indexes',
+                'code-graph',
+                'repositories',
+                identity.checkoutId,
+                'graph-v3.sqlite',
+              ),
+              repositoryId: identity.repositoryId,
+            },
+          ]);
+          expect(yield* Ref.get(searchedSnapshotIds)).toEqual([snapshot.id, readyBaseSnapshotId]);
+          expect(yield* Ref.get(leaseEvents)).toEqual([
+            `acquire:${readyBaseSnapshotId}`,
+            `acquire:${snapshot.id}`,
+            `release:lease:${snapshot.id}`,
+            `release:lease:${readyBaseSnapshotId}`,
+          ]);
+          expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
+          expect(yield* Ref.get(storeReads)).toEqual({
+            leasesAcquired: 2,
+            leasesReleased: 2,
+            provenance: 2,
+            readyById: 0,
+            readyByWorktree: 1,
+          });
+
+          yield* Ref.set(failPathSearch, true);
+          yield* Ref.set(leaseEvents, []);
+          const failedReadyBaseImpact = yield* query
+            .inspect({
+              baseCommit: readyBase.commit,
+              baseCommitPolicy: 'ready-only',
+              cwd: fixtureRoot.repository,
+              operation: 'impact',
+              query: 'changed paths',
+              refresh: false,
+              requestMaintenance: false,
+              seedQueries: ['deleted.ts'],
+              strictFreshness: true,
+              threadnoteHome: fixtureRoot.home,
+            })
+            .pipe(Effect.flip);
+          expect(failedReadyBaseImpact).toEqual(new TestError('bounded impact read failed'));
+          expect(yield* Ref.get(leaseEvents)).toEqual([
+            `acquire:${readyBaseSnapshotId}`,
+            `acquire:${snapshot.id}`,
+            `release:lease:${snapshot.id}`,
+            `release:lease:${readyBaseSnapshotId}`,
+          ]);
+          expect(yield* Ref.get(ensureCommitCalls)).toBe(0);
+          yield* Ref.set(failPathSearch, false);
+          yield* Ref.set(readyBaseRef, undefined);
 
           yield* Ref.set(storeReads, emptyStoreReads());
           const fallbackInspection = yield* query.inspect({
