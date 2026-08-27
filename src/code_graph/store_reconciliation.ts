@@ -22,7 +22,11 @@ import {
   removedViewCleanupRecordedRevision,
 } from './store_removed_view_schema_inspection.js';
 import {normalizeSchemaDefinition} from './store_schema_normalization.js';
-import {inspectBoundedSchemaMetadataValue} from './store_schema_metadata.js';
+import {
+  REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  inspectBoundedSchemaMetadataRowCount,
+  inspectBoundedSchemaMetadataValue,
+} from './store_schema_metadata.js';
 import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
 import {
   allocateRemovedViewCleanupEpoch,
@@ -159,14 +163,18 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
       }
-      const cursorRows = yield* sql.unsafe<{readonly value: unknown}>(
-        `SELECT value FROM schema_metadata WHERE key = ? LIMIT 1`,
-        [ORPHAN_PROVENANCE_CURSOR_KEY],
-      );
-      const cursor = cursorRows[0]?.value;
-      if (cursor !== undefined && (typeof cursor !== 'string' || !/^[0-9a-f]{64}$/.test(cursor))) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor is invalid.'));
+      const cursorInspection = yield* inspectBoundedSchemaMetadataValue(sql, ORPHAN_PROVENANCE_CURSOR_KEY, 64);
+      if (cursorInspection.state === 'invalid') {
+        return yield* Effect.fail(
+          new CodeGraphStoreError('Code graph provenance reconciliation cursor metadata is invalid.'),
+        );
       }
+      const cursor =
+        cursorInspection.state === 'recorded' && /^[0-9a-f]{64}$/u.test(cursorInspection.value)
+          ? cursorInspection.value
+          : undefined;
+      const cursorRecovery =
+        cursorInspection.state === 'recorded' && cursor === undefined ? ('invalid-format' as const) : undefined;
       const selectPage = (boundary: 'after' | 'through', pageLimit: number) => {
         const predicate =
           cursor === undefined ? '' : boundary === 'after' ? 'AND candidate.value > ?' : 'AND candidate.value <= ?';
@@ -204,14 +212,49 @@ const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenan
       const selected = rows.map(row => row.worktree_id as string);
       const nextCursor = selected.at(-1);
       if (nextCursor !== undefined) {
-        yield* sql.unsafe(
-          `INSERT INTO schema_metadata (key, value)
-           VALUES (?, ?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          [ORPHAN_PROVENANCE_CURSOR_KEY, nextCursor],
-        );
+        if (cursorInspection.state === 'missing') {
+          const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
+          const removedViewAdmissionCursor = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
+          const metadataRowLimit =
+            removedViewAdmissionCursor.cursor === undefined
+              ? REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - 1
+              : REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS;
+          if (
+            metadataRowCount === undefined ||
+            !removedViewAdmissionCursor.current ||
+            metadataRowCount >= metadataRowLimit
+          ) {
+            return yield* Effect.fail(
+              new CodeGraphStoreError('Code graph provenance reconciliation cursor metadata has no capacity.'),
+            );
+          }
+          yield* sql.unsafe(`INSERT INTO schema_metadata (key, value) VALUES (?, ?)`, [
+            ORPHAN_PROVENANCE_CURSOR_KEY,
+            nextCursor,
+          ]);
+        } else {
+          yield* sql.unsafe(`UPDATE schema_metadata SET value = ? WHERE key = ? AND value = ?`, [
+            nextCursor,
+            ORPHAN_PROVENANCE_CURSOR_KEY,
+            cursorInspection.value,
+          ]);
+          if ((yield* lastStatementChangeCount(sql)) !== 1) {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor changed.'));
+          }
+        }
+      } else if (cursorRecovery !== undefined && cursorInspection.state === 'recorded') {
+        yield* sql.unsafe(`DELETE FROM schema_metadata WHERE key = ? AND value = ?`, [
+          ORPHAN_PROVENANCE_CURSOR_KEY,
+          cursorInspection.value,
+        ]);
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor changed.'));
+        }
       }
-      return {worktreeIds: selected} as const satisfies CodeGraphOrphanProvenanceCandidatePage;
+      return {
+        ...(cursorRecovery === undefined ? {} : {cursorRecovery}),
+        worktreeIds: selected,
+      } as const satisfies CodeGraphOrphanProvenanceCandidatePage;
     }),
   );
 });

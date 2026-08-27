@@ -207,6 +207,8 @@ export interface CodeGraphDatabaseRepair {
   readonly removedSnapshots: number;
 }
 
+export type CodeGraphRoutineMaintenanceDiagnostic = 'orphan-provenance-cursor-recovered';
+
 export type CodeGraphRoutineMaintenanceResult =
   | {
       readonly cleanup:
@@ -221,6 +223,8 @@ export type CodeGraphRoutineMaintenanceResult =
         | 'removed-worktree-view'
         | 'schema-migration'
         | 'retired-snapshot';
+      /** Closed, path-free maintenance observations safe for CLI and Manager diagnostics. */
+      readonly diagnostics?: readonly CodeGraphRoutineMaintenanceDiagnostic[];
       readonly expiredLeases: number;
       readonly remaining: boolean;
       readonly retiredSnapshots: number;
@@ -237,9 +241,13 @@ export type CodeGraphRoutineMaintenanceResult =
         | 'status-sidecar-unavailable'
         | 'worktree-busy'
         | 'writer-busy';
+      /** Closed, path-free maintenance observations safe for CLI and Manager diagnostics. */
+      readonly diagnostics?: readonly CodeGraphRoutineMaintenanceDiagnostic[];
       readonly state: 'deferred';
     }
   | {
+      /** Closed, path-free maintenance observations safe for CLI and Manager diagnostics. */
+      readonly diagnostics?: readonly CodeGraphRoutineMaintenanceDiagnostic[];
       readonly reason: 'database-missing' | 'schema-unavailable' | 'writer-lock-unavailable';
       readonly state: 'skipped';
     };
@@ -585,6 +593,8 @@ export interface CodeGraphWorktreeReconciliationCandidate {
 }
 
 export interface CodeGraphOrphanProvenanceCandidatePage {
+  /** Advisory cursor repair performed atomically with this claim. Never grants deletion authority. */
+  readonly cursorRecovery?: 'invalid-format';
   readonly worktreeIds: readonly string[];
 }
 

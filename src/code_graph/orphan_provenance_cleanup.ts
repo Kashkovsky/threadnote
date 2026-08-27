@@ -35,6 +35,7 @@ import {
 } from './worktree_reconciliation.js';
 
 export const CODE_GRAPH_ORPHAN_PROVENANCE_CANDIDATE_LIMIT = 32;
+export const CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC = 'orphan-provenance-cursor-recovered' as const;
 
 class CodeGraphOrphanProvenanceAuthorityChanged extends Schema.TaggedError<CodeGraphOrphanProvenanceAuthorityChanged>()(
   'CodeGraphOrphanProvenanceAuthorityChanged',
@@ -42,8 +43,15 @@ class CodeGraphOrphanProvenanceAuthorityChanged extends Schema.TaggedError<CodeG
 ) {}
 
 export type CodeGraphOrphanProvenanceCleanupResult =
-  | {readonly state: 'removed'; readonly worktreeId: string}
   | {
+      /** Advisory scheduler repair only; deletion still requires every independent authority gate. */
+      readonly cursorRecovery?: 'invalid-format';
+      readonly state: 'removed';
+      readonly worktreeId: string;
+    }
+  | {
+      /** Advisory scheduler repair only; deletion still requires every independent authority gate. */
+      readonly cursorRecovery?: 'invalid-format';
       readonly reason:
         | 'active-view'
         | 'already-removed'
@@ -58,6 +66,8 @@ export type CodeGraphOrphanProvenanceCleanupResult =
       readonly state: 'preserved';
     }
   | {
+      /** Advisory scheduler repair only; deletion still requires every independent authority gate. */
+      readonly cursorRecovery?: 'invalid-format';
       readonly reason:
         | 'catalog-unavailable'
         | 'inventory-unavailable'
@@ -117,15 +127,9 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
     Effect.sync(() => {
       const tick = (input: CodeGraphWorktreeReconciliationTick) =>
         Effect.gen(function* () {
-          const expectedAnchor = yield* resolveExpectedAnchor(dependencies, input);
-          if (expectedAnchor === undefined) {
-            return {
-              reason:
-                input.anchorIdentity === undefined && input.anchorPath === undefined
-                  ? 'no-anchor'
-                  : 'anchor-unavailable',
-              state: 'preserved',
-            } as const;
+          let expectedAnchor = input.anchorIdentity;
+          if (expectedAnchor !== undefined && expectedAnchor.checkoutId !== input.checkoutId) {
+            return {reason: 'anchor-unavailable', state: 'preserved'} as const;
           }
           const inventory = yield* dependencies
             .inspectInventory(input.threadnoteHome, input.checkoutId)
@@ -153,48 +157,66 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
               state: 'deferred',
             } as const;
           }
+          const cursorRecovery = claimed.value.cursorRecovery;
+          const withCursorRecovery = <Result extends CodeGraphOrphanProvenanceCleanupResult>(
+            result: Result,
+          ): CodeGraphOrphanProvenanceCleanupResult =>
+            cursorRecovery === undefined ? result : {...result, cursorRecovery};
           if (claimed.value.worktreeIds.length === 0) {
-            return {reason: 'no-candidates', state: 'preserved'} as const;
+            return withCursorRecovery({reason: 'no-candidates', state: 'preserved'} as const);
           }
-          const evidenceCandidates = yield* readEvidenceCandidates(
-            dependencies,
-            input,
-            claimed.value.worktreeIds,
-            expectedAnchor,
-          );
+          const evidenceCandidates = yield* readEvidenceCandidates(dependencies, input, claimed.value.worktreeIds);
           if (evidenceCandidates.length === 0) {
-            return {reason: 'no-candidates', state: 'preserved'} as const;
+            return withCursorRecovery({reason: 'no-candidates', state: 'preserved'} as const);
+          }
+          if (expectedAnchor === undefined) {
+            if (input.anchorPath === undefined) {
+              return withCursorRecovery({reason: 'no-anchor', state: 'preserved'} as const);
+            }
+            const resolved = yield* dependencies.resolveAnchor(input.anchorPath).pipe(Effect.option);
+            if (resolved._tag === 'None' || resolved.value.checkoutId !== input.checkoutId) {
+              return withCursorRecovery({reason: 'anchor-unavailable', state: 'preserved'} as const);
+            }
+            expectedAnchor = resolved.value;
+          }
+          const repositoryCandidates = evidenceCandidates.filter(
+            candidate =>
+              candidate.repositoryId === expectedAnchor.repositoryId &&
+              candidate.worktreeId !== expectedAnchor.worktreeId,
+          );
+          if (repositoryCandidates.length === 0) {
+            return withCursorRecovery({reason: 'no-candidates', state: 'preserved'} as const);
           }
           const initialAnchor = yield* dependencies.resolveAnchor(expectedAnchor.repoRoot).pipe(Effect.option);
           if (initialAnchor._tag === 'None' || !sameLiveAnchor(initialAnchor.value, expectedAnchor, input.checkoutId)) {
-            return {reason: 'anchor-unavailable', state: 'preserved'} as const;
+            return withCursorRecovery({reason: 'anchor-unavailable', state: 'preserved'} as const);
           }
           const initialAuthority = yield* dependencies
-            .observeAuthority(initialAnchor.value, evidenceCandidates.map(authorityTarget))
+            .observeAuthority(initialAnchor.value, repositoryCandidates.map(authorityTarget))
             .pipe(Effect.option);
           if (initialAuthority._tag === 'None' || initialAuthority.value.state === 'unknown') {
-            return {reason: 'registry-unavailable', state: 'deferred'} as const;
+            return withCursorRecovery({reason: 'registry-unavailable', state: 'deferred'} as const);
           }
           const completeInitialAuthority = initialAuthority.value;
           if (
-            completeInitialAuthority.pathStates.length !== evidenceCandidates.length ||
-            completeInitialAuthority.registryStates.length !== evidenceCandidates.length
+            completeInitialAuthority.pathStates.length !== repositoryCandidates.length ||
+            completeInitialAuthority.registryStates.length !== repositoryCandidates.length
           ) {
-            return {reason: 'registry-unavailable', state: 'deferred'} as const;
+            return withCursorRecovery({reason: 'registry-unavailable', state: 'deferred'} as const);
           }
-          const targetIndex = evidenceCandidates.findIndex(
+          const targetIndex = repositoryCandidates.findIndex(
             (_candidate, index) =>
               completeInitialAuthority.pathStates[index] === 'missing' &&
               completeInitialAuthority.registryStates[index] === 'absent',
           );
           if (targetIndex < 0) {
-            return {
+            return withCursorRecovery({
               reason: completeInitialAuthority.pathStates.includes('missing') ? 'registered' : 'no-missing-candidates',
               state: 'preserved',
-            } as const;
+            } as const);
           }
-          const target = evidenceCandidates[targetIndex]!;
-          return yield* dependencies
+          const target = repositoryCandidates[targetIndex]!;
+          const result = yield* dependencies
             .withTargetLock(
               input,
               target.worktreeId,
@@ -219,6 +241,7 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
                 }),
               ),
             );
+          return withCursorRecovery(result);
         });
       return {tick} satisfies CodeGraphOrphanProvenanceCleanerShape;
     }),
@@ -422,25 +445,10 @@ export const makeLiveCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.mak
   },
 );
 
-function resolveExpectedAnchor(
-  dependencies: CodeGraphOrphanProvenanceCleanupDependencies,
-  input: CodeGraphWorktreeReconciliationTick,
-): Effect.Effect<RepositoryIdentity | undefined> {
-  if (input.anchorIdentity !== undefined) {
-    return Effect.succeed(input.anchorIdentity.checkoutId === input.checkoutId ? input.anchorIdentity : undefined);
-  }
-  if (input.anchorPath === undefined) return Effect.succeed(undefined);
-  return dependencies.resolveAnchor(input.anchorPath).pipe(
-    Effect.map(identity => (identity.checkoutId === input.checkoutId ? identity : undefined)),
-    Effect.catch(() => Effect.succeed(undefined)),
-  );
-}
-
 function readEvidenceCandidates(
   dependencies: CodeGraphOrphanProvenanceCleanupDependencies,
   input: CodeGraphWorktreeReconciliationTick,
   worktreeIds: readonly string[],
-  expectedAnchor: RepositoryIdentity,
 ) {
   return Effect.forEach(
     worktreeIds,
@@ -451,12 +459,7 @@ function readEvidenceCandidates(
     {concurrency: 1},
   ).pipe(
     Effect.map(evidence =>
-      evidence.filter(
-        (candidate): candidate is ProvenanceCandidate =>
-          candidate.state === 'candidate' &&
-          candidate.repositoryId === expectedAnchor.repositoryId &&
-          candidate.worktreeId !== expectedAnchor.worktreeId,
-      ),
+      evidence.filter((candidate): candidate is ProvenanceCandidate => candidate.state === 'candidate'),
     ),
   );
 }

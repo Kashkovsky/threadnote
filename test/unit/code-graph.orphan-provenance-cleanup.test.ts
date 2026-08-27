@@ -14,7 +14,7 @@ import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Effect, Layer, Path, Ref} from 'effect';
+import {Effect, FileSystem, Layer, Path, Ref} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {afterEach, describe, expect} from 'vitest';
@@ -24,14 +24,20 @@ import {
   type CodeGraphWorktreeReconciliationEvidenceCandidate,
 } from '../../src/code_graph/local_provenance.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {
+  makeCodeGraphLifecycleOpportunityRunner,
+  type CodeGraphLifecycleOpportunityTarget,
+} from '../../src/code_graph/lifecycle_opportunity.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
 import {
   CODE_GRAPH_ORPHAN_PROVENANCE_CANDIDATE_LIMIT,
+  CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC,
   makeCodeGraphOrphanProvenanceCleaner,
   type CodeGraphOrphanProvenanceCleanupDependencies,
 } from '../../src/code_graph/orphan_provenance_cleanup.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type RepositoryIdentity} from '../../src/code_graph/types.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -82,6 +88,35 @@ afterEach(() => {
 });
 
 describe('automatic orphan provenance cleanup', () => {
+  effectIt.effect('does not resolve a path anchor before bounded orphan admission finds a candidate', () =>
+    Effect.gen(function* () {
+      const cases = [
+        {
+          claimCandidates: () => Effect.die('claim should not run for an empty inventory'),
+          inspectInventory: () => Effect.succeed({state: 'ready', worktreeIds: []} as const),
+        },
+        {
+          claimCandidates: () => Effect.succeed({worktreeIds: []}),
+          inspectInventory: () => Effect.succeed({state: 'ready', worktreeIds: [targetWorktreeId]} as const),
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const anchorResolutions = yield* Ref.make(0);
+        const dependencies = successfulDependencies({
+          claimCandidates: testCase.claimCandidates,
+          inspectInventory: testCase.inspectInventory,
+          resolveAnchor: () => Ref.update(anchorResolutions, count => count + 1).pipe(Effect.as(anchor)),
+        });
+        const cleaner = yield* makeCodeGraphOrphanProvenanceCleaner(dependencies);
+        const result = yield* cleaner.tick(pathAnchorTick());
+
+        expect(result).toEqual({reason: 'no-candidates', state: 'preserved'});
+        expect(yield* Ref.get(anchorResolutions)).toBe(0);
+      }
+    }),
+  );
+
   effectIt.effect.prop(
     'removes only when every generated authority predicate remains exact and no active view exists',
     {
@@ -181,11 +216,177 @@ describe('automatic orphan provenance cleanup', () => {
         });
         expect(yield* store.observeOrphanProvenanceView(databasePath, worktreeIds[0]!)).toEqual({state: 'absent'});
 
-        const malformed = yield* Effect.sync(() => corruptOrphanCursor(databasePath)).pipe(
+        const malformed = yield* Effect.sync(() => writeOrphanCursor(databasePath, 'malformed')).pipe(
           Effect.andThen(store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 1).pipe(Effect.exit)),
         );
-        expect(malformed._tag).toBe('Failure');
+        expect(malformed._tag).toBe('Success');
+        if (malformed._tag === 'Success') {
+          expect(malformed.value).toEqual({
+            cursorRecovery: 'invalid-format',
+            worktreeIds: [worktreeIds[0]!],
+          });
+        }
+        expect(readOrphanCursor(databasePath)).toBe(worktreeIds[0]);
+
+        const resumed = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 1);
+        expect(resumed).toEqual({worktreeIds: [worktreeIds[1]!]});
+
+        yield* Effect.sync(() => writeOrphanCursor(databasePath, 'x'.repeat(65)));
+        const structurallyInvalid = yield* store
+          .claimOrphanProvenanceCandidates(databasePath, worktreeIds, 1)
+          .pipe(Effect.exit);
+        expect(structurallyInvalid._tag).toBe('Failure');
+        expect(readOrphanCursor(databasePath)).toBe('x'.repeat(65));
+
+        yield* Effect.sync(() => writeOrphanCursor(databasePath, 'malformed'));
+        const allActive = yield* store.claimOrphanProvenanceCandidates(databasePath, [worktreeIds.at(-1)!], 1);
+        expect(allActive).toEqual({cursorRecovery: 'invalid-format', worktreeIds: []});
+        expect(readOrphanCursor(databasePath)).toBeUndefined();
+
+        const ambiguousBefore = yield* Effect.sync(() => {
+          writeSchemaMetadata(databasePath, 'ORPHAN_PROVENANCE_CURSOR', 'malformed');
+          return readSchemaMetadata(databasePath);
+        });
+        const ambiguous = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 1).pipe(Effect.exit);
+        expect(ambiguous._tag).toBe('Failure');
+        expect(readSchemaMetadata(databasePath)).toEqual(ambiguousBefore);
       }).pipe(provideTestLayer(storeLayer)),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'recovers every bounded noncanonical cursor without changing candidate membership',
+    {
+      malformedCursor: fc
+        .string({maxLength: 32})
+        .filter(value => new TextEncoder().encode(value).byteLength <= 64 && !/^[0-9a-f]{64}$/u.test(value)),
+    },
+    ({malformedCursor}) =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-orphan-cursor-property-'});
+            const databasePath = join(root, 'repositories', checkoutId, 'graph-v3.sqlite');
+            const store = yield* CodeGraphStore;
+            yield* store.initialize(databasePath);
+            const worktreeIds = Array.from({length: 4}, (_, index) => index.toString(16).padStart(64, '0'));
+            yield* Effect.sync(() => {
+              seedActiveView(databasePath, worktreeIds[3]!);
+              writeOrphanCursor(databasePath, malformedCursor);
+            });
+
+            const recovered = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
+            expect(recovered).toEqual({
+              cursorRecovery: 'invalid-format',
+              worktreeIds: [worktreeIds[0]!, worktreeIds[1]!],
+            });
+            expect(readOrphanCursor(databasePath)).toBe(worktreeIds[1]);
+
+            const resumed = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
+            expect(resumed).toEqual({worktreeIds: [worktreeIds[2]!, worktreeIds[0]!]});
+            expect(new Set([...recovered.worktreeIds, ...resumed.worktreeIds])).toEqual(
+              new Set(worktreeIds.slice(0, 3)),
+            );
+          }),
+        ).pipe(provideTestLayer(storeLayer)),
+      ),
+    {fastCheck: {numRuns: 24}},
+  );
+
+  effectIt.effect('fails closed before a missing cursor can exceed bounded metadata capacity', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        for (const withRemovedViewCursor of [false, true]) {
+          const root = mkdtempSync(join(tmpdir(), 'threadnote-orphan-provenance-capacity-'));
+          temporaryRoots.push(root);
+          const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
+          yield* store.initialize(databasePath);
+          if (withRemovedViewCursor) {
+            yield* Effect.sync(() =>
+              upsertSchemaMetadata(databasePath, 'removed_view_cleanup_admission_cursor', 'f'.repeat(64)),
+            );
+          }
+          const before = yield* Effect.sync(() => fillOrphanCursorMetadataCapacity(databasePath));
+
+          const claimed = yield* store
+            .claimOrphanProvenanceCandidates(databasePath, ['0'.repeat(64)], 1)
+            .pipe(Effect.exit);
+
+          expect(claimed._tag).toBe('Failure');
+          expect(readSchemaMetadata(databasePath)).toEqual(before);
+          expect(readOrphanCursor(databasePath)).toBeUndefined();
+          expect(before).toHaveLength(
+            withRemovedViewCursor
+              ? REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS
+              : REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - 1,
+          );
+        }
+      }).pipe(provideTestLayer(storeLayer)),
+    ),
+  );
+
+  effectIt.effect('advances later-database orphan cleanup across fresh explicit diagnostics runners', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = realpathSync(mkdtempSync(join(tmpdir(), 'threadnote-orphan-provenance-multi-')));
+        temporaryRoots.push(root);
+        const home = join(root, 'threadnote-home');
+        const fixtures = yield* Effect.forEach(
+          ['first', 'second'],
+          name => createLiveOrphanRepositoryFixture(root, home, name),
+          {concurrency: 1},
+        );
+        const [earlier, later] = [...fixtures].sort((left, right) =>
+          left.mainIdentity.checkoutId.localeCompare(right.mainIdentity.checkoutId),
+        );
+        expect(earlier).toBeDefined();
+        expect(later).toBeDefined();
+        yield* Effect.sync(() => {
+          execFileSync('git', ['-C', later!.main, 'worktree', 'remove', later!.linked], {encoding: 'utf8'});
+          writeOrphanCursor(later!.databasePath, 'malformed-cursor');
+        });
+        const maintenance = yield* CodeGraphMaintenanceCoordinator;
+        const targets: readonly CodeGraphLifecycleOpportunityTarget[] = [earlier!, later!].map(fixture => ({
+          anchorIdentity: fixture.mainIdentity,
+          checkoutId: fixture.mainIdentity.checkoutId,
+          databasePath: fixture.databasePath,
+        }));
+
+        const first = yield* makeCodeGraphLifecycleOpportunityRunner()({
+          maintenance,
+          opportunity: 'diagnostics',
+          targets,
+          threadnoteHome: home,
+        });
+        const second = yield* makeCodeGraphLifecycleOpportunityRunner()({
+          maintenance,
+          opportunity: 'diagnostics',
+          targets,
+          threadnoteHome: home,
+        });
+
+        expect(first).toMatchObject({
+          checkoutId: earlier!.mainIdentity.checkoutId,
+          result: {cleanup: 'none'},
+          state: 'completed',
+        });
+        expect(second).toMatchObject({
+          checkoutId: later!.mainIdentity.checkoutId,
+          result: {
+            cleanup: 'orphan-provenance',
+            diagnostics: [CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC],
+          },
+          state: 'completed',
+        });
+        expect(existsSync(earlier!.sidecar)).toBe(true);
+        expect(existsSync(later!.sidecar)).toBe(false);
+        expect(readFileSync(later!.mainFile, 'utf8')).toBe('main source\n');
+        const serialized = JSON.stringify([first, second]);
+        expect(serialized).not.toContain(root);
+        expect(serialized).not.toContain('malformed-cursor');
+      }).pipe(provideTestLayer(maintenanceLayer)),
     ),
   );
 
@@ -277,6 +478,16 @@ function tick() {
   } as const;
 }
 
+function pathAnchorTick() {
+  return {
+    anchorPath: anchor.repoRoot,
+    checkoutId,
+    databasePath: '/derived/graph-v3.sqlite',
+    threadnoteHome: '/derived/threadnote-home',
+    writerLockPath: '/derived/database-writer.lock',
+  } as const;
+}
+
 function seedActiveView(databasePath: string, worktreeId: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
@@ -308,10 +519,92 @@ function seedActiveView(databasePath: string, worktreeId: string): void {
   }
 }
 
-function corruptOrphanCursor(databasePath: string): void {
+function writeOrphanCursor(databasePath: string, value: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
-    database.query("UPDATE schema_metadata SET value = 'malformed' WHERE key = 'orphan_provenance_cursor'").run();
+    database
+      .query(
+        `INSERT INTO schema_metadata (key, value)
+         VALUES ('orphan_provenance_cursor', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(value);
+  } finally {
+    database.close(false);
+  }
+}
+
+function writeSchemaMetadata(databasePath: string, key: string, value: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)').run(key, value);
+  } finally {
+    database.close(false);
+  }
+}
+
+function upsertSchemaMetadata(databasePath: string, key: string, value: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database
+      .query(
+        `INSERT INTO schema_metadata (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(key, value);
+  } finally {
+    database.close(false);
+  }
+}
+
+function readOrphanCursor(databasePath: string): string | undefined {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return (
+      database.query("SELECT value FROM schema_metadata WHERE key = 'orphan_provenance_cursor'").get() as {
+        value: string;
+      } | null
+    )?.value;
+  } finally {
+    database.close(false);
+  }
+}
+
+function readSchemaMetadata(databasePath: string): readonly {readonly key: string; readonly value: string}[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database.query('SELECT key, value FROM schema_metadata ORDER BY key').all() as readonly {
+      readonly key: string;
+      readonly value: string;
+    }[];
+  } finally {
+    database.close(false);
+  }
+}
+
+function fillOrphanCursorMetadataCapacity(
+  databasePath: string,
+): readonly {readonly key: string; readonly value: string}[] {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    const admissionCursor = database
+      .query("SELECT 1 FROM schema_metadata WHERE key = 'removed_view_cleanup_admission_cursor'")
+      .get();
+    const limit =
+      admissionCursor === null
+        ? REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - 1
+        : REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS;
+    let count = Number(
+      (database.query('SELECT COUNT(*) AS count FROM schema_metadata').get() as {count: number}).count,
+    );
+    while (count < limit) {
+      database.query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)').run(`capacity-${count}`, 'bounded');
+      count += 1;
+    }
+    return database.query('SELECT key, value FROM schema_metadata ORDER BY key').all() as readonly {
+      readonly key: string;
+      readonly value: string;
+    }[];
   } finally {
     database.close(false);
   }
@@ -320,52 +613,57 @@ function corruptOrphanCursor(databasePath: string): void {
 const createLiveOrphanFixture = Effect.gen(function* () {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'threadnote-orphan-provenance-live-')));
   temporaryRoots.push(root);
-  const main = join(root, 'main');
-  const linked = join(root, 'linked');
   const home = join(root, 'threadnote-home');
-  const mainFile = join(main, 'main.txt');
-  yield* Effect.sync(() => {
-    mkdirSync(main, {recursive: true});
-    execFileSync('git', ['init', '--initial-branch=main', main], {encoding: 'utf8'});
-    execFileSync('git', ['-C', main, 'config', 'user.email', 'threadnote@example.invalid'], {encoding: 'utf8'});
-    execFileSync('git', ['-C', main, 'config', 'user.name', 'Threadnote Test'], {encoding: 'utf8'});
-    writeFileSync(mainFile, 'main source\n');
-    execFileSync('git', ['-C', main, 'add', 'main.txt'], {encoding: 'utf8'});
-    execFileSync('git', ['-C', main, 'commit', '-m', 'initial'], {encoding: 'utf8'});
-    execFileSync('git', ['-C', main, 'worktree', 'add', '-b', 'linked-test', linked], {encoding: 'utf8'});
-  });
-  const mainIdentity = yield* resolveRepositoryIdentity(main);
-  const linkedIdentity = yield* resolveRepositoryIdentity(linked);
-  const association = yield* recordVerifiedCodeGraphLocalAssociation(home, linkedIdentity);
-  expect(association.state).toBe('verified');
-  const path = yield* Path.Path;
-  const layout = codeGraphLayout(path, home, mainIdentity.checkoutId, mainIdentity.worktreeId);
-  const store = yield* CodeGraphStore;
-  yield* store.initialize(layout.databasePath);
-  const sidecar = join(
-    home,
-    'indexes',
-    'code-graph',
-    'repositories',
-    mainIdentity.checkoutId,
-    'local-context',
-    'worktrees',
-    `${linkedIdentity.worktreeId}.json`,
-  );
-  expect(existsSync(sidecar)).toBe(true);
-  return {
-    databasePath: layout.databasePath,
-    home,
-    layout,
-    linked,
-    linkedIdentity,
-    main,
-    mainFile,
-    mainIdentity,
-    root,
-    sidecar,
-  };
+  return yield* createLiveOrphanRepositoryFixture(root, home, 'single');
 });
+
+const createLiveOrphanRepositoryFixture = (root: string, home: string, name: string) =>
+  Effect.gen(function* () {
+    const main = join(root, `${name}-main`);
+    const linked = join(root, `${name}-linked`);
+    const mainFile = join(main, 'main.txt');
+    yield* Effect.sync(() => {
+      mkdirSync(main, {recursive: true});
+      execFileSync('git', ['init', '--initial-branch=main', main], {encoding: 'utf8'});
+      execFileSync('git', ['-C', main, 'config', 'user.email', 'threadnote@example.invalid'], {encoding: 'utf8'});
+      execFileSync('git', ['-C', main, 'config', 'user.name', 'Threadnote Test'], {encoding: 'utf8'});
+      writeFileSync(mainFile, 'main source\n');
+      execFileSync('git', ['-C', main, 'add', 'main.txt'], {encoding: 'utf8'});
+      execFileSync('git', ['-C', main, 'commit', '-m', 'initial'], {encoding: 'utf8'});
+      execFileSync('git', ['-C', main, 'worktree', 'add', '-b', `${name}-linked-test`, linked], {encoding: 'utf8'});
+    });
+    const mainIdentity = yield* resolveRepositoryIdentity(main);
+    const linkedIdentity = yield* resolveRepositoryIdentity(linked);
+    const association = yield* recordVerifiedCodeGraphLocalAssociation(home, linkedIdentity);
+    expect(association.state).toBe('verified');
+    const path = yield* Path.Path;
+    const layout = codeGraphLayout(path, home, mainIdentity.checkoutId, mainIdentity.worktreeId);
+    const store = yield* CodeGraphStore;
+    yield* store.initialize(layout.databasePath);
+    const sidecar = join(
+      home,
+      'indexes',
+      'code-graph',
+      'repositories',
+      mainIdentity.checkoutId,
+      'local-context',
+      'worktrees',
+      `${linkedIdentity.worktreeId}.json`,
+    );
+    expect(existsSync(sidecar)).toBe(true);
+    return {
+      databasePath: layout.databasePath,
+      home,
+      layout,
+      linked,
+      linkedIdentity,
+      main,
+      mainFile,
+      mainIdentity,
+      root,
+      sidecar,
+    };
+  });
 
 function readGraphRowCounts(databasePath: string) {
   const database = new Database(databasePath, {readonly: true, strict: true});

@@ -27,7 +27,10 @@ import {
   withPreparedCodeGraphRemovedViewVectorUnit,
 } from './vector_maintenance.js';
 import {makeLiveCodeGraphWorktreeReconciler} from './worktree_reconciliation.js';
-import {makeLiveCodeGraphOrphanProvenanceCleaner} from './orphan_provenance_cleanup.js';
+import {
+  CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC,
+  makeLiveCodeGraphOrphanProvenanceCleaner,
+} from './orphan_provenance_cleanup.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 import {type CodeGraphStoragePressure} from './storage_pressure.js';
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
@@ -309,7 +312,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
         residualWorker.tick(input).pipe(Effect.map(result => residualMaintenanceResult(result)));
       const runReconciliation: CodeGraphRoutineMaintenanceRun = input =>
         reconciler.tick(input).pipe(
-          Effect.flatMap(result => {
+          Effect.flatMap((result): Effect.Effect<CodeGraphRoutineMaintenanceResult> => {
             if (result.state === 'removed') {
               return Effect.succeed({
                 cleanup: 'removed-worktree-view',
@@ -330,10 +333,15 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
               return Effect.succeed({reason: 'schema-unavailable', state: 'skipped'} as const);
             }
             return orphanProvenanceCleaner.tick(input).pipe(
-              Effect.map(orphan => {
+              Effect.map((orphan): CodeGraphRoutineMaintenanceResult => {
+                const diagnostics =
+                  orphan.cursorRecovery === undefined
+                    ? {}
+                    : {diagnostics: [CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC] as const};
                 if (orphan.state === 'removed') {
                   return {
                     cleanup: 'orphan-provenance',
+                    ...diagnostics,
                     expiredLeases: 0,
                     remaining: true,
                     retiredSnapshots: 0,
@@ -342,15 +350,15 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
                   } as const satisfies CodeGraphRoutineMaintenanceResult;
                 }
                 if (orphan.reason === 'external-maintenance') {
-                  return {reason: 'external-maintenance', state: 'deferred'} as const;
+                  return {reason: 'external-maintenance', ...diagnostics, state: 'deferred'} as const;
                 }
                 if (orphan.state === 'deferred' && orphan.reason === 'writer-busy') {
-                  return {reason: 'writer-busy', state: 'deferred'} as const;
+                  return {reason: 'writer-busy', ...diagnostics, state: 'deferred'} as const;
                 }
                 if (orphan.state === 'deferred' && orphan.reason === 'catalog-unavailable') {
-                  return {reason: 'schema-unavailable', state: 'skipped'} as const;
+                  return {reason: 'schema-unavailable', ...diagnostics, state: 'skipped'} as const;
                 }
-                return emptyMaintenanceResult();
+                return {...emptyMaintenanceResult(), ...diagnostics};
               }),
             );
           }),
@@ -381,7 +389,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
             waitTimeoutMilliseconds: 0,
           })
           .pipe(
-            Effect.flatMap(result =>
+            Effect.flatMap((result): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
               result.state === 'prepared'
                 ? Effect.succeed({
                     cleanup: 'reconciliation-index',
@@ -743,8 +751,13 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
       Effect.gen(function* () {
         const exit = yield* restore(
           externalMaintenanceActive(input.threadnoteHome).pipe(
-            Effect.flatMap(active =>
-              active ? Effect.succeed({reason: 'external-maintenance', state: 'deferred'} as const) : run(input),
+            Effect.flatMap((active): Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError> =>
+              active
+                ? Effect.succeed({
+                    reason: 'external-maintenance',
+                    state: 'deferred',
+                  } as const satisfies CodeGraphRoutineMaintenanceResult)
+                : run(input),
             ),
           ),
         ).pipe(Effect.exit);
