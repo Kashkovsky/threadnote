@@ -373,16 +373,34 @@ jobs:
           machines_file="$RUNNER_TEMP/threadnote-machines-after.json"
           checks_file="$RUNNER_TEMP/threadnote-checks-after.json"
           images_file="$RUNNER_TEMP/threadnote-images-after.json"
-          flyctl machine list --app threadnote-telemetry --json > "$machines_file"
-          go run ./cmd/budget < "$machines_file"
-          flyctl image show --app threadnote-telemetry --json > "$images_file"
           expected_digest="${THREADNOTE_TELEMETRY_IMAGE##*@}"
-          jq -e --arg digest "$expected_digest" '
-            type == "array" and
-            length == 2 and
-            ([.[].MachineID] | unique | length) == 2 and
-            all(.Digest == $digest)
-          ' "$images_file" >/dev/null
+          deployed_inventory_ready=false
+          for _ in $(seq 1 20); do
+            if flyctl machine list --app threadnote-telemetry --json > "$machines_file" &&
+              flyctl image show --app threadnote-telemetry --json > "$images_file" &&
+              go run ./cmd/budget < "$machines_file" >/dev/null 2>&1 &&
+              jq -e --arg digest "$expected_digest" '
+                type == "array" and
+                length == 2 and
+                ([.[].MachineID] | unique | length) == 2 and
+                all(.Digest == $digest)
+              ' "$images_file" >/dev/null; then
+              deployed_inventory_ready=true
+              break
+            fi
+            sleep 3
+          done
+          if [[ "$deployed_inventory_ready" != 'true' ]]; then
+            echo 'The deployed Machine inventory and image digest did not converge within 60 seconds.' >&2
+            go run ./cmd/budget < "$machines_file" || true
+            jq -e --arg digest "$expected_digest" '
+              type == "array" and
+              length == 2 and
+              ([.[].MachineID] | unique | length) == 2 and
+              all(.Digest == $digest)
+            ' "$images_file" >/dev/null || true
+            exit 1
+          fi
 
           healthy=false
           for _ in $(seq 1 20); do
