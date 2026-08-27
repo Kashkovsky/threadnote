@@ -20,8 +20,17 @@ import {
   removedViewCleanupRecordedRevision,
 } from './store_removed_view_schema_inspection.js';
 import {normalizeSchemaDefinition} from './store_schema_normalization.js';
-import {inspectBoundedSchemaMetadataValue} from './store_schema_metadata.js';
-import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
+import {
+  REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  inspectBoundedSchemaMetadataRowCount,
+  inspectBoundedSchemaMetadataValue,
+} from './store_schema_metadata.js';
+import {
+  CODE_GRAPH_SCHEMA_VERSION,
+  CodeGraphStoreCorruptionError,
+  CodeGraphStoreError,
+  CodeGraphStoreIncompatibleSchemaError,
+} from './types.js';
 import {
   allocateRemovedViewCleanupEpoch,
   authorityPrimaryKeyBinary,
@@ -63,6 +72,10 @@ import {
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 
+const WORKTREE_RECONCILIATION_CURSOR_KEY = 'worktree_reconciliation_cursor';
+const WORKTREE_RECONCILIATION_CURSOR_PATTERN = /^[0-9a-f]{64}$/u;
+const WORKTREE_RECONCILIATION_CURSOR_OPERATION = 'claim code graph reconciliation candidates';
+
 const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktreeReconciliationCandidates')(function* (
   sql: SqlClient.SqlClient,
   requestedLimit: number,
@@ -73,14 +86,20 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
       }
-      const cursorRows = yield* sql<{readonly value: string}>`
-          SELECT value FROM schema_metadata WHERE key = 'worktree_reconciliation_cursor' LIMIT 1
-        `;
-      const recordedCursor = cursorRows[0]?.value;
-      if (recordedCursor !== undefined && !/^[0-9a-f]{64}$/.test(recordedCursor)) {
-        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation cursor is invalid.'));
+      const cursorInspection = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+      if (cursorInspection.state === 'invalid') {
+        return yield* Effect.fail(
+          new CodeGraphStoreCorruptionError('Code graph reconciliation cursor metadata is structurally invalid.', {
+            operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
+          }),
+        );
       }
-      const cursor = recordedCursor;
+      const recordedCursor = cursorInspection.state === 'recorded' ? cursorInspection.value : undefined;
+      const cursor =
+        recordedCursor !== undefined && WORKTREE_RECONCILIATION_CURSOR_PATTERN.test(recordedCursor)
+          ? recordedCursor
+          : undefined;
+      const resetMalformedCursor = recordedCursor !== undefined && cursor === undefined;
       const selectPage = (boundary: 'after' | 'through', pageLimit: number) => {
         const statement = codeGraphWorktreeReconciliationCandidatePageStatement(cursor, boundary, pageLimit);
         return sql.unsafe<{
@@ -110,12 +129,54 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
       ) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation candidate is invalid.'));
       }
-      if (nextCursor !== undefined) {
+      let cursorRecorded = recordedCursor !== undefined;
+      if (resetMalformedCursor) {
         yield* sql`
-            INSERT INTO schema_metadata (key, value)
-            VALUES ('worktree_reconciliation_cursor', ${nextCursor})
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+          DELETE FROM schema_metadata
+          WHERE key = ${WORKTREE_RECONCILIATION_CURSOR_KEY}
+            AND value = ${recordedCursor}
+        `;
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+        }
+        cursorRecorded = false;
+      }
+      if (nextCursor !== undefined) {
+        if (cursorRecorded) {
+          yield* sql`
+            UPDATE schema_metadata
+            SET value = ${nextCursor}
+            WHERE key = ${WORKTREE_RECONCILIATION_CURSOR_KEY}
+              AND value = ${recordedCursor}
           `;
+        } else {
+          const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
+          if (
+            metadataRowCount === undefined ||
+            metadataRowCount >= REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS
+          ) {
+            return yield* Effect.fail(
+              new CodeGraphStoreIncompatibleSchemaError(
+                'Code graph reconciliation cursor metadata capacity is unavailable.',
+                {
+                  operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
+                },
+              ),
+            );
+          }
+          yield* sql`
+            INSERT INTO schema_metadata (key, value)
+            VALUES (${WORKTREE_RECONCILIATION_CURSOR_KEY}, ${nextCursor})
+            ON CONFLICT(key) DO NOTHING
+          `;
+        }
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+        }
+        const advancedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+        if (advancedCursor.state !== 'recorded' || advancedCursor.value !== nextCursor) {
+          return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+        }
       }
       return rows
         .filter(row => row.snapshot_state === 'ready' && Number(row.tombstoned) === 0)
@@ -127,6 +188,15 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
     }),
   );
 });
+
+function worktreeReconciliationCursorChangedError(): CodeGraphStoreError {
+  return new CodeGraphStoreCorruptionError(
+    'Code graph reconciliation cursor metadata changed before it could advance.',
+    {
+      operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
+    },
+  );
+}
 
 /** @internal Indexed cursor-page statement retained for query-plan and high-cardinality regressions. */
 
