@@ -93,6 +93,8 @@ export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
   readonly requestMaintenance?: boolean;
   readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
   readonly refresh?: boolean;
+  /** @internal Original changed-path count when a process boundary bounds seedQueries. */
+  readonly seedQueryCount?: number;
   readonly seedQueries?: readonly string[];
   /** Internal pre-read observation returned by status; never serialized to command or MCP output. */
   readonly statusObservation?: CodeGraphStatusObservation;
@@ -732,6 +734,7 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   baseSnapshotId?: string,
   timeBudgets: CodeGraphTraversalTimeBudgets = {},
   packageName?: string,
+  seedQueryCount?: number,
 ) {
   const traversalTimeBudgetMilliseconds = boundedInteger(
     timeBudgets.traversalMilliseconds,
@@ -944,9 +947,11 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   );
   const unresolvedSeedQueries = Math.max(0, unresolvedQueries.length - recovered.recoveredPaths);
   const warnings: string[] = [];
-  if (seedQueries && seedQueries.length > MAX_IMPACT_SEED_QUERIES) {
+  const suppliedSeedQueryCount = seedQueryCount ?? seedQueries?.length ?? 0;
+  if (seedQueries && suppliedSeedQueryCount > MAX_IMPACT_SEED_QUERIES) {
     warnings.push(
-      `Impact analysis evaluated ${MAX_IMPACT_SEED_QUERIES} of ${seedQueries.length} changed paths; results are partial.`,
+      `Impact analysis evaluated ${MAX_IMPACT_SEED_QUERIES} of ${suppliedSeedQueryCount} changed paths; ` +
+        'results are partial.',
     );
   }
   if (impact && seedQueries?.length && unresolvedSeedQueries > 0) {
@@ -1323,6 +1328,9 @@ const inspectReadyGraph = Effect.fn('codeGraph.inspectReadyGraph')(function* (in
             true,
             input.options.seedQueries,
             impactBaseSnapshotId(snapshot, input.options, input.baseSnapshotId),
+            undefined,
+            undefined,
+            input.options.seedQueryCount,
           );
         case 'explain':
           return yield* traversalQuery(
