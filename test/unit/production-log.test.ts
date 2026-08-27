@@ -295,7 +295,7 @@ describe('production log writer', () => {
   );
 
   effectIt.effect('keeps Windows production logging best-effort at the ten-second contention bound', () =>
-    windowsEntriesAfterLockContention(10_025).pipe(
+    windowsEntriesAfterLockContention(10_025, {awaitApplicationStartBeforeRelease: true}).pipe(
       Effect.flatMap(entries =>
         Effect.sync(() => {
           expect(entries).toHaveLength(1);
@@ -467,13 +467,17 @@ function ownedTestHome(label: string) {
   });
 }
 
-function windowsEntriesAfterLockContention(releaseAfterMilliseconds: number) {
+function windowsEntriesAfterLockContention(
+  releaseAfterMilliseconds: number,
+  options: {readonly awaitApplicationStartBeforeRelease?: boolean} = {},
+) {
   return Effect.scoped(
     Effect.gen(function* () {
       const {fs, home, path} = yield* ownedTestHome(`windows-contention-${releaseAfterMilliseconds}`);
       const lockPath = path.join(home, 'locks', 'production-log.lock');
       const acquired = yield* Deferred.make<void>();
       const contentionObserved = yield* Deferred.make<void>();
+      const applicationStarted = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
       const ownerFiber = yield* withExclusiveFileLock(
         fs,
@@ -503,7 +507,11 @@ function windowsEntriesAfterLockContention(releaseAfterMilliseconds: number) {
       });
       const nativeSystem = yield* SystemInfo;
       const windowsSystem = SystemInfo.of({...nativeSystem, platform: 'win32'});
-      const writerFiber = yield* withProductionLogging(home, {component: 'cli', operation: 'logs'}, Effect.void).pipe(
+      const writerFiber = yield* withProductionLogging(
+        home,
+        {component: 'cli', operation: 'logs'},
+        Deferred.succeed(applicationStarted, undefined),
+      ).pipe(
         Effect.provideService(FileSystem.FileSystem, observedFs),
         Effect.provideService(SystemInfo, windowsSystem),
         Effect.forkChild({startImmediately: true}),
@@ -511,6 +519,11 @@ function windowsEntriesAfterLockContention(releaseAfterMilliseconds: number) {
       yield* Deferred.await(contentionObserved);
 
       yield* TestClock.adjust(releaseAfterMilliseconds);
+      if (options.awaitApplicationStartBeforeRelease === true) {
+        // Keep the owner locked until the first log write has observed the virtual deadline. Otherwise a busy host can
+        // resume the owner before the contender after TestClock's cooperative wake-up and make this boundary racy.
+        yield* Deferred.await(applicationStarted);
+      }
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(ownerFiber);
       yield* TestClock.adjust(25);
