@@ -28,20 +28,32 @@ interface CliOutputSink {
   readonly write: (chunk: string) => number | Promise<number>;
 }
 
+const isBrokenPipeError = (cause: unknown): boolean =>
+  typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'EPIPE';
+
 /** @internal Exported so pipe-backpressure ordering can be regression-tested without a real subprocess. */
 export function makeQueuedCliWriter(open: () => CliOutputSink) {
   let sink: CliOutputSink | undefined;
   let tail = Promise.resolve();
   let failure: unknown;
   let ended = false;
+  let consumerClosed = false;
   const write = (output: string): Promise<void> => {
     const write = tail.then(async () => {
-      sink ??= open();
-      // Bun may complete a pipe write asynchronously once the OS pipe reaches
-      // backpressure. Flushing before that promise settles can close a large
-      // final JSON payload at an arbitrary prefix on slower hosts.
-      await sink.write(`${output}\n`);
-      await sink.flush();
+      if (consumerClosed) return;
+      try {
+        sink ??= open();
+        // Bun may complete a pipe write asynchronously once the OS pipe reaches
+        // backpressure. Flushing before that promise settles can close a large
+        // final JSON payload at an arbitrary prefix on slower hosts.
+        await sink.write(`${output}\n`);
+        await sink.flush();
+      } catch (cause) {
+        // A downstream Unix consumer such as `head` closing after its requested
+        // prefix is normal pipeline control flow, not a failed CLI operation.
+        if (!isBrokenPipeError(cause)) throw cause;
+        consumerClosed = true;
+      }
     });
     tail = write.catch(cause => {
       failure ??= cause;
@@ -55,9 +67,14 @@ export function makeQueuedCliWriter(open: () => CliOutputSink) {
   return {
     drain: async (): Promise<void> => {
       await flush();
-      if (sink !== undefined && !ended) {
+      if (sink !== undefined && !ended && !consumerClosed) {
         ended = true;
-        await sink.end();
+        try {
+          await sink.end();
+        } catch (cause) {
+          if (!isBrokenPipeError(cause)) throw cause;
+          consumerClosed = true;
+        }
       }
     },
     enqueue: (output: string): void => {

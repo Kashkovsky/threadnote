@@ -808,6 +808,48 @@ describe('Effect CLI', () => {
     }
   });
 
+  it('treats an early-closing stdout consumer as a normal CLI termination', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-broken-pipe-'));
+    const input = `consumer-prefix\n${'synthetic-memory-line\n'.repeat(64 * 1024)}`;
+    try {
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          'src/standalone.ts',
+          'remember',
+          '--home',
+          home,
+          '--dry-run',
+          '--stdin',
+          '--project',
+          'threadnote',
+          '--topic',
+          'synthetic-broken-pipe',
+        ],
+        {
+          cwd: process.cwd(),
+          env: {...process.env, NO_COLOR: '1'},
+          stdin: 'pipe',
+          stderr: 'pipe',
+          stdout: 'pipe',
+        },
+      );
+      child.stdin.write(input);
+      child.stdin.end();
+
+      const stdout = child.stdout.getReader();
+      const prefix = await stdout.read();
+      await stdout.cancel();
+      const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+
+      expect(new TextDecoder().decode(prefix.value)).toContain('consumer-prefix');
+      expect(stderr).toBe('');
+      expect(exitCode).toBe(0);
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
+  });
+
   it('includes eligible untracked files in Git-base impact analysis', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-graph-'));
     const home = join(root, '.threadnote-test-home');
