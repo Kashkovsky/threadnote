@@ -10,6 +10,8 @@ const CODE_GRAPH_IMPACT_QUERY_INPUT_BYTES_MAXIMUM = 256 * 1_024;
 const CODE_GRAPH_IMPACT_QUERY_OUTPUT_BYTES_MAXIMUM = 2 * 1_024 * 1_024;
 const CODE_GRAPH_IMPACT_QUERY_TEXT_BYTES_MAXIMUM = 64 * 1_024;
 const CODE_GRAPH_IMPACT_QUERY_SEED_LIMIT = 200;
+const CODE_GRAPH_IMPACT_QUERY_CHANGED_PATHS_SELECTOR = 'changed paths';
+const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 export const CODE_GRAPH_IMPACT_QUERY_TIMEOUT_MILLISECONDS = 20_000;
 
 interface CodeGraphImpactQueryRequest {
@@ -152,7 +154,7 @@ function encodeImpactQueryRequest(input: IsolatedCodeGraphImpactQueryInput): Uin
     ...(input.includeModelAssociations === undefined ? {} : {includeModelAssociations: input.includeModelAssociations}),
     nodeLimit: input.nodeLimit,
     protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
-    query: input.query,
+    query: impactQueryTransportSelector(input.query, input.seedQueries),
     ...(input.seedQueries === undefined ? {} : {seedQueries, seedQueryCount: input.seedQueries.length}),
     threadnoteHome: input.threadnoteHome,
   } satisfies CodeGraphImpactQueryRequest;
@@ -223,7 +225,7 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     (record.includeModelAssociations !== undefined && typeof record.includeModelAssociations !== 'boolean') ||
     (record.seedQueryCount !== undefined && !boundedInteger(record.seedQueryCount, 0, Number.MAX_SAFE_INTEGER)) ||
     (record.baseCommit !== undefined &&
-      (typeof record.baseCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(record.baseCommit)))
+      (typeof record.baseCommit !== 'string' || !GIT_OBJECT_ID_PATTERN.test(record.baseCommit)))
   ) {
     return false;
   }
@@ -236,6 +238,14 @@ function validImpactQueryRequest(value: unknown): value is CodeGraphImpactQueryR
     seeds.every(value => validProtocolText(value)) &&
     (record.query !== '' || seedQueryCount > 0)
   );
+}
+
+/** @internal Seed paths carry default diff impact semantics; never duplicate them into the selector field. */
+export function impactQueryTransportSelector(
+  query: string | undefined,
+  seedQueries: readonly string[] | undefined,
+): string {
+  return seedQueries?.length ? CODE_GRAPH_IMPACT_QUERY_CHANGED_PATHS_SELECTOR : (query ?? '');
 }
 
 function validProtocolText(value: unknown, allowEmpty = false): value is string {

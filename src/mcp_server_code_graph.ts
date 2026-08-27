@@ -16,6 +16,7 @@ import {
 } from './code_graph/query_anonymous_telemetry.js';
 import {repositoryChangesSince} from './code_graph/repository.js';
 import {
+  impactQueryTransportSelector,
   inspectCodeGraphImpactIsolated,
   IsolatedCodeGraphImpactQueryTimedOut,
 } from './code_graph/isolated_impact_query.js';
@@ -481,7 +482,7 @@ export function registerCodeGraphTool(
           );
         }
         const {refreshStatus, selection, status} = snapshotResolution;
-        const queryText = requestedQuery || changes?.paths.join(' ') || '';
+        const queryText = impactQueryTransportSelector(requestedQuery, changes?.paths);
         const result = yield* queryTelemetry.execute(
           operation === 'impact'
             ? inspectCodeGraphImpactIsolated({

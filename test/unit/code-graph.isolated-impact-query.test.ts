@@ -5,6 +5,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   decodeImpactQueryRequest,
+  impactQueryTransportSelector,
   impactQueryWorkerEnvironment,
   impactQueryWorkerInvocation,
   inspectCodeGraphImpactIsolated,
@@ -114,7 +115,7 @@ describe('isolated code graph impact query', () => {
       expect(observed?.options?.maxOutputBytes).toBe(2 * 1_024 * 1_024);
       expect(JSON.stringify([observed?.arguments, observed?.options?.env])).not.toContain(input.query);
       const request = decodeImpactQueryRequest(new TextDecoder().decode(observed?.options?.input));
-      expect(request).toMatchObject({...input, protocol: 1});
+      expect(request).toMatchObject({...input, protocol: 1, query: 'changed paths'});
     }),
   );
 
@@ -149,20 +150,22 @@ describe('isolated code graph impact query', () => {
       });
       const seedQueries = Array.from({length: 201}, (_, index) => `src/file-${index}.ts`);
 
-      yield* inspectCodeGraphImpactIsolated({...input, seedQueries}).pipe(
+      yield* inspectCodeGraphImpactIsolated({...input, query: 'src/private-path.ts '.repeat(4_000), seedQueries}).pipe(
         Effect.provideService(CommandExecutor, command),
         Effect.provideService(SystemInfo, systemInfoStub({})),
       );
 
       const request = decodeImpactQueryRequest(new TextDecoder().decode(encodedRequest));
+      expect(request?.query).toBe('changed paths');
       expect(request?.seedQueries).toEqual(seedQueries.slice(0, 200));
       expect(request?.seedQueryCount).toBe(201);
     }),
   );
 
   effectIt.effect.prop(
-    'round-trips every bounded path and selector set without changing order or content (property)',
+    'round-trips SHA-1/SHA-256 bases and every bounded path set without changing order or content (property)',
     {
+      baseCommit: fc.oneof(gitObjectId(40), gitObjectId(64)),
       query: fc.string({maxLength: 80}).filter(value => !value.includes('\0')),
       seeds: fc.array(
         fc.string({maxLength: 80, minLength: 1}).filter(value => !value.includes('\0')),
@@ -171,10 +174,11 @@ describe('isolated code graph impact query', () => {
         },
       ),
     },
-    ({query, seeds}) =>
+    ({baseCommit, query, seeds}) =>
       Effect.sync(() => {
         fc.pre(query !== '' || seeds.length > 0);
         const request = {
+          baseCommit,
           cwd: '/workspace/repository',
           edgeLimit: 40,
           nodeLimit: 20,
@@ -188,6 +192,12 @@ describe('isolated code graph impact query', () => {
       }),
     {fastCheck: {numRuns: 80}},
   );
+
+  it('uses a fixed selector for seed-based impact instead of duplicating an unbounded changed-path list', () => {
+    const oversizedLegacySelector = 'src/very-long-private-path.ts '.repeat(3_000);
+    expect(impactQueryTransportSelector(oversizedLegacySelector, ['src/a.ts'])).toBe('changed paths');
+    expect(impactQueryTransportSelector('cgs_symbol', undefined)).toBe('cgs_symbol');
+  });
 
   it('rejects NUL-bearing, over-count, and non-SHA protocol fields', () => {
     const request = {
@@ -208,6 +218,12 @@ describe('isolated code graph impact query', () => {
 
 function commandResult(stdout: string): CommandResult {
   return {exitCode: 0, stderr: '', stdout};
+}
+
+function gitObjectId(length: 40 | 64): fc.Arbitrary<string> {
+  return fc
+    .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: length, minLength: length})
+    .map(characters => characters.join(''));
 }
 
 function systemInfoStub(overrides: Partial<SystemInfoShape>): SystemInfoShape {
