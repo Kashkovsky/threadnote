@@ -1,6 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Console, Effect, Terminal} from 'effect';
+import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {promptForSelection, startProgress} from '../../src/cli_ui.js';
 import {CliOutput, makeQueuedCliWriter, withCliOutputConsole} from '../../src/effect/cli_output.js';
@@ -67,6 +68,59 @@ describe('CLI progress indicator', () => {
     await writer.drain();
 
     expect(events).toEqual(['write:complete-json\n', 'written', 'flush', 'end']);
+  });
+
+  it.each(['write', 'flush', 'end'] as const)(
+    'silently stops writing after a downstream consumer closes the pipe during %s',
+    async failureStage => {
+      const events: string[] = [];
+      const brokenPipe = Object.assign(new Error('broken pipe'), {code: 'EPIPE'});
+      const sinkOperation = (operation: 'end' | 'flush' | 'write') => {
+        events.push(operation);
+        if (failureStage === operation) throw brokenPipe;
+        return 0;
+      };
+      const writer = makeQueuedCliWriter(() => ({
+        end: () => sinkOperation('end'),
+        flush: () => sinkOperation('flush'),
+        write: () => sinkOperation('write'),
+      }));
+
+      await writer.write('requested-prefix');
+      await writer.drain();
+      await writer.write('unrequested-suffix');
+      await writer.drain();
+
+      expect(events).toEqual(
+        failureStage === 'write'
+          ? ['write']
+          : failureStage === 'flush'
+            ? ['write', 'flush']
+            : ['write', 'flush', 'end'],
+      );
+    },
+  );
+
+  it('preserves arbitrary non-EPIPE sink failures', async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.string().filter(code => code !== 'EPIPE'),
+        async code => {
+          const failure = Object.assign(new Error('sink failure'), {code});
+          const writer = makeQueuedCliWriter(() => ({
+            end: () => 0,
+            flush: () => 0,
+            write: () => {
+              throw failure;
+            },
+          }));
+
+          await expect(writer.write('complete-json')).rejects.toBe(failure);
+          await expect(writer.flush()).rejects.toBe(failure);
+        },
+      ),
+      {numRuns: 64},
+    );
   });
 
   effectIt.effect('renders each explicit milestone immediately in an interactive terminal', () =>
