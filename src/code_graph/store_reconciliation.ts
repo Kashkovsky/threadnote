@@ -5,6 +5,8 @@ import {
   CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS,
   CODE_GRAPH_REMOVED_VIEW_CLEANUP_PAGE_ROWS,
   CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES,
+  type CodeGraphOrphanProvenanceCandidatePage,
+  type CodeGraphOrphanProvenanceViewObservation,
   type CodeGraphRemovedViewCleanupEntry,
   type CodeGraphRemovedViewCleanupEvidence,
   type CodeGraphRemovedViewCleanupUpdate,
@@ -75,6 +77,8 @@ import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 const WORKTREE_RECONCILIATION_CURSOR_KEY = 'worktree_reconciliation_cursor';
 const WORKTREE_RECONCILIATION_CURSOR = /^[0-9a-f]{64}$/u;
 const WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS = 67 satisfies SchemaMetadataMaximumRows;
+const ORPHAN_PROVENANCE_CURSOR_KEY = 'orphan_provenance_cursor';
+const ORPHAN_PROVENANCE_WORKTREE_ID_LIMIT = 4_096;
 
 interface WorktreeReconciliationCursor {
   readonly recorded: boolean;
@@ -217,6 +221,161 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
           snapshotId: row.snapshot_id,
           worktreeId: row.worktree_id,
         })) satisfies readonly CodeGraphWorktreeReconciliationCandidate[];
+    }),
+  );
+});
+
+const claimOrphanProvenanceCandidates = Effect.fn('codeGraph.claimOrphanProvenanceCandidates')(function* (
+  sql: SqlClient.SqlClient,
+  requestedWorktreeIds: readonly string[],
+  requestedLimit: number,
+) {
+  if (
+    requestedWorktreeIds.length > ORPHAN_PROVENANCE_WORKTREE_ID_LIMIT ||
+    requestedWorktreeIds.some(worktreeId => !/^[0-9a-f]{64}$/.test(worktreeId))
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance candidate inventory is invalid.'));
+  }
+  const worktreeIds = [...new Set(requestedWorktreeIds)].sort();
+  if (worktreeIds.length !== requestedWorktreeIds.length) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance candidate inventory is invalid.'));
+  }
+  if (worktreeIds.length === 0) {
+    return {worktreeIds: []} as const satisfies CodeGraphOrphanProvenanceCandidatePage;
+  }
+  const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(32, requestedLimit)) : 32;
+  const encodedWorktreeIds = JSON.stringify(worktreeIds);
+  const worktreeIdSet = new Set(worktreeIds);
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+      }
+      const cursorInspection = yield* inspectBoundedSchemaMetadataValue(sql, ORPHAN_PROVENANCE_CURSOR_KEY, 64);
+      if (cursorInspection.state === 'invalid') {
+        return yield* Effect.fail(
+          new CodeGraphStoreError('Code graph provenance reconciliation cursor metadata is invalid.'),
+        );
+      }
+      const cursor =
+        cursorInspection.state === 'recorded' && /^[0-9a-f]{64}$/u.test(cursorInspection.value)
+          ? cursorInspection.value
+          : undefined;
+      const cursorRecovery =
+        cursorInspection.state === 'recorded' && cursor === undefined ? ('invalid-format' as const) : undefined;
+      const selectPage = (boundary: 'after' | 'through', pageLimit: number) => {
+        const predicate =
+          cursor === undefined ? '' : boundary === 'after' ? 'AND candidate.value > ?' : 'AND candidate.value <= ?';
+        const parameters =
+          cursor === undefined ? [encodedWorktreeIds, pageLimit] : [encodedWorktreeIds, cursor, pageLimit];
+        return sql.unsafe<{readonly worktree_id: unknown}>(
+          `SELECT candidate.value AS worktree_id
+           FROM json_each(?) AS candidate
+           LEFT JOIN active_snapshots AS active ON active.worktree_id = candidate.value
+           WHERE candidate.type = 'text'
+             AND active.worktree_id IS NULL
+             ${predicate}
+           ORDER BY candidate.value
+           LIMIT ?`,
+          parameters,
+        );
+      };
+      const after = yield* selectPage('after', limit);
+      const rows =
+        cursor === undefined || after.length >= limit
+          ? after
+          : [...after, ...(yield* selectPage('through', limit - after.length))];
+      if (
+        rows.some(
+          row =>
+            typeof row.worktree_id !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(row.worktree_id) ||
+            !worktreeIdSet.has(row.worktree_id),
+        )
+      ) {
+        return yield* Effect.fail(
+          new CodeGraphStoreError('Code graph provenance reconciliation candidate is invalid.'),
+        );
+      }
+      const selected = rows.map(row => row.worktree_id as string);
+      const nextCursor = selected.at(-1);
+      if (nextCursor !== undefined) {
+        if (cursorInspection.state === 'missing') {
+          const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
+          const removedViewAdmissionCursor = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
+          const metadataRowLimit =
+            removedViewAdmissionCursor.cursor === undefined
+              ? REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - 1
+              : REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS;
+          if (
+            metadataRowCount === undefined ||
+            !removedViewAdmissionCursor.current ||
+            metadataRowCount >= metadataRowLimit
+          ) {
+            return yield* Effect.fail(
+              new CodeGraphStoreError('Code graph provenance reconciliation cursor metadata has no capacity.'),
+            );
+          }
+          yield* sql.unsafe(`INSERT INTO schema_metadata (key, value) VALUES (?, ?)`, [
+            ORPHAN_PROVENANCE_CURSOR_KEY,
+            nextCursor,
+          ]);
+        } else {
+          yield* sql.unsafe(`UPDATE schema_metadata SET value = ? WHERE key = ? AND value = ?`, [
+            nextCursor,
+            ORPHAN_PROVENANCE_CURSOR_KEY,
+            cursorInspection.value,
+          ]);
+          if ((yield* lastStatementChangeCount(sql)) !== 1) {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor changed.'));
+          }
+        }
+      } else if (cursorRecovery !== undefined && cursorInspection.state === 'recorded') {
+        yield* sql.unsafe(`DELETE FROM schema_metadata WHERE key = ? AND value = ?`, [
+          ORPHAN_PROVENANCE_CURSOR_KEY,
+          cursorInspection.value,
+        ]);
+        if ((yield* lastStatementChangeCount(sql)) !== 1) {
+          return yield* Effect.fail(new CodeGraphStoreError('Code graph provenance reconciliation cursor changed.'));
+        }
+      }
+      return {
+        ...(cursorRecovery === undefined ? {} : {cursorRecovery}),
+        worktreeIds: selected,
+      } as const satisfies CodeGraphOrphanProvenanceCandidatePage;
+    }),
+  );
+});
+
+const observeOrphanProvenanceView = Effect.fn('codeGraph.observeOrphanProvenanceView')(function* (
+  sql: SqlClient.SqlClient,
+  worktreeId: string,
+) {
+  if (!/^[0-9a-f]{64}$/.test(worktreeId)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
+  }
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
+      }
+      const rows = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+        `SELECT snapshot_id FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
+        [worktreeId],
+      );
+      if (
+        rows.length > 1 ||
+        (rows[0] !== undefined &&
+          (typeof rows[0].snapshot_id !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(rows[0].snapshot_id)))
+      ) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph view authority is invalid.'));
+      }
+      return rows[0] === undefined
+        ? ({state: 'absent'} as const satisfies CodeGraphOrphanProvenanceViewObservation)
+        : ({
+            snapshotId: rows[0].snapshot_id as string,
+            state: 'active',
+          } as const satisfies CodeGraphOrphanProvenanceViewObservation);
     }),
   );
 });
@@ -826,7 +985,9 @@ export {
   ensureRemovedViewCleanupEpoch,
   validRemovedViewCleanupUpdate,
   admitRemovedViewCleanupEpoch,
+  claimOrphanProvenanceCandidates,
   claimWorktreeReconciliationCandidates,
+  observeOrphanProvenanceView,
   claimRemovedViewCleanupCandidates,
   authorizeRemovedViewCleanup,
   updateRemovedViewCleanup,

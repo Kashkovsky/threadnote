@@ -27,6 +27,8 @@ import type {
   CodeGraphMaterializationSpoolContext,
   CodeGraphMaterializedShardAssociationBatch,
   CodeGraphMaterializedShardCacheBatch,
+  CodeGraphOrphanProvenanceCandidatePage,
+  CodeGraphOrphanProvenanceViewObservation,
   CodeGraphRemovedViewCleanupAuthorizationResult,
   CodeGraphRemovedViewCleanupEntry,
   CodeGraphRemovedViewCleanupStoreOptions,
@@ -187,6 +189,17 @@ export interface CodeGraphStoreShape {
     limit: number,
     options?: CodeGraphWorktreeReconciliationClaimOptions,
   ) => Effect.Effect<readonly CodeGraphWorktreeReconciliationCandidate[], CodeGraphStoreError>;
+  readonly claimOrphanProvenanceCandidates: (
+    databasePath: string,
+    worktreeIds: readonly string[],
+    limit: number,
+    options?: CodeGraphWorktreeReconciliationClaimOptions,
+  ) => Effect.Effect<CodeGraphOrphanProvenanceCandidatePage, CodeGraphStoreError>;
+  readonly observeOrphanProvenanceView: (
+    databasePath: string,
+    worktreeId: string,
+    options?: CodeGraphWorktreeReconciliationClaimOptions,
+  ) => Effect.Effect<CodeGraphOrphanProvenanceViewObservation, CodeGraphStoreError>;
   readonly prepareWorktreeReconciliationIndexes: (
     databasePath: string,
     options?: CodeGraphWorktreeReconciliationClaimOptions,
