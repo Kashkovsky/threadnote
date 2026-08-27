@@ -172,11 +172,28 @@ function processPresentationRank(process: ManageableThreadnoteProcessDiagnostic)
   if (process.role === 'legacy') return 2;
   if (
     process.activityRole !== undefined ||
-    (process.currentOperation !== undefined && process.currentOperation !== 'manager-ui')
+    (process.currentOperation !== undefined && !isProcessBaselineOperation(process))
   ) {
     return 0;
   }
   return 1;
+}
+
+function isProcessBaselineOperation(process: ManageableThreadnoteProcessDiagnostic): boolean {
+  switch (process.role) {
+    case 'manager':
+      return process.currentOperation === 'manager-ui';
+    case 'mcp':
+      return process.currentOperation === 'mcp-server';
+    case 'mcp-broker':
+      return process.currentOperation === 'mcp-broker';
+    case 'local-model-worker':
+      return process.currentOperation === 'model-stdio';
+    case 'graph-parser-worker':
+      return process.currentOperation === 'parser-stdio';
+    default:
+      return false;
+  }
 }
 
 function processRoleLabel(role: ManageableThreadnoteProcessDiagnostic['role']): string {

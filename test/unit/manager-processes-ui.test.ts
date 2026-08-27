@@ -158,6 +158,30 @@ describe('Manager Processes panel', () => {
     );
   });
 
+  it('keeps idle service baselines behind active work even when the services are older', () => {
+    const process = (
+      processId: number,
+      role: ManageableThreadnoteProcessDiagnostic['role'],
+      currentOperation: string,
+    ): ManageableThreadnoteProcessDiagnostic => ({
+      ageMilliseconds: 1,
+      currentOperation,
+      parentProcessId: 1,
+      processId,
+      role,
+      startedAt: `2026-08-0${processId}T00:00:00.000Z`,
+      terminable: true,
+    });
+    const ordered = orderManagerProcessesForPresentation([
+      process(1, 'mcp', 'mcp-server'),
+      process(2, 'mcp-broker', 'mcp-broker'),
+      process(3, 'local-model-worker', 'model-stdio'),
+      process(4, 'graph-parser-worker', 'parser-stdio'),
+      process(5, 'cli', 'index-repository'),
+    ]);
+    expect(ordered.map(value => value.processId)).toEqual([5, 1, 2, 3, 4]);
+  });
+
   it('confirms termination and posts the exact opaque process reference with the PID', async () => {
     await renderProcesses();
     const stop = document.querySelector<HTMLButtonElement>(
@@ -221,10 +245,29 @@ function jsonResponse(body: unknown, status = 200): Response {
 const processDiagnosticArbitrary: FC.Arbitrary<ManageableThreadnoteProcessDiagnostic> = FC.record({
   activityRole: FC.option(FC.constant('graph-builder' as const), {nil: undefined}),
   ageMilliseconds: FC.nat(),
-  currentOperation: FC.option(FC.constantFrom('index-repository', 'manager-ui'), {nil: undefined}),
+  currentOperation: FC.option(
+    FC.constantFrom(
+      'index-repository',
+      'manager-ui',
+      'mcp-server',
+      'mcp-broker',
+      'model-stdio',
+      'parser-stdio',
+      'embed-many',
+    ),
+    {nil: undefined},
+  ),
   parentProcessId: FC.nat(),
   processId: FC.integer({min: 1, max: 1_000_000}),
-  role: FC.constantFrom('cli' as const, 'manager' as const, 'mcp' as const, 'legacy' as const),
+  role: FC.constantFrom(
+    'cli' as const,
+    'manager' as const,
+    'mcp' as const,
+    'mcp-broker' as const,
+    'local-model-worker' as const,
+    'graph-parser-worker' as const,
+    'legacy' as const,
+  ),
   startedAt: FC.date({
     max: new Date('2030-01-01T00:00:00.000Z'),
     min: new Date('2020-01-01T00:00:00.000Z'),
@@ -236,7 +279,17 @@ const processDiagnosticArbitrary: FC.Arbitrary<ManageableThreadnoteProcessDiagno
 function presentationRank(process: ManageableThreadnoteProcessDiagnostic): number {
   if (process.role === 'legacy') return 2;
   return process.activityRole !== undefined ||
-    (process.currentOperation !== undefined && process.currentOperation !== 'manager-ui')
+    (process.currentOperation !== undefined && !isBaselineOperationForRole(process.role, process.currentOperation))
     ? 0
     : 1;
+}
+
+function isBaselineOperationForRole(role: ManageableThreadnoteProcessDiagnostic['role'], operation: string): boolean {
+  return (
+    (role === 'manager' && operation === 'manager-ui') ||
+    (role === 'mcp' && operation === 'mcp-server') ||
+    (role === 'mcp-broker' && operation === 'mcp-broker') ||
+    (role === 'local-model-worker' && operation === 'model-stdio') ||
+    (role === 'graph-parser-worker' && operation === 'parser-stdio')
+  );
 }
