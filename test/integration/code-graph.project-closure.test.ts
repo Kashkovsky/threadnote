@@ -208,6 +208,44 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  it.effect('ignores overlapping TypeScript config ownership outside the package resolver closure', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => createProjectClosureRepository({overlappingTypeScriptConfigs: true})),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const incrementalHome = join(root, '.threadnote-overlap-incremental');
+          const fullHome = join(root, '.threadnote-overlap-full');
+          yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          yield* Effect.sync(() => redirectBarrel(root));
+
+          const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+          const incrementalLayout = codeGraphLayout(
+            path,
+            incrementalHome,
+            incremental.identity.checkoutId,
+            incremental.identity.worktreeId,
+          );
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+          expect(incremental.materialization).toMatchObject({
+            closureProjects: 2,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
+            stagedFiles: 4,
+          });
+          expect(incremental.materialization?.fallbackReason).toBeUndefined();
+          expect(
+            normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
+          ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect('keeps unchanged static re-export resolution local despite an unrelated incomplete project model', () =>
     Effect.forEach(
       ['dirty', 'clean'] as const,
@@ -727,7 +765,9 @@ describe('project-closure incremental indexing', () => {
   );
 });
 
-function createProjectClosureRepository(options: {readonly orphanProjectBoundary?: boolean} = {}): string {
+function createProjectClosureRepository(
+  options: {readonly orphanProjectBoundary?: boolean; readonly overlappingTypeScriptConfigs?: boolean} = {},
+): string {
   const root = mkdtempSync(join(tmpdir(), 'threadnote-project-closure-'));
   writeFile(root, '.gitignore', '/.threadnote-*/\n');
   write(root, 'package.json', {name: '@fixture/root', private: true, workspaces: ['packages/*']});
@@ -756,6 +796,13 @@ function createProjectClosureRepository(options: {readonly orphanProjectBoundary
   writeFile(root, 'packages/other/index.ts', 'export function other() { return "other"; }\n');
   write(root, 'packages/unrelated/package.json', {name: '@fixture/unrelated'});
   writeFile(root, 'packages/unrelated/index.ts', 'export function unrelated() { return "unrelated"; }\n');
+  if (options.overlappingTypeScriptConfigs) {
+    write(root, 'tsconfig.json', {compilerOptions: {rootDir: 'packages'}, include: ['packages/**/*.ts']});
+    write(root, 'test/tsconfig.json', {
+      compilerOptions: {rootDir: '..'},
+      include: ['../packages/**/*.ts'],
+    });
+  }
   if (options.orphanProjectBoundary) {
     write(root, 'unmodeled/tsconfig.json', {references: [{path: '../not-indexed'}]});
     writeFile(root, 'unmodeled/index.ts', 'export const unmodeled = true;\n');

@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Option} from 'effect';
 import {createRepositoryFactAttributor} from './extractor.js';
 import {finalCodeGraphFactBatches} from './fact_budget.js';
 import {
@@ -209,9 +209,8 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       input.inventory.workspace ?? (yield* input.languagePacks.discoverWorkspace(input.inventory.committedFiles));
     const committedByPath = new Map(input.inventory.committedFiles.map(file => [file.path, file]));
     const effectiveByPath = new Map(input.inventory.files.map(file => [file.path, file]));
-    const deletedPaths = input.inventory.committedFiles
-      .filter(file => !effectiveByPath.has(file.path))
-      .map(file => file.path);
+    const deletedFiles = input.inventory.committedFiles.filter(file => !effectiveByPath.has(file.path));
+    const deletedPaths = deletedFiles.map(file => file.path);
     const modifiedFiles = input.inventory.files.filter(file => {
       const committed = committedByPath.get(file.path);
       return (
@@ -237,7 +236,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
         currentChangedFiles: modifiedFiles,
         currentFiles: input.inventory.files,
         currentWorkspace: workspace,
-        deletedPaths,
+        deletedFiles,
         languagePacks: input.languagePacks,
         layout: input.layout,
         store: input.store,
@@ -355,7 +354,8 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
       return {mode: 'fallback', reason: 'workspace-changed'} satisfies IncrementalOverlayPreassessment;
     }
     const currentPaths = new Set(input.inventory.files.map(file => file.path));
-    const deletedPaths = input.candidate.files.filter(file => !currentPaths.has(file.path)).map(file => file.path);
+    const deletedFiles = input.candidate.files.filter(file => !currentPaths.has(file.path));
+    const deletedPaths = deletedFiles.map(file => file.path);
     if (modifiedFiles.length === 0 && deletedPaths.length === 0) {
       return {mode: 'fallback', reason: 'no-materialized-changes'} satisfies IncrementalOverlayPreassessment;
     }
@@ -370,7 +370,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
         currentChangedFiles: modifiedFiles,
         currentFiles: input.inventory.files,
         currentWorkspace: workspace,
-        deletedPaths,
+        deletedFiles,
         languagePacks: input.languagePacks,
         layout: input.layout,
         store: input.store,
@@ -530,7 +530,7 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
   readonly currentChangedFiles: readonly CodeGraphInventoryFile[];
   readonly currentFiles: readonly CodeGraphInventoryFile[];
   readonly currentWorkspace: CodeGraphWorkspace;
-  readonly deletedPaths: readonly string[];
+  readonly deletedFiles: readonly CodeGraphInventoryFile[];
   readonly languagePacks: CodeGraphLanguagePackRegistryShape;
   readonly layout: CodeGraphLayout;
   readonly store: CodeGraphStoreShape;
@@ -543,7 +543,9 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     baseProjects: input.baseWorkspace.projects,
     currentChangedPaths: input.currentChangedFiles.map(file => file.path),
     currentProjects: input.currentWorkspace.projects,
-    deletedPaths: input.deletedPaths,
+    currentResolutionDomainByPath: projectClosureResolutionDomainByPath(input.currentChangedFiles, input.languagePacks),
+    deletedPaths: input.deletedFiles.map(file => file.path),
+    deletedResolutionDomainByPath: projectClosureResolutionDomainByPath(input.deletedFiles, input.languagePacks),
   });
   if (seeds.mode === 'fallback') return seeds satisfies IncrementalOverlayPreassessment;
   const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
@@ -555,13 +557,25 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     currentChangedFiles: input.currentChangedFiles,
     currentFiles: input.currentFiles,
     currentWorkspace: input.currentWorkspace,
-    deletedPaths: input.deletedPaths,
+    deletedPaths: input.deletedFiles.map(file => file.path),
     languagePacks: input.languagePacks,
     layout: input.layout,
     seedProjectIds,
     store: input.store,
   });
 });
+
+function projectClosureResolutionDomainByPath(
+  files: readonly CodeGraphInventoryFile[],
+  languagePacks: CodeGraphLanguagePackRegistryShape,
+): ReadonlyMap<string, string> {
+  const output = new Map<string, string>();
+  for (const file of files) {
+    const match = Option.getOrUndefined(languagePacks.match(file.path));
+    if (match !== undefined) output.set(file.path, match.pack.resolutionStrategy.domain);
+  }
+  return output;
+}
 
 const assessPlannedProjectIncrementalClosure = Effect.fn('codeGraph.assessPlannedProjectIncrementalClosure')(
   function* (input: {

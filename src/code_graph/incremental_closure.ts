@@ -73,16 +73,13 @@ export function assessProjectFileSetClosureSeeds(input: {
   readonly baseProjects: readonly CodeGraphWorkspaceProject[];
   readonly currentChangedPaths: readonly string[];
   readonly currentProjects: readonly CodeGraphWorkspaceProject[];
+  readonly currentResolutionDomainByPath?: ReadonlyMap<string, string>;
   readonly deletedPaths: readonly string[];
+  readonly deletedResolutionDomainByPath?: ReadonlyMap<string, string>;
 }): ProjectClosureSeedAssessment {
   const baseProjectsById = uniqueProjectsById(input.baseProjects);
   const currentProjectsById = uniqueProjectsById(input.currentProjects);
-  if (
-    baseProjectsById === undefined ||
-    currentProjectsById === undefined ||
-    !hasCompleteDeclaredDependencyModel(input.baseProjects, baseProjectsById) ||
-    !hasCompleteDeclaredDependencyModel(input.currentProjects, currentProjectsById)
-  ) {
+  if (baseProjectsById === undefined || currentProjectsById === undefined) {
     return incompleteSeeds();
   }
   const seeds = new Set<string>();
@@ -91,11 +88,24 @@ export function assessProjectFileSetClosureSeeds(input: {
     paths: readonly string[],
     projects: readonly CodeGraphWorkspaceProject[],
     projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
+    resolutionDomainByPath: ReadonlyMap<string, string> | undefined,
   ): boolean => {
     const indexesByDomain = projectPathIndexesByDomain(projects);
     for (const path of uniqueSorted(paths)) {
       let owned = false;
-      for (const [domain, indexes] of indexesByDomain) {
+      // Workspace detectors can intentionally overlap the same source path in
+      // metadata-only domains (for example a test tsconfig that also compiles
+      // src). File-set admission must use the extractor's resolver domain;
+      // ambiguity in another domain cannot affect these facts.
+      const resolutionDomain = resolutionDomainByPath?.get(path);
+      const domainIndexes = resolutionDomain === undefined ? undefined : indexesByDomain.get(resolutionDomain);
+      const indexesForPath =
+        resolutionDomain === undefined
+          ? indexesByDomain
+          : domainIndexes === undefined
+            ? new Map<string, ProjectPathIndexes>()
+            : new Map([[resolutionDomain, domainIndexes]]);
+      for (const [domain, indexes] of indexesForPath) {
         ownershipChecks += 1;
         const owner = nearestProject(indexes, path);
         if (owner.mode !== 'unique') return false;
@@ -124,9 +134,25 @@ export function assessProjectFileSetClosureSeeds(input: {
     return true;
   };
   if (
-    !collect(input.currentChangedPaths, input.currentProjects, currentProjectsById) ||
-    !collect(input.deletedPaths, input.baseProjects, baseProjectsById) ||
+    !collect(
+      input.currentChangedPaths,
+      input.currentProjects,
+      currentProjectsById,
+      input.currentResolutionDomainByPath,
+    ) ||
+    !collect(input.deletedPaths, input.baseProjects, baseProjectsById, input.deletedResolutionDomainByPath) ||
     seeds.size === 0
+  ) {
+    return incompleteSeeds();
+  }
+  if ([...seeds].some(id => !baseProjectsById.has(id) || !currentProjectsById.has(id))) {
+    return incompleteSeeds();
+  }
+  const baseResolutionDomains = new Set([...seeds].map(id => baseProjectsById.get(id)!.resolutionDomain));
+  const currentResolutionDomains = new Set([...seeds].map(id => currentProjectsById.get(id)!.resolutionDomain));
+  if (
+    !hasCompleteDeclaredDependencyModel(input.baseProjects, baseProjectsById, baseResolutionDomains) ||
+    !hasCompleteDeclaredDependencyModel(input.currentProjects, currentProjectsById, currentResolutionDomains)
   ) {
     return incompleteSeeds();
   }
@@ -169,12 +195,17 @@ export function selectProjectIncrementalClosure(
   if (projectClosure === undefined) return incompletePlan();
   const {dependencyEdges, projectIds, projectsById} = projectClosure;
   const closure = new Set(projectIds);
+  // Reverse dependencies never cross resolver domains. Checking ownership in
+  // an unrelated workspace domain would only let overlapping metadata scopes
+  // veto an otherwise complete declared closure.
+  const closureResolutionDomains = new Set(projectIds.map(id => projectsById.get(id)!.resolutionDomain));
 
   const indexesByDomain = projectPathIndexesByDomain(input.projects);
   const affected = new Set(input.modifiedPaths);
   let pathOwnershipChecks = 0;
   for (const file of input.files) {
     for (const [domain, indexes] of indexesByDomain) {
+      if (!closureResolutionDomains.has(domain)) continue;
       pathOwnershipChecks += 1;
       const owner = nearestProject(indexes, file.path);
       if (owner.mode === 'ambiguous') return incompletePlan();
@@ -237,7 +268,6 @@ export function assessProjectClosureSeeds(input: {
     if (projectsById.has(project.id)) return incompleteSeeds();
     projectsById.set(project.id, project);
   }
-  if (!hasCompleteDeclaredDependencyModel(input.projects, projectsById)) return incompleteSeeds();
   const indexesByDomain = projectPathIndexesByDomain(input.projects);
   let ownershipChecks = 0;
 
@@ -329,6 +359,10 @@ export function assessProjectClosureSeeds(input: {
     }
     seeds.add(project.project.id);
   }
+  const seedResolutionDomains = new Set([...seeds].map(id => projectsById.get(id)!.resolutionDomain));
+  if (!hasCompleteDeclaredDependencyModel(input.projects, projectsById, seedResolutionDomains)) {
+    return incompleteSeeds();
+  }
   return {
     mode: 'eligible',
     planningOperations: {ownershipChecks, pathIndexProjects: input.projects.length},
@@ -417,8 +451,10 @@ function declaredProjectForPath(
 function hasCompleteDeclaredDependencyModel(
   projects: readonly CodeGraphWorkspaceProject[],
   projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
+  resolutionDomains?: ReadonlySet<string>,
 ): boolean {
   for (const project of projects) {
+    if (resolutionDomains !== undefined && !resolutionDomains.has(project.resolutionDomain)) continue;
     const dependencies = new Set(project.dependencies);
     const detailedTargets = new Set(project.dependencyDetails.map(dependency => dependency.targetId));
     if (
@@ -457,13 +493,16 @@ function declaredProjectResolutionClosure(
   seedProjectIds: readonly string[],
 ): DeclaredProjectResolutionClosure | undefined {
   const projectsById = uniqueProjectsById(projects);
-  if (projectsById === undefined || !hasCompleteDeclaredDependencyModel(projects, projectsById)) return undefined;
+  if (projectsById === undefined) return undefined;
   const seeds = uniqueSorted(seedProjectIds);
   if (seeds.length === 0 || seeds.some(id => !projectsById.has(id))) return undefined;
+  const resolutionDomains = new Set(seeds.map(id => projectsById.get(id)!.resolutionDomain));
+  if (!hasCompleteDeclaredDependencyModel(projects, projectsById, resolutionDomains)) return undefined;
 
   const reverseDependencies = new Map<string, string[]>();
   let dependencyEdges = 0;
   for (const project of projects) {
+    if (!resolutionDomains.has(project.resolutionDomain)) continue;
     for (const dependencyId of project.dependencies) {
       dependencyEdges += 1;
       const dependency = projectsById.get(dependencyId)!;
