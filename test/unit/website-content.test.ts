@@ -78,6 +78,7 @@ const toolKeys = {
     'memberLimit',
     'operation',
   ]),
+  context_brief: new Set(['budgetTokens', 'callerCwd', 'mode', 'project', 'task', 'workset']),
   inspect_code_graph: new Set([
     'base',
     'callerCwd',
@@ -111,6 +112,7 @@ const toolKeys = {
   ]),
   remember_context: new Set([
     'callerCwd',
+    'codeRefs',
     'kind',
     'project',
     'references',
@@ -777,7 +779,10 @@ The body remains ordinary **Markdown**.
     );
     expect(operations.some(operation => operation.includes('recall_context'))).toBe(true);
     expect(operations.some(operation => operation.includes('inspect_code_graph'))).toBe(true);
+    expect(operations.some(operation => operation.includes('context_brief'))).toBe(true);
     expect(operations.some(operation => operation.includes('share_publish'))).toBe(true);
+    expect(JSON.stringify(proTips)).toContain('stale-link');
+    expect(JSON.stringify(proTips)).toContain('no Workset required');
   });
 
   it('uses fictional, generic examples in public graph simulations', async () => {
@@ -806,6 +811,11 @@ The body remains ordinary **Markdown**.
         expect(Object.keys(payload).every(key => allowedKeys.has(key))).toBe(true);
 
         switch (name) {
+          case 'context_brief':
+            expectNonEmptyString(payload, 'task');
+            expectNonEmptyString(payload, 'callerCwd');
+            expect(payload.callerCwd).toMatch(/^\//);
+            break;
           case 'recall_context':
             expectNonEmptyString(payload, 'project');
             expectNonEmptyString(payload, 'query');
@@ -821,6 +831,15 @@ The body remains ordinary **Markdown**.
             break;
           case 'remember_context':
             expectNonEmptyString(payload, 'text');
+            if (payload.codeRefs !== undefined) {
+              expect(Array.isArray(payload.codeRefs)).toBe(true);
+              expect((payload.codeRefs as unknown[]).length).toBeGreaterThan(0);
+              expect((payload.codeRefs as unknown[]).every(ref => typeof ref === 'string' && ref.length > 0)).toBe(
+                true,
+              );
+              expectNonEmptyString(payload, 'callerCwd');
+              expect(payload.callerCwd).toMatch(/^\//);
+            }
             break;
           case 'share_publish':
             expectNonEmptyString(payload, 'uri');
@@ -891,6 +910,26 @@ The body remains ordinary **Markdown**.
     expect(landingSource).not.toMatch(/13\.2×|9\.9×/);
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
+  });
+
+  it('explains the 4.4 citation contract across Home, Pro Tips, and FAQ', async () => {
+    const [landingSource, proTipsSource, faqSource] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'ProTipsPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+    ]);
+    const tips = JSON.stringify(proTips);
+
+    expect(landingSource).toContain('Optional citations · stale-link warnings · legacy recall');
+    expect(landingSource).toContain('older uncited memories stay recallable');
+    expect(tips).toContain('codeRefs');
+    expect(tips).toContain('Memory fresh · citation relocated · warning stale-link');
+    expect(proTipsSource).toContain('source-aware memory');
+    expect(proTipsSource).toContain('same memory, citation, and graph-search');
+    expect(faqSource).toContain('Will my existing memories disappear after upgrading to 4.4?');
+    expect(faqSource).toContain('v1 and other uncited memories stay recallable');
+    expect(faqSource).toContain('Do I need a Workset to use code citations or Context Brief?');
+    expect(faqSource).toContain('queries never fan out cold graph builds');
   });
 
   it('renders a connected, scale-stable Manager graph preview', async () => {
