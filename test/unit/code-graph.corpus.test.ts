@@ -3,7 +3,7 @@ import {describe, expect, test} from 'vitest';
 import fc from 'fast-check';
 import {strToU8, zipSync} from 'fflate';
 import {Option} from 'effect';
-import {extractCorpusFile} from '../../src/code_graph/languages/corpus/extractor.js';
+import {extractCorpusFile, joinPdfTextItemsWithinLimit} from '../../src/code_graph/languages/corpus/extractor.js';
 import {
   CORPUS_ARCHIVE_ENTRY_BYTES_LIMIT,
   CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
@@ -168,6 +168,47 @@ describe('code graph corpus extraction', () => {
     expect(facts.diagnostics).toEqual([]);
     expect(facts.symbols.some(symbol => symbol.documentation?.includes('Retry queue architecture'))).toBe(true);
     expect(facts.symbols[0]?.signature).toContain('1 page');
+  });
+
+  test('ignores PDF marked-content boundaries while preserving text and explicit line endings', () => {
+    expect(
+      joinPdfTextItemsWithinLimit(
+        [
+          {id: 'section', type: 'beginMarkedContentProps'},
+          {hasEOL: true, str: 'first'},
+          {id: 'section', type: 'endMarkedContent'},
+          {hasEOL: false, str: 'second'},
+        ],
+        12,
+      ),
+    ).toBe('first\nsecond');
+  });
+
+  test('preserves ordered PDF text exactly when it fits and rejects it when it exceeds the remaining budget', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.oneof(
+            fc.record({hasEOL: fc.boolean(), str: fc.string({maxLength: 20})}),
+            fc.record({id: fc.string({maxLength: 20}), type: fc.constantFrom('begin', 'beginProps', 'end')}),
+          ),
+          {maxLength: 30},
+        ),
+        fc.integer({max: 200, min: 0}),
+        (items, maximumCharacters) => {
+          const expected = items
+            .filter((item): item is Extract<(typeof items)[number], {str: string}> => 'str' in item)
+            .map(item => `${item.str}${item.hasEOL ? '\n' : ''}`)
+            .join('');
+          if (expected.length <= maximumCharacters) {
+            expect(joinPdfTextItemsWithinLimit(items, maximumCharacters)).toBe(expected);
+          } else {
+            expect(() => joinPdfTextItemsWithinLimit(items, maximumCharacters)).toThrow('character safety budget');
+          }
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   test('falls back to metadata when cumulative PDF text exceeds its per-artifact budget', async () => {
