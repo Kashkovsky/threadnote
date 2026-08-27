@@ -51,6 +51,17 @@ beforeEach(() => {
             terminable: true,
           },
           {
+            ageMilliseconds: 1_000,
+            currentOperation: 'impact-query',
+            parentProcessId: 80_300,
+            parentRole: 'mcp',
+            processId: 80_301,
+            processRef: `tnp_${'c'.repeat(64)}`,
+            role: 'graph-query-worker',
+            startedAt: '2026-08-12T00:00:00.000Z',
+            terminable: true,
+          },
+          {
             ageMilliseconds: 5_000,
             currentOperation: 'manager-ui',
             parentProcessId: 1,
@@ -80,12 +91,14 @@ describe('Manager Processes panel', () => {
     await renderProcesses();
     const processList = document.querySelector('[aria-label="Threadnote process inventory"]');
     expect(processList?.getAttribute('role')).toBe('list');
-    expect(processList?.querySelectorAll('[role="listitem"]')).toHaveLength(3);
+    expect(processList?.querySelectorAll('[role="listitem"]')).toHaveLength(4);
     expect(document.body.textContent).toContain('Graph compaction worker');
     expect(document.body.textContent).toContain('Compact graph storage');
     expect(document.body.textContent).toContain('Manager · PID 80276');
     expect(document.body.textContent).toContain('MCP server');
     expect(document.body.textContent).toContain('Graph builder activity');
+    expect(document.body.textContent).toContain('Graph query worker');
+    expect(document.body.textContent).toContain('Impact query');
     expect(document.body.textContent).not.toContain(`tnp_${'a'.repeat(64)}`);
 
     const stop = document.querySelector<HTMLButtonElement>(

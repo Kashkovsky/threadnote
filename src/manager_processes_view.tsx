@@ -163,6 +163,8 @@ function processRoleLabel(role: ManageableThreadnoteProcessDiagnostic['role']): 
       return 'Graph diagnostics worker';
     case 'graph-parser-worker':
       return 'Graph parser worker';
+    case 'graph-query-worker':
+      return 'Graph query worker';
     case 'graph-waiter':
       return 'Graph waiter';
     case 'legacy':
