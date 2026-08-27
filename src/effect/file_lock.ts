@@ -8,6 +8,8 @@ export interface ExclusiveFileLockOptions {
   readonly onCompleted?: (lockPath: string) => Effect.Effect<void, never>;
   readonly onContention?: (lockPath: string) => Effect.Effect<void, never>;
   readonly retryIntervalMilliseconds: number;
+  /** @internal Maximum short retries for Windows sharing-shaped exclusive-create failures. */
+  readonly windowsSharingViolationRetryLimit?: number;
   /** @internal Select the versioned, cross-observer process identity channel. */
   readonly useCanonicalProcessStartIdentity?: boolean;
   /**
@@ -118,7 +120,15 @@ function tryAcquireFileLock(
 ): Effect.Effect<boolean, unknown, Crypto.Crypto | SystemInfo> {
   return Effect.gen(function* () {
     yield* recoverStaleFileLock(fs, lockPath, options);
-    if (!(yield* tryWriteLockToken(fs, lockPath, token))) {
+    if (
+      !(yield* tryWriteLockToken(
+        fs,
+        lockPath,
+        token,
+        options.windowsSharingViolationRetryLimit,
+        options.retryIntervalMilliseconds,
+      ))
+    ) {
       return false;
     }
     if (yield* fs.exists(recoveryGuardPath(lockPath))) {
@@ -232,15 +242,53 @@ function staleDeadLockToken(
   });
 }
 
-function tryWriteLockToken(fs: FileSystem.FileSystem, path: string, token: string): Effect.Effect<boolean, unknown> {
-  return fs.writeFileString(path, `${token}\n`, {flag: 'wx', mode: 0o600}).pipe(
-    Effect.as(true),
-    Effect.catch(error =>
-      error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
-        ? Effect.succeed(false)
-        : Effect.fail(error),
-    ),
-  );
+function tryWriteLockToken(
+  fs: FileSystem.FileSystem,
+  path: string,
+  token: string,
+  windowsSharingViolationRetryLimit = 0,
+  retryIntervalMilliseconds = 0,
+): Effect.Effect<boolean, unknown, SystemInfo> {
+  return Effect.gen(function* () {
+    const system = yield* SystemInfo;
+    const retryLimit =
+      Number.isSafeInteger(windowsSharingViolationRetryLimit) && windowsSharingViolationRetryLimit > 0
+        ? windowsSharingViolationRetryLimit
+        : 0;
+    for (let retry = 0; ; retry += 1) {
+      const attempted = yield* fs.writeFileString(path, `${token}\n`, {flag: 'wx', mode: 0o600}).pipe(
+        Effect.as({status: 'acquired'} as const),
+        Effect.catch(error => Effect.succeed({error, status: 'failed'} as const)),
+      );
+      if (attempted.status === 'acquired') return true;
+      if (attempted.error instanceof PlatformError.PlatformError && attempted.error.reason._tag === 'AlreadyExists') {
+        return false;
+      }
+      if (retry >= retryLimit || !isWindowsSharingViolation(attempted.error, system.platform)) {
+        return yield* Effect.fail(attempted.error);
+      }
+      yield* Effect.sleep(retryIntervalMilliseconds);
+    }
+  });
+}
+
+function isWindowsSharingViolation(error: unknown, platform: NodeJS.Platform): boolean {
+  if (!(error instanceof PlatformError.PlatformError)) return false;
+  if (platform !== 'win32') return false;
+
+  // Windows can report an exclusive create against a live lock as a sharing/access failure instead of EEXIST.
+  // Treat only the normalized contention-shaped failures as a missed acquisition so the bounded lock loop retries;
+  // unrelated errors such as a full disk still fail immediately.
+  if (error.reason._tag === 'Busy' || error.reason._tag === 'PermissionDenied' || error.reason._tag === 'WouldBlock') {
+    return true;
+  }
+  if (error.reason._tag !== 'Unknown') return false;
+  const cause = error.reason.cause;
+  const code =
+    typeof cause === 'object' && cause !== null && 'code' in cause
+      ? (cause as {readonly code?: unknown}).code
+      : undefined;
+  return code === 'EACCES' || code === 'EAGAIN' || code === 'EBUSY' || code === 'EPERM';
 }
 
 function recoveryGuardPath(lockPath: string): string {

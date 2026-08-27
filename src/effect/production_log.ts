@@ -38,6 +38,9 @@ const PRODUCTION_LOG_PROCESS_WAIT_MILLISECONDS = PRODUCTION_LOG_LOCK_WAIT_MILLIS
 // Eight standalone Windows processes can occupy the low-volume log lock beyond five seconds under hosted-runner
 // scheduling. Keep the queue bounded while preserving both lifecycle entries for commands that already completed.
 const PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS = 10_000;
+// Windows can briefly report a sharing/access violation while a lock-file delete settles. Retry that distinct error
+// for at most 4 * 25 ms; permanent access failures remain best-effort without consuming the ten-second queue bound.
+const PRODUCTION_LOG_WINDOWS_SHARING_VIOLATION_RETRY_LIMIT = 4;
 const PRODUCTION_LOG_RUNTIME_NAME = 'bun';
 const PRODUCTION_LOG_UNKNOWN_ERROR_TYPE = 'UnknownError';
 const PRODUCTION_LOG_REPORTED_ERROR_TYPE = 'ReportedError';
@@ -391,7 +394,11 @@ function appendProductionLogs(
     const lockPath = path.join(home, PRODUCTION_LOG_LOCK_DIRECTORY_NAME, PRODUCTION_LOG_LOCK_FILE_NAME);
     const lockOptions =
       system.platform === 'win32'
-        ? {...PRODUCTION_LOG_LOCK_OPTIONS, waitTimeoutMilliseconds: PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS}
+        ? {
+            ...PRODUCTION_LOG_LOCK_OPTIONS,
+            waitTimeoutMilliseconds: PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS,
+            windowsSharingViolationRetryLimit: PRODUCTION_LOG_WINDOWS_SHARING_VIOLATION_RETRY_LIMIT,
+          }
         : PRODUCTION_LOG_LOCK_OPTIONS;
     const serialized = entries.map(entry => JSON.stringify(entry)).join('\n') + '\n';
     const serializedBytes = BigInt(new TextEncoder().encode(serialized).byteLength);
