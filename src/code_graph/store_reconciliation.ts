@@ -530,7 +530,9 @@ const codeGraphWorktreeReconciliationSchemaCompatible: (
     }
     const removedForeignKeys = yield* sql.unsafe(`SELECT 1 FROM pragma_foreign_key_list('removed_views') LIMIT 1`);
     if (removedForeignKeys.length !== 0) return false;
-    if (requireCleanup && !(yield* codeGraphRemovedViewCleanupBaseSchemaAdmission(sql)).current) return false;
+    if (requireCleanup && !(yield* codeGraphRemovedViewCleanupBaseSchemaAdmission(sql)).current) {
+      return false;
+    }
     const snapshotForeignKeys = yield* sql.unsafe<{
       readonly from: string;
       readonly match: string;

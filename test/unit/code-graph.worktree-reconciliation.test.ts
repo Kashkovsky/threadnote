@@ -450,7 +450,7 @@ describe('automatic missing-worktree reconciliation', () => {
     }),
   );
 
-  effectIt.effect('claims a durable cross-process cursor page and recovers bounded malformed state', () =>
+  effectIt.effect('repairs only bounded semantic cursor state and keeps authoritative state fail closed', () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const root = mkdtempSync(join(tmpdir(), 'threadnote-reconciliation-cursor-'));
@@ -472,21 +472,55 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(claimed.size).toBe(69);
         expect(claimed.has(worktreeIds.at(-1)!)).toBe(false);
 
-        const recovered = yield* Effect.sync(() => {
+        const cleanupCursor = 'e'.repeat(64);
+        const repaired = yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
             database
-              .query("UPDATE schema_metadata SET value = 'malformed' WHERE key = 'worktree_reconciliation_cursor'")
-              .run();
+              .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+              .run('removed_view_cleanup_admission_cursor', cleanupCursor);
+            database
+              .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+              .run('malformed', 'worktree_reconciliation_cursor');
+          } finally {
+            database.close(false);
+          }
+        }).pipe(Effect.andThen(store.claimWorktreeReconciliationCandidates(databasePath, 32)));
+        expect(repaired).toHaveLength(32);
+        expect(readSchemaMetadataFamily(databasePath, 'worktree_reconciliation_cursor')).toEqual([
+          {key: 'worktree_reconciliation_cursor', value: worktreeIds[31]},
+        ]);
+        expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(cleanupCursor);
+
+        const authoritative = yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database
+              .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+              .run('malformed-authoritative', 'removed_view_cleanup_admission_cursor');
           } finally {
             database.close(false);
           }
         }).pipe(Effect.andThen(store.claimWorktreeReconciliationCandidates(databasePath, 32).pipe(Effect.exit)));
-        expect(recovered._tag).toBe('Success');
-        if (recovered._tag === 'Success') {
-          expect(recovered.value.map(entry => entry.worktreeId)).toEqual(worktreeIds.slice(0, 32));
+        expect(authoritative._tag).toBe('Failure');
+        if (authoritative._tag === 'Failure') {
+          expect(String(authoritative.cause)).not.toContain('malformed-authoritative');
+          expect(String(authoritative.cause)).not.toContain(root);
         }
+        expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(
+          'malformed-authoritative',
+        );
         expect(readReconciliationCursor(databasePath)).toBe(worktreeIds[31]);
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database
+              .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+              .run(cleanupCursor, 'removed_view_cleanup_admission_cursor');
+          } finally {
+            database.close(false);
+          }
+        });
 
         const incompatibleVersion = yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
