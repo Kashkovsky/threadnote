@@ -414,6 +414,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
                     : ({reason: 'schema-unavailable', state: 'skipped'} as const),
                 ),
                 Effect.provideService(CommandExecutor, commandExecutor),
+                Effect.provideService(Crypto.Crypto, crypto),
                 Effect.provideService(FileSystem.FileSystem, fs),
                 Effect.provideService(Path.Path, path),
                 Effect.provideService(SystemInfo, systemInfo),

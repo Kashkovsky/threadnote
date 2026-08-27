@@ -49,7 +49,7 @@ export default function ProTipsPage() {
   useEffect(() => {
     setDocumentMeta(
       'Pro tips',
-      'Practical Threadnote workflows for reviews, teamwork, on-call, continuity, and graph search.',
+      'Practical Threadnote workflows for reviews, continuity, source-aware memory, and graph search.',
     );
   }, []);
 
@@ -66,8 +66,8 @@ export default function ProTipsPage() {
           <span className="eyebrow">Field guide</span>
           <h1>Keep context moving at the speed of the work.</h1>
           <p>
-            Practical patterns for turning individual agent sessions into durable team leverage— with explicit
-            boundaries and evidence you can inspect.
+            Practical patterns for turning individual agent sessions into durable team leverage—with explicit
+            boundaries, source-aware memory, and evidence you can inspect.
           </p>
         </div>
         <div className="subpage-hero__metric">
@@ -142,9 +142,10 @@ export default function ProTipsPage() {
       <section className="content-section content-section--cta">
         <div className="cta-panel cta-panel--compact">
           <span className="eyebrow">Make it your default loop</span>
-          <h2>Recall first. Inspect source. Preserve what changed.</h2>
+          <h2>Recall first. Check the evidence. Preserve what changed.</h2>
           <p>
-            Add the agent instructions once and every compatible agent gets the same memory and graph-search contract.
+            Add the agent instructions once and every compatible agent gets the same memory, citation, and graph-search
+            contract.
           </p>
           <a className="button" href={docsArticleHref('connect-an-agent')}>
             Connect an agent

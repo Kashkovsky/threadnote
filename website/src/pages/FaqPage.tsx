@@ -24,6 +24,21 @@ const questions = [
       'They answer different questions. Recall finds what was learned, decided, or handed off and returns pointers to canonical records. inspect_code_graph answers scoped current-source questions; analyze_code_graph summarizes whole-repository topology. Keeping those surfaces separate stops historical paths from masquerading as current source evidence and avoids mixing a focused query with an architecture-wide analysis.',
   },
   {
+    question: 'What do memory-to-code citations and stale-link warnings mean?',
+    answer:
+      'Code citations are optional capture-time evidence for exact files or symbols. Context Brief checks selected citations against an already-ready current graph: exact or uniquely relocated evidence keeps the memory fresh, relocation adds a stale-link warning so you can recapture the new locator, changed or deleted evidence makes the memory stale, and unavailable or ambiguous evidence stays unknown. Even an exact citation proves that the cited bytes survived—not that the memory prose is automatically correct.',
+  },
+  {
+    question: 'Will my existing memories disappear after upgrading to 4.4?',
+    answer:
+      'No. v1 and other uncited memories stay recallable and can appear in Context Brief. They keep conservative commit-level freshness when Threadnote can resolve it and otherwise show unknown; Threadnote does not invent precise citations or require a migration just to keep recall working.',
+  },
+  {
+    question: 'Do I need a Workset to use code citations or Context Brief?',
+    answer:
+      'No. For an ordinary one-repository task, pass the absolute callerCwd—or run the CLI from that checkout—and use its ready current graph. A named, explicitly prepared Workset is only for bounded multi-repository evidence; queries never fan out cold graph builds.',
+  },
+  {
     question: 'Which agents can use it?',
     answer:
       'Any agent that can connect a local stdio MCP server or invoke the CLI can use Threadnote. The installer includes guided MCP setup for Codex, Claude, Cursor, and Copilot, and the underlying contract is tool-neutral.',
@@ -61,7 +76,10 @@ const questions = [
 ];
 
 export default function FaqPage() {
-  setDocumentMeta('FAQ', 'Threadnote 4 frequently asked questions about local data, AI, sharing, and large monorepos.');
+  setDocumentMeta(
+    'FAQ',
+    'Threadnote 4 frequently asked questions about local data, code citations, memory compatibility, scope, and sharing.',
+  );
 
   return (
     <SiteShell page="faq" fullBleed>
@@ -69,7 +87,7 @@ export default function FaqPage() {
         <div>
           <span className="eyebrow">Frequently asked questions</span>
           <h1>Understand the boundary before you trust the context.</h1>
-          <p>Straight answers about local data, AI models, agent integration, sharing, and large monorepos.</p>
+          <p>Straight answers about local data, source freshness, existing memory, agent integration, and scope.</p>
         </div>
         <a className="button button--ghost" href={siteHref('docs/')}>
           Read the full docs
