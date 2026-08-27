@@ -27,7 +27,7 @@ import {
   resolveAndRecordCodeGraphLocalAssociation,
 } from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
-import {resolveRepositoryIdentity, resolveRepositoryIdentityForExpectation} from './repository.js';
+import {resolveRepositoryIdentity} from './repository.js';
 import {
   attachCodeGraphStatusObservation,
   observationFromCodeGraphStatus,
@@ -42,6 +42,11 @@ import {
   type CodeGraphTraversalTimeBudgets,
 } from './query_contract.js';
 import {codeGraphSnapshotRuntimeCurrent} from './query_snapshot_runtime.js';
+import {
+  codeGraphLanguagePackStatuses,
+  repositoryIdentityObservation,
+  resolvePublishedRepositoryIdentityObservation,
+} from './query_status_helpers.js';
 export {observationFromCodeGraphStatus, shouldAttachSharedReadySnapshot} from './query_contract.js';
 export {codeGraphSnapshotMatchesCurrentLanguagePacks} from './query_snapshot_runtime.js';
 export type {
@@ -174,6 +179,7 @@ export class CodeGraphQueryService extends Context.Service<
         identity: RepositoryIdentity,
         options?: CodeGraphStatusOptions,
         identityAlreadyObserved = false,
+        preobservedWorktreeChanged?: boolean,
       ) =>
         Effect.gen(function* () {
           if (!identityAlreadyObserved) yield* recordVerifiedCodeGraphLocalAssociation(threadnoteHome, identity);
@@ -194,7 +200,9 @@ export class CodeGraphQueryService extends Context.Service<
                   options?.telemetry,
                   telemetryPhase,
                   'query-worktree-observation',
-                  worktreeOverlayState(identity),
+                  preobservedWorktreeChanged === false
+                    ? Effect.succeed({dirty: false as const, fingerprint: undefined})
+                    : worktreeOverlayState(identity),
                   options?.telemetryWorktreeDisposition,
                 );
           const stale =
@@ -206,18 +214,7 @@ export class CodeGraphQueryService extends Context.Service<
             databasePath: layout.databasePath,
             freshness: stale ? 'stale' : overlay === undefined ? 'deferred' : 'current',
             identity,
-            languagePacks: languagePacks.packs.map(pack => ({
-              assetCount: pack.assets.length,
-              capabilities: [...pack.capabilities].sort(),
-              extractorVersion: pack.extractor.version,
-              id: pack.id,
-              languages: [...new Set(pack.files.map(matcher => matcher.language))].sort(),
-              resolutionDomain: pack.resolutionStrategy.domain,
-              resolutionVersion: pack.resolutionStrategy.version,
-              roles: [...new Set(pack.files.map(matcher => matcher.role))].sort(),
-              version: pack.version,
-              workspaceDetection: Option.isSome(pack.workspaceDetector),
-            })),
+            languagePacks: codeGraphLanguagePackStatuses(languagePacks),
             readySnapshot: readySnapshot ? {...readySnapshot, worktreeId: identity.worktreeId} : undefined,
             stale,
           } satisfies CodeGraphStatus;
@@ -663,14 +660,16 @@ export class CodeGraphQueryService extends Context.Service<
         statusForPublishedIdentity: (threadnoteHome, cwd, expected, options) =>
           withRepositoryServices(
             Effect.gen(function* () {
-              const identity = yield* withCodeGraphQueryTelemetryStage(
+              const observation = yield* withCodeGraphQueryTelemetryStage(
                 options?.telemetry,
                 'graph.query.status',
                 'query-repository-identity',
-                resolveRepositoryIdentityForExpectation(cwd, expected),
+                resolvePublishedRepositoryIdentityObservation(cwd, expected, options?.observeWorktree !== false),
               );
+              const identity = observation.identity;
               yield* options?.afterIdentityObserved?.(identity) ?? Effect.void;
-              const status = yield* statusForIdentity(threadnoteHome, identity, options, true);
+              const changed = options?.afterIdentityObserved === undefined ? observation.worktreeChanged : undefined;
+              const status = yield* statusForIdentity(threadnoteHome, identity, options, true, changed);
               if (options?.requestMaintenance !== false) yield* requestMaintenance(threadnoteHome, identity);
               return status;
             }),
@@ -678,24 +677,26 @@ export class CodeGraphQueryService extends Context.Service<
         withStatusSession: (threadnoteHome, cwd, expected, options, use) =>
           withRepositoryServices(
             Effect.gen(function* () {
-              const identity = yield* expected === undefined
+              const observation = yield* expected === undefined
                 ? withCodeGraphQueryTelemetryStage(
                     options.telemetry,
                     'graph.query.status',
                     'query-repository-identity',
                     resolveAndRecordCodeGraphLocalAssociation(threadnoteHome, cwd),
-                  ).pipe(Effect.map(observation => observation.identity))
+                  ).pipe(Effect.map(local => repositoryIdentityObservation(local.identity)))
                 : withCodeGraphQueryTelemetryStage(
                     options.telemetry,
                     'graph.query.status',
                     'query-repository-identity',
-                    resolveRepositoryIdentityForExpectation(cwd, expected),
+                    resolvePublishedRepositoryIdentityObservation(cwd, expected, options.observeWorktree !== false),
                   );
+              const identity = observation.identity;
               yield* options.afterIdentityObserved?.(identity) ?? Effect.void;
+              const changed = options.afterIdentityObserved === undefined ? observation.worktreeChanged : undefined;
               const layout = codeGraphLayout(path, threadnoteHome, identity.checkoutId, identity.worktreeId);
               const result = yield* store.withSession(
                 layout.databasePath,
-                statusForIdentity(threadnoteHome, identity, options, true).pipe(Effect.flatMap(use)),
+                statusForIdentity(threadnoteHome, identity, options, true, changed).pipe(Effect.flatMap(use)),
               );
               if (options.requestMaintenance !== false) yield* requestMaintenance(threadnoteHome, identity);
               return result;

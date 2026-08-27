@@ -265,6 +265,56 @@ describe('code graph query budgets', () => {
           expect(sessionResult.before.readySnapshot?.id).toBe(snapshot.id);
           expect(sessionResult.after.readySnapshot?.id).toBe(snapshot.id);
           expect(sessionResult.after.freshness).toBe('current');
+
+          yield* Ref.set(commandCalls, []);
+          const publishedExpected = {
+            checkoutId: identity.checkoutId,
+            repositoryId: identity.repositoryId,
+            worktreeId: identity.worktreeId,
+          };
+          const cleanPublished = yield* query.statusForPublishedIdentity(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            publishedExpected,
+            {observeWorktree: true, requestMaintenance: false},
+          );
+          expect(cleanPublished.freshness).toBe('current');
+          expect(
+            (yield* Ref.get(commandCalls)).filter(call => call.executable === 'git' && call.args.includes('status')),
+          ).toHaveLength(1);
+
+          const racedPublished = yield* query.statusForPublishedIdentity(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            publishedExpected,
+            {
+              afterIdentityObserved: () =>
+                Effect.sync(() =>
+                  writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 2;\n'),
+                ),
+              observeWorktree: true,
+              requestMaintenance: false,
+            },
+          );
+          expect(racedPublished).toMatchObject({freshness: 'stale', stale: true});
+          yield* Effect.sync(() =>
+            writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 1;\n'),
+          );
+
+          yield* Effect.sync(() =>
+            writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 2;\n'),
+          );
+          const dirtyPublished = yield* query.statusForPublishedIdentity(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            publishedExpected,
+            {observeWorktree: true, requestMaintenance: false},
+          );
+          expect(dirtyPublished).toMatchObject({freshness: 'stale', stale: true});
+          yield* Effect.sync(() =>
+            writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 1;\n'),
+          );
+
           yield* Ref.set(snapshotRef, undefined);
           const deferredColdStatus = yield* query.statusForIdentity(fixtureRoot.home, identity, {
             observeWorktree: false,

@@ -6,6 +6,7 @@ import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdenti
 
 const IDENTITY_FORMAT_VERSION = 1;
 const GIT_DIRECTORY_OUTPUT_BYTES_MAXIMUM = 16 * 1_024;
+const REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM = 64 * 1_024;
 
 export const CODE_GRAPH_WORKTREE_REGISTRY_LIMITS = {
   maxOutputBytes: 8 * 1_048_576,
@@ -127,8 +128,8 @@ export const observeCleanRepositoryWorktree = Effect.fn('codeGraph.observeCleanR
 ) {
   const porcelain = yield* runCommandEffect(
     'git',
-    ['-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'],
-    {maxOutputBytes: 0, timeoutMs: 0},
+    ['--no-optional-locks', '-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'],
+    {maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM, timeoutMs: 10_000},
   );
   return porcelain.stdout.length === 0 ? {dirty: false as const, fingerprint: undefined} : undefined;
 });
@@ -209,68 +210,142 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
  */
 export const resolveRepositoryIdentityForExpectation = Effect.fn('codeGraph.resolveRepositoryIdentityForExpectation')(
   function* (cwd: string, expected: RepositoryIdentityExpectation) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const system = yield* SystemInfo;
-    const [metadataResult, ignoreCaseResult, remoteResult, branch] = yield* Effect.all(
-      [
-        runGit(cwd, [
-          'rev-parse',
-          '--path-format=absolute',
-          '--show-toplevel',
-          '--git-common-dir',
-          '--show-object-format',
-          'HEAD',
-        ]),
-        runGit(cwd, ['config', '--bool', 'core.ignorecase'], true),
-        runGit(cwd, ['remote', 'get-url', 'origin'], true),
-        observeRepositoryBranch(cwd),
-      ],
-      {concurrency: 4},
-    ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-    const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
-    if (metadata.length !== 4) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
-    }
-    const repoRoot = yield* fs
-      .realPath(metadata[0]!)
-      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-    const commonRaw = metadata[1]!;
-    const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
-    const gitCommonDirectory = yield* fs
-      .realPath(commonAbsolute)
-      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-    const objectFormat = metadata[2]!;
-    if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
-      return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
-    }
-    const remoteIdentity =
-      remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
-    const repositorySource = remoteIdentity ?? `local:${normalizeLocalIdentity(gitCommonDirectory, system.platform)}`;
-    const identity = {
-      ...(branch.state === 'current' ? {branch: branch.branch} : {}),
-      caseMode:
-        ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
-          ? 'insensitive'
-          : 'sensitive',
-      checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
-      displayName: repositoryDisplayName(remoteIdentity, repoRoot),
-      gitCommonDirectory,
-      headCommit: metadata[3]!,
-      objectFormat,
-      remoteIdentity,
-      repoRoot,
-      repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
-      worktreeId: worktreeIdForRoot(repoRoot),
-    } satisfies RepositoryIdentity;
-    if (!repositoryIdentityMatchesExpectation(identity, expected)) {
-      return yield* Effect.fail(
-        new CodeGraphRepositoryError('Repository identity does not match the published workset.'),
-      );
-    }
-    return identity;
+    return (yield* resolveExpectedRepositoryIdentity(cwd, expected, false)).identity;
   },
 );
+
+/**
+ * Revalidate a published member while co-observing its HEAD and clean/changed
+ * bit. The common clean path avoids a second serial Git status process; a
+ * changed path still falls back to the policy-aware overlay inventory.
+ */
+export const resolveRepositoryIdentityForExpectationAndWorktree = Effect.fn(
+  'codeGraph.resolveRepositoryIdentityForExpectationAndWorktree',
+)(function* (cwd: string, expected: RepositoryIdentityExpectation) {
+  const observation = yield* resolveExpectedRepositoryIdentity(cwd, expected, true);
+  return {identity: observation.identity, worktreeChanged: observation.worktreeChanged!};
+});
+
+const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRepositoryIdentity')(function* (
+  cwd: string,
+  expected: RepositoryIdentityExpectation,
+  observeWorktree: boolean,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const branchOrWorktree = observeWorktree
+    ? runCommandEffect(
+        'git',
+        ['--no-optional-locks', '-C', cwd, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
+        {maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM, timeoutMs: 10_000},
+      ).pipe(Effect.map(result => ({kind: 'worktree' as const, output: result.stdout})))
+    : observeRepositoryBranch(cwd).pipe(Effect.map(branch => ({branch, kind: 'branch' as const})));
+  const [metadataResult, ignoreCaseResult, remoteResult, observed] = yield* Effect.all(
+    [
+      runGit(cwd, [
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--git-common-dir',
+        '--show-object-format',
+        'HEAD',
+      ]),
+      runGit(cwd, ['config', '--bool', 'core.ignorecase'], true),
+      runGit(cwd, ['remote', 'get-url', 'origin'], true),
+      branchOrWorktree,
+    ],
+    {concurrency: 4},
+  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+  if (metadata.length !== 4) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+  }
+  const repoRoot = yield* fs
+    .realPath(metadata[0]!)
+    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  const commonRaw = metadata[1]!;
+  const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
+  const gitCommonDirectory = yield* fs
+    .realPath(commonAbsolute)
+    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  const objectFormat = metadata[2]!;
+  if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
+    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+  }
+  const worktree =
+    observed.kind === 'worktree'
+      ? parseRepositoryIdentityWorktreeObservation(observed.output, objectFormat)
+      : undefined;
+  if (observed.kind === 'worktree' && (worktree === undefined || worktree.headCommit !== metadata[3])) {
+    return yield* Effect.fail(
+      new CodeGraphRepositoryError('Repository identity changed during the worktree observation.'),
+    );
+  }
+  const branch = observed.kind === 'branch' ? observed.branch : worktree!.branch;
+  const remoteIdentity =
+    remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
+  const repositorySource = remoteIdentity ?? `local:${normalizeLocalIdentity(gitCommonDirectory, system.platform)}`;
+  const identity = {
+    ...(branch.state === 'current' ? {branch: branch.branch} : {}),
+    caseMode:
+      ignoreCaseResult.exitCode === 0 && ignoreCaseResult.stdout.trim().toLowerCase() === 'true'
+        ? 'insensitive'
+        : 'sensitive',
+    checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
+    displayName: repositoryDisplayName(remoteIdentity, repoRoot),
+    gitCommonDirectory,
+    headCommit: metadata[3]!,
+    objectFormat,
+    remoteIdentity,
+    repoRoot,
+    repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
+    worktreeId: worktreeIdForRoot(repoRoot),
+  } satisfies RepositoryIdentity;
+  if (!repositoryIdentityMatchesExpectation(identity, expected)) {
+    return yield* Effect.fail(
+      new CodeGraphRepositoryError('Repository identity does not match the published workset.'),
+    );
+  }
+  return {
+    identity,
+    ...(worktree === undefined ? {} : {worktreeChanged: worktree.changed}),
+  };
+});
+
+export function parseRepositoryIdentityWorktreeObservation(
+  output: string,
+  objectFormat: RepositoryIdentity['objectFormat'],
+):
+  | {
+      readonly branch: {readonly branch?: string; readonly state: 'current' | 'detached' | 'missing'};
+      readonly changed: boolean;
+      readonly headCommit: string;
+    }
+  | undefined {
+  if (!output.endsWith('\0')) return undefined;
+  const records = output.slice(0, -1).split('\0');
+  const heads = records.filter(record => record.startsWith('# branch.oid '));
+  const branches = records.filter(record => record.startsWith('# branch.head '));
+  if (heads.length !== 1 || branches.length > 1) return undefined;
+  const headCommit = heads[0]!.slice('# branch.oid '.length);
+  const expectedLength = objectFormat === 'sha256' ? 64 : 40;
+  if (!new RegExp(`^[0-9a-f]{${expectedLength}}$`, 'u').test(headCommit)) return undefined;
+  const rawBranch = branches[0]?.slice('# branch.head '.length);
+  const branch =
+    rawBranch === '(detached)'
+      ? ({state: 'detached'} as const)
+      : rawBranch === undefined
+        ? ({state: 'missing'} as const)
+        : normalizeRepositoryBranchName(rawBranch) === undefined
+          ? ({state: 'missing'} as const)
+          : ({branch: normalizeRepositoryBranchName(rawBranch), state: 'current'} as const);
+  return {
+    branch,
+    changed: records.some(record => !record.startsWith('# ')),
+    headCommit,
+  };
+}
 
 /**
  * Return a bounded, pathless diagnostic observation from Git's porcelain output.

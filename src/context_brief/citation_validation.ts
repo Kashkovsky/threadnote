@@ -258,7 +258,13 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
 
       if (uncachedTasks.length > 0) {
         const citations = uncachedTasks.map(task => task.citation);
-        const symbolCitations = citations.filter(citation => citation.target.kind === 'symbol');
+        const symbolCitations = citations.filter(
+          (
+            citation,
+          ): citation is MemoryCodeCitationV1 & {
+            readonly target: Extract<MemoryCodeCitationV1['target'], {readonly kind: 'symbol'}>;
+          } => citation.target.kind === 'symbol',
+        );
         const locators = symbolCitations.map(symbolLocator);
         const evidence = yield* store.effectiveSnapshotCitationEvidence(repository.status.databasePath, snapshot.id, {
           contentHashes: citations.map(citation => citation.fileContentHash.value),
@@ -280,27 +286,30 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         // may prove inventory completeness; a live preview would rescan the
         // worktree and turn recall into an unbounded cold-index path.
         const fileInventoryCoverage = evidence.fileInventoryCoverage;
-        const repositoryRoot = yield* fs.realPath(repository.status.identity.repoRoot);
-        const sourceBytes = yield* readCodeGraphCitationSources({
-          objectFormat: repository.status.identity.objectFormat,
-          repositoryRoot,
-          sourceCommit: snapshot.commit,
-          sources: symbolCitations.flatMap(citation => {
-            if (citation.target.kind !== 'symbol') return [];
-            return symbolCitationSourceCandidates(
-              citation as MemoryCodeCitationV1 & {
-                readonly target: Extract<MemoryCodeCitationV1['target'], {readonly kind: 'symbol'}>;
-              },
-              exactById.get(citation.target.nodeId),
-              locatorsByKey.get(locatorKey(symbolLocator(citation))),
-              snapshot,
-            ).map(symbol => ({
-              expectedContentHash: symbol.contentHash,
-              repositoryPath: symbol.path,
-              requireBytes: true,
-            }));
-          }),
-        });
+        const sourceBytes =
+          symbolCitations.length === 0
+            ? new Map<string, Uint8Array>()
+            : yield* fs.realPath(repository.status.identity.repoRoot).pipe(
+                Effect.flatMap(repositoryRoot =>
+                  readCodeGraphCitationSources({
+                    objectFormat: repository.status.identity.objectFormat,
+                    repositoryRoot,
+                    sourceCommit: snapshot.commit,
+                    sources: symbolCitations.flatMap(citation =>
+                      symbolCitationSourceCandidates(
+                        citation,
+                        exactById.get(citation.target.nodeId),
+                        locatorsByKey.get(locatorKey(symbolLocator(citation))),
+                        snapshot,
+                      ).map(symbol => ({
+                        expectedContentHash: symbol.contentHash,
+                        repositoryPath: symbol.path,
+                        requireBytes: true,
+                      })),
+                    ),
+                  }),
+                ),
+              );
         type PreparedSource = ReturnType<typeof createCodeGraphSourceSpanCanonicalizer>;
         const sourceCache = new Map<string, PreparedSource>();
         const readSource = (repositoryPath: string, expectedHash: string) => {

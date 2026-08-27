@@ -75,6 +75,27 @@ export interface RuntimeTextDirectoryNamePage {
   readonly overflow: boolean;
 }
 
+/** Stream UTF-8 directory names without retaining a corpus-sized listing. */
+export async function* runtimeTextDirectoryNames(path: string): AsyncGenerator<string, void, void> {
+  const directory = await nativeFileSystemPromises.opendir(path, {
+    bufferSize: 32,
+    encoding: runtimePlatform === 'win32' ? 'utf8' : 'buffer',
+  });
+  const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
+  try {
+    for await (const entry of directory) {
+      const name = entry instanceof Uint8Array ? entry : entry.name;
+      yield typeof name === 'string' ? name : decoder.decode(name);
+    }
+  } finally {
+    try {
+      await directory.close();
+    } catch {
+      // A fully consumed async directory iterator is already closed.
+    }
+  }
+}
+
 /** Host facts and Bun's Node-compatible structural adapters stay inside SystemInfo's runtime boundary. */
 export const runtimeArchitecture = process.arch;
 export const runtimePlatform = process.platform;

@@ -41,11 +41,26 @@ import {
   runtimeLstat,
   runtimeOperatingSystemRelease,
   runtimeStat,
+  runtimeTextDirectoryNames,
   makeCachedProcessStartIdentityResolver,
   SystemInfo,
 } from '../../src/effect/system.js';
 
 describe('SystemInfo structural path adapter', () => {
+  it('streams every UTF-8 directory name across native read buffers', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'threadnote-runtime-directory-stream-'));
+    const expected = Array.from({length: 97}, (_unused, index) => `entry-${String(index).padStart(3, '0')}-λ`);
+    try {
+      for (const name of expected) writeFileSync(join(root, name), 'threadnote');
+      const observed: string[] = [];
+      for await (const name of runtimeTextDirectoryNames(root)) observed.push(name);
+
+      expect(observed.sort()).toEqual(expected.sort());
+    } finally {
+      rmSync(root, {force: true, recursive: true});
+    }
+  });
+
   it('retains the host kernel release for benchmark provenance', () => {
     expect(runtimeOperatingSystemRelease).toBe(release());
   });
