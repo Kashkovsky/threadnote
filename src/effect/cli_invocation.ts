@@ -155,7 +155,11 @@ export function normalizeCliArguments(args: readonly string[]): readonly string[
     const current = args[index] ?? '';
     const equalsIndex = current.indexOf('=');
     const inlineName = equalsIndex > 0 ? current.slice(0, equalsIndex) : current;
-    const kind = valueFlagKinds.get(inlineName);
+    // A spelling can be boolean in one command and valued in another (for
+    // example, `init-manifest --replace` versus `remember --replace <uri>`).
+    // Effect's selected command can disambiguate those flags. Rewriting them
+    // here from the global registry would consume a following flag as a value.
+    const kind = booleanFlagNames.has(inlineName) ? undefined : valueFlagKinds.get(inlineName);
     if (!kind) {
       normalized.push(current);
       continue;

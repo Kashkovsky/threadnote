@@ -83,6 +83,81 @@ describe('Effect CLI', () => {
     }
   });
 
+  it('disambiguates reused boolean and value flag names by selected command', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-reused-flags-'));
+    const home = join(root, 'home');
+    const firstRepo = join(root, 'first-repo');
+    const secondRepo = join(root, 'second-repo');
+    try {
+      await Promise.all([mkdir(firstRepo), mkdir(secondRepo)]);
+      await Promise.all([
+        execFilePromise('git', ['-C', firstRepo, 'init', '-q']),
+        execFilePromise('git', ['-C', secondRepo, 'init', '-q']),
+      ]);
+
+      const replaceBeforeRepos = await runCli([
+        'init-manifest',
+        '--home',
+        home,
+        '--dry-run',
+        '--replace',
+        '--repo',
+        firstRepo,
+        '--repo',
+        secondRepo,
+      ]);
+      const replaceAfterRepo = await runCli([
+        'init-manifest',
+        '--home',
+        home,
+        '--dry-run',
+        '--repo',
+        firstRepo,
+        '--replace',
+      ]);
+      const updateStatus = await runCli(['update', '--status', '--json'], {
+        THREADNOTE_HOME: home,
+        THREADNOTE_INSTALL_ROOT: join(root, 'install'),
+      });
+      const replacementUri = 'threadnote://user/test/memories/durable/projects/threadnote/old.md';
+      const rememberReplace = await runCli([
+        'remember',
+        '--home',
+        home,
+        '--dry-run',
+        '--text',
+        'replacement',
+        '--project',
+        'threadnote',
+        '--topic',
+        'reused-replace',
+        '--replace',
+        replacementUri,
+      ]);
+      const projectionStatus = await runCli([
+        'projection',
+        'add',
+        '--home',
+        home,
+        '--id',
+        'reused-status',
+        '--vault',
+        root,
+        '--status',
+        'active',
+      ]);
+
+      expect(replaceBeforeRepos.stdout).toContain('name: first-repo');
+      expect(replaceBeforeRepos.stdout).toContain('name: second-repo');
+      expect(replaceAfterRepo.stdout).toContain('name: first-repo');
+      expect(JSON.parse(updateStatus.stdout)).toMatchObject({version: 1});
+      expect(rememberReplace.stdout).toContain(`supersedes: ${replacementUri}`);
+      expect(projectionStatus.stdout).toContain('statuses: active');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
   it('exposes local AI model installation and switching commands', async () => {
     const install = await runCli(['local-ai', 'install', '--help']);
     const switching = await runCli(['local-ai', 'model', 'switch', '--help']);
