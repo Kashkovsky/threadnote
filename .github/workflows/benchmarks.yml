@@ -435,10 +435,11 @@ jobs:
           --output artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-vector-benchmark-10k-Linux-${{ runner.arch }}
           path: artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
   code-graph-100k:

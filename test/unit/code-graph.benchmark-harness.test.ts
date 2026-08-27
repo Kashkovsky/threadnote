@@ -341,14 +341,16 @@ describe('code graph external benchmark harness', () => {
     expect(source.match(/sampler\s*\? Effect\.void\s*:\s*observeSqliteStoragePeak/g)).toHaveLength(3);
   });
 
-  it('retains provenance-valid artifact evidence before reporting a ratchet regression', () => {
+  it('retains provenance-valid artifact evidence before reporting a budget or ratchet regression', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
-    const finalization = sourceSlice(source, 'const ratchetFailure =', 'if (!options.quiet)');
+    const finalization = sourceSlice(source, 'let budgetFailure:', 'if (!options.quiet)');
     expectInOrder(finalization, [
+      'enforceCodeGraphBenchmarkBudget(artifact, budget, options.scaleSymbols)',
       'enforceCodeGraphBenchmarkRatchet(artifact, ratchet)',
       'validateBenchmarkRuntimeProvenance(threadnoteSourceRoot)',
       'verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit)',
       'atomicWrite(options.outputPath',
+      'if (budgetFailure) return yield* Effect.fail(budgetFailure)',
       'if (ratchetFailure) return yield* Effect.fail(ratchetFailure)',
     ]);
   });

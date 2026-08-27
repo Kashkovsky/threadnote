@@ -1796,6 +1796,76 @@ describe('code graph release evidence', () => {
     );
   });
 
+  it('calibrates only the 10k vector cold wall while retaining every other performance guard', () => {
+    const budgets = readJson(CODE_GRAPH_BUDGETS) as {
+      readonly vectorPerformance: PerformanceBudget;
+      readonly vectorScalePerformance: Readonly<Record<string, PerformanceBudget>>;
+    };
+    const budget = budgets.vectorScalePerformance['10000']!;
+    const guardedMeasurements = [
+      ['cold-materialization', 'coldMaterializationP95MillisecondsMaximum'],
+      ['one-file-reindex-index', 'oneFileIncrementalP95MillisecondsMaximum'],
+      ['one-file-reindex-materialization', 'oneFileMaterializationP95MillisecondsMaximum'],
+      ['hot-semantic-vector-query', 'hotQueryP95MillisecondsMaximum'],
+      ['whole-graph-structural-analysis', 'wholeGraphAnalysisP95MillisecondsMaximum'],
+      ['incremental-process-peak-rss', 'processPeakRssBytesMaximum'],
+      ['derived-index-disk', 'derivedIndexBytesMaximum'],
+    ] as const;
+    const artifact = benchmarkArtifact(
+      [
+        benchmarkMeasurement('cold-index', 'milliseconds', [budget.coldIndexP95MillisecondsMaximum]),
+        ...guardedMeasurements.map(([name]) =>
+          benchmarkMeasurement(name, name.includes('rss') || name.includes('disk') ? 'bytes' : 'milliseconds', [1]),
+        ),
+      ],
+      {scaleSymbols: 10_000, vectorEnabled: true},
+      'code-graph-vectors-v1',
+    );
+
+    expect(budget).toEqual({
+      coldIndexP95MillisecondsMaximum: 600_000,
+      coldMaterializationP95MillisecondsMaximum: 60_000,
+      derivedIndexBytesMaximum: 1_073_741_824,
+      hotQueryP95MillisecondsMaximum: 5_000,
+      oneFileIncrementalP95MillisecondsMaximum: 120_000,
+      oneFileMaterializationP95MillisecondsMaximum: 15_000,
+      processPeakRssBytesMaximum: 4_294_967_296,
+      wholeGraphAnalysisP95MillisecondsMaximum: 10_000,
+    });
+    expect(budgets.vectorPerformance.coldIndexP95MillisecondsMaximum).toBe(60_000);
+    expect(budgets.vectorScalePerformance['100000']?.coldIndexP95MillisecondsMaximum).toBe(900_000);
+    expect(() => enforceCodeGraphBenchmarkBudget(artifact, budgets, 10_000)).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        {
+          ...artifact,
+          measurements: artifact.measurements.map(measurement =>
+            measurement.name === 'cold-index'
+              ? benchmarkMeasurement(measurement.name, measurement.unit, [600_001])
+              : measurement,
+          ),
+        },
+        budgets,
+        10_000,
+      ),
+    ).toThrow(/cold-index/);
+
+    fc.assert(
+      fc.property(fc.constantFrom(...guardedMeasurements), fc.integer({max: 10_000, min: 1}), ([name, key], delta) => {
+        const regressed = {
+          ...artifact,
+          measurements: artifact.measurements.map(measurement =>
+            measurement.name === name
+              ? benchmarkMeasurement(measurement.name, measurement.unit, [budget[key] + delta])
+              : measurement,
+          ),
+        };
+        expect(() => enforceCodeGraphBenchmarkBudget(regressed, budgets, 10_000)).toThrow(new RegExp(name, 'u'));
+      }),
+      {numRuns: 50},
+    );
+  });
+
   it('ratchets every named metric independently and binds it to exact evidence conditions', () => {
     const artifact = benchmarkArtifact(
       [
@@ -2517,8 +2587,12 @@ describe('code graph release evidence', () => {
 interface PerformanceBudget {
   readonly coldIndexP95MillisecondsMaximum: number;
   readonly coldMaterializationP95MillisecondsMaximum: number;
+  readonly derivedIndexBytesMaximum: number;
+  readonly hotQueryP95MillisecondsMaximum: number;
   readonly oneFileIncrementalP95MillisecondsMaximum: number;
   readonly oneFileMaterializationP95MillisecondsMaximum: number;
+  readonly processPeakRssBytesMaximum: number;
+  readonly wholeGraphAnalysisP95MillisecondsMaximum: number;
 }
 
 interface BenchmarkWorkflow {

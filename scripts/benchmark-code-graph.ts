@@ -1872,11 +1872,21 @@ const benchmarkCodeGraph = Effect.scoped(
       assertExternalRepositoryEvidence(artifact);
       if (releaseEvidenceSource) assertExternalPerformanceEvidence(artifact);
     }
+    let budgetFailure: ScriptError | undefined;
     if (options.failOnBudget) {
       const budgetPath = yield* path.fromFileUrl(
         new URL(`../test/evaluation/baselines/${options.fixture}/budgets.json`, import.meta.url),
       );
-      enforceCodeGraphBenchmarkBudget(artifact, yield* readJsonFile(budgetPath), options.scaleSymbols);
+      const budget = yield* readJsonFile(budgetPath);
+      budgetFailure = yield* Effect.try({
+        catch: cause => scriptError(cause, 'Code graph performance budget failed.'),
+        try: () => enforceCodeGraphBenchmarkBudget(artifact, budget, options.scaleSymbols),
+      }).pipe(
+        Effect.match({
+          onFailure: failure => failure,
+          onSuccess: () => undefined,
+        }),
+      );
     }
     const ratchetFailure =
       ratchet === undefined
@@ -1911,6 +1921,7 @@ const benchmarkCodeGraph = Effect.scoped(
       yield* verifyBenchmarkSourceUnchanged(threadnoteSourceRoot, commit);
     }
     if (options.outputPath) yield* atomicWrite(options.outputPath, `${JSON.stringify(artifact, undefined, 2)}\n`);
+    if (budgetFailure) return yield* Effect.fail(budgetFailure);
     if (ratchetFailure) return yield* Effect.fail(ratchetFailure);
     if (!options.quiet) yield* printJson(artifact);
   }),
