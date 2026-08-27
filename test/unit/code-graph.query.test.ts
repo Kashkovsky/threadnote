@@ -166,6 +166,8 @@ describe('code graph query budgets', () => {
           CodeGraphMaintenanceCoordinator,
           CodeGraphMaintenanceCoordinator.of({
             kickOrdinary: () => Effect.die(new TestError('query trigger test must not kick ordinary maintenance')),
+            kickReconciliation: () =>
+              Effect.die(new TestError('query trigger test must not kick reconciliation maintenance')),
             kickResidual: () => Effect.die(new TestError('query trigger test must not kick residual maintenance')),
             request: input =>
               Ref.update(requests, current => [

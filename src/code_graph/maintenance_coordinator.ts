@@ -65,6 +65,10 @@ export interface CodeGraphMaintenanceCoordinatorShape {
   readonly kickOrdinary: (
     input: CodeGraphRoutineMaintenanceTick,
   ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
+  /** Run exactly one nonblocking missing-worktree reconciliation unit without rotating through other lanes. */
+  readonly kickReconciliation: (
+    input: CodeGraphRoutineMaintenanceTick,
+  ) => Effect.Effect<CodeGraphRoutineMaintenanceResult, CodeGraphStoreError>;
   /** Run exactly one nonblocking residual unit without starting a full maintenance round. */
   readonly kickResidual: (
     input: CodeGraphRoutineMaintenanceTick,
@@ -439,6 +443,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
         },
         runResidualCleanup,
         runRoutineMaintenance,
+        runReconciliationOrPreparationWithoutHistory,
       );
     }),
   );
@@ -692,6 +697,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
   interlocks: CodeGraphMaintenanceCoordinatorInterlocks = {},
   kickResidual: CodeGraphRoutineMaintenanceRun = run,
   kickOrdinary: CodeGraphRoutineMaintenanceRun = run,
+  kickReconciliation: CodeGraphRoutineMaintenanceRun = run,
 ) {
   const scope = yield* Effect.scope;
   const stateByHome = yield* SynchronizedRef.make(new Map<string, HomeMaintenanceState>());
@@ -900,7 +906,7 @@ export const makeCodeGraphMaintenanceCoordinator = Effect.fn('codeGraph.makeMain
       }),
     );
 
-  return CodeGraphMaintenanceCoordinator.of({kickOrdinary, kickResidual, request, tick});
+  return CodeGraphMaintenanceCoordinator.of({kickOrdinary, kickReconciliation, kickResidual, request, tick});
 });
 
 function automaticTailBudgetAvailable(budget: MaintenanceExecutionBudget, observedAt: number): boolean {

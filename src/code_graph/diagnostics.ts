@@ -411,6 +411,7 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
             ...(database.accounting?.pressure === 'critical' || database.accounting?.pressure === 'elevated'
               ? {pressure: database.accounting.pressure}
               : {}),
+            reconciliationPending: database.views.some(view => view.localAssociation.state === 'missing'),
           },
         ];
       }),

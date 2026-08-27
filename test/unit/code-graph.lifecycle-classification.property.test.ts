@@ -9,7 +9,11 @@ import {
   type CodeGraphLifecycleProtection,
   type CodeGraphLifecycleState,
 } from '../../src/code_graph/lifecycle_classification.js';
-import {selectCodeGraphLifecycleOpportunityTarget} from '../../src/code_graph/lifecycle_opportunity.js';
+import {
+  codeGraphLifecycleOpportunityUnits,
+  selectCodeGraphLifecycleOpportunityTarget,
+  selectCodeGraphLifecycleOpportunityUnit,
+} from '../../src/code_graph/lifecycle_opportunity.js';
 
 const reclaimableState = fc.constantFrom<CodeGraphLifecycleState>(
   'missing-view',
@@ -109,6 +113,68 @@ describe('code graph lifecycle classification properties', () => {
         }
         expect(visited).toEqual(['0'.repeat(64), '1'.repeat(64), '2'.repeat(64), '3'.repeat(64)]);
         expect(selectCodeGraphLifecycleOpportunityTarget(targets, cursor)?.checkoutId).toBe('0'.repeat(64));
+      }),
+      {numRuns: 40},
+    );
+  });
+
+  it('prioritizes cold pending reconciliation without breaking fair rotation', () => {
+    fc.assert(
+      fc.property(fc.shuffledSubarray([0, 1, 2, 3], {maxLength: 4, minLength: 4}), order => {
+        const targets = order.map(index => ({
+          ...(index % 2 === 1 ? {anchorPath: `/repository/${index}`} : {}),
+          checkoutId: index.toString(16).repeat(64),
+          databasePath: `/database/${index}`,
+          reconciliationPending: index % 2 === 1,
+        }));
+        const visited: string[] = [];
+        let cursor: string | undefined;
+        for (let index = 0; index < targets.length; index += 1) {
+          const selected = selectCodeGraphLifecycleOpportunityTarget(targets, cursor);
+          if (!selected) throw new TestError('valid lifecycle target was not selected');
+          visited.push(selected.checkoutId);
+          cursor = `${selected.checkoutId}\0${selected.databasePath}`;
+        }
+        expect(visited[0]).toBe('1'.repeat(64));
+        expect(new Set(visited)).toEqual(new Set(targets.map(target => target.checkoutId)));
+        const unanchored = targets.map(target => ({
+          checkoutId: target.checkoutId,
+          databasePath: target.databasePath,
+          reconciliationPending: target.reconciliationPending,
+        }));
+        expect(selectCodeGraphLifecycleOpportunityTarget(unanchored)?.checkoutId).toBe('0'.repeat(64));
+      }),
+      {numRuns: 40},
+    );
+  });
+
+  it('builds a bounded pending unit ring that visits every explicit lane exactly once', () => {
+    fc.assert(
+      fc.property(fc.shuffledSubarray([0, 1, 2, 3], {maxLength: 4, minLength: 4}), order => {
+        const targets = order.map(index => ({
+          ...(index === 1 || index === 3 ? {anchorPath: `/repository/${index}`} : {}),
+          checkoutId: index.toString(16).repeat(64),
+          databasePath: `/database/${index}`,
+          reconciliationPending: index === 1 || index === 2,
+        }));
+        const units = codeGraphLifecycleOpportunityUnits(targets, 'status');
+        const expected = [
+          `reconciliation:${'1'.repeat(64)}`,
+          ...[0, 1, 2, 3].map(index => `ordinary:${index.toString(16).repeat(64)}`),
+          ...[0, 1, 2, 3].map(index => `residual:${index.toString(16).repeat(64)}`),
+        ];
+        const visited: string[] = [];
+        let cursor: string | undefined;
+        for (let index = 0; index < units.length; index += 1) {
+          const selected = selectCodeGraphLifecycleOpportunityUnit(units, cursor);
+          if (!selected) throw new TestError('valid lifecycle unit was not selected');
+          visited.push(`${selected.lane}:${selected.target.checkoutId}`);
+          cursor = `${selected.lane}\0${selected.target.checkoutId}\0${selected.target.databasePath}`;
+        }
+
+        expect(visited).toEqual(expected);
+        expect(new Set(visited).size).toBe(units.length);
+        expect(selectCodeGraphLifecycleOpportunityUnit(units, cursor)).toEqual(units[0]);
       }),
       {numRuns: 40},
     );
