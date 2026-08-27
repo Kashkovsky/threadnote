@@ -2148,18 +2148,20 @@ p {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 60px;
+  min-width: 0;
 }
 
 .tips-index {
   align-self: start;
   position: sticky;
   top: 100px;
+  min-width: 0;
   border-top: 1px solid var(--line);
 }
 
 .tips-index button {
   display: grid;
-  grid-template-columns: 30px 1fr 16px;
+  grid-template-columns: 30px minmax(0, 1fr) 16px;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -2193,9 +2195,11 @@ p {
 }
 
 .tips-index button strong {
+  min-width: 0;
   font-size: 14px;
   font-weight: 540;
   line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .tips-index button svg {
@@ -2222,6 +2226,10 @@ p {
 .tip-detail > header {
   max-width: 760px;
   margin-bottom: 34px;
+}
+
+.tip-detail {
+  min-width: 0;
 }
 
 .tip-detail > header h2 {
@@ -5961,13 +5969,13 @@ p {
   }
 
   .tips-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .tips-index {
     position: static;
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     border-left: 1px solid var(--line);
   }
 
@@ -6490,7 +6498,7 @@ p {
   }
 
   .tips-index {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .release-hero {
