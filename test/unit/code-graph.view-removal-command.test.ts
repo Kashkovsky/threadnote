@@ -24,6 +24,11 @@ import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {withCodeGraphTargetWorktreeLock} from '../../src/code_graph/maintenance_gate.js';
+import {
+  anonymousTelemetryDiagnosticFromError,
+  readAnonymousTelemetryDiagnostic,
+  readAnonymousTelemetryReportedOutcome,
+} from '../../src/telemetry/diagnostic.js';
 
 const CHECKOUT_ID = 'a'.repeat(64);
 const WORKTREE_ID = '1'.repeat(64);
@@ -43,6 +48,7 @@ describe('code graph remove-view command core', () => {
 
           const preview = yield* removeCodeGraphView(fixture.home, target);
           const stale = yield* removeCodeGraphView(fixture.home, {...target, snapshotId: `cgsn_${'d'.repeat(40)}`});
+          const notFound = yield* removeCodeGraphView(fixture.home, {...target, worktreeId: '2'.repeat(64)});
           expect(preview).toMatchObject({applied: false, cleanup: {provenance: null, vectors: null}, state: 'ready'});
           expect(activeView(fixture.databasePath)).toBe(SNAPSHOT_ID);
           expect(removedView(fixture.databasePath)).toBeUndefined();
@@ -52,7 +58,16 @@ describe('code graph remove-view command core', () => {
             observedState: 'active',
             state: 'stale-target',
           });
-          expect(codeGraphViewRemovalTargetFailure(stale)?.message).toMatch(/changed/);
+          expect(notFound).toMatchObject({applied: false, state: 'not-found'});
+          for (const result of [stale, notFound]) {
+            const failure = codeGraphViewRemovalTargetFailure(result);
+            expect(failure?.message).toMatch(result.state === 'stale-target' ? /changed/ : /does not exist/);
+            expect(anonymousTelemetryDiagnosticFromError(failure)).toEqual({
+              errorType: 'CodeGraphViewRemovalError',
+            });
+            expect(readAnonymousTelemetryDiagnostic(failure)).toEqual({errorType: 'CodeGraphViewRemovalError'});
+            expect(readAnonymousTelemetryReportedOutcome(failure)).toBe('unavailable');
+          }
 
           const first = yield* removeCodeGraphView(fixture.home, target, {apply: true});
           const retry = yield* removeCodeGraphView(fixture.home, target, {apply: true});
