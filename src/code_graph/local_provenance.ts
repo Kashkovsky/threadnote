@@ -519,6 +519,14 @@ const cleanupMissingCodeGraphLocalProvenanceUnsafe = Effect.fn('codeGraph.cleanu
     if (!validTarget(target)) return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
     const evidence = yield* readCodeGraphLocalReconciliationEvidence(threadnoteHome, target);
     if (evidence.state !== 'verified') {
+      if (
+        evidence.state === 'legacy-unknown' &&
+        options.expectedEvidence !== undefined &&
+        validLocalProvenanceCleanupEvidenceTarget(options.expectedEvidence, target) &&
+        (yield* codeGraphLocalProvenanceSidecarAbsent(threadnoteHome, target))
+      ) {
+        return {state: 'not-found'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
+      }
       return {
         observedState: evidence.state,
         state: 'preserved',
@@ -583,6 +591,30 @@ const cleanupMissingCodeGraphLocalProvenanceUnsafe = Effect.fn('codeGraph.cleanu
     return {state: 'removed'} as const satisfies CodeGraphLocalProvenanceCleanupResult;
   },
 );
+
+const codeGraphLocalProvenanceSidecarAbsent = Effect.fn('codeGraph.localProvenanceSidecarAbsent')(function* (
+  threadnoteHome: string,
+  target: CodeGraphLocalAssociationTarget,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const checkoutRoot = yield* inspectCheckoutRoot(fs, path, threadnoteHome, target.checkoutId);
+  if (checkoutRoot === undefined) return true;
+
+  const localContext = path.join(checkoutRoot, LOCAL_CONTEXT_DIRECTORY);
+  if (Option.isSome(yield* fs.readLink(localContext).pipe(Effect.option))) return false;
+  if (!(yield* fs.exists(localContext))) return true;
+  const canonicalContext = yield* inspectPrivateContainedDirectory(fs, path, checkoutRoot, localContext);
+  const worktrees = path.join(canonicalContext, LOCAL_WORKTREES_DIRECTORY);
+  if (Option.isSome(yield* fs.readLink(worktrees).pipe(Effect.option))) return false;
+  if (!(yield* fs.exists(worktrees))) return true;
+  const canonicalWorktrees = yield* inspectPrivateContainedDirectory(fs, path, canonicalContext, worktrees);
+
+  const file = path.join(canonicalWorktrees, `${target.worktreeId}.json`);
+  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) return false;
+  if (Option.isSome(yield* optionOnNotFound(fs.stat(file)))) return false;
+  return Option.isNone(yield* fs.readLink(file).pipe(Effect.option)) && !(yield* fs.exists(file));
+});
 
 export const cleanupMissingCodeGraphLocalProvenance = Effect.fn('codeGraph.cleanupMissingLocalProvenance')(function* (
   threadnoteHome: string,
@@ -697,6 +729,20 @@ function localProvenanceCleanupEvidenceMatchesCandidate(
     evidence.repositoryId === candidate.record.repositoryId &&
     evidence.recordDigest === candidate.recordDigest &&
     evidence.recordIdentity === candidate.recordIdentity
+  );
+}
+
+function validLocalProvenanceCleanupEvidenceTarget(
+  evidence: CodeGraphLocalProvenanceCleanupEvidence,
+  target: CodeGraphLocalAssociationTarget,
+): boolean {
+  return (
+    evidence.checkoutId === target.checkoutId &&
+    evidence.worktreeId === target.worktreeId &&
+    (target.repositoryId === undefined || evidence.repositoryId === target.repositoryId) &&
+    HASH_ID.test(evidence.repositoryId) &&
+    HASH_ID.test(evidence.recordDigest) &&
+    HASH_ID.test(evidence.recordIdentity)
   );
 }
 
