@@ -1,5 +1,5 @@
 import {unzipSync, type UnzipFileInfo} from 'fflate';
-import {getDocumentProxy, getResolvedPDFJS} from 'unpdf';
+import {getResolvedPDFJS} from 'unpdf';
 import {Option} from 'effect';
 import {sha256HexSync} from '../../../crypto/sha256.js';
 import {compareNaturalCodeUnits} from '../../ordering.js';
@@ -50,7 +50,9 @@ interface ExtractedCorpus {
   readonly urls: readonly string[];
 }
 
-type PdfDocument = Awaited<ReturnType<typeof getDocumentProxy>>;
+type PdfJs = Awaited<ReturnType<typeof getResolvedPDFJS>>;
+type PdfLoadingTask = ReturnType<PdfJs['getDocument']>;
+type PdfDocument = Awaited<PdfLoadingTask['promise']>;
 type PdfPage = Awaited<ReturnType<PdfDocument['getPage']>>;
 type PdfAnnotations = Awaited<ReturnType<PdfPage['getAnnotations']>>;
 type PdfTextContent = Awaited<ReturnType<PdfPage['getTextContent']>>;
@@ -272,7 +274,7 @@ async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractio
     const loadingTask = pdfjs.getDocument({
       data: bytes,
       disableFontFace: true,
-      isEvalSupported: false,
+      // PDF.js removed its final eval-based compiler together with the former isEvalSupported option.
       ...(standardFontDataUrl ? {standardFontDataUrl} : {}),
       useSystemFonts: true,
     });
@@ -282,9 +284,6 @@ async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractio
     const abortLoading = () => void destroy?.().catch(() => undefined);
     controller.signal.addEventListener('abort', abortLoading, {once: true});
     const pdf = await abortable<PdfDocument>(loadingTask.promise, controller.signal);
-    destroy = async () => {
-      await pdf.destroy();
-    };
     const text: string[] = [];
     const links: string[] = [];
     let extractedCharacters = 0;
@@ -295,17 +294,11 @@ async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractio
       try {
         const content = await abortable<PdfTextContent>(page.getTextContent(), controller.signal);
         budget.check();
-        const pageText = content.items
-          .filter(
-            (item: unknown): item is {readonly hasEOL?: boolean; readonly str: string} =>
-              isRecord(item) && typeof item.str === 'string',
-          )
-          .map((item: {readonly hasEOL?: boolean; readonly str: string}) => `${item.str}${item.hasEOL ? '\n' : ''}`)
-          .join('');
+        const pageText = joinPdfTextItemsWithinLimit(
+          content.items,
+          budget.maximumExtractedTextCharacters - extractedCharacters,
+        );
         extractedCharacters += pageText.length;
-        if (extractedCharacters > budget.maximumExtractedTextCharacters) {
-          throw new Error('PDF extracted text exceeds the per-artifact character safety budget');
-        }
         text.push(pageText);
         const annotations = await abortable<PdfAnnotations>(page.getAnnotations(), controller.signal);
         for (const annotation of annotations) {
@@ -340,6 +333,22 @@ async function extractPdf(file: CodeGraphInventoryFile, options: CorpusExtractio
     options.signal?.removeEventListener('abort', forwardAbort);
     await destroy?.().catch(() => undefined);
   }
+}
+
+export function joinPdfTextItemsWithinLimit(items: readonly unknown[], maximumCharacters: number): string {
+  const chunks: string[] = [];
+  let characters = 0;
+  for (const item of items) {
+    if (!isRecord(item) || typeof item.str !== 'string') continue;
+    const hasEndOfLine = item.hasEOL === true;
+    characters += item.str.length + (hasEndOfLine ? 1 : 0);
+    if (characters > maximumCharacters) {
+      throw new Error('PDF extracted text exceeds the per-artifact character safety budget');
+    }
+    chunks.push(item.str);
+    if (hasEndOfLine) chunks.push('\n');
+  }
+  return chunks.join('');
 }
 
 function extractArchiveDocument(
