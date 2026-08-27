@@ -162,7 +162,8 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         completedSnapshotId: undefined,
         routinePhysical: false,
       };
-      return useDatabaseDirect(
+      const useSessionDatabase = options?.existingOnly === true ? useExistingDatabase : useDatabaseDirect;
+      return useSessionDatabase(
         databasePath,
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;

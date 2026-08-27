@@ -630,6 +630,8 @@ export interface CodeGraphStoreShape {
 }
 
 export interface CodeGraphDatabaseSessionOptions {
+  /** @internal Open a writable connection only when the database already exists. */
+  readonly existingOnly?: boolean;
   /** @internal Open a non-creating, query-only SQLite connection without WAL bootstrap writes. */
   readonly readOnly?: boolean;
   /** @internal Ordinary index sessions reclaim a bounded page of completed build-only rows after foreground work. */
