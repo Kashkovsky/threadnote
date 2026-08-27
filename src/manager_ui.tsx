@@ -17,6 +17,7 @@ import {
 import {
   GraphWorkspace,
   graphBuildIsActive,
+  graphCatalogRequiresAuthoritativeRefresh,
   graphCompletedBuildResultIdentity,
   graphDiagnosticsRequiresCatalogRefresh,
   graphMaintenanceStatusLabel,
@@ -226,6 +227,7 @@ function App(): React.ReactElement {
   const [graphCatalog, setGraphCatalog] = useState<GraphCatalog | undefined>();
   const [graphCatalogError, setGraphCatalogError] = useState('');
   const graphCatalogRef = useRef<GraphCatalog | undefined>(undefined);
+  const graphCatalogAuthoritativeRef = useRef(false);
   const [graphDiagnostics, setGraphDiagnostics] = useState<CodeGraphLocalDiagnosticsReport | undefined>();
   const graphDiagnosticsCatalogRevisionRef = useRef<string | undefined>(undefined);
   const [graphAdministrationBusy, setGraphAdministrationBusy] = useState<string | undefined>();
@@ -314,21 +316,23 @@ function App(): React.ReactElement {
         const active = status.builds.some(graphBuildIsActive);
         const activeMaintenance = status.maintenance !== undefined;
         const refreshCatalog =
-          !activeMaintenance &&
-          ((observedActiveBuild && !active) ||
-            (observedActiveMaintenance && !activeMaintenance) ||
-            graphStatusRequiresCatalogRefresh(
-              graphCatalogRef.current,
-              status.builds,
-              acknowledgedCompletedResults,
-              status.catalogRevision,
-            ));
+          graphCatalogRequiresAuthoritativeRefresh(graphCatalogAuthoritativeRef.current, status.maintenance) ||
+          (!activeMaintenance &&
+            ((observedActiveBuild && !active) ||
+              (observedActiveMaintenance && !activeMaintenance) ||
+              graphStatusRequiresCatalogRefresh(
+                graphCatalogRef.current,
+                status.builds,
+                acknowledgedCompletedResults,
+                status.catalogRevision,
+              )));
         if (refreshCatalog) {
           const refreshed = await api<GraphCatalog>('/api/graphs', undefined, {
             timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
           });
           if (cancelled) return;
           const refreshedWithStatus = mergeGraphCatalogStatus(refreshed, status);
+          graphCatalogAuthoritativeRef.current = true;
           graphCatalogRef.current = refreshedWithStatus;
           setGraphCatalog(refreshedWithStatus);
           setGraphCatalogError('');
@@ -427,6 +431,7 @@ function App(): React.ReactElement {
       timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
     }).then(
       catalog => {
+        graphCatalogAuthoritativeRef.current = true;
         graphCatalogRef.current = catalog;
         setGraphCatalog(catalog);
         setGraphCatalogError('');
@@ -451,6 +456,7 @@ function App(): React.ReactElement {
       const next = await api<GraphCatalog>('/api/graphs', undefined, {
         timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
       });
+      graphCatalogAuthoritativeRef.current = true;
       graphCatalogRef.current = next;
       setGraphCatalog(next);
       setGraphCatalogError('');

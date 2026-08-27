@@ -62,7 +62,11 @@ export interface CodeGraphIsolatedBuilderOptions {
   readonly assertRuntimeSchemaCompatible: (databasePath: string) => Effect.Effect<void, unknown>;
   readonly cwd: string;
   readonly admissionClass?: CodeGraphBuilderAdmissionClass;
-  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void>;
+  /** Forward an explicit clean rebuild to the child CLI. */
+  readonly full?: boolean;
+  /** Preserve MCP/workset structural-only indexing unless the caller explicitly enables vectors. */
+  readonly noVectors?: boolean;
+  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
   /** @internal Deterministic shared-sidecar seam for cross-host spawn tests. */
   readonly readStatus?: Effect.Effect<ObservedCodeGraphBuildStatus | undefined, unknown>;
   /** Privacy-safe build request identity used for exact completed-result reuse. */
@@ -75,6 +79,8 @@ export interface CodeGraphIsolatedBuilderOptions {
     options: {
       readonly admissionClass?: CodeGraphBuilderAdmissionClass;
       readonly cwd: string;
+      readonly full?: boolean;
+      readonly noVectors?: boolean;
       readonly threadnoteHome: string;
     },
   ) => CodeGraphIsolatedBuilderSpawnPlan;
@@ -82,7 +88,11 @@ export interface CodeGraphIsolatedBuilderOptions {
 }
 
 export interface CodeGraphIsolatedBuilderResult {
+  readonly dirty: boolean;
   readonly edges: number;
+  readonly files: number;
+  readonly requestKey?: string;
+  readonly snapshotId: string;
   readonly symbols: number;
 }
 
@@ -102,7 +112,7 @@ export function isCodeGraphIsolatedBuilderHost(
 
 /**
  * Re-invoke the current Threadnote entrypoint as a CLI `graph index` child.
- * Uses `--no-vectors` so MCP watcher refresh matches in-process `ensureVectors: false`.
+ * Uses `--no-vectors` by default so MCP watcher refresh matches in-process `ensureVectors: false`.
  * Never targets the MCP launcher; MCP stdio stays free for recall and other tools.
  * Interrupted MCP hosts detach and leave the child running so a later refresh can re-attach.
  */
@@ -111,6 +121,8 @@ export function codeGraphIsolatedBuilderSpawnPlan(
   options: {
     readonly admissionClass?: CodeGraphBuilderAdmissionClass;
     readonly cwd: string;
+    readonly full?: boolean;
+    readonly noVectors?: boolean;
     readonly threadnoteHome: string;
   },
 ): CodeGraphIsolatedBuilderSpawnPlan {
@@ -122,7 +134,8 @@ export function codeGraphIsolatedBuilderSpawnPlan(
       options.threadnoteHome,
       'graph',
       'index',
-      '--no-vectors',
+      ...(options.full === true ? ['--full'] : []),
+      ...(options.noVectors === false ? [] : ['--no-vectors']),
       '--cwd',
       options.cwd,
     ],
@@ -271,6 +284,8 @@ export const runIsolatedCodeGraphIndex: (
   const plan = (options.spawnPlan ?? codeGraphIsolatedBuilderSpawnPlan)(system, {
     admissionClass: options.admissionClass,
     cwd: identity.repoRoot,
+    full: options.full,
+    noVectors: options.noVectors,
     threadnoteHome: options.threadnoteHome,
   });
   yield* assertIsolatedBuilderPlanEffect(plan);
@@ -330,7 +345,14 @@ export const runIsolatedCodeGraphIndex: (
 
   // The spawn lock is released before either branch waits for repository-sized work.
   if (admission.mode === 'completed') {
-    return {edges: admission.result.edges, symbols: admission.result.symbols};
+    return {
+      dirty: admission.result.dirty,
+      edges: admission.result.edges,
+      files: admission.result.files,
+      ...(options.requestKey === undefined ? {} : {requestKey: options.requestKey}),
+      snapshotId: admission.result.snapshotId,
+      symbols: admission.result.symbols,
+    };
   }
   if (admission.mode === 'attach') {
     const attached = yield* awaitExistingBuilder(readStatus, options.onProgress, {
@@ -382,11 +404,15 @@ export function isolatedBuilderFailureMessage(
 
 /** @internal Pure success contract for unit tests. */
 export function isolatedBuilderResultFromCompletedStatus(
-  status: Pick<ObservedCodeGraphBuildStatus, 'result'> | undefined,
+  status: Pick<ObservedCodeGraphBuildStatus, 'request' | 'result'> | undefined,
 ): Effect.Effect<CodeGraphIsolatedBuilderResult, Error> {
   if (status?.result) {
     return Effect.succeed({
+      dirty: status.result.dirty,
       edges: status.result.edges,
+      files: status.result.files,
+      ...(status.request?.key === undefined ? {} : {requestKey: status.request.key}),
+      snapshotId: status.result.snapshotId,
       symbols: status.result.symbols,
     });
   }
@@ -567,7 +593,11 @@ function awaitExistingBuilder<E, R>(
       }
       if (status.observation.liveness === 'completed' && status.result) {
         return {
+          dirty: status.result.dirty,
           edges: status.result.edges,
+          files: status.result.files,
+          ...(status.request?.key === undefined ? {} : {requestKey: status.request.key}),
+          snapshotId: status.result.snapshotId,
           symbols: status.result.symbols,
         } satisfies CodeGraphIsolatedBuilderResult;
       }
@@ -632,7 +662,8 @@ function emitProgress(onProgress: CodeGraphIsolatedBuilderOptions['onProgress'],
   return onProgress?.(progress) ?? Effect.void;
 }
 
-function developmentStandaloneScript(system: SystemInfoShape): Option.Option<string> {
+/** @internal Resolve the development script prefix used by isolated exact-runtime children. */
+export function developmentStandaloneScript(system: SystemInfoShape): Option.Option<string> {
   const executableName = executableBaseName(system.executablePath);
   if (executableName !== 'bun' && executableName !== 'bun.exe') return Option.none();
   const candidate = system.processArguments[1];

@@ -188,13 +188,35 @@ describe('isolated code-graph builder spawn plan', () => {
     expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
   });
 
+  it('forwards a Manager full rebuild without disabling vectors', () => {
+    const plan = codeGraphIsolatedBuilderSpawnPlan(systemInfoStub({}), {
+      cwd: '/repo/worktree',
+      full: true,
+      noVectors: false,
+      threadnoteHome: '/home/.threadnote',
+    });
+
+    expect(plan.arguments).toEqual([
+      '--home',
+      '/home/.threadnote',
+      'graph',
+      'index',
+      '--full',
+      '--cwd',
+      '/repo/worktree',
+    ]);
+    expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
+  });
+
   it('keeps production plans valid across host shapes (property)', () => {
     fc.assert(
       fc.property(
         fc.constantFrom('/repo', '/tmp/worktree'),
         fc.constantFrom('/home/.threadnote', '/tmp/tn-home'),
         fc.boolean(),
-        (cwd, home, bunHost) => {
+        fc.boolean(),
+        fc.boolean(),
+        (cwd, home, bunHost, full, noVectors) => {
           const plan = codeGraphIsolatedBuilderSpawnPlan(
             systemInfoStub({
               executablePath: bunHost ? '/usr/local/bin/bun' : '/opt/threadnote/bin/threadnote',
@@ -202,12 +224,13 @@ describe('isolated code-graph builder spawn plan', () => {
                 ? ['/usr/local/bin/bun', '/src/standalone.ts', 'mcp-server']
                 : ['/opt/threadnote/bin/threadnote', '/$bunfs/root/threadnote', 'mcp-server'],
             }),
-            {cwd, threadnoteHome: home},
+            {cwd, full, noVectors, threadnoteHome: home},
           );
           expect(() => assertIsolatedBuilderPlan(plan)).not.toThrow();
           const graphAt = plan.arguments.indexOf('graph');
           expect(plan.arguments[graphAt + 1]).toBe('index');
-          expect(plan.arguments).toContain('--no-vectors');
+          expect(plan.arguments.includes('--full')).toBe(full);
+          expect(plan.arguments.includes('--no-vectors')).toBe(noVectors);
           expect(plan.arguments[plan.arguments.indexOf('--cwd') + 1]).toBe(cwd);
           expect(plan.arguments[plan.arguments.indexOf('--home') + 1]).toBe(home);
         },
@@ -426,7 +449,7 @@ describe('isolated builder exit contracts', () => {
         yield* isolatedBuilderResultFromCompletedStatus({
           result: {dirty: false, edges: 4, files: 1, snapshotId: 'snap', symbols: 2},
         }),
-      ).toEqual({edges: 4, symbols: 2});
+      ).toEqual({dirty: false, edges: 4, files: 1, snapshotId: 'snap', symbols: 2});
       expect(String(yield* Effect.flip(isolatedBuilderResultFromCompletedStatus(undefined)))).toMatch(
         /finished without writing a build result/,
       );
@@ -455,7 +478,13 @@ describe('isolated builder exit contracts', () => {
 
       yield* TestClock.adjust(200);
 
-      expect(yield* Fiber.join(result)).toEqual({edges: 41, symbols: 29});
+      expect(yield* Fiber.join(result)).toEqual({
+        dirty: false,
+        edges: 41,
+        files: 3,
+        snapshotId: 'snapshot',
+        symbols: 29,
+      });
       expect(reads).toBe(3);
     }),
   );
@@ -552,7 +581,7 @@ describe('isolated builder exit contracts', () => {
             'owned-build',
             {pollMilliseconds: 0, timeoutMilliseconds: 10_000},
           ),
-        ).toEqual({edges: 41, symbols: 29});
+        ).toEqual({dirty: false, edges: 41, files: 3, snapshotId: 'owned', symbols: 29});
         expect(reads).toBe(statuses.length);
       }),
     {fastCheck: {numRuns: 60}},
@@ -643,8 +672,22 @@ describe('isolated builder cross-host spawn admission', () => {
             resolveExit(0);
 
             expect(yield* Effect.all([Fiber.join(owner), Fiber.join(waiter)], {concurrency: 'unbounded'})).toEqual([
-              {edges: 11, symbols: 7},
-              {edges: 11, symbols: 7},
+              {
+                dirty: false,
+                edges: 11,
+                files: 2,
+                requestKey: 'request-a',
+                snapshotId: 'snapshot',
+                symbols: 7,
+              },
+              {
+                dirty: false,
+                edges: 11,
+                files: 2,
+                requestKey: 'request-a',
+                snapshotId: 'snapshot',
+                symbols: 7,
+              },
             ]);
             expect(spawnCalls).toBe(1);
           }),
@@ -728,7 +771,14 @@ describe('isolated builder cross-host spawn admission', () => {
             } as ObservedCodeGraphBuildStatus;
             exits[0]!(0);
 
-            expect(yield* Fiber.join(owner)).toEqual({edges: 11, symbols: 7});
+            expect(yield* Fiber.join(owner)).toEqual({
+              dirty: false,
+              edges: 11,
+              files: 2,
+              requestKey: 'request-a',
+              snapshotId: 'snapshot-a',
+              symbols: 7,
+            });
             while (spawnCalls < 2 || exits[1] === undefined) yield* Effect.yieldNow;
             status = {
               ...runningStatus(1),
@@ -738,7 +788,14 @@ describe('isolated builder cross-host spawn admission', () => {
             } as ObservedCodeGraphBuildStatus;
             exits[1]!(0);
 
-            expect(yield* Fiber.join(waiter)).toEqual({edges: 13, symbols: 9});
+            expect(yield* Fiber.join(waiter)).toEqual({
+              dirty: true,
+              edges: 13,
+              files: 1,
+              requestKey: 'request-b',
+              snapshotId: 'snapshot-b',
+              symbols: 9,
+            });
             expect(spawnCalls).toBe(2);
           }),
         home => Effect.sync(() => rmSync(home, {force: true, recursive: true})),

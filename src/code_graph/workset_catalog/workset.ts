@@ -1,6 +1,8 @@
-import {Cause, Clock, Effect, Exit, FileSystem, Path, Ref, Result, Semaphore} from 'effect';
+import {Cause, Clock, Crypto, Effect, Exit, FileSystem, Path, Ref, Result, Semaphore} from 'effect';
 import {sha256HexSync} from '../../crypto/sha256.js';
+import {CommandExecutor} from '../../effect/command.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../../effect/file_lock.js';
+import {SystemInfo} from '../../effect/system.js';
 import {requireWorkset} from '../../manifest.js';
 import type {ProjectManifest, ResolvedWorkset, RuntimeConfig} from '../../types.js';
 import {expandPath} from '../../utils.js';
@@ -13,12 +15,15 @@ import {
 } from '../cross_repository/store.js';
 import type {CodeGraphMonikerV1} from '../cross_repository/types.js';
 import {CodeGraphIndexer, type CodeGraphIndexerShape} from '../indexer.js';
+import {runIsolatedCodeGraphIndexSnapshot} from '../isolated_index.js';
 import {
   RepositoryMaintenanceInterrupted,
   RepositoryRegistrationLost,
   WorktreeChangedDuringIndex,
 } from '../indexer_shared.js';
 import {CodeGraphQueryService} from '../query.js';
+import {CodeGraphLanguagePackRegistry} from '../languages/registry.js';
+import {CodeGraphStore} from '../store.js';
 import {makeCodeGraphWorksetTelemetryReporter} from '../workset_telemetry.js';
 import {
   CodeGraphRepositoryError,
@@ -33,6 +38,7 @@ import {
 } from '../types.js';
 import {stageCodeGraphWorksetRoutingProjectionScoped} from './projection_builder.js';
 import {codeGraphWorksetCatalogLayout} from './layout.js';
+import {renderCodeGraphWorksetPrepareProgress} from './progress_render.js';
 import {
   maintainCodeGraphWorksetCatalogPreparationPage,
   publishCodeGraphWorksetCatalogGeneration,
@@ -191,6 +197,8 @@ export interface CodeGraphWorksetStatusResultV1 {
 
 export interface PrepareCodeGraphWorksetOptionsV1 {
   readonly concurrency?: number;
+  /** @internal Keep a long-lived Manager host out of repository-sized SQLite work. */
+  readonly isolateBuilds?: boolean;
   readonly onProgress?: (progress: CodeGraphWorksetPrepareProgressV1) => Effect.Effect<void, unknown>;
 }
 
@@ -230,6 +238,8 @@ export interface CodeGraphWorksetPrepareProgressV1 {
   readonly version: 1;
   readonly workset: string;
 }
+
+export {renderCodeGraphWorksetPrepareProgress} from './progress_render.js';
 
 interface CodeGraphWorksetPrepareProgressInputV1 {
   readonly activity?: CodeGraphWorksetPrepareIndexActivityV1;
@@ -314,7 +324,8 @@ const prepareCodeGraphWorksetScoped = Effect.fn('codeGraphWorkset.prepareScoped'
   yield* Effect.forEach(unresolved, member => completeMember('indexing', member), {discard: true});
   const indexed = yield* Effect.forEach(
     workset.projects,
-    project => prepareConfiguredSnapshot(config, project, fs, indexer, reportAt, completeMember),
+    project =>
+      prepareConfiguredSnapshot(config, project, fs, indexer, options.isolateBuilds === true, reportAt, completeMember),
     {concurrency},
   );
   const projectionDigests = new Set<string>();
@@ -419,73 +430,6 @@ function reportCodeGraphWorksetPrepareProgress(
   return Effect.all([reporter?.(event) ?? Effect.void, telemetryReporter(event)], {discard: true}).pipe(
     Effect.catchCause(() => Effect.void),
   );
-}
-
-export function renderCodeGraphWorksetPrepareProgress(
-  progress: Omit<CodeGraphWorksetPrepareProgressV1, 'message'> | CodeGraphWorksetPrepareProgressV1,
-): string {
-  const count = `${progress.completed}/${progress.total} members · ${formatWorksetPrepareElapsed(progress.elapsedMilliseconds)}`;
-  switch (progress.phase) {
-    case 'starting':
-      return `Workset starting · ${progress.total} member${progress.total === 1 ? '' : 's'}.`;
-    case 'waiting':
-      return `Workset waiting · home-global publication lock · ${count}.`;
-    case 'indexing': {
-      const attempt =
-        progress.attempt === undefined
-          ? ''
-          : ` · attempt ${progress.attempt}/${progress.maxAttempts ?? progress.attempt}`;
-      const activity = renderCodeGraphWorksetIndexActivity(progress.activity);
-      const terminal = progress.member === undefined ? '' : ` · ${renderPrepareMemberTerminal(progress.member)}`;
-      return `Workset indexing · ${progress.project ?? 'member'}${attempt}${activity}${terminal} · ${count}.`;
-    }
-    case 'projecting': {
-      const terminal = progress.member === undefined ? '' : ` · ${renderPrepareMemberTerminal(progress.member)}`;
-      return `Workset projecting · ${progress.project ?? 'member'}${terminal} · ${count}.`;
-    }
-    case 'cataloging':
-      return `Workset cataloging · staging an atomic routing catalog · ${count}.`;
-    case 'bridging':
-      return `Workset bridging · resolving cross-repository bridges · ${count}.`;
-    case 'publishing':
-      return `Workset publishing · atomic generation pointer · ${count}.`;
-    case 'completed':
-      return progress.resultState === 'ready'
-        ? `Workset completed · published generation · ${count}.`
-        : `Workset completed · no ready generation published · ${count}.`;
-    case 'failed':
-      return `Workset failed · previous generation preserved · ${count}.`;
-  }
-}
-
-function formatWorksetPrepareElapsed(milliseconds: number): string {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
-  if (seconds < 60) return `${seconds}s elapsed`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s elapsed`;
-}
-
-function renderCodeGraphWorksetIndexActivity(activity: CodeGraphWorksetPrepareIndexActivityV1 | undefined): string {
-  if (activity === undefined) return '';
-  const phase = activity.subphase === undefined ? activity.phase : `${activity.phase}/${activity.subphase}`;
-  const measured =
-    activity.completed === undefined || activity.total === undefined
-      ? ''
-      : ` ${activity.completed}/${activity.total}${activity.unit === undefined ? '' : ` ${activity.unit}`}`;
-  const reason = activity.reason === undefined ? '' : ` (${activity.reason})`;
-  return ` · ${phase}${measured}${reason}`;
-}
-
-function renderPrepareMemberTerminal(member: CodeGraphWorksetPrepareMemberV1): string {
-  switch (member.state) {
-    case 'ready':
-      return `ready with ${member.symbolCount} routing symbols`;
-    case 'failed':
-      return `${member.reason}: ${member.detail.summary}`;
-    case 'excluded':
-    case 'missing':
-      return `${member.state}: ${member.reason}`;
-  }
 }
 
 function codeGraphWorksetPrepareIndexActivity(progress: CodeGraphProgress): CodeGraphWorksetPrepareIndexActivityV1 {
@@ -633,6 +577,7 @@ function prepareConfiguredSnapshot(
   project: ProjectManifest,
   fs: FileSystem.FileSystem,
   indexer: CodeGraphIndexerShape,
+  isolateBuild: boolean,
   report: (progress: CodeGraphWorksetPrepareProgressInputV1) => Effect.Effect<void>,
   completeMember: (phase: 'indexing' | 'projecting', member: CodeGraphWorksetPrepareMemberV1) => Effect.Effect<void>,
 ) {
@@ -644,28 +589,50 @@ function prepareConfiguredSnapshot(
       return missing;
     }
     const projectName = safeLabel(project.name);
-    const indexAttempt = (attempt: number): Effect.Effect<CodeGraphIndexSummary, unknown> =>
-      report({
+    type IsolatedIndexRequirements =
+      | CodeGraphLanguagePackRegistry
+      | CodeGraphStore
+      | CommandExecutor
+      | Crypto.Crypto
+      | FileSystem.FileSystem
+      | Path.Path
+      | SystemInfo;
+    const indexAttempt = (
+      attempt: number,
+    ): Effect.Effect<Pick<CodeGraphIndexSummary, 'identity' | 'snapshot'>, unknown, IsolatedIndexRequirements> => {
+      const indexOptions = {
+        cwd,
+        ensureVectors: false,
+        onProgress: (progress: CodeGraphProgress) =>
+          report({
+            activity: codeGraphWorksetPrepareIndexActivity(progress),
+            attempt,
+            maxAttempts: CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM,
+            phase: 'indexing',
+            project: projectName,
+          }),
+        threadnoteHome: config.agentContextHome,
+      };
+      const selectIndexResult = (
+        summary: Pick<CodeGraphIndexSummary, 'identity' | 'snapshot'>,
+      ): Pick<CodeGraphIndexSummary, 'identity' | 'snapshot'> => ({
+        identity: summary.identity,
+        snapshot: summary.snapshot,
+      });
+      const index: Effect.Effect<
+        Pick<CodeGraphIndexSummary, 'identity' | 'snapshot'>,
+        unknown,
+        IsolatedIndexRequirements
+      > = isolateBuild
+        ? runIsolatedCodeGraphIndexSnapshot(indexOptions).pipe(Effect.map(selectIndexResult))
+        : indexer.index(indexOptions).pipe(Effect.map(selectIndexResult));
+      return report({
         attempt,
         maxAttempts: CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM,
         phase: 'indexing',
         project: projectName,
       }).pipe(
-        Effect.andThen(
-          indexer.index({
-            cwd,
-            ensureVectors: false,
-            onProgress: progress =>
-              report({
-                activity: codeGraphWorksetPrepareIndexActivity(progress),
-                attempt,
-                maxAttempts: CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM,
-                phase: 'indexing',
-                project: projectName,
-              }),
-            threadnoteHome: config.agentContextHome,
-          }),
-        ),
+        Effect.andThen(index),
         Effect.catch(error =>
           attempt < CODE_GRAPH_WORKSET_PREPARE_MEMBER_ATTEMPTS_MAXIMUM &&
           codeGraphWorksetPrepareFailureDetail(error, 'index').retryable
@@ -673,6 +640,7 @@ function prepareConfiguredSnapshot(
             : Effect.fail(error),
         ),
       );
+    };
     const outcome = yield* Effect.result(indexAttempt(1));
     if (Result.isFailure(outcome)) {
       const failed = failedPrepareMember(project.name, 'index-failed', outcome.failure);

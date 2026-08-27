@@ -2,6 +2,7 @@ import React, {useEffect, useMemo, useRef, useState} from 'react';
 import type {ProjectedContextBriefV1, ContextBriefMode} from './context_brief/index.js';
 import type {CodeGraphWorksetTopologyResultV1} from './code_graph/cross_repository/runtime.js';
 import type {CodeGraphCrossRepositoryTraversalResultV1} from './code_graph/cross_repository/traversal.js';
+import {renderCodeGraphWorksetPrepareProgress} from './code_graph/workset_catalog/progress_render.js';
 import type {CodeGraphWorksetStatusResultV1} from './code_graph/workset_catalog/workset.js';
 import type {ProjectedCodeGraphWorksetEvidenceV1} from './code_graph/workset_evidence.js';
 import {useManagerDialogs} from './manager_dialog.js';
@@ -29,6 +30,7 @@ interface DefinitionDraft {
 }
 
 const JOB_POLL_MILLISECONDS = 1_000;
+const JOB_PROGRESS_CLOCK_MILLISECONDS = 1_000;
 const JOB_RECEIPTS_VISIBLE_MAXIMUM = 250;
 const PROJECT_PICKER_VISIBLE_MAXIMUM = 250;
 const WORKSET_OPERATIONS = ['query', 'traversal', 'topology', 'brief'] as const;
@@ -927,6 +929,12 @@ export function PrepareJobPanel(props: {
   readonly onCancel: () => void;
 }): React.ReactElement {
   const active = props.job.status === 'running' || props.job.status === 'cancelling';
+  const [nowMilliseconds, setNowMilliseconds] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNowMilliseconds(Date.now()), JOB_PROGRESS_CLOCK_MILLISECONDS);
+    return () => window.clearInterval(timer);
+  }, [active, props.job.id]);
   const allReceipts = props.job.result?.members ?? [];
   const receipts = [...allReceipts]
     .sort((left, right) => Number(left.state === 'ready') - Number(right.state === 'ready'))
@@ -938,7 +946,7 @@ export function PrepareJobPanel(props: {
         <strong>
           {props.job.workset} · {props.job.progress.phase}
         </strong>
-        <span>{props.job.progress.message}</span>
+        <span aria-live="off">{managerWorksetJobProgressMessage(props.job, nowMilliseconds)}</span>
       </div>
       <progress
         aria-label={`${props.job.workset} preparation progress`}
@@ -980,6 +988,30 @@ export function PrepareJobPanel(props: {
       ) : null}
     </section>
   );
+}
+
+export function managerWorksetJobElapsedMilliseconds(job: ManagerWorksetPrepareJob, nowMilliseconds: number): number {
+  const createdAtMilliseconds = Date.parse(job.createdAt);
+  const wallElapsed = Number.isFinite(createdAtMilliseconds) ? Math.max(0, nowMilliseconds - createdAtMilliseconds) : 0;
+  return Math.max(0, job.progress.elapsedMilliseconds ?? 0, wallElapsed);
+}
+
+export function managerWorksetJobProgressMessage(job: ManagerWorksetPrepareJob, nowMilliseconds: number): string {
+  if (job.status !== 'running' || job.progress.phase === 'cancelled' || job.progress.phase === 'cancelling')
+    return job.progress.message;
+  return renderCodeGraphWorksetPrepareProgress({
+    completed: job.progress.completed ?? 0,
+    elapsedMilliseconds: managerWorksetJobElapsedMilliseconds(job, nowMilliseconds),
+    phase: job.progress.phase,
+    total: job.progress.total,
+    type: 'code-graph-workset-progress',
+    version: 1,
+    workset: job.workset,
+    ...(job.progress.activity === undefined ? {} : {activity: job.progress.activity}),
+    ...(job.progress.attempt === undefined ? {} : {attempt: job.progress.attempt}),
+    ...(job.progress.maxAttempts === undefined ? {} : {maxAttempts: job.progress.maxAttempts}),
+    ...(job.progress.project === undefined ? {} : {project: job.progress.project}),
+  });
 }
 
 function QueryPanel(props: {

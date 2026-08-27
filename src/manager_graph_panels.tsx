@@ -1513,17 +1513,34 @@ function formatGraphPercentage(completed: number, total: number): string {
   return `${Math.min(100, Math.max(0, (completed / total) * 100)).toFixed(1)}%`;
 }
 
-export function GraphEmptyState(props: {readonly building: boolean}): React.ReactElement {
+export function GraphEmptyState(props: {
+  readonly state: 'building' | 'empty' | 'recovering' | 'retrying';
+}): React.ReactElement {
+  const building = props.state === 'building';
+  const recovering = props.state === 'recovering';
+  const retrying = props.state === 'retrying';
   return (
     <div className="graph-empty">
       <span className="empty-orbit" aria-hidden="true" />
-      <h3>{props.building ? 'Building the first repository graph' : 'No indexed repositories yet'}</h3>
+      <h3>
+        {recovering
+          ? 'Refreshing indexed repositories'
+          : retrying
+            ? 'Retrying indexed repositories'
+            : building
+              ? 'Building the first repository graph'
+              : 'No indexed repositories yet'}
+      </h3>
       <p>
-        {props.building
-          ? 'The newest phase and counters appear above. A ready snapshot will open here automatically.'
-          : 'Build a native graph from a repository, then refresh this workspace.'}
+        {recovering
+          ? 'Threadnote is finishing graph maintenance. Existing indexes will return here automatically.'
+          : retrying
+            ? 'Threadnote is retrying the indexed repository catalog. Existing indexes will return here automatically.'
+            : building
+              ? 'The newest phase and counters appear above. A ready snapshot will open here automatically.'
+              : 'Build a native graph from a repository, then refresh this workspace.'}
       </p>
-      {props.building ? null : <code>threadnote graph index</code>}
+      {building || recovering || retrying ? null : <code>threadnote graph index</code>}
     </div>
   );
 }

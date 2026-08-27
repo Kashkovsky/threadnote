@@ -13,6 +13,8 @@ import {
   graphBuildIsActive,
   graphBuildShouldDisplay,
   graphBuildTarget,
+  graphCatalogEmptyState,
+  graphCatalogRequiresAuthoritativeRefresh,
   graphCatalogSearchOptions,
   graphCatalogPageOffsets,
   graphCatalogContinuationHasMore,
@@ -320,6 +322,28 @@ describe('manager graph focus', () => {
     expect(markup).toContain('Graph catalog is temporarily busy.');
     expect(markup).toContain('Try again');
     expect(markup).not.toContain('Loading indexed repositories');
+  });
+
+  it('keeps a status-only catalog retry cause-neutral without maintenance evidence', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds: [], diagnostics: [], repositories: [], waiterCount: 0, waiters: []},
+        catalogError: 'The graph catalog request timed out.',
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(graphCatalogEmptyState({builds: [], catalogError: 'timeout'})).toBe('retrying');
+    expect(markup).toContain('Retrying indexed repositories');
+    expect(markup).toContain('retrying the indexed repository catalog');
+    expect(markup).not.toContain('finishing graph maintenance');
   });
 
   it('renders stale live owners with a home-abbreviated repository path and status facts', () => {
@@ -639,6 +663,9 @@ describe('manager graph focus', () => {
     expect(markup).toContain('eligible for automatic compaction after retry-cooldown and maintenance safety checks');
     expect(markup).toContain('Automatic graph storage compaction');
     expect(markup).toContain('Compacting Indexed repository in an isolated process without blocking Manager');
+    expect(markup).toContain('Refreshing indexed repositories');
+    expect(markup).toContain('Existing indexes will return here automatically.');
+    expect(markup).not.toContain('No indexed repositories yet');
     expect(markup).not.toContain('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
 
     const previousMaintenance = {
@@ -676,9 +703,37 @@ describe('manager graph focus', () => {
     expect(selected.hiddenCount).toBe(3);
     expect(selected.jobs.map(job => job.state)).not.toContain('completed');
     expect(selected.jobs[0]?.buildId).toBe('running');
+
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {builds, diagnostics: [], repositories: [], waiterCount: waiters.length, waiters},
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onRefresh: () => undefined,
+      }),
+    );
+    expect(markup.match(/class="graph-build-card/g)).toHaveLength(4);
+    expect(markup).toContain('3 older build notices are summarized.');
+    expect(markup).toContain('aria-label="7 status notices"');
   });
 
   it('refreshes a terminal snapshot missing from the catalog and scopes waiters to their build', () => {
+    expect(graphCatalogRequiresAuthoritativeRefresh(false)).toBe(true);
+    expect(
+      graphCatalogRequiresAuthoritativeRefresh(false, {
+        operation: 'selected-snapshot-purge',
+        phase: 'waiting-builders',
+        startedAt: '2026-08-12T12:00:00.000Z',
+        total: 1,
+      }),
+    ).toBe(false);
+    expect(graphCatalogRequiresAuthoritativeRefresh(true)).toBe(false);
+
     const catalog = {
       builds: [],
       catalogRevision: 'revision-before-removal',
