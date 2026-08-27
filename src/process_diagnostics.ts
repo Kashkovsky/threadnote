@@ -222,6 +222,16 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
+
+  // Standalone release leases are acquired immediately before runtime process
+  // registration. Observe leases first so a process that finishes registering
+  // during this snapshot is classified from its registry row instead of being
+  // reported transiently as a pre-registry release.
+  const releaseLeaseDiagnostics = yield* readLiveStandaloneProcessLeases().pipe(
+    Effect.catch(() => Effect.succeed({leases: [] as const, truncated: false})),
+  );
+  const releaseLeases = releaseLeaseDiagnostics.leases;
+
   const directory = processDiagnosticsDirectory(path, config.agentContextHome);
   const names = yield* fs.readDirectory(directory).pipe(Effect.catch(() => Effect.succeed([] as string[])));
   const eligibleNames = names.filter(name => /^[1-9]\d*\.json$/.test(name));
@@ -257,10 +267,6 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
   // PID/start-identity-bound lease so updates do not delete their executable.
   // Merge only that bounded installation evidence; never inspect or expose
   // arbitrary process command lines, which may contain memory text or paths.
-  const releaseLeaseDiagnostics = yield* readLiveStandaloneProcessLeases().pipe(
-    Effect.catch(() => Effect.succeed({leases: [] as const, truncated: false})),
-  );
-  const releaseLeases = releaseLeaseDiagnostics.leases;
   const releaseLeaseByProcess = new Map(releaseLeases.map(lease => [lease.processId, lease] as const));
   const registeredProcessIds = new Set(live.map(value => value.processId));
   const now = Date.now();
