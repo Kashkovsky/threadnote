@@ -42,7 +42,6 @@ import {
   CodeGraphStoreError,
   type CodeGraphSnapshot,
 } from '../../src/code_graph/types.js';
-import {REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS} from '../../src/code_graph/store_schema_metadata.js';
 import type {RepositoryIdentity} from '../../src/code_graph/types.js';
 import {
   CODE_GRAPH_WORKTREE_RECONCILIATION_CANDIDATE_LIMIT,
@@ -60,10 +59,6 @@ const targetWorktreeId = 'd'.repeat(64);
 const expectedSnapshotId = `cgsn_${'e'.repeat(40)}`;
 const privateRoot = '/private/threadnote/repository';
 const registryRootIdentity = 'f'.repeat(64);
-const boundedMalformedReconciliationCursor = fc
-  .array(fc.constantFrom(...'0123456789abcdefxyz_-'.split('')), {maxLength: 64})
-  .map(characters => characters.join(''))
-  .filter(value => !/^[0-9a-f]{64}$/u.test(value));
 const temporaryRoots: string[] = [];
 const storeLayer = CodeGraphStore.layer.pipe(
   Layer.provideMerge(SystemInfo.layer),
@@ -450,7 +445,7 @@ describe('automatic missing-worktree reconciliation', () => {
     }),
   );
 
-  effectIt.effect('claims a durable cross-process cursor page and recovers bounded malformed state', () =>
+  effectIt.effect('repairs only malformed advisory cursor state and keeps authoritative state fail closed', () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const root = mkdtempSync(join(tmpdir(), 'threadnote-reconciliation-cursor-'));
@@ -472,21 +467,58 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(claimed.size).toBe(69);
         expect(claimed.has(worktreeIds.at(-1)!)).toBe(false);
 
-        const recovered = yield* Effect.sync(() => {
+        const cleanupCursor = 'e'.repeat(64);
+        const repaired = yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
           try {
             database
-              .query("UPDATE schema_metadata SET value = 'malformed' WHERE key = 'worktree_reconciliation_cursor'")
-              .run();
+              .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+              .run('removed_view_cleanup_admission_cursor', cleanupCursor);
+            database
+              .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+              .run('malformed'.repeat(128), 'worktree_reconciliation_cursor');
+            database
+              .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+              .run('WORKTREE_RECONCILIATION_CURSOR', 'f'.repeat(64));
+          } finally {
+            database.close(false);
+          }
+        }).pipe(Effect.andThen(store.claimWorktreeReconciliationCandidates(databasePath, 32)));
+        expect(repaired).toHaveLength(32);
+        expect(readSchemaMetadataFamily(databasePath, 'worktree_reconciliation_cursor')).toEqual([
+          {key: 'worktree_reconciliation_cursor', value: worktreeIds[31]},
+        ]);
+        expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(cleanupCursor);
+
+        const authoritative = yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database
+              .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+              .run('malformed-authoritative', 'removed_view_cleanup_admission_cursor');
           } finally {
             database.close(false);
           }
         }).pipe(Effect.andThen(store.claimWorktreeReconciliationCandidates(databasePath, 32).pipe(Effect.exit)));
-        expect(recovered._tag).toBe('Success');
-        if (recovered._tag === 'Success') {
-          expect(recovered.value.map(entry => entry.worktreeId)).toEqual(worktreeIds.slice(0, 32));
+        expect(authoritative._tag).toBe('Failure');
+        if (authoritative._tag === 'Failure') {
+          expect(String(authoritative.cause)).not.toContain('malformed-authoritative');
+          expect(String(authoritative.cause)).not.toContain(root);
         }
+        expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(
+          'malformed-authoritative',
+        );
         expect(readReconciliationCursor(databasePath)).toBe(worktreeIds[31]);
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database
+              .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+              .run(cleanupCursor, 'removed_view_cleanup_admission_cursor');
+          } finally {
+            database.close(false);
+          }
+        });
 
         const incompatibleVersion = yield* Effect.sync(() => {
           const database = new Database(databasePath, {strict: true});
@@ -537,53 +569,102 @@ describe('automatic missing-worktree reconciliation', () => {
     ),
   );
 
-  effectIt.effect('bounds invalid cursor diagnostics and refuses a missing cursor at metadata capacity', () =>
+  effectIt.effect('does not consume the authoritative cleanup cursor reservation at either metadata ceiling', () =>
     TestClock.withLive(
       Effect.gen(function* () {
-        const root = mkdtempSync(join(tmpdir(), 'threadnote-reconciliation-cursor-bounds-'));
-        temporaryRoots.push(root);
-        const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
         const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-        const worktreeIds = ['0'.repeat(64), '1'.repeat(64)];
-        yield* Effect.sync(() => seedCandidateViews(databasePath, worktreeIds, false));
+        for (const cleanupCursorRecorded of [false, true]) {
+          const root = mkdtempSync(join(tmpdir(), 'threadnote-reconciliation-cursor-capacity-'));
+          temporaryRoots.push(root);
+          const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
+          yield* store.initialize(databasePath);
+          yield* Effect.sync(() => {
+            seedCandidateViews(databasePath, [targetWorktreeId], false);
+            if (cleanupCursorRecorded) {
+              executeDatabaseSql(
+                databasePath,
+                `INSERT INTO schema_metadata (key, value)
+                 VALUES ('removed_view_cleanup_admission_cursor', '${'e'.repeat(64)}')`,
+              );
+            }
+          });
+          const maximumRows = cleanupCursorRecorded ? 66 : 65;
+          const fillerKeys = yield* Effect.sync(() => fillSchemaMetadataToCount(databasePath, maximumRows));
 
-        const oversized = 'private-cursor-content-'.repeat(4_096);
-        yield* Effect.sync(() => writeReconciliationCursor(databasePath, oversized));
-        const invalid = yield* Effect.flip(store.claimWorktreeReconciliationCandidates(databasePath, 1));
-        expect(invalid).toBeInstanceOf(CodeGraphStoreError);
-        expect(invalid.message).toBe('Code graph reconciliation cursor metadata is structurally invalid.');
-        expect(invalid.code).toBe('confirmed-corruption');
-        expect(invalid.operation).toBe('claim code graph reconciliation candidates');
-        expect(invalid.recovery).toBe('manual-rebuild');
-        expect(invalid.message).not.toContain(oversized.slice(0, 32));
-        expect(readReconciliationCursor(databasePath)).toBe(oversized);
+          expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows);
+          expect(readReconciliationCursor(databasePath)).toBeUndefined();
+          expect(yield* store.claimWorktreeReconciliationCandidates(databasePath, 1)).toHaveLength(1);
+          expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows);
+          expect(readReconciliationCursor(databasePath)).toBeUndefined();
+          expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(
+            cleanupCursorRecorded ? 'e'.repeat(64) : undefined,
+          );
 
-        yield* Effect.sync(() => {
-          deleteReconciliationCursor(databasePath);
-          fillSchemaMetadataToCapacity(databasePath);
-        });
-        const capacity = yield* Effect.flip(store.claimWorktreeReconciliationCandidates(databasePath, 1));
-        expect(capacity).toBeInstanceOf(CodeGraphStoreError);
-        expect(capacity.message).toBe('Code graph reconciliation cursor metadata capacity is unavailable.');
-        expect(capacity.code).toBe('incompatible-schema');
-        expect(capacity.operation).toBe('claim code graph reconciliation candidates');
-        expect(capacity.recovery).toBe('manual-migration');
-        expect(readReconciliationCursor(databasePath)).toBeUndefined();
-        expect(readSchemaMetadataRowCount(databasePath)).toBe(REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS);
+          const legacyCursor = cleanupCursorRecorded ? 'a'.repeat(64) : 'malformed'.repeat(128);
+          yield* Effect.sync(() => {
+            const database = new Database(databasePath, {strict: true});
+            try {
+              database
+                .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?)')
+                .run('worktree_reconciliation_cursor', legacyCursor);
+              if (cleanupCursorRecorded) {
+                database
+                  .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+                  .run('malformed-authoritative', 'removed_view_cleanup_admission_cursor');
+              }
+            } finally {
+              database.close(false);
+            }
+          });
+          expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows + 1);
+          if (cleanupCursorRecorded) {
+            const refused = yield* store.claimWorktreeReconciliationCandidates(databasePath, 1).pipe(Effect.exit);
+            expect(refused._tag).toBe('Failure');
+            expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows + 1);
+            expect(readReconciliationCursor(databasePath)).toBe(legacyCursor);
+            expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(
+              'malformed-authoritative',
+            );
+            yield* Effect.sync(() => {
+              const database = new Database(databasePath, {strict: true});
+              try {
+                database
+                  .query('UPDATE schema_metadata SET value = ? WHERE key = ?')
+                  .run('e'.repeat(64), 'removed_view_cleanup_admission_cursor');
+              } finally {
+                database.close(false);
+              }
+            });
+          }
 
-        yield* Effect.sync(() => deleteOneFillerMetadataRow(databasePath));
-        const claimed = yield* store.claimWorktreeReconciliationCandidates(databasePath, 1);
-        expect(claimed.map(entry => entry.worktreeId)).toEqual([worktreeIds[0]]);
-        expect(readReconciliationCursor(databasePath)).toBe(worktreeIds[0]);
-        expect(readSchemaMetadataRowCount(databasePath)).toBe(REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS);
+          expect(yield* store.claimWorktreeReconciliationCandidates(databasePath, 1)).toHaveLength(1);
+          expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows);
+          expect(readReconciliationCursor(databasePath)).toBeUndefined();
+          expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(
+            cleanupCursorRecorded ? 'e'.repeat(64) : undefined,
+          );
+          expect(yield* store.claimWorktreeReconciliationCandidates(databasePath, 1)).toHaveLength(1);
+          expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows);
+          expect(readReconciliationCursor(databasePath)).toBeUndefined();
+
+          yield* Effect.sync(() =>
+            executeDatabaseSql(databasePath, `DELETE FROM schema_metadata WHERE key = '${fillerKeys.at(-1)}'`),
+          );
+          expect(yield* store.claimWorktreeReconciliationCandidates(databasePath, 1)).toHaveLength(1);
+          expect(readSchemaMetadataCount(databasePath)).toBe(maximumRows);
+          expect(readReconciliationCursor(databasePath)).toBe(targetWorktreeId);
+        }
       }).pipe(provideTestLayer(storeLayer)),
     ),
   );
 
   effectIt.effect.prop(
-    'atomically replaces every bounded semantic-invalid cursor with the claimed page boundary',
-    {malformedCursor: boundedMalformedReconciliationCursor},
+    'canonicalizes every bounded malformed advisory cursor without changing authoritative cursor state',
+    {
+      malformedCursor: fc
+        .oneof(fc.string({maxLength: 96}), fc.string({maxLength: 192, minLength: 65}))
+        .filter(value => !/^[0-9a-f]{64}$/u.test(value)),
+    },
     ({malformedCursor}) =>
       TestClock.withLive(
         Effect.gen(function* () {
@@ -591,19 +672,30 @@ describe('automatic missing-worktree reconciliation', () => {
           temporaryRoots.push(root);
           const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
           const store = yield* CodeGraphStore;
+          const cleanupCursor = 'e'.repeat(64);
           yield* store.initialize(databasePath);
-          const worktreeIds = ['0'.repeat(64), '1'.repeat(64), '2'.repeat(64)];
           yield* Effect.sync(() => {
-            seedCandidateViews(databasePath, worktreeIds, false);
-            writeReconciliationCursor(databasePath, malformedCursor);
+            seedCandidateViews(databasePath, [targetWorktreeId], false);
+            const database = new Database(databasePath, {strict: true});
+            try {
+              database
+                .query('INSERT INTO schema_metadata (key, value) VALUES (?, ?), (?, ?)')
+                .run(
+                  'removed_view_cleanup_admission_cursor',
+                  cleanupCursor,
+                  'worktree_reconciliation_cursor',
+                  malformedCursor,
+                );
+            } finally {
+              database.close(false);
+            }
           });
-          const beforeRows = readSchemaMetadataRowCount(databasePath);
 
-          const claimed = yield* store.claimWorktreeReconciliationCandidates(databasePath, 2);
-
-          expect(claimed.map(entry => entry.worktreeId)).toEqual(worktreeIds.slice(0, 2));
-          expect(readReconciliationCursor(databasePath)).toBe(worktreeIds[1]);
-          expect(readSchemaMetadataRowCount(databasePath)).toBe(beforeRows);
+          expect(yield* store.claimWorktreeReconciliationCandidates(databasePath, 1)).toHaveLength(1);
+          expect(readSchemaMetadataFamily(databasePath, 'worktree_reconciliation_cursor')).toEqual([
+            {key: 'worktree_reconciliation_cursor', value: targetWorktreeId},
+          ]);
+          expect(readSchemaMetadataValue(databasePath, 'removed_view_cleanup_admission_cursor')).toBe(cleanupCursor);
         }).pipe(provideTestLayer(storeLayer)),
       ),
     {fastCheck: {numRuns: 24}},
@@ -1789,85 +1881,62 @@ function removeViewTombstone(databasePath: string, worktreeId: string): void {
 }
 
 function readReconciliationCursor(databasePath: string): string | undefined {
+  return readSchemaMetadataValue(databasePath, 'worktree_reconciliation_cursor');
+}
+
+function readSchemaMetadataValue(databasePath: string, key: string): string | undefined {
   const database = new Database(databasePath, {readonly: true, strict: true});
   try {
-    const row = database
-      .query("SELECT value FROM schema_metadata WHERE key = 'worktree_reconciliation_cursor'")
-      .get() as {readonly value: string} | null;
+    const row = database.query('SELECT value FROM schema_metadata WHERE key = ? COLLATE BINARY').get(key) as {
+      readonly value: string;
+    } | null;
     return row?.value;
   } finally {
     database.close(false);
   }
 }
 
-function writeReconciliationCursor(databasePath: string, value: string): void {
-  const database = new Database(databasePath, {strict: true});
+function readSchemaMetadataFamily(
+  databasePath: string,
+  key: string,
+): readonly {readonly key: string; readonly value: string}[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
   try {
-    database
-      .query(
-        `INSERT INTO schema_metadata (key, value) VALUES ('worktree_reconciliation_cursor', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      )
-      .run(value);
+    return database
+      .query('SELECT key, value FROM schema_metadata WHERE key = ? COLLATE NOCASE ORDER BY key')
+      .all(key) as readonly {readonly key: string; readonly value: string}[];
   } finally {
     database.close(false);
   }
 }
 
-function deleteReconciliationCursor(databasePath: string): void {
-  const database = new Database(databasePath, {strict: true});
+function readSchemaMetadataCount(databasePath: string): number {
+  const database = new Database(databasePath, {readonly: true, strict: true});
   try {
-    database.query("DELETE FROM schema_metadata WHERE key = 'worktree_reconciliation_cursor'").run();
+    const row = database.query('SELECT COUNT(*) AS count FROM schema_metadata').get() as {
+      readonly count: number;
+    };
+    return Number(row.count);
   } finally {
     database.close(false);
   }
 }
 
-function fillSchemaMetadataToCapacity(databasePath: string): void {
+function fillSchemaMetadataToCount(databasePath: string, targetCount: number): readonly string[] {
   const database = new Database(databasePath, {strict: true});
   try {
-    database
-      .query(
-        `INSERT INTO schema_metadata (key, value) VALUES ('removed_view_cleanup_admission_cursor', ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-      )
-      .run('f'.repeat(64));
-    const count = Number(
-      database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM schema_metadata').get()?.count ?? 0,
+    const current = Number(
+      (database.query('SELECT COUNT(*) AS count FROM schema_metadata').get() as {count: number}).count,
+    );
+    const keys = Array.from(
+      {length: Math.max(0, targetCount - current)},
+      (_, index) => `reconciliation_cursor_capacity_${index.toString().padStart(2, '0')}`,
     );
     const insert = database.prepare('INSERT INTO schema_metadata (key, value) VALUES (?, ?)');
     database.transaction(() => {
-      for (let index = count; index < REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS; index += 1) {
-        insert.run(`cursor-capacity-filler-${index}`, 'bounded');
-      }
+      for (const key of keys) insert.run(key, 'bounded-fixture');
     })();
-  } finally {
-    database.close(false);
-  }
-}
-
-function deleteOneFillerMetadataRow(databasePath: string): void {
-  const database = new Database(databasePath, {strict: true});
-  try {
-    database
-      .query(
-        `DELETE FROM schema_metadata
-         WHERE key = (
-           SELECT key FROM schema_metadata WHERE key LIKE 'cursor-capacity-filler-%' ORDER BY key LIMIT 1
-         )`,
-      )
-      .run();
-  } finally {
-    database.close(false);
-  }
-}
-
-function readSchemaMetadataRowCount(databasePath: string): number {
-  const database = new Database(databasePath, {readonly: true, strict: true});
-  try {
-    return Number(
-      database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM schema_metadata').get()?.count ?? -1,
-    );
+    return keys;
   } finally {
     database.close(false);
   }
