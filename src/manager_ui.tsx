@@ -528,7 +528,7 @@ function App(): React.ReactElement {
       } else {
         result = await api<{readonly output: string}>('/api/graphs/action', {
           ...action,
-          confirm: action.dryRun !== true,
+          confirm: !('dryRun' in action) || action.dryRun !== true,
         });
       }
       await refreshGraphCatalog(false);

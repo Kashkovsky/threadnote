@@ -32,9 +32,13 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
 import {withSharedRepositoryLock} from '../../src/effect/share_lock.js';
 import * as automaticCompaction from '../../src/code_graph/automatic_compaction.js';
+import * as isolatedIndex from '../../src/code_graph/isolated_index.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {makeCodeGraphBuildReporter} from '../../src/code_graph/build_status.js';
-import {recordVerifiedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
+import {
+  readCodeGraphLocalAssociation,
+  recordVerifiedCodeGraphLocalAssociation,
+} from '../../src/code_graph/local_provenance.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   withCodeGraphMaintenanceIntent,
@@ -53,6 +57,7 @@ import {
 import {runEffect} from '../helpers/effect-runtime.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 
 const MANAGER_GRAPH_SNAPSHOT_ID = `cgsn_${'1'.repeat(40)}`;
 const MANAGER_GRAPH_REPLACEMENT_SNAPSHOT_ID = `cgsn_${'2'.repeat(40)}`;
@@ -91,6 +96,11 @@ vi.mock('../../src/seeding.js', async importOriginal => {
 vi.mock('../../src/code_graph/automatic_compaction.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/code_graph/automatic_compaction.js')>();
   return {...actual, compactCodeGraphStorageIsolated: vi.fn(actual.compactCodeGraphStorageIsolated)};
+});
+
+vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/code_graph/isolated_index.js')>();
+  return {...actual, runIsolatedCodeGraphIndexSnapshot: vi.fn(actual.runIsolatedCodeGraphIndexSnapshot)};
 });
 
 async function makeRuntime(): Promise<RuntimeConfig> {
@@ -673,6 +683,7 @@ describe('manager http API', () => {
 
   beforeEach(() => {
     vi.mocked(automaticCompaction.compactCodeGraphStorageIsolated).mockClear();
+    vi.mocked(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).mockClear();
     vi.mocked(lifecycle.runRepair)
       .mockReset()
       .mockImplementation((_config, options) => Console.log(options.dryRun ? 'repair dry run' : 'repair applied'));
@@ -1879,6 +1890,285 @@ describe('manager http API', () => {
       expect(analysisResponse.status).toBe(200);
       expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 1_602, analyzedNodeCount: 523});
       expect(analysis.trust.classification).toBe('untrusted-repository-data');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('exposes and isolated-indexes a configured project before any graph database exists', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const repositoryRoot = join(config.agentContextHome, 'configured-project');
+    const secondRepositoryRoot = join(config.agentContextHome, 'second-project');
+    initializeGitRepository(repositoryRoot);
+    initializeGitRepository(secondRepositoryRoot);
+    const identity = await runEffect(resolveRepositoryIdentity(repositoryRoot));
+    const secondIdentity = await runEffect(resolveRepositoryIdentity(secondRepositoryRoot));
+    const manifestFor = (projectPath: string): string =>
+      [
+        'version: 1',
+        'projects:',
+        '  - name: configured-project',
+        `    path: ${JSON.stringify(projectPath)}`,
+        '    uri: threadnote://resources/repos/configured-project',
+        '    seed: []',
+        '',
+      ].join('\n');
+    await writeFile(config.manifestPath, manifestFor(repositoryRoot));
+    const snapshot: CodeGraphSnapshot = {
+      commit: identity.headCommit,
+      completedAt: '2026-08-27T12:00:00.000Z',
+      dirty: false,
+      edgeCount: 0,
+      extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
+      fileCount: 1,
+      id: `cgsn_${'9'.repeat(40)}-direct`,
+      repositoryId: identity.repositoryId,
+      state: 'ready',
+      symbolCount: 2,
+      worktreeId: identity.worktreeId,
+    };
+    const secondSnapshot = {
+      ...snapshot,
+      commit: secondIdentity.headCommit,
+      id: `cgsn_${'8'.repeat(40)}-direct`,
+      repositoryId: secondIdentity.repositoryId,
+      worktreeId: secondIdentity.worktreeId,
+    } satisfies CodeGraphSnapshot;
+    vi.mocked(isolatedIndex.runIsolatedCodeGraphIndexSnapshot)
+      .mockReturnValueOnce(Effect.succeed({durationMs: 1, identity, snapshot}))
+      .mockReturnValueOnce(Effect.succeed({durationMs: 1, identity: secondIdentity, snapshot: secondSnapshot}))
+      .mockReturnValueOnce(Effect.succeed({durationMs: 1, identity, snapshot}));
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const response = await fetch(`${server.url}/api/graphs`, {headers});
+      const catalog = (await response.json()) as {
+        readonly configuredProjects: readonly {
+          readonly graphState: string;
+          readonly name: string;
+          readonly path: string;
+        }[];
+        readonly manifestRevision: string;
+        readonly repositories: readonly unknown[];
+      };
+      expect(response.status).toBe(200);
+      expect(catalog.repositories).toEqual([]);
+      expect(catalog.configuredProjects).toEqual([
+        {
+          folder: 'configured-project',
+          graphState: 'not-indexed',
+          name: 'configured-project',
+          path: repositoryRoot,
+        },
+      ]);
+      expect(catalog.manifestRevision).toMatch(/^[0-9a-f]{64}$/);
+
+      const indexResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index-project',
+          expectedRevision: catalog.manifestRevision,
+          project: 'configured-project',
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(indexResponse.status).toBe(200);
+      expect(await indexResponse.json()).toEqual({
+        output: 'Ready in an isolated process · 1 files · 2 symbols · 0 edges',
+      });
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenNthCalledWith(1, {
+        cwd: identity.repoRoot,
+        expectedIdentity: {
+          checkoutId: identity.checkoutId,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        },
+        force: false,
+        threadnoteHome: config.agentContextHome,
+      });
+      expect(await runEffect(readCodeGraphLocalAssociation(config.agentContextHome, identity))).toMatchObject({
+        path: identity.repoRoot,
+        state: 'verified',
+      });
+
+      await runEffect(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const layout = codeGraphLayout(path, config.agentContextHome, identity.checkoutId, identity.worktreeId);
+          const symbol = graphSymbol(
+            'configured-symbol',
+            'configuredSymbol',
+            'src/index.ts',
+            'configured-project',
+            'function',
+            'configured-project',
+          );
+          const secondSymbol = graphSymbol(
+            'configured-second-symbol',
+            'configuredSecondSymbol',
+            symbol.path,
+            'configured-project',
+            'function',
+            'configured-project',
+          );
+          yield* store.activate(
+            layout.databasePath,
+            identity,
+            snapshot,
+            [graphFile(symbol.path, symbol.id)],
+            [symbol, secondSymbol],
+            [],
+          );
+          yield* store.promote(layout.databasePath, identity, snapshot.id);
+        }),
+      );
+      const refreshedCatalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const refreshedCatalog = (await refreshedCatalogResponse.json()) as {
+        readonly configuredProjects: readonly {readonly graphState: string; readonly name: string}[];
+      };
+      expect(refreshedCatalogResponse.status).toBe(200);
+      expect(refreshedCatalog.configuredProjects).toEqual([
+        expect.objectContaining({graphState: 'ready', name: 'configured-project'}),
+      ]);
+
+      const nestedSymlink = join(repositoryRoot, 'linked-project');
+      await symlink(secondRepositoryRoot, nestedSymlink, 'dir');
+      await writeFile(config.manifestPath, manifestFor(nestedSymlink));
+      const symlinkCatalogResponse = await fetch(`${server.url}/api/graphs`, {headers});
+      const symlinkCatalog = (await symlinkCatalogResponse.json()) as {
+        readonly configuredProjects: readonly {readonly graphState: string; readonly name: string}[];
+        readonly manifestRevision: string;
+      };
+      expect(symlinkCatalogResponse.status).toBe(200);
+      expect(symlinkCatalog.configuredProjects).toEqual([
+        expect.objectContaining({graphState: 'not-indexed', name: 'configured-project'}),
+      ]);
+      const symlinkIndexResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index-project',
+          expectedRevision: symlinkCatalog.manifestRevision,
+          project: 'configured-project',
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(symlinkIndexResponse.status).toBe(200);
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenNthCalledWith(2, {
+        cwd: secondIdentity.repoRoot,
+        expectedIdentity: {
+          checkoutId: secondIdentity.checkoutId,
+          repositoryId: secondIdentity.repositoryId,
+          worktreeId: secondIdentity.worktreeId,
+        },
+        force: false,
+        threadnoteHome: config.agentContextHome,
+      });
+
+      const staleResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index-project',
+          expectedRevision: '0'.repeat(64),
+          project: 'configured-project',
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(staleResponse.status).toBe(409);
+      expect(await staleResponse.json()).toEqual({
+        code: 'graph-project-stale',
+        error: 'Configured projects changed. Refresh Manager before choosing a project to index.',
+        retryAfterMilliseconds: 0,
+      });
+
+      const existingIndexResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index',
+          checkoutId: identity.checkoutId,
+          cwd: repositoryRoot,
+          full: true,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(existingIndexResponse.status).toBe(200);
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenNthCalledWith(3, {
+        cwd: identity.repoRoot,
+        expectedIdentity: {
+          checkoutId: identity.checkoutId,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        },
+        force: true,
+        threadnoteHome: config.agentContextHome,
+      });
+
+      const unsafeManifest = manifestFor(`${secondRepositoryRoot}\t`);
+      await writeFile(config.manifestPath, unsafeManifest);
+      const unsafeResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index-project',
+          expectedRevision: sha256HexSync(unsafeManifest),
+          project: 'configured-project',
+        }),
+        headers,
+        method: 'POST',
+      });
+      expect(unsafeResponse.status).toBe(409);
+      expect(await unsafeResponse.json()).toEqual({
+        code: 'graph-project-unavailable',
+        error: 'Configured projects could not be read. Refresh Manager and retry.',
+        retryAfterMilliseconds: 0,
+      });
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledTimes(3);
+
+      const foreignManifest = manifestFor('C:\\foreign\\configured-project');
+      await writeFile(config.manifestPath, foreignManifest);
+      const foreignResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index-project',
+          expectedRevision: sha256HexSync(foreignManifest),
+          project: 'configured-project',
+        }),
+        headers,
+        method: 'POST',
+      });
+      const foreign = await foreignResponse.json();
+      expect(foreignResponse.status).toBe(409);
+      expect(foreign).toEqual({
+        code: 'graph-project-unavailable',
+        error:
+          'The selected configured project is not an available local Git repository. Check its manifest path and retry.',
+        retryAfterMilliseconds: 0,
+      });
+      expect(JSON.stringify(foreign)).not.toContain('foreign\\configured-project');
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledTimes(3);
+
+      const missingManifest = manifestFor(repositoryRoot);
+      await writeFile(config.manifestPath, missingManifest);
+      await rm(repositoryRoot, {force: true, recursive: true});
+      const unavailableResponse = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({
+          action: 'index-project',
+          expectedRevision: sha256HexSync(missingManifest),
+          project: 'configured-project',
+        }),
+        headers,
+        method: 'POST',
+      });
+      const unavailable = await unavailableResponse.json();
+      expect(unavailableResponse.status).toBe(409);
+      expect(unavailable).toEqual({
+        code: 'graph-project-unavailable',
+        error:
+          'The selected configured project is not an available local Git repository. Check its manifest path and retry.',
+        retryAfterMilliseconds: 0,
+      });
+      expect(JSON.stringify(unavailable)).not.toContain(repositoryRoot);
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledTimes(3);
     } finally {
       await server.close();
     }

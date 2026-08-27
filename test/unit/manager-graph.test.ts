@@ -227,6 +227,85 @@ describe('manager graph focus', () => {
     expect(css).toMatch(/\.graph-administration\[open\] \.graph-administration-caret\s*{[^}]*rotate\(0deg\)/s);
   });
 
+  it('offers configured projects for first-time indexing and distinguishes ready snapshots', () => {
+    const neverResolves = () => new Promise<never>(() => undefined);
+    const markup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {
+          builds: [],
+          configuredProjects: [
+            {
+              folder: 'cold-project',
+              graphState: 'not-indexed',
+              name: 'cold-project',
+              path: '/repos/cold-project',
+            },
+            {
+              folder: 'ready-project',
+              graphState: 'ready',
+              name: 'ready-project',
+              path: '/repos/ready-project',
+            },
+            {
+              folder: 'hidden-project',
+              graphState: 'unknown',
+              name: 'hidden-project',
+              path: '/repos/hidden-project',
+            },
+          ],
+          diagnostics: [],
+          manifestRevision: 'a'.repeat(64),
+          repositories: [],
+          waiterCount: 0,
+          waiters: [],
+        },
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onAdministrationAction: () => undefined,
+        onRefresh: () => undefined,
+      }),
+    );
+
+    expect(markup).toContain('<strong>Configured projects</strong>');
+    expect(markup).toContain('cold-project · needs initialization');
+    expect(markup).toContain('ready-project · ready snapshot');
+    expect(markup).toContain('hidden-project · ready state not shown');
+    expect(markup).toContain('No ready snapshot · /repos/cold-project');
+    expect(markup).toContain('>Index graph</button>');
+    expect(markup).toContain('3 configured projects are ready to initialize from Manager.');
+    expect(markup).toContain('>Choose a configured project</button>');
+    expect(markup).not.toContain('<code>threadnote graph index</code>');
+
+    const emptyMarkup = renderToStaticMarkup(
+      createElement(GraphWorkspace, {
+        catalog: {
+          builds: [],
+          configuredProjects: [],
+          diagnostics: [],
+          manifestRevision: 'a'.repeat(64),
+          repositories: [],
+          waiterCount: 0,
+          waiters: [],
+        },
+        loadAnalysis: neverResolves,
+        loadCatalogPage: neverResolves,
+        loadGraph: neverResolves,
+        loadNodeDetail: neverResolves,
+        loadQuery: neverResolves,
+        loadViewsPage: neverResolves,
+        onAdministrationAction: () => undefined,
+        onRefresh: () => undefined,
+      }),
+    );
+    expect(emptyMarkup).toContain('No configured projects');
+    expect(emptyMarkup).toMatch(/<button disabled="" type="button">Index graph<\/button>/);
+    expect(emptyMarkup).toContain('<code>threadnote graph index</code>');
+  });
+
   it('orders build status banners by stable folder or checkout identity', () => {
     const earlier = {
       ...graphBuildStatus('running'),
@@ -676,14 +755,28 @@ describe('manager graph focus', () => {
       snapshotId: `cgsn_${'b'.repeat(40)}-direct`,
       total: 5,
     };
+    const configuredProject = {
+      folder: 'cold-project',
+      graphState: 'not-indexed' as const,
+      name: 'cold-project',
+      path: '/repos/cold-project',
+    };
     const afterMaintenance = mergeGraphCatalogStatus(
-      {...merged, catalogRevision: 'visible-revision', maintenance: previousMaintenance},
+      {
+        ...merged,
+        catalogRevision: 'visible-revision',
+        configuredProjects: [configuredProject],
+        maintenance: previousMaintenance,
+        manifestRevision: 'manifest-revision',
+      },
       {builds: [reclaiming], lifecyclePending: false, waiterCount: 0, waiters: []},
     );
     expect(afterMaintenance.catalogRevision).toBe('visible-revision');
     expect(afterMaintenance.maintenance).toBeUndefined();
     expect(afterMaintenance.automaticCompaction).toEqual(merged.automaticCompaction);
     expect(afterMaintenance.storage).toEqual(merged.storage);
+    expect(afterMaintenance.configuredProjects).toEqual([configuredProject]);
+    expect(afterMaintenance.manifestRevision).toBe('manifest-revision');
   });
 
   it('shows only a bounded actionable administration job summary', () => {

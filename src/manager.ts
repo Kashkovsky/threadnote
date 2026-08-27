@@ -87,6 +87,7 @@ import {
   isManagerWorksetApiPath,
   managerWorksetRequestAllowedDuringMaintenance,
 } from './manager_worksets.js';
+import * as graphProjects from './manager_graph_projects.js';
 import {
   cleanupMode,
   consolidationAgent,
@@ -127,7 +128,6 @@ import {removeCodeGraphView, renderCodeGraphViewRemovalResult} from './code_grap
 import {
   managerGraphAnalysis,
   managerGraphBuildCatalog,
-  managerGraphCatalog,
   managerGraphCatalogPage,
   managerGraphNodeDetail,
   managerGraphQuery,
@@ -167,6 +167,7 @@ interface ManagerDirectoryEntry {
 class ManagerOperationError extends Error {
   readonly _tag = 'ManagerOperationError' as const;
 }
+
 function managerOperationError(cause: unknown): ManagerOperationError {
   return cause instanceof ManagerOperationError ? cause : new ManagerOperationError(errorMessage(cause), {cause});
 }
@@ -534,6 +535,8 @@ function handleRequestEffect(
           writeJson(response, 409, {code: 'graph-view-stale', error: error.message, retryAfterMilliseconds: 0});
           return;
         }
+        if (error instanceof graphProjects.ManagerGraphProjectActionError)
+          return writeJson(response, 409, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
         writeJson(response, 500, {error: errorMessage(error)});
       }),
     ),
@@ -599,10 +602,8 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
     writeJson(response, 200, {resourcesTree: resourceTree, tree});
     return;
   }
-  if (request.method === 'GET' && url.pathname === '/api/graphs') {
-    writeJson(response, 200, yield* managerGraphCatalog(context.config.agentContextHome));
-    return;
-  }
+  if (request.method === 'GET' && url.pathname === '/api/graphs')
+    return writeJson(response, 200, yield* graphProjects.managerGraphProjectCatalog(context.config));
   if (request.method === 'GET' && url.pathname === '/api/graphs/status') {
     const automaticCompaction = context.automaticCompactionStatus
       ? yield* Ref.get(context.automaticCompactionStatus)
@@ -1607,6 +1608,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
   if (action === 'purge-all') {
     return yield* runCaptured(() => runCodeGraphPurge(config, {all: true, dryRun}), runEffect);
   }
+  if (action === 'index-project') return yield* graphProjects.runManagerManifestProjectGraphIndex(config, body);
   const checkoutId = yield* Effect.try({
     try: () => requireGraphIdentity(body.checkoutId, 'checkoutId'),
     catch: managerOperationError,
