@@ -243,6 +243,29 @@ describe('anonymous telemetry runtime', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
+  effectIt.effect('preserves closed reported outcomes attached to failed carriers', () => {
+    const capture = capturingTracer();
+    const cases = ['timed-out', 'unavailable', 'failure'] as const;
+
+    return Effect.gen(function* () {
+      for (const outcome of cases) {
+        const error = attachAnonymousTelemetryReportedOutcome(
+          new TestError('private target detail at /Users/private/repository'),
+          outcome,
+        );
+        const exit = yield* Effect.exit(
+          withAnonymousTelemetry({component: 'cli', operation: 'graph.remove-view'}, Effect.fail(error)),
+        );
+        expect(Exit.isFailure(exit)).toBe(true);
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(error);
+      }
+
+      expect(capture.spans.map(span => spanAttributes(span)['threadnote.outcome'])).toEqual(cases);
+      expect(capture.spans.map(span => spanAttributes(span)['error.type'])).toEqual(cases.map(() => 'UnknownError'));
+      expect(JSON.stringify(capture.spans.map(spanAttributes))).not.toContain('private');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
   effectIt.effect('buckets start/end memory and never exports exact byte counts', () => {
     const capture = capturingTracer();
     const mebibytes = 1_024 * 1_024;

@@ -1,4 +1,5 @@
 import {Effect, FileSystem, Option, Path, PlatformError} from 'effect';
+import {attachAnonymousTelemetryDiagnostic, attachAnonymousTelemetryReportedOutcome} from '../telemetry/diagnostic.js';
 import {
   captureCodeGraphLocalProvenanceCleanupEvidence,
   cleanupMissingCodeGraphLocalProvenance,
@@ -291,12 +292,23 @@ export function renderCodeGraphViewRemovalResult(result: CodeGraphViewRemovalAct
 
 export function codeGraphViewRemovalTargetFailure(result: CodeGraphViewRemovalActionResult): Error | undefined {
   if (result.state === 'stale-target') {
-    return new CodeGraphViewRemovalError('The selected code graph view changed; refresh the view inventory and retry.');
+    return codeGraphViewRemovalTargetError(
+      'The selected code graph view changed; refresh the view inventory and retry.',
+    );
   }
   if (result.state === 'not-found') {
-    return new CodeGraphViewRemovalError('The selected code graph view does not exist; refresh the view inventory.');
+    return codeGraphViewRemovalTargetError('The selected code graph view does not exist; refresh the view inventory.');
   }
   return undefined;
+}
+
+function codeGraphViewRemovalTargetError(message: string): CodeGraphViewRemovalError {
+  return attachAnonymousTelemetryReportedOutcome(
+    attachAnonymousTelemetryDiagnostic(new CodeGraphViewRemovalError(message), {
+      errorType: 'CodeGraphViewRemovalError',
+    }),
+    'unavailable',
+  );
 }
 
 function actionResult(

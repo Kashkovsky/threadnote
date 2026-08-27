@@ -11,6 +11,7 @@ import {
   closedTelemetryErrorType,
   projectAnonymousTelemetryDiagnostic,
   readAnonymousTelemetryDiagnostic,
+  readAnonymousTelemetryReportedOutcome,
   type AnonymousTelemetryReportedOutcome,
   type AnonymousTelemetryDiagnostic,
 } from '../telemetry/diagnostic.js';
@@ -797,10 +798,11 @@ function unsafeCompletionClassification<A, E>(
   const diagnostic = projectAnonymousTelemetryDiagnostic(
     readAnonymousTelemetryDiagnostic(error) ?? anonymousTelemetryDiagnosticFromError(error),
   );
+  const reportedOutcome = readAnonymousTelemetryReportedOutcome(error);
   return {
     ...(diagnostic === undefined ? {} : {diagnostic}),
     errorType: diagnostic?.errorType ?? 'UnknownError',
-    outcome: 'failure',
+    outcome: reportedOutcome ?? 'failure',
   };
 }
 
