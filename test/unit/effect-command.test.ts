@@ -1,5 +1,5 @@
 import {TestError} from '../helpers/test-error.js';
-import {mkdtemp, readFile, rm} from '../helpers/node-fs-promises.js';
+import {mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Clock, Effect, Fiber, FileSystem, Path, Result} from 'effect';
@@ -138,6 +138,21 @@ describe('Effect CommandExecutor', () => {
     expect(result).toEqual({exitCode: 0, stderr: '', stdout: ''});
   });
 
+  it('waits for a complete detached-child receipt instead of treating file creation as completion', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'threadnote-detached-receipt-'));
+    const receiptPath = join(directory, 'environment.json');
+    try {
+      await writeFile(receiptPath, '{', 'utf8');
+      const receipt = readCompleteEnvironmentReceipt(receiptPath);
+      await new Promise(resolve => setTimeout(resolve, 20));
+      await writeFile(receiptPath, JSON.stringify({THREADNOTE_DETACHED_SAFE_VALUE: 'complete'}), 'utf8');
+
+      await expect(receipt).resolves.toEqual({THREADNOTE_DETACHED_SAFE_VALUE: 'complete'});
+    } finally {
+      await rm(directory, {force: true, recursive: true});
+    }
+  });
+
   it('scrubs telemetry correlation state from detached children', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'threadnote-detached-command-'));
     const receiptPath = join(directory, 'environment.json');
@@ -157,18 +172,10 @@ describe('Effect CommandExecutor', () => {
         ),
       );
       expect(spawned).toBe(true);
-      let childEnvironment: Record<string, string> | undefined;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const receipt = await readFile(receiptPath, 'utf8').catch(() => undefined);
-        if (receipt !== undefined) {
-          childEnvironment = JSON.parse(receipt) as Record<string, string>;
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
+      const childEnvironment = await readCompleteEnvironmentReceipt(receiptPath);
       expect(childEnvironment).toEqual(expect.objectContaining({THREADNOTE_DETACHED_SAFE_VALUE: 'preserved'}));
       for (const variable of Object.keys(privateValues)) {
-        expect(childEnvironment?.[variable]).toBeUndefined();
+        expect(childEnvironment[variable]).toBeUndefined();
       }
     } finally {
       await rm(directory, {force: true, recursive: true});
@@ -198,15 +205,7 @@ describe('Effect CommandExecutor', () => {
         ),
       );
       expect(spawned).toBe(true);
-      let childEnvironment: Record<string, string> | undefined;
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        const receipt = await readFile(receiptPath, 'utf8').catch(() => undefined);
-        if (receipt !== undefined) {
-          childEnvironment = JSON.parse(receipt) as Record<string, string>;
-          break;
-        }
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
+      const childEnvironment = await readCompleteEnvironmentReceipt(receiptPath);
       expect(childEnvironment).toEqual(
         expect.objectContaining({
           [TELEMETRY_AGENT_SESSION_ENVIRONMENT_VARIABLE]: sessionId,
@@ -215,13 +214,31 @@ describe('Effect CommandExecutor', () => {
           THREADNOTE_DETACHED_SAFE_VALUE: 'preserved',
         }),
       );
-      expect(childEnvironment?.[TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE]).toBeUndefined();
-      expect(childEnvironment?.[TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]).toBeUndefined();
+      expect(childEnvironment[TELEMETRY_PROVIDER_ENVIRONMENT_VARIABLE]).toBeUndefined();
+      expect(childEnvironment[TELEMETRY_PROVIDER_SESSION_TOKEN_ENVIRONMENT_VARIABLE]).toBeUndefined();
     } finally {
       await rm(directory, {force: true, recursive: true});
     }
   });
 });
+
+async function readCompleteEnvironmentReceipt(path: string): Promise<Record<string, string>> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const receipt = await readFile(path, 'utf8').catch(() => undefined);
+    if (receipt !== undefined) {
+      try {
+        const parsed: unknown = JSON.parse(receipt);
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+          return parsed as Record<string, string>;
+        }
+      } catch {
+        // A detached writer can create the file before its complete JSON payload is visible.
+      }
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new TestError('Detached child did not publish a complete environment receipt.');
+}
 
 function isProcessRunning(pid: number): boolean {
   try {
