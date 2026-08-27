@@ -82,13 +82,22 @@ export interface GraphCatalogDiagnostic {
   readonly message: string;
 }
 
+export interface GraphConfiguredProject {
+  readonly folder: string;
+  readonly graphState: 'not-indexed' | 'ready' | 'unknown';
+  readonly name: string;
+  readonly path: string;
+}
+
 export interface GraphCatalog {
   readonly automaticCompaction?: CodeGraphAutomaticCompactionStatus;
   readonly builds: readonly GraphBuildStatus[];
   readonly catalogRevision?: string;
+  readonly configuredProjects?: readonly GraphConfiguredProject[];
   readonly diagnostics: readonly GraphCatalogDiagnostic[];
   readonly lifecyclePending?: boolean;
   readonly maintenance?: CodeGraphMaintenanceStatus;
+  readonly manifestRevision?: string;
   readonly repositories: readonly GraphRepositoryGroup[];
   readonly storage?: Readonly<Record<string, ManagerGraphStorageSummary>>;
   readonly waiterCount: number;
@@ -105,6 +114,12 @@ export type GraphAdministrationAction =
       readonly full?: boolean;
       readonly repositoryId: string;
       readonly worktreeId: string;
+    }
+  | {
+      readonly action: 'index-project';
+      readonly expectedRevision: string;
+      readonly full?: boolean;
+      readonly project: string;
     }
   | {
       readonly action: 'purge' | 'purge-obsolete';

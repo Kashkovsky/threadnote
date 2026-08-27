@@ -722,6 +722,8 @@ export function GraphWorkspace(props: {
         <div className="graph-notices">
           <GraphAdministration
             busy={props.administrationBusy}
+            configuredProjects={props.catalog?.configuredProjects}
+            expectedManifestRevision={props.catalog?.manifestRevision}
             onAction={props.onAdministrationAction ?? (() => undefined)}
             onDiagnostics={props.onDiagnostics ?? (() => undefined)}
             output={props.administrationOutput}
@@ -1132,7 +1134,11 @@ export function GraphWorkspace(props: {
                 <span>Loading indexed repositories…</span>
               </div>
             ) : repositories.length === 0 ? (
-              <GraphEmptyState state={emptyState} />
+              <GraphEmptyState
+                configuredProjectCount={props.catalog.configuredProjects?.length ?? 0}
+                onOpenAdministration={() => setActiveTab('administration')}
+                state={emptyState}
+              />
             ) : activeQuery && selectedRepositoryIsIndexing && !queryGraph ? (
               <div aria-live="polite" className="graph-loading" role="status">
                 <span className="spinner" aria-hidden="true" />

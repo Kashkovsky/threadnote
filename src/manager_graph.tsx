@@ -48,6 +48,7 @@ export {
   type GraphCatalog,
   type GraphCatalogEmptyState,
   type GraphCatalogDiagnostic,
+  type GraphConfiguredProject,
   type GraphCatalogPage,
   type GraphCatalogSearchOptions,
   type GraphEdge,

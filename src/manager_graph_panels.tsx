@@ -30,6 +30,7 @@ import {
   type GraphAdministrationAction,
   type GraphAnalysis,
   type GraphBuildStatus,
+  type GraphConfiguredProject,
   type GraphEdge,
   type GraphMaterializationRows,
   type GraphMaterializationStage,
@@ -459,6 +460,8 @@ export function NodeInspector(props: {
 
 export function GraphAdministration(props: {
   readonly busy?: string;
+  readonly configuredProjects?: readonly GraphConfiguredProject[];
+  readonly expectedManifestRevision?: string;
   readonly onAction: (action: GraphAdministrationAction) => void;
   readonly onDiagnostics: (options: {readonly analyze: boolean; readonly deep: boolean}) => void;
   readonly output?: string;
@@ -468,7 +471,10 @@ export function GraphAdministration(props: {
   const [analyze, setAnalyze] = useState(false);
   const [deep, setDeep] = useState(false);
   const [forceCompact, setForceCompact] = useState(false);
+  const [selectedProjectName, setSelectedProjectName] = useState('');
   const blocked = props.busy !== undefined;
+  const selectedProject =
+    props.configuredProjects?.find(project => project.name === selectedProjectName) ?? props.configuredProjects?.[0];
   const confirmAction = async (options: ManagerDialogOptions, action: GraphAdministrationAction): Promise<void> => {
     if (await dialogs.confirm(options)) props.onAction(action);
   };
@@ -523,6 +529,57 @@ export function GraphAdministration(props: {
         </span>
       </summary>
       <div className="graph-administration-body">
+        {props.configuredProjects === undefined ? null : (
+          <section className="graph-configured-project-index">
+            <header>
+              <strong>Configured projects</strong>
+              <small>Initialize a missing graph, or refresh an existing ready snapshot, from this Manager.</small>
+            </header>
+            <div className="graph-configured-project-controls">
+              <label>
+                <span>Project</span>
+                <select
+                  disabled={blocked || props.configuredProjects.length === 0}
+                  onChange={event => setSelectedProjectName(event.target.value)}
+                  value={selectedProject?.name ?? ''}
+                >
+                  {props.configuredProjects.length === 0 ? (
+                    <option value="">No configured projects</option>
+                  ) : (
+                    props.configuredProjects.map(project => (
+                      <option key={project.name} value={project.name}>
+                        {project.name} · {graphConfiguredProjectStateLabel(project.graphState)}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </label>
+              <span className="graph-configured-project-detail" title={selectedProject?.path}>
+                {selectedProject
+                  ? `${graphConfiguredProjectStateDetail(selectedProject.graphState)} · ${selectedProject.path}`
+                  : 'Add a project to the seed manifest before indexing from Manager.'}
+              </span>
+              <button
+                disabled={blocked || !selectedProject || !props.expectedManifestRevision}
+                onClick={() => {
+                  if (!selectedProject || !props.expectedManifestRevision) return;
+                  props.onAction({
+                    action: 'index-project',
+                    expectedRevision: props.expectedManifestRevision,
+                    project: selectedProject.name,
+                  });
+                }}
+                type="button"
+              >
+                {selectedProject?.graphState === 'ready'
+                  ? 'Refresh graph'
+                  : selectedProject?.graphState === 'unknown'
+                    ? 'Index / refresh graph'
+                    : 'Index graph'}
+              </button>
+            </div>
+          </section>
+        )}
         <div className="graph-administration-toolbar">
           <label className="check-row">
             <input
@@ -928,6 +985,28 @@ export function GraphAdministration(props: {
       </div>
     </details>
   );
+}
+
+function graphConfiguredProjectStateLabel(state: GraphConfiguredProject['graphState']): string {
+  switch (state) {
+    case 'not-indexed':
+      return 'needs initialization';
+    case 'ready':
+      return 'ready snapshot';
+    case 'unknown':
+      return 'ready state not shown';
+  }
+}
+
+function graphConfiguredProjectStateDetail(state: GraphConfiguredProject['graphState']): string {
+  switch (state) {
+    case 'not-indexed':
+      return 'No ready snapshot';
+    case 'ready':
+      return 'Ready snapshot';
+    case 'unknown':
+      return 'Ready state is outside the bounded catalog';
+  }
 }
 
 export function GraphMaintenanceProgress(props: {
@@ -1514,11 +1593,14 @@ function formatGraphPercentage(completed: number, total: number): string {
 }
 
 export function GraphEmptyState(props: {
+  readonly configuredProjectCount?: number;
+  readonly onOpenAdministration?: () => void;
   readonly state: 'building' | 'empty' | 'recovering' | 'retrying';
 }): React.ReactElement {
   const building = props.state === 'building';
   const recovering = props.state === 'recovering';
   const retrying = props.state === 'retrying';
+  const hasConfiguredProjects = (props.configuredProjectCount ?? 0) > 0;
   return (
     <div className="graph-empty">
       <span className="empty-orbit" aria-hidden="true" />
@@ -1538,9 +1620,17 @@ export function GraphEmptyState(props: {
             ? 'Threadnote is retrying the indexed repository catalog. Existing indexes will return here automatically.'
             : building
               ? 'The newest phase and counters appear above. A ready snapshot will open here automatically.'
-              : 'Build a native graph from a repository, then refresh this workspace.'}
+              : hasConfiguredProjects
+                ? `${props.configuredProjectCount?.toLocaleString()} configured project${props.configuredProjectCount === 1 ? ' is' : 's are'} ready to initialize from Manager.`
+                : 'Build a native graph from a repository, then refresh this workspace.'}
       </p>
-      {building || recovering || retrying ? null : <code>threadnote graph index</code>}
+      {building || recovering || retrying ? null : hasConfiguredProjects ? (
+        <button onClick={props.onOpenAdministration} type="button">
+          Choose a configured project
+        </button>
+      ) : (
+        <code>threadnote graph index</code>
+      )}
     </div>
   );
 }

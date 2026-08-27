@@ -1156,10 +1156,66 @@ dd {
 }
 
 .graph-administration-toolbar button,
+.graph-configured-project-controls button,
 .graph-database-actions button {
   font-size: 10px;
   min-height: 30px;
   padding: 5px 9px;
+}
+
+.graph-configured-project-index {
+  background: rgba(103, 232, 199, 0.035);
+  border: 1px solid var(--accent-line);
+  border-radius: 9px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.graph-configured-project-index > header {
+  display: grid;
+  gap: 2px;
+}
+
+.graph-configured-project-index > header small,
+.graph-configured-project-detail {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.graph-configured-project-controls {
+  align-items: end;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(180px, 0.85fr) minmax(180px, 1.15fr) auto;
+  min-width: 0;
+}
+
+.graph-configured-project-controls label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.graph-configured-project-controls label > span {
+  color: var(--dim);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.graph-configured-project-controls select,
+.graph-configured-project-detail {
+  min-width: 0;
+  width: 100%;
+}
+
+.graph-configured-project-detail {
+  overflow: hidden;
+  padding-bottom: 7px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .graph-force-compact {
@@ -3728,6 +3784,19 @@ dd {
 
   .graph-control-actions {
     grid-template-columns: 1fr;
+  }
+
+  .graph-configured-project-controls {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .graph-configured-project-controls button {
+    width: 100%;
+  }
+
+  .graph-configured-project-detail {
+    padding-bottom: 0;
   }
 
   .graph-filterbar {

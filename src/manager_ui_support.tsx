@@ -209,6 +209,8 @@ export function graphAdministrationActionLabel(action: GraphAdministrationAction
       return action.dryRun ? 'Compaction preview' : 'Graph compaction';
     case 'index':
       return action.full ? 'Graph reindex' : 'Graph index';
+    case 'index-project':
+      return action.full ? 'Configured project reindex' : 'Configured project index';
     case 'purge':
       return action.dryRun ? 'Graph purge preview' : 'Graph purge';
     case 'purge-all':
