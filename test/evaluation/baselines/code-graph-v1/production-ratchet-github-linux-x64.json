@@ -1144,14 +1144,14 @@
     "mcp-impact-returned-edges": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 0,
-      "minimum": 0
+      "maximum": 1,
+      "minimum": 1
     },
     "mcp-impact-returned-nodes": {
       "samplesMinimum": 1,
       "unit": "count",
-      "maximum": 0,
-      "minimum": 0
+      "maximum": 2,
+      "minimum": 2
     },
     "mcp-impact-structured-output": {
       "samplesMinimum": 1,

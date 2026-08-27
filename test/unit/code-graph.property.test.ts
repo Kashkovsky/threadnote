@@ -306,6 +306,64 @@ function inventoryPolicyPath(
 
 describe('native code graph traversal properties', () => {
   it.effect.prop(
+    'keeps exact impact selectors independent of fuzzy candidate order and score',
+    {
+      lowercaseQuery: FC.boolean(),
+      noiseScores: FC.array(FC.integer({max: 100, min: 1}), {maxLength: 20}),
+      position: FC.integer({max: 100, min: 0}),
+    },
+    ({lowercaseQuery, noiseScores, position}) => {
+      const exact = {
+        ...graphNode(0),
+        id: 'exact-impact-target',
+        name: 'TargetSelector',
+        qualifiedName: 'TargetSelector',
+        score: 0.01,
+      };
+      const candidates = noiseScores.map((score, index) => ({
+        ...graphNode(index + 1),
+        id: `noise-${index}`,
+        name: `TargetSelectorNoise${index}`,
+        qualifiedName: `TargetSelectorNoise${index}`,
+        score: score / 100,
+      }));
+      candidates.splice(position % (candidates.length + 1), 0, exact);
+      const inspectedSeeds: string[][] = [];
+      const store = {
+        edgesForNodes: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+          Effect.sync(() => {
+            inspectedSeeds.push([...ids]);
+            return [];
+          }),
+        searchSymbolsMany: () => Effect.succeed([candidates]),
+        symbolsByIds: () => Effect.succeed([]),
+      } as unknown as CodeGraphStoreShape;
+
+      return Effect.gen(function* () {
+        const result = yield* traversalQuery(
+          store,
+          layout.databasePath,
+          'snapshot',
+          lowercaseQuery ? exact.name.toLocaleLowerCase('en-US') : exact.name,
+          'incoming',
+          20,
+          40,
+          1,
+          ['resolved'],
+          emptyEmbedding,
+          '/property/home',
+          layout,
+          true,
+        );
+
+        expect(inspectedSeeds).toEqual([[exact.id]]);
+        expect(result.nodes.map(node => node.id)).toEqual([exact.id]);
+      });
+    },
+    {fastCheck: {numRuns: 80}},
+  );
+
+  it.effect.prop(
     'matches breadth-first reachability and terminates on generated cyclic graphs',
     {
       graph: graphCaseArbitrary,
