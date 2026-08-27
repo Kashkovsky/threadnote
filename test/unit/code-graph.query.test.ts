@@ -194,10 +194,13 @@ describe('code graph query budgets', () => {
           CodeGraphStore,
           CodeGraphStore.of({
             acquireSnapshotLease: () => recordStoreRead('leasesAcquired').pipe(Effect.as('lease')),
+            edgesForNodes: () => Effect.succeed([]),
             readySnapshot: () => recordStoreRead('readyByWorktree').pipe(Effect.andThen(Ref.get(snapshotRef))),
             readySnapshotById: () => recordStoreRead('readyById').pipe(Effect.andThen(Ref.get(snapshotRef))),
             readySnapshotForCommit: () => Effect.succeed(undefined),
             releaseSnapshotLease: () => recordStoreRead('leasesReleased'),
+            searchSymbolsByPaths: (_databasePath: string, _snapshotId: string, queries: readonly string[]) =>
+              Effect.succeed(queries.map(() => [])),
             snapshotPackProvenance: () => recordStoreRead('provenance').pipe(Effect.as([])),
             symbolsByIds: () => Effect.succeed([]),
             withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) =>
@@ -429,6 +432,23 @@ describe('code graph query budgets', () => {
             readyById: 0,
             readyByWorktree: 1,
           });
+
+          const boundedImpact = yield* query.inspect({
+            baseCommit: 'f'.repeat(40),
+            baseCommitPolicy: 'ready-only',
+            cwd: fixtureRoot.repository,
+            operation: 'impact',
+            query: 'changed paths',
+            refresh: false,
+            requestMaintenance: false,
+            seedQueries: ['deleted.ts'],
+            strictFreshness: true,
+            threadnoteHome: fixtureRoot.home,
+          });
+          expect(boundedImpact.freshness).toBe('current');
+          expect(boundedImpact.warnings).toContain(
+            'The requested impact base has no ready current-format snapshot; deleted-path recovery was skipped without starting indexing.',
+          );
 
           yield* Ref.set(storeReads, emptyStoreReads());
           const fallbackInspection = yield* query.inspect({

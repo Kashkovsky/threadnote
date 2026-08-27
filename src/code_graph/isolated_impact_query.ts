@@ -2,7 +2,7 @@ import {Effect, Stdio, Stream} from 'effect';
 import {CommandExecutor, CommandTimedOut, type CommandExecutionError} from '../effect/command.js';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
 import {CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT} from '../worker_protocol.js';
-import {CodeGraphQueryService} from './query.js';
+import {CodeGraphQueryService, type CodeGraphInspectOptions} from './query.js';
 import type {CodeGraphQueryResult} from './types.js';
 
 const CODE_GRAPH_IMPACT_QUERY_PROTOCOL = 1 as const;
@@ -111,37 +111,44 @@ export const codeGraphImpactQueryWorkerProgram = (threadnoteHome: string) =>
     const response =
       request === undefined || request.threadnoteHome !== threadnoteHome
         ? ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL} as const)
-        : yield* query
-            .inspect({
-              ...(request.baseCommit === undefined ? {} : {baseCommit: request.baseCommit}),
-              cwd: request.cwd,
-              depth: request.depth,
-              edgeLimit: request.edgeLimit,
-              includeHeuristic: request.includeHeuristic,
-              includeModelAssociations: request.includeModelAssociations,
-              nodeLimit: request.nodeLimit,
-              operation: 'impact',
-              query: request.query,
-              refresh: false,
-              requestMaintenance: false,
-              seedQueryCount: request.seedQueryCount,
-              seedQueries: request.seedQueries,
-              strictFreshness: true,
-              threadnoteHome,
-            })
-            .pipe(
-              Effect.match({
-                onFailure: () => ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL}) as const,
-                onSuccess: result =>
-                  ({
-                    ok: true,
-                    protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
-                    result,
-                  }) as const satisfies CodeGraphImpactQueryResponse,
-              }),
-            );
+        : yield* query.inspect(impactQueryWorkerInspectOptions(request, threadnoteHome)).pipe(
+            Effect.match({
+              onFailure: () => ({ok: false, protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL}) as const,
+              onSuccess: result =>
+                ({
+                  ok: true,
+                  protocol: CODE_GRAPH_IMPACT_QUERY_PROTOCOL,
+                  result,
+                }) as const satisfies CodeGraphImpactQueryResponse,
+            }),
+          );
     yield* writeImpactQueryWorkerResponse(response);
   }).pipe(Effect.catch(() => Effect.void));
+
+/** @internal Keep the bounded read worker incapable of starting base-commit indexing. */
+export function impactQueryWorkerInspectOptions(
+  request: CodeGraphImpactQueryRequest,
+  threadnoteHome: string,
+): CodeGraphInspectOptions {
+  return {
+    ...(request.baseCommit === undefined ? {} : {baseCommit: request.baseCommit}),
+    baseCommitPolicy: 'ready-only',
+    cwd: request.cwd,
+    depth: request.depth,
+    edgeLimit: request.edgeLimit,
+    includeHeuristic: request.includeHeuristic,
+    includeModelAssociations: request.includeModelAssociations,
+    nodeLimit: request.nodeLimit,
+    operation: 'impact',
+    query: request.query,
+    refresh: false,
+    requestMaintenance: false,
+    seedQueryCount: request.seedQueryCount,
+    seedQueries: request.seedQueries,
+    strictFreshness: true,
+    threadnoteHome,
+  };
+}
 
 function encodeImpactQueryRequest(input: IsolatedCodeGraphImpactQueryInput): Uint8Array {
   const seedQueries = input.seedQueries?.slice(0, CODE_GRAPH_IMPACT_QUERY_SEED_LIMIT);
