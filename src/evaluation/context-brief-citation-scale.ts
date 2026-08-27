@@ -255,6 +255,7 @@ const runObservation = Effect.fn('evaluation.contextBriefCitationScaleObservatio
 });
 
 interface MutableCounters {
+  activeViewFenceObservations: number;
   coldGraphBuilds: number;
   databasePaths: Set<string>;
   effectiveEvidenceBatches: number;
@@ -301,6 +302,11 @@ export function makeContextBriefCitationScaleGraphInstrumentation(): ContextBrie
           observeDatabasePath(databasePath);
           counters.effectiveEvidenceBatches += 1;
         }).pipe(Effect.andThen(store.effectiveSnapshotCitationEvidence(databasePath, snapshotId, request))),
+      loadActiveViewFence: (databasePath, worktreeId) =>
+        Effect.sync(() => {
+          observeDatabasePath(databasePath);
+          counters.activeViewFenceObservations += 1;
+        }).pipe(Effect.andThen(store.loadActiveViewFence(databasePath, worktreeId))),
       readySnapshot: (databasePath, worktreeId) =>
         Effect.sync(() => {
           observeDatabasePath(databasePath);
@@ -328,6 +334,7 @@ export function makeContextBriefCitationScaleGraphInstrumentation(): ContextBrie
         }).pipe(Effect.andThen(store.withSession(databasePath, effect, options))),
     });
   const snapshot = (): ContextBriefCitationScaleCountersV1 => ({
+    activeViewFenceObservations: counters.activeViewFenceObservations,
     coldGraphBuilds: counters.coldGraphBuilds,
     distinctGraphDatabasePaths: counters.databasePaths.size,
     effectiveEvidenceBatches: counters.effectiveEvidenceBatches,
@@ -400,6 +407,7 @@ function fixtureBudgetTokens(_prepared: ContextBriefCitationScalePreparedProfile
 
 function emptyCounters(): MutableCounters {
   return {
+    activeViewFenceObservations: 0,
     coldGraphBuilds: 0,
     databasePaths: new Set(),
     effectiveEvidenceBatches: 0,

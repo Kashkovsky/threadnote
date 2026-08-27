@@ -318,34 +318,36 @@ const validatePublishedRepositoryTasks = Effect.fn('contextBrief.validatePublish
       return yield* validateRepositoryTasks(
         {
           databasePath: layout.databasePath,
-          finalFence: resolvePublishedRepositoryReadFence(cwd, published).pipe(
-            Effect.flatMap(observation =>
-              Effect.gen(function* () {
-                if (observation.worktreeChanged) {
-                  const policyAwareStatus = yield* query.statusForPublishedIdentity(
-                    config.agentContextHome,
-                    cwd,
-                    published,
-                    {observeWorktree: true, requestMaintenance: false},
-                  );
-                  if (
-                    policyAwareStatus.freshness !== 'current' ||
-                    policyAwareStatus.stale ||
-                    !cleanPublishedCatalogFenceMatches(
-                      published,
-                      snapshot,
-                      policyAwareStatus.identity,
-                      policyAwareStatus.readySnapshot,
-                    )
-                  ) {
-                    return false;
-                  }
-                }
-                const activeSnapshot = yield* store.readySnapshot(layout.databasePath, published.worktreeId);
-                return cleanPublishedCatalogFenceMatches(published, snapshot, observation, activeSnapshot);
-              }),
-            ),
-          ),
+          finalFence: Effect.gen(function* () {
+            const beforeActive = yield* store.loadActiveViewFence(layout.databasePath, published.worktreeId);
+            if (
+              !cleanPublishedCatalogSnapshotMatches(published, snapshot) ||
+              beforeActive?.snapshotId !== snapshot.id
+            ) {
+              return false;
+            }
+            const policyAwareFence = query
+              .statusForPublishedIdentity(config.agentContextHome, cwd, published, {
+                observeWorktree: true,
+                requestMaintenance: false,
+              })
+              .pipe(
+                Effect.map(
+                  status =>
+                    status.freshness === 'current' &&
+                    !status.stale &&
+                    cleanPublishedCatalogFenceMatches(published, snapshot, status.identity, status.readySnapshot),
+                ),
+              );
+            const observation = yield* resolvePublishedRepositoryReadFence(cwd, published).pipe(Effect.option);
+            const repositoryCurrent =
+              observation._tag === 'None' || observation.value.worktreeChanged
+                ? yield* policyAwareFence
+                : cleanPublishedCatalogFenceMatches(published, snapshot, observation.value, snapshot);
+            if (!repositoryCurrent) return false;
+            const afterActive = yield* store.loadActiveViewFence(layout.databasePath, published.worktreeId);
+            return sameActiveViewFence(beforeActive, afterActive);
+          }),
           objectFormat: snapshot.commit.length === 64 ? 'sha256' : 'sha1',
           repositoryId: published.repositoryId,
           snapshot,
@@ -359,6 +361,18 @@ const validatePublishedRepositoryTasks = Effect.fn('contextBrief.validatePublish
     {existingOnly: true},
   );
 });
+
+function sameActiveViewFence(
+  before: {readonly activatedAt: string; readonly snapshotId: string; readonly worktreeId: string},
+  after: {readonly activatedAt: string; readonly snapshotId: string; readonly worktreeId: string} | undefined,
+): boolean {
+  return (
+    after !== undefined &&
+    before.activatedAt === after.activatedAt &&
+    before.snapshotId === after.snapshotId &&
+    before.worktreeId === after.worktreeId
+  );
+}
 
 const statusRepositoryFinalFence = (
   config: RuntimeConfig,

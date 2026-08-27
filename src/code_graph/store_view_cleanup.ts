@@ -28,6 +28,7 @@ import {
   ensureRemovedViewCleanupEpoch,
 } from './store_reconciliation.js';
 import {type CompactLexicalSnapshotKeyRow, validatedCompactLexicalCount} from './store_build_core.js';
+import {nextCodeGraphActiveViewActivationTimestamp} from './store_active_views.js';
 
 /** @internal Bounded keyset page retained for admission query-plan and load regressions. */
 
@@ -115,10 +116,12 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
           ),
         );
       }
-      const active = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+      const active = yield* sql.unsafe<{readonly activated_at: unknown; readonly snapshot_id: unknown}>(
         `SELECT CASE
            WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
-           THEN snapshot_id ELSE NULL END AS snapshot_id
+           THEN snapshot_id ELSE NULL END AS snapshot_id,
+           CASE WHEN typeof(activated_at) = 'text' AND length(CAST(activated_at AS BLOB)) = 24
+             THEN activated_at ELSE NULL END AS activated_at
          FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
         [worktreeId],
       );
@@ -136,13 +139,17 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         [worktreeId],
       );
       const activeSnapshotId = active[0]?.snapshot_id;
+      const activeActivatedAt = active[0]?.activated_at;
       const removedSnapshotId = removed[0]?.expected_snapshot_id;
       const removedAtValue = removed[0]?.removed_at;
 
       if (
         active.length > 1 ||
         (activeSnapshotId !== undefined &&
-          (typeof activeSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(activeSnapshotId))) ||
+          (typeof activeSnapshotId !== 'string' ||
+            !CODE_GRAPH_SNAPSHOT_ID.test(activeSnapshotId) ||
+            typeof activeActivatedAt !== 'string' ||
+            !validCanonicalTimestamp(activeActivatedAt))) ||
         removed.length > 1 ||
         (removedSnapshotId !== undefined &&
           (typeof removedSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(removedSnapshotId))) ||
@@ -202,7 +209,13 @@ const removeActiveView = Effect.fn('codeGraph.removeActiveView')(function* (
         true,
         alreadyRemoved ? undefined : cleanupEvidence,
       );
-      const removedAt = alreadyRemoved ? removedAtValue! : new Date().toISOString();
+      const removedAt = nextCodeGraphActiveViewActivationTimestamp(new Date().toISOString(), [
+        typeof activeActivatedAt === 'string' ? activeActivatedAt : undefined,
+        typeof removedAtValue === 'string' ? removedAtValue : undefined,
+      ]);
+      if (removedAt === undefined) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view generation is invalid.'));
+      }
       yield* sql`
         INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at)
         VALUES (${worktreeId}, ${expectedSnapshotId}, ${removedAt})

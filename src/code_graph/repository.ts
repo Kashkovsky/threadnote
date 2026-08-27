@@ -204,74 +204,133 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
 });
 
 export interface PublishedRepositoryReadFenceInterlock {
-  /** @internal Deterministic race hook for focused validation tests. */
+  /** @internal Deterministic caller-retarget hook for focused validation tests. */
   readonly afterInitialIdentity?: () => Effect.Effect<void, unknown, CommandExecutor>;
-  /** @internal Deterministic race hook for focused validation tests. */
-  readonly afterWorktreeObservation?: () => Effect.Effect<void, unknown, CommandExecutor>;
+  /** @internal Deterministic closing-observation hook for focused validation tests. */
+  readonly beforeClosingWorktreeObservation?: () => Effect.Effect<void, unknown, CommandExecutor>;
 }
 
 /**
- * Bracket repository identity and worktree observations so caller retargets
- * and edits across an earlier observation cannot satisfy the closing proof.
+ * Close a published repository read after immutable evidence has been read.
+ * Remote identity is read from the resolved root, then the original caller
+ * receives the last code-bearing observation and reports the root/common-dir
+ * Git actually opened. An intervening retarget, edit, or HEAD move cannot
+ * satisfy the proof.
  */
 export const resolvePublishedRepositoryReadFence = Effect.fn('codeGraph.resolvePublishedRepositoryReadFence')(
   function* (cwd: string, expected: RepositoryIdentityExpectation, interlock?: PublishedRepositoryReadFenceInterlock) {
     const system = yield* SystemInfo;
-    const initial = yield* observeRepositoryReadFenceMetadata(cwd);
+    const observed = yield* observeRepositoryReadFenceMetadata(cwd);
     yield* interlock?.afterInitialIdentity?.() ?? Effect.void;
-    const initialWorktree = yield* observeRepositoryReadFenceWorktree(initial.repoRoot, initial.objectFormat);
-    if (initialWorktree.headCommit !== initial.headCommit) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository changed during the graph read.'));
-    }
-    yield* interlock?.afterWorktreeObservation?.() ?? Effect.void;
-    const [final, remoteResult] = yield* Effect.all(
-      [observeRepositoryReadFenceMetadata(cwd), runGit(cwd, ['remote', 'get-url', 'origin'], true)],
-      {concurrency: 2},
-    ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
-    if (
-      final.repoRoot !== initial.repoRoot ||
-      final.gitCommonDirectory !== initial.gitCommonDirectory ||
-      final.objectFormat !== initial.objectFormat ||
-      final.headCommit !== initial.headCommit
-    ) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
-    }
+    const remoteResult = yield* runGit(observed.repoRoot, ['remote', 'get-url', 'origin'], true).pipe(
+      Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')),
+    );
     const remoteIdentity =
       remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
     const repositorySource =
-      remoteIdentity ?? `local:${normalizeLocalIdentity(final.gitCommonDirectory, system.platform)}`;
+      remoteIdentity ?? `local:${normalizeLocalIdentity(observed.gitCommonDirectory, system.platform)}`;
     const identity = {
-      checkoutId: checkoutIdForGitCommonDirectory(final.gitCommonDirectory),
-      headCommit: final.headCommit,
+      checkoutId: checkoutIdForGitCommonDirectory(observed.gitCommonDirectory),
+      headCommit: observed.headCommit,
       repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
-      worktreeId: worktreeIdForRoot(final.repoRoot),
+      worktreeId: worktreeIdForRoot(observed.repoRoot),
     };
     if (!repositoryIdentityMatchesExpectation(identity, expected)) {
       return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
     }
-    const finalWorktree = yield* observeRepositoryReadFenceWorktree(final.repoRoot, final.objectFormat);
-    if (finalWorktree.headCommit !== final.headCommit) {
-      return yield* Effect.fail(new CodeGraphRepositoryError('Repository changed during the graph read.'));
+    yield* interlock?.beforeClosingWorktreeObservation?.() ?? Effect.void;
+    const worktree = yield* observeRepositoryReadFenceClosingWorktree(cwd, observed.objectFormat);
+    if (
+      worktree.repoRoot !== observed.repoRoot ||
+      worktree.gitCommonDirectory !== observed.gitCommonDirectory ||
+      worktree.headCommit !== observed.headCommit
+    ) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
     }
-    return {...identity, worktreeChanged: initialWorktree.changed || finalWorktree.changed};
+    return {...identity, worktreeChanged: worktree.changed};
   },
 );
 
-const observeRepositoryReadFenceWorktree = Effect.fn('codeGraph.observeRepositoryReadFenceWorktree')(function* (
-  repoRoot: string,
-  objectFormat: RepositoryIdentity['objectFormat'],
-) {
-  const status = yield* runCommandEffect(
-    'git',
-    ['--no-optional-locks', '-C', repoRoot, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
-    {maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM, timeoutMs: 10_000},
-  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
-  const worktree = parseRepositoryIdentityWorktreeObservation(status.stdout, objectFormat);
-  if (worktree === undefined) {
-    return yield* Effect.fail(new CodeGraphRepositoryError('Repository changed during the graph read.'));
+const observeRepositoryReadFenceClosingWorktree = Effect.fn('codeGraph.observeRepositoryReadFenceClosingWorktree')(
+  function* (cwd: string, objectFormat: RepositoryIdentity['objectFormat']) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const status = yield* runCommandEffect(
+      'git',
+      ['--no-optional-locks', '-C', cwd, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
+      {
+        env: repositoryReadFenceTraceEnvironment(system.environment()),
+        maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM,
+        timeoutMs: 10_000,
+      },
+    ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+    const worktree = parseRepositoryIdentityWorktreeObservation(status.stdout, objectFormat);
+    const setup = parseRepositoryReadFenceSetupObservation(status.stderr);
+    if (worktree === undefined || setup === undefined) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository read fence could not be revalidated.'));
+    }
+    const repoRoot = yield* fs
+      .realPath(setup.worktree)
+      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+    const commonPath = path.isAbsolute(setup.gitCommonDirectory)
+      ? setup.gitCommonDirectory
+      : path.resolve(repoRoot, setup.gitCommonDirectory);
+    const gitCommonDirectory = yield* fs
+      .realPath(commonPath)
+      .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+    return {...worktree, gitCommonDirectory, repoRoot};
+  },
+);
+
+export function parseRepositoryReadFenceSetupObservation(
+  output: string,
+): {readonly gitCommonDirectory: string; readonly worktree: string} | undefined {
+  const markers = {
+    gitCommonDirectory: 'setup: git_common_dir: ',
+    worktree: 'setup: worktree: ',
+  } as const;
+  const matches = {gitCommonDirectory: [] as string[], worktree: [] as string[]};
+  for (const line of output.split(/\r?\n/u)) {
+    for (const key of Object.keys(markers) as Array<keyof typeof markers>) {
+      const index = line.indexOf(markers[key]);
+      if (index >= 0) matches[key].push(line.slice(index + markers[key].length));
+    }
   }
-  return worktree;
-});
+  if (matches.gitCommonDirectory.length !== 1 || matches.worktree.length !== 1) return undefined;
+  const gitCommonDirectory = matches.gitCommonDirectory[0]!;
+  const worktree = matches.worktree[0]!;
+  if (
+    gitCommonDirectory.length === 0 ||
+    worktree.length === 0 ||
+    gitCommonDirectory === '(null)' ||
+    worktree === '(null)' ||
+    hasControlCharacter(gitCommonDirectory) ||
+    hasControlCharacter(worktree) ||
+    /\p{Bidi_Control}/u.test(gitCommonDirectory) ||
+    /\p{Bidi_Control}/u.test(worktree)
+  ) {
+    return undefined;
+  }
+  return {gitCommonDirectory, worktree};
+}
+
+function repositoryReadFenceTraceEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return {
+    ...environment,
+    GIT_TRACE: '0',
+    GIT_TRACE2: '0',
+    GIT_TRACE2_EVENT: '0',
+    GIT_TRACE2_PERF: '0',
+    GIT_TRACE_BARE: '0',
+    GIT_TRACE_CURL: '0',
+    GIT_TRACE_PACKET: '0',
+    GIT_TRACE_PERFORMANCE: '0',
+    GIT_TRACE_REFS: '0',
+    GIT_TRACE_SETUP: '1',
+    GIT_TRACE_SHALLOW: '0',
+  };
+}
 
 const observeRepositoryReadFenceMetadata = Effect.fn('codeGraph.observeRepositoryReadFenceMetadata')(function* (
   cwd: string,

@@ -14,7 +14,7 @@ import {
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
-import {runCommandEffect} from '../../src/effect/command.js';
+import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureMemoryCodeCitations} from '../../src/memory_code_citation_capture.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -22,7 +22,7 @@ import {TestError} from '../helpers/test-error.js';
 
 describe('Context Brief published Workset citation validation', () => {
   effectIt.effect(
-    'preserves policy-excluded changes and balances the lease when a HEAD race turns evidence stale',
+    'preserves policy-excluded changes and balances the lease when closing-fence races turn evidence stale',
     () =>
       Effect.acquireUseRelease(
         Effect.tryPromise({
@@ -74,6 +74,31 @@ describe('Context Brief published Workset citation validation', () => {
             let evidenceReads = 0;
             let released = 0;
             let sessions = 0;
+            let activeFenceReads = 0;
+            let changedActivationFenceRead: number | undefined;
+            let mutateBeforeActiveFence = false;
+            let suppressClosingTrace = false;
+            const citedPath = path.join(repository.path, 'src', 'session.ts');
+            const citedSource = yield* fs.readFileString(citedPath);
+            const baseCommand = yield* CommandExecutor;
+            const faultableCommand = CommandExecutor.of({
+              ...baseCommand,
+              execute: (executable, args, options) =>
+                baseCommand.execute(executable, args, options).pipe(
+                  Effect.map(result => {
+                    if (
+                      suppressClosingTrace &&
+                      executable === 'git' &&
+                      args.includes('status') &&
+                      options?.env?.GIT_TRACE_SETUP === '1'
+                    ) {
+                      suppressClosingTrace = false;
+                      return {...result, stderr: ''};
+                    }
+                    return result;
+                  }),
+                ),
+            });
             const countedStore = CodeGraphStore.of({
               ...baseStore,
               acquireSnapshotLease: (...args: Parameters<CodeGraphStoreShape['acquireSnapshotLease']>) =>
@@ -86,6 +111,23 @@ describe('Context Brief published Workset citation validation', () => {
                 ),
               releaseSnapshotLease: (...args: Parameters<CodeGraphStoreShape['releaseSnapshotLease']>) =>
                 baseStore.releaseSnapshotLease(...args).pipe(Effect.tap(() => Effect.sync(() => void ++released))),
+              loadActiveViewFence: (...args: Parameters<CodeGraphStoreShape['loadActiveViewFence']>) =>
+                Effect.gen(function* () {
+                  const read = ++activeFenceReads;
+                  if (mutateBeforeActiveFence) {
+                    mutateBeforeActiveFence = false;
+                    yield* fs.writeFileString(citedPath, `${citedSource}\n// closing-fence mutation\n`);
+                  }
+                  const fence = yield* baseStore.loadActiveViewFence(...args);
+                  if (fence !== undefined && read === changedActivationFenceRead) {
+                    changedActivationFenceRead = undefined;
+                    return {
+                      ...fence,
+                      activatedAt: new Date(Date.parse(fence.activatedAt) + 1).toISOString(),
+                    };
+                  }
+                  return fence;
+                }),
               withSession: (...args: Parameters<CodeGraphStoreShape['withSession']>) => {
                 expect(args[2]).toMatchObject({existingOnly: true});
                 return Effect.sync(() => void ++sessions).pipe(Effect.andThen(baseStore.withSession(...args)));
@@ -94,28 +136,67 @@ describe('Context Brief published Workset citation validation', () => {
             const validate = () =>
               validateContextBriefMemoryCitations(config, {kind: 'workset', name: fixture.identity.worksetName}, [
                 candidate,
-              ]).pipe(Effect.provideService(CodeGraphStore, countedStore));
+              ]).pipe(
+                Effect.provideService(CodeGraphStore, countedStore),
+                Effect.provideService(CommandExecutor, faultableCommand),
+              );
 
             const exact = yield* validate();
             expect(exact[0]?.receipts).toMatchObject([{reason: 'exact', status: 'exact'}]);
-            expect({acquired, evidenceReads, released, sessions}).toEqual({
+            expect({acquired, activeFenceReads, evidenceReads, released, sessions}).toEqual({
               acquired: 1,
+              activeFenceReads: 2,
               evidenceReads: 1,
               released: 1,
               sessions: 1,
             });
 
-            yield* fs.writeFileString(excludedPath, '<svg>excluded change</svg>\n');
-            const policyClean = yield* validate();
-            expect(policyClean[0]?.receipts).toMatchObject([{reason: 'exact', status: 'exact'}]);
-            expect({acquired, evidenceReads, released, sessions}).toEqual({
+            suppressClosingTrace = true;
+            const fallbackExact = yield* validate();
+            expect(fallbackExact[0]?.receipts).toMatchObject([{reason: 'exact', status: 'exact'}]);
+            expect({acquired, activeFenceReads, evidenceReads, released, sessions}).toEqual({
               acquired: 2,
+              activeFenceReads: 4,
               evidenceReads: 1,
               released: 2,
               sessions: 2,
             });
 
+            yield* fs.writeFileString(excludedPath, '<svg>excluded change</svg>\n');
+            const policyClean = yield* validate();
+            expect(policyClean[0]?.receipts).toMatchObject([{reason: 'exact', status: 'exact'}]);
+            expect({acquired, activeFenceReads, evidenceReads, released, sessions}).toEqual({
+              acquired: 3,
+              activeFenceReads: 6,
+              evidenceReads: 1,
+              released: 3,
+              sessions: 3,
+            });
+
             yield* fs.writeFileString(excludedPath, '<svg/>\n');
+            mutateBeforeActiveFence = true;
+            const lateEdit = yield* validate();
+            expect(lateEdit[0]?.receipts).toMatchObject([{reason: 'graph-stale', status: 'unknown'}]);
+            expect({acquired, activeFenceReads, evidenceReads, released, sessions}).toEqual({
+              acquired: 4,
+              activeFenceReads: 7,
+              evidenceReads: 1,
+              released: 4,
+              sessions: 4,
+            });
+            yield* fs.writeFileString(citedPath, citedSource);
+
+            changedActivationFenceRead = activeFenceReads + 2;
+            const promoted = yield* validate();
+            expect(promoted[0]?.receipts).toMatchObject([{reason: 'graph-stale', status: 'unknown'}]);
+            expect({acquired, activeFenceReads, evidenceReads, released, sessions}).toEqual({
+              acquired: 5,
+              activeFenceReads: 9,
+              evidenceReads: 1,
+              released: 5,
+              sessions: 5,
+            });
+
             yield* git(repository.path, [
               '-c',
               'user.name=Threadnote Test',
@@ -129,11 +210,12 @@ describe('Context Brief published Workset citation validation', () => {
 
             const stale = yield* validate();
             expect(stale[0]?.receipts).toMatchObject([{reason: 'graph-stale', status: 'unknown'}]);
-            expect({acquired, evidenceReads, released, sessions}).toEqual({
-              acquired: 3,
+            expect({acquired, activeFenceReads, evidenceReads, released, sessions}).toEqual({
+              acquired: 6,
+              activeFenceReads: 10,
               evidenceReads: 1,
-              released: 3,
-              sessions: 3,
+              released: 6,
+              sessions: 6,
             });
           }),
         fixture =>
