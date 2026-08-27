@@ -2,9 +2,11 @@
 
 import React, {act} from 'react';
 import {createRoot, type Root} from 'react-dom/client';
+import FC from 'fast-check';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {ManagerDialogProvider} from '../../src/manager_dialog.js';
-import {ProcessesPanel} from '../../src/manager_processes_view.js';
+import {orderManagerProcessesForPresentation, ProcessesPanel} from '../../src/manager_processes_view.js';
+import type {ManageableThreadnoteProcessDiagnostic} from '../../src/process_diagnostics.js';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 
@@ -27,6 +29,16 @@ beforeEach(() => {
     return Promise.resolve(
       jsonResponse({
         processes: [
+          {
+            ageMilliseconds: 86_400_000,
+            parentProcessId: 1,
+            processId: 80100,
+            releaseVersion: '4.3.8',
+            role: 'legacy',
+            startedAt: '2026-08-11T00:00:00.000Z',
+            terminable: false,
+            terminationBlockedReason: 'legacy-process',
+          },
           {
             ageMilliseconds: 540_000,
             currentOperation: 'compact-graph-storage',
@@ -91,7 +103,7 @@ describe('Manager Processes panel', () => {
     await renderProcesses();
     const processList = document.querySelector('[aria-label="Threadnote process inventory"]');
     expect(processList?.getAttribute('role')).toBe('list');
-    expect(processList?.querySelectorAll('[role="listitem"]')).toHaveLength(4);
+    expect(processList?.querySelectorAll('[role="listitem"]')).toHaveLength(5);
     expect(document.body.textContent).toContain('Graph compaction worker');
     expect(document.body.textContent).toContain('Compact graph storage');
     expect(document.body.textContent).toContain('Manager · PID 80276');
@@ -109,6 +121,70 @@ describe('Manager Processes panel', () => {
     expect(stop?.disabled).toBe(false);
     expect(managerStop?.title).toBe('The current Manager process is protected');
     expect(managerStop?.disabled).toBe(true);
+  });
+
+  it('puts active work ahead of idle registered and legacy runtimes', async () => {
+    await renderProcesses();
+    const titles = [...document.querySelectorAll('.process-card-title strong')].map(element => element.textContent);
+    expect(titles).toEqual([
+      'Graph compaction worker',
+      'MCP server',
+      'Graph query worker',
+      'Manager',
+      'Legacy runtime',
+    ]);
+    expect(document.body.textContent).toContain('Active operations appear first');
+  });
+
+  it('orders every process by attention rank without mutating the API response', () => {
+    FC.assert(
+      FC.property(
+        FC.uniqueArray(processDiagnosticArbitrary, {
+          maxLength: 140,
+          minLength: 101,
+          selector: process => process.processId,
+        }),
+        processes => {
+          const before = [...processes];
+          const ordered = orderManagerProcessesForPresentation(processes);
+          expect(processes).toEqual(before);
+          expect(ordered).toHaveLength(processes.length);
+          expect(new Set(ordered.map(process => process.processId))).toEqual(
+            new Set(processes.map(process => process.processId)),
+          );
+          expect(orderManagerProcessesForPresentation(processes)).toEqual(ordered);
+          for (let index = 1; index < ordered.length; index += 1) {
+            expect(presentationRank(ordered[index - 1]!)).toBeLessThanOrEqual(presentationRank(ordered[index]!));
+          }
+          expect(presentationRank(ordered[99]!)).toBeLessThanOrEqual(presentationRank(ordered[100]!));
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('keeps idle service baselines behind active work even when the services are older', () => {
+    const process = (
+      processId: number,
+      role: ManageableThreadnoteProcessDiagnostic['role'],
+      currentOperation: string,
+    ): ManageableThreadnoteProcessDiagnostic => ({
+      ageMilliseconds: 1,
+      currentOperation,
+      parentProcessId: 1,
+      processId,
+      role,
+      startedAt: `2026-08-0${processId}T00:00:00.000Z`,
+      terminable: true,
+    });
+    const ordered = orderManagerProcessesForPresentation([
+      process(1, 'mcp', 'mcp-server'),
+      process(2, 'mcp-broker', 'mcp-broker'),
+      process(3, 'local-model-worker', 'model-stdio'),
+      process(4, 'graph-parser-worker', 'parser-stdio'),
+      process(5, 'cli', 'index-repository'),
+    ]);
+    expect(ordered.map(value => value.processId)).toEqual([5, 1, 2, 3, 4]);
   });
 
   it('confirms termination and posts the exact opaque process reference with the PID', async () => {
@@ -169,4 +245,56 @@ async function waitForElement<T extends Element>(selector: string): Promise<T> {
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {headers: {'content-type': 'application/json'}, status});
+}
+
+const processDiagnosticArbitrary: FC.Arbitrary<ManageableThreadnoteProcessDiagnostic> = FC.record({
+  activityRole: FC.option(FC.constant('graph-builder' as const), {nil: undefined}),
+  ageMilliseconds: FC.nat(),
+  currentOperation: FC.option(
+    FC.constantFrom(
+      'index-repository',
+      'manager-ui',
+      'mcp-server',
+      'mcp-broker',
+      'model-stdio',
+      'parser-stdio',
+      'embed-many',
+    ),
+    {nil: undefined},
+  ),
+  parentProcessId: FC.nat(),
+  processId: FC.integer({min: 1, max: 1_000_000}),
+  role: FC.constantFrom(
+    'cli' as const,
+    'manager' as const,
+    'mcp' as const,
+    'mcp-broker' as const,
+    'local-model-worker' as const,
+    'graph-parser-worker' as const,
+    'legacy' as const,
+  ),
+  startedAt: FC.date({
+    max: new Date('2030-01-01T00:00:00.000Z'),
+    min: new Date('2020-01-01T00:00:00.000Z'),
+    noInvalidDate: true,
+  }).map(value => value.toISOString()),
+  terminable: FC.boolean(),
+});
+
+function presentationRank(process: ManageableThreadnoteProcessDiagnostic): number {
+  if (process.role === 'legacy') return 2;
+  return process.activityRole !== undefined ||
+    (process.currentOperation !== undefined && !isBaselineOperationForRole(process.role, process.currentOperation))
+    ? 0
+    : 1;
+}
+
+function isBaselineOperationForRole(role: ManageableThreadnoteProcessDiagnostic['role'], operation: string): boolean {
+  return (
+    (role === 'manager' && operation === 'manager-ui') ||
+    (role === 'mcp' && operation === 'mcp-server') ||
+    (role === 'mcp-broker' && operation === 'mcp-broker') ||
+    (role === 'local-model-worker' && operation === 'model-stdio') ||
+    (role === 'graph-parser-worker' && operation === 'parser-stdio')
+  );
 }

@@ -4,6 +4,7 @@ import type {RuntimeConfig} from './types.js';
 import {SystemInfo} from './effect/system.js';
 import {readLiveStandaloneProcessLeases} from './standalone_process_lease.js';
 import {sha256HexSync} from './crypto/sha256.js';
+import {orderThreadnoteProcessesByAttention} from './process_attention.js';
 import {withoutTelemetrySessionEnvironment} from './telemetry/session.js';
 
 const PROCESS_DIAGNOSTICS_SCHEMA_VERSION = 1;
@@ -218,6 +219,7 @@ export function withThreadnoteProcessActivity<A, E, R>(
 
 const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
+  selection: 'attention' | 'chronological' = 'chronological',
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -311,7 +313,10 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
   // Bound the OS memory query to the same privacy-safe rows the command can
   // return. A damaged private lease tree must not turn diagnostics into an
   // unbounded command line or PowerShell query.
-  const selected = candidates.slice(0, PROCESS_DIAGNOSTICS_LIMIT);
+  const selected = (selection === 'attention' ? orderThreadnoteProcessesByAttention(candidates) : candidates).slice(
+    0,
+    PROCESS_DIAGNOSTICS_LIMIT,
+  );
   const memoryByProcess = new Map(
     processMemoryBytes(
       selected.map(value => value.processId),
@@ -353,7 +358,7 @@ export const readManageableThreadnoteProcessDiagnostics = Effect.fn('processDiag
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
   const system = yield* SystemInfo;
-  const snapshot = yield* readThreadnoteProcessSnapshot(config);
+  const snapshot = yield* readThreadnoteProcessSnapshot(config, 'attention');
   const diagnostics = snapshot.diagnostics;
   const processes: ManageableThreadnoteProcessDiagnostic[] = yield* Effect.forEach(
     diagnostics.processes,

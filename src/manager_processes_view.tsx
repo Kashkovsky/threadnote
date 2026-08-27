@@ -1,5 +1,6 @@
 import React, {useEffect, useState} from 'react';
 import {useManagerDialogs} from './manager_dialog.js';
+import {orderThreadnoteProcessesByAttention} from './process_attention.js';
 import {api, errorMessage} from './manager_ui_support.js';
 import type {
   ManageableThreadnoteProcessDiagnostic,
@@ -14,6 +15,8 @@ export function ProcessesPanel(): React.ReactElement {
   const [loadError, setLoadError] = useState('');
   const [operationError, setOperationError] = useState('');
   const [terminating, setTerminating] = useState<string>();
+  const displayedProcesses =
+    diagnostics === undefined ? undefined : orderManagerProcessesForPresentation(diagnostics.processes);
 
   const load = async (signal?: AbortSignal): Promise<void> => {
     try {
@@ -73,8 +76,8 @@ export function ProcessesPanel(): React.ReactElement {
           <p className="eyebrow">Runtime inventory</p>
           <h2>Threadnote processes</h2>
           <p>
-            Registered processes and identity-verified legacy runtimes. Arguments, environment variables, and private
-            registration data are never exposed.
+            Active operations appear first, followed by other registered processes and identity-verified legacy
+            runtimes. Arguments, environment variables, and private registration data are never exposed.
           </p>
         </div>
         <button
@@ -100,10 +103,10 @@ export function ProcessesPanel(): React.ReactElement {
       <div aria-label="Threadnote process inventory" className="process-list" role="list">
         {diagnostics === undefined ? (
           <p className="process-empty">Loading registered processes…</p>
-        ) : diagnostics.processes.length === 0 ? (
+        ) : displayedProcesses?.length === 0 ? (
           <p className="process-empty">No registered Threadnote processes are visible.</p>
         ) : (
-          diagnostics.processes.map(process => (
+          displayedProcesses?.map(process => (
             <article className="process-card" key={`${process.processId}:${process.startedAt}`} role="listitem">
               <div className="process-card-main">
                 <div className="process-card-title">
@@ -149,6 +152,12 @@ export function ProcessesPanel(): React.ReactElement {
       </div>
     </div>
   );
+}
+
+export function orderManagerProcessesForPresentation(
+  processes: readonly ManageableThreadnoteProcessDiagnostic[],
+): readonly ManageableThreadnoteProcessDiagnostic[] {
+  return orderThreadnoteProcessesByAttention(processes);
 }
 
 function processRoleLabel(role: ManageableThreadnoteProcessDiagnostic['role']): string {

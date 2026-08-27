@@ -6,6 +6,7 @@ import {Effect, FileSystem} from 'effect';
 import {describe} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
 import {handleManagerProcessRequest} from '../../src/manager_processes.js';
+import {readThreadnoteProcessDiagnostics} from '../../src/process_diagnostics.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 describe('Manager process API', () => {
@@ -99,25 +100,86 @@ describe('Manager process API', () => {
       expect(signals).toEqual(['SIGTERM']);
     }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
+
+  it.effect('retains active work when more than 100 older idle services truncate the Manager inventory', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-manager-process-attention-'});
+      const idleProcessIds = Array.from({length: 100}, (_, index) => 1_235_000 + index);
+      const activeProcessId = 1_235_100;
+      yield* Effect.forEach(
+        idleProcessIds,
+        processId => writeRegistration(fileSystem, home, processId, `idle-token-${processId}`),
+        {concurrency: 8},
+      );
+      yield* writeRegistration(fileSystem, home, activeProcessId, 'active-process-token', {
+        baseRole: 'cli',
+        currentOperation: 'index-repository',
+        role: 'cli',
+        startedAt: '2026-08-27T00:00:00.000Z',
+      });
+      const liveProcessIds = new Set([...idleProcessIds, activeProcessId]);
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: processId => liveProcessIds.has(processId),
+        processStartIdentity: () => Effect.succeed('identity-a'),
+      });
+      const config = testConfig(home);
+      const listed = yield* handleManagerProcessRequest({
+        body: Effect.succeed({}),
+        config,
+        method: 'GET',
+        url: new URL('http://localhost/api/processes'),
+      }).pipe(Effect.provideService(SystemInfo, testSystem));
+      const managerInventory = listed!.body as {
+        readonly processes: readonly {readonly processId: number}[];
+        readonly truncated: boolean;
+      };
+      expect(managerInventory.truncated).toBe(true);
+      expect(managerInventory.processes).toHaveLength(100);
+      expect(managerInventory.processes[0]?.processId).toBe(activeProcessId);
+      expect(managerInventory.processes.some(process => process.processId === activeProcessId)).toBe(true);
+
+      const chronological = yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(SystemInfo, testSystem),
+      );
+      expect(chronological.truncated).toBe(true);
+      expect(chronological.processes).toHaveLength(100);
+      expect(chronological.processes.some(process => process.processId === activeProcessId)).toBe(false);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
 });
 
-function writeRegistration(fileSystem: FileSystem.FileSystem, home: string, processId: number, token: string) {
+function writeRegistration(
+  fileSystem: FileSystem.FileSystem,
+  home: string,
+  processId: number,
+  token: string,
+  options: {
+    readonly baseRole?: 'cli' | 'mcp';
+    readonly currentOperation?: string;
+    readonly role?: 'cli' | 'mcp';
+    readonly startedAt?: string;
+  } = {},
+) {
+  const startedAt = options.startedAt ?? '2026-08-12T00:00:00.000Z';
   return Effect.gen(function* () {
     const directory = join(home, 'runtime', 'processes');
     yield* fileSystem.makeDirectory(directory, {recursive: true});
     yield* fileSystem.writeFileString(
       join(directory, `${processId}.json`),
       `${JSON.stringify({
-        baseRole: 'mcp',
-        currentOperation: 'mcp-server',
+        baseRole: options.baseRole ?? 'mcp',
+        currentOperation: options.currentOperation ?? 'mcp-server',
         parentProcessId: 42,
         processId,
         processStartIdentity: 'identity-a',
-        role: 'mcp',
+        role: options.role ?? 'mcp',
         schemaVersion: 1,
-        startedAt: '2026-08-12T00:00:00.000Z',
+        startedAt,
         token,
-        updatedAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: startedAt,
       })}\n`,
     );
   });
