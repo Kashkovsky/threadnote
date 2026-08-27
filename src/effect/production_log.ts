@@ -35,9 +35,9 @@ const PRODUCTION_LOG_LOCK_RETRY_MILLISECONDS = 25;
 const PRODUCTION_LOG_LOCK_STALE_MILLISECONDS = 30_000;
 const PRODUCTION_LOG_LOCK_WAIT_MILLISECONDS = 2_000;
 const PRODUCTION_LOG_PROCESS_WAIT_MILLISECONDS = PRODUCTION_LOG_LOCK_WAIT_MILLISECONDS + 500;
-// Eight standalone Windows processes can occupy the low-volume log lock beyond two seconds under hosted-runner
+// Eight standalone Windows processes can occupy the low-volume log lock beyond five seconds under hosted-runner
 // scheduling. Keep the queue bounded while preserving both lifecycle entries for commands that already completed.
-const PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS = 5_000;
+const PRODUCTION_LOG_WINDOWS_LOCK_WAIT_MILLISECONDS = 10_000;
 const PRODUCTION_LOG_RUNTIME_NAME = 'bun';
 const PRODUCTION_LOG_UNKNOWN_ERROR_TYPE = 'UnknownError';
 const PRODUCTION_LOG_REPORTED_ERROR_TYPE = 'ReportedError';
