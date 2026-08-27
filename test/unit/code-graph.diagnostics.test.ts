@@ -4,6 +4,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, PlatformError} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  codeGraphLifecycleDiagnosticIssue,
   inspectAllCodeGraphs,
   inspectAllCodeGraphsLocal,
   renderCodeGraphDiagnostics,
@@ -55,6 +56,33 @@ describe('all-code-graph diagnostics', () => {
       THREADNOTE_CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER: '1',
       THREADNOTE_HOME: '/threadnote-home',
     });
+  });
+
+  it('projects cursor recovery as one fixed path-free diagnostics issue', () => {
+    const privateMarker = '/private/repository/malformed-cursor-value';
+    const lifecycle = {
+      checkoutId: 'a'.repeat(64),
+      opportunity: 'diagnostics',
+      result: {
+        cleanup: 'none',
+        diagnostics: ['orphan-provenance-cursor-recovered'],
+        expiredLeases: 0,
+        privateMarker,
+        remaining: false,
+        retiredSnapshots: 0,
+        rowsDeleted: 0,
+        state: 'completed',
+      },
+      state: 'completed',
+    } as const;
+    const issue = codeGraphLifecycleDiagnosticIssue(lifecycle);
+
+    expect(issue).toEqual({
+      code: 'orphan-provenance-cursor-recovered',
+      message: 'Recovered an invalid orphan provenance cleanup cursor; bounded rotation restarted.',
+    });
+    expect(JSON.stringify(issue)).not.toContain(privateMarker);
+    expect(codeGraphLifecycleDiagnosticIssue({opportunity: 'diagnostics', state: 'no-target'})).toBeUndefined();
   });
 
   effectIt.effect('reports every database without a repository cwd and keeps JSON privacy-safe', () =>
