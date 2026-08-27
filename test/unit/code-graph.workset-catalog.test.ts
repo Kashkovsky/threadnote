@@ -1,9 +1,11 @@
 import {Database} from 'bun:sqlite';
-import {Effect} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION,
   codeGraphWorksetCatalogDatabasePath,
@@ -34,12 +36,15 @@ import {
   withCodeGraphWorksetCatalogWriter,
 } from '../../src/code_graph/workset_catalog/store.js';
 import {
+  CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
   CodeGraphWorksetCatalogError,
   type CodeGraphWorksetCatalogGenerationInputV1,
   type CodeGraphWorksetCatalogGenerationMemberV1,
   type CodeGraphWorksetRoutingProjectionV1,
+  type CodeGraphWorksetRoutingSymbolV1,
 } from '../../src/code_graph/workset_catalog/types.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdir, mkdtemp, readFile, rm, stat, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -729,7 +734,100 @@ describe('code graph workset catalog', () => {
       {numRuns: 100},
     );
   });
+
+  it('admits the observed ordinary 66k-symbol routing density inside the calibrated projection envelope', () => {
+    const symbolCount = 66_067;
+    let logicalBytes = 0;
+    for (let offset = 0; offset < symbolCount; offset += 257) {
+      const length = Math.min(257, symbolCount - offset);
+      const page = Array.from({length}, (_, index) => calibratedProjectionSymbol(offset + index));
+      logicalBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(logicalBytes, page);
+    }
+
+    expect(logicalBytes).toBeGreaterThan(128 * 1_024 * 1_024);
+    expect(logicalBytes).toBeLessThanOrEqual(CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum);
+  });
+
+  it('accepts the exact projection limit and rejects an already-over-limit accumulator', () => {
+    const maximum = CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum;
+    expect(codeGraphWorksetRoutingProjectionLogicalBytesAppend(maximum, [])).toBe(maximum);
+    let failure: unknown;
+    try {
+      codeGraphWorksetRoutingProjectionLogicalBytesAppend(maximum + 1, []);
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toMatchObject({reason: 'capacity'} satisfies Partial<CodeGraphWorksetCatalogError>);
+  });
+
+  effectIt.effect('preserves the independent 4 GiB aggregate projection capacity guard', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const system = yield* SystemInfo;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-aggregate-capacity-'});
+        const projectionMaximum = CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum;
+        const projectionSlots = CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum / projectionMaximum;
+        expect(Number.isSafeInteger(projectionSlots)).toBe(true);
+        const ampleDisk = SystemInfo.of({
+          ...system,
+          availableDiskBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+        });
+
+        for (let index = 0; index < projectionSlots; index += 1) {
+          const begun = yield* beginCodeGraphWorksetCatalogProjection(
+            home,
+            projectionReceipt(projection(10_000 + index)),
+            projectionMaximum,
+          ).pipe(Effect.provideService(SystemInfo, ampleDisk));
+          expect(begun.state).toBe('staging');
+        }
+        const failure = yield* beginCodeGraphWorksetCatalogProjection(
+          home,
+          projectionReceipt(projection(20_000)),
+          projectionMaximum,
+        ).pipe(Effect.provideService(SystemInfo, ampleDisk), Effect.flip);
+        expect(failure).toMatchObject({reason: 'capacity'} satisfies Partial<CodeGraphWorksetCatalogError>);
+
+        const capacity = yield* Effect.sync(() => {
+          const database = new Database(catalogPath(home), {readonly: true, strict: true});
+          try {
+            return database
+              .query<{readonly projection_logical_bytes: number}, []>(
+                'SELECT projection_logical_bytes FROM catalog_capacity WHERE singleton = 1',
+              )
+              .get()?.projection_logical_bytes;
+          } finally {
+            database.close(false);
+          }
+        });
+        expect(capacity).toBe(CODE_GRAPH_WORKSET_CATALOG_LIMITS.catalogPhysicalBytesMaximum);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
+
+function calibratedProjectionSymbol(index: number): CodeGraphWorksetRoutingSymbolV1 {
+  const padded = index.toString().padStart(5, '0');
+  const lookupCount = index % 5 < 3 ? 3 : 2;
+  const termCount = index % 100 < 46 ? 11 : 10;
+  return {
+    exported: index % 3 === 0,
+    kind: 'function',
+    language: 'typescript',
+    lookupKeys: Array.from({length: lookupCount}, (_, key) => `workset.catalog.${padded}.lookup-${key}`),
+    name: `prepareRoutingProjection${padded}`,
+    nodeId: `cgs_${digest(`calibrated-node-${index}`).slice(0, 32)}`,
+    packageName: 'threadnote',
+    path: `src/workset/routing-${padded}.ts`,
+    qualifiedName: `WorksetCatalog.prepareRoutingProjection${padded}`,
+    span: {column: 1, endColumn: 48, endLine: index + 2, line: index + 1},
+    terms: Array.from({length: termCount}, (_, term) => ({
+      term: `routing-projection-${padded}-term-${term.toString().padStart(2, '0')}`,
+      weight: 5 - (term % 5),
+    })),
+  };
+}
 
 async function temporaryHome(homes: string[]): Promise<string> {
   const home = await mkdtemp('threadnote-workset-catalog-');

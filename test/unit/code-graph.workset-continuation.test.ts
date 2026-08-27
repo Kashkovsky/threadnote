@@ -1,8 +1,10 @@
 import {Database} from 'bun:sqlite';
-import {Effect} from 'effect';
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem, Path} from 'effect';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   CODE_GRAPH_WORKSET_EVIDENCE_PROJECTOR_VERSION,
   codeGraphEvidenceCardId,
@@ -32,7 +34,8 @@ import {
   type CodeGraphWorksetResultSetPageV1,
   type CodeGraphWorksetRoutingProjectionV1,
 } from '../../src/code_graph/workset_catalog/types.js';
-import {join, mkdir, mkdtemp, rm, stat, writeFile} from '../helpers/effect-filesystem.js';
+import {join, mkdtemp, rm, stat} from '../helpers/effect-filesystem.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph workset qualified refs and continuation', () => {
@@ -42,27 +45,44 @@ describe('code graph workset qualified refs and continuation', () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
   });
 
-  it('creates v3 before removing the obsolete disposable v2 catalog', async () => {
-    const home = await temporaryHome(homes);
-    const root = join(home, 'indexes', 'code-graph', 'worksets');
-    await mkdir(root, {recursive: true});
-    const legacyPath = join(root, 'catalog-v2.sqlite');
-    const legacy = new Database(legacyPath, {create: true, strict: true});
-    try {
-      legacy.exec('CREATE TABLE legacy_ready_projection (id TEXT PRIMARY KEY)');
-      legacy.query('INSERT INTO legacy_ready_projection (id) VALUES (?)').run('pre-normalized-routing');
-    } finally {
-      legacy.close(false);
-    }
-    const legacySidecars = ['-journal', '-shm', '-wal'].map(suffix => `${legacyPath}${suffix}`);
-    for (const sidecar of legacySidecars) await writeFile(sidecar, 'obsolete disposable sidecar');
+  effectIt.effect('creates v4 before removing obsolete disposable v2 and v3 catalogs', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-catalog-upgrade-'});
+        const root = path.join(home, 'indexes', 'code-graph', 'worksets');
+        yield* fs.makeDirectory(root, {recursive: true});
+        const obsoleteDatabases = [2, 3].map(version => path.join(root, `catalog-v${String(version)}.sqlite`));
+        const obsoleteFiles = obsoleteDatabases.flatMap(databasePath => [
+          databasePath,
+          `${databasePath}-journal`,
+          `${databasePath}-shm`,
+          `${databasePath}-wal`,
+        ]);
 
-    await runEffect(ensureCodeGraphWorksetCatalog(home));
-    expect(catalogPath(home)).toBe(join(root, 'catalog-v3.sqlite'));
-    await expect(stat(legacyPath)).rejects.toBeDefined();
-    for (const sidecar of legacySidecars) await expect(stat(sidecar)).rejects.toBeDefined();
-    expect(await runEffect(inspectCodeGraphWorksetCatalog(home))).toMatchObject({schemaVersion: 3, state: 'ok'});
-  });
+        for (const databasePath of obsoleteDatabases) {
+          yield* Effect.sync(() => {
+            const legacy = new Database(databasePath, {create: true, strict: true});
+            try {
+              legacy.exec('CREATE TABLE legacy_ready_projection (id TEXT PRIMARY KEY)');
+              legacy.query('INSERT INTO legacy_ready_projection (id) VALUES (?)').run('pre-normalized-routing');
+            } finally {
+              legacy.close(false);
+            }
+          });
+          for (const suffix of ['-journal', '-shm', '-wal']) {
+            yield* fs.writeFile(`${databasePath}${suffix}`, new TextEncoder().encode('obsolete disposable sidecar'));
+          }
+        }
+
+        yield* ensureCodeGraphWorksetCatalog(home);
+        expect(catalogPath(home)).toBe(path.join(root, 'catalog-v4.sqlite'));
+        for (const candidate of obsoleteFiles) expect(yield* fs.exists(candidate)).toBe(false);
+        expect(yield* inspectCodeGraphWorksetCatalog(home)).toMatchObject({schemaVersion: 4, state: 'ok'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('isolates cgr handles by repository while accepting every local node-id width', async () => {
     const home = await temporaryHome(homes);

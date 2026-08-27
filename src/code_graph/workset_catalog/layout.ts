@@ -1,6 +1,6 @@
 import type {Path} from 'effect';
 
-export const CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION = 3 as const;
+export const CODE_GRAPH_WORKSET_CATALOG_SCHEMA_VERSION = 4 as const;
 
 export interface CodeGraphWorksetCatalogLayout {
   readonly databasePath: string;

@@ -18,6 +18,9 @@ export function codeGraphWorksetRoutingProjectionLogicalBytesAppend(
   if (!Number.isSafeInteger(currentBytes) || currentBytes < 0) {
     throw new CodeGraphWorksetCatalogError('invalid-input', 'Workset routing projection byte state is invalid.');
   }
+  if (currentBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum) {
+    throw projectionCapacityError();
+  }
   let bytes = currentBytes;
   for (const symbol of symbols) {
     bytes += Buffer.byteLength(JSON.stringify(symbol), 'utf8') + ROUTING_ROW_STORAGE_CHARGE_BYTES;
@@ -34,11 +37,15 @@ export function codeGraphWorksetRoutingProjectionLogicalBytesAppend(
         ROUTING_ROW_STORAGE_CHARGE_BYTES;
     }
     if (!Number.isSafeInteger(bytes) || bytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum) {
-      throw new CodeGraphWorksetCatalogError(
-        'capacity',
-        'Workset routing projection exceeds the supported aggregate byte bound.',
-      );
+      throw projectionCapacityError();
     }
   }
   return bytes;
+}
+
+function projectionCapacityError(): CodeGraphWorksetCatalogError {
+  return new CodeGraphWorksetCatalogError(
+    'capacity',
+    'Workset routing projection exceeds the supported aggregate byte bound.',
+  );
 }
