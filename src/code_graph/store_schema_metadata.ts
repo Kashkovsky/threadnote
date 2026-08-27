@@ -6,6 +6,7 @@ import {CodeGraphRuntimeReconnectRequiredError, CodeGraphStoreError} from './typ
 
 export const REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS = 64;
 export const REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS = 66;
+export type SchemaMetadataMaximumRows = 66 | 67;
 
 export const SCHEMA_METADATA_TABLE_SQL = `CREATE TABLE IF NOT EXISTS schema_metadata (
   key TEXT PRIMARY KEY NOT NULL,
@@ -13,11 +14,12 @@ export const SCHEMA_METADATA_TABLE_SQL = `CREATE TABLE IF NOT EXISTS schema_meta
 )`;
 
 export const inspectBoundedSchemaMetadataRowCount = Effect.fn('codeGraph.inspectBoundedSchemaMetadataRowCount')(
-  function* (sql: SqlClient.SqlClient) {
-    const rows = yield* sql.unsafe(
-      `SELECT 1 FROM schema_metadata LIMIT ${REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS + 1}`,
-    );
-    return rows.length > REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS ? undefined : rows.length;
+  function* (
+    sql: SqlClient.SqlClient,
+    maximumRows: SchemaMetadataMaximumRows = REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  ) {
+    const rows = yield* sql.unsafe(`SELECT 1 FROM schema_metadata LIMIT ${maximumRows + 1}`);
+    return rows.length > maximumRows ? undefined : rows.length;
   },
 );
 
@@ -25,8 +27,9 @@ export const inspectBoundedSchemaMetadataValue = Effect.fn('codeGraph.inspectBou
   sql: SqlClient.SqlClient,
   key: string,
   maximumValueBytes: number,
+  maximumRows: SchemaMetadataMaximumRows = REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
 ) {
-  if ((yield* inspectBoundedSchemaMetadataRowCount(sql)) === undefined) {
+  if ((yield* inspectBoundedSchemaMetadataRowCount(sql, maximumRows)) === undefined) {
     return {state: 'invalid'} as const;
   }
   const rows = yield* sql.unsafe<{

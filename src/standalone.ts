@@ -7,6 +7,7 @@ import {
   CODE_GRAPH_COMPACTION_WORKER_ARGUMENT,
   CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT,
   CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT,
+  CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   LOCAL_MODEL_WORKER_ARGUMENT,
 } from './worker_protocol.js';
@@ -17,6 +18,7 @@ const isLocalModelWorker = arguments_[0] === LOCAL_MODEL_WORKER_ARGUMENT;
 const isCodeGraphParserWorker = arguments_[0] === CODE_GRAPH_PARSER_WORKER_ARGUMENT;
 const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORKER_ARGUMENT;
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
+const isCodeGraphImpactQueryWorker = arguments_[0] === CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
 const isMcpBroker = arguments_[0] === 'mcp-broker';
 const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
@@ -30,13 +32,16 @@ const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   });
 });
 
-if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker) {
-  // SQLite's integrity_check is synchronous native work. This worker must keep
-  // the OS default SIGTERM behavior so the lock-owning parent can always stop it.
+if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker || isCodeGraphImpactQueryWorker) {
+  // SQLite's integrity checks, compaction, and graph reads are synchronous
+  // native work. These workers keep the OS default SIGTERM behavior so their
+  // lock-owning or deadline-owning parents can always stop them.
   runSignalTransparentMain(
     isCodeGraphCompactionWorker
       ? await codeGraphAutomaticCompactionWorkerProgram()
-      : await codeGraphDeepDiagnosticsWorkerProgram(),
+      : isCodeGraphImpactQueryWorker
+        ? await codeGraphImpactQueryWorkerProgram()
+        : await codeGraphDeepDiagnosticsWorkerProgram(),
     {disableErrorReporting: true},
   );
 } else {
@@ -165,6 +170,29 @@ async function codeGraphAutomaticCompactionWorkerProgram() {
       ),
     ),
     Effect.provide(Layer.merge(system.SystemInfo.layer, BunServices.layer)),
+  );
+}
+
+async function codeGraphImpactQueryWorkerProgram() {
+  const [worker, runtime, processDiagnostics, processLease] = await Promise.all([
+    import('./code_graph/isolated_impact_query.js'),
+    import('./effect/runtime.js'),
+    import('./process_diagnostics.js'),
+    import('./standalone_process_lease.js'),
+  ]);
+  const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
+  return processHome.pipe(
+    Effect.flatMap(home =>
+      processLease.withStandaloneProcessLease(
+        processDiagnostics.withSignalTransparentThreadnoteWorkerRegistration(
+          home,
+          'graph-query-worker',
+          'impact-query',
+          worker.codeGraphImpactQueryWorkerProgram(home),
+        ),
+      ),
+    ),
+    Effect.provide(runtime.ApplicationLayer),
   );
 }
 
