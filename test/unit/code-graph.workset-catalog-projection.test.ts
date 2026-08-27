@@ -1,7 +1,8 @@
 import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
-import {Effect} from 'effect';
+import {Effect, FileSystem} from 'effect';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
@@ -11,6 +12,8 @@ import {
   stageCodeGraphWorksetRoutingProjectionScoped,
 } from '../../src/code_graph/workset_catalog/projection_builder.js';
 import {CodeGraphWorksetCatalogError} from '../../src/code_graph/workset_catalog/types.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -350,6 +353,108 @@ describe('code graph ready-snapshot workset routing projections', () => {
     );
     expect(staged.receipt.symbolCount).toBe(symbols.length);
   });
+
+  effectIt.effect('prepares compact routing once per streamed pass instead of once per symbol page', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const store = yield* CodeGraphStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-projection-reverse-terms-'});
+        const identity = repositoryIdentity('reverse-terms');
+        const snapshotId = snapshotIdentity('reverse-terms');
+        const symbols = Array.from({length: 257}, (_, index) =>
+          symbol(`reverse${index.toString().padStart(3, '0')}`, {
+            terms: [
+              {term: `shared-${index % 11}`, weight: 2},
+              {term: `unique-${index}`, weight: 5},
+            ],
+          }),
+        );
+        yield* store.initialize(databasePath(home, identity.checkoutId));
+        yield* Effect.sync(() =>
+          seedGraph(
+            home,
+            identity,
+            [
+              {
+                compact: true,
+                effectiveSymbolCount: symbols.length,
+                id: snapshotId,
+                symbols,
+                worktreeId: identity.worktreeId,
+              },
+            ],
+            [{snapshotId, worktreeId: identity.worktreeId}],
+          ),
+        );
+        const preparedRoutingSurfaces: Array<{readonly lookupKeys: number; readonly terms: number}> = [];
+        let peakBufferedSymbols = 0;
+
+        const staged = yield* stageCodeGraphWorksetRoutingProjectionScoped({
+          identity,
+          observeBufferedSymbols: count => {
+            peakBufferedSymbols = Math.max(peakBufferedSymbols, count);
+          },
+          observePreparedRoutingSurface: counts => preparedRoutingSurfaces.push(counts),
+          pageSize: 1,
+          snapshotId,
+          threadnoteHome: home,
+        });
+
+        expect(staged.receipt.symbolCount).toBe(symbols.length);
+        expect(staged.stats).toMatchObject({pagesRead: symbols.length, symbolsRead: symbols.length});
+        expect(preparedRoutingSurfaces).toEqual([
+          {lookupKeys: symbols.length, terms: symbols.length * 2},
+          {lookupKeys: symbols.length, terms: symbols.length * 2},
+        ]);
+        expect(peakBufferedSymbols).toBe(1);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects compact routing drift between the digest and publication passes', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const store = yield* CodeGraphStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-projection-routing-drift-'});
+        const identity = repositoryIdentity('routing-drift');
+        const snapshotId = snapshotIdentity('routing-drift');
+        yield* store.initialize(databasePath(home, identity.checkoutId));
+        yield* Effect.sync(() =>
+          seedGraph(
+            home,
+            identity,
+            [
+              {
+                compact: true,
+                effectiveSymbolCount: 1,
+                id: snapshotId,
+                symbols: [symbol('drifting')],
+                worktreeId: identity.worktreeId,
+              },
+            ],
+            [{snapshotId, worktreeId: identity.worktreeId}],
+          ),
+        );
+        let preparations = 0;
+
+        const failure = yield* stageCodeGraphWorksetRoutingProjectionScoped({
+          identity,
+          observePreparedRoutingSurface: () => {
+            preparations += 1;
+            if (preparations === 1) replaceCompactTermWeight(home, identity.checkoutId, snapshotId);
+          },
+          pageSize: 1,
+          snapshotId,
+          threadnoteHome: home,
+        }).pipe(Effect.flip);
+
+        expect(preparations).toBe(2);
+        expect(failure).toMatchObject({reason: 'corrupt'} satisfies Partial<CodeGraphWorksetCatalogError>);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
 
 interface FixtureIdentity {
@@ -662,6 +767,23 @@ function replaceActiveSnapshot(home: string, identity: FixtureIdentity, snapshot
     database
       .query('UPDATE active_snapshots SET snapshot_id = ?, activated_at = ? WHERE worktree_id = ?')
       .run(snapshotId, '2026-08-11T00:01:00.000Z', identity.worktreeId);
+  } finally {
+    database.close(false);
+  }
+}
+
+function replaceCompactTermWeight(home: string, checkoutId: string, snapshotId: string): void {
+  const database = new Database(databasePath(home, checkoutId), {strict: true});
+  try {
+    database
+      .query(
+        `UPDATE lexical_compact_postings
+         SET weight = CASE weight WHEN 5 THEN 4 ELSE 5 END
+         WHERE snapshot_key = (
+           SELECT snapshot_key FROM lexical_compact_snapshots WHERE snapshot_id = ?
+         )`,
+      )
+      .run(snapshotId);
   } finally {
     database.close(false);
   }
