@@ -374,48 +374,31 @@ jobs:
           checks_file="$RUNNER_TEMP/threadnote-checks-after.json"
           images_file="$RUNNER_TEMP/threadnote-images-after.json"
           expected_digest="${THREADNOTE_TELEMETRY_IMAGE##*@}"
-          deployed_inventory_ready=false
+          deployed_observations_ready=false
           for _ in $(seq 1 20); do
             if flyctl machine list --app threadnote-telemetry --json > "$machines_file" &&
               flyctl image show --app threadnote-telemetry --json > "$images_file" &&
+              flyctl checks list --app threadnote-telemetry --json > "$checks_file" &&
               go run ./cmd/budget < "$machines_file" >/dev/null 2>&1 &&
-              jq -e --arg digest "$expected_digest" '
-                type == "array" and
-                length == 2 and
-                ([.[].MachineID] | unique | length) == 2 and
-                all(.Digest == $digest)
-              ' "$images_file" >/dev/null; then
-              deployed_inventory_ready=true
+              jq -se --arg digest "$expected_digest" '
+                .[0] as $machines |
+                .[1] as $images |
+                .[2] as $checks |
+                ($machines | type == "array" and length == 2 and ([.[].id] | unique | length) == 2) and
+                ($images | type == "array" and length == 2 and ([.[].MachineID] | unique | length) == 2 and all(.Digest == $digest)) and
+                ($checks | type == "object" and length == 2) and
+                ([ $checks[] | .[] | .status ] | length == 2 and all(. == "passing")) and
+                ([ $machines[].id ] | sort) == ([ $images[].MachineID ] | sort) and
+                ([ $machines[].id ] | sort) == ($checks | keys | sort)
+              ' "$machines_file" "$images_file" "$checks_file" >/dev/null; then
+              deployed_observations_ready=true
               break
             fi
             sleep 3
           done
-          if [[ "$deployed_inventory_ready" != 'true' ]]; then
-            echo 'The deployed Machine inventory and image digest did not converge within 60 seconds.' >&2
+          if [[ "$deployed_observations_ready" != 'true' ]]; then
+            echo 'The deployed Machine inventory, image digest, and service checks did not converge within 60 seconds.' >&2
             go run ./cmd/budget < "$machines_file" || true
-            jq -e --arg digest "$expected_digest" '
-              type == "array" and
-              length == 2 and
-              ([.[].MachineID] | unique | length) == 2 and
-              all(.Digest == $digest)
-            ' "$images_file" >/dev/null || true
-            exit 1
-          fi
-
-          healthy=false
-          for _ in $(seq 1 20); do
-            flyctl checks list --app threadnote-telemetry --json > "$checks_file"
-            if jq -e '
-              [.. | objects | select(has("status")) | .status] as $statuses
-              | ($statuses | length == 2) and ($statuses | all(. == "passing"))
-            ' "$checks_file" >/dev/null; then
-              healthy=true
-              break
-            fi
-            sleep 3
-          done
-          if [[ "$healthy" != 'true' ]]; then
-            echo 'Both Fly service checks did not become healthy.' >&2
             exit 1
           fi
           curl --fail --silent --show-error --output /dev/null \
