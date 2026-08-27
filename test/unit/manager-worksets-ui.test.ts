@@ -2,9 +2,12 @@
 
 import React, {act} from 'react';
 import {createRoot, type Root} from 'react-dom/client';
-import {afterEach, beforeEach, describe, expect, it} from 'vitest';
+import {renderToStaticMarkup} from 'react-dom/server';
+import fc from 'fast-check';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {ManagerDialogProvider} from '../../src/manager_dialog.js';
-import {WorksetsPanel} from '../../src/manager_worksets_view.js';
+import type {ManagerWorksetPrepareJob} from '../../src/manager_worksets.js';
+import {managerWorksetJobElapsedMilliseconds, PrepareJobPanel, WorksetsPanel} from '../../src/manager_worksets_view.js';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 
@@ -166,6 +169,44 @@ afterEach(async () => {
 });
 
 describe('Manager Worksets interaction fencing', () => {
+  it('renders a live elapsed projection message instead of a stale child update', () => {
+    const nowMilliseconds = Date.parse('2026-08-27T10:05:12.000Z');
+    const job = prepareJob({
+      createdAt: '2026-08-27T10:00:00.000Z',
+      elapsedMilliseconds: 1_000,
+    });
+    const now = vi.spyOn(Date, 'now').mockReturnValue(nowMilliseconds);
+    try {
+      const markup = renderToStaticMarkup(React.createElement(PrepareJobPanel, {job, onCancel: () => undefined}));
+      expect(markup).toContain('Workset projecting · alpha · 0/2 members · 5m 12s elapsed.');
+      expect(markup).not.toContain('1s elapsed');
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('keeps active elapsed time monotonic and no lower than the latest authoritative update', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 600_000, min: 0}),
+        fc.integer({max: 600_000, min: -600_000}),
+        fc.integer({max: 600_000, min: 0}),
+        (ageMilliseconds, clockAdjustmentMilliseconds, reportedMilliseconds) => {
+          const baseline = Date.parse('2026-08-27T10:00:00.000Z');
+          const job = prepareJob({
+            createdAt: new Date(baseline - ageMilliseconds).toISOString(),
+            elapsedMilliseconds: reportedMilliseconds,
+          });
+          const first = managerWorksetJobElapsedMilliseconds(job, baseline);
+          const next = managerWorksetJobElapsedMilliseconds(job, baseline + clockAdjustmentMilliseconds, first);
+          expect(first).toBeGreaterThanOrEqual(reportedMilliseconds);
+          expect(next).toBeGreaterThanOrEqual(first);
+        },
+      ),
+      {numRuns: 40},
+    );
+  });
+
   it('aborts stale selection work, clears cancellation immediately, and permits a clean rerun', async () => {
     await renderWorksets();
     const input = await waitForElement<HTMLInputElement>('input[placeholder="checkout ownership or parseManifest"]');
@@ -455,6 +496,26 @@ describe('Manager Worksets interaction fencing', () => {
     expect(css).toMatch(/\.worksets-editor\s*\{[\s\S]*max-height: calc\(100dvh - 16px\);[\s\S]*overflow-y: auto/u);
   });
 });
+
+function prepareJob(input: {
+  readonly createdAt: string;
+  readonly elapsedMilliseconds: number;
+}): ManagerWorksetPrepareJob {
+  return {
+    createdAt: input.createdAt,
+    id: 'cgwj_live_elapsed',
+    progress: {
+      completed: 0,
+      elapsedMilliseconds: input.elapsedMilliseconds,
+      message: 'Workset projecting · alpha · 0/2 members · 1s elapsed.',
+      phase: 'projecting',
+      project: 'alpha',
+      total: 2,
+    },
+    status: 'running',
+    workset: 'platform',
+  };
+}
 
 async function renderWorksets(waitSelector = '#worksets-tab-query'): Promise<void> {
   const container = document.createElement('div');

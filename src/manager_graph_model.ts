@@ -654,6 +654,40 @@ export function graphCompletedBuildResultIdentity(build: GraphBuildStatus): stri
     : undefined;
 }
 
+/**
+ * A status-only catalog keeps progress visible while the authoritative catalog
+ * is maintenance-busy. Once maintenance releases, it must never become the
+ * terminal empty state: the next poll retries the full catalog automatically.
+ */
+export function graphCatalogRequiresAuthoritativeRefresh(
+  authoritativeCatalogLoaded: boolean,
+  maintenance?: CodeGraphMaintenanceStatus,
+): boolean {
+  return !authoritativeCatalogLoaded && maintenance === undefined;
+}
+
+export type GraphCatalogEmptyState = 'building' | 'empty' | 'recovering' | 'retrying';
+
+/** Keep maintenance evidence separate from cause-neutral catalog retry failures. */
+export function graphCatalogEmptyState(input: {
+  readonly automaticCompaction?: CodeGraphAutomaticCompactionStatus;
+  readonly builds: readonly GraphBuildStatus[];
+  readonly catalogError?: string;
+  readonly lifecyclePending?: boolean;
+  readonly maintenance?: CodeGraphMaintenanceStatus;
+}): GraphCatalogEmptyState {
+  if (
+    input.maintenance !== undefined ||
+    input.lifecyclePending === true ||
+    input.automaticCompaction?.state === 'inspecting' ||
+    input.automaticCompaction?.state === 'running'
+  ) {
+    return 'recovering';
+  }
+  if (input.builds.some(graphBuildIsActive)) return 'building';
+  return input.catalogError ? 'retrying' : 'empty';
+}
+
 export function graphStatusRequiresCatalogRefresh(
   catalog: GraphCatalog | undefined,
   builds: readonly GraphBuildStatus[],

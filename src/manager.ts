@@ -101,7 +101,8 @@ import {
   requireString,
   requireStringArray,
 } from './manager_request_inputs.js';
-import {runCodeGraphIndex, runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
+import {runCodeGraphPurge, runCodeGraphRepair} from './code_graph/commands.js';
+import {runIsolatedCodeGraphIndexSnapshot} from './code_graph/isolated_index.js';
 import {
   compactCodeGraphStorageIsolated,
   runCodeGraphAutomaticCompactionLoop,
@@ -1717,7 +1718,21 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
       );
     case 'index':
       return yield* runCaptured(
-        () => runCodeGraphIndex(config, {cwd, expectedIdentity, full: body.full === true}),
+        () =>
+          runIsolatedCodeGraphIndexSnapshot({
+            cwd,
+            expectedIdentity,
+            force: body.full === true,
+            threadnoteHome: config.agentContextHome,
+          }).pipe(
+            Effect.flatMap(summary =>
+              Console.log(
+                `Ready in an isolated process · ${summary.snapshot.fileCount.toLocaleString()} files · ` +
+                  `${summary.snapshot.symbolCount.toLocaleString()} symbols · ` +
+                  `${summary.snapshot.edgeCount.toLocaleString()} edges`,
+              ),
+            ),
+          ),
         runEffect,
       );
     default:

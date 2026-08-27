@@ -1333,6 +1333,12 @@ dd {
   gap: 8px;
 }
 
+.graph-build-hidden {
+  color: var(--muted);
+  font-size: 10px;
+  margin: 0;
+}
+
 .graph-build-card {
   background: rgba(103, 232, 199, 0.06);
   border: 1px solid var(--accent-line);

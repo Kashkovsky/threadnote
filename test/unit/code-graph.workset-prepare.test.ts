@@ -1,6 +1,6 @@
 import {TestError} from '../helpers/test-error.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, Exit, Fiber, FileSystem, Path, Semaphore} from 'effect';
+import {Deferred, Effect, Exit, Fiber, FileSystem, Path, Semaphore} from 'effect';
 import {TestClock} from 'effect/testing';
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   retirePreparation: vi.fn(),
   expandPath: vi.fn(),
   leaseGuard: vi.fn(),
+  isolatedIndex: vi.fn(),
   publishGeneration: vi.fn(),
   readBridgeSummary: vi.fn(),
   readSnapshotMonikers: vi.fn(),
@@ -71,6 +72,11 @@ vi.mock('../../src/code_graph/cross_repository/snapshot_monikers.js', () => ({
 vi.mock('../../src/code_graph/cross_repository/store.js', () => ({
   readPublishedCodeGraphWorksetCatalogBridgeSetSummary: mocks.readBridgeSummary,
   replaceCodeGraphWorksetCatalogBridgeSet: mocks.replaceBridgeSet,
+}));
+
+vi.mock('../../src/code_graph/isolated_index.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../src/code_graph/isolated_index.js')>()),
+  runIsolatedCodeGraphIndexSnapshot: mocks.isolatedIndex,
 }));
 
 vi.mock('../../src/code_graph/workset_catalog/store.js', () => ({
@@ -501,6 +507,85 @@ describe('code graph workset mixed-coverage preparation', () => {
       );
     }).pipe(provideTestLayer(ApplicationLayer));
   });
+
+  effectIt.effect('overlaps isolated member builders up to the requested concurrency', () =>
+    Effect.gen(function* () {
+      const fs = {exists: () => Effect.succeed(true)} as unknown as FileSystem.FileSystem;
+      const bothStarted = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let active = 0;
+      let started = 0;
+      let maximumActive = 0;
+      let activeProjections = 0;
+      let maximumActiveProjections = 0;
+      const inProcessIndex = vi.fn(() => Effect.die('Manager orchestrator must not index in process'));
+      const indexer: CodeGraphIndexerShape = {
+        ensureCommit: () => Effect.die('not used'),
+        index: inProcessIndex,
+      };
+      mocks.requireWorkset.mockReturnValue(
+        Effect.succeed({
+          name: 'engineering',
+          projects: [
+            {name: 'api', path: '/api', seed: [], uri: 'threadnote://resources/repos/api'},
+            {name: 'worker', path: '/worker', seed: [], uri: 'threadnote://resources/repos/worker'},
+            {name: 'web', path: '/web', seed: [], uri: 'threadnote://resources/repos/web'},
+          ],
+          unresolvedProjects: [],
+        }),
+      );
+      mocks.isolatedIndex.mockImplementation(() =>
+        Effect.gen(function* () {
+          active += 1;
+          started += 1;
+          maximumActive = Math.max(maximumActive, active);
+          if (started === 2) yield* Deferred.succeed(bothStarted, undefined);
+          yield* Deferred.await(release);
+          active -= 1;
+          return summary;
+        }),
+      );
+      const stageProjection = mocks.stageProjection();
+      mocks.stageProjection.mockClear();
+      mocks.stageProjection.mockImplementation(() =>
+        Effect.sync(() => {
+          activeProjections += 1;
+          maximumActiveProjections = Math.max(maximumActiveProjections, activeProjections);
+        }).pipe(
+          Effect.andThen(Effect.yieldNow),
+          Effect.andThen(stageProjection),
+          Effect.ensuring(Effect.sync(() => (activeProjections -= 1))),
+        ),
+      );
+
+      const fiber = yield* prepareCodeGraphWorkset(config, 'engineering', {
+        concurrency: 2,
+        isolateBuilds: true,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(CodeGraphIndexer, indexer),
+        Effect.forkChild({startImmediately: true}),
+      );
+      yield* Deferred.await(bothStarted);
+      yield* Effect.yieldNow;
+
+      expect(maximumActive).toBe(2);
+      expect(started).toBe(2);
+      expect(inProcessIndex).not.toHaveBeenCalled();
+      expect(mocks.isolatedIndex).toHaveBeenCalledTimes(2);
+
+      yield* Deferred.succeed(release, undefined);
+      const result = yield* Fiber.join(fiber);
+      expect(result.coverage).toMatchObject({complete: true, ready: 3, requested: 3});
+      expect(mocks.isolatedIndex.mock.calls.map(([options]) => options.cwd).sort()).toEqual([
+        '/api',
+        '/web',
+        '/worker',
+      ]);
+      expect(maximumActiveProjections).toBe(1);
+      expect(mocks.stageProjection).toHaveBeenCalledTimes(3);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   effectIt.effect('keeps actionable typed detail when every member index fails', () => {
     const fs = {exists: (path: string) => Effect.succeed(path === '/ready')} as unknown as FileSystem.FileSystem;

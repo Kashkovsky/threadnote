@@ -7,10 +7,11 @@ import {
   traceCodeGraphWorksetImpact,
 } from './code_graph/cross_repository/runtime.js';
 import {codeGraphWorksetCatalogLayout} from './code_graph/workset_catalog/layout.js';
+import {prepareManagerCodeGraphWorksetIsolated} from './code_graph/workset_catalog/isolated_prepare.js';
 import {CodeGraphWorksetCatalogError} from './code_graph/workset_catalog/types.js';
 import {
   inspectCodeGraphWorksetStatus,
-  prepareCodeGraphWorkset,
+  type PrepareCodeGraphWorksetOptionsV1,
   type CodeGraphWorksetPrepareProgressV1,
   type CodeGraphWorksetPrepareResultV1,
 } from './code_graph/workset_catalog/workset.js';
@@ -216,10 +217,7 @@ export interface ManagerWorksetApiRequest {
   readonly prepareWorkset?: (
     config: RuntimeConfig,
     worksetName: string,
-    options: {
-      readonly concurrency?: number;
-      readonly onProgress?: (progress: CodeGraphWorksetPrepareProgressV1) => Effect.Effect<void, unknown>;
-    },
+    options: PrepareCodeGraphWorksetOptionsV1,
   ) => Effect.Effect<CodeGraphWorksetPrepareResultV1, unknown, ApplicationServices>;
   readonly url: URL;
 }
@@ -869,7 +867,7 @@ function startManagerWorksetPrepare(request: ManagerWorksetApiRequest, body: Rec
         },
       };
       registry.jobs.set(id, entry);
-      const fiber = yield* (request.prepareWorkset ?? prepareCodeGraphWorkset)(request.config, workset, {
+      const fiber = yield* (request.prepareWorkset ?? prepareManagerCodeGraphWorksetIsolated)(request.config, workset, {
         ...(concurrency === undefined ? {} : {concurrency}),
         onProgress: progress => updateManagerWorksetPrepareProgress(entry, progress),
       }).pipe(

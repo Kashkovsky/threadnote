@@ -46,6 +46,7 @@ import {
   type CodeGraphWorksetStatusResultV1,
 } from './workset_catalog/workset.js';
 import {makeCodeGraphWorksetJsonProgressReporter} from './workset_progress.js';
+import {CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV} from './workset_catalog/isolated_prepare.js';
 import {CodeGraphAnalysis} from './analysis.js';
 import {
   codeGraphAnalysisLimitsForView,
@@ -832,9 +833,12 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
   config: RuntimeConfig,
   options: {readonly concurrency?: number; readonly json?: boolean; readonly name: string},
 ) {
+  const system = yield* SystemInfo;
+  const isolateBuilds = system.environment()[CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV] === '1';
   const result = options.json
     ? yield* prepareCodeGraphWorkset(config, options.name, {
         concurrency: options.concurrency,
+        isolateBuilds,
         onProgress: yield* makeCodeGraphWorksetJsonProgressReporter(),
       })
     : yield* Effect.acquireUseRelease(
@@ -842,6 +846,7 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
         progress =>
           prepareCodeGraphWorkset(config, options.name, {
             concurrency: options.concurrency,
+            isolateBuilds,
             onProgress: event => progress.update(event.message),
           }),
         progress => progress.stop.pipe(Effect.catch(() => Effect.void)),

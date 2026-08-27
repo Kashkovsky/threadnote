@@ -11,8 +11,10 @@ import {
   GRAPH_QUERY_DEBOUNCE_MILLISECONDS,
   GRAPH_QUERY_MAXIMUM_LENGTH,
   graphAnalysisRequestIsCurrent,
+  graphAdministrationJobSelection,
   graphBuildShouldDisplay,
   graphCatalogContinuationHasMore,
+  graphCatalogEmptyState,
   graphCatalogPageOffsets,
   graphCatalogSearchOptions,
   graphLocalAssociationText,
@@ -188,11 +190,22 @@ export function GraphWorkspace(props: {
     () => orderGraphBuildStatuses((props.catalog?.builds ?? []).filter(graphBuildShouldDisplay), repositories),
     [props.catalog?.builds, repositories],
   );
+  const administrationJobs = useMemo(
+    () => graphAdministrationJobSelection(visibleBuilds, props.catalog?.waiters ?? []),
+    [props.catalog?.waiters, visibleBuilds],
+  );
   const statusNoticeCount =
-    visibleBuilds.length +
+    administrationJobs.total +
     (props.catalog?.automaticCompaction ? 1 : 0) +
     (props.catalog?.maintenance ? 1 : 0) +
     (props.catalog?.diagnostics.length ?? 0);
+  const emptyState = graphCatalogEmptyState({
+    automaticCompaction: props.catalog?.automaticCompaction,
+    builds: visibleBuilds,
+    catalogError: props.catalogError,
+    lifecyclePending: props.catalog?.lifecyclePending,
+    maintenance: props.catalog?.maintenance,
+  });
   const selectedRepositoryIsIndexing = visibleBuilds.some(
     build =>
       repository !== undefined &&
@@ -720,9 +733,9 @@ export function GraphWorkspace(props: {
           {props.catalog?.maintenance ? (
             <GraphMaintenanceProgress repositories={repositories} status={props.catalog.maintenance} />
           ) : null}
-          {visibleBuilds.length > 0 ? (
+          {administrationJobs.jobs.length > 0 ? (
             <div className="graph-build-status" aria-live="polite">
-              {visibleBuilds.map(build => (
+              {administrationJobs.jobs.map(build => (
                 <GraphBuildProgress
                   build={build}
                   key={`${build.identity.checkoutId}:${build.identity.worktreeId}:${build.buildId}`}
@@ -731,6 +744,12 @@ export function GraphWorkspace(props: {
                   waiters={props.catalog?.waiters ?? []}
                 />
               ))}
+              {administrationJobs.hiddenCount > 0 ? (
+                <p className="graph-build-hidden">
+                  {administrationJobs.hiddenCount.toLocaleString()} older build{' '}
+                  {administrationJobs.hiddenCount === 1 ? 'notice is' : 'notices are'} summarized.
+                </p>
+              ) : null}
             </div>
           ) : null}
 
@@ -1113,9 +1132,7 @@ export function GraphWorkspace(props: {
                 <span>Loading indexed repositories…</span>
               </div>
             ) : repositories.length === 0 ? (
-              <GraphEmptyState
-                building={visibleBuilds.some(build => build.state === 'queued' || build.state === 'running')}
-              />
+              <GraphEmptyState state={emptyState} />
             ) : activeQuery && selectedRepositoryIsIndexing && !queryGraph ? (
               <div aria-live="polite" className="graph-loading" role="status">
                 <span className="spinner" aria-hidden="true" />

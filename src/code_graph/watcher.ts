@@ -306,7 +306,7 @@ export class CodeGraphWatcher extends Context.Service<CodeGraphWatcher, CodeGrap
               assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
               cwd: options.cwd,
               onProgress: options.onProgress,
-              requestKey: codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, undefined),
+              requestKey: codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, undefined, false),
               threadnoteHome: options.threadnoteHome,
             }).pipe(
               Effect.provideService(CommandExecutor, commandExecutor),
