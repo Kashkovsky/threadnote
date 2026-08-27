@@ -43,6 +43,13 @@ import {
 } from './query_contract.js';
 import {codeGraphSnapshotRuntimeCurrent} from './query_snapshot_runtime.js';
 import {
+  codeGraphEndpointMatches,
+  exactCodeGraphImpactSelectorMatches,
+  isStableCodeGraphNodeId,
+  parseCodeGraphEndpointSelector,
+  selectCodeGraphEndpoint,
+} from './query_selector.js';
+import {
   codeGraphLanguagePackStatuses,
   repositoryIdentityObservation,
   resolvePublishedRepositoryIdentityObservation,
@@ -740,27 +747,44 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
   );
   let deadline = (yield* Clock.currentTimeMillis) + traversalTimeBudgetMilliseconds;
   const requestedSeedQueries = (seedQueries?.length ? seedQueries : [query]).slice(0, MAX_IMPACT_SEED_QUERIES);
+  const impactSelector = impact && !seedQueries?.length ? parseCodeGraphEndpointSelector(query) : undefined;
+  const structuredImpactSelector =
+    impactSelector !== undefined &&
+    (impactSelector.path !== undefined || isStableCodeGraphNodeId(impactSelector.symbol));
   const seedLimit = impact ? MAX_IMPACT_SEED_SYMBOLS : Math.min(nodeLimit, 12);
   const perSeedLimit = impact
     ? Math.max(1, Math.min(20, Math.ceil(MAX_IMPACT_SEED_SYMBOLS / requestedSeedQueries.length)))
     : Math.max(1, seedLimit);
   const normalizedPackageName = packageName?.trim().toLocaleLowerCase('en-US');
   const lexicalCandidateLimit = normalizedPackageName ? Math.min(500, Math.max(200, perSeedLimit * 20)) : perSeedLimit;
-  const lexicalCandidateGroups =
-    impact && seedQueries?.length
-      ? yield* store.searchSymbolsByPaths(databasePath, snapshotId, requestedSeedQueries, lexicalCandidateLimit)
-      : yield* store.searchSymbolsMany(databasePath, snapshotId, requestedSeedQueries, lexicalCandidateLimit);
+  const lexicalCandidateGroups = impactSelector?.path
+    ? [yield* store.findSymbolsByPathAndName(databasePath, snapshotId, impactSelector.path, impactSelector.symbol)]
+    : impactSelector && isStableCodeGraphNodeId(impactSelector.symbol)
+      ? [
+          (yield* store.symbolsByIds(databasePath, snapshotId, [impactSelector.symbol])).map(node => ({
+            ...node,
+            score: 1,
+          })),
+        ]
+      : impact && seedQueries?.length
+        ? yield* store.searchSymbolsByPaths(databasePath, snapshotId, requestedSeedQueries, lexicalCandidateLimit)
+        : yield* store.searchSymbolsMany(databasePath, snapshotId, requestedSeedQueries, lexicalCandidateLimit);
   // The elapsed budget governs graph traversal, not an already-completed
   // lexical seed lookup that SQLite cannot interrupt. Impact keeps one
   // absolute budget across path recovery and traversal; ordinary queries get
   // the same complete traversal window regardless of snapshot representation.
   if (!impact) deadline = (yield* Clock.currentTimeMillis) + traversalTimeBudgetMilliseconds;
-  const lexicalGroups = lexicalCandidateGroups.map(group =>
-    (normalizedPackageName
+  const exactImpactSelectorGroups = impactSelector
+    ? lexicalCandidateGroups.map(group => exactCodeGraphImpactSelectorMatches(impactSelector, group))
+    : [];
+  const impactSelectorResolvedExactly = exactImpactSelectorGroups.some(group => group.length > 0);
+  const lexicalGroups = lexicalCandidateGroups.map(group => {
+    const packageMatches = normalizedPackageName
       ? group.filter(node => node.packageName?.toLocaleLowerCase('en-US') === normalizedPackageName)
-      : group
-    ).slice(0, perSeedLimit),
-  );
+      : group;
+    const exactMatches = impactSelector ? exactCodeGraphImpactSelectorMatches(impactSelector, packageMatches) : [];
+    return (impactSelectorResolvedExactly ? exactMatches : packageMatches).slice(0, perSeedLimit);
+  });
   const lexicalCandidatesExamined = lexicalCandidateGroups.reduce((total, group) => total + group.length, 0);
   const lexicalPackageMatches = lexicalGroups.reduce((total, group) => total + group.length, 0);
   let timedOut = yield* deadlineReached(deadline);
@@ -795,7 +819,12 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
     : [...lexicalById.values()]
         .sort((left, right) => right.score - left.score || compareCodeUnits(left.id, right.id))
         .slice(0, seedLimit);
-  const semanticEligible = !timedOut && !(impact && seedQueries?.length) && lexicalSeeds.length < seedLimit;
+  const semanticEligible =
+    !timedOut &&
+    !(impact && seedQueries?.length) &&
+    !structuredImpactSelector &&
+    !impactSelectorResolvedExactly &&
+    lexicalSeeds.length < seedLimit;
   const semanticResult = !semanticEligible
     ? {scores: new Map<string, number>(), timedOut: false}
     : yield* embedding.search(threadnoteHome, layout, snapshotId, query, Math.min(nodeLimit, 12)).pipe(
@@ -920,8 +949,10 @@ export const traversalQuery = Effect.fn('codeGraph.traversalQuery')(function* (
       `Impact analysis evaluated ${MAX_IMPACT_SEED_QUERIES} of ${seedQueries.length} changed paths; results are partial.`,
     );
   }
-  if (impact && unresolvedSeedQueries > 0) {
+  if (impact && seedQueries?.length && unresolvedSeedQueries > 0) {
     warnings.push(`${unresolvedSeedQueries} changed path(s) did not resolve to indexed code symbols.`);
+  } else if (impact && !seedQueries?.length && seeds.length === 0) {
+    warnings.push('Impact selector did not resolve to indexed code symbols.');
   }
   if (recovered.recoveredPaths > 0) {
     warnings.push(
@@ -1581,13 +1612,13 @@ const pathQuery = Effect.fn('codeGraph.pathQuery')(function* (
   allowedProvenances: readonly CodeGraphProvenance[],
 ) {
   const deadline = (yield* Clock.currentTimeMillis) + QUERY_TRAVERSAL_TIME_BUDGET_MILLISECONDS;
-  const fromSelector = parseEndpointSelector(from);
-  const toSelector = parseEndpointSelector(to);
-  const fromMatches = yield* endpointMatches(store, databasePath, snapshotId, fromSelector);
+  const fromSelector = parseCodeGraphEndpointSelector(from);
+  const toSelector = parseCodeGraphEndpointSelector(to);
+  const fromMatches = yield* codeGraphEndpointMatches(store, databasePath, snapshotId, fromSelector);
   if (yield* deadlineReached(deadline)) {
     return {edges: [], nodes: [], warnings: ['Path search reached its elapsed-time budget; results are partial.']};
   }
-  const toMatches = yield* endpointMatches(store, databasePath, snapshotId, toSelector);
+  const toMatches = yield* codeGraphEndpointMatches(store, databasePath, snapshotId, toSelector);
   if (yield* deadlineReached(deadline)) {
     return {
       edges: [],
@@ -1595,8 +1626,8 @@ const pathQuery = Effect.fn('codeGraph.pathQuery')(function* (
       warnings: ['Path search reached its elapsed-time budget; results are partial.'],
     };
   }
-  const startSelection = selectEndpoint(fromMatches, fromSelector);
-  const targetSelection = selectEndpoint(toMatches, toSelector);
+  const startSelection = selectCodeGraphEndpoint(fromMatches, fromSelector);
+  const targetSelection = selectCodeGraphEndpoint(toMatches, toSelector);
   const start = startSelection.node;
   const target = targetSelection.node;
   const selectorWarnings = [...startSelection.warnings, ...targetSelection.warnings];
@@ -1695,76 +1726,6 @@ const pathQuery = Effect.fn('codeGraph.pathQuery')(function* (
     warnings: [],
   };
 });
-
-interface EndpointSelector {
-  readonly original: string;
-  readonly path?: string;
-  readonly symbol: string;
-}
-
-function endpointMatches(
-  store: CodeGraphStoreShape,
-  databasePath: string,
-  snapshotId: string,
-  selector: EndpointSelector,
-): Effect.Effect<readonly CodeGraphQueryNode[], unknown> {
-  if (!selector.path && isStableCodeGraphNodeId(selector.symbol)) {
-    return store
-      .symbolsByIds(databasePath, snapshotId, [selector.symbol])
-      .pipe(Effect.map(symbols => symbols.map(symbol => ({...symbol, score: 1}))));
-  }
-  return selector.path
-    ? store.findSymbolsByPathAndName(databasePath, snapshotId, selector.path, selector.symbol)
-    : store.searchSymbols(databasePath, snapshotId, selector.symbol, 20);
-}
-
-function isStableCodeGraphNodeId(value: string): boolean {
-  return /^cgs_[a-f0-9]{32,64}$/u.test(value);
-}
-
-function parseEndpointSelector(value: string): EndpointSelector {
-  const separator = value.lastIndexOf('#');
-  if (separator <= 0 || separator >= value.length - 1) {
-    return {original: value, symbol: value};
-  }
-  return {
-    original: value,
-    path: value
-      .slice(0, separator)
-      .replaceAll('\\', '/')
-      .replace(/^\.\/+/, ''),
-    symbol: value.slice(separator + 1),
-  };
-}
-
-function selectEndpoint(
-  matches: readonly CodeGraphQueryNode[],
-  selector: EndpointSelector,
-): {readonly node?: CodeGraphQueryNode; readonly warnings: readonly string[]} {
-  const normalizedSymbol = selector.symbol.toLocaleLowerCase('en-US');
-  const candidates = matches.filter(node => {
-    if (selector.path && node.path.replaceAll('\\', '/') !== selector.path) return false;
-    return (
-      node.name.toLocaleLowerCase('en-US') === normalizedSymbol ||
-      node.qualifiedName.toLocaleLowerCase('en-US') === normalizedSymbol
-    );
-  });
-  if (candidates.length === 1) return {node: candidates[0], warnings: []};
-  if (candidates.length === 0 && matches.length === 1 && !selector.path) {
-    return {node: matches[0], warnings: []};
-  }
-  const visible = (candidates.length > 0 ? candidates : matches)
-    .slice(0, 5)
-    .map(node => `${node.path}#${node.qualifiedName}`)
-    .join(', ');
-  return {
-    warnings: [
-      visible.length > 0
-        ? `Path endpoint "${selector.original}" is ambiguous; use path#symbol. Candidates: ${visible}.`
-        : `Path endpoint "${selector.original}" was not found.`,
-    ],
-  };
-}
 
 export type CodeGraphRenderTarget = 'mcp' | 'standalone';
 

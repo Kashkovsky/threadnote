@@ -847,6 +847,126 @@ describe('code graph query budgets', () => {
     }),
   );
 
+  it.effect('narrows an exact impact symbol before reverse traversal', () =>
+    Effect.gen(function* () {
+      const exact = {
+        ...seed,
+        id: 'exact-impact-seed',
+        name: 'unsafeCompletionClassification',
+        qualifiedName: 'unsafeCompletionClassification',
+        score: 0.01,
+      };
+      const fuzzy = {
+        ...seed,
+        id: 'fuzzy-impact-seed',
+        name: 'ResourcePathUnsafe',
+        path: 'src/effect/resource-store.ts',
+        qualifiedName: 'ResourcePathUnsafe',
+        score: 1,
+      };
+      const exactDependent = {
+        ...dependent,
+        id: 'exact-impact-dependent',
+        name: 'completionClassification',
+        qualifiedName: 'completionClassification',
+      };
+      const fuzzyDependent = {...dependent, id: 'fuzzy-impact-dependent'};
+      const inspectedSeeds: string[][] = [];
+      let semanticSearches = 0;
+      const store = {
+        edgesForNodes: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+          Effect.sync(() => {
+            inspectedSeeds.push([...ids]);
+            return [
+              {...edge, id: 'exact-edge', sourceId: exactDependent.id, targetId: exact.id},
+              {...edge, id: 'fuzzy-edge', sourceId: fuzzyDependent.id, targetId: fuzzy.id},
+            ].filter(candidate => candidate.targetId !== undefined && ids.includes(candidate.targetId));
+          }),
+        searchSymbolsMany: () => Effect.succeed([[fuzzy, exact]]),
+        symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+          Effect.succeed([exactDependent, fuzzyDependent].filter(node => ids.includes(node.id))),
+      } as unknown as CodeGraphStoreShape;
+      const unusedEmbedding = {
+        search: () =>
+          Effect.sync(() => {
+            semanticSearches += 1;
+            return new Map<string, number>();
+          }),
+      } as unknown as CodeGraphEmbeddingIndexShape;
+
+      const result = yield* traversalQuery(
+        store,
+        layout.databasePath,
+        'snapshot',
+        exact.name,
+        'incoming',
+        20,
+        40,
+        1,
+        ['resolved'],
+        unusedEmbedding,
+        '/fixture/home',
+        layout,
+        true,
+      );
+
+      expect(inspectedSeeds).toEqual([[exact.id]]);
+      expect(result.nodes.map(node => node.id)).toEqual([exactDependent.id, exact.id]);
+      expect(result.edges.map(candidate => candidate.id)).toEqual(['exact-edge']);
+      expect(semanticSearches).toBe(0);
+    }),
+  );
+
+  it.effect('round-trips exact impact node IDs and diagnoses a missing ID as a selector', () =>
+    Effect.gen(function* () {
+      let lexicalSearches = 0;
+      let semanticSearches = 0;
+      const store = {
+        edgesForNodes: () => Effect.succeed([]),
+        searchSymbolsMany: () =>
+          Effect.sync(() => {
+            lexicalSearches += 1;
+            return [[]];
+          }),
+        symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+          Effect.succeed(ids.includes(stableSeed.id) ? [stableSeed] : []),
+      } as unknown as CodeGraphStoreShape;
+      const unusedEmbedding = {
+        search: () =>
+          Effect.sync(() => {
+            semanticSearches += 1;
+            return new Map<string, number>();
+          }),
+      } as unknown as CodeGraphEmbeddingIndexShape;
+      const impact = (query: string) =>
+        traversalQuery(
+          store,
+          layout.databasePath,
+          'snapshot',
+          query,
+          'incoming',
+          20,
+          40,
+          1,
+          ['resolved'],
+          unusedEmbedding,
+          '/fixture/home',
+          layout,
+          true,
+        );
+
+      const found = yield* impact(stableSeed.id);
+      const missing = yield* impact(`cgs_${'f'.repeat(32)}`);
+
+      expect(found.nodes.map(node => node.id)).toEqual([stableSeed.id]);
+      expect(found.warnings).toEqual([]);
+      expect(missing.nodes).toEqual([]);
+      expect(missing.warnings).toContain('Impact selector did not resolve to indexed code symbols.');
+      expect(lexicalSearches).toBe(0);
+      expect(semanticSearches).toBe(0);
+    }),
+  );
+
   for (const phase of ['search', 'adjacency', 'hydration'] as const) {
     it.effect(`enforces the absolute deadline after ${phase}`, () =>
       Effect.gen(function* () {
