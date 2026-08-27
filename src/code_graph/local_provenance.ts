@@ -1,7 +1,7 @@
 import {Clock, Crypto, Effect, FileSystem, Option, Path, PlatformError} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
-import {SystemInfo} from '../effect/system.js';
+import {runtimeTextDirectoryNamePage, SystemInfo} from '../effect/system.js';
 import {
   captureCodeGraphGitWorktreeRegistration,
   observeCodeGraphRecordedWorktreePaths,
@@ -25,6 +25,7 @@ const LOCAL_PROVENANCE_SCHEMA_VERSION = 2 as const;
 const LOCAL_PROVENANCE_BYTES_LIMIT = 8 * 1_024;
 const LOCAL_PATH_LENGTH_LIMIT = 4_096;
 const LOCAL_PROVENANCE_REFRESH_MILLISECONDS = 5 * 60_000;
+export const CODE_GRAPH_LOCAL_PROVENANCE_INVENTORY_ENTRY_LIMIT = 4_096;
 const HASH_ID = /^[0-9a-f]{64}$/;
 const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -148,6 +149,60 @@ export type CodeGraphLocalProvenanceCleanupResult =
       readonly observedState: CodeGraphLocalAssociationState;
       readonly state: 'preserved';
     };
+
+export type CodeGraphLocalProvenanceInventory =
+  {readonly state: 'ready'; readonly worktreeIds: readonly string[]} | {readonly state: 'unavailable'};
+
+/**
+ * List one checkout's private provenance identities without returning paths or
+ * reading record contents. The closed absolute entry ceiling keeps automatic
+ * maintenance bounded; overflow and containment ambiguity fail closed.
+ */
+export const inspectCodeGraphLocalProvenanceInventory = Effect.fn('codeGraph.inspectLocalProvenanceInventory')(
+  function* (threadnoteHome: string, checkoutId: string) {
+    if (!HASH_ID.test(checkoutId)) {
+      return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceInventory;
+    }
+    return yield* Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const checkoutRoot = yield* inspectCheckoutRoot(fs, path, threadnoteHome, checkoutId);
+      if (checkoutRoot === undefined) {
+        return {state: 'ready', worktreeIds: []} as const satisfies CodeGraphLocalProvenanceInventory;
+      }
+      const localContext = path.join(checkoutRoot, LOCAL_CONTEXT_DIRECTORY);
+      if (Option.isSome(yield* fs.readLink(localContext).pipe(Effect.option))) {
+        return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceInventory;
+      }
+      if (!(yield* fs.exists(localContext))) {
+        return {state: 'ready', worktreeIds: []} as const satisfies CodeGraphLocalProvenanceInventory;
+      }
+      const canonicalContext = yield* inspectPrivateContainedDirectory(fs, path, checkoutRoot, localContext);
+      const worktrees = path.join(canonicalContext, LOCAL_WORKTREES_DIRECTORY);
+      if (Option.isSome(yield* fs.readLink(worktrees).pipe(Effect.option))) {
+        return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceInventory;
+      }
+      if (!(yield* fs.exists(worktrees))) {
+        return {state: 'ready', worktreeIds: []} as const satisfies CodeGraphLocalProvenanceInventory;
+      }
+      const canonicalWorktrees = yield* inspectPrivateContainedDirectory(fs, path, canonicalContext, worktrees);
+      const page = yield* runtimeTextDirectoryNamePage(
+        canonicalWorktrees,
+        CODE_GRAPH_LOCAL_PROVENANCE_INVENTORY_ENTRY_LIMIT,
+      );
+      if (page.overflow) {
+        return {state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceInventory;
+      }
+      const worktreeIds = page.names
+        .filter(name => /^[0-9a-f]{64}\.json$/.test(name))
+        .map(name => name.slice(0, -5))
+        .sort();
+      return {state: 'ready', worktreeIds} as const satisfies CodeGraphLocalProvenanceInventory;
+    }).pipe(
+      Effect.catch(() => Effect.succeed({state: 'unavailable'} as const satisfies CodeGraphLocalProvenanceInventory)),
+    );
+  },
+);
 
 /**
  * Persist a path only after the caller resolved the complete Git identity. Failures are represented

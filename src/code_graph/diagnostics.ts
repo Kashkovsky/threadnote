@@ -23,8 +23,9 @@ import {
   type CodeGraphLocalAssociation,
 } from './local_provenance.js';
 import {classifyCodeGraphLifecycle, type CodeGraphLifecycleClassification} from './lifecycle_classification.js';
-import {runCodeGraphLifecycleOpportunity} from './lifecycle_opportunity.js';
+import {runCodeGraphLifecycleOpportunity, type CodeGraphLifecycleOpportunityResult} from './lifecycle_opportunity.js';
 import {CodeGraphMaintenanceCoordinator} from './maintenance_coordinator.js';
+import {CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC} from './orphan_provenance_cleanup.js';
 import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
 
 const DIAGNOSTIC_CATALOG_PAGE_SIZE = 64;
@@ -46,7 +47,12 @@ export interface CodeGraphDiagnosticsProgress {
 }
 
 export interface CodeGraphDiagnosticsIssue {
-  readonly code: 'active-build' | 'analysis-failed' | 'catalog-unavailable' | 'health-check-failed';
+  readonly code:
+    | 'active-build'
+    | 'analysis-failed'
+    | 'catalog-unavailable'
+    | 'health-check-failed'
+    | 'orphan-provenance-cursor-recovered';
   readonly message: string;
 }
 
@@ -349,7 +355,7 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
     [inspectAllCodeGraphs(threadnoteHome, options), readAllCodeGraphBuildStatuses(threadnoteHome)],
     {concurrency: 2},
   );
-  const databases = yield* Effect.forEach(
+  let databases = yield* Effect.forEach(
     report.databases,
     database =>
       Effect.gen(function* () {
@@ -394,7 +400,7 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
   const path = yield* Path.Path;
   const databasePaths = yield* codeGraphDatabasePaths(threadnoteHome);
   if (lifecycleMaintenance._tag === 'Some') {
-    yield* runCodeGraphLifecycleOpportunity({
+    const lifecycle = yield* runCodeGraphLifecycleOpportunity({
       opportunity: 'diagnostics',
       targets: databases.flatMap(database => {
         const databasePath = databasePaths.find(
@@ -418,9 +424,36 @@ export const inspectAllCodeGraphsLocal = Effect.fn('codeGraph.inspectAllDiagnost
       maintenance: lifecycleMaintenance.value,
       threadnoteHome,
     }).pipe(Effect.catch(() => Effect.void));
+    const lifecycleIssue = codeGraphLifecycleDiagnosticIssue(lifecycle);
+    if (lifecycleIssue !== undefined && lifecycle?.state === 'completed') {
+      databases = databases.map(database =>
+        database.checkoutId === lifecycle.checkoutId
+          ? {
+              ...database,
+              issues: [...database.issues, lifecycleIssue],
+            }
+          : database,
+      );
+    }
   }
   return {...report, databases, version: 2} satisfies CodeGraphLocalDiagnosticsReport;
 });
+
+/** @internal Project only closed maintenance receipts into privacy-safe diagnostics. */
+export function codeGraphLifecycleDiagnosticIssue(
+  lifecycle: CodeGraphLifecycleOpportunityResult | void,
+): CodeGraphDiagnosticsIssue | undefined {
+  if (
+    lifecycle?.state !== 'completed' ||
+    !lifecycle.result.diagnostics?.includes(CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC)
+  ) {
+    return undefined;
+  }
+  return {
+    code: CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC,
+    message: 'Recovered an invalid orphan provenance cleanup cursor; bounded rotation restarted.',
+  };
+}
 
 export function renderCodeGraphDiagnostics(
   report: CodeGraphDiagnosticsReport | CodeGraphLocalDiagnosticsReport,
