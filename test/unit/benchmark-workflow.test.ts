@@ -227,6 +227,15 @@ describe('platform benchmark workflow', () => {
       expect(download?.with).toMatchObject({name: 'code-graph-core-embedding-model'});
       expect(job.steps?.some(step => step.uses === 'actions/cache@v6')).toBe(false);
     }
+
+    const vector10k = workflow.jobs['code-graph-vectors-10k']!;
+    const retainedFailureEvidence = vector10k.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
+    expect(retainedFailureEvidence?.if).toBe('always()');
+    expect(retainedFailureEvidence?.with).toMatchObject({
+      'if-no-files-found': 'warn',
+      name: 'code-graph-vector-benchmark-10k-Linux-${{ runner.arch }}',
+      path: 'artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json',
+    });
   });
 
   it('bounds the shared production-large n=1 workflow for schedule, opt-in, and release evidence', () => {
