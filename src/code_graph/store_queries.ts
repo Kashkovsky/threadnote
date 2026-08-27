@@ -1282,7 +1282,16 @@ const selectSearchSymbolsWithSql = Effect.fn('codeGraph.selectSearchSymbolsWithS
     const current = byId.get(row.id);
     if (!current || compareRows(row, current) < 0) byId.set(row.id, row);
   }
-  return [...byId.values()].sort(compareRows).slice(0, safeLimit).map(rankedNode);
+  const ranked = [...byId.values()].sort(compareRows);
+  const exactIds = new Set(exactRows.map(row => row.id));
+  // Admit exact identities before the bounded page is truncated, then retain
+  // the established path and side-effect-owner ordering within that page.
+  const reservedExact = ranked.filter(row => exactIds.has(row.id)).slice(0, safeLimit);
+  const selected = [
+    ...reservedExact,
+    ...ranked.filter(row => !exactIds.has(row.id)).slice(0, safeLimit - reservedExact.length),
+  ].sort(compareRows);
+  return selected.map(rankedNode);
 });
 
 const selectSearchSymbolsMany = Effect.fn('codeGraph.selectSearchSymbolsMany')(function* (
