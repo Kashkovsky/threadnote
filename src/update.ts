@@ -21,6 +21,7 @@ import {SystemInfo, type SystemInfoShape} from './effect/system.js';
 import {
   activeInstalledVersion,
   activateStandaloneRelease,
+  executingInstalledRelease,
   installationRoot,
   promoteStandaloneReleaseDirectory,
   pruneStandaloneReleases,
@@ -33,6 +34,7 @@ import {whatsNewLinesForVersionRange} from './release_notes.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from './types.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {isDevelopmentBuildVersion} from './version_compare.js';
+import {isStandaloneThreadnoteBuild} from './version.js';
 import {
   compareVersions,
   ensureDirectory,
@@ -723,10 +725,19 @@ function getUpdateInfo(
 ) {
   return Effect.gen(function* () {
     const packageVersion = yield* currentPackageVersion();
-    const installedVersion =
-      options.preferInstalledVersion && !requiresFreshStandaloneInstall(packageVersion)
-        ? yield* activeInstalledVersion()
-        : undefined;
+    const standaloneBuild = isStandaloneThreadnoteBuild();
+    const runningInstalledRelease =
+      options.preferInstalledVersion && standaloneBuild && !isDevelopmentBuildVersion(packageVersion)
+        ? (yield* executingInstalledRelease()) !== undefined
+        : false;
+    const installedVersion = shouldPreferActiveInstalledVersion({
+      packageVersion,
+      preferInstalledVersion: options.preferInstalledVersion,
+      runningInstalledRelease,
+      standaloneBuild,
+    })
+      ? yield* activeInstalledVersion()
+      : undefined;
     const currentVersion = installedVersion ?? packageVersion;
     const inferredChannel = selectUpdateChannel(currentVersion);
     const channel = selectUpdateChannel(currentVersion, options.requestedChannel);
@@ -759,6 +770,19 @@ function getUpdateInfo(
       usedCache: cached !== undefined,
     };
   });
+}
+
+export function shouldPreferActiveInstalledVersion(options: {
+  readonly packageVersion: string;
+  readonly preferInstalledVersion: boolean;
+  readonly runningInstalledRelease: boolean;
+  readonly standaloneBuild: boolean;
+}): boolean {
+  return (
+    options.preferInstalledVersion &&
+    !requiresFreshStandaloneInstall(options.packageVersion) &&
+    (!options.standaloneBuild || isDevelopmentBuildVersion(options.packageVersion) || options.runningInstalledRelease)
+  );
 }
 
 export function requestedUpdateChannel(options: Pick<UpdateOptions, 'beta' | 'stable'>): UpdateChannel | undefined {

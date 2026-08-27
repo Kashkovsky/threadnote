@@ -27,6 +27,14 @@ vi.mock('../../src/utils.js', async importOriginal => {
   };
 });
 
+vi.mock('../../src/version.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/version.js')>();
+  return {
+    ...actual,
+    isStandaloneThreadnoteBuild: vi.fn(() => false),
+  };
+});
+
 import {
   fetchLatestVersion,
   isUpdateTargetAllowed,
@@ -41,9 +49,11 @@ import {
   resolveReleaseSource,
   runPostUpdate,
   runUpdate,
+  shouldPreferActiveInstalledVersion,
   verifyOfficialPlatformSignature,
 } from '../../src/update.js';
 import * as utils from '../../src/utils.js';
+import * as version from '../../src/version.js';
 
 const OFFICIAL_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_VERSION = '4.0.0';
@@ -56,6 +66,7 @@ beforeEach(async () => {
   isolatedInstallationRoot = await mkdtemp(join(tmpdir(), 'threadnote-update-installation-'));
   process.env.THREADNOTE_INSTALL_ROOT = isolatedInstallationRoot;
   vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(RELEASE_VERSION));
+  vi.mocked(version.isStandaloneThreadnoteBuild).mockReturnValue(false);
   if (defaultToolRootImplementation) {
     vi.mocked(utils.toolRoot).mockImplementation(defaultToolRootImplementation);
   }
@@ -80,6 +91,37 @@ describe('standalone release selection', () => {
   it('requires a fresh install before the standalone 4.x updater boundary', () => {
     expect(requiresFreshStandaloneInstall('3.0.5')).toBe(true);
     expect(requiresFreshStandaloneInstall('4.0.0-beta.1')).toBe(false);
+  });
+
+  it('selects active installation metadata only for source, development, or installed runtimes', () => {
+    fc.assert(
+      fc.property(
+        fc.boolean(),
+        fc.boolean(),
+        fc.boolean(),
+        fc.boolean(),
+        (preferInstalledVersion, standaloneBuild, developmentBuild, runningInstalledRelease) => {
+          const packageVersion = developmentBuild ? `4.4.1-local.g${'a'.repeat(40)}` : '4.4.1';
+          expect(
+            shouldPreferActiveInstalledVersion({
+              packageVersion,
+              preferInstalledVersion,
+              runningInstalledRelease,
+              standaloneBuild,
+            }),
+          ).toBe(preferInstalledVersion && (!standaloneBuild || developmentBuild || runningInstalledRelease));
+        },
+      ),
+      {numRuns: 100},
+    );
+    expect(
+      shouldPreferActiveInstalledVersion({
+        packageVersion: '3.0.5',
+        preferInstalledVersion: true,
+        runningInstalledRelease: true,
+        standaloneBuild: true,
+      }),
+    ).toBe(false);
   });
 
   it('labels the inclusive beta channel without describing a stable winner as a beta release', () => {
@@ -422,6 +464,62 @@ describe('update notifications', () => {
 });
 
 describe('standalone updater', () => {
+  effectIt.effect('keeps an extracted release binary independent from an unrelated active development install', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const releaseVersion = '4.4.1';
+        const activeVersion = `4.4.1-local.g${'b'.repeat(40)}`;
+        vi.mocked(utils.currentPackageVersion).mockReturnValue(Effect.succeed(releaseVersion));
+        vi.mocked(version.isStandaloneThreadnoteBuild).mockReturnValue(true);
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-extracted-update-check-'});
+        const installRoot = path.join(temporaryRoot, 'install');
+        const activeReleaseRoot = path.join(installRoot, 'versions', activeVersion);
+        const extractedRoot = path.join(temporaryRoot, 'extracted-release');
+        yield* fs.makeDirectory(activeReleaseRoot, {recursive: true});
+        yield* fs.makeDirectory(extractedRoot, {recursive: true});
+        yield* fs.writeFileString(
+          path.join(activeReleaseRoot, 'release.json'),
+          `${JSON.stringify({version: activeVersion})}\n`,
+        );
+        yield* fs.writeFileString(
+          path.join(extractedRoot, 'release.json'),
+          `${JSON.stringify({version: releaseVersion})}\n`,
+        );
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            THREADNOTE_INSTALL_ROOT: installRoot,
+          }),
+          executablePath: path.join(extractedRoot, baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote'),
+        });
+        yield* activateStandaloneRelease(activeReleaseRoot, false).pipe(Effect.provideService(SystemInfo, testSystem));
+        const http = HttpService.of({
+          downloadToFile: () => Effect.die('update check must not download'),
+          getJson: () => Effect.succeed({body: [releaseResponse(releaseVersion, false)], status: 200}),
+          getStatus: () => Effect.die('not used'),
+          getText: () => Effect.die('not used'),
+        });
+
+        const captured = yield* captureConsole(
+          runUpdate(runtimeConfig(path.join(temporaryRoot, 'home')), {check: true, json: true}).pipe(
+            Effect.provideService(HttpService, http),
+            Effect.provideService(SystemInfo, testSystem),
+          ),
+        );
+
+        expect(JSON.parse(captured.output)).toMatchObject({
+          currentVersion: releaseVersion,
+          isUpdateAvailable: false,
+          latestVersion: releaseVersion,
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('emits one versioned JSON document for a release check', () =>
     Effect.gen(function* () {
       const captured = yield* captureDryRunUpdateSelection(
