@@ -917,19 +917,20 @@ describe('code graph query budgets', () => {
     }),
   );
 
-  it.effect('round-trips exact impact node IDs and diagnoses a missing ID as a selector', () =>
+  it.effect('round-trips exact impact node IDs with the same reverse dependencies as an exact name', () =>
     Effect.gen(function* () {
       let lexicalSearches = 0;
       let semanticSearches = 0;
       const store = {
-        edgesForNodes: () => Effect.succeed([]),
+        edgesForNodes: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
+          Effect.succeed(ids.includes(stableSeed.id) ? [stableEdge] : []),
         searchSymbolsMany: () =>
           Effect.sync(() => {
             lexicalSearches += 1;
-            return [[]];
+            return [[stableSeed]];
           }),
         symbolsByIds: (_databasePath: string, _snapshotId: string, ids: readonly string[]) =>
-          Effect.succeed(ids.includes(stableSeed.id) ? [stableSeed] : []),
+          Effect.succeed([stableSeed, stableDependent].filter(node => ids.includes(node.id))),
       } as unknown as CodeGraphStoreShape;
       const unusedEmbedding = {
         search: () =>
@@ -955,14 +956,16 @@ describe('code graph query budgets', () => {
           true,
         );
 
-      const found = yield* impact(stableSeed.id);
+      const byName = yield* impact(stableSeed.name);
+      const byId = yield* impact(stableSeed.id);
       const missing = yield* impact(`cgs_${'f'.repeat(32)}`);
 
-      expect(found.nodes.map(node => node.id)).toEqual([stableSeed.id]);
-      expect(found.warnings).toEqual([]);
+      expect(byName.nodes.map(node => node.id)).toEqual([stableDependent.id, stableSeed.id]);
+      expect(byName.edges.map(candidate => candidate.id)).toEqual([stableEdge.id]);
+      expect(byId).toEqual(byName);
       expect(missing.nodes).toEqual([]);
       expect(missing.warnings).toContain('Impact selector did not resolve to indexed code symbols.');
-      expect(lexicalSearches).toBe(0);
+      expect(lexicalSearches).toBe(1);
       expect(semanticSearches).toBe(0);
     }),
   );
