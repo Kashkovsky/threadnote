@@ -366,22 +366,61 @@ describe('automatic orphan provenance cleanup', () => {
           targets,
           threadnoteHome: home,
         });
-
-        expect(first).toMatchObject({
-          checkoutId: earlier!.mainIdentity.checkoutId,
-          result: {cleanup: 'none'},
-          state: 'completed',
-        });
-        expect(second).toMatchObject({
+        const persistedCursor = JSON.parse(
+          readFileSync(
+            join(home, 'locks', 'indexes', 'code-graph', 'lifecycle-opportunities', 'diagnostics.cursor-v1.json'),
+            'utf8',
+          ),
+        ) as {readonly checkoutId?: unknown; readonly lane?: unknown};
+        expect(persistedCursor).toMatchObject({
           checkoutId: later!.mainIdentity.checkoutId,
-          result: {
-            cleanup: 'orphan-provenance',
-            diagnostics: [CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC],
-          },
-          state: 'completed',
+          lane: 'reconciliation',
         });
+
+        if (first.state === 'completed') {
+          expect(first).toMatchObject({
+            checkoutId: earlier!.mainIdentity.checkoutId,
+            result: {cleanup: 'none'},
+          });
+        } else {
+          expect(first).toEqual({opportunity: 'diagnostics', reason: 'deadline', state: 'deferred'});
+        }
+
+        if (second.state === 'completed') {
+          expect(second).toMatchObject({
+            checkoutId: later!.mainIdentity.checkoutId,
+            result: {
+              cleanup: 'orphan-provenance',
+              diagnostics: [CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC],
+            },
+          });
+        } else {
+          expect(second).toEqual({opportunity: 'diagnostics', reason: 'deadline', state: 'deferred'});
+          if (existsSync(later!.sidecar)) {
+            // The foreground deadline is a valid production result. Finish the same live lane
+            // directly so this test verifies cleanup correctness without stretching that guard.
+            const cursorBeforeRetry = readOrphanCursor(later!.databasePath);
+            const completed = yield* maintenance.kickReconciliation({
+              allowIndexPreparation: true,
+              anchorIdentity: later!.mainIdentity,
+              automaticTail: false,
+              checkoutId: later!.mainIdentity.checkoutId,
+              databasePath: later!.databasePath,
+              joinActive: false,
+              threadnoteHome: home,
+              writerLockPath: later!.layout.databaseWriteLockPath,
+            });
+            expect(completed).toMatchObject({cleanup: 'orphan-provenance', state: 'completed'});
+            if (cursorBeforeRetry === 'malformed-cursor') {
+              expect(completed).toMatchObject({
+                diagnostics: [CODE_GRAPH_ORPHAN_PROVENANCE_CURSOR_RECOVERY_DIAGNOSTIC],
+              });
+            }
+          }
+        }
         expect(existsSync(earlier!.sidecar)).toBe(true);
         expect(existsSync(later!.sidecar)).toBe(false);
+        expect(readOrphanCursor(later!.databasePath)).not.toBe('malformed-cursor');
         expect(readFileSync(later!.mainFile, 'utf8')).toBe('main source\n');
         const serialized = JSON.stringify([first, second]);
         expect(serialized).not.toContain(root);

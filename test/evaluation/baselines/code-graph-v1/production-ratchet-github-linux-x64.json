@@ -904,7 +904,7 @@
     "cold-registration-lock-and-database-setup": {
       "samplesMinimum": 1,
       "unit": "milliseconds",
-      "p95Maximum": 2398
+      "p95Maximum": 4796
     },
     "cold-registration-process-cpu-n1": {
       "samplesMinimum": 1,

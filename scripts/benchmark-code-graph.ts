@@ -6870,6 +6870,14 @@ const PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM = 0.75;
 // end-to-end cold and incremental objectives this ratchet exists to protect.
 const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 100;
 const PRODUCTION_RATCHET_DETAILED_MILLISECOND_NOISE_HEADROOM = 300;
+// Cold registration includes two race-fenced Git status observations and
+// synchronous fresh SQLite setup on hosted virtual storage. Preserve a strict
+// sub-five-second wall objective while allowing the independently ratcheted
+// CPU, work, and storage measurements to distinguish host wait from product
+// regressions. Same-overlay registration retains its narrower envelope.
+const PRODUCTION_RATCHET_COLD_REGISTRATION_RELATIVE_HEADROOM = 5;
+const PRODUCTION_RATCHET_SAME_OVERLAY_REGISTRATION_RELATIVE_HEADROOM = 2;
+const PRODUCTION_RATCHET_REGISTRATION_MILLISECOND_TARGET = 5_000 - 1;
 // A zero-byte seed can still observe a tiny SQLite journal or filesystem
 // bookkeeping file on another hosted VM. Govern storage growth from the first
 // material MiB instead of treating a 512-byte observation as a regression.
@@ -6884,11 +6892,13 @@ const PRODUCTION_RATCHET_REDUCED_PROFILE_FILES_MAXIMUM = 3_000;
 const PRODUCTION_RATCHET_REDUCED_PROFILE_SYMBOLS_MAXIMUM = 110_000;
 const PRODUCTION_RATCHET_MILLISECOND_TARGETS = new Map<string, number>([
   ['cold-index', 60 * 60_000 - 1],
+  ['cold-registration-lock-and-database-setup', PRODUCTION_RATCHET_REGISTRATION_MILLISECOND_TARGET],
   ['cold-reference-resolution-longest-transaction-n1', 15_000 - 1],
   ['one-file-reindex-index', 30_000 - 1],
   ['one-file-reindex-post-committed-scan-overlay-and-workspace', 5_000 - 1],
-  ['one-file-reindex-registration-lock-and-database-setup', 5_000 - 1],
+  ['one-file-reindex-registration-lock-and-database-setup', PRODUCTION_RATCHET_REGISTRATION_MILLISECOND_TARGET],
   ['one-file-reindex-reference-resolution-longest-transaction-n1', 15_000 - 1],
+  ['same-overlay-reference-registration-lock-and-database-setup', PRODUCTION_RATCHET_REGISTRATION_MILLISECOND_TARGET],
   ['same-overlay-reference-reference-resolution-longest-transaction-n1', 15_000 - 1],
 ]);
 
@@ -7191,14 +7201,15 @@ function productionMeasurementRatchet(
   if (unit === 'milliseconds') {
     const objective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
     const detailedTiming = name.endsWith('-n1') && objective === undefined;
-    const fullBuildRegistration =
-      name === 'cold-registration-lock-and-database-setup' ||
-      name === 'same-overlay-reference-registration-lock-and-database-setup';
-    const relativeHeadroom = fullBuildRegistration
-      ? 2
-      : detailedTiming
-        ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM
-        : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
+    const coldRegistration = name === 'cold-registration-lock-and-database-setup';
+    const sameOverlayRegistration = name === 'same-overlay-reference-registration-lock-and-database-setup';
+    const relativeHeadroom = coldRegistration
+      ? PRODUCTION_RATCHET_COLD_REGISTRATION_RELATIVE_HEADROOM
+      : sameOverlayRegistration
+        ? PRODUCTION_RATCHET_SAME_OVERLAY_REGISTRATION_RELATIVE_HEADROOM
+        : detailedTiming
+          ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM
+          : PRODUCTION_RATCHET_RELATIVE_HEADROOM;
     const absoluteHeadroom = detailedTiming
       ? PRODUCTION_RATCHET_DETAILED_MILLISECOND_NOISE_HEADROOM
       : PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM;

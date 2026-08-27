@@ -1,7 +1,7 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {describe, expect, it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import type {CodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {
@@ -17,7 +17,6 @@ import {
 } from '../../src/code_graph/vector_retirement.js';
 import {codeGraphDiskReservationRoot, codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
-import {CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS} from '../../src/code_graph/store_models.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
 import {removeCodeGraphView} from '../../src/code_graph/view_removal.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -75,23 +74,21 @@ describe('live removed-view residual maintenance', () => {
         let observedBuildSidecarRetirement = false;
 
         for (let unit = 0; unit < 16 && observed.at(-1)!.phase !== 'complete'; unit += 1) {
-          yield* TestClock.adjust(2);
           const before = observed.at(-1)!;
+          yield* advancePastCleanupSchedule(before);
           const result = yield* coordinator.kickResidual(fixture.tick);
           const after = readCleanupRow(fixture.databasePath);
           const pointerCount = readVectorCounts(fixture.vectorDatabasePath!).pointers;
 
           expect(result.state).toBe('completed');
-          // Claiming takes one full-entry CAS revision. A nonblocking vector
-          // reservation may defer under OS contention before the commit CAS;
-          // otherwise the bounded commit takes the second revision. No
-          // additional unit is detached in either case.
+          // Claiming takes one full-entry CAS revision. The bounded page may
+          // either defer before its commit or take a second revision while
+          // retaining the phase with a durable progress cursor.
           const revisionDelta = after.revision - before.revision;
           expect(revisionDelta).toBeGreaterThanOrEqual(1);
           expect(revisionDelta).toBeLessThanOrEqual(2);
           if (revisionDelta === 1) {
             expect(after.phase).toBe(before.phase);
-            yield* TestClock.adjust(CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS + 1);
           }
           expect(PHASES.indexOf(after.phase) - PHASES.indexOf(before.phase)).toBeGreaterThanOrEqual(0);
           expect(PHASES.indexOf(after.phase) - PHASES.indexOf(before.phase)).toBeLessThanOrEqual(1);
@@ -177,19 +174,17 @@ describe('live removed-view residual maintenance', () => {
           let afterVector = readCleanupRow(fixture.databasePath);
           for (let attempt = 0; attempt < 16 && afterVector.phase === 'vector-pointers'; attempt += 1) {
             const before = afterVector;
-            yield* TestClock.adjust(
-              before.revision === 0 ? 2 : CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS + 1,
-            );
+            yield* advancePastCleanupSchedule(before);
             expect((yield* coordinator.kickResidual(fixture.tick)).state).toBe('completed');
             afterVector = readCleanupRow(fixture.databasePath);
             const revisionDelta = afterVector.revision - before.revision;
             expect(revisionDelta).toBeGreaterThanOrEqual(1);
             expect(revisionDelta).toBeLessThanOrEqual(2);
-            if (afterVector.phase === 'vector-pointers') expect(revisionDelta).toBe(1);
+            if (revisionDelta === 1) expect(afterVector.phase).toBe(before.phase);
           }
           expect(afterVector.phase).toBe('build-status');
 
-          yield* TestClock.adjust(2);
+          yield* advancePastCleanupSchedule(afterVector);
           yield* coordinator.kickResidual(fixture.tick);
           const afterBuildStatus = readCleanupRow(fixture.databasePath);
           expect(afterBuildStatus).toMatchObject({
@@ -197,7 +192,7 @@ describe('live removed-view residual maintenance', () => {
             revision: afterVector.revision + 2,
           });
 
-          yield* TestClock.adjust(2);
+          yield* advancePastCleanupSchedule(afterBuildStatus);
           yield* coordinator.kickResidual(fixture.tick);
           const deferred = readCleanupRow(fixture.databasePath);
           expect(deferred).toMatchObject({
@@ -220,6 +215,11 @@ describe('live removed-view residual maintenance', () => {
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
+});
+
+const advancePastCleanupSchedule = Effect.fn('test.advancePastCleanupSchedule')(function* (row: CleanupRow) {
+  const now = yield* Clock.currentTimeMillis;
+  yield* TestClock.adjust(Math.max(2, row.next_attempt_at - now + 1));
 });
 
 function makeFixture(prefix: string, options: {readonly vector: boolean}) {

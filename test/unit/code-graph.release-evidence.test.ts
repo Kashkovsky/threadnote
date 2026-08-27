@@ -1006,6 +1006,8 @@ describe('code graph release evidence', () => {
           ...requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
           benchmarkMeasurement('cold-index', 'milliseconds', [coldIndexMilliseconds]),
           benchmarkMeasurement('cold-registration-lock-and-database-setup', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('cold-registration-process-cpu-n1', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('cold-sqlite-wal-peak-observed', 'bytes', [coldIndexMilliseconds]),
           benchmarkMeasurement('same-overlay-reference-registration-lock-and-database-setup', 'milliseconds', [
             coldIndexMilliseconds + 10,
           ]),
@@ -1151,17 +1153,49 @@ describe('code graph release evidence', () => {
     }
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toMatchObject({p95Maximum: 1_048_576});
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).not.toHaveProperty('minimum');
-    for (const registrationName of [
-      'cold-registration-lock-and-database-setup',
-      'same-overlay-reference-registration-lock-and-database-setup',
-    ]) {
+    for (const [registrationName, multiplier] of [
+      ['cold-registration-lock-and-database-setup', 6],
+      ['same-overlay-reference-registration-lock-and-database-setup', 3],
+    ] as const) {
       const observedMaximum = Math.max(
         ...artifacts.map(
           artifact => artifact.measurements.find(measurement => measurement.name === registrationName)!.p50,
         ),
       );
-      expect(ratchet.measurements[registrationName]).toMatchObject({p95Maximum: Math.ceil(observedMaximum * 3)});
+      expect(ratchet.measurements[registrationName]).toMatchObject({
+        p95Maximum: Math.min(Math.ceil(observedMaximum * multiplier), 4_999),
+      });
     }
+    fc.assert(
+      fc.property(
+        fc.integer({max: 4_999, min: 1}),
+        fc.integer({max: 4_999, min: 1}),
+        (coldRegistration, referenceRegistration) => {
+          const registrations: Readonly<Record<string, number>> = {
+            'cold-registration-lock-and-database-setup': coldRegistration,
+            'same-overlay-reference-registration-lock-and-database-setup': referenceRegistration,
+          };
+          const varied = artifacts.map(artifact => ({
+            ...artifact,
+            measurements: artifact.measurements.map(measurement =>
+              registrations[measurement.name] === undefined
+                ? measurement
+                : benchmarkMeasurement(measurement.name, measurement.unit, [registrations[measurement.name]!]),
+            ),
+          }));
+          const variedRatchet = createCodeGraphProductionRatchet(varied);
+          for (const [name, observed, multiplier] of [
+            ['cold-registration-lock-and-database-setup', coldRegistration, 6],
+            ['same-overlay-reference-registration-lock-and-database-setup', referenceRegistration, 3],
+          ] as const) {
+            expect(variedRatchet.measurements[name]).toMatchObject({
+              p95Maximum: Math.min(Math.ceil(Math.max(observed * multiplier, observed + 100)), 4_999),
+            });
+          }
+        },
+      ),
+      {numRuns: 25},
+    );
     fc.assert(
       fc.property(fc.integer({max: 10_000, min: 1}), samplerCount => {
         const observed = {
@@ -1208,6 +1242,35 @@ describe('code graph release evidence', () => {
     expect(() => createCodeGraphProductionRatchet(overTarget)).toThrow(
       /objective one-file-reindex-index has not been attained/,
     );
+    const overRegistrationTarget = artifacts.map(artifact => ({
+      ...artifact,
+      measurements: artifact.measurements.map(measurement =>
+        measurement.name === 'cold-registration-lock-and-database-setup'
+          ? benchmarkMeasurement(measurement.name, measurement.unit, [5_000])
+          : measurement,
+      ),
+    }));
+    expect(() => createCodeGraphProductionRatchet(overRegistrationTarget)).toThrow(
+      /objective cold-registration-lock-and-database-setup has not been attained/,
+    );
+    for (const governedName of [
+      'cold-registration-process-cpu-n1',
+      'one-file-reindex-incremental-work-planned-rows-n1',
+      'cold-sqlite-wal-peak-observed',
+    ]) {
+      const governedLimit = ratchet.measurements[governedName];
+      expect(governedLimit, governedName).toBeDefined();
+      const maximum = governedLimit!.maximum ?? governedLimit!.p95Maximum!;
+      const regression = {
+        ...artifacts[0]!,
+        measurements: artifacts[0]!.measurements.map(measurement =>
+          measurement.name === governedName
+            ? benchmarkMeasurement(measurement.name, measurement.unit, [maximum + 1])
+            : measurement,
+        ),
+      };
+      expect(() => enforceCodeGraphBenchmarkRatchet(regression, ratchet)).toThrow(new RegExp(governedName));
+    }
     expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 8);
     expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
     expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-boundary-rss-n1'))).toBe(false);
