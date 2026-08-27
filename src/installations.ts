@@ -237,6 +237,13 @@ export const activeInstalledVersion = Effect.fn('installations.activeVersion')(f
   return (yield* activeInstalledRelease())?.version;
 });
 
+export const executingInstalledRelease = Effect.fn('installations.executingRelease')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  return yield* readValidatedRelease(fs, path, path.dirname(system.executablePath), installationRoot(path, system));
+});
+
 export const pruneStandaloneReleases = Effect.fn('installations.pruneReleases')(function* (
   activeReleaseRoot: string,
   dryRun: boolean,
