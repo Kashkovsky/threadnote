@@ -5,6 +5,7 @@ import type {
   ManageableThreadnoteProcessDiagnostic,
   ManageableThreadnoteProcessDiagnostics,
 } from './process_diagnostics.js';
+import {orderThreadnoteProcessesByAttention} from './process_diagnostics.js';
 
 const PROCESS_POLL_MILLISECONDS = 2_000;
 
@@ -156,44 +157,7 @@ export function ProcessesPanel(): React.ReactElement {
 export function orderManagerProcessesForPresentation(
   processes: readonly ManageableThreadnoteProcessDiagnostic[],
 ): readonly ManageableThreadnoteProcessDiagnostic[] {
-  return processes
-    .map((process, inputIndex) => ({inputIndex, process}))
-    .sort(
-      (left, right) =>
-        processPresentationRank(left.process) - processPresentationRank(right.process) ||
-        left.process.startedAt.localeCompare(right.process.startedAt) ||
-        left.process.processId - right.process.processId ||
-        left.inputIndex - right.inputIndex,
-    )
-    .map(entry => entry.process);
-}
-
-function processPresentationRank(process: ManageableThreadnoteProcessDiagnostic): number {
-  if (process.role === 'legacy') return 2;
-  if (
-    process.activityRole !== undefined ||
-    (process.currentOperation !== undefined && !isProcessBaselineOperation(process))
-  ) {
-    return 0;
-  }
-  return 1;
-}
-
-function isProcessBaselineOperation(process: ManageableThreadnoteProcessDiagnostic): boolean {
-  switch (process.role) {
-    case 'manager':
-      return process.currentOperation === 'manager-ui';
-    case 'mcp':
-      return process.currentOperation === 'mcp-server';
-    case 'mcp-broker':
-      return process.currentOperation === 'mcp-broker';
-    case 'local-model-worker':
-      return process.currentOperation === 'model-stdio';
-    case 'graph-parser-worker':
-      return process.currentOperation === 'parser-stdio';
-    default:
-      return false;
-  }
+  return orderThreadnoteProcessesByAttention(processes);
 }
 
 function processRoleLabel(role: ManageableThreadnoteProcessDiagnostic['role']): string {

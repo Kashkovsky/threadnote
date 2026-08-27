@@ -72,6 +72,49 @@ export interface ManageableThreadnoteProcessDiagnostics {
   readonly truncated: boolean;
 }
 
+export function orderThreadnoteProcessesByAttention<T extends ThreadnoteProcessDiagnostic>(
+  processes: readonly T[],
+): readonly T[] {
+  return processes
+    .map((process, inputIndex) => ({inputIndex, process}))
+    .sort(
+      (left, right) =>
+        processAttentionRank(left.process) - processAttentionRank(right.process) ||
+        left.process.startedAt.localeCompare(right.process.startedAt) ||
+        left.process.processId - right.process.processId ||
+        left.inputIndex - right.inputIndex,
+    )
+    .map(entry => entry.process);
+}
+
+function processAttentionRank(process: ThreadnoteProcessDiagnostic): number {
+  if (process.role === 'legacy') return 2;
+  if (
+    process.activityRole !== undefined ||
+    (process.currentOperation !== undefined && !isProcessBaselineOperation(process))
+  ) {
+    return 0;
+  }
+  return 1;
+}
+
+function isProcessBaselineOperation(process: ThreadnoteProcessDiagnostic): boolean {
+  switch (process.role) {
+    case 'manager':
+      return process.currentOperation === 'manager-ui';
+    case 'mcp':
+      return process.currentOperation === 'mcp-server';
+    case 'mcp-broker':
+      return process.currentOperation === 'mcp-broker';
+    case 'local-model-worker':
+      return process.currentOperation === 'model-stdio';
+    case 'graph-parser-worker':
+      return process.currentOperation === 'parser-stdio';
+    default:
+      return false;
+  }
+}
+
 export type ThreadnoteProcessTerminationErrorCode =
   | 'current-manager'
   | 'invalid-process-target'
@@ -218,6 +261,7 @@ export function withThreadnoteProcessActivity<A, E, R>(
 
 const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
+  selection: 'attention' | 'chronological' = 'chronological',
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -311,7 +355,10 @@ const readThreadnoteProcessSnapshot = Effect.fn('processDiagnostics.readSnapshot
   // Bound the OS memory query to the same privacy-safe rows the command can
   // return. A damaged private lease tree must not turn diagnostics into an
   // unbounded command line or PowerShell query.
-  const selected = candidates.slice(0, PROCESS_DIAGNOSTICS_LIMIT);
+  const selected = (selection === 'attention' ? orderThreadnoteProcessesByAttention(candidates) : candidates).slice(
+    0,
+    PROCESS_DIAGNOSTICS_LIMIT,
+  );
   const memoryByProcess = new Map(
     processMemoryBytes(
       selected.map(value => value.processId),
@@ -353,7 +400,7 @@ export const readManageableThreadnoteProcessDiagnostics = Effect.fn('processDiag
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
   const system = yield* SystemInfo;
-  const snapshot = yield* readThreadnoteProcessSnapshot(config);
+  const snapshot = yield* readThreadnoteProcessSnapshot(config, 'attention');
   const diagnostics = snapshot.diagnostics;
   const processes: ManageableThreadnoteProcessDiagnostic[] = yield* Effect.forEach(
     diagnostics.processes,

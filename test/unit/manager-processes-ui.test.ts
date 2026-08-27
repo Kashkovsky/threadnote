@@ -139,7 +139,11 @@ describe('Manager Processes panel', () => {
   it('orders every process by attention rank without mutating the API response', () => {
     FC.assert(
       FC.property(
-        FC.uniqueArray(processDiagnosticArbitrary, {maxLength: 40, selector: process => process.processId}),
+        FC.uniqueArray(processDiagnosticArbitrary, {
+          maxLength: 140,
+          minLength: 101,
+          selector: process => process.processId,
+        }),
         processes => {
           const before = [...processes];
           const ordered = orderManagerProcessesForPresentation(processes);
@@ -152,6 +156,7 @@ describe('Manager Processes panel', () => {
           for (let index = 1; index < ordered.length; index += 1) {
             expect(presentationRank(ordered[index - 1]!)).toBeLessThanOrEqual(presentationRank(ordered[index]!));
           }
+          expect(presentationRank(ordered[99]!)).toBeLessThanOrEqual(presentationRank(ordered[100]!));
         },
       ),
       {numRuns: 100},
