@@ -4,6 +4,7 @@ import {SystemInfo, type SystemInfoShape} from '../../effect/system.js';
 import {withCurrentAgentSessionEnvironment} from '../../telemetry/session.js';
 import type {RuntimeConfig} from '../../types.js';
 import {developmentStandaloneScript} from '../isolated_builder.js';
+import type {CodeGraphStoreRecovery} from '../types.js';
 import type {
   CodeGraphWorksetPrepareBridgeReceiptV1,
   CodeGraphWorksetPrepareCoverageV1,
@@ -39,6 +40,17 @@ const GRAPH_PROGRESS_PHASES = new Set([
   'resolving',
   'scanning',
   'waiting',
+]);
+const STORE_RECOVERIES = new Set<CodeGraphStoreRecovery>([
+  'defer',
+  'diagnose',
+  'fix-permissions',
+  'free-space',
+  'manual-migration',
+  'manual-rebuild',
+  'migrate-additive',
+  'reconnect-runtime',
+  'retry-read-only',
 ]);
 
 export class CodeGraphIsolatedWorksetPrepareError extends Error {
@@ -171,15 +183,68 @@ function consumeIsolatedWorksetProgress(
   expectedWorkset: string,
   onProgress: PrepareCodeGraphWorksetOptionsV1['onProgress'],
 ) {
+  const lines = makeIsolatedWorksetProgressLineDecoder();
   return stream.pipe(
-    Stream.decodeText,
-    Stream.splitLines,
-    Stream.runForEach(line => {
-      const progress = decodeIsolatedWorksetPrepareProgress(line);
-      if (progress === undefined || progress.workset !== expectedWorkset) return Effect.void;
-      return (onProgress?.(progress) ?? Effect.void).pipe(Effect.catch(() => Effect.void));
-    }),
+    Stream.runForEach(chunk =>
+      Effect.forEach(
+        lines.push(chunk),
+        line => {
+          const progress = decodeIsolatedWorksetPrepareProgress(line);
+          if (progress === undefined || progress.workset !== expectedWorkset) return Effect.void;
+          return (onProgress?.(progress) ?? Effect.void).pipe(Effect.catch(() => Effect.void));
+        },
+        {discard: true},
+      ),
+    ),
   );
+}
+
+/**
+ * Incrementally frame stderr before decoding it. The fixed-size buffer is
+ * abandoned as soon as one unfinished record exceeds the protocol limit, and
+ * input is ignored until its newline so a faulty child cannot grow the Manager
+ * heap while still allowing later valid progress records through.
+ */
+export function makeIsolatedWorksetProgressLineDecoder(): {
+  readonly bufferedBytes: () => number;
+  readonly push: (chunk: Uint8Array) => readonly string[];
+} {
+  const buffer = new Uint8Array(ISOLATED_WORKSET_PROGRESS_LINE_BYTES_MAXIMUM);
+  const decoder = new TextDecoder();
+  let bufferedBytes = 0;
+  let discardingOversizedLine = false;
+
+  const append = (bytes: Uint8Array): void => {
+    if (bytes.byteLength === 0 || discardingOversizedLine) return;
+    if (bytes.byteLength > buffer.byteLength - bufferedBytes) {
+      bufferedBytes = 0;
+      discardingOversizedLine = true;
+      return;
+    }
+    buffer.set(bytes, bufferedBytes);
+    bufferedBytes += bytes.byteLength;
+  };
+
+  return {
+    bufferedBytes: () => bufferedBytes,
+    push: chunk => {
+      const decoded: string[] = [];
+      let segmentStart = 0;
+      for (let index = 0; index < chunk.byteLength; index += 1) {
+        if (chunk[index] !== 0x0a) continue;
+        append(chunk.subarray(segmentStart, index));
+        if (!discardingOversizedLine) {
+          const lineBytes = bufferedBytes > 0 && buffer[bufferedBytes - 1] === 0x0d ? bufferedBytes - 1 : bufferedBytes;
+          decoded.push(decoder.decode(buffer.subarray(0, lineBytes)));
+        }
+        bufferedBytes = 0;
+        discardingOversizedLine = false;
+        segmentStart = index + 1;
+      }
+      append(chunk.subarray(segmentStart));
+      return decoded;
+    },
+  };
 }
 
 export function decodeIsolatedWorksetPrepareProgress(content: string): CodeGraphWorksetPrepareProgressV1 | undefined {
@@ -319,9 +384,14 @@ function decodeMember(value: unknown): CodeGraphWorksetPrepareMemberV1 | undefin
         return undefined;
       }
       const detail = value.detail;
+      const recovery =
+        typeof detail.recovery === 'string' && STORE_RECOVERIES.has(detail.recovery as CodeGraphStoreRecovery)
+          ? (detail.recovery as CodeGraphStoreRecovery)
+          : undefined;
       if (
         !boundedText(detail.code) ||
         !boundedText(detail.errorType) ||
+        (detail.recovery !== undefined && recovery === undefined) ||
         typeof detail.retryable !== 'boolean' ||
         !boundedText(detail.summary)
       ) {
@@ -331,6 +401,7 @@ function decodeMember(value: unknown): CodeGraphWorksetPrepareMemberV1 | undefin
         detail: {
           code: detail.code as Extract<CodeGraphWorksetPrepareMemberV1, {state: 'failed'}>['detail']['code'],
           errorType: detail.errorType,
+          ...(recovery === undefined ? {} : {recovery}),
           retryable: detail.retryable,
           summary: detail.summary,
         },

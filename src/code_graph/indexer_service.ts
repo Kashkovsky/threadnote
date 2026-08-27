@@ -121,9 +121,16 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
             ).pipe(Effect.provideService(Crypto.Crypto, crypto));
             const requestedOverlay = requestedBuildRequest.state;
             yield* anonymousTelemetry.observeOverlay(requestedOverlay.dirty);
+            const ensureVectors = codeGraphIndexEnsuresVectors(request);
             const requestKey = request.force
               ? undefined
-              : codeGraphBuildRequestKey(initialIdentity, requestedOverlay, languagePacks, request.incrementalOverlay);
+              : codeGraphBuildRequestKey(
+                  initialIdentity,
+                  requestedOverlay,
+                  languagePacks,
+                  request.incrementalOverlay,
+                  ensureVectors,
+                );
             const reporter = yield* withCodeGraphMaintenanceRegistration(
               request.threadnoteHome,
               Effect.gen(function* () {
@@ -165,7 +172,6 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
               temporaryDirectory: system.tempDirectory,
               walAutoCheckpointPages: options.sqliteWriterTuning?.walAutoCheckpointPages ?? 1_000,
             };
-            const ensureVectors = codeGraphIndexEnsuresVectors(options);
             const repositoryBuild = withCodeGraphProcessLock(
               fs,
               layout.lockPath,

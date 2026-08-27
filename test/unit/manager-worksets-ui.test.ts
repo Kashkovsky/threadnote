@@ -189,16 +189,16 @@ describe('Manager Worksets interaction fencing', () => {
     fc.assert(
       fc.property(
         fc.integer({max: 600_000, min: 0}),
+        fc.integer({max: 600_000, min: -600_000}),
         fc.integer({max: 600_000, min: 0}),
-        fc.integer({max: 600_000, min: 0}),
-        (ageMilliseconds, advanceMilliseconds, reportedMilliseconds) => {
+        (ageMilliseconds, clockAdjustmentMilliseconds, reportedMilliseconds) => {
           const baseline = Date.parse('2026-08-27T10:00:00.000Z');
           const job = prepareJob({
             createdAt: new Date(baseline - ageMilliseconds).toISOString(),
             elapsedMilliseconds: reportedMilliseconds,
           });
           const first = managerWorksetJobElapsedMilliseconds(job, baseline);
-          const next = managerWorksetJobElapsedMilliseconds(job, baseline + advanceMilliseconds);
+          const next = managerWorksetJobElapsedMilliseconds(job, baseline + clockAdjustmentMilliseconds, first);
           expect(first).toBeGreaterThanOrEqual(reportedMilliseconds);
           expect(next).toBeGreaterThanOrEqual(first);
         },

@@ -5,6 +5,7 @@ import {
   codeGraphIsolatedWorksetPrepareSpawnPlan,
   decodeIsolatedWorksetPrepareProgress,
   decodeIsolatedWorksetPrepareResult,
+  makeIsolatedWorksetProgressLineDecoder,
 } from '../../src/code_graph/workset_catalog/isolated_prepare.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {Effect} from 'effect';
@@ -161,6 +162,20 @@ describe('isolated Manager workset preparation', () => {
     expect(decodeIsolatedWorksetPrepareProgress('not-json')).toBeUndefined();
   });
 
+  it('drops an oversized unfinished stderr record without retaining it and resumes at the next line', () => {
+    const lines = makeIsolatedWorksetProgressLineDecoder();
+    const encoder = new TextEncoder();
+
+    expect(lines.push(encoder.encode('x'.repeat(40 * 1_024)))).toEqual([]);
+    expect(lines.bufferedBytes()).toBe(40 * 1_024);
+    expect(lines.push(encoder.encode('x'.repeat(30 * 1_024)))).toEqual([]);
+    expect(lines.bufferedBytes()).toBe(0);
+
+    const valid = JSON.stringify(progress);
+    expect(lines.push(encoder.encode(`\n${valid}\n`))).toEqual([valid]);
+    expect(lines.bufferedBytes()).toBe(0);
+  });
+
   it('decodes the final publication receipt and rejects malformed authority', () => {
     const decoded = decodeIsolatedWorksetPrepareResult(JSON.stringify({...result, privatePath: '/private/repository'}));
 
@@ -170,5 +185,38 @@ describe('isolated Manager workset preparation', () => {
       decodeIsolatedWorksetPrepareResult(JSON.stringify({...result, manifestDigest: 'not-a-digest'})),
     ).toBeUndefined();
     expect(decodeIsolatedWorksetPrepareResult(JSON.stringify({...result, state: 'staging'}))).toBeUndefined();
+  });
+
+  it('preserves validated recovery guidance in failed member receipts', () => {
+    const failed = {
+      ...result,
+      coverage: {complete: false, excluded: 0, failed: 1, missing: 0, ready: 0, requested: 1},
+      members: [
+        {
+          detail: {
+            code: 'busy',
+            errorType: 'CodeGraphStoreError',
+            recovery: 'defer',
+            retryable: true,
+            summary: 'The graph store is busy.',
+          },
+          project: 'api',
+          reason: 'index-failed',
+          state: 'failed',
+        },
+      ],
+      published: undefined,
+      state: 'failed',
+    } as const;
+
+    expect(decodeIsolatedWorksetPrepareResult(JSON.stringify(failed))?.members[0]).toEqual(failed.members[0]);
+    expect(
+      decodeIsolatedWorksetPrepareResult(
+        JSON.stringify({
+          ...failed,
+          members: [{...failed.members[0], detail: {...failed.members[0].detail, recovery: 'shell'}}],
+        }),
+      ),
+    ).toBeUndefined();
   });
 });

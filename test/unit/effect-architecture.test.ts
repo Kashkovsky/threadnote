@@ -216,6 +216,26 @@ describe('Effect architecture boundaries', () => {
     expect(runtime).not.toContain('THREADNOTE_STANDALONE');
   });
 
+  it('keeps Manager graph construction outside the long-lived UI process', async () => {
+    const [manager, managerWorksets, worksetCommands, worksetPreparation] = await Promise.all([
+      readFile(join(sourceRoot, 'manager.ts'), 'utf8'),
+      readFile(join(sourceRoot, 'manager_worksets.ts'), 'utf8'),
+      readFile(join(sourceRoot, 'code_graph', 'commands.ts'), 'utf8'),
+      readFile(join(sourceRoot, 'code_graph', 'workset_catalog', 'isolated_prepare.ts'), 'utf8'),
+    ]);
+
+    expect(manager).toContain('runIsolatedCodeGraphIndexSnapshot({');
+    expect(manager).not.toContain('CodeGraphIndexer');
+    expect(managerWorksets).toContain('request.prepareWorkset ?? prepareManagerCodeGraphWorksetIsolated');
+    expect(managerWorksets).not.toContain('prepareCodeGraphWorkset(');
+    expect(worksetPreparation).toContain("'workset',\n      'prepare',\n      '--json'");
+    expect(worksetPreparation).toContain("[CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV]: '1'");
+    expect(worksetCommands).toContain(
+      "const isolateBuilds = system.environment()[CODE_GRAPH_MANAGER_WORKSET_ORCHESTRATOR_ENV] === '1'",
+    );
+    expect(worksetCommands).toContain('isolateBuilds,');
+  });
+
   it('keeps standalone worker dispatch independent from application entry modules', async () => {
     const standalone = await readFile(join(sourceRoot, 'standalone.ts'), 'utf8');
     const workerProtocol = await readFile(join(sourceRoot, 'worker_protocol.ts'), 'utf8');

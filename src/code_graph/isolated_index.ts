@@ -85,16 +85,17 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
     );
   }
   const requestedOverlay = yield* worktreeBuildRequestState(identity, options.threadnoteHome);
+  const ensureVectors = codeGraphIndexEnsuresVectors(options);
   const requestKey = options.force
     ? undefined
-    : codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, options.incrementalOverlay);
+    : codeGraphBuildRequestKey(identity, requestedOverlay, languagePacks, options.incrementalOverlay, ensureVectors);
   const startedAt = yield* Clock.currentTimeMillis;
   const result = yield* runIsolatedCodeGraphIndex({
     admissionClass: options.admissionClass,
     assertRuntimeSchemaCompatible: databasePath => store.assertRuntimeSchemaCompatible(databasePath),
     cwd: identity.repoRoot,
     full: options.force === true,
-    noVectors: !codeGraphIndexEnsuresVectors(options),
+    noVectors: !ensureVectors,
     onProgress: options.onProgress,
     requestKey,
     resolveIdentity: () => Effect.succeed(identity),
@@ -111,6 +112,7 @@ export const runIsolatedCodeGraphIndexSnapshot = Effect.fn('codeGraph.isolatedIn
           yield* worktreeBuildRequestState(completedIdentity, options.threadnoteHome),
           languagePacks,
           options.incrementalOverlay,
+          ensureVectors,
         );
   const layout = codeGraphLayout(path, options.threadnoteHome, identity.checkoutId, identity.worktreeId);
   const recovered = yield* recoverIsolatedCodeGraphIndexSnapshot({

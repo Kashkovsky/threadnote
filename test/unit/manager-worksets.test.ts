@@ -1418,28 +1418,29 @@ describe('Manager Worksets API and human labels', () => {
         const progressObserved = yield* Deferred.make<void>();
         const release = yield* Deferred.make<void>();
         const started = yield* handleManagerWorksetRequest({
-          body: Effect.succeed({workset: 'platform'}),
+          body: Effect.succeed({concurrency: 2, workset: 'platform'}),
           config: current.config,
           contextKey,
           jobScope,
           method: 'POST',
           prepareWorkset: (_config, workset, options) =>
-            (
-              options.onProgress?.({
-                activity: {completed: 5, phase: 'scanning', total: 10, unit: 'files'},
-                attempt: 1,
-                completed: 0,
-                elapsedMilliseconds: 2_500,
-                maxAttempts: 2,
-                message: 'api · indexing · scanning 5/10 files · 0/1 members.',
-                phase: 'indexing',
-                project: 'api',
-                total: 1,
-                type: 'code-graph-workset-progress',
-                version: 1,
-                workset,
-              }) ?? Effect.void
-            ).pipe(
+            Effect.sync(() => expect(options.concurrency).toBe(2)).pipe(
+              Effect.andThen(
+                options.onProgress?.({
+                  activity: {completed: 5, phase: 'scanning', total: 10, unit: 'files'},
+                  attempt: 1,
+                  completed: 0,
+                  elapsedMilliseconds: 2_500,
+                  maxAttempts: 2,
+                  message: 'api · indexing · scanning 5/10 files · 0/1 members.',
+                  phase: 'indexing',
+                  project: 'api',
+                  total: 1,
+                  type: 'code-graph-workset-progress',
+                  version: 1,
+                  workset,
+                }) ?? Effect.void,
+              ),
               Effect.andThen(Deferred.succeed(progressObserved, undefined)),
               Effect.andThen(Deferred.await(release)),
               Effect.as({

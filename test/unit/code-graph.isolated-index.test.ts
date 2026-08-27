@@ -1,9 +1,13 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import fc from 'fast-check';
-import {describe, expect} from 'vitest';
+import {describe, expect, it} from 'vitest';
+import {isolatedBuilderRequestMatches} from '../../src/code_graph/isolated_builder.js';
+import {codeGraphBuildRequestKey} from '../../src/code_graph/indexer_build.js';
 import {WorktreeChangedDuringIndex} from '../../src/code_graph/indexer_shared.js';
 import {recoverIsolatedCodeGraphIndexSnapshot} from '../../src/code_graph/isolated_index.js';
+import type {CodeGraphLanguagePackRegistryShape} from '../../src/code_graph/languages/registry.js';
+import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
 import {
   CodeGraphSnapshotUnavailable,
   type CodeGraphSnapshot,
@@ -45,6 +49,21 @@ const result = {
 } as const;
 
 describe('isolated index snapshot recovery', () => {
+  it('never attaches a vector-required request to an active or completed structural-only build', () => {
+    const languagePacks = {cacheIdentities: [], packs: []} as unknown as CodeGraphLanguagePackRegistryShape;
+    const structuralOnlyKey = codeGraphBuildRequestKey(identity, {dirty: false}, languagePacks, undefined, false);
+    const vectorRequiredKey = codeGraphBuildRequestKey(identity, {dirty: false}, languagePacks, undefined, true);
+
+    expect(vectorRequiredKey).not.toBe(structuralOnlyKey);
+    for (const liveness of ['active', 'completed'] as const) {
+      const status = {
+        observation: {liveness},
+        request: {key: structuralOnlyKey},
+      } as ObservedCodeGraphBuildStatus;
+      expect(isolatedBuilderRequestMatches(status, vectorRequiredKey)).toBe(false);
+    }
+  });
+
   effectIt.effect('recovers the exact authoritative ready snapshot named by the child receipt', () =>
     Effect.gen(function* () {
       const loadedIds: string[] = [];
@@ -111,5 +130,45 @@ describe('isolated index snapshot recovery', () => {
         expect(snapshotLoads).toBe(0);
       }),
     {fastCheck: {numRuns: 36}},
+  );
+
+  effectIt.effect.prop(
+    'rejects every authoritative snapshot mutation after exactly one ready-row load (property)',
+    {drift: fc.constantFrom('snapshot', 'repository', 'commit', 'dirty', 'files', 'symbols', 'edges', 'worktree')},
+    ({drift}) =>
+      Effect.gen(function* () {
+        let snapshotLoads = 0;
+        const completedResult = drift === 'worktree' ? {...result, dirty: true} : result;
+        const loadedSnapshot: CodeGraphSnapshot = {
+          ...snapshot,
+          dirty: completedResult.dirty,
+          ...(drift === 'snapshot' ? {id: `cgsn_${'f'.repeat(40)}`} : {}),
+          ...(drift === 'repository' ? {repositoryId: 'f'.repeat(64)} : {}),
+          ...(drift === 'commit' ? {commit: 'f'.repeat(40)} : {}),
+          ...(drift === 'dirty' ? {dirty: !completedResult.dirty} : {}),
+          ...(drift === 'files' ? {fileCount: completedResult.files + 1} : {}),
+          ...(drift === 'symbols' ? {symbolCount: completedResult.symbols + 1} : {}),
+          ...(drift === 'edges' ? {edgeCount: completedResult.edges + 1} : {}),
+          ...(drift === 'worktree' ? {worktreeId: 'f'.repeat(64)} : {}),
+        };
+        const failure = yield* recoverIsolatedCodeGraphIndexSnapshot({
+          completedIdentity: identity,
+          currentRequestKey: result.requestKey,
+          loadReadySnapshot: () =>
+            Effect.sync(() => {
+              snapshotLoads += 1;
+              return loadedSnapshot;
+            }),
+          requestedIdentity: identity,
+          requestedRequestKey: result.requestKey,
+          result: completedResult,
+        }).pipe(Effect.flip);
+
+        expect(snapshotLoads).toBe(1);
+        expect(failure).toBeInstanceOf(
+          drift === 'snapshot' || drift === 'repository' ? CodeGraphSnapshotUnavailable : WorktreeChangedDuringIndex,
+        );
+      }),
+    {fastCheck: {numRuns: 40}},
   );
 });

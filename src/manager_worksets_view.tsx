@@ -930,6 +930,16 @@ export function PrepareJobPanel(props: {
 }): React.ReactElement {
   const active = props.job.status === 'running' || props.job.status === 'cancelling';
   const [nowMilliseconds, setNowMilliseconds] = useState(() => Date.now());
+  const elapsedProjection = useRef({jobId: props.job.id, milliseconds: 0});
+  if (elapsedProjection.current.jobId !== props.job.id) {
+    elapsedProjection.current = {jobId: props.job.id, milliseconds: 0};
+  }
+  const elapsedMilliseconds = managerWorksetJobElapsedMilliseconds(
+    props.job,
+    nowMilliseconds,
+    elapsedProjection.current.milliseconds,
+  );
+  elapsedProjection.current.milliseconds = elapsedMilliseconds;
   useEffect(() => {
     if (!active) return;
     const timer = window.setInterval(() => setNowMilliseconds(Date.now()), JOB_PROGRESS_CLOCK_MILLISECONDS);
@@ -946,7 +956,7 @@ export function PrepareJobPanel(props: {
         <strong>
           {props.job.workset} · {props.job.progress.phase}
         </strong>
-        <span aria-live="off">{managerWorksetJobProgressMessage(props.job, nowMilliseconds)}</span>
+        <span aria-live="off">{managerWorksetJobProgressMessage(props.job, nowMilliseconds, elapsedMilliseconds)}</span>
       </div>
       <progress
         aria-label={`${props.job.workset} preparation progress`}
@@ -990,18 +1000,26 @@ export function PrepareJobPanel(props: {
   );
 }
 
-export function managerWorksetJobElapsedMilliseconds(job: ManagerWorksetPrepareJob, nowMilliseconds: number): number {
+export function managerWorksetJobElapsedMilliseconds(
+  job: ManagerWorksetPrepareJob,
+  nowMilliseconds: number,
+  previousMilliseconds = 0,
+): number {
   const createdAtMilliseconds = Date.parse(job.createdAt);
   const wallElapsed = Number.isFinite(createdAtMilliseconds) ? Math.max(0, nowMilliseconds - createdAtMilliseconds) : 0;
-  return Math.max(0, job.progress.elapsedMilliseconds ?? 0, wallElapsed);
+  return Math.max(0, previousMilliseconds, job.progress.elapsedMilliseconds ?? 0, wallElapsed);
 }
 
-export function managerWorksetJobProgressMessage(job: ManagerWorksetPrepareJob, nowMilliseconds: number): string {
+export function managerWorksetJobProgressMessage(
+  job: ManagerWorksetPrepareJob,
+  nowMilliseconds: number,
+  previousMilliseconds = 0,
+): string {
   if (job.status !== 'running' || job.progress.phase === 'cancelled' || job.progress.phase === 'cancelling')
     return job.progress.message;
   return renderCodeGraphWorksetPrepareProgress({
     completed: job.progress.completed ?? 0,
-    elapsedMilliseconds: managerWorksetJobElapsedMilliseconds(job, nowMilliseconds),
+    elapsedMilliseconds: managerWorksetJobElapsedMilliseconds(job, nowMilliseconds, previousMilliseconds),
     phase: job.progress.phase,
     total: job.progress.total,
     type: 'code-graph-workset-progress',
