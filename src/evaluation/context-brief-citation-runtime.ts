@@ -6,6 +6,7 @@ import type {
 import {codeGraphCommittedFileContentHash} from '../code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
+import {selectCodeGraphCitationContentHashTargets} from '../code_graph/store_citation_queries.js';
 import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, CodeGraphStatus} from '../code_graph/types.js';
 import {
@@ -253,15 +254,23 @@ function makeScenarioGraph(
         ? [sourceFile]
         : currentFiles(fixture.source.path, fixture.source.content, sourceHash, changedHash, scenario.kind);
     const byPath = new Map(files.map(file => [file.path, file]));
+    const paths = [
+      ...new Set([...(request.paths ?? []), ...(request.fileRelocationFallbacks ?? []).map(item => item.path)]),
+    ];
+    const contentHashes = selectCodeGraphCitationContentHashTargets(
+      [...new Set(request.contentHashes ?? [])],
+      request.fileRelocationFallbacks ?? [],
+      new Set(files.map(file => file.path)),
+    );
     return {
       fileInventoryCoverage:
         phase === 'capture' || scenario.snapshotState === 'current-complete' ? 'complete' : 'incomplete',
-      filesByContentHashes: (request.contentHashes ?? []).map(contentHash => ({
+      filesByContentHashes: contentHashes.map(contentHash => ({
         contentHash,
         files: files.filter(file => file.contentHash === contentHash),
         truncated: false,
       })),
-      filesByPaths: (request.paths ?? []).map(repositoryPath => ({
+      filesByPaths: paths.map(repositoryPath => ({
         ...(byPath.get(repositoryPath) === undefined ? {} : {file: byPath.get(repositoryPath)!}),
         path: repositoryPath,
       })),

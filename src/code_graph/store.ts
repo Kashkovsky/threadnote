@@ -46,6 +46,7 @@ export {
   type CodeGraphEffectiveSnapshotCitationEvidence,
   type CodeGraphEffectiveSnapshotCitationEvidenceRequest,
   type CodeGraphEffectiveSymbolLocatorMatches,
+  type CodeGraphCitationFileRelocationFallbackV1,
   type CodeGraphSourceSpanFragmentFailureReason,
   type CodeGraphSourceSpanCanonicalizerV1,
   type CodeGraphSourceSpanFragmentResult,

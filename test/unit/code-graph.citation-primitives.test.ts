@@ -12,6 +12,7 @@ import {
   createCodeGraphSourceSpanCanonicalizer,
   type CodeGraphSymbolSemanticLocatorV1,
 } from '../../src/code_graph/store.js';
+import {selectCodeGraphCitationContentHashTargets} from '../../src/code_graph/store_citation_queries.js';
 import {
   codeGraphCommittedFileContentHash,
   codeGraphFileContentHashMatchesBytes,
@@ -56,6 +57,45 @@ const inheritedLocator = {
 } as const satisfies CodeGraphSymbolSemanticLocatorV1;
 
 describe('code graph citation query primitives', () => {
+  effectIt.prop(
+    'queries eager hashes and only missing-path relocation fallbacks in first-seen order',
+    {
+      eagerContentHashes: FC.array(
+        FC.integer({max: 5, min: 0}).map(value => String(value).repeat(64)),
+        {
+          maxLength: 8,
+        },
+      ),
+      fallbacks: FC.array(
+        FC.record({
+          contentHash: FC.integer({max: 5, min: 0}).map(value => String(value).repeat(64)),
+          path: FC.integer({max: 5, min: 0}).map(value => `src/${value}.ts`),
+        }),
+        {maxLength: 12},
+      ),
+      presentPaths: FC.uniqueArray(
+        FC.integer({max: 5, min: 0}).map(value => `src/${value}.ts`),
+        {
+          maxLength: 6,
+        },
+      ),
+    },
+    ({eagerContentHashes, fallbacks, presentPaths}) => {
+      const potential = [...new Set([...eagerContentHashes, ...fallbacks.map(fallback => fallback.contentHash)])];
+      const present = new Set(presentPaths);
+      const selected = selectCodeGraphCitationContentHashTargets([...new Set(eagerContentHashes)], fallbacks, present);
+      const expected = [
+        ...new Set([
+          ...eagerContentHashes,
+          ...fallbacks.filter(fallback => !present.has(fallback.path)).map(fallback => fallback.contentHash),
+        ]),
+      ];
+      expect(selected).toEqual(expected);
+      expect(selected.every(contentHash => potential.includes(contentHash))).toBe(true);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   effectIt.prop(
     'matches current Git-blob envelopes and legacy raw hashes to the same source bytes',
     {
@@ -256,6 +296,37 @@ describe('code graph citation query primitives', () => {
         expect(combined.symbolsBySemanticLocators[0]).toEqual(
           expect.objectContaining({truncated: true, symbols: [expect.objectContaining({id: 'symbol-new-target-b'})]}),
         );
+
+        const exactPathFallback = yield* store.effectiveSnapshotCitationEvidence(databasePath, currentSnapshotId, {
+          fileRelocationFallbacks: [{contentHash: keepHash, path: 'src/keep.ts'}],
+        });
+        expect(exactPathFallback.filesByPaths).toEqual([
+          {file: expect.objectContaining({contentHash: keepHash}), path: 'src/keep.ts'},
+        ]);
+        expect(exactPathFallback.filesByContentHashes).toEqual([]);
+
+        const duplicateMaximumFallback = yield* store.effectiveSnapshotCitationEvidence(
+          databasePath,
+          currentSnapshotId,
+          {
+            fileRelocationFallbacks: Array.from({length: 400}, () => ({
+              contentHash: keepHash,
+              path: 'src/keep.ts',
+            })),
+            paths: Array.from({length: 400}, () => 'src/keep.ts'),
+          },
+        );
+        expect(duplicateMaximumFallback.filesByPaths).toHaveLength(1);
+        expect(duplicateMaximumFallback.filesByContentHashes).toEqual([]);
+
+        const missingPathFallback = yield* store.effectiveSnapshotCitationEvidence(databasePath, currentSnapshotId, {
+          fileRelocationFallbacks: [{contentHash: duplicateHash, path: 'src/missing.ts'}],
+        });
+        expect(missingPathFallback.filesByPaths).toEqual([{path: 'src/missing.ts'}]);
+        expect(missingPathFallback.filesByContentHashes[0]?.files.map(file => file.path)).toEqual([
+          'src/base-copy.ts',
+          'src/current-copy.ts',
+        ]);
 
         yield* withCitationDatabase(databasePath, database => {
           const pathPlan = queryPlan(

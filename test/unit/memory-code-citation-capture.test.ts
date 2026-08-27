@@ -167,14 +167,25 @@ function citationFixture(root: string) {
   let validationSessions = 0;
   const evidence = (request: CodeGraphEffectiveSnapshotCitationEvidenceRequest) => {
     evidenceCalls += 1;
+    const paths = [
+      ...new Set([...(request.paths ?? []), ...(request.fileRelocationFallbacks ?? []).map(item => item.path)]),
+    ];
+    const contentHashes = [
+      ...new Set([
+        ...(request.contentHashes ?? []),
+        ...(request.fileRelocationFallbacks ?? [])
+          .filter(item => item.path !== file.path)
+          .map(item => item.contentHash),
+      ]),
+    ];
     return {
       fileInventoryCoverage: 'complete',
-      filesByContentHashes: (request.contentHashes ?? []).map(contentHash => ({
+      filesByContentHashes: contentHashes.map(contentHash => ({
         contentHash,
         files: contentHash === SOURCE_HASH ? [file] : [],
         truncated: false,
       })),
-      filesByPaths: (request.paths ?? []).map(repositoryPath => ({
+      filesByPaths: paths.map(repositoryPath => ({
         ...(repositoryPath === file.path ? {file} : {}),
         path: repositoryPath,
       })),
