@@ -1,7 +1,7 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
-import {Deferred, Effect, Fiber, FileSystem, Layer} from 'effect';
+import {Deferred, Effect, Exit, Fiber, FileSystem, Layer, PlatformError} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {FileLockTimeout, withExclusiveFileLock} from '../../src/effect/file_lock.js';
@@ -94,6 +94,43 @@ describe('Effect file lock', () => {
         expect(yield* fs.exists(lockPath)).toBe(false);
       }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
     ),
+  );
+
+  effectIt.effect('keeps Windows sharing-shaped failures fail-fast unless the caller opts into bounded retries', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const system = yield* SystemInfo;
+      let attempts = 0;
+      const failedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (path, content, options) =>
+          path === lockPath
+            ? Effect.sync(() => {
+                attempts += 1;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    PlatformError.systemError({
+                      _tag: 'PermissionDenied',
+                      cause: {code: 'EACCES'},
+                      method: 'writeFileString',
+                      module: 'FileSystem',
+                      pathOrDescriptor: path,
+                    }),
+                  ),
+                ),
+              )
+            : fs.writeFileString(path, content, options),
+      });
+      const failed = yield* Effect.exit(
+        withExclusiveFileLock(failedFs, lockPath, TEST_LOCK_OPTIONS, Effect.void).pipe(
+          Effect.provideService(SystemInfo, SystemInfo.of({...system, platform: 'win32'})),
+        ),
+      );
+
+      expect(Exit.isFailure(failed)).toBe(true);
+      expect(attempts).toBe(1);
+    }).pipe(provideTestLayer(FILE_LOCK_TEST_LAYER)),
   );
 
   it('reports lock contention with a typed timeout', async () => {

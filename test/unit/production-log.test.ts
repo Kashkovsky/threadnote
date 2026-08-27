@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Cause, Deferred, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
+import {Cause, Deferred, Effect, Exit, Fiber, FileSystem, Path, PlatformError} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
@@ -263,6 +263,55 @@ describe('production log writer', () => {
         expect(new Set(entries.map(entry => entry.invocationId)).size).toBe(invocationCount);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('retries a Windows sharing violation instead of dropping a lifecycle entry', () =>
+    TestClock.withLive(
+      windowsEntriesAfterTransientLockContention(1, 'PermissionDenied').pipe(
+        Effect.flatMap(entries =>
+          Effect.sync(() => {
+            expect(entries).toHaveLength(2);
+            expect(entries.map(entry => entry.event)).toEqual(['invocation.started', 'invocation.finished']);
+            expect(entries[0]?.invocationId).toBe(entries[1]?.invocationId);
+          }),
+        ),
+      ),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'preserves Windows lifecycle pairs across bounded transient exclusive-create failures',
+    {
+      failures: fc.integer({min: 1, max: 4}),
+      reason: fc.constantFrom('Busy' as const, 'PermissionDenied' as const, 'Unknown' as const, 'WouldBlock' as const),
+    },
+    ({failures, reason}) =>
+      TestClock.withLive(
+        windowsEntriesAfterTransientLockContention(failures, reason).pipe(
+          Effect.flatMap(entries =>
+            Effect.sync(() => {
+              expect(entries).toHaveLength(2);
+              expect(entries[0]?.event).toBe('invocation.started');
+              expect(entries[1]?.event).toBe('invocation.finished');
+              expect(entries[0]?.invocationId).toBe(entries[1]?.invocationId);
+            }),
+          ),
+        ),
+      ),
+    {fastCheck: {numRuns: 12}},
+  );
+
+  effectIt.effect('keeps a persistent Windows sharing violation best-effort after the short retry cap', () =>
+    TestClock.withLive(
+      windowsEntriesAfterTransientLockContention(5, 'PermissionDenied').pipe(
+        Effect.flatMap(entries =>
+          Effect.sync(() => {
+            expect(entries).toHaveLength(1);
+            expect(entries[0]?.event).toBe('invocation.finished');
+          }),
+        ),
+      ),
+    ),
   );
 
   effectIt.effect('preserves both Windows lifecycle entries when lock contention exceeds five seconds', () =>
@@ -528,6 +577,49 @@ function windowsEntriesAfterLockContention(
       yield* Fiber.join(ownerFiber);
       yield* TestClock.adjust(25);
       yield* Fiber.join(writerFiber);
+
+      return parseEntries(yield* fs.readFileString(productionLogPath(path, home)));
+    }),
+  ).pipe(provideTestLayer(ApplicationLayer));
+}
+
+function windowsEntriesAfterTransientLockContention(
+  failureCount: number,
+  reason: 'Busy' | 'PermissionDenied' | 'Unknown' | 'WouldBlock',
+) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const {fs, home, path} = yield* ownedTestHome(`windows-transient-contention-${reason}-${failureCount}`);
+      const lockPath = path.join(home, 'locks', 'production-log.lock');
+      let remainingFailures = failureCount;
+      const contendedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (candidate, content, options) =>
+          candidate === lockPath && remainingFailures > 0
+            ? Effect.sync(() => {
+                remainingFailures -= 1;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    PlatformError.systemError({
+                      _tag: reason,
+                      cause: reason === 'Unknown' ? {code: 'EPERM'} : undefined,
+                      method: 'writeFileString',
+                      module: 'FileSystem',
+                      pathOrDescriptor: candidate,
+                    }),
+                  ),
+                ),
+              )
+            : fs.writeFileString(candidate, content, options),
+      });
+      const nativeSystem = yield* SystemInfo;
+      const windowsSystem = SystemInfo.of({...nativeSystem, platform: 'win32'});
+
+      yield* withProductionLogging(home, {component: 'cli', operation: 'logs'}, Effect.void).pipe(
+        Effect.provideService(FileSystem.FileSystem, contendedFs),
+        Effect.provideService(SystemInfo, windowsSystem),
+      );
 
       return parseEntries(yield* fs.readFileString(productionLogPath(path, home)));
     }),
