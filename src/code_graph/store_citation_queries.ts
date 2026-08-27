@@ -3,6 +3,8 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET,
   CODE_GRAPH_CITATION_QUERY_MAX_TARGETS,
+  selectCodeGraphCitationContentHashTargets,
+  type CodeGraphCitationFileRelocationFallbackV1,
   type CodeGraphEffectiveFileHashMatches,
   type CodeGraphEffectiveFilePathObservation,
   type CodeGraphEffectiveSnapshotCitationEvidence,
@@ -292,8 +294,17 @@ export const selectEffectiveSnapshotSymbolsBySemanticLocators = Effect.fn(
  */
 export const selectEffectiveSnapshotCitationEvidence = Effect.fn('codeGraph.selectEffectiveSnapshotCitationEvidence')(
   function* (snapshotId: string, request: CodeGraphEffectiveSnapshotCitationEvidenceRequest) {
-    const paths = yield* validateCitationPaths(request.paths ?? []);
-    const contentHashes = yield* validateCitationContentHashes(request.contentHashes ?? []);
+    const fileRelocationFallbacks = yield* validateCitationFileRelocationFallbacks(
+      request.fileRelocationFallbacks ?? [],
+    );
+    const eagerPaths = yield* validateCitationPaths(request.paths ?? []);
+    const paths = yield* validateCitationPaths([
+      ...new Set([...eagerPaths, ...fileRelocationFallbacks.map(fallback => fallback.path)]),
+    ]);
+    const eagerContentHashes = yield* validateCitationContentHashes(request.contentHashes ?? []);
+    yield* validateCitationContentHashes([
+      ...new Set([...eagerContentHashes, ...fileRelocationFallbacks.map(fallback => fallback.contentHash)]),
+    ]);
     const symbolIds = yield* validateCitationSymbolIds(request.symbolIds ?? []);
     const semanticLocators = yield* validateSemanticLocators(request.semanticLocators ?? []);
     const limitPerContentHash = yield* validateMatchLimit(request.limitPerContentHash ?? 2);
@@ -326,6 +337,11 @@ export const selectEffectiveSnapshotCitationEvidence = Effect.fn('codeGraph.sele
             sql,
             codeGraphEffectiveFilesByPathsQueryStatement(snapshotId, baseSnapshotId, paths),
           );
+    const contentHashes = selectCodeGraphCitationContentHashTargets(
+      eagerContentHashes,
+      fileRelocationFallbacks,
+      new Set(pathRows.flatMap(row => (row.path === null ? [] : [row.requested_path]))),
+    );
     const hashRows =
       contentHashes.length === 0
         ? []
@@ -428,28 +444,45 @@ function inventoryFileFromRow(row: EffectiveFileRow): CodeGraphInventoryFile {
 }
 
 function validateCitationPaths(paths: readonly string[]) {
-  return validateUniqueTargets(
-    paths,
-    path => path,
-    path =>
-      typeof path === 'string' &&
-      path.length > 0 &&
-      path.length <= 4_096 &&
-      !path.includes('\0') &&
-      !path.includes('\\') &&
-      !path.startsWith('/') &&
-      path.split('/').every(segment => segment.length > 0 && segment !== '.' && segment !== '..'),
-    'repository-relative code graph path',
-  );
+  return validateUniqueTargets(paths, path => path, validCitationPath, 'repository-relative code graph path');
 }
 
 function validateCitationContentHashes(contentHashes: readonly string[]) {
   return validateUniqueTargets(
     contentHashes,
     contentHash => contentHash,
-    contentHash => typeof contentHash === 'string' && /^[0-9a-f]{64}$/u.test(contentHash),
+    validCitationContentHash,
     'SHA-256 code graph content hash',
   );
+}
+
+function validateCitationFileRelocationFallbacks(fallbacks: readonly CodeGraphCitationFileRelocationFallbackV1[]) {
+  return validateUniqueTargets(
+    fallbacks,
+    fallback => `${fallback.path}\0${fallback.contentHash}`,
+    fallback =>
+      typeof fallback === 'object' &&
+      fallback !== null &&
+      validCitationPath(fallback.path) &&
+      validCitationContentHash(fallback.contentHash),
+    'code graph file relocation fallback',
+  );
+}
+
+function validCitationPath(path: unknown): path is string {
+  return (
+    typeof path === 'string' &&
+    path.length > 0 &&
+    path.length <= 4_096 &&
+    !path.includes('\0') &&
+    !path.includes('\\') &&
+    !path.startsWith('/') &&
+    path.split('/').every(segment => segment.length > 0 && segment !== '.' && segment !== '..')
+  );
+}
+
+function validCitationContentHash(contentHash: unknown): contentHash is string {
+  return typeof contentHash === 'string' && /^[0-9a-f]{64}$/u.test(contentHash);
 }
 
 function validateCitationSymbolIds(symbolIds: readonly string[]) {

@@ -1,7 +1,8 @@
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import type {
-  CodeGraphEffectiveSnapshotCitationEvidence,
-  CodeGraphEffectiveSnapshotCitationEvidenceRequest,
+import {
+  selectCodeGraphCitationContentHashTargets,
+  type CodeGraphEffectiveSnapshotCitationEvidence,
+  type CodeGraphEffectiveSnapshotCitationEvidenceRequest,
 } from '../code_graph/citation_primitives.js';
 import {codeGraphCommittedFileContentHash} from '../code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
@@ -253,15 +254,23 @@ function makeScenarioGraph(
         ? [sourceFile]
         : currentFiles(fixture.source.path, fixture.source.content, sourceHash, changedHash, scenario.kind);
     const byPath = new Map(files.map(file => [file.path, file]));
+    const paths = [
+      ...new Set([...(request.paths ?? []), ...(request.fileRelocationFallbacks ?? []).map(item => item.path)]),
+    ];
+    const contentHashes = selectCodeGraphCitationContentHashTargets(
+      [...new Set(request.contentHashes ?? [])],
+      request.fileRelocationFallbacks ?? [],
+      new Set(files.map(file => file.path)),
+    );
     return {
       fileInventoryCoverage:
         phase === 'capture' || scenario.snapshotState === 'current-complete' ? 'complete' : 'incomplete',
-      filesByContentHashes: (request.contentHashes ?? []).map(contentHash => ({
+      filesByContentHashes: contentHashes.map(contentHash => ({
         contentHash,
         files: files.filter(file => file.contentHash === contentHash),
         truncated: false,
       })),
-      filesByPaths: (request.paths ?? []).map(repositoryPath => ({
+      filesByPaths: paths.map(repositoryPath => ({
         ...(byPath.get(repositoryPath) === undefined ? {} : {file: byPath.get(repositoryPath)!}),
         path: repositoryPath,
       })),

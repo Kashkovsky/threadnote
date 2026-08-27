@@ -267,10 +267,12 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         );
         const locators = symbolCitations.map(symbolLocator);
         const evidence = yield* store.effectiveSnapshotCitationEvidence(repository.status.databasePath, snapshot.id, {
-          contentHashes: citations.map(citation => citation.fileContentHash.value),
+          fileRelocationFallbacks: citations.map(citation => ({
+            contentHash: citation.fileContentHash.value,
+            path: citation.path,
+          })),
           limitPerContentHash: RELOCATION_MATCH_LIMIT,
           limitPerSemanticLocator: RELOCATION_MATCH_LIMIT,
-          paths: citations.map(citation => citation.path),
           semanticLocators: locators,
           symbolIds: symbolCitations.flatMap(citation =>
             citation.target.kind === 'symbol' ? [citation.target.nodeId] : [],

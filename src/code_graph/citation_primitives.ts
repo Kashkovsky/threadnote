@@ -37,8 +37,32 @@ export interface CodeGraphEffectiveSymbolLocatorMatches {
   readonly truncated: boolean;
 }
 
+export interface CodeGraphCitationFileRelocationFallbackV1 {
+  readonly contentHash: string;
+  readonly path: string;
+}
+
+/** Select eager hashes plus fallbacks whose original path is absent. */
+export function selectCodeGraphCitationContentHashTargets(
+  eagerContentHashes: readonly string[],
+  fileRelocationFallbacks: readonly CodeGraphCitationFileRelocationFallbackV1[],
+  presentPaths: ReadonlySet<string>,
+): readonly string[] {
+  const requestedContentHashes = new Set(eagerContentHashes);
+  for (const fallback of fileRelocationFallbacks) {
+    if (!presentPaths.has(fallback.path)) requestedContentHashes.add(fallback.contentHash);
+  }
+  return [...requestedContentHashes];
+}
+
 export interface CodeGraphEffectiveSnapshotCitationEvidenceRequest {
   readonly contentHashes?: readonly string[];
+  /**
+   * Query a content hash only when its paired original path is absent from the
+   * effective snapshot. This keeps the common exact/changed path proof inside
+   * the same database session without paying for an unused relocation scan.
+   */
+  readonly fileRelocationFallbacks?: readonly CodeGraphCitationFileRelocationFallbackV1[];
   /** Defaults to 2 and is capped by CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET. */
   readonly limitPerContentHash?: number;
   /** Defaults to 2 and is capped by CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET. */
@@ -56,6 +80,7 @@ export interface CodeGraphEffectiveSnapshotCitationEvidence {
    * deletion result; every missing or partial proof must remain `incomplete`.
    */
   readonly fileInventoryCoverage: 'complete' | 'incomplete';
+  /** Eager hashes plus fallback hashes whose paired original path was absent. */
   readonly filesByContentHashes: readonly CodeGraphEffectiveFileHashMatches[];
   readonly filesByPaths: readonly CodeGraphEffectiveFilePathObservation[];
   readonly symbolsByIds: readonly CodeGraphSymbol[];
