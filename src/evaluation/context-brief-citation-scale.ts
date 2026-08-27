@@ -142,7 +142,7 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
       dirty,
       memoryBytes: hardware.memoryBytes,
       operatingSystem: hardware.operatingSystem,
-      runnerClass: process.env.THREADNOTE_BENCHMARK_RUNNER_CLASS ?? 'local-unpinned',
+      runnerClass: system.environment().THREADNOTE_BENCHMARK_RUNNER_CLASS ?? 'local-unpinned',
       runtime: `bun/${system.runtimeVersion}`,
       sourceVersion: `threadnote-${sourceVersion}`,
     },
@@ -181,11 +181,12 @@ const runObservation = Effect.fn('evaluation.contextBriefCitationScaleObservatio
   profileId: ContextBriefCitationScaleProfileId,
   ordinal: number,
 ) {
+  const system = yield* SystemInfo;
   const prepared = fixture.profiles.get(profileId)!;
   const token = fixture.runToken(profileId, ordinal);
   graph.reset();
   Bun.gc(true);
-  const rssBefore = process.memoryUsage().rss;
+  const rssBefore = system.memoryUsage().rss;
   let peakRss = rssBefore;
   let memoryRetrievalMilliseconds = 0;
   let validationMilliseconds = 0;
@@ -193,7 +194,7 @@ const runObservation = Effect.fn('evaluation.contextBriefCitationScaleObservatio
   let validationReceipts = 0;
   let exactValidationReceipts = 0;
   const observeRss = () => {
-    peakRss = Math.max(peakRss, process.memoryUsage().rss);
+    peakRss = Math.max(peakRss, system.memoryUsage().rss);
   };
   const started = yield* Clock.currentTimeNanos;
   const brief = yield* compileContextBriefWith(

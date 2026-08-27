@@ -562,6 +562,7 @@ postgresDescribe('remote memory PostgreSQL service', () => {
       `,
     );
     expect(blockedHeads).toEqual([{topic: clean.topic}]);
+    expect(await indexer.runPass({batchSize: 1})).toEqual({failed: 0, processed: 1});
   });
 
   it('commits one immutable CAS winner, replays exact outcomes, and recalls through the recent-write overlay', async () => {
@@ -1338,8 +1339,8 @@ postgresDescribe('remote memory PostgreSQL service', () => {
       },
       {
         content: operatorMalformedCitationContent(`000-forged-export-malformed-${suffix}`),
-        shareId: SHARE_B,
-        tenantId: TENANT_B,
+        shareId: SHARE_A_MULTI_MEMBER,
+        tenantId: TENANT_A,
         topic: `000-forged-export-malformed-${suffix}`,
       },
     ] as const;
