@@ -529,6 +529,70 @@ describe('process diagnostics', () => {
     }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
   );
 
+  it.effect('does not report a process that registers while its release lease snapshot is being read', () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const nativeSystem = yield* SystemInfo;
+      const home = yield* fileSystem.makeTempDirectoryScoped({prefix: 'threadnote-registering-process-home-'});
+      const processId = 1_234_568;
+      const version = '4.4.1-local.g0123456789abcdef0123456789abcdef01234567';
+      const leaseDirectory = join(installationTemporaryRoot!, 'leases', version);
+      const registrationDirectory = join(home, 'runtime', 'processes');
+      const registrationPath = join(registrationDirectory, `${processId}.json`);
+      yield* fileSystem.makeDirectory(leaseDirectory, {recursive: true});
+      yield* fileSystem.makeDirectory(registrationDirectory, {recursive: true});
+      yield* fileSystem.writeFileString(
+        join(leaseDirectory, `${processId}.json`),
+        `${JSON.stringify({
+          parentProcessId: 7654,
+          processId,
+          processStartIdentity: 'matching-process-identity',
+          startedAt: '2026-08-27T00:00:00.000Z',
+          token: 'private-ownership-token',
+          version,
+        })}\n`,
+      );
+
+      let registrationWritten = false;
+      const registeringFileSystem = FileSystem.FileSystem.of({
+        ...fileSystem,
+        readDirectory: directory =>
+          fileSystem.readDirectory(directory).pipe(
+            Effect.tap(() => {
+              if (directory !== leaseDirectory || registrationWritten) return Effect.void;
+              registrationWritten = true;
+              return fileSystem.writeFileString(
+                registrationPath,
+                `${JSON.stringify(
+                  testRegistration(processId, 'mcp', 'matching-process-identity', 'registry-token-value'),
+                )}\n`,
+              );
+            }),
+          ),
+      });
+      const testSystem = SystemInfo.of({
+        ...nativeSystem,
+        isProcessRunning: candidate => candidate === processId,
+        processStartIdentity: candidate =>
+          Effect.succeed(candidate === processId ? 'matching-process-identity' : undefined),
+      });
+
+      const diagnostics = yield* readThreadnoteProcessDiagnostics({agentContextHome: home}).pipe(
+        Effect.provideService(FileSystem.FileSystem, registeringFileSystem),
+        Effect.provideService(SystemInfo, testSystem),
+      );
+
+      expect(registrationWritten).toBe(true);
+      expect(diagnostics.processes).toEqual([
+        expect.objectContaining({
+          processId,
+          releaseVersion: version,
+          role: 'mcp',
+        }),
+      ]);
+    }).pipe(provideTestLayer(SystemInfo.layer), provideTestLayer(BunServices.layer), Effect.scoped),
+  );
+
   it.effect('keeps process identity as ROLE while nested activities update OPERATION and title', () =>
     Effect.gen(function* () {
       temporaryRoot = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-process-diagnostics-')));
