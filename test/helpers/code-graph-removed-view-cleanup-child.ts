@@ -1,12 +1,22 @@
 import {provideTestLayer} from './effect-layer.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, FileSystem, Layer} from 'effect';
-import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {
+  type CodeGraphRemovedViewCleanupEntry,
+  CodeGraphStore,
+  type CodeGraphStoreShape,
+} from '../../src/code_graph/store.js';
+import {CodeGraphStoreBusyError, CodeGraphStoreError} from '../../src/code_graph/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
-const [databasePath, nowText, markerPath] = process.argv.slice(2);
+const [databasePath, nowText, markerPath, contentionMarkerPath] = process.argv.slice(2);
 const validPath = (value: string | undefined) => value !== undefined && value.length > 0 && !value.includes('\0');
-if (!validPath(databasePath) || !validPath(markerPath) || !/^[0-9]+$/u.test(nowText ?? '')) {
+if (
+  !validPath(databasePath) ||
+  !validPath(markerPath) ||
+  (contentionMarkerPath !== undefined && !validPath(contentionMarkerPath)) ||
+  !/^[0-9]+$/u.test(nowText ?? '')
+) {
   process.stderr.write('invalid removed-view-cleanup child arguments\n');
   process.exit(2);
 }
@@ -18,13 +28,13 @@ if (!Number.isSafeInteger(now)) {
 }
 
 const childLayer = CodeGraphStore.layer.pipe(Layer.provideMerge(Layer.merge(BunServices.layer, SystemInfo.layer)));
+const CLAIM_BUDGET_MILLISECONDS = 30_000;
+const CLAIM_RETRY_PAUSE_MILLISECONDS = 25;
 
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const store = yield* CodeGraphStore;
-  const claimed = yield* store.claimRemovedViewCleanupCandidates(databasePath!, now, 32, {
-    waitTimeoutMilliseconds: 30_000,
-  });
+  const claimed = yield* claimWithBoundedBusyDeferral(store, fs, databasePath!, now, contentionMarkerPath);
   const marker = JSON.stringify({
     event: 'claim-committed',
     processId: process.pid,
@@ -38,7 +48,55 @@ const program = Effect.gen(function* () {
   for (;;) yield* Effect.sleep(60_000);
 }).pipe(provideTestLayer(childLayer));
 
+function claimWithBoundedBusyDeferral(
+  store: CodeGraphStoreShape,
+  fs: FileSystem.FileSystem,
+  databasePath: string,
+  now: number,
+  contentionMarkerPath: string | undefined,
+): Effect.Effect<readonly CodeGraphRemovedViewCleanupEntry[], unknown> {
+  const deadline = performance.now() + CLAIM_BUDGET_MILLISECONDS;
+  let contentionReported = false;
+
+  const attempt = (): Effect.Effect<readonly CodeGraphRemovedViewCleanupEntry[], unknown> => {
+    const remainingMilliseconds = Math.max(0, deadline - performance.now());
+    return store
+      .claimRemovedViewCleanupCandidates(databasePath, now, 32, {
+        waitTimeoutMilliseconds: remainingMilliseconds,
+      })
+      .pipe(
+        Effect.catch(error => {
+          if (!(error instanceof CodeGraphStoreBusyError) || !error.retryable || performance.now() >= deadline) {
+            return Effect.fail(error);
+          }
+          const reportContention =
+            contentionMarkerPath !== undefined && !contentionReported
+              ? Effect.sync(() => {
+                  contentionReported = true;
+                }).pipe(
+                  Effect.andThen(
+                    fs.writeFileString(contentionMarkerPath, 'retryable-sqlite-busy\n', {flag: 'wx', mode: 0o600}),
+                  ),
+                )
+              : Effect.void;
+          return reportContention.pipe(
+            Effect.andThen(
+              Effect.sleep(Math.max(0, Math.min(CLAIM_RETRY_PAUSE_MILLISECONDS, deadline - performance.now()))),
+            ),
+            Effect.andThen(Effect.suspend(attempt)),
+          );
+        }),
+      );
+  };
+
+  return Effect.suspend(attempt);
+}
+
 Effect.runPromise(program).catch(cause => {
-  process.stderr.write(`removed-view-cleanup child failed: ${cause instanceof Error ? cause.name : 'unknown'}\n`);
+  const diagnostic =
+    cause instanceof CodeGraphStoreError
+      ? {code: cause.code, name: cause.name, operation: cause.operation, retryable: cause.retryable}
+      : {name: cause instanceof Error ? cause.name : 'unknown'};
+  process.stderr.write(`removed-view-cleanup child failed: ${JSON.stringify(diagnostic)}\n`);
   process.exitCode = 1;
 });
