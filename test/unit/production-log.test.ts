@@ -1,8 +1,9 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Cause, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
+import {Cause, Deferred, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import {
   PRODUCTION_LOG_FILE_NAME,
@@ -14,6 +15,7 @@ import {
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {captureConsole} from '../../src/effect/console.js';
+import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {SystemInfo} from '../../src/effect/system.js';
 
 interface ParsedProductionLogEntry {
@@ -263,6 +265,46 @@ describe('production log writer', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('preserves both Windows lifecycle entries when lock contention exceeds five seconds', () =>
+    windowsEntriesAfterLockContention(5_500).pipe(
+      Effect.flatMap(entries =>
+        Effect.sync(() => {
+          expect(entries).toHaveLength(2);
+          expect(entries.map(entry => entry.event)).toEqual(['invocation.started', 'invocation.finished']);
+          expect(entries[0]?.invocationId).toBe(entries[1]?.invocationId);
+        }),
+      ),
+    ),
+  );
+
+  effectIt.effect.prop(
+    'preserves correlated Windows lifecycle entries across the extended bounded contention window',
+    {releaseAfterMilliseconds: fc.integer({min: 5_025, max: 9_500})},
+    ({releaseAfterMilliseconds}) =>
+      windowsEntriesAfterLockContention(releaseAfterMilliseconds).pipe(
+        Effect.flatMap(entries =>
+          Effect.sync(() => {
+            expect(entries).toHaveLength(2);
+            expect(entries[0]?.event).toBe('invocation.started');
+            expect(entries[1]?.event).toBe('invocation.finished');
+            expect(entries[0]?.invocationId).toBe(entries[1]?.invocationId);
+          }),
+        ),
+      ),
+    {fastCheck: {numRuns: 12}},
+  );
+
+  effectIt.effect('keeps Windows production logging best-effort at the ten-second contention bound', () =>
+    windowsEntriesAfterLockContention(10_025).pipe(
+      Effect.flatMap(entries =>
+        Effect.sync(() => {
+          expect(entries).toHaveLength(1);
+          expect(entries[0]?.event).toBe('invocation.finished');
+        }),
+      ),
+    ),
+  );
+
   effectIt.effect('does not replace existing log history when Windows reports non-POSIX file modes', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -423,6 +465,60 @@ function ownedTestHome(label: string) {
     );
     return {fs, home, path};
   });
+}
+
+function windowsEntriesAfterLockContention(releaseAfterMilliseconds: number) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const {fs, home, path} = yield* ownedTestHome(`windows-contention-${releaseAfterMilliseconds}`);
+      const lockPath = path.join(home, 'locks', 'production-log.lock');
+      const acquired = yield* Deferred.make<void>();
+      const contentionObserved = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const ownerFiber = yield* withExclusiveFileLock(
+        fs,
+        lockPath,
+        {
+          retryIntervalMilliseconds: 25,
+          staleAfterMilliseconds: 30_000,
+          waitTimeoutMilliseconds: 20_000,
+        },
+        Effect.gen(function* () {
+          yield* Deferred.succeed(acquired, undefined);
+          yield* Deferred.await(release);
+        }),
+      ).pipe(Effect.forkChild({startImmediately: true}));
+      yield* Deferred.await(acquired);
+
+      const observedFs = FileSystem.FileSystem.of({
+        ...fs,
+        writeFileString: (candidate, content, options) =>
+          fs
+            .writeFileString(candidate, content, options)
+            .pipe(
+              Effect.tapError(() =>
+                candidate === lockPath ? Deferred.succeed(contentionObserved, undefined) : Effect.void,
+              ),
+            ),
+      });
+      const nativeSystem = yield* SystemInfo;
+      const windowsSystem = SystemInfo.of({...nativeSystem, platform: 'win32'});
+      const writerFiber = yield* withProductionLogging(home, {component: 'cli', operation: 'logs'}, Effect.void).pipe(
+        Effect.provideService(FileSystem.FileSystem, observedFs),
+        Effect.provideService(SystemInfo, windowsSystem),
+        Effect.forkChild({startImmediately: true}),
+      );
+      yield* Deferred.await(contentionObserved);
+
+      yield* TestClock.adjust(releaseAfterMilliseconds);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(ownerFiber);
+      yield* TestClock.adjust(25);
+      yield* Fiber.join(writerFiber);
+
+      return parseEntries(yield* fs.readFileString(productionLogPath(path, home)));
+    }),
+  ).pipe(provideTestLayer(ApplicationLayer));
 }
 
 function productionLogPath(path: Path.Path, home: string): string {
