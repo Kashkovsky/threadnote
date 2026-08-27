@@ -1,3 +1,4 @@
+import {TestError} from '../helpers/test-error.js';
 import {execFile} from '../helpers/node-child-process.js';
 import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -9,6 +10,8 @@ import {expect, it} from 'vitest';
 
 const execute = promisify(execFile);
 const windowsIt = process.platform === 'win32' ? it : it.skip;
+const releaseMetadataProbeTimeoutMilliseconds = 180_000;
+const failureOutputLimit = 8_192;
 
 windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release', async () => {
   const root = await mkdtemp(join(tmpdir(), 'threadnote windows bootstrap-'));
@@ -127,14 +130,12 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
           THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}/selection`,
           THREADNOTE_RELEASE_SOURCE: `http://127.0.0.1:${server.port}/stable-winner-releases`,
         },
-        timeout: 60_000,
+        timeout: releaseMetadataProbeTimeoutMilliseconds,
       }).catch((cause: unknown) => cause);
-      expect(String((stableWinnerFailure as {readonly stdout?: unknown}).stdout)).toContain(
-        'Downloading Threadnote 9.0.0',
-      );
-      expect(String((stableWinnerFailure as {readonly stderr?: unknown}).stderr)).toContain(
-        'Release metadata does not match Threadnote 9.0.0',
-      );
+      expectInstallerFailure(stableWinnerFailure, 'stable-winner release metadata probe', {
+        stderr: 'Release metadata does not match Threadnote 9.0.0',
+        stdout: 'Downloading Threadnote 9.0.0',
+      });
       const stableOnlyFailure = await execute(
         join(powerShellDirectory, 'powershell.exe'),
         installerArguments.filter(argument => argument !== '-Beta'),
@@ -145,15 +146,13 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
             THREADNOTE_INSTALL_ROOT: join(root, 'stable-only-install'),
             THREADNOTE_RELEASE_DOWNLOAD_ROOT: `http://127.0.0.1:${server.port}/selection`,
           },
-          timeout: 60_000,
+          timeout: releaseMetadataProbeTimeoutMilliseconds,
         },
       ).catch((cause: unknown) => cause);
-      expect(String((stableOnlyFailure as {readonly stdout?: unknown}).stdout)).toContain(
-        'Downloading Threadnote 4.1.1',
-      );
-      expect(String((stableOnlyFailure as {readonly stderr?: unknown}).stderr)).toContain(
-        'Release metadata does not match Threadnote 4.1.1',
-      );
+      expectInstallerFailure(stableOnlyFailure, 'stable-only release metadata probe', {
+        stderr: 'Release metadata does not match Threadnote 4.1.1',
+        stdout: 'Downloading Threadnote 4.1.1',
+      });
       for (const rejectedVersion of ['4.0.0-beta.6', '4.0.0-beta.5', '4.0.0-beta.4']) {
         const requestsBefore = assetRequests.length;
         const failure = await execute(join(powerShellDirectory, 'powershell.exe'), installerArguments, {
@@ -282,3 +281,41 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
     await rm(root, {force: true, recursive: true});
   }
 });
+
+function expectInstallerFailure(
+  outcome: unknown,
+  scenario: string,
+  expected: {readonly stderr: string; readonly stdout: string},
+): void {
+  const failure = outcome as {
+    readonly code?: unknown;
+    readonly killed?: boolean;
+    readonly signal?: unknown;
+    readonly stderr?: unknown;
+    readonly stdout?: unknown;
+  };
+  const stderr = String(failure.stderr ?? '');
+  const stdout = String(failure.stdout ?? '');
+  const diagnostics = boundedFailureOutput(
+    `code: ${String(failure.code ?? 'unknown')}\nkilled: ${String(failure.killed ?? false)}\nsignal: ${String(
+      failure.signal ?? 'none',
+    )}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+  );
+  if (!(outcome instanceof Error)) {
+    throw new TestError(`${scenario} unexpectedly succeeded.\n${diagnostics}`);
+  }
+  if (failure.killed === true) {
+    throw new TestError(
+      `${scenario} exceeded the ${releaseMetadataProbeTimeoutMilliseconds} ms deadline (signal ${String(
+        failure.signal ?? 'unknown',
+      )}).\n${diagnostics}`,
+      {cause: outcome},
+    );
+  }
+  expect(stdout, diagnostics).toContain(expected.stdout);
+  expect(stderr, diagnostics).toContain(expected.stderr);
+}
+
+function boundedFailureOutput(output: string): string {
+  return output.length <= failureOutputLimit ? output : `${output.slice(0, failureOutputLimit)}\n[output truncated]`;
+}
