@@ -306,6 +306,11 @@ export function makeContextBriefCitationScaleGraphInstrumentation(): ContextBrie
           observeDatabasePath(databasePath);
           counters.statusObservations += 1;
         }).pipe(Effect.andThen(store.readySnapshot(databasePath, worktreeId))),
+      readySnapshotById: (databasePath, snapshotId) =>
+        Effect.sync(() => {
+          observeDatabasePath(databasePath);
+          counters.statusObservations += 1;
+        }).pipe(Effect.andThen(store.readySnapshotById(databasePath, snapshotId))),
       releaseSnapshotLease: (databasePath, token, options) =>
         store.releaseSnapshotLease(databasePath, token, options).pipe(
           Effect.tap(() =>

@@ -6,6 +6,7 @@ import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
 import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
 import type {
   CodeGraphEffectiveSnapshotCitationEvidence,
   CodeGraphEffectiveSnapshotCitationEvidenceRequest,
@@ -75,12 +76,12 @@ describe('memory code citation capture and validation', () => {
       };
       const first = yield* validateContextBriefMemoryCitations(CONFIG, {callerCwd: root, kind: 'repository'}, [
         candidate,
-      ]).pipe(provideTestLayer(fixture.layer));
+      ]).pipe(provideTestLayer(Layer.merge(fixture.layer, CodeGraphLanguagePackRegistry.layer)));
       const callsAfterFirstValidation = fixture.evidenceCalls();
       yield* TestClock.adjust('1 second');
       const second = yield* validateContextBriefMemoryCitations(CONFIG, {callerCwd: root, kind: 'repository'}, [
         candidate,
-      ]).pipe(provideTestLayer(fixture.layer));
+      ]).pipe(provideTestLayer(Layer.merge(fixture.layer, CodeGraphLanguagePackRegistry.layer)));
 
       expect(first[0]?.receipts.map(receipt => receipt.status)).toEqual(['exact', 'exact']);
       expect(first[0]?.cacheHits).toBeUndefined();

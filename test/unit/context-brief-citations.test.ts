@@ -5,6 +5,8 @@ import {Effect, Layer} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   aggregatePreciseStatus,
+  cleanPublishedCatalogFenceMatches,
+  cleanPublishedCatalogSnapshotMatches,
   cleanPublishedCitationFenceMatches,
   routeContextBriefWorksetValidation,
   validateContextBriefFileCitation,
@@ -21,6 +23,7 @@ import type {
 } from '../../src/code_graph/types.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphWorksetManifestDigest} from '../../src/code_graph/workset_catalog/workset.js';
+import type {CodeGraphWorksetCatalogPublishedMemberV1} from '../../src/code_graph/workset_catalog/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import type {ResolvedWorkset} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -51,6 +54,18 @@ const snapshot: CodeGraphSnapshot = {
   state: 'ready',
   symbolCount: 0,
   worktreeId: '2'.repeat(64),
+};
+const published: CodeGraphWorksetCatalogPublishedMemberV1 = {
+  checkoutId: '3'.repeat(64),
+  commitId: snapshot.commit,
+  ordinal: 0,
+  projectionDigest: '4'.repeat(64),
+  repositoryId: snapshot.repositoryId,
+  repositoryKey: 'threadnote',
+  snapshotDigest: '5'.repeat(64),
+  snapshotId: snapshot.id,
+  symbolCount: snapshot.symbolCount,
+  worktreeId: snapshot.worktreeId,
 };
 
 describe('Context Brief code-citation classification', () => {
@@ -111,6 +126,81 @@ describe('Context Brief code-citation classification', () => {
       ),
       {numRuns: 100},
     );
+  });
+
+  it('rejects every mutated catalog-first snapshot or final-fence component', () => {
+    const identity = {
+      checkoutId: published.checkoutId,
+      headCommit: published.commitId,
+      repositoryId: published.repositoryId,
+      worktreeId: published.worktreeId,
+    };
+    expect(cleanPublishedCatalogSnapshotMatches(published, snapshot)).toBe(true);
+    expect(
+      cleanPublishedCatalogFenceMatches(published, snapshot, identity, {
+        ...snapshot,
+        worktreeId: 'shared-clean-row'.padEnd(64, '0'),
+      }),
+    ).toBe(true);
+
+    const mutations = [
+      'selected-id',
+      'selected-repository',
+      'selected-commit',
+      'selected-symbols',
+      'selected-dirty',
+      'selected-state',
+      'identity-checkout',
+      'identity-repository',
+      'identity-worktree',
+      'identity-head',
+      'active-id',
+      'active-repository',
+      'active-commit',
+      'active-symbols',
+      'active-extractor',
+      'active-content',
+      'active-base',
+      'active-files',
+      'active-edges',
+      'active-overlay',
+      'active-dirty',
+      'active-state',
+    ] as const;
+    for (const mutation of mutations) {
+      const selected: CodeGraphSnapshot = {
+        ...snapshot,
+        ...(mutation === 'selected-id' ? {id: `cgsn_${'9'.repeat(40)}`} : {}),
+        ...(mutation === 'selected-repository' ? {repositoryId: '9'.repeat(64)} : {}),
+        ...(mutation === 'selected-commit' ? {commit: '9'.repeat(40)} : {}),
+        ...(mutation === 'selected-symbols' ? {symbolCount: snapshot.symbolCount + 1} : {}),
+        ...(mutation === 'selected-dirty' ? {dirty: true} : {}),
+        ...(mutation === 'selected-state' ? {state: 'retired' as const} : {}),
+      };
+      const observedIdentity = {
+        ...identity,
+        ...(mutation === 'identity-checkout' ? {checkoutId: '9'.repeat(64)} : {}),
+        ...(mutation === 'identity-repository' ? {repositoryId: '9'.repeat(64)} : {}),
+        ...(mutation === 'identity-worktree' ? {worktreeId: '9'.repeat(64)} : {}),
+        ...(mutation === 'identity-head' ? {headCommit: '9'.repeat(40)} : {}),
+      };
+      const active: CodeGraphSnapshot = {
+        ...snapshot,
+        ...(mutation === 'active-id' ? {id: `cgsn_${'9'.repeat(40)}`} : {}),
+        ...(mutation === 'active-repository' ? {repositoryId: '9'.repeat(64)} : {}),
+        ...(mutation === 'active-commit' ? {commit: '9'.repeat(40)} : {}),
+        ...(mutation === 'active-symbols' ? {symbolCount: snapshot.symbolCount + 1} : {}),
+        ...(mutation === 'active-extractor' ? {extractorSet: 'changed-extractor'} : {}),
+        ...(mutation === 'active-content' ? {graphContentId: `cgc_${'9'.repeat(40)}`} : {}),
+        ...(mutation === 'active-base' ? {baseSnapshotId: `cgsn_${'9'.repeat(40)}`} : {}),
+        ...(mutation === 'active-files' ? {fileCount: snapshot.fileCount + 1} : {}),
+        ...(mutation === 'active-edges' ? {edgeCount: snapshot.edgeCount + 1} : {}),
+        ...(mutation === 'active-overlay' ? {overlayFingerprint: 'changed-overlay'} : {}),
+        ...(mutation === 'active-dirty' ? {dirty: true} : {}),
+        ...(mutation === 'active-state' ? {state: 'retired' as const} : {}),
+      };
+      expect(cleanPublishedCatalogFenceMatches(published, selected, observedIdentity, active)).toBe(false);
+    }
   });
 
   it('classifies exact and relocated file evidence while abstaining on incomplete or ambiguous absence', () => {

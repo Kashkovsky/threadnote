@@ -1,6 +1,6 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
+import {type CommandExecutor, runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {platformPathFor, SystemInfo} from '../effect/system.js';
 import {CodeGraphRepositoryError, type RepositoryIdentity, type RepositoryIdentityExpectation} from './types.js';
 
@@ -201,6 +201,114 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
     return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
   }
   return identity;
+});
+
+export interface PublishedRepositoryReadFenceInterlock {
+  /** @internal Deterministic race hook for focused validation tests. */
+  readonly afterInitialIdentity?: () => Effect.Effect<void, unknown, CommandExecutor>;
+  /** @internal Deterministic race hook for focused validation tests. */
+  readonly afterWorktreeObservation?: () => Effect.Effect<void, unknown, CommandExecutor>;
+}
+
+/**
+ * Bracket repository identity and worktree observations so caller retargets
+ * and edits across an earlier observation cannot satisfy the closing proof.
+ */
+export const resolvePublishedRepositoryReadFence = Effect.fn('codeGraph.resolvePublishedRepositoryReadFence')(
+  function* (cwd: string, expected: RepositoryIdentityExpectation, interlock?: PublishedRepositoryReadFenceInterlock) {
+    const system = yield* SystemInfo;
+    const initial = yield* observeRepositoryReadFenceMetadata(cwd);
+    yield* interlock?.afterInitialIdentity?.() ?? Effect.void;
+    const initialWorktree = yield* observeRepositoryReadFenceWorktree(initial.repoRoot, initial.objectFormat);
+    if (initialWorktree.headCommit !== initial.headCommit) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository changed during the graph read.'));
+    }
+    yield* interlock?.afterWorktreeObservation?.() ?? Effect.void;
+    const [final, remoteResult] = yield* Effect.all(
+      [observeRepositoryReadFenceMetadata(cwd), runGit(cwd, ['remote', 'get-url', 'origin'], true)],
+      {concurrency: 2},
+    ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+    if (
+      final.repoRoot !== initial.repoRoot ||
+      final.gitCommonDirectory !== initial.gitCommonDirectory ||
+      final.objectFormat !== initial.objectFormat ||
+      final.headCommit !== initial.headCommit
+    ) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
+    }
+    const remoteIdentity =
+      remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
+    const repositorySource =
+      remoteIdentity ?? `local:${normalizeLocalIdentity(final.gitCommonDirectory, system.platform)}`;
+    const identity = {
+      checkoutId: checkoutIdForGitCommonDirectory(final.gitCommonDirectory),
+      headCommit: final.headCommit,
+      repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
+      worktreeId: worktreeIdForRoot(final.repoRoot),
+    };
+    if (!repositoryIdentityMatchesExpectation(identity, expected)) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
+    }
+    const finalWorktree = yield* observeRepositoryReadFenceWorktree(final.repoRoot, final.objectFormat);
+    if (finalWorktree.headCommit !== final.headCommit) {
+      return yield* Effect.fail(new CodeGraphRepositoryError('Repository changed during the graph read.'));
+    }
+    return {...identity, worktreeChanged: initialWorktree.changed || finalWorktree.changed};
+  },
+);
+
+const observeRepositoryReadFenceWorktree = Effect.fn('codeGraph.observeRepositoryReadFenceWorktree')(function* (
+  repoRoot: string,
+  objectFormat: RepositoryIdentity['objectFormat'],
+) {
+  const status = yield* runCommandEffect(
+    'git',
+    ['--no-optional-locks', '-C', repoRoot, 'status', '--porcelain=v2', '-z', '--branch', '--untracked-files=normal'],
+    {maxOutputBytes: REPOSITORY_STATUS_OBSERVATION_BYTES_MAXIMUM, timeoutMs: 10_000},
+  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+  const worktree = parseRepositoryIdentityWorktreeObservation(status.stdout, objectFormat);
+  if (worktree === undefined) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Repository changed during the graph read.'));
+  }
+  return worktree;
+});
+
+const observeRepositoryReadFenceMetadata = Effect.fn('codeGraph.observeRepositoryReadFenceMetadata')(function* (
+  cwd: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const result = yield* runGit(cwd, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--show-toplevel',
+    '--git-common-dir',
+    '--show-object-format',
+    'HEAD',
+  ]).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository read fence could not be revalidated.')));
+  const metadata = result.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+  if (metadata.length !== 4) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+  }
+  const repoRoot = yield* fs.realPath(metadata[0]!);
+  const commonRaw = metadata[1]!;
+  const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
+  const gitCommonDirectory = yield* fs.realPath(commonAbsolute);
+  const objectFormat = metadata[2]!;
+  if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
+    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+  }
+  const headCommit = metadata[3]!;
+  const expectedLength = objectFormat === 'sha256' ? 64 : 40;
+  if (!new RegExp(`^[0-9a-f]{${expectedLength}}$`, 'u').test(headCommit)) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+  }
+  return {
+    gitCommonDirectory,
+    headCommit,
+    objectFormat: objectFormat as RepositoryIdentity['objectFormat'],
+    repoRoot,
+  };
 });
 
 /**
