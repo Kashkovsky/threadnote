@@ -186,7 +186,7 @@ async function codeGraphImpactQueryWorkerProgram() {
       processLease.withStandaloneProcessLease(
         processDiagnostics.withSignalTransparentThreadnoteWorkerRegistration(
           home,
-          'graph-diagnostics-worker',
+          'graph-query-worker',
           'impact-query',
           worker.codeGraphImpactQueryWorkerProgram(home),
         ),
