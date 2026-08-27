@@ -28,9 +28,9 @@ const features: Array<{
     icon: 'memory',
     accent: 'teal',
     label: 'Durable memory',
-    title: 'The useful part survives the chat.',
-    body: 'Decisions, handoffs, workflows, and lessons become scoped Markdown with stable URIs—not another transcript dump.',
-    detail: 'Recall → inspect pointer → read canonical record',
+    title: 'The useful part survives—and can check its sources.',
+    body: 'Decisions, handoffs, workflows, and lessons become scoped Markdown with stable URIs. Important claims can cite exact files or symbols, while older uncited memories stay recallable.',
+    detail: 'Optional citations · stale-link warnings · legacy recall',
   },
   {
     icon: 'local',
@@ -78,12 +78,12 @@ const workflow = [
   {
     number: '01',
     title: 'Recall what was learned',
-    body: 'Threadnote ranks scoped memories and returns small, explainable pointers.',
+    body: 'Threadnote ranks scoped memories—including older uncited records—and returns small, explainable pointers.',
   },
   {
     number: '02',
-    title: 'Inspect what exists',
-    body: 'The code graph answers current-source questions without mixing them into historical recall.',
+    title: 'Check the current evidence',
+    body: 'Context Brief validates optional citations while the graph answers current-source questions; neither rewrites the memory.',
   },
   {
     number: '03',
@@ -93,7 +93,7 @@ const workflow = [
   {
     number: '04',
     title: 'Preserve the outcome',
-    body: 'Update a stable durable memory, leave a concise handoff, and optionally publish the reusable part.',
+    body: 'Update stable memory, cite consequential source claims when useful, leave a concise handoff, and optionally publish the reusable part.',
   },
 ];
 
@@ -307,7 +307,7 @@ function GraphSearchShowcase() {
 export default function LandingPage() {
   setDocumentMeta(
     'Your team remembers',
-    'Local-first engineering memory and large-scale polyglot code graph search for every coding agent.',
+    'Local-first engineering memory with optional code citations, honest freshness warnings, and large-scale polyglot graph search for every coding agent.',
   );
 
   return (
@@ -323,8 +323,8 @@ export default function LandingPage() {
             <span>Every coding agent can use it.</span>
           </h1>
           <p className="hero__lede">
-            Local-first engineering memory and large-scale polyglot graph search for Codex, Claude, Cursor, Copilot, and
-            the next agent you try.
+            Local-first engineering memory that can cite current code and warn when evidence moves or changes, plus
+            large-scale polyglot graph search for Codex, Claude, Cursor, Copilot, and the next agent you try.
           </p>
           <div className="hero__actions">
             <a className="button" href={docsArticleHref('installation')}>
@@ -385,11 +385,12 @@ export default function LandingPage() {
 
       <section className="content-section content-section--trace">
         <header className="section-heading">
-          <span className="eyebrow">Context that can show its work</span>
-          <h2>One prompt. Two kinds of evidence. No context archaeology.</h2>
+          <span className="eyebrow">Context that can check its sources</span>
+          <h2>One prompt. Memory, current code, and honest freshness.</h2>
           <p>
             Memory explains what people learned and decided. The graph explains what the current worktree contains.
-            Agents call both deliberately.
+            Optional citations let Context Brief keep warnings beside moved, changed, deleted, or unverifiable evidence;
+            uncited memories still participate in recall.
           </p>
         </header>
         <AgentTrace scenario={heroScenario} />
