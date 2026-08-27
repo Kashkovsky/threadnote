@@ -52,6 +52,15 @@ describe('Context Brief citation scale benchmark', () => {
     );
   });
 
+  it('fails when a published Workset omits either active-view fence observation', () => {
+    const profile = budget.profiles.find(candidate => candidate.id === 'workset-50')!;
+    const observation = scaleObservation(profile, {
+      activeViewFenceObservations: profile.citedRepositories,
+    });
+    const evaluated = evaluateContextBriefCitationScaleProfile(budget, profile.id, observation, [observation]);
+    expect(evaluated.failures).toContain('workset-50 observation 0 made 16/32 active-view fence observations');
+  });
+
   it('keeps aggregation invariant under sample order while enforcing fan-out counters', () => {
     const profile = budget.profiles.find(candidate => candidate.id === 'workset-50')!;
     fc.assert(
@@ -118,6 +127,7 @@ function scaleObservation(
     addedRssBytes: 1_024,
     contextBriefMilliseconds: 10,
     counters: {
+      activeViewFenceObservations: profile.id === 'local-100k' ? 0 : profile.citedRepositories * 2,
       coldGraphBuilds: 0,
       distinctGraphDatabasePaths: profile.citedRepositories,
       effectiveEvidenceBatches: profile.citedRepositories,
@@ -127,7 +137,7 @@ function scaleObservation(
       productionStoreSessionCalls: profile.citedRepositories,
       snapshotLeaseAcquisitions: profile.citedRepositories,
       snapshotLeaseReleases: profile.citedRepositories,
-      statusObservations: profile.citedRepositories * 2,
+      statusObservations: profile.citedRepositories * (profile.id === 'local-100k' ? 2 : 1),
       ...counters,
     },
     estimatedTokens: 1_000,

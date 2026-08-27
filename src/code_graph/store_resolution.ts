@@ -44,6 +44,7 @@ import {
   markSnapshotLeaseRetirementBaton,
 } from './store_reconciliation.js';
 import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconciliation_core.js';
+import {nextCodeGraphActiveViewActivationTimestamp} from './store_active_views.js';
 import {CodeGraphPromotionCapacityPlanChanged, type EdgeRow} from './store_internal_models.js';
 import {lastStatementChangeCount, nextPersistentActivationBatchRows} from './store_activation_core.js';
 
@@ -867,18 +868,24 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           new CodeGraphStoreError(`Ready snapshot ${snapshotId} was built by an incompatible extractor generation.`),
         );
       }
-      const active = yield* sql.unsafe<{readonly snapshot_id: unknown}>(
+      const active = yield* sql.unsafe<{readonly activated_at: unknown; readonly snapshot_id: unknown}>(
         `SELECT CASE
            WHEN typeof(snapshot_id) = 'text' AND length(CAST(snapshot_id AS BLOB)) BETWEEN 45 AND 67
-           THEN snapshot_id ELSE NULL END AS snapshot_id
+           THEN snapshot_id ELSE NULL END AS snapshot_id,
+           CASE WHEN typeof(activated_at) = 'text' AND length(CAST(activated_at AS BLOB)) = 24
+             THEN activated_at ELSE NULL END AS activated_at
          FROM active_snapshots WHERE worktree_id = ? LIMIT 2`,
         [identity.worktreeId],
       );
       const displacedSnapshotId = active[0]?.snapshot_id;
+      const displacedActivatedAt = active[0]?.activated_at;
       if (
         active.length > 1 ||
         (displacedSnapshotId !== undefined &&
-          (typeof displacedSnapshotId !== 'string' || !CODE_GRAPH_SNAPSHOT_ID.test(displacedSnapshotId)))
+          (typeof displacedSnapshotId !== 'string' ||
+            !CODE_GRAPH_SNAPSHOT_ID.test(displacedSnapshotId) ||
+            typeof displacedActivatedAt !== 'string' ||
+            !validCanonicalTimestamp(displacedActivatedAt)))
       ) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
       }
@@ -918,10 +925,17 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
       ) {
         return yield* Effect.fail(new CodeGraphPromotionCapacityPlanChanged());
       }
+      const activatedAt = nextCodeGraphActiveViewActivationTimestamp(capacity.activatedAt, [
+        typeof displacedActivatedAt === 'string' ? displacedActivatedAt : undefined,
+        typeof removedAt === 'string' ? removedAt : undefined,
+      ]);
+      if (activatedAt === undefined) {
+        return yield* Effect.fail(new CodeGraphStoreError('Code graph active view generation is invalid.'));
+      }
       const now = yield* Clock.currentTimeMillis;
       yield* sql`
         INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at)
-        VALUES (${identity.worktreeId}, ${snapshotId}, ${capacity.activatedAt})
+        VALUES (${identity.worktreeId}, ${snapshotId}, ${activatedAt})
         ON CONFLICT(worktree_id) DO UPDATE SET
           snapshot_id = excluded.snapshot_id,
           activated_at = excluded.activated_at

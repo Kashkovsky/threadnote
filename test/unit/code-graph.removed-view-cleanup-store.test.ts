@@ -479,6 +479,51 @@ describe('removed code graph view cleanup queue', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('keeps view generations monotonic through a same-clock promote/remove ABA sequence', () =>
+    withFixture('threadnote-removed-cleanup-generation-aba-', ({databasePath, identity}) =>
+      Effect.gen(function* () {
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        const initialGeneration = '2099-01-01T00:00:00.000Z';
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            seedSnapshot(database, SNAPSHOT_ID, WORKTREE_ID, 'ready');
+            seedSnapshot(database, NEW_SNAPSHOT_ID, WORKTREE_ID, 'ready');
+            database
+              .query('INSERT INTO active_snapshots (worktree_id, snapshot_id, activated_at) VALUES (?, ?, ?)')
+              .run(WORKTREE_ID, NEW_SNAPSHOT_ID, initialGeneration);
+          } finally {
+            database.close(false);
+          }
+        });
+        yield* Effect.acquireRelease(store.acquireSnapshotLease(databasePath, SNAPSHOT_ID, 60_000), token =>
+          store.releaseSnapshotLease(databasePath, token).pipe(Effect.orDie),
+        );
+        yield* Effect.acquireRelease(store.acquireSnapshotLease(databasePath, NEW_SNAPSHOT_ID, 60_000), token =>
+          store.releaseSnapshotLease(databasePath, token).pipe(Effect.orDie),
+        );
+
+        const firstB = yield* store.loadActiveViewFence(databasePath, WORKTREE_ID);
+        expect(firstB).toMatchObject({activatedAt: initialGeneration, snapshotId: NEW_SNAPSHOT_ID});
+        yield* store.removeView(databasePath, WORKTREE_ID, NEW_SNAPSHOT_ID);
+        const removedB = readRemovedViewGeneration(databasePath);
+        yield* store.promote(databasePath, identity, SNAPSHOT_ID);
+        const activeA = yield* store.loadActiveViewFence(databasePath, WORKTREE_ID);
+        yield* store.removeView(databasePath, WORKTREE_ID, SNAPSHOT_ID);
+        const removedA = readRemovedViewGeneration(databasePath);
+        yield* store.promote(databasePath, identity, NEW_SNAPSHOT_ID);
+        const finalB = yield* store.loadActiveViewFence(databasePath, WORKTREE_ID);
+
+        expect(
+          [firstB!.activatedAt, removedB, activeA!.activatedAt, removedA, finalB!.activatedAt].map(Date.parse),
+        ).toEqual([0, 1, 2, 3, 4].map(offset => Date.parse(initialGeneration) + offset));
+        expect(finalB).toMatchObject({snapshotId: NEW_SNAPSHOT_ID});
+        expect(finalB!.activatedAt).not.toBe(firstB!.activatedAt);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('binds one shared snapshot removal without disturbing the other worktree authority', () =>
     withFixture('threadnote-removed-cleanup-shared-snapshot-', ({databasePath}) =>
       Effect.gen(function* () {
@@ -1349,6 +1394,19 @@ function readLeaseCarriers(databasePath: string): readonly string[] {
       )
       .all()
       .map(row => row.token);
+  } finally {
+    database.close(false);
+  }
+}
+
+function readRemovedViewGeneration(databasePath: string): string {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const row = database
+      .query<{readonly removed_at: string}, [string]>('SELECT removed_at FROM removed_views WHERE worktree_id = ?')
+      .get(WORKTREE_ID);
+    if (row === null) throw new TestError('missing removed view generation');
+    return row.removed_at;
   } finally {
     database.close(false);
   }

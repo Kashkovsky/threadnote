@@ -14,6 +14,7 @@ import type {
 } from './citation_primitives.js';
 import type {
   CodeGraphActivationProgressCallback,
+  CodeGraphActiveViewFence,
   CodeGraphActiveViewIdentity,
   CodeGraphAnalysisEdgeAggregatePage,
   CodeGraphAnalysisSummary,
@@ -363,6 +364,10 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     limit: number,
   ) => Effect.Effect<readonly CodeGraphActiveViewIdentity[], CodeGraphStoreError>;
+  readonly loadActiveViewFence: (
+    databasePath: string,
+    worktreeId: string,
+  ) => Effect.Effect<CodeGraphActiveViewFence | undefined, CodeGraphStoreError>;
   readonly loadVisualizationCatalogs: (
     databasePath: string,
     metrics?: 'complete' | 'deferred',

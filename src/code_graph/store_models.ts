@@ -482,6 +482,13 @@ export interface CodeGraphActiveViewIdentity {
   readonly worktreeId: string;
 }
 
+/** Exact active-pointer generation used to fence a read across external work. */
+export interface CodeGraphActiveViewFence {
+  readonly activatedAt: string;
+  readonly snapshotId: string;
+  readonly worktreeId: string;
+}
+
 export interface CodeGraphVisualizationRelationshipSummary {
   readonly incoming: number;
   readonly outgoing: number;

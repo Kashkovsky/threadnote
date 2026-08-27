@@ -26,6 +26,7 @@ export interface ContextBriefCitationScaleBudgetV1 {
 }
 
 export interface ContextBriefCitationScaleCountersV1 {
+  readonly activeViewFenceObservations: number;
   readonly coldGraphBuilds: number;
   readonly distinctGraphDatabasePaths: number;
   readonly effectiveEvidenceBatches: number;
@@ -55,6 +56,7 @@ export interface ContextBriefCitationScaleObservationV1 {
 export interface ContextBriefCitationScaleProfileResultV1 {
   readonly coldReadyGraphObservation: ContextBriefCitationScaleObservationV1;
   readonly counters: {
+    readonly maximumActiveViewFenceObservations: number;
     readonly maximumDistinctGraphDatabasePaths: number;
     readonly maximumEffectiveEvidenceBatches: number;
     readonly maximumLeaseBalance: number;
@@ -163,6 +165,7 @@ export function evaluateContextBriefCitationScaleProfile(
     ),
   };
   const counters = {
+    maximumActiveViewFenceObservations: maximum(all, observation => observation.counters.activeViewFenceObservations),
     maximumDistinctGraphDatabasePaths: maximum(all, observation => observation.counters.distinctGraphDatabasePaths),
     maximumEffectiveEvidenceBatches: maximum(all, observation => observation.counters.effectiveEvidenceBatches),
     maximumLeaseBalance: maximum(all, observation => observation.counters.leaseBalance),
@@ -233,6 +236,8 @@ function observationFailures(
 ): readonly string[] {
   const prefix = `${profile.id} observation ${index}`;
   const counters = observation.counters;
+  const expectedStatusObservations = profile.citedRepositories * (profile.id === 'local-100k' ? 2 : 1);
+  const expectedActiveViewFenceObservations = profile.id === 'local-100k' ? 0 : profile.citedRepositories * 2;
   return [
     observation.profile === profile.id ? '' : `${prefix} has wrong profile ${observation.profile}`,
     observation.selectedMemories === profile.selectedMemories
@@ -256,9 +261,12 @@ function observationFailures(
     counters.effectiveEvidenceBatches === profile.citedRepositories
       ? ''
       : `${prefix} issued ${counters.effectiveEvidenceBatches}/${profile.citedRepositories} repository evidence batches`,
-    counters.statusObservations === profile.citedRepositories * 2
+    counters.statusObservations === expectedStatusObservations
       ? ''
-      : `${prefix} made ${counters.statusObservations}/${profile.citedRepositories * 2} initial/final status observations`,
+      : `${prefix} made ${counters.statusObservations}/${expectedStatusObservations} snapshot status observations`,
+    counters.activeViewFenceObservations === expectedActiveViewFenceObservations
+      ? ''
+      : `${prefix} made ${counters.activeViewFenceObservations}/${expectedActiveViewFenceObservations} active-view fence observations`,
     counters.snapshotLeaseAcquisitions === profile.citedRepositories &&
     counters.snapshotLeaseReleases === profile.citedRepositories &&
     counters.leaseBalance === 0

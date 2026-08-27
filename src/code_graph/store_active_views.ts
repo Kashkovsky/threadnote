@@ -1,9 +1,28 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {type CodeGraphActiveViewIdentity} from './store_models.js';
+import {type CodeGraphActiveViewFence, type CodeGraphActiveViewIdentity} from './store_models.js';
+import {CODE_GRAPH_SNAPSHOT_ID, validCanonicalTimestamp} from './store_reconciliation_core.js';
+import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './store_removed_view_schema_contracts.js';
 import {configureConnection, tableExists} from './store_session.js';
+import {CodeGraphStoreError} from './types.js';
 
 const ACTIVE_VIEW_IDENTITY_LIMIT_MAXIMUM = 64;
+
+/** Advance a canonical wall-clock candidate past every durable view generation. */
+export function nextCodeGraphActiveViewActivationTimestamp(
+  candidate: string,
+  previous: readonly (string | undefined)[],
+): string | undefined {
+  if (!validCanonicalTimestamp(candidate)) return undefined;
+  let nextMilliseconds = Date.parse(candidate);
+  for (const value of previous) {
+    if (value === undefined) continue;
+    if (!validCanonicalTimestamp(value)) return undefined;
+    nextMilliseconds = Math.max(nextMilliseconds, Date.parse(value) + 1);
+  }
+  if (nextMilliseconds > MAXIMUM_CANONICAL_DATE_MILLISECONDS) return undefined;
+  return new Date(nextMilliseconds).toISOString();
+}
 
 /** Cheap bounded pointer read for Manager's cross-process catalog revision. */
 export const selectActiveViewIdentities = Effect.fn('codeGraph.selectActiveViewIdentities')(function* (limit: number) {
@@ -46,4 +65,36 @@ export const selectActiveViewIdentities = Effect.fn('codeGraph.selectActiveViewI
         worktreeId: row.worktree_id,
       }) satisfies CodeGraphActiveViewIdentity,
   );
+});
+
+/** Read one exact active-pointer generation without opening another database session. */
+export const selectActiveViewFence = Effect.fn('codeGraph.selectActiveViewFence')(function* (worktreeId: string) {
+  if (!/^[0-9a-f]{64}$/u.test(worktreeId)) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph worktree identity is invalid.'));
+  }
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const rows = yield* sql.unsafe<{
+    readonly activated_at: unknown;
+    readonly snapshot_id: unknown;
+  }>(
+    `SELECT activated_at, snapshot_id
+     FROM active_snapshots
+     WHERE worktree_id = ?
+     LIMIT 2`,
+    [worktreeId],
+  );
+  if (rows.length === 0) return undefined;
+  const activatedAt = rows[0]?.activated_at;
+  const snapshotId = rows[0]?.snapshot_id;
+  if (
+    rows.length !== 1 ||
+    typeof activatedAt !== 'string' ||
+    !validCanonicalTimestamp(activatedAt) ||
+    typeof snapshotId !== 'string' ||
+    !CODE_GRAPH_SNAPSHOT_ID.test(snapshotId)
+  ) {
+    return yield* Effect.fail(new CodeGraphStoreError('Code graph active view authority is invalid.'));
+  }
+  return {activatedAt, snapshotId, worktreeId} satisfies CodeGraphActiveViewFence;
 });

@@ -34,11 +34,12 @@ The profiles are local/96 citations, workset-50/16 cited repositories/64 citatio
 repositories/96 citations. Every warmup and measured sample selects a different set of canonical schema-v4 memories,
 so validation receipts are not process-cache hits. The artifact records 25-sample p95 latency after five warmups, added
 RSS, selected memories, all validation receipts, distinct graph database paths, production graph-store sessions,
-snapshot leases, effective-evidence batches, status observations, maintenance requests, and cold graph builds. The
+snapshot leases, effective-evidence batches, snapshot-status observations, active-view fence observations, maintenance
+requests, and cold graph builds. The
 session counter wraps calls that reach the real `CodeGraphStore.withSession` implementation against the prebuilt SQLite
 files; OS file-descriptor opens are not separately counted. The production query boundary owns that session across the
-initial status, lease, evidence read, final status fence, and release. Lease/evidence/status operations remain separate
-counters so session reuse cannot hide fan-out or skipped work.
+snapshot selection, lease, evidence read, two-sided active-view fence, and release. Lease, evidence, snapshot-status,
+and active-view-fence operations remain separate counters so session reuse cannot hide fan-out or skipped work.
 
 ```sh
 # Scheduled/manual release-quality distribution; ordinary pull-request CI does not run this job.
