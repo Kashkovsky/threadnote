@@ -1,4 +1,5 @@
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
+import {runBunBuild} from './effect/bun-build.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Console, Effect, FileSystem, Path} from 'effect';
@@ -65,7 +66,7 @@ const build = Effect.gen(function* () {
     yield* fs.copyFile(path.join(root, file), path.join(outputRoot, file));
   }
 
-  yield* runBuild({
+  yield* runBunBuild({
     compile: {
       autoloadBunfig: false,
       autoloadDotenv: false,
@@ -90,7 +91,7 @@ const build = Effect.gen(function* () {
     yield* fs.chmod(executablePath, 0o755);
   }
 
-  yield* runBuild({
+  yield* runBunBuild({
     entrypoints: [path.join(root, 'src', 'manager_ui.tsx')],
     format: 'iife',
     minify: true,
@@ -214,28 +215,8 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function runBuild(options: Bun.BuildConfig) {
-  return Effect.tryPromise({
-    try: () => Bun.build(options),
-    catch: cause => new ScriptError('Bun could not build the standalone artifact.', {cause}),
-  }).pipe(
-    Effect.flatMap(result =>
-      result.success
-        ? Effect.void
-        : Effect.fail(
-            new ScriptError(
-              result.logs
-                .map(log => log.message)
-                .filter(Boolean)
-                .join('\n'),
-            ),
-          ),
-    ),
-  );
-}
-
 function bundleNativeRuntime(entrypoint: string, outfile: string, nativePackage: string, nativeRuntimeVersion: string) {
-  return runBuild({
+  return runBunBuild({
     entrypoints: [entrypoint],
     minify: true,
     naming: outfile.replaceAll('\\', '/').split('/').at(-1),
