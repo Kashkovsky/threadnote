@@ -2,6 +2,12 @@ name: Telemetry gateway
 
 on:
   workflow_dispatch:
+    inputs:
+      redeploy_production:
+        description: Redeploy and prove the exact selected main revision
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [main]
   pull_request:
@@ -13,7 +19,7 @@ permissions:
 # A production rollout and its storage proof are one serialized operation. Pull
 # request and manual validation runs use a unique group and remain parallel.
 concurrency:
-  group: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'telemetry-production-gateway' || format('telemetry-gateway-{0}', github.run_id) }}
+  group: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.redeploy_production == true)) && 'telemetry-production-gateway' || format('telemetry-gateway-{0}', github.run_id) }}
   queue: max
   cancel-in-progress: false
 
@@ -37,6 +43,7 @@ jobs:
         shell: bash
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          REDEPLOY_PRODUCTION: ${{ inputs.redeploy_production }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -47,6 +54,10 @@ jobs:
 
           if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
             validate=true
+            if [[ "$REDEPLOY_PRODUCTION" == 'true' ]]; then
+              deploy=true
+              supersede=true
+            fi
           else
             if [[ "$GITHUB_EVENT_NAME" == 'pull_request' ]]; then
               base_sha="$PR_BASE_SHA"
@@ -165,7 +176,7 @@ jobs:
     name: Deploy immutable production image
     needs: [classify, validate, validate-fly]
     if: >-
-      github.event_name == 'push' &&
+      github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/main' &&
       needs.classify.outputs.deploy == 'true' &&
       needs.validate.result == 'success' &&
@@ -485,6 +496,7 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           DEPLOYED: ${{ needs.deploy.outputs.deployed }}
           CANARY_RESULT: ${{ needs.storage-canary.result }}
+          REDEPLOY_PRODUCTION: ${{ inputs.redeploy_production }}
         run: |
           set -euo pipefail
           [[ "$CLASSIFY_RESULT" == 'success' ]]
@@ -501,7 +513,9 @@ jobs:
             [[ "$FLY_VALIDATE_RESULT" == 'skipped' ]]
           fi
 
-          if [[ "$GITHUB_EVENT_NAME" == 'push' && "$GITHUB_REF" == 'refs/heads/main' && "$DEPLOY_REQUIRED" == 'true' ]]; then
+          if [[ "$GITHUB_REF" == 'refs/heads/main' && "$DEPLOY_REQUIRED" == 'true' &&
+            ( "$GITHUB_EVENT_NAME" == 'push' ||
+              ( "$GITHUB_EVENT_NAME" == 'workflow_dispatch' && "$REDEPLOY_PRODUCTION" == 'true' ) ) ]]; then
             [[ "$DEPLOY_RESULT" == 'success' ]]
             if [[ "$DEPLOYED" == 'true' ]]; then
               [[ "$CANARY_RESULT" == 'success' ]]

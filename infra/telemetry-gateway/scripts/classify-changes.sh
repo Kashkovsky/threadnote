@@ -19,7 +19,6 @@ while IFS= read -r -d '' path; do
 
   case "$path" in
     .dockerignore | fly.toml | \
-      .github/workflows/telemetry-gateway.yml | \
       infra/telemetry-gateway/Dockerfile | \
       infra/telemetry-gateway/collector.yaml | \
       infra/telemetry-gateway/go.mod | \

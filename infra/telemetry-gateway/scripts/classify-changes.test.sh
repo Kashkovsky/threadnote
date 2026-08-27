@@ -28,7 +28,6 @@ assert_classification "$production" infra/telemetry-gateway/telemetry-schema-v3.
 assert_classification "$production" infra/telemetry-gateway/telemetry-schema-v4.json
 assert_classification "$production" infra/telemetry-gateway/telemetry-schema-v5.json
 assert_classification "$production" .dockerignore
-assert_classification "$production" .github/workflows/telemetry-gateway.yml
 assert_classification "$production" docs/telemetry.md infra/telemetry-gateway/schema.go
 # `git diff --no-renames` presents a move as the old deletion plus new addition;
 # the removed runtime path must keep the pair deployable.
@@ -38,6 +37,7 @@ assert_classification "$validation_only" infra/telemetry-gateway/gateway_test.go
 assert_classification "$validation_only" infra/telemetry-gateway/internal/budget/budget_test.go
 assert_classification "$validation_only" infra/telemetry-gateway/cmd/canary/main.go
 assert_classification "$validation_only" infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json
+assert_classification "$validation_only" .github/workflows/telemetry-gateway.yml
 assert_classification "$validation_only" docs/operations/telemetry-production.md
 assert_classification "$validation_only" infra/telemetry-gateway/scripts/classify-changes.sh
 
