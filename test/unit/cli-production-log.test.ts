@@ -53,6 +53,12 @@ describe('CLI production log policy', () => {
       operation: 'migrate-lifecycle',
       writeProductionLog: false,
     });
+    expect(
+      inspectCliInvocation(['init-manifest', '--replace', '--dry-run', '--repo', '/tmp/repository']),
+    ).toMatchObject({
+      operation: 'init-manifest',
+      writeProductionLog: false,
+    });
     for (const command of ['publish', 'publish-artifact', 'publish-bundle']) {
       expect(inspectCliInvocation(['share', command, '--preview'])).toMatchObject({
         operation: 'share',

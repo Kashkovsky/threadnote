@@ -94,7 +94,9 @@ function scanCliArguments(arguments_: readonly string[]) {
     const argument = arguments_[index] ?? '';
     const equalsIndex = argument.indexOf('=');
     const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
-    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
+    const valueKind = booleanFlagNames.has(flagName)
+      ? undefined
+      : (valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName));
     if (valueKind !== undefined) {
       const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
       if (flagName === '--home') {
