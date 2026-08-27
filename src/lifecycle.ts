@@ -12,7 +12,12 @@ import {sha256FileHex} from './effect/digest.js';
 import {hasManagedClaudeHooks, runHooksInstall} from './hooks.js';
 import {localAiDoctorCheck} from './effect/local-ai.js';
 import {SystemInfo} from './effect/system.js';
-import {activateStandaloneRelease, pruneStandaloneReleases, withStandaloneInstallationLock} from './installations.js';
+import {
+  activeInstalledVersion,
+  activateStandaloneRelease,
+  pruneStandaloneReleases,
+  withStandaloneInstallationLock,
+} from './installations.js';
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {legacyProcessDoctorCheck} from './process_diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
@@ -78,6 +83,11 @@ const LAYOUT_RECEIPT = 'layout.json';
 type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 interface RunInstallOptions extends InstallOptions {
   readonly skipRecallIndexes?: boolean;
+  readonly skipReleaseLifecycle?: boolean;
+}
+
+interface RunRepairOptions extends RepairOptions {
+  readonly skipReleaseLifecycle?: boolean;
 }
 
 interface RunDoctorOptions extends DoctorOptions {
@@ -256,16 +266,18 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
   const dryRun = options.dryRun === true;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const releaseRoot = yield* toolRoot();
-  const legacyCleanup = yield* planLegacyInstallationCleanup();
-  yield* withStandaloneInstallationLock(
-    Effect.gen(function* () {
-      yield* activateStandaloneRelease(releaseRoot, dryRun);
-      yield* applyLegacyInstallationCleanup(legacyCleanup, dryRun);
-      yield* installCommandShim(dryRun);
-    }),
-    dryRun,
-  );
+  const releaseRoot = options.skipReleaseLifecycle === true ? undefined : yield* toolRoot();
+  if (releaseRoot !== undefined) {
+    const legacyCleanup = yield* planLegacyInstallationCleanup();
+    yield* withStandaloneInstallationLock(
+      Effect.gen(function* () {
+        yield* activateStandaloneRelease(releaseRoot, dryRun);
+        yield* applyLegacyInstallationCleanup(legacyCleanup, dryRun);
+        yield* installCommandShim(dryRun);
+      }),
+      dryRun,
+    );
+  }
   const layoutMigration = yield* migrateThreadnoteStorageLayout({
     apply: !dryRun,
     home: config.agentContextHome,
@@ -341,17 +353,20 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
         : 'Install complete. Semantic recall is ready. Next: `threadnote seed` to add repository resources.',
     );
   }
-  yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
+  if (releaseRoot !== undefined) {
+    yield* withStandaloneInstallationLock(pruneStandaloneReleases(releaseRoot, dryRun), dryRun);
+  }
   return embedding;
 });
 
-export const runRepair = Effect.fn('lifecycle.repair')(function* (config: RuntimeConfig, options: RepairOptions) {
+export const runRepair = Effect.fn('lifecycle.repair')(function* (config: RuntimeConfig, options: RunRepairOptions) {
   const dryRun = options.dryRun === true;
   yield* Console.log('Repairing the self-contained Threadnote home.');
   const embedding = yield* runInstall(config, {
     dryRun,
     printNextSteps: false,
     skipRecallIndexes: true,
+    skipReleaseLifecycle: options.skipReleaseLifecycle,
     start: false,
   });
   if (!dryRun) {
@@ -392,6 +407,31 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
   }
+});
+
+/**
+ * Repairs version-derived state while the development installer owns the
+ * installation lock. Unlike ordinary repair, this never activates or prunes a
+ * release and fails if the installer's exact target is not active.
+ */
+export const runDevelopmentInstallRepair = Effect.fn('lifecycle.developmentInstallRepair')(function* (
+  config: RuntimeConfig,
+  expectedVersion: string,
+) {
+  const requireExpectedActive = Effect.gen(function* () {
+    if ((yield* activeInstalledVersion()) !== expectedVersion) {
+      return yield* Effect.fail(
+        new LifecycleOperationError('The active release changed during development installer repair.'),
+      );
+    }
+  });
+  yield* requireExpectedActive;
+  yield* runRepair(config, {
+    mcp: 'none',
+    postUpdate: false,
+    skipReleaseLifecycle: true,
+  });
+  yield* requireExpectedActive;
 });
 
 const maintainRecallIndexes = Effect.fn('lifecycle.maintainRecallIndexes')(function* (

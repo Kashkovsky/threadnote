@@ -888,7 +888,7 @@ describe('exact-head development runtime', () => {
                   stderr: '',
                   stdout:
                     arguments_[0] === 'doctor'
-                      ? 'Running Threadnote doctor checks.\nSummary: all checks complete.\n'
+                      ? 'Running Threadnote doctor checks.\nSummary: 0 failure(s), 0 warning(s)\n'
                       : `threadnote v${version}\n`,
                 });
               },
@@ -921,7 +921,219 @@ describe('exact-head development runtime', () => {
         expect(result.cliMode).toBe(0o755);
         expect(result.mcpMode).toBe(0o755);
         expect(result.invocations).toContainEqual({arguments: ['--version'], executable: result.cliLauncher});
+        expect(
+          result.invocations.some(invocation => invocation.arguments.join(' ') === 'doctor --dry-run --strict'),
+        ).toBe(true);
+        expect(result.invocations.some(invocation => invocation.arguments[0] === 'development-install-repair')).toBe(
+          false,
+        );
       }),
+  );
+
+  effectIt.effect('repairs failed doctor state after activation and requires a clean recheck', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-doctor-repair-'});
+          const installRoot = path.join(root, 'install');
+          const sourceCommit = '6'.repeat(40);
+          const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+          const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+          const releaseRoot = path.join(installRoot, 'versions', version);
+          yield* writeDevelopmentReleaseFixture(
+            fs,
+            path,
+            releaseRoot,
+            version,
+            sourceCommit,
+            executableName,
+            'doctor-repair-release',
+          );
+          const testSystem = SystemInfo.of({
+            ...baseSystem,
+            environment: () => ({
+              ...baseSystem.environment(),
+              THREADNOTE_BIN_DIR: path.join(root, 'bin'),
+              THREADNOTE_INSTALL_ROOT: installRoot,
+            }),
+          });
+          const invocations: Array<readonly string[]> = [];
+          let repairObservedInstallationLock = false;
+          let strictDoctorChecks = 0;
+          const executor = CommandExecutor.of({
+            execute: (_executable, arguments_) => {
+              invocations.push([...arguments_]);
+              if (arguments_[0] === 'doctor') {
+                const strict = arguments_.includes('--strict');
+                if (strict) strictDoctorChecks += 1;
+                const failures = strict && strictDoctorChecks > 1 ? 0 : 2;
+                return Effect.succeed({
+                  exitCode: strict && failures > 0 ? 1 : 0,
+                  stderr: '',
+                  stdout: `Running Threadnote doctor checks.\nSummary: ${failures} failure(s), 1 warning(s)\n`,
+                });
+              }
+              if (arguments_[0] === 'development-install-repair') {
+                return fs.exists(path.join(installRoot, '.installation.lock')).pipe(
+                  Effect.orDie,
+                  Effect.map(exists => {
+                    repairObservedInstallationLock = exists;
+                    return {exitCode: 0, stderr: '', stdout: 'Repair complete.\n'};
+                  }),
+                );
+              }
+              return Effect.succeed({exitCode: 0, stderr: '', stdout: `threadnote v${version}\n`});
+            },
+            executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+          });
+          const installed = yield* activateLocalStandaloneRelease({
+            canonicalInstallRoot: yield* fs.realPath(installRoot),
+            canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+            commit: sourceCommit,
+            executableName,
+            releaseRoot,
+            reused: true,
+            sourceCheckoutId: 'a'.repeat(64),
+            stagedRoot: Option.none(),
+            takeOverGlobalRuntime: false,
+            terminateSuperseded: false,
+            version,
+          }).pipe(Effect.provideService(CommandExecutor, executor), Effect.provideService(SystemInfo, testSystem));
+          return {installed, invocations, repairObservedInstallationLock, strictDoctorChecks};
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.installed.doctorVerified).toBe(true);
+      expect(result.repairObservedInstallationLock).toBe(true);
+      expect(result.strictDoctorChecks).toBe(2);
+      expect(result.invocations).toContainEqual([
+        'development-install-repair',
+        '--expected-version',
+        result.installed.version,
+      ]);
+      expect(result.invocations.at(-1)).toEqual(['doctor', '--dry-run', '--strict']);
+    }),
+  );
+
+  effectIt.effect('keeps committed activation and defers cleanup when repaired doctor remains unhealthy', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-development-doctor-committed-'});
+        const installRoot = path.join(root, 'install');
+        const binRoot = path.join(root, 'bin');
+        const sourceCommit = 'd'.repeat(40);
+        const priorCommit = 'e'.repeat(40);
+        const version = developmentBuildVersion('4.0.0-beta.30', sourceCommit);
+        const priorVersion = developmentBuildVersion('4.0.0-beta.29', priorCommit);
+        const releaseRoot = path.join(installRoot, 'versions', version);
+        const priorReleaseRoot = path.join(installRoot, 'versions', priorVersion);
+        const executableName = baseSystem.platform === 'win32' ? 'threadnote.exe' : 'threadnote';
+        yield* writeDevelopmentReleaseFixture(
+          fs,
+          path,
+          releaseRoot,
+          version,
+          sourceCommit,
+          executableName,
+          'failed-doctor-release',
+        );
+        yield* writeDevelopmentReleaseFixture(
+          fs,
+          path,
+          priorReleaseRoot,
+          priorVersion,
+          priorCommit,
+          executableName,
+          'prior-doctor-release',
+        );
+        const activePointerPath = path.join(installRoot, 'active-release.json');
+        const ownerPath = path.join(installRoot, 'development-runtime-owner.json');
+        const priorPointer = `${JSON.stringify({releaseRoot: priorReleaseRoot, version: priorVersion})}\n`;
+        const priorOwner = `${JSON.stringify({
+          schemaVersion: 1,
+          sourceCheckoutId: 'b'.repeat(64),
+          version: priorVersion,
+        })}\n`;
+        yield* fs.writeFileString(activePointerPath, priorPointer, {mode: 0o600});
+        yield* fs.writeFileString(ownerPath, priorOwner, {mode: 0o600});
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({
+            ...baseSystem.environment(),
+            THREADNOTE_BIN_DIR: binRoot,
+            THREADNOTE_INSTALL_ROOT: installRoot,
+          }),
+        });
+        const [cliLauncher, mcpLauncher, priorCli, priorMcp, activeCli, activeMcp] = yield* Effect.all([
+          commandLauncherPath('cli'),
+          commandLauncherPath('mcp'),
+          renderCommandShim(priorReleaseRoot, 'cli'),
+          renderCommandShim(priorReleaseRoot, 'mcp'),
+          renderCommandShim(releaseRoot, 'cli'),
+          renderCommandShim(releaseRoot, 'mcp'),
+        ]).pipe(Effect.provideService(SystemInfo, testSystem));
+        yield* fs.makeDirectory(binRoot, {recursive: true});
+        yield* fs.writeFileString(cliLauncher, priorCli, {mode: 0o755});
+        yield* fs.writeFileString(mcpLauncher, priorMcp, {mode: 0o755});
+        const invocations: Array<readonly string[]> = [];
+        const executor = CommandExecutor.of({
+          execute: (_executable, arguments_) => {
+            invocations.push([...arguments_]);
+            if (arguments_[0] === 'doctor') {
+              const strict = arguments_.includes('--strict');
+              return Effect.succeed({
+                exitCode: strict ? 1 : 0,
+                stderr: '',
+                stdout: 'Running Threadnote doctor checks.\nSummary: 1 failure(s), 0 warning(s)\n',
+              });
+            }
+            return Effect.succeed({exitCode: 0, stderr: '', stdout: `threadnote v${version}\n`});
+          },
+          executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),
+        });
+        const failure = yield* activateLocalStandaloneRelease({
+          canonicalInstallRoot: yield* fs.realPath(installRoot),
+          canonicalVersionsRoot: yield* fs.realPath(path.join(installRoot, 'versions')),
+          commit: sourceCommit,
+          executableName,
+          releaseRoot,
+          reused: true,
+          sourceCheckoutId: 'a'.repeat(64),
+          stagedRoot: Option.none(),
+          takeOverGlobalRuntime: true,
+          terminateSuperseded: true,
+          version,
+        }).pipe(
+          Effect.provideService(CommandExecutor, executor),
+          Effect.provideService(SystemInfo, testSystem),
+          Effect.flip,
+        );
+
+        expect(String(failure)).toContain('exact-HEAD development release is active');
+        expect(JSON.parse(yield* fs.readFileString(activePointerPath))).toEqual({
+          releaseRoot: yield* fs.realPath(releaseRoot),
+          version,
+        });
+        expect(JSON.parse(yield* fs.readFileString(ownerPath))).toEqual({
+          schemaVersion: 1,
+          sourceCheckoutId: 'a'.repeat(64),
+          version,
+        });
+        expect(yield* fs.readFileString(cliLauncher)).toBe(activeCli);
+        expect(yield* fs.readFileString(mcpLauncher)).toBe(activeMcp);
+        expect(yield* fs.readFileString(cliLauncher)).not.toBe(priorCli);
+        expect(yield* fs.readFileString(mcpLauncher)).not.toBe(priorMcp);
+        expect(yield* fs.exists(releaseRoot)).toBe(true);
+        expect(yield* fs.exists(priorReleaseRoot)).toBe(true);
+        expect(invocations).toContainEqual(['development-install-repair', '--expected-version', version]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect.skipIf(process.platform === 'win32')(
@@ -954,7 +1166,7 @@ describe('exact-head development runtime', () => {
               [
                 '#!/bin/sh',
                 'if [ "$1" = "doctor" ]; then',
-                "  printf '%s\\n' 'Running Threadnote doctor checks.' 'Summary: all checks complete.'",
+                "  printf '%s\\n' 'Running Threadnote doctor checks.' 'Summary: 0 failure(s), 0 warning(s)'",
                 'elif [ "$1" = "--version" ]; then',
                 `  printf '%s\\n' 'threadnote v${version}'`,
                 'else',
@@ -1490,7 +1702,7 @@ function versionCommandExecutor(version: string) {
         stderr: '',
         stdout:
           arguments_[0] === 'doctor'
-            ? 'Running Threadnote doctor checks.\nSummary: all checks complete.\n'
+            ? 'Running Threadnote doctor checks.\nSummary: 0 failure(s), 0 warning(s)\n'
             : `threadnote v${version}\n`,
       }),
     executeStreaming: () => Effect.die(new TestError('Unexpected streaming command')),

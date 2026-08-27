@@ -336,9 +336,10 @@ const writeDevelopmentRuntimeOwner = Effect.fn('developmentInstall.writeRuntimeO
 
 /**
  * The complete managed-release mutation is one installation-lock critical
- * section. This prevents a concurrent updater from pruning a reused release
- * before activation or becoming active while superseded processes are being
- * retired.
+ * section. Activation is the commit point: a later health-repair failure keeps
+ * the exact release active because repaired state may not be backward
+ * compatible. Cleanup remains deferred so prior releases and processes survive
+ * for diagnosis.
  */
 export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.activate')(function* (
   input: LocalStandaloneActivationInput,
@@ -456,6 +457,17 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
         ),
       ),
     );
+    yield* verifyActivatedDevelopmentRelease(executable, installRoot, input.version).pipe(
+      Effect.catchCause(healthCause =>
+        Effect.fail(
+          new ScriptError(
+            'The exact-HEAD development release is active, but doctor verification still failed after repair. ' +
+              'The prior release and superseded processes were preserved for diagnosis.',
+            {cause: Cause.squash(healthCause)},
+          ),
+        ),
+      ),
+    );
 
     let terminatedSupersededProcesses = 0;
     const preservedMcpSessionProcessIds = new Set<number>();
@@ -538,6 +550,48 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
     ),
   );
 });
+
+const verifyActivatedDevelopmentRelease = Effect.fn('developmentInstall.verifyActivated')(function* (
+  executable: string,
+  installRoot: string,
+  expectedVersion: string,
+) {
+  const system = yield* SystemInfo;
+  const commandOptions = {
+    env: {...system.environment(), THREADNOTE_INSTALL_ROOT: installRoot},
+    maxOutputBytes: 2 * 1024 * 1024,
+    timeoutMs: COMMAND_TIMEOUT_MILLISECONDS,
+  } as const;
+  const runDoctorStrict = () =>
+    runCommandEffect(executable, ['doctor', '--dry-run', '--strict'], {...commandOptions, allowFailure: true});
+  const initial = yield* runDoctorStrict();
+  const initialFailures = developmentDoctorFailureCount(initial.stdout);
+  if (initialFailures === undefined || (initial.exitCode !== 0 && initialFailures === 0)) {
+    return yield* Effect.fail(
+      new ScriptError('The activated development executable did not complete doctor verification.'),
+    );
+  }
+  if (initial.exitCode === 0 && initialFailures === 0) return;
+
+  yield* runCommandEffect(
+    executable,
+    ['development-install-repair', '--expected-version', expectedVersion],
+    commandOptions,
+  );
+  const repaired = yield* runDoctorStrict();
+  if (repaired.exitCode !== 0 || developmentDoctorFailureCount(repaired.stdout) !== 0) {
+    return yield* Effect.fail(
+      new ScriptError('The activated development executable still has doctor failures after repair.'),
+    );
+  }
+});
+
+function developmentDoctorFailureCount(stdout: string): number | undefined {
+  const match = /(?:^|\r?\n)Summary: (\d+) failure\(s\), \d+ warning\(s\)(?:\r?\n|$)/u.exec(stdout);
+  if (match?.[1] === undefined) return undefined;
+  const failures = Number(match[1]);
+  return Number.isSafeInteger(failures) ? failures : undefined;
+}
 
 function requireEvidenceVersion(evidence: DevelopmentRuntimeEvidence, expectedVersion: string) {
   return evidence.version === expectedVersion

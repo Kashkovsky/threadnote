@@ -2,7 +2,15 @@ import {Console, Effect, Option, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
-import {runDoctor, runInstall, runRepair, runStart, runStop, runUninstall} from '../lifecycle.js';
+import {
+  runDevelopmentInstallRepair,
+  runDoctor,
+  runInstall,
+  runRepair,
+  runStart,
+  runStop,
+  runUninstall,
+} from '../lifecycle.js';
 import {
   ensureLocalAiStarted,
   readLocalAiSettings,
@@ -378,6 +386,14 @@ const postUpdate = Command.make(
   },
   options => withRuntimeEffect(config => runPostUpdate(config, options)),
 ).pipe(Command.withDescription('Run packaged post-update action prompts'), Command.unlisted);
+
+const developmentInstallRepair = Command.make(
+  'development-install-repair',
+  {
+    expectedVersion: requiredString('expected-version', 'Exact active development release version'),
+  },
+  options => withRuntimeEffect(config => runDevelopmentInstallRepair(config, options.expectedVersion)),
+).pipe(Command.withDescription('Repair state inside an exact-HEAD development activation'), Command.unlisted);
 
 const repair = Command.make(
   'repair',
@@ -1837,6 +1853,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('update', update),
   registerTopLevelCommand('auto-update-worker', autoUpdateWorker),
   registerTopLevelCommand('post-update', postUpdate),
+  registerTopLevelCommand('development-install-repair', developmentInstallRepair),
   registerTopLevelCommand('repair', repair),
   registerTopLevelCommand('start', start),
   registerTopLevelCommand('stop', stop),
