@@ -19,6 +19,8 @@ export interface CodeGraphWorksetRoutingProjectionRequestV1 {
   readonly pageSize?: number;
   /** @internal Test/benchmark observer for the largest live normalized symbol page. */
   readonly observeBufferedSymbols?: (count: number) => void;
+  /** @internal Test/benchmark observer for the session-local reverse routing surface. */
+  readonly observePreparedRoutingSurface?: (counts: {readonly lookupKeys: number; readonly terms: number}) => void;
   readonly snapshotId?: string;
   readonly threadnoteHome: string;
 }
@@ -42,6 +44,9 @@ export const buildCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
       : {leaseDurationMilliseconds: request.leaseDurationMilliseconds}),
     ...(request.pageSize === undefined ? {} : {pageSize: request.pageSize}),
     ...(request.observeBufferedSymbols === undefined ? {} : {observeBufferedSymbols: request.observeBufferedSymbols}),
+    ...(request.observePreparedRoutingSurface === undefined
+      ? {}
+      : {observePreparedRoutingSurface: request.observePreparedRoutingSurface}),
     repositoryId: request.identity.repositoryId,
     ...(request.snapshotId === undefined ? {} : {snapshotId: request.snapshotId}),
     worktreeId: request.identity.worktreeId,
@@ -69,6 +74,9 @@ export const stageCodeGraphWorksetRoutingProjectionScoped = Effect.fn(
         : {leaseDurationMilliseconds: request.leaseDurationMilliseconds}),
       ...(request.pageSize === undefined ? {} : {pageSize: request.pageSize}),
       ...(request.observeBufferedSymbols === undefined ? {} : {observeBufferedSymbols: request.observeBufferedSymbols}),
+      ...(request.observePreparedRoutingSurface === undefined
+        ? {}
+        : {observePreparedRoutingSurface: request.observePreparedRoutingSurface}),
       repositoryId: request.identity.repositoryId,
       ...(request.snapshotId === undefined ? {} : {snapshotId: request.snapshotId}),
       worktreeId: request.identity.worktreeId,

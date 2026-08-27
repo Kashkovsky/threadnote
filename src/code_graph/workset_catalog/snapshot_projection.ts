@@ -32,6 +32,8 @@ const MAXIMUM_LEASE_MILLISECONDS = 10 * 60_000;
 const MAXIMUM_LOOKUP_JSON_BYTES = 256 * 1_024;
 const MAXIMUM_SPAN_JSON_BYTES = 4 * 1_024;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
+const PROJECTION_LOOKUP_TABLE = 'workset_projection_lookup';
+const PROJECTION_TERMS_TABLE = 'workset_projection_terms';
 
 export interface CodeGraphReadySnapshotRoutingProjectionInputV1 {
   readonly checkoutId: string;
@@ -43,6 +45,8 @@ export interface CodeGraphReadySnapshotRoutingProjectionInputV1 {
   readonly snapshotId?: string;
   /** @internal Test/benchmark observer for the largest live normalized symbol page. */
   readonly observeBufferedSymbols?: (count: number) => void;
+  /** @internal Test/benchmark observer for the session-local reverse routing surface. */
+  readonly observePreparedRoutingSurface?: (counts: {readonly lookupKeys: number; readonly terms: number}) => void;
   readonly worktreeId: string;
 }
 
@@ -325,6 +329,7 @@ export const buildCodeGraphReadySnapshotRoutingProjection = Effect.fn(
 function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjectionInput) {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* configureProjectionTemporaryStorage(sql);
     const before = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
     validateSelectedSnapshot(before, selected);
     const baseSnapshotId = optionalText(before.base_snapshot_id, 'base snapshot identity');
@@ -357,6 +362,7 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
         invalid('The ready snapshot has more symbols than one routing projection can represent.'),
       );
     }
+    yield* prepareProjectionRoutingSurface(sql, selected.id, baseSnapshotId, input.observePreparedRoutingSurface);
 
     const stats: MutableProjectionStats = {
       componentCount,
@@ -375,8 +381,8 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
       if (page.length === 0) break;
       stats.pagesRead += 1;
       const nodeIds = page.map(row => requiredText(row.id, 'symbol identity'));
-      const lookupRows = yield* selectLookupRows(sql, selected.id, baseSnapshotId, nodeIds);
-      const termRows = yield* selectTermRows(sql, selected.id, baseSnapshotId, nodeIds);
+      const lookupRows = yield* selectLookupRows(sql, nodeIds);
+      const termRows = yield* selectTermRows(sql, nodeIds);
       const lookupBySymbol = groupLookupRows(lookupRows);
       const termsBySymbol = groupTermRows(termRows);
 
@@ -468,6 +474,7 @@ function readProjectionStreamed<E, R>(
 ) {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* configureProjectionTemporaryStorage(sql);
     const before = yield* selectProjectionSnapshot(sql, selected.id, input.repositoryId, input.worktreeId);
     validateSelectedSnapshot(before, selected);
     const baseSnapshotId = optionalText(before.base_snapshot_id, 'base snapshot identity');
@@ -492,6 +499,7 @@ function readProjectionStreamed<E, R>(
       expectedSymbolCount,
       safeCount(before.edge_count, 'snapshot edge count'),
     );
+    yield* prepareProjectionRoutingSurface(sql, selected.id, baseSnapshotId, input.observePreparedRoutingSurface);
     const stats = projectionStats(componentCount, dependencyCount);
     let reservedLogicalBytes = 0;
     const firstPass = yield* scanProjectionSymbolPages(sql, selected.id, baseSnapshotId, input, stats, symbols =>
@@ -546,6 +554,10 @@ function readProjectionStreamed<E, R>(
     const receipt = {...header, projectionDigest} satisfies CodeGraphWorksetRoutingProjectionReceiptV1;
     const begun = yield* sink.begin(receipt, reservedLogicalBytes);
     if (begun.state === 'staging') {
+      // Re-read the immutable source surface for the verification/publication
+      // pass. Reusing the first TEMP projection would make lookup/term drift
+      // invisible to the existing cross-pass digest fence.
+      yield* prepareProjectionRoutingSurface(sql, selected.id, baseSnapshotId, input.observePreparedRoutingSurface);
       const verificationStats = projectionStats(componentCount, dependencyCount);
       const secondPass = yield* scanProjectionSymbolPages(
         sql,
@@ -636,8 +648,8 @@ function scanProjectionSymbolPages<E, R>(
       if (page.length === 0) break;
       stats.pagesRead += 1;
       const nodeIds = page.map(row => requiredText(row.id, 'symbol identity'));
-      const lookupBySymbol = groupLookupRows(yield* selectLookupRows(sql, snapshotId, baseSnapshotId, nodeIds));
-      const termsBySymbol = groupTermRows(yield* selectTermRows(sql, snapshotId, baseSnapshotId, nodeIds));
+      const lookupBySymbol = groupLookupRows(yield* selectLookupRows(sql, nodeIds));
+      const termsBySymbol = groupTermRows(yield* selectTermRows(sql, nodeIds));
       const symbols: CodeGraphWorksetRoutingSymbolV1[] = page.map(row => {
         const nodeId = requiredText(row.id, 'symbol identity');
         return normalizeCodeGraphWorksetRoutingSymbol({
@@ -690,6 +702,7 @@ interface NormalizedProjectionInput {
   readonly leaseDurationMilliseconds: number;
   readonly pageSize: number;
   readonly observeBufferedSymbols?: (count: number) => void;
+  readonly observePreparedRoutingSurface?: (counts: {readonly lookupKeys: number; readonly terms: number}) => void;
   readonly repositoryId: string;
   readonly snapshotId?: string;
   readonly worktreeId: string;
@@ -730,6 +743,9 @@ function normalizeInput(
         leaseDurationMilliseconds,
         pageSize,
         ...(input.observeBufferedSymbols === undefined ? {} : {observeBufferedSymbols: input.observeBufferedSymbols}),
+        ...(input.observePreparedRoutingSurface === undefined
+          ? {}
+          : {observePreparedRoutingSurface: input.observePreparedRoutingSurface}),
         repositoryId: input.repositoryId,
         ...(input.snapshotId === undefined ? {} : {snapshotId: input.snapshotId}),
         worktreeId: input.worktreeId,
@@ -830,25 +846,62 @@ function selectSymbolPage(
   );
 }
 
-function selectLookupRows(
+function selectLookupRows(sql: SqlClient.SqlClient, nodeIds: readonly string[]) {
+  if (nodeIds.length === 0) return Effect.succeed([] as readonly LookupProjectionRow[]);
+  return sql.unsafe<LookupProjectionRow>(
+    `SELECT symbol_id, lookup_key
+     FROM temp.${PROJECTION_LOOKUP_TABLE}
+     WHERE symbol_id IN (${nodeIds.map(() => '?').join(', ')})
+     ORDER BY symbol_id, lookup_key`,
+    nodeIds,
+  );
+}
+
+/**
+ * The enclosing store session opens main with SQLite's read-only flag. Select
+ * file-backed TEMP storage now; each preparation below relaxes the additional
+ * query_only belt only for its connection-local TEMP writes.
+ */
+function configureProjectionTemporaryStorage(sql: SqlClient.SqlClient) {
+  return sql.unsafe('PRAGMA temp_store = FILE');
+}
+
+/**
+ * Materialize one symbol-first TEMP projection of the immutable routing surface.
+ *
+ * Compact postings and resolved lookup keys are deliberately stored routing-
+ * key-first for graph search. A routing projection asks the inverse question
+ * for every symbol page. Running those inverse joins page-by-page makes SQLite
+ * scan or probe the complete key domains repeatedly. This read-only session
+ * instead scans the selected snapshots once into file-backed TEMP storage,
+ * then both digest/publication passes use symbol-first TEMP primary keys
+ * without adding persistent graph indexes or graph-build write amplification.
+ */
+function prepareProjectionRoutingSurface(
   sql: SqlClient.SqlClient,
   snapshotId: string,
   baseSnapshotId: string | undefined,
-  nodeIds: readonly string[],
+  observe?: (counts: {readonly lookupKeys: number; readonly terms: number}) => void,
 ) {
-  if (nodeIds.length === 0) return Effect.succeed([] as readonly LookupProjectionRow[]);
-  const requested = nodeIds.map(() => '(?)').join(', ');
-  return sql.unsafe<LookupProjectionRow>(
-    `WITH requested(symbol_id) AS (VALUES ${requested}),
-     effective_lookup AS (
+  return Effect.gen(function* () {
+    yield* sql.unsafe('PRAGMA query_only = OFF');
+    const counts = yield* Effect.gen(function* () {
+      yield* sql.unsafe(`DROP TABLE IF EXISTS temp.${PROJECTION_LOOKUP_TABLE}`);
+      yield* sql.unsafe(`DROP TABLE IF EXISTS temp.${PROJECTION_TERMS_TABLE}`);
+      yield* sql.unsafe(`CREATE TEMP TABLE ${PROJECTION_LOOKUP_TABLE} (
+      symbol_id TEXT NOT NULL,
+      lookup_key TEXT NOT NULL,
+      PRIMARY KEY (symbol_id, lookup_key)
+    ) WITHOUT ROWID`);
+      const baseId = baseSnapshotId ?? '';
+      yield* sql.unsafe(
+        `WITH effective_lookup AS (
        SELECT lookup.symbol_id, lookup.lookup_key
        FROM snapshot_symbol_lookup AS lookup
-       JOIN requested ON requested.symbol_id = lookup.symbol_id
        WHERE lookup.snapshot_id = ?
        UNION ALL
        SELECT lookup.symbol_id, lookup.lookup_key
        FROM snapshot_symbol_lookup AS lookup
-       JOIN requested ON requested.symbol_id = lookup.symbol_id
        WHERE lookup.snapshot_id = ?
          AND NOT EXISTS (
            SELECT 1 FROM symbols AS overrides
@@ -859,27 +912,24 @@ function selectLookupRows(
            WHERE deletions.snapshot_id = ? AND deletions.symbol_id = lookup.symbol_id
          )
      )
-     SELECT symbol_id, lookup_key FROM effective_lookup
-     ORDER BY symbol_id, lookup_key`,
-    [...nodeIds, snapshotId, baseSnapshotId ?? '', snapshotId, snapshotId],
-  );
-}
+     INSERT INTO temp.${PROJECTION_LOOKUP_TABLE} (symbol_id, lookup_key)
+     SELECT symbol_id, lookup_key
+     FROM effective_lookup
+     GROUP BY symbol_id, lookup_key`,
+        [snapshotId, baseId, snapshotId, snapshotId],
+      );
+      const lookupKeys = observe === undefined ? 0 : yield* selectChangedRowCount(sql, 'routing lookup preparation');
 
-function selectTermRows(
-  sql: SqlClient.SqlClient,
-  snapshotId: string,
-  baseSnapshotId: string | undefined,
-  nodeIds: readonly string[],
-) {
-  if (nodeIds.length === 0) return Effect.succeed([] as readonly TermProjectionRow[]);
-  const requested = nodeIds.map(() => '(?)').join(', ');
-  const baseId = baseSnapshotId ?? '';
-  return sql.unsafe<TermProjectionRow>(
-    `WITH requested(symbol_id) AS (VALUES ${requested}),
-     effective_terms AS (
+      yield* sql.unsafe(`CREATE TEMP TABLE ${PROJECTION_TERMS_TABLE} (
+      symbol_id TEXT NOT NULL,
+      term TEXT NOT NULL,
+      weight INTEGER NOT NULL,
+      PRIMARY KEY (symbol_id, term)
+    ) WITHOUT ROWID`);
+      yield* sql.unsafe(
+        `WITH effective_terms AS (
        SELECT legacy.symbol_id, legacy.term, legacy.weight
        FROM symbol_terms AS legacy
-       JOIN requested ON requested.symbol_id = legacy.symbol_id
        WHERE legacy.snapshot_id = ?
          AND NOT EXISTS (
            SELECT 1 FROM lexical_storage_formats AS storage
@@ -899,12 +949,10 @@ function selectTermRows(
        JOIN lexical_compact_symbols AS compact_symbol
          ON compact_symbol.snapshot_key = compact_snapshot.snapshot_key
         AND compact_symbol.symbol_key = posting.symbol_key
-       JOIN requested ON requested.symbol_id = compact_symbol.symbol_id
        WHERE compact_snapshot.snapshot_id = ?
        UNION ALL
        SELECT legacy.symbol_id, legacy.term, legacy.weight
        FROM symbol_terms AS legacy
-       JOIN requested ON requested.symbol_id = legacy.symbol_id
        WHERE legacy.snapshot_id = ?
          AND NOT EXISTS (
            SELECT 1 FROM lexical_storage_formats AS storage
@@ -932,7 +980,6 @@ function selectTermRows(
        JOIN lexical_compact_symbols AS compact_symbol
          ON compact_symbol.snapshot_key = compact_snapshot.snapshot_key
         AND compact_symbol.symbol_key = posting.symbol_key
-       JOIN requested ON requested.symbol_id = compact_symbol.symbol_id
        WHERE compact_snapshot.snapshot_id = ?
          AND NOT EXISTS (
            SELECT 1 FROM symbols AS overrides
@@ -943,11 +990,36 @@ function selectTermRows(
            WHERE deletions.snapshot_id = ? AND deletions.symbol_id = compact_symbol.symbol_id
          )
      )
+     INSERT INTO temp.${PROJECTION_TERMS_TABLE} (symbol_id, term, weight)
      SELECT symbol_id, term, MAX(weight) AS weight
      FROM effective_terms
-     GROUP BY symbol_id, term
+     GROUP BY symbol_id, term`,
+        [snapshotId, snapshotId, baseId, snapshotId, snapshotId, baseId, snapshotId, snapshotId],
+      );
+      return observe === undefined
+        ? undefined
+        : {lookupKeys, terms: yield* selectChangedRowCount(sql, 'routing term preparation')};
+    }).pipe(Effect.ensuring(sql.unsafe('PRAGMA query_only = ON').pipe(Effect.orDie)));
+    if (counts !== undefined) observe?.(counts);
+  });
+}
+
+function selectChangedRowCount(sql: SqlClient.SqlClient, label: string) {
+  return Effect.gen(function* () {
+    const rows = yield* sql.unsafe<CountRow>('SELECT changes() AS count');
+    if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} count is unavailable.`));
+    return safeCount(rows[0]!.count, `${label} count`);
+  });
+}
+
+function selectTermRows(sql: SqlClient.SqlClient, nodeIds: readonly string[]) {
+  if (nodeIds.length === 0) return Effect.succeed([] as readonly TermProjectionRow[]);
+  return sql.unsafe<TermProjectionRow>(
+    `SELECT symbol_id, term, weight
+     FROM temp.${PROJECTION_TERMS_TABLE}
+     WHERE symbol_id IN (${nodeIds.map(() => '?').join(', ')})
      ORDER BY symbol_id, weight DESC, term`,
-    [...nodeIds, snapshotId, snapshotId, baseId, snapshotId, snapshotId, baseId, snapshotId, snapshotId],
+    nodeIds,
   );
 }
 
