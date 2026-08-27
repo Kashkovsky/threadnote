@@ -34,6 +34,11 @@ describe('code graph local provenance cleanup', () => {
           Effect.gen(function* () {
             const fixture = yield* provenanceCleanupFixture;
             const beforeSource = yield* fixture.fs.readFileString(fixture.sourceSentinel);
+            const expectedEvidence = yield* captureCodeGraphLocalProvenanceCleanupEvidence(fixture.home, {
+              checkoutId: CHECKOUT_ID,
+              worktreeId: WORKTREE_ID,
+            });
+            expect(expectedEvidence).toBeDefined();
             const result = yield* cleanupMissingCodeGraphLocalProvenance(fixture.home, {
               checkoutId: CHECKOUT_ID,
               worktreeId: WORKTREE_ID,
@@ -43,6 +48,13 @@ describe('code graph local provenance cleanup', () => {
             expect(yield* fixture.fs.exists(fixture.sidecar)).toBe(false);
             expect(yield* fixture.fs.exists(fixture.neighborSidecar)).toBe(true);
             expect(yield* fixture.fs.readFileString(fixture.sourceSentinel)).toBe(beforeSource);
+            expect(
+              yield* cleanupMissingCodeGraphLocalProvenance(
+                fixture.home,
+                {checkoutId: CHECKOUT_ID, worktreeId: WORKTREE_ID},
+                {expectedEvidence: expectedEvidence!},
+              ),
+            ).toEqual({state: 'not-found'});
           }),
         ),
     );

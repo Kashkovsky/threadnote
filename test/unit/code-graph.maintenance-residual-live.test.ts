@@ -47,6 +47,7 @@ describe('live removed-view residual maintenance', () => {
         const path = yield* Path.Path;
         const coordinator = yield* CodeGraphMaintenanceCoordinator;
         yield* seedExactTerminalBuildStatus(fs, path, fixture.home);
+        const provenanceSidecar = yield* seedExactProvenance(fs, path, fixture.home);
 
         const foreground = yield* removeCodeGraphView(
           fixture.home,
@@ -60,10 +61,11 @@ describe('live removed-view residual maintenance', () => {
 
         expect(foreground).toMatchObject({
           applied: true,
-          cleanup: {vectors: null},
+          cleanup: {provenance: {state: 'removed'}, vectors: null},
           state: 'removed',
           warnings: [],
         });
+        expect(yield* fs.exists(provenanceSidecar)).toBe(false);
         expect(readVectorCounts(fixture.vectorDatabasePath!)).toMatchObject({pointers: 1});
         expect(readCleanupRow(fixture.databasePath)).toMatchObject({phase: 'vector-pointers', revision: 0});
 
@@ -341,6 +343,34 @@ function seedExactTerminalBuildStatus(fs: FileSystem.FileSystem, path: Path.Path
       `${JSON.stringify({buildId: BUILD_ID, schemaVersion: 1, worktreePath: '/private/missing-worktree'})}\n`,
       {flag: 'wx', mode: 0o600},
     );
+  });
+}
+
+function seedExactProvenance(fs: FileSystem.FileSystem, path: Path.Path, home: string) {
+  return Effect.gen(function* () {
+    const localContext = path.join(home, 'indexes', 'code-graph', 'repositories', CHECKOUT_ID, 'local-context');
+    const worktrees = path.join(localContext, 'worktrees');
+    yield* fs.makeDirectory(worktrees, {recursive: true, mode: 0o700});
+    if (process.platform !== 'win32') {
+      yield* fs.chmod(localContext, 0o700);
+      yield* fs.chmod(worktrees, 0o700);
+    }
+    const sidecar = path.join(worktrees, `${WORKTREE_ID}.json`);
+    yield* fs.writeFileString(
+      sidecar,
+      `${JSON.stringify({
+        canonicalWorktreePath: path.join(home, 'missing-worktree'),
+        checkoutId: CHECKOUT_ID,
+        headCommit: 'f'.repeat(40),
+        observedAt: new Date(0).toISOString(),
+        registration: {kind: 'main'},
+        repositoryId: REPOSITORY_ID,
+        schemaVersion: 2,
+        worktreeId: WORKTREE_ID,
+      })}\n`,
+      {flag: 'wx', mode: 0o600},
+    );
+    return sidecar;
   });
 }
 
