@@ -1,11 +1,11 @@
 import React, {useEffect, useState} from 'react';
 import {useManagerDialogs} from './manager_dialog.js';
+import {orderThreadnoteProcessesByAttention} from './process_attention.js';
 import {api, errorMessage} from './manager_ui_support.js';
 import type {
   ManageableThreadnoteProcessDiagnostic,
   ManageableThreadnoteProcessDiagnostics,
 } from './process_diagnostics.js';
-import {orderThreadnoteProcessesByAttention} from './process_diagnostics.js';
 
 const PROCESS_POLL_MILLISECONDS = 2_000;
 
