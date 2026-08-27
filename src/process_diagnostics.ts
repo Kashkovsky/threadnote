@@ -19,6 +19,7 @@ export type ThreadnoteProcessRole =
   | 'graph-compaction-worker'
   | 'graph-diagnostics-worker'
   | 'graph-parser-worker'
+  | 'graph-query-worker'
   | 'graph-waiter'
   | 'legacy'
   | 'local-model-worker'
@@ -176,7 +177,10 @@ export function withThreadnoteProcessRegistration<A, E, R>(
  */
 export function withSignalTransparentThreadnoteWorkerRegistration<A, E, R>(
   home: string,
-  role: Extract<RegisteredThreadnoteProcessRole, 'graph-compaction-worker' | 'graph-diagnostics-worker'>,
+  role: Extract<
+    RegisteredThreadnoteProcessRole,
+    'graph-compaction-worker' | 'graph-diagnostics-worker' | 'graph-query-worker'
+  >,
   operation: string,
   effect: Effect.Effect<A, E, R>,
 ) {
@@ -679,6 +683,7 @@ function isRegisteredThreadnoteProcessRole(value: unknown): value is RegisteredT
     value === 'graph-compaction-worker' ||
     value === 'graph-diagnostics-worker' ||
     value === 'graph-parser-worker' ||
+    value === 'graph-query-worker' ||
     value === 'graph-waiter' ||
     value === 'local-model-worker' ||
     value === 'manager' ||

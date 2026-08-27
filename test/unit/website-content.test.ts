@@ -2384,6 +2384,21 @@ Measure the system before changing its implementation language.
     );
   });
 
+  it('keeps the Pro Tips explorer contained at mobile widths', async () => {
+    const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
+    const tabletStart = styles.indexOf('@media (max-width: 980px)');
+    const mobileStart = styles.indexOf('@media (max-width: 680px)', tabletStart);
+    const tabletStyles = styles.slice(tabletStart, mobileStart);
+    const mobileStyles = styles.slice(mobileStart);
+
+    expect(styles).toMatch(/\.tips-layout\s*{[^}]*min-width: 0;/s);
+    expect(styles).toMatch(/\.tips-index\s*{[^}]*min-width: 0;/s);
+    expect(styles).toMatch(/\.tip-detail\s*{[^}]*min-width: 0;/s);
+    expect(tabletStyles).toMatch(/\.tips-layout\s*{[^}]*grid-template-columns: minmax\(0, 1fr\);/s);
+    expect(tabletStyles).toMatch(/\.tips-index\s*{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/s);
+    expect(mobileStyles).toMatch(/\.tips-index\s*{[^}]*grid-template-columns: minmax\(0, 1fr\);/s);
+  });
+
   it('wraps inline post code without disabling code-block or table scrolling', async () => {
     const styles = await readFile(join(root, 'website', 'src', 'styles.css'), 'utf8');
 

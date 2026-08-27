@@ -15,6 +15,11 @@ import {
   makeCodeGraphQueryAnonymousTelemetryReporter,
 } from './code_graph/query_anonymous_telemetry.js';
 import {repositoryChangesSince} from './code_graph/repository.js';
+import {
+  impactQueryTransportSelector,
+  inspectCodeGraphImpactIsolated,
+  IsolatedCodeGraphImpactQueryTimedOut,
+} from './code_graph/isolated_impact_query.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from './code_graph/types.js';
 import type {CodeGraphWorksetQueryResult} from './code_graph/workset_query.js';
 import {
@@ -226,6 +231,17 @@ export function registerCodeGraphTool(
         skip: queryTelemetry.skip,
         stage: queryTelemetry.stage,
       } satisfies CodeGraphQueryTelemetryObserver;
+      const timeoutResult = () =>
+        Effect.gen(function* () {
+          const status = Option.isSome(timeoutContext)
+            ? yield* queryTelemetry.status(codeGraphQueryTimeoutStatusFor(timeoutContext))
+            : undefined;
+          return yield* queryTelemetry.stage(
+            'graph.query.execute',
+            'query-serialization',
+            Effect.sync(() => codeGraphQueryTimeoutResult(operation, status)),
+          );
+        });
       return Effect.gen(function* () {
         const path = yield* Path.Path;
         if (!path.isAbsolute(checkedCwd.value)) {
@@ -466,30 +482,42 @@ export function registerCodeGraphTool(
           );
         }
         const {refreshStatus, selection, status} = snapshotResolution;
+        const queryText = impactQueryTransportSelector(requestedQuery, changes?.paths);
         const result = yield* queryTelemetry.execute(
-          service.inspect({
-            baseCommit: changes?.baseCommit,
-            cwd: inspectionCwd,
-            depth,
-            direction,
-            edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
-            from,
-            includeHeuristic,
-            includeModelAssociations,
-            nodeId: inspectionNodeId,
-            nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
-            operation,
-            packageName: packageName?.trim() || undefined,
-            query: requestedQuery || changes?.paths.join(' '),
-            refresh: false,
-            requestMaintenance: false,
-            seedQueries: changes?.paths,
-            statusObservation: observationFromCodeGraphStatus(status),
-            symbol,
-            telemetry: queryStageTelemetry,
-            threadnoteHome: config.agentContextHome,
-            to,
-          }),
+          operation === 'impact'
+            ? inspectCodeGraphImpactIsolated({
+                ...(changes?.baseCommit === undefined ? {} : {baseCommit: changes.baseCommit}),
+                cwd: inspectionCwd,
+                depth,
+                edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+                includeHeuristic,
+                includeModelAssociations,
+                nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+                query: queryText,
+                seedQueries: changes?.paths,
+                threadnoteHome: config.agentContextHome,
+              })
+            : service.inspect({
+                cwd: inspectionCwd,
+                depth,
+                direction,
+                edgeLimit: edgeLimit ?? MCP_CODE_GRAPH_DEFAULT_EDGE_LIMIT,
+                from,
+                includeHeuristic,
+                includeModelAssociations,
+                nodeId: inspectionNodeId,
+                nodeLimit: nodeLimit ?? MCP_CODE_GRAPH_DEFAULT_NODE_LIMIT,
+                operation,
+                packageName: packageName?.trim() || undefined,
+                query: queryText,
+                refresh: false,
+                requestMaintenance: false,
+                statusObservation: observationFromCodeGraphStatus(status),
+                symbol,
+                telemetry: queryStageTelemetry,
+                threadnoteHome: config.agentContextHome,
+                to,
+              }),
           codeGraphQueryAnonymousTelemetrySnapshotSurface(status, selection),
         );
         return yield* queryTelemetry.stage(
@@ -509,26 +537,20 @@ export function registerCodeGraphTool(
       }).pipe(
         Effect.timeoutOrElse({
           duration: MCP_CODE_GRAPH_QUERY_TIMEOUT_MILLISECONDS,
-          orElse: () =>
-            Effect.gen(function* () {
-              const status = Option.isSome(timeoutContext)
-                ? yield* queryTelemetry.status(codeGraphQueryTimeoutStatusFor(timeoutContext))
-                : undefined;
-              return yield* queryTelemetry.stage(
-                'graph.query.execute',
-                'query-serialization',
-                Effect.sync(() => codeGraphQueryTimeoutResult(operation, status)),
-              );
-            }),
+          orElse: timeoutResult,
         }),
         Effect.catch(error =>
-          queryTelemetry.stage(
-            'graph.query.execute',
-            'query-serialization',
-            Effect.sync(() =>
-              error instanceof AgentResponseBudgetTooSmallError ? argumentError(error.message) : mcpErrorResult(error),
-            ),
-          ),
+          error instanceof IsolatedCodeGraphImpactQueryTimedOut
+            ? timeoutResult()
+            : queryTelemetry.stage(
+                'graph.query.execute',
+                'query-serialization',
+                Effect.sync(() =>
+                  error instanceof AgentResponseBudgetTooSmallError
+                    ? argumentError(error.message)
+                    : mcpErrorResult(error),
+                ),
+              ),
         ),
       );
     },

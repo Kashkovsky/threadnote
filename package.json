@@ -139,7 +139,7 @@
     "remark-gfm": "^4.0.1",
     "three": "^0.185.1",
     "typescript-compiler": "npm:typescript@5.9.3",
-    "unpdf": "1.6.2",
+    "unpdf": "1.8.1",
     "web-tree-sitter": "0.26.11",
     "yaml": "^2.9.0",
     "zod": "4.4.3"
