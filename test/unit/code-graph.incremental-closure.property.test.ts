@@ -224,6 +224,61 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 200}},
   );
 
+  it.prop(
+    'ignores ambiguous ownership in resolution domains outside the changed file and seeded closure',
+    {
+      reverse: FC.boolean(),
+      unrelatedProjectCount: FC.integer({max: 8, min: 2}),
+    },
+    ({reverse, unrelatedProjectCount}) => {
+      const runtime = project('runtime');
+      const path = `${runtime.root}/added.ts`;
+      const unrelated = Array.from({length: unrelatedProjectCount}, (_, index) => ({
+        ...project(`config-${index}`),
+        dependencies: [`missing-${index}`],
+        dependencyDetails: [],
+        resolutionDomain: 'typescript-config',
+        root: '',
+        sourceRoots: [runtime.root],
+      }));
+      const projects = [runtime, ...(reverse ? unrelated.reverse() : unrelated)];
+      const currentResolutionDomainByPath = new Map([[path, 'typescript']]);
+      const canonicalSeeds = assessProjectFileSetClosureSeeds({
+        baseProjects: [runtime],
+        currentChangedPaths: [path],
+        currentProjects: [runtime],
+        currentResolutionDomainByPath,
+        deletedPaths: [],
+      });
+      const mixedSeeds = assessProjectFileSetClosureSeeds({
+        baseProjects: projects,
+        currentChangedPaths: [path],
+        currentProjects: projects,
+        currentResolutionDomainByPath,
+        deletedPaths: [],
+      });
+      const file = inventory(path, 1);
+      const common = {
+        cachedFactBytesByPath: new Map([[path, 1]]),
+        files: [file],
+        modifiedPaths: [path],
+        seedProjectIds: [runtime.id],
+        workspaceDiagnostics: [] as readonly string[],
+      };
+
+      expect(canonicalSeeds).toMatchObject({mode: 'eligible', seedProjectIds: [runtime.id]});
+      expect(mixedSeeds).toMatchObject({
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 1},
+        seedProjectIds: [runtime.id],
+      });
+      expect(planProjectIncrementalClosure({...common, projects})).toEqual(
+        planProjectIncrementalClosure({...common, projects: [runtime]}),
+      );
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('fails closed when a file-set change lacks stable declared ownership in both workspace models', () => {
     const declared = project('a');
     const input = {
@@ -244,6 +299,10 @@ describe('project incremental closure', () => {
       }),
     ).toEqual({mode: 'fallback', reason: 'project-closure-incomplete'});
     expect(assessProjectFileSetClosureSeeds({...input, currentProjects: []})).toEqual({
+      mode: 'fallback',
+      reason: 'project-closure-incomplete',
+    });
+    expect(assessProjectFileSetClosureSeeds({...input, baseProjects: []})).toEqual({
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
