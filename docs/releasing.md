@@ -63,14 +63,19 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    user-visible value rather than implementation history, include concrete commands when useful, and do not add a
    validation/checks section.
 2. Merge the release source and ensure ordinary CI is green.
-3. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
+3. Dispatch `Platform benchmarks` on the exact clean release-candidate SHA with
+   `include_context_brief_citations_scale=true`. Before tagging, require its Context Brief citation artifact to report
+   `gate.passed=true`, the exact candidate commit, `dirty=false`, 100,000 indexed memory candidates, 25 samples, five
+   warmups, and the `local-100k`, `workset-50`, and `workset-128` profiles. This gate is mandatory for a release that
+   changes Context Brief, recall, citation, or graph-validation behavior; production-large evidence is not a substitute.
+4. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
    and, only on an admitted runner, one `code-graph-production-large-n1` observation automatically. Do not dispatch a
    duplicate hosted run for that tag; if the runner is not admitted, use a separately governed capable environment.
-4. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
-5. Create and push the version tag matching both `package.json` and the release-notes filename, for example
+5. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
+6. Create and push the version tag matching both `package.json` and the release-notes filename, for example
    `v4.0.1`.
-6. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
+7. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    four enabled archives are verified while its bounded production-large observation continues independently.
 
 The main-branch website build includes the prepared stable `package.json` version when its matching release note is

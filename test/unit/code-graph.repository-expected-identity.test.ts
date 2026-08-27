@@ -2,7 +2,11 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
-import {resolveRepositoryIdentity, resolveRepositoryIdentityForExpectation} from '../../src/code_graph/repository.js';
+import {
+  resolveRepositoryIdentity,
+  resolveRepositoryIdentityForExpectation,
+  revalidateRepositoryIdentityFence,
+} from '../../src/code_graph/repository.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
@@ -54,6 +58,52 @@ describe('code graph expected repository identity', () => {
             yield* git(root, ['remote', 'set-url', 'origin', 'https://github.com/example/replaced.git']);
             const failure = yield* resolveRepositoryIdentityForExpectation(root, remoteExpected).pipe(Effect.flip);
             expect(failure.message).toBe('Repository identity does not match the published workset.');
+          }),
+        ),
+      ),
+    );
+
+    it.effect('revalidates code-bearing identity fields and observes a changed HEAD', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const root = yield* Effect.acquireRelease(
+              fs.makeTempDirectory({prefix: 'threadnote-identity-fence-'}),
+              directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.orDie),
+            );
+            yield* git(root, ['init', '-q']);
+            yield* git(root, [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '--allow-empty',
+              '-qm',
+              'fixture',
+            ]);
+            const before = yield* resolveRepositoryIdentity(root);
+            expect(yield* revalidateRepositoryIdentityFence(root, before)).toEqual(before);
+
+            yield* git(root, [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '--allow-empty',
+              '-qm',
+              'next',
+            ]);
+            const after = yield* revalidateRepositoryIdentityFence(root, before);
+            expect(after.headCommit).not.toBe(before.headCommit);
+            expect(after.repositoryId).toBe(before.repositoryId);
+            expect(after.worktreeId).toBe(before.worktreeId);
+
+            yield* git(root, ['remote', 'add', 'origin', 'https://github.com/example/replaced.git']);
+            const failure = yield* revalidateRepositoryIdentityFence(root, before).pipe(Effect.flip);
+            expect(failure.message).toBe('Repository identity changed during the graph read.');
           }),
         ),
       ),

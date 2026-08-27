@@ -16,6 +16,7 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {runEffect} from '../helpers/effect-runtime.js';
+import {resolveContextBriefFinalFenceOverlay} from '../../src/context_brief/citation_validation.js';
 
 describe('code graph inventory admission policy', () => {
   const roots: string[] = [];
@@ -89,6 +90,11 @@ describe('code graph inventory admission policy', () => {
       expect(excludedOnly.dirty).toBe(false);
       expect(excludedOnly.overlayFingerprint).toBeUndefined();
       expect(yield* observedOverlayStateEffect(root)).toEqual({dirty: false, fingerprint: undefined});
+      expect(
+        yield* resolveRepositoryIdentity(root).pipe(
+          Effect.flatMap(identity => resolveContextBriefFinalFenceOverlay(identity, undefined)),
+        ),
+      ).toEqual({dirty: false, fingerprint: undefined});
       expect(excludedOnly.files.map(file => file.path)).toEqual(clean.files.map(file => file.path));
       expect(excludedOnly.skipped).toBe(5);
       expect(excludedOnly.policyExclusions?.files).toBe(5);
@@ -109,6 +115,11 @@ describe('code graph inventory admission policy', () => {
       expect(admitted.dirty).toBe(true);
       expect(admitted.overlayFingerprint).toMatch(/^[0-9a-f]{64}$/);
       expect(yield* observedOverlayStateEffect(root)).toMatchObject({dirty: true, fingerprint: expect.any(String)});
+      expect(
+        yield* resolveRepositoryIdentity(root).pipe(
+          Effect.flatMap(identity => resolveContextBriefFinalFenceOverlay(identity, undefined)),
+        ),
+      ).toMatchObject({dirty: true, fingerprint: expect.any(String)});
       expect(admitted.files.find(file => file.path === 'apps/mobile/project.json')).toMatchObject({
         path: 'apps/mobile/project.json',
         size: 3,

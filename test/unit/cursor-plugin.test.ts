@@ -12,7 +12,7 @@ import {SystemInfo} from '../../src/effect/system.js';
 
 const root = process.cwd();
 const pluginRoot = join(root, 'cursor-plugin');
-const cursorPluginVersion = '1.0.1';
+const cursorPluginVersion = '1.0.2';
 
 describe('Cursor plugin package', () => {
   it('matches Cursor manifest anatomy and the canonical Threadnote instructions', async () => {
@@ -171,7 +171,10 @@ describe('Cursor plugin package', () => {
         yield* fs.copy(pluginRoot, cachedRoot, {overwrite: true});
         yield* fs.writeFileString(
           cachedRule,
-          (yield* fs.readFileString(cachedRule)).replace('source evidence.', 'source evidence for this task.'),
+          (yield* fs.readFileString(cachedRule)).replace(
+            'current code evidence.',
+            'current code evidence for this task.',
+          ),
         );
         const sameVersionMismatch = yield* doctor();
         expect(sameVersionMismatch).toMatchObject([{name: 'Cursor plugin', status: 'fail'}]);

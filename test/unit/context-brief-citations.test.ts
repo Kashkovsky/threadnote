@@ -5,6 +5,7 @@ import {Effect, Layer} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   aggregatePreciseStatus,
+  cleanPublishedCitationFenceMatches,
   routeContextBriefWorksetValidation,
   validateContextBriefFileCitation,
   validateContextBriefSymbolCitation,
@@ -12,7 +13,12 @@ import {
 } from '../../src/context_brief/index.js';
 import {createCodeGraphSourceSpanCanonicalizer} from '../../src/code_graph/citation_primitives.js';
 import {createMemoryCodeCitation} from '../../src/memory_code_citation.js';
-import type {CodeGraphInventoryFile, CodeGraphSnapshot, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import type {
+  CodeGraphInventoryFile,
+  CodeGraphSnapshot,
+  CodeGraphStatus,
+  CodeGraphSymbol,
+} from '../../src/code_graph/types.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {codeGraphWorksetManifestDigest} from '../../src/code_graph/workset_catalog/workset.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -48,6 +54,65 @@ const snapshot: CodeGraphSnapshot = {
 };
 
 describe('Context Brief code-citation classification', () => {
+  it('accepts a clean published fence only while every code-bearing identity stays exact', () => {
+    const before: CodeGraphStatus = {
+      databasePath: '/threadnote/graph.sqlite',
+      freshness: 'current',
+      identity: {
+        caseMode: 'sensitive',
+        checkoutId: 'checkout',
+        displayName: 'example/threadnote',
+        gitCommonDirectory: '/work/.git',
+        headCommit: snapshot.commit,
+        objectFormat: 'sha1',
+        remoteIdentity: 'https://github.com/example/threadnote.git',
+        repoRoot: '/work',
+        repositoryId: snapshot.repositoryId,
+        worktreeId: snapshot.worktreeId,
+      },
+      languagePacks: [],
+      readySnapshot: snapshot,
+      stale: false,
+    };
+    const clean = {dirty: false as const, fingerprint: undefined};
+    expect(cleanPublishedCitationFenceMatches(before, before.identity, clean, snapshot)).toBe(true);
+
+    fc.assert(
+      fc.property(
+        fc.constantFrom(
+          'checkout',
+          'repository',
+          'worktree',
+          'head',
+          'dirty',
+          'snapshot',
+          'commit',
+          'snapshot-repository',
+          'snapshot-worktree',
+        ),
+        mutation => {
+          const identity = {
+            ...before.identity,
+            ...(mutation === 'checkout' ? {checkoutId: 'changed-checkout'} : {}),
+            ...(mutation === 'repository' ? {repositoryId: '9'.repeat(64)} : {}),
+            ...(mutation === 'worktree' ? {worktreeId: 'changed-worktree'} : {}),
+            ...(mutation === 'head' ? {headCommit: '9'.repeat(40)} : {}),
+          };
+          const overlay = mutation === 'dirty' ? undefined : clean;
+          const active = {
+            ...snapshot,
+            ...(mutation === 'snapshot' ? {id: `cgsn_${'9'.repeat(40)}`} : {}),
+            ...(mutation === 'commit' ? {commit: '9'.repeat(40)} : {}),
+            ...(mutation === 'snapshot-repository' ? {repositoryId: '9'.repeat(64)} : {}),
+            ...(mutation === 'snapshot-worktree' ? {worktreeId: 'changed-worktree'} : {}),
+          };
+          expect(cleanPublishedCitationFenceMatches(before, identity, overlay, active)).toBe(false);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   it('classifies exact and relocated file evidence while abstaining on incomplete or ambiguous absence', () => {
     expect(
       validateContextBriefFileCitation(

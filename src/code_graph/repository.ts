@@ -121,6 +121,87 @@ export const resolveRepositoryIdentity = Effect.fn('codeGraph.resolveRepositoryI
   return (yield* resolveRepositoryIdentityDetail(cwd)).identity;
 });
 
+/** Bounded cleanliness probe used by the clean-snapshot final read fence. */
+export const observeCleanRepositoryWorktree = Effect.fn('codeGraph.observeCleanRepositoryWorktree')(function* (
+  cwd: string,
+) {
+  const porcelain = yield* runCommandEffect(
+    'git',
+    ['-C', cwd, 'status', '--porcelain=v1', '-z', '--untracked-files=normal'],
+    {maxOutputBytes: 0, timeoutMs: 0},
+  );
+  return porcelain.stdout.length === 0 ? {dirty: false as const, fingerprint: undefined} : undefined;
+});
+
+/**
+ * Reobserve the code-bearing parts of an identity for a final read fence.
+ * Branch display and case-mode configuration cannot change the cited bytes, so
+ * the already-validated values are retained while repository IDs and HEAD are
+ * independently recomputed.
+ */
+export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidateRepositoryIdentityFence')(function* (
+  cwd: string,
+  previous: RepositoryIdentity,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const system = yield* SystemInfo;
+  const [metadataResult, remoteResult] = yield* Effect.all(
+    [
+      runGit(cwd, [
+        'rev-parse',
+        '--path-format=absolute',
+        '--show-toplevel',
+        '--git-common-dir',
+        '--show-object-format',
+        'HEAD',
+      ]),
+      runGit(cwd, ['remote', 'get-url', 'origin'], true),
+    ],
+    {concurrency: 2},
+  ).pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  const metadata = metadataResult.stdout.replace(/\r?\n$/u, '').split(/\r?\n/u);
+  if (metadata.length !== 4) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
+  }
+  const repoRoot = yield* fs
+    .realPath(metadata[0]!)
+    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  const commonRaw = metadata[1]!;
+  const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
+  const gitCommonDirectory = yield* fs
+    .realPath(commonAbsolute)
+    .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
+  const objectFormat = metadata[2]!;
+  if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
+    return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
+  }
+  const remoteIdentity =
+    remoteResult.exitCode === 0 ? normalizeCredentialFreeRemote(remoteResult.stdout.trim()) : undefined;
+  const repositorySource = remoteIdentity ?? `local:${normalizeLocalIdentity(gitCommonDirectory, system.platform)}`;
+  const identity = {
+    ...(previous.branch === undefined ? {} : {branch: previous.branch}),
+    caseMode: previous.caseMode,
+    checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
+    displayName: repositoryDisplayName(remoteIdentity, repoRoot),
+    gitCommonDirectory,
+    headCommit: metadata[3]!,
+    objectFormat,
+    remoteIdentity,
+    repoRoot,
+    repositoryId: sha256HexSync(`repository-v${IDENTITY_FORMAT_VERSION}\n${repositorySource}`),
+    worktreeId: worktreeIdForRoot(repoRoot),
+  } satisfies RepositoryIdentity;
+  if (
+    identity.checkoutId !== previous.checkoutId ||
+    identity.repositoryId !== previous.repositoryId ||
+    identity.worktreeId !== previous.worktreeId
+  ) {
+    return yield* Effect.fail(new CodeGraphRepositoryError('Repository identity changed during the graph read.'));
+  }
+  return identity;
+});
+
 /**
  * Revalidate a previously published repository identity without repeating the
  * full discovery path. The expected repository ID remains independently

@@ -7,11 +7,19 @@ import {
   type CodeGraphEffectiveSymbolLocatorMatches,
   type CodeGraphSymbolSemanticLocatorV1,
 } from '../code_graph/citation_primitives.js';
+import {worktreeOverlayState} from '../code_graph/inventory.js';
 import {readContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
 import {decodeUtf8} from '../code_graph/inventory_content.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
+import {observeCleanRepositoryWorktree, revalidateRepositoryIdentityFence} from '../code_graph/repository.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStatus, CodeGraphSymbol, RepositoryIdentityExpectation} from '../code_graph/types.js';
+import type {
+  CodeGraphSnapshot,
+  CodeGraphStatus,
+  CodeGraphSymbol,
+  RepositoryIdentity,
+  RepositoryIdentityExpectation,
+} from '../code_graph/types.js';
 import {readPublishedCodeGraphWorksetCatalogGeneration} from '../code_graph/workset_catalog/store.js';
 import type {
   CodeGraphWorksetCatalogPublishedGenerationV1,
@@ -326,16 +334,38 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         for (const [index, task] of uncachedTasks.entries()) computed.set(task, receipts[index]!);
       }
 
-      const after = yield* repository.expected === undefined
-        ? query.status(config.agentContextHome, repository.cwd, {
-            observeWorktree: true,
-            requestMaintenance: false,
-          })
-        : query.statusForPublishedIdentity(config.agentContextHome, repository.cwd, repository.expected, {
-            observeWorktree: true,
-            requestMaintenance: false,
-          });
-      if (!sameExactSnapshot(repository.status, after)) {
+      const fenceCurrent =
+        repository.expected !== undefined && snapshot.dirty === false
+          ? yield* Effect.all(
+              [
+                revalidateRepositoryIdentityFence(repository.cwd, repository.status.identity),
+                observeCleanRepositoryWorktree(repository.status.identity.repoRoot),
+                store.readySnapshot(repository.status.databasePath, repository.status.identity.worktreeId),
+              ],
+              {concurrency: 3},
+            ).pipe(
+              Effect.flatMap(([identity, cleanOverlay, activeSnapshot]) =>
+                resolveContextBriefFinalFenceOverlay(identity, cleanOverlay).pipe(
+                  Effect.map(overlay =>
+                    cleanPublishedCitationFenceMatches(repository.status, identity, overlay, activeSnapshot),
+                  ),
+                ),
+              ),
+              Effect.catch(() => Effect.succeed(false)),
+            )
+          : sameExactSnapshot(
+              repository.status,
+              yield* repository.expected === undefined
+                ? query.status(config.agentContextHome, repository.cwd, {
+                    observeWorktree: true,
+                    requestMaintenance: false,
+                  })
+                : query.statusForPublishedIdentity(config.agentContextHome, repository.cwd, repository.expected, {
+                    observeWorktree: true,
+                    requestMaintenance: false,
+                  }),
+            );
+      if (!fenceCurrent) {
         return tasks.map(task => ({
           cacheHit: false,
           receipt: unknownReceipt(task.citation, 'graph-stale', observedAt),
@@ -854,6 +884,37 @@ function sameExactSnapshot(before: CodeGraphStatus, after: CodeGraphStatus): boo
     before.readySnapshot?.id === after.readySnapshot?.id
   );
 }
+
+/** Exact final fence for a clean snapshot selected from a published Workset. */
+export function cleanPublishedCitationFenceMatches(
+  before: CodeGraphStatus,
+  identity: RepositoryIdentity,
+  overlay: {readonly dirty: boolean; readonly fingerprint?: string} | undefined,
+  activeSnapshot: CodeGraphSnapshot | undefined,
+): boolean {
+  const selected = before.readySnapshot;
+  return (
+    selected !== undefined &&
+    selected.dirty === false &&
+    overlay?.dirty === false &&
+    identity.checkoutId === before.identity.checkoutId &&
+    identity.repositoryId === before.identity.repositoryId &&
+    identity.worktreeId === before.identity.worktreeId &&
+    identity.headCommit === selected.commit &&
+    activeSnapshot?.id === selected.id &&
+    activeSnapshot.commit === selected.commit &&
+    activeSnapshot.repositoryId === selected.repositoryId &&
+    activeSnapshot.worktreeId === selected.worktreeId
+  );
+}
+
+/** Preserve policy-aware freshness when the raw clean probe observes changes. */
+export const resolveContextBriefFinalFenceOverlay = Effect.fn('contextBrief.resolveFinalFenceOverlay')(function* (
+  identity: RepositoryIdentity,
+  cleanOverlay: {readonly dirty: false; readonly fingerprint?: undefined} | undefined,
+) {
+  return cleanOverlay ?? (yield* worktreeOverlayState(identity));
+});
 
 function validationCacheKey(status: CodeGraphStatus, snapshotId: string, citationId: string): string {
   return `${status.identity.repositoryId}\u0000${status.identity.worktreeId}\u0000${snapshotId}\u0000${citationId}`;

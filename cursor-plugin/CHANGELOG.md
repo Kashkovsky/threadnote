@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Explain memory-to-code citation capture, exact-current graph requirements, and legacy-memory freshness.
+- Restore compact recall, code-graph, Workset, and handoff guidance across installed agent surfaces.
+
 ## 1.0.1
 
 - Clarify how agents use published Workset generations for bounded cross-repository evidence.

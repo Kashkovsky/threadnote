@@ -1,40 +1,41 @@
 # Agent instructions
 
-Use Threadnote as shared memory. Repo files remain authoritative; follow the nearest checked-in
-`AGENTS.md`, `CLAUDE.md`, or equivalent guidance first.
+Use Threadnote as shared memory. Repo files remain authoritative; follow checked-in
+`AGENTS.md`, `CLAUDE.md`, or equivalent guidance.
 
-At the start of a non-trivial task, call `recall_context` with the project and absolute `callerCwd`; in a monorepo, use
-the nested package/app cwd. Recall provides decisions and handoffs; the code graph provides current source evidence.
+For non-trivial tasks, call `recall_context` with project and absolute `callerCwd`; use the nested package/app cwd in
+monorepos. Recall gives decisions/handoffs; graph gives current code evidence.
 
-`project` excludes projects but keeps projectless guidance; omit it for global recall or use a Workset. In monorepos,
+`project` excludes projects but retains projectless guidance; omit it for global recall or use a Workset. In monorepos,
 `callerCwd` prefers its package without excluding repo-wide or sibling evidence.
 
-A recall result is an unread pointer queue, not evidence. Read relevant `threadnote://` results with `read_context`
+Recall returns an unread pointer queue, not evidence. Read relevant `threadnote://` results with `read_context`
 before relying on them or citing memory-backed claims.
 
-Use `explain: true` only for ranking diagnostics.
+Recall is compact/budgeted; `explain: true` is only for ranking diagnostics and cannot make unread pointers evidence.
 
-For unfamiliar source or relationship claims, call `inspect_code_graph` before broad text search. Use `query`, then
-round-trip its stable ID through `node`, `neighbors`, or `path`; use `impact` for reverse dependencies and
-`analyze_code_graph` for repository structure. Follow with exact text or path search for literals and verification. If
-graph state is `indexing`, work independently and retry. If graph tooling is unavailable, say so and use targeted text
-search. A bounded skip fits a known exact path or symbol, remote review without a checkout, or visual/binary evidence.
+For unfamiliar source/relationship claims, call `inspect_code_graph` before broad text search. Use `query` to find a
+concept, then round-trip its stable ID through `node`, `neighbors`, or `path`; use `impact` for reverse dependencies and
+`analyze_code_graph` for repo-wide structure. Follow with exact text or path search for literals and verification. If
+`indexing`, work; retry after its delay. If graph tooling is unavailable, say so; use targeted text search. Skip graph
+only for known exact paths/symbols, remote review without checkout, or visual/binary evidence; use it if scope expands.
 
-For cross-repository work, use a named Workset when one is configured. Queries read its published ready generation and
-never fan out cold graph builds. For missing or stale snapshots, run `threadnote workset prepare <name>` first. Treat
-results as bounded, per-repository evidence with provenance, not proof of repository-wide absence.
+For cross-repo work, use a named Workset when one is configured. Queries read only its published ready generation and
+never fan out cold graph builds. If a member lacks a ready snapshot or needs fresher evidence, run
+`threadnote workset prepare <name>` explicitly. Results are bounded, per-repository evidence with provenance, not proof
+of repository-wide absence.
 
-Store reusable decisions with `kind: durable` and status or next steps with `kind: handoff`. Use stable `project` and
-`topic` identities and `replaceUri` for updates. Store routine durable knowledge and handoffs directly; use
-`review_session_context` only for additional session-extracted candidates requiring explicit approval. Before pausing
-or ending meaningful work, leave a concise handoff.
+Store decisions/contracts as `kind: durable`; status/checks/blockers/next steps as `kind: handoff`. Use stable `project`
+and `topic` identities; update memories with `replaceUri`. Store routine durable knowledge and handoffs
+directly; use `review_session_context` only for additional session-extracted candidates requiring explicit approval.
+Before pausing or ending meaningful work, leave a concise handoff.
 
-For a consequential source-backed memory claim, pass repository-relative paths or returned `cgs_`/`cgr_` handles via
-MCP `codeRefs` or repeatable CLI `--code-ref` flags. Capture needs a ready exact-current graph and never starts indexing.
-Omitted references clear citations on replacement. Existing uncited memories stay recallable with
-coarse or unknown freshness; see [Memory-to-code citations](memory-code-citations.md).
+For consequential source-backed claims, cite repo-relative paths/returned `cgs_`/`cgr_` handles via MCP `codeRefs` or
+repeated CLI `--code-ref`. Capture needs a ready exact-current graph; it never indexes. Replacement without refs clears
+citations. Legacy uncited memories stay recallable at coarse/unknown freshness; see
+[Citations](https://threadnote.io/docs/code-citations/).
 
-Prefer MCP tools; use the `threadnote` CLI as fallback. On storage/indexing failure, run `threadnote doctor --dry-run`
-and continue safe work. Never store secrets, credentials, customer data, or raw production
-logs. Confirm with the user before publishing durable memory; never publish handoffs or preferences, overwrite
-conflicting changes, or force a sync without explicit approval.
+Prefer Threadnote MCP; use the `threadnote` CLI fallback. On storage/indexing failure, run `threadnote doctor --dry-run`,
+report it and continue safe work. Never store secrets,
+credentials, customer data, or raw production logs. Confirm with the user before publishing durable memory; never
+publish handoffs or preferences, overwrite conflicting changes, or force a sync without explicit approval.

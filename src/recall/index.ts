@@ -154,11 +154,13 @@ interface RecallDocumentRow {
   readonly uri: string;
 }
 
-interface RecallDocumentSourceRow extends RecallDocumentRow {
+interface RecallDocumentSourceRow {
   readonly authority_policy_key: string | null;
+  readonly id: number;
   readonly source_modified_at: string | null;
   readonly source_path: string;
   readonly source_size: number;
+  readonly uri: string;
 }
 
 interface RecallMetadataRow {
@@ -1034,8 +1036,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
       source_path,
       source_modified_at,
       source_size,
-      authority_policy_key,
-      candidate_json
+      authority_policy_key
     FROM documents
     ORDER BY uri
   `;
