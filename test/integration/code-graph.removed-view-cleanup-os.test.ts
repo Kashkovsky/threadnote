@@ -28,12 +28,20 @@ interface CleanupChildMarker {
   readonly worktreeIds: readonly string[];
 }
 
+interface CleanupSqliteBlocker {
+  readonly release: () => void;
+}
+
+interface CleanupSqliteStatement {
+  readonly finalize: () => void;
+}
+
 describe('removed code graph view cleanup OS crash coordination', () => {
   effectIt.effect(
-    'keeps a killed post-commit claim leased, advances a disjoint page, and reclaims it at exact TTL',
+    'defers retryable contention, keeps a killed claim leased, and reclaims it at exact TTL',
     () =>
       TestClock.withLive(
-        withFixture('threadnote-removed-cleanup-os-', ({databasePath, markerPath}) =>
+        withFixture('threadnote-removed-cleanup-os-', ({contentionMarkerPath, databasePath, markerPath}) =>
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const store = yield* CodeGraphStore;
@@ -42,57 +50,65 @@ describe('removed code graph view cleanup OS crash coordination', () => {
             const now = Date.parse('2026-03-01T00:00:00.000Z');
 
             yield* Effect.acquireUseRelease(
-              startCleanupChild(databasePath, now, markerPath),
-              child =>
-                Effect.gen(function* () {
-                  yield* waitForMarker(fs, markerPath, child);
-                  const marker = yield* readMarker(fs, markerPath);
-                  const expectedKilled = Array.from({length: 32}, (_, index) => worktreeId(index));
-                  expect(child.exitCode).toBeNull();
-                  expect(marker).toMatchObject({event: 'claim-committed', revisions: Array(32).fill(1)});
-                  expect(marker.worktreeIds).toEqual(expectedKilled);
-                  expect(readLeasedRows(databasePath, expectedKilled)).toEqual(
-                    expectedKilled.map(worktreeId => ({
-                      next_attempt_at: now + 30_000,
-                      revision: 1,
-                      worktree_id: worktreeId,
-                    })),
-                  );
+              Effect.sync(() => holdSqliteWriter(databasePath)),
+              blocker =>
+                Effect.acquireUseRelease(
+                  startCleanupChild(databasePath, now, markerPath, contentionMarkerPath),
+                  child =>
+                    Effect.gen(function* () {
+                      yield* waitForMarker(fs, contentionMarkerPath, child);
+                      expect(yield* fs.readFileString(contentionMarkerPath)).toBe('retryable-sqlite-busy\n');
+                      yield* Effect.sync(blocker.release);
+                      yield* waitForMarker(fs, markerPath, child);
+                      const marker = yield* readMarker(fs, markerPath);
+                      const expectedKilled = Array.from({length: 32}, (_, index) => worktreeId(index));
+                      expect(child.exitCode).toBeNull();
+                      expect(marker).toMatchObject({event: 'claim-committed', revisions: Array(32).fill(1)});
+                      expect(marker.worktreeIds).toEqual(expectedKilled);
+                      expect(readLeasedRows(databasePath, expectedKilled)).toEqual(
+                        expectedKilled.map(worktreeId => ({
+                          next_attempt_at: now + 30_000,
+                          revision: 1,
+                          worktree_id: worktreeId,
+                        })),
+                      );
 
-                  child.kill('SIGKILL');
-                  yield* Effect.promise(() => child.exited);
-                  expect(readLeasedRows(databasePath, expectedKilled)).toEqual(
-                    expectedKilled.map(worktreeId => ({
-                      next_attempt_at: now + 30_000,
-                      revision: 1,
-                      worktree_id: worktreeId,
-                    })),
-                  );
+                      child.kill('SIGKILL');
+                      yield* Effect.promise(() => child.exited);
+                      expect(readLeasedRows(databasePath, expectedKilled)).toEqual(
+                        expectedKilled.map(worktreeId => ({
+                          next_attempt_at: now + 30_000,
+                          revision: 1,
+                          worktree_id: worktreeId,
+                        })),
+                      );
 
-                  const successor = yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32, {
-                    waitTimeoutMilliseconds: 30_000,
-                  });
-                  const expectedSuccessor = Array.from({length: 32}, (_, index) => worktreeId(index + 32));
-                  expect(successor.map(entry => entry.worktreeId)).toEqual(expectedSuccessor);
-                  expect(new Set([...marker.worktreeIds, ...expectedSuccessor])).toHaveLength(OS_ROWS);
-                  expect(yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32)).toEqual([]);
-                  expect(
-                    yield* store.claimRemovedViewCleanupCandidates(
-                      databasePath,
-                      now + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS - 1,
-                      32,
-                    ),
-                  ).toEqual([]);
+                      const successor = yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32, {
+                        waitTimeoutMilliseconds: 30_000,
+                      });
+                      const expectedSuccessor = Array.from({length: 32}, (_, index) => worktreeId(index + 32));
+                      expect(successor.map(entry => entry.worktreeId)).toEqual(expectedSuccessor);
+                      expect(new Set([...marker.worktreeIds, ...expectedSuccessor])).toHaveLength(OS_ROWS);
+                      expect(yield* store.claimRemovedViewCleanupCandidates(databasePath, now, 32)).toEqual([]);
+                      expect(
+                        yield* store.claimRemovedViewCleanupCandidates(
+                          databasePath,
+                          now + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS - 1,
+                          32,
+                        ),
+                      ).toEqual([]);
 
-                  const reclaimed = yield* store.claimRemovedViewCleanupCandidates(
-                    databasePath,
-                    now + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS,
-                    32,
-                  );
-                  expect(reclaimed.map(entry => entry.worktreeId)).toEqual(expectedKilled);
-                  expect(reclaimed.map(entry => entry.revision)).toEqual(Array(32).fill(2));
-                }),
-              terminateCleanupChild,
+                      const reclaimed = yield* store.claimRemovedViewCleanupCandidates(
+                        databasePath,
+                        now + CODE_GRAPH_REMOVED_VIEW_CLEANUP_CLAIM_LEASE_MILLISECONDS,
+                        32,
+                      );
+                      expect(reclaimed.map(entry => entry.worktreeId)).toEqual(expectedKilled);
+                      expect(reclaimed.map(entry => entry.revision)).toEqual(Array(32).fill(2));
+                    }),
+                  terminateCleanupChild,
+                ),
+              blocker => Effect.sync(blocker.release),
             );
           }),
         ),
@@ -130,7 +146,11 @@ describe('removed code graph view cleanup OS crash coordination', () => {
 
 function withFixture<A, E, R>(
   prefix: string,
-  use: (fixture: {readonly databasePath: string; readonly markerPath: string}) => Effect.Effect<A, E, R>,
+  use: (fixture: {
+    readonly contentionMarkerPath: string;
+    readonly databasePath: string;
+    readonly markerPath: string;
+  }) => Effect.Effect<A, E, R>,
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -138,6 +158,7 @@ function withFixture<A, E, R>(
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({prefix});
       return yield* use({
+        contentionMarkerPath: path.join(root, 'retryable-contention.marker'),
         databasePath: path.join(root, 'indexes', 'code-graph', 'repositories', CHECKOUT_ID, 'graph-v3.sqlite'),
         markerPath: path.join(root, 'claim-committed.json'),
       });
@@ -147,10 +168,12 @@ function withFixture<A, E, R>(
 
 function seedDueRows(databasePath: string, count: number): void {
   const database = new Database(databasePath, {strict: true});
+  const statements: CleanupSqliteStatement[] = [];
   try {
     const tombstone = database.prepare(
       'INSERT INTO removed_views (worktree_id, expected_snapshot_id, removed_at) VALUES (?, ?, ?)',
     );
+    statements.push(tombstone);
     const cleanup = database.prepare(
       `INSERT INTO removed_view_cleanup (
          worktree_id, expected_snapshot_id, removed_at, epoch, repository_id,
@@ -158,6 +181,11 @@ function seedDueRows(databasePath: string, count: number): void {
          revision, attempts, next_attempt_at, blocked_code, updated_at
        ) VALUES (?, ?, ?, ?, NULL, NULL, NULL, 'vector-pointers', NULL, 0, 0, 0, NULL, ?)`,
     );
+    statements.push(cleanup);
+    const sequence = database.query(
+      "UPDATE schema_metadata SET value = ? WHERE key = 'removed_view_cleanup_epoch_sequence'",
+    );
+    statements.push(sequence);
     database.transaction(() => {
       for (let index = 0; index < count; index += 1) {
         const worktree = worktreeId(index);
@@ -165,16 +193,38 @@ function seedDueRows(databasePath: string, count: number): void {
         tombstone.run(worktree, snapshot, REMOVED_AT);
         cleanup.run(worktree, snapshot, REMOVED_AT, index + 1, REMOVED_AT);
       }
-      database
-        .query("UPDATE schema_metadata SET value = ? WHERE key = 'removed_view_cleanup_epoch_sequence'")
-        .run(String(count));
+      sequence.run(String(count));
     })();
   } finally {
-    database.close(false);
+    // This seed hands the database to another OS process immediately. A weak
+    // close keeps prepared statements and their connection alive until GC.
+    finalizeStatementsAndClose(database, statements);
   }
 }
 
-function startCleanupChild(databasePath: string, now: number, markerPath: string): Effect.Effect<CleanupChildProcess> {
+function holdSqliteWriter(databasePath: string): CleanupSqliteBlocker {
+  const database = new Database(databasePath, {create: false, strict: true});
+  database.exec('PRAGMA busy_timeout = 0; BEGIN IMMEDIATE');
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      try {
+        if (database.inTransaction) database.exec('ROLLBACK');
+      } finally {
+        database.close(true);
+        released = true;
+      }
+    },
+  };
+}
+
+function startCleanupChild(
+  databasePath: string,
+  now: number,
+  markerPath: string,
+  contentionMarkerPath: string,
+): Effect.Effect<CleanupChildProcess> {
   return Effect.sync(
     () =>
       Bun.spawn({
@@ -185,6 +235,7 @@ function startCleanupChild(databasePath: string, now: number, markerPath: string
           databasePath,
           String(now),
           markerPath,
+          contentionMarkerPath,
         ],
         stderr: 'pipe',
         stdout: 'pipe',
@@ -280,6 +331,7 @@ function readMarker(fs: FileSystem.FileSystem, markerPath: string) {
 
 function readLeasedRows(databasePath: string, worktreeIds: readonly string[]) {
   const database = new Database(databasePath, {readonly: true, strict: true});
+  const statements: CleanupSqliteStatement[] = [];
   try {
     const select = database.prepare<
       {readonly next_attempt_at: number; readonly revision: number; readonly worktree_id: string},
@@ -288,32 +340,57 @@ function readLeasedRows(databasePath: string, worktreeIds: readonly string[]) {
       `SELECT worktree_id, revision, next_attempt_at
        FROM removed_view_cleanup WHERE worktree_id = ?`,
     );
+    statements.push(select);
     return worktreeIds.map(worktreeId => select.get(worktreeId)!);
   } finally {
-    database.close(false);
+    finalizeStatementsAndClose(database, statements);
   }
 }
 
 function readQueueProgress(databasePath: string) {
   const database = new Database(databasePath, {readonly: true, strict: true});
+  const statements: CleanupSqliteStatement[] = [];
   try {
-    const aggregate = database
-      .query<{readonly leased: number; readonly revisions: number; readonly rows: number}, []>(
-        `SELECT COUNT(*) AS rows,
-                SUM(CASE WHEN next_attempt_at > 0 THEN 1 ELSE 0 END) AS leased,
-                SUM(revision) AS revisions
-         FROM removed_view_cleanup`,
-      )
-      .get()!;
-    const cursor = database
-      .query<{readonly value: string}, []>(
-        "SELECT value FROM schema_metadata WHERE key = 'removed_view_cleanup_admission_cursor'",
-      )
-      .get()?.value;
+    const aggregateStatement = database.query<
+      {readonly leased: number; readonly revisions: number; readonly rows: number},
+      []
+    >(
+      `SELECT COUNT(*) AS rows,
+              SUM(CASE WHEN next_attempt_at > 0 THEN 1 ELSE 0 END) AS leased,
+              SUM(revision) AS revisions
+       FROM removed_view_cleanup`,
+    );
+    statements.push(aggregateStatement);
+    const aggregate = aggregateStatement.get()!;
+    const cursorStatement = database.query<{readonly value: string}, []>(
+      "SELECT value FROM schema_metadata WHERE key = 'removed_view_cleanup_admission_cursor'",
+    );
+    statements.push(cursorStatement);
+    const cursor = cursorStatement.get()?.value;
     return {...aggregate, cursor};
   } finally {
-    database.close(false);
+    finalizeStatementsAndClose(database, statements);
   }
+}
+
+function finalizeStatementsAndClose(database: Database, statements: readonly CleanupSqliteStatement[]): void {
+  let firstFailure: unknown;
+  let failed = false;
+  for (const statement of statements) {
+    try {
+      statement.finalize();
+    } catch (cause) {
+      if (!failed) firstFailure = cause;
+      failed = true;
+    }
+  }
+  try {
+    database.close(true);
+  } catch (cause) {
+    if (!failed) firstFailure = cause;
+    failed = true;
+  }
+  if (failed) throw firstFailure;
 }
 
 function worktreeId(index: number): string {
