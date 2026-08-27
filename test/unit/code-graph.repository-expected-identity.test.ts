@@ -8,6 +8,7 @@ import {
   resolveRepositoryIdentity,
   resolveRepositoryIdentityForExpectation,
   resolveRepositoryIdentityForExpectationAndWorktree,
+  resolvePublishedRepositoryReadFence,
   revalidateRepositoryIdentityFence,
 } from '../../src/code_graph/repository.js';
 import {runCommandEffect} from '../../src/effect/command.js';
@@ -117,6 +118,84 @@ describe('code graph expected repository identity', () => {
             yield* git(root, ['remote', 'add', 'origin', 'https://github.com/example/replaced.git']);
             const failure = yield* revalidateRepositoryIdentityFence(root, before).pipe(Effect.flip);
             expect(failure.message).toBe('Repository identity changed during the graph read.');
+          }),
+        ),
+      ),
+    );
+
+    it.effect('brackets a clean published read across caller-path and HEAD observations', () =>
+      TestClock.withLive(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const parent = yield* Effect.acquireRelease(
+              fs.makeTempDirectory({prefix: 'threadnote-published-read-fence-'}),
+              directory => fs.remove(directory, {force: true, recursive: true}).pipe(Effect.orDie),
+            );
+            const first = path.join(parent, 'first');
+            const second = path.join(parent, 'second');
+            const caller = path.join(parent, 'caller');
+            yield* fs.makeDirectory(first);
+            yield* git(first, ['init', '-q']);
+            yield* fs.writeFileString(path.join(first, 'tracked.ts'), 'export const tracked = 1;\n');
+            yield* git(first, ['add', 'tracked.ts']);
+            yield* git(first, [
+              '-c',
+              'user.name=Threadnote Test',
+              '-c',
+              'user.email=test@threadnote.local',
+              'commit',
+              '--allow-empty',
+              '-qm',
+              'fixture',
+            ]);
+            yield* git(first, ['remote', 'add', 'origin', 'https://github.com/example/read-fence.git']);
+            yield* git(parent, ['clone', '--quiet', first, second]);
+            yield* git(second, ['remote', 'set-url', 'origin', 'https://github.com/example/read-fence.git']);
+            yield* fs.symlink(first, caller);
+            const identity = yield* resolveRepositoryIdentity(caller);
+            const expected = {
+              checkoutId: identity.checkoutId,
+              repositoryId: identity.repositoryId,
+              worktreeId: identity.worktreeId,
+            };
+            expect(yield* resolvePublishedRepositoryReadFence(caller, expected)).toEqual({
+              ...expected,
+              headCommit: identity.headCommit,
+              worktreeChanged: false,
+            });
+
+            const failure = yield* resolvePublishedRepositoryReadFence(caller, expected, {
+              afterInitialIdentity: () => fs.remove(caller).pipe(Effect.andThen(fs.symlink(second, caller))),
+            }).pipe(Effect.flip);
+            expect(failure).toBeInstanceOf(Error);
+            expect((failure as Error).message).toBe('Repository identity changed during the graph read.');
+
+            yield* fs.remove(caller);
+            yield* fs.symlink(first, caller);
+            const changed = yield* resolvePublishedRepositoryReadFence(caller, expected, {
+              afterWorktreeObservation: () =>
+                fs.writeFileString(path.join(first, 'tracked.ts'), 'export const tracked = 2;\n'),
+            });
+            expect(changed).toEqual({...expected, headCommit: identity.headCommit, worktreeChanged: true});
+            yield* fs.writeFileString(path.join(first, 'tracked.ts'), 'export const tracked = 1;\n');
+
+            const headFailure = yield* resolvePublishedRepositoryReadFence(caller, expected, {
+              afterWorktreeObservation: () =>
+                git(first, [
+                  '-c',
+                  'user.name=Threadnote Test',
+                  '-c',
+                  'user.email=test@threadnote.local',
+                  'commit',
+                  '--allow-empty',
+                  '-qm',
+                  'interlocked next head',
+                ]).pipe(Effect.asVoid),
+            }).pipe(Effect.flip);
+            expect(headFailure).toBeInstanceOf(Error);
+            expect((headFailure as Error).message).toBe('Repository identity changed during the graph read.');
           }),
         ),
       ),

@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem} from 'effect';
+import {Clock, Effect, FileSystem, Path} from 'effect';
 import {
   createCodeGraphSourceSpanCanonicalizer,
   type CodeGraphEffectiveFileHashMatches,
@@ -10,8 +10,15 @@ import {
 import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation_source.js';
 import {worktreeOverlayState} from '../code_graph/inventory.js';
 import {decodeUtf8} from '../code_graph/inventory_content.js';
+import {CodeGraphLanguagePackRegistry} from '../code_graph/languages/registry.js';
+import {codeGraphLayout} from '../code_graph/layout.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
-import {observeCleanRepositoryWorktree, revalidateRepositoryIdentityFence} from '../code_graph/repository.js';
+import {codeGraphSnapshotRuntimeCurrent} from '../code_graph/query_snapshot_runtime.js';
+import {
+  observeCleanRepositoryWorktree,
+  resolvePublishedRepositoryReadFence,
+  revalidateRepositoryIdentityFence,
+} from '../code_graph/repository.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import type {
   CodeGraphSnapshot,
@@ -27,6 +34,7 @@ import type {
 } from '../code_graph/workset_catalog/types.js';
 import {codeGraphWorksetManifestDigest} from '../code_graph/workset_catalog/workset.js';
 import {sha256Hex} from '../effect/digest.js';
+import {CommandExecutor} from '../effect/command.js';
 import {SystemInfo} from '../effect/system.js';
 import {requireWorkset} from '../manifest.js';
 import type {MemoryCodeCitationV1} from '../memory_code_citation.js';
@@ -53,7 +61,20 @@ interface CitationTask {
   readonly uri: string;
 }
 
-interface ReadyRepository {
+interface RepositoryValidationInput {
+  readonly databasePath: string;
+  readonly finalFence: Effect.Effect<boolean, unknown, RepositoryValidationFenceRequirements>;
+  readonly objectFormat: RepositoryIdentity['objectFormat'];
+  readonly repositoryId: string;
+  readonly snapshot: CodeGraphSnapshot;
+  readonly sourceRoot: string;
+  readonly worktreeId: string;
+}
+
+type RepositoryValidationFenceRequirements =
+  CodeGraphQueryService | CodeGraphStore | CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo;
+
+interface StatusReadyRepository {
   readonly cwd: string;
   readonly expected?: RepositoryIdentityExpectation;
   readonly status: CodeGraphStatus;
@@ -62,6 +83,7 @@ interface ReadyRepository {
 interface ValidationRepositoryTarget {
   readonly cwd: string;
   readonly expected?: RepositoryIdentityExpectation;
+  readonly published?: CodeGraphWorksetCatalogPublishedMemberV1;
 }
 
 interface ValidationScopeResolution {
@@ -148,14 +170,26 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
         ) {
           return Effect.succeed(undefined);
         }
-        const repository = {...target, status} satisfies ReadyRepository;
+        const repository = {...target, status} satisfies StatusReadyRepository;
         if (status.readySnapshot === undefined || status.stale || status.freshness !== 'current') {
           return Effect.succeed({
             repositoryId,
             tuples: tasks.map(task => [task, unknown(task.citation, 'graph-stale'), false] as const),
           });
         }
-        return validateRepositoryTasks(config, repository, tasks, observedAt).pipe(
+        return validateRepositoryTasks(
+          {
+            databasePath: status.databasePath,
+            finalFence: statusRepositoryFinalFence(config, repository),
+            objectFormat: status.identity.objectFormat,
+            repositoryId,
+            snapshot: status.readySnapshot,
+            sourceRoot: status.identity.repoRoot,
+            worktreeId: status.identity.worktreeId,
+          },
+          tasks,
+          observedAt,
+        ).pipe(
           Effect.map(results => ({
             repositoryId,
             tuples: tasks.map((task, index) => [task, results[index]!.receipt, results[index]!.cacheHit] as const),
@@ -174,6 +208,26 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
             ? query.status(config.agentContextHome, target.cwd, statusOptions)
             : query.statusForPublishedIdentity(config.agentContextHome, target.cwd, target.expected, statusOptions)
           ).pipe(Effect.flatMap(use));
+      if (target.published !== undefined) {
+        const repositoryId = target.published.repositoryId;
+        const tasks = eligibleByRepository.get(repositoryId);
+        if (tasks === undefined) return Effect.succeed(undefined).pipe(Effect.option);
+        if (!tasks.every(task => task.citation.target.kind === 'file')) return statusAndValidate.pipe(Effect.option);
+        return validatePublishedRepositoryTasks(config, target.cwd, target.published, tasks, observedAt).pipe(
+          Effect.catch(() => Effect.succeed(undefined)),
+          Effect.flatMap(results =>
+            results === undefined
+              ? statusAndValidate
+              : Effect.succeed({
+                  repositoryId,
+                  tuples: tasks.map(
+                    (task, index) => [task, results[index]!.receipt, results[index]!.cacheHit] as const,
+                  ),
+                }),
+          ),
+          Effect.option,
+        );
+      }
       return statusAndValidate.pipe(Effect.option);
     },
     {concurrency: VALIDATION_CONCURRENCY},
@@ -234,24 +288,132 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
   }) as readonly ContextBriefMemoryCitationValidationV2[];
 });
 
-const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitationTasks')(function* (
+const validatePublishedRepositoryTasks = Effect.fn('contextBrief.validatePublishedRepositoryCitationTasks')(function* (
   config: RuntimeConfig,
-  repository: ReadyRepository,
+  cwd: string,
+  published: CodeGraphWorksetCatalogPublishedMemberV1,
+  tasks: readonly CitationTask[],
+  observedAt: string,
+) {
+  const path = yield* Path.Path;
+  const query = yield* CodeGraphQueryService;
+  const store = yield* CodeGraphStore;
+  const languagePacks = yield* CodeGraphLanguagePackRegistry;
+  const layout = codeGraphLayout(path, config.agentContextHome, published.checkoutId, published.worktreeId);
+  return yield* store.withSession(
+    layout.databasePath,
+    Effect.gen(function* () {
+      const snapshot = yield* store.readySnapshotById(layout.databasePath, published.snapshotId);
+      if (snapshot?.dirty === true) return undefined;
+      const runtimeCurrent =
+        snapshot !== undefined && cleanPublishedCatalogSnapshotMatches(published, snapshot)
+          ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, snapshot, languagePacks)
+          : false;
+      if (snapshot === undefined || !cleanPublishedCatalogSnapshotMatches(published, snapshot) || !runtimeCurrent) {
+        return tasks.map(task => ({
+          cacheHit: false,
+          receipt: unknownReceipt(task.citation, 'graph-stale', observedAt),
+        })) satisfies readonly ValidatedCitation[];
+      }
+      return yield* validateRepositoryTasks(
+        {
+          databasePath: layout.databasePath,
+          finalFence: resolvePublishedRepositoryReadFence(cwd, published).pipe(
+            Effect.flatMap(observation =>
+              Effect.gen(function* () {
+                if (observation.worktreeChanged) {
+                  const policyAwareStatus = yield* query.statusForPublishedIdentity(
+                    config.agentContextHome,
+                    cwd,
+                    published,
+                    {observeWorktree: true, requestMaintenance: false},
+                  );
+                  if (
+                    policyAwareStatus.freshness !== 'current' ||
+                    policyAwareStatus.stale ||
+                    !cleanPublishedCatalogFenceMatches(
+                      published,
+                      snapshot,
+                      policyAwareStatus.identity,
+                      policyAwareStatus.readySnapshot,
+                    )
+                  ) {
+                    return false;
+                  }
+                }
+                const activeSnapshot = yield* store.readySnapshot(layout.databasePath, published.worktreeId);
+                return cleanPublishedCatalogFenceMatches(published, snapshot, observation, activeSnapshot);
+              }),
+            ),
+          ),
+          objectFormat: snapshot.commit.length === 64 ? 'sha256' : 'sha1',
+          repositoryId: published.repositoryId,
+          snapshot,
+          sourceRoot: cwd,
+          worktreeId: published.worktreeId,
+        },
+        tasks,
+        observedAt,
+      );
+    }),
+    {existingOnly: true},
+  );
+});
+
+const statusRepositoryFinalFence = (
+  config: RuntimeConfig,
+  repository: StatusReadyRepository,
+): Effect.Effect<boolean, unknown, RepositoryValidationFenceRequirements> =>
+  Effect.gen(function* () {
+    const query = yield* CodeGraphQueryService;
+    const store = yield* CodeGraphStore;
+    const snapshot = repository.status.readySnapshot!;
+    if (repository.expected !== undefined && snapshot.dirty === false) {
+      return yield* Effect.all(
+        [
+          revalidateRepositoryIdentityFence(repository.cwd, repository.status.identity),
+          observeCleanRepositoryWorktree(repository.status.identity.repoRoot),
+          store.readySnapshot(repository.status.databasePath, repository.status.identity.worktreeId),
+        ],
+        {concurrency: 3},
+      ).pipe(
+        Effect.flatMap(([identity, cleanOverlay, activeSnapshot]) =>
+          resolveContextBriefFinalFenceOverlay(identity, cleanOverlay).pipe(
+            Effect.map(overlay =>
+              cleanPublishedCitationFenceMatches(repository.status, identity, overlay, activeSnapshot),
+            ),
+          ),
+        ),
+      );
+    }
+    const after = yield* repository.expected === undefined
+      ? query.status(config.agentContextHome, repository.cwd, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        })
+      : query.statusForPublishedIdentity(config.agentContextHome, repository.cwd, repository.expected, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+    return sameExactSnapshot(repository.status, after);
+  });
+
+const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitationTasks')(function* (
+  repository: RepositoryValidationInput,
   tasks: readonly CitationTask[],
   observedAt: string,
 ) {
   const store = yield* CodeGraphStore;
-  const query = yield* CodeGraphQueryService;
   const fs = yield* FileSystem.FileSystem;
-  const snapshot = repository.status.readySnapshot!;
+  const snapshot = repository.snapshot;
   return yield* Effect.scoped(
     Effect.gen(function* () {
-      yield* Effect.acquireRelease(
-        store.acquireSnapshotLease(repository.status.databasePath, snapshot.id, 60_000),
-        token =>
-          store.releaseSnapshotLease(repository.status.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+      yield* Effect.acquireRelease(store.acquireSnapshotLease(repository.databasePath, snapshot.id, 60_000), token =>
+        store.releaseSnapshotLease(repository.databasePath, token).pipe(Effect.catch(() => Effect.void)),
       );
-      const cacheKeys = tasks.map(task => validationCacheKey(repository.status, snapshot.id, task.citation.id));
+      const cacheKeys = tasks.map(task =>
+        validationCacheKey(repository.repositoryId, repository.worktreeId, snapshot.id, task.citation.id),
+      );
       const cached = cacheKeys.map(validationCacheGet);
       const uncachedTasks = tasks.filter((_, index) => cached[index] === undefined);
       const computed = new Map<CitationTask, ContextBriefCitationValidationReceiptV2>();
@@ -266,7 +428,7 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
           } => citation.target.kind === 'symbol',
         );
         const locators = symbolCitations.map(symbolLocator);
-        const evidence = yield* store.effectiveSnapshotCitationEvidence(repository.status.databasePath, snapshot.id, {
+        const evidence = yield* store.effectiveSnapshotCitationEvidence(repository.databasePath, snapshot.id, {
           fileRelocationFallbacks: citations.map(citation => ({
             contentHash: citation.fileContentHash.value,
             path: citation.path,
@@ -291,10 +453,10 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         const sourceBytes =
           symbolCitations.length === 0
             ? new Map<string, Uint8Array>()
-            : yield* fs.realPath(repository.status.identity.repoRoot).pipe(
+            : yield* fs.realPath(repository.sourceRoot).pipe(
                 Effect.flatMap(repositoryRoot =>
                   readCodeGraphCitationSources({
-                    objectFormat: repository.status.identity.objectFormat,
+                    objectFormat: repository.objectFormat,
                     repositoryRoot,
                     sourceCommit: snapshot.commit,
                     sources: symbolCitations.flatMap(citation =>
@@ -366,37 +528,7 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         for (const [index, task] of uncachedTasks.entries()) computed.set(task, receipts[index]!);
       }
 
-      const fenceCurrent =
-        repository.expected !== undefined && snapshot.dirty === false
-          ? yield* Effect.all(
-              [
-                revalidateRepositoryIdentityFence(repository.cwd, repository.status.identity),
-                observeCleanRepositoryWorktree(repository.status.identity.repoRoot),
-                store.readySnapshot(repository.status.databasePath, repository.status.identity.worktreeId),
-              ],
-              {concurrency: 3},
-            ).pipe(
-              Effect.flatMap(([identity, cleanOverlay, activeSnapshot]) =>
-                resolveContextBriefFinalFenceOverlay(identity, cleanOverlay).pipe(
-                  Effect.map(overlay =>
-                    cleanPublishedCitationFenceMatches(repository.status, identity, overlay, activeSnapshot),
-                  ),
-                ),
-              ),
-              Effect.catch(() => Effect.succeed(false)),
-            )
-          : sameExactSnapshot(
-              repository.status,
-              yield* repository.expected === undefined
-                ? query.status(config.agentContextHome, repository.cwd, {
-                    observeWorktree: true,
-                    requestMaintenance: false,
-                  })
-                : query.statusForPublishedIdentity(config.agentContextHome, repository.cwd, repository.expected, {
-                    observeWorktree: true,
-                    requestMaintenance: false,
-                  }),
-            );
+      const fenceCurrent = yield* repository.finalFence.pipe(Effect.catch(() => Effect.succeed(false)));
       if (!fenceCurrent) {
         return tasks.map(task => ({
           cacheHit: false,
@@ -850,7 +982,9 @@ const validationScopeTargets = Effect.fn('contextBrief.validationScopeTargets')(
     route.members,
     member =>
       expandPath(member.projectPath).pipe(
-        Effect.map(cwd => ({cwd, expected: member.published}) satisfies ValidationRepositoryTarget),
+        Effect.map(
+          cwd => ({cwd, expected: member.published, published: member.published}) satisfies ValidationRepositoryTarget,
+        ),
         Effect.option,
       ),
     {concurrency: VALIDATION_CONCURRENCY},
@@ -943,6 +1077,49 @@ function sameExactSnapshot(before: CodeGraphStatus, after: CodeGraphStatus): boo
   );
 }
 
+/** Immutable published-catalog receipt required before citation evidence reads. */
+export function cleanPublishedCatalogSnapshotMatches(
+  published: CodeGraphWorksetCatalogPublishedMemberV1,
+  snapshot: CodeGraphSnapshot,
+): boolean {
+  return (
+    snapshot.state === 'ready' &&
+    snapshot.dirty === false &&
+    snapshot.id === published.snapshotId &&
+    snapshot.repositoryId === published.repositoryId &&
+    snapshot.commit === published.commitId &&
+    snapshot.symbolCount === published.symbolCount
+  );
+}
+
+/** Final catalog-first fence after the complete live repository observation. */
+export function cleanPublishedCatalogFenceMatches(
+  published: CodeGraphWorksetCatalogPublishedMemberV1,
+  selected: CodeGraphSnapshot,
+  identity: Pick<RepositoryIdentity, 'checkoutId' | 'headCommit' | 'repositoryId' | 'worktreeId'>,
+  active: CodeGraphSnapshot | undefined,
+): boolean {
+  return (
+    cleanPublishedCatalogSnapshotMatches(published, selected) &&
+    identity.checkoutId === published.checkoutId &&
+    identity.repositoryId === published.repositoryId &&
+    identity.worktreeId === published.worktreeId &&
+    identity.headCommit === selected.commit &&
+    active?.state === 'ready' &&
+    active.dirty === false &&
+    active.id === selected.id &&
+    active.repositoryId === selected.repositoryId &&
+    active.commit === selected.commit &&
+    active.symbolCount === selected.symbolCount &&
+    active.extractorSet === selected.extractorSet &&
+    active.graphContentId === selected.graphContentId &&
+    active.baseSnapshotId === selected.baseSnapshotId &&
+    active.fileCount === selected.fileCount &&
+    active.edgeCount === selected.edgeCount &&
+    active.overlayFingerprint === selected.overlayFingerprint
+  );
+}
+
 /** Exact final fence for a clean snapshot selected from a published Workset. */
 export function cleanPublishedCitationFenceMatches(
   before: CodeGraphStatus,
@@ -974,8 +1151,8 @@ export const resolveContextBriefFinalFenceOverlay = Effect.fn('contextBrief.reso
   return cleanOverlay ?? (yield* worktreeOverlayState(identity));
 });
 
-function validationCacheKey(status: CodeGraphStatus, snapshotId: string, citationId: string): string {
-  return `${status.identity.repositoryId}\u0000${status.identity.worktreeId}\u0000${snapshotId}\u0000${citationId}`;
+function validationCacheKey(repositoryId: string, worktreeId: string, snapshotId: string, citationId: string): string {
+  return `${repositoryId}\u0000${worktreeId}\u0000${snapshotId}\u0000${citationId}`;
 }
 
 function validationCacheGet(key: string): ContextBriefCitationValidationReceiptV2 | undefined {

@@ -1,5 +1,5 @@
 import * as SqliteClient from '@effect/sql-sqlite-bun/SqliteClient';
-import {Context, Effect, Layer, Option, Path} from 'effect';
+import {Cause, Context, Effect, Layer, Option, Path} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import * as SqlError from 'effect/unstable/sql/SqlError';
 import type {
@@ -54,7 +54,7 @@ export function useReadOnlyDatabase<A, E, R>(
 export function useExistingDatabase<A, E, R>(
   databasePath: string,
   effect: Effect.Effect<A, E, R | SqlClient.SqlClient>,
-): Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>> {
+): Effect.Effect<A, E | CodeGraphStoreError, Exclude<R, SqlClient.SqlClient>> {
   return Effect.scoped(
     Layer.build(
       SqliteClient.layer({
@@ -64,7 +64,14 @@ export function useExistingDatabase<A, E, R>(
         readonly: false,
         readwrite: true,
       }),
-    ).pipe(Effect.flatMap(context => effect.pipe(Effect.provide(context)))),
+    ).pipe(
+      Effect.catchCause(cause =>
+        Cause.hasInterruptsOnly(cause)
+          ? Effect.failCause(cause)
+          : Effect.fail(new CodeGraphStoreError('Existing code graph database could not be opened.')),
+      ),
+      Effect.flatMap(context => effect.pipe(Effect.provide(context))),
+    ),
   );
 }
 

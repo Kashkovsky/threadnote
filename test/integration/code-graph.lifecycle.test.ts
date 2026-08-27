@@ -63,6 +63,7 @@ import {
 } from '../../src/code_graph/store.js';
 import {
   CODE_GRAPH_SCHEMA_VERSION,
+  CodeGraphStoreError,
   CodeGraphStoreNoSpaceError,
   type CodeGraphMaterializationMetrics,
   type CodeGraphProgress,
@@ -619,6 +620,37 @@ describe('native code graph lifecycle', () => {
           database.close();
         }
       });
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('opens existing-only writable sessions without creating a missing graph database', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(createFixtureRepository);
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      const fs = yield* FileSystem.FileSystem;
+      const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const databasePath = codeGraphDatabasePath(home, indexed);
+      const selected = yield* store.withSession(
+        databasePath,
+        Effect.scoped(
+          Effect.acquireUseRelease(
+            store.acquireSnapshotLease(databasePath, indexed.snapshot.id, 60_000),
+            () => store.readySnapshot(databasePath, indexed.identity.worktreeId),
+            token => store.releaseSnapshotLease(databasePath, token),
+          ),
+        ),
+        {existingOnly: true},
+      );
+      expect(selected?.id).toBe(indexed.snapshot.id);
+
+      const missing = join(home, 'indexes', 'code-graph', 'missing.sqlite');
+      expect(yield* fs.exists(missing)).toBe(false);
+      const failure = yield* store.withSession(missing, Effect.void, {existingOnly: true}).pipe(Effect.flip);
+      expect(failure).toBeInstanceOf(CodeGraphStoreError);
+      expect(failure.message).toBe('Existing code graph database could not be opened.');
+      expect(yield* fs.exists(missing)).toBe(false);
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
