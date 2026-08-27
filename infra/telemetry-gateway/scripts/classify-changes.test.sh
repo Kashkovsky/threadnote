@@ -37,8 +37,8 @@ assert_classification "$validation_only" infra/telemetry-gateway/gateway_test.go
 assert_classification "$validation_only" infra/telemetry-gateway/internal/budget/budget_test.go
 assert_classification "$validation_only" infra/telemetry-gateway/cmd/canary/main.go
 assert_classification "$validation_only" infra/telemetry-gateway/threadnote-anonymous-telemetry-dashboard.json
-assert_classification "$validation_only" docs/operations/telemetry-production.md
 assert_classification "$validation_only" .github/workflows/telemetry-gateway.yml
+assert_classification "$validation_only" docs/operations/telemetry-production.md
 assert_classification "$validation_only" infra/telemetry-gateway/scripts/classify-changes.sh
 
 assert_classification "$irrelevant" README.md src/code_graph/indexer.ts

@@ -255,6 +255,12 @@ Collector configuration, gateway runtime (including its shared internal budget
 constants), dependencies, or admitted schemas change. Dashboard,
 documentation, test-only, standalone budget-verifier command, storage-canary,
 and workflow-only changes are validated but cannot start a production rollout.
+When a workflow-only rollout-gate fix itself must be proven, dispatch
+`telemetry-gateway.yml` from the exact `main` revision with
+`redeploy_production=true`. That explicit run uses the protected production
+environment, redeploys an immutable image for the selected revision, and must
+pass the same post-deploy convergence and storage-canary gates; the default
+manual dispatch remains validation-only.
 
 The production job first rejects a superseded revision when newer `main` commits
 change a production input. Later workflow, classifier, documentation, or
