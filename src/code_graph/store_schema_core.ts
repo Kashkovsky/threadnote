@@ -12,6 +12,7 @@ import {
 } from './store_removed_view_schema_inspection.js';
 import {
   REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  type SchemaMetadataMaximumRows,
   inspectBoundedSchemaMetadataRowCount,
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
@@ -25,8 +26,16 @@ const removedViewCleanupSchemaCurrent = Effect.fn('codeGraph.removedViewCleanupS
 });
 
 const inspectRemovedViewCleanupAdmissionCursor = Effect.fn('codeGraph.inspectRemovedViewCleanupAdmissionCursor')(
-  function* (sql: SqlClient.SqlClient) {
-    const inspection = yield* inspectBoundedSchemaMetadataValue(sql, REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY, 64);
+  function* (
+    sql: SqlClient.SqlClient,
+    maximumMetadataRows: SchemaMetadataMaximumRows = REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  ) {
+    const inspection = yield* inspectBoundedSchemaMetadataValue(
+      sql,
+      REMOVED_VIEW_CLEANUP_ADMISSION_CURSOR_KEY,
+      64,
+      maximumMetadataRows,
+    );
     if (inspection.state === 'missing') return {current: true, cursor: undefined} as const;
     if (inspection.state === 'invalid' || !/^[0-9a-f]{64}$/u.test(inspection.value)) {
       return {current: false, cursor: undefined} as const;

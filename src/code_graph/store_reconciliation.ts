@@ -24,10 +24,12 @@ import {
 import {normalizeSchemaDefinition} from './store_schema_normalization.js';
 import {
   REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  type SchemaMetadataMaximumRows,
   inspectBoundedSchemaMetadataRowCount,
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
 import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreCorruptionError,
   CodeGraphStoreError,
@@ -77,8 +79,125 @@ import {type CodeGraphSqlQueryStatement} from './store_visualization_sql.js';
 const WORKTREE_RECONCILIATION_CURSOR_KEY = 'worktree_reconciliation_cursor';
 const WORKTREE_RECONCILIATION_CURSOR_PATTERN = /^[0-9a-f]{64}$/u;
 const WORKTREE_RECONCILIATION_CURSOR_OPERATION = 'claim code graph reconciliation candidates';
+const WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS = 67 satisfies SchemaMetadataMaximumRows;
 const ORPHAN_PROVENANCE_CURSOR_KEY = 'orphan_provenance_cursor';
 const ORPHAN_PROVENANCE_WORKTREE_ID_LIMIT = 4_096;
+
+type WorktreeReconciliationCursorState =
+  {readonly recorded: true; readonly value: string} | {readonly recorded: false; readonly value: undefined};
+
+const admitOrRecoverWorktreeReconciliationSchema = Effect.fn('codeGraph.admitOrRecoverWorktreeReconciliationSchema')(
+  function* (sql: SqlClient.SqlClient) {
+    if (yield* codeGraphWorktreeReconciliationSchemaCompatible(sql)) return true;
+
+    const revision = yield* removedViewCleanupRecordedRevision(
+      sql,
+      WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
+    );
+    if (revision.state !== 'recorded' || revision.value !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+      return false;
+    }
+    const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(
+      sql,
+      WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
+    );
+    const cleanupCursor = yield* inspectRemovedViewCleanupAdmissionCursor(
+      sql,
+      WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
+    );
+    if (!cleanupCursor.current) return false;
+    const admittedRows =
+      REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - (cleanupCursor.cursor === undefined ? 1 : 0);
+    if (metadataRowCount !== admittedRows + 1) return false;
+
+    const cursor = yield* inspectBoundedSchemaMetadataValue(
+      sql,
+      WORKTREE_RECONCILIATION_CURSOR_KEY,
+      64,
+      WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
+    );
+    if (cursor.state === 'invalid') {
+      return yield* Effect.fail(worktreeReconciliationCursorStructuralError());
+    }
+    if (cursor.state === 'missing') return false;
+    yield* clearWorktreeReconciliationCursor(sql, cursor.value);
+    return yield* codeGraphWorktreeReconciliationSchemaCompatible(sql);
+  },
+);
+
+const inspectWorktreeReconciliationCursor = Effect.fn('codeGraph.inspectWorktreeReconciliationCursor')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const inspection = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+  if (inspection.state === 'invalid') {
+    return yield* Effect.fail(worktreeReconciliationCursorStructuralError());
+  }
+  if (inspection.state === 'missing') {
+    return {recorded: false, value: undefined} satisfies WorktreeReconciliationCursorState;
+  }
+  if (WORKTREE_RECONCILIATION_CURSOR_PATTERN.test(inspection.value)) {
+    return {recorded: true, value: inspection.value} satisfies WorktreeReconciliationCursorState;
+  }
+  yield* clearWorktreeReconciliationCursor(sql, inspection.value);
+  return {recorded: false, value: undefined} satisfies WorktreeReconciliationCursorState;
+});
+
+const clearWorktreeReconciliationCursor = Effect.fn('codeGraph.clearWorktreeReconciliationCursor')(function* (
+  sql: SqlClient.SqlClient,
+  recordedCursor: string,
+) {
+  yield* sql.unsafe(
+    `DELETE FROM schema_metadata
+     WHERE key = ? COLLATE BINARY
+       AND value = ? COLLATE BINARY`,
+    [WORKTREE_RECONCILIATION_CURSOR_KEY, recordedCursor],
+  );
+  if ((yield* lastStatementChangeCount(sql)) !== 1) {
+    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+  }
+  const clearedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+  if (clearedCursor.state !== 'missing') {
+    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+  }
+});
+
+const recordWorktreeReconciliationCursor = Effect.fn('codeGraph.recordWorktreeReconciliationCursor')(function* (
+  sql: SqlClient.SqlClient,
+  current: WorktreeReconciliationCursorState,
+  nextCursor: string,
+) {
+  if (current.recorded) {
+    yield* sql.unsafe(
+      `UPDATE schema_metadata
+       SET value = ?
+       WHERE key = ? COLLATE BINARY
+         AND value = ? COLLATE BINARY`,
+      [nextCursor, WORKTREE_RECONCILIATION_CURSOR_KEY, current.value],
+    );
+  } else {
+    const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
+    const cleanupCursor = yield* inspectRemovedViewCleanupAdmissionCursor(sql);
+    if (metadataRowCount === undefined || !cleanupCursor.current) {
+      return yield* Effect.fail(worktreeReconciliationCursorCapacityError());
+    }
+    const maximumRows =
+      REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS - (cleanupCursor.cursor === undefined ? 1 : 0);
+    if (metadataRowCount >= maximumRows) return;
+    yield* sql.unsafe(
+      `INSERT INTO schema_metadata (key, value)
+       VALUES (?, ?)
+       ON CONFLICT(key) DO NOTHING`,
+      [WORKTREE_RECONCILIATION_CURSOR_KEY, nextCursor],
+    );
+  }
+  if ((yield* lastStatementChangeCount(sql)) !== 1) {
+    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+  }
+  const advancedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
+  if (advancedCursor.state !== 'recorded' || advancedCursor.value !== nextCursor) {
+    return yield* Effect.fail(worktreeReconciliationCursorChangedError());
+  }
+});
 
 const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktreeReconciliationCandidates')(function* (
   sql: SqlClient.SqlClient,
@@ -87,23 +206,11 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
   const limit = Number.isSafeInteger(requestedLimit) ? Math.max(1, Math.min(32, requestedLimit)) : 32;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql))) {
+      if (!(yield* admitOrRecoverWorktreeReconciliationSchema(sql))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation schema is unavailable.'));
       }
-      const cursorInspection = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
-      if (cursorInspection.state === 'invalid') {
-        return yield* Effect.fail(
-          new CodeGraphStoreCorruptionError('Code graph reconciliation cursor metadata is structurally invalid.', {
-            operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
-          }),
-        );
-      }
-      const recordedCursor = cursorInspection.state === 'recorded' ? cursorInspection.value : undefined;
-      const cursor =
-        recordedCursor !== undefined && WORKTREE_RECONCILIATION_CURSOR_PATTERN.test(recordedCursor)
-          ? recordedCursor
-          : undefined;
-      const resetMalformedCursor = recordedCursor !== undefined && cursor === undefined;
+      const cursorState = yield* inspectWorktreeReconciliationCursor(sql);
+      const cursor = cursorState.value;
       const selectPage = (boundary: 'after' | 'through', pageLimit: number) => {
         const statement = codeGraphWorktreeReconciliationCandidatePageStatement(cursor, boundary, pageLimit);
         return sql.unsafe<{
@@ -133,54 +240,8 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
       ) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph reconciliation candidate is invalid.'));
       }
-      let cursorRecorded = recordedCursor !== undefined;
-      if (resetMalformedCursor) {
-        yield* sql`
-          DELETE FROM schema_metadata
-          WHERE key = ${WORKTREE_RECONCILIATION_CURSOR_KEY}
-            AND value = ${recordedCursor}
-        `;
-        if ((yield* lastStatementChangeCount(sql)) !== 1) {
-          return yield* Effect.fail(worktreeReconciliationCursorChangedError());
-        }
-        cursorRecorded = false;
-      }
       if (nextCursor !== undefined) {
-        if (cursorRecorded) {
-          yield* sql`
-            UPDATE schema_metadata
-            SET value = ${nextCursor}
-            WHERE key = ${WORKTREE_RECONCILIATION_CURSOR_KEY}
-              AND value = ${recordedCursor}
-          `;
-        } else {
-          const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(sql);
-          if (
-            metadataRowCount === undefined ||
-            metadataRowCount >= REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS
-          ) {
-            return yield* Effect.fail(
-              new CodeGraphStoreIncompatibleSchemaError(
-                'Code graph reconciliation cursor metadata capacity is unavailable.',
-                {
-                  operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
-                },
-              ),
-            );
-          }
-          yield* sql`
-            INSERT INTO schema_metadata (key, value)
-            VALUES (${WORKTREE_RECONCILIATION_CURSOR_KEY}, ${nextCursor})
-            ON CONFLICT(key) DO NOTHING
-          `;
-        }
-        if ((yield* lastStatementChangeCount(sql)) !== 1) {
-          return yield* Effect.fail(worktreeReconciliationCursorChangedError());
-        }
-        const advancedCursor = yield* inspectBoundedSchemaMetadataValue(sql, WORKTREE_RECONCILIATION_CURSOR_KEY, 64);
-        if (advancedCursor.state !== 'recorded' || advancedCursor.value !== nextCursor) {
-          return yield* Effect.fail(worktreeReconciliationCursorChangedError());
-        }
+        yield* recordWorktreeReconciliationCursor(sql, cursorState, nextCursor);
       }
       return rows
         .filter(row => row.snapshot_state === 'ready' && Number(row.tombstoned) === 0)
@@ -193,9 +254,24 @@ const claimWorktreeReconciliationCandidates = Effect.fn('codeGraph.claimWorktree
   );
 });
 
+function worktreeReconciliationCursorStructuralError(): CodeGraphStoreCorruptionError {
+  return new CodeGraphStoreCorruptionError('Code graph reconciliation cursor metadata is structurally invalid.', {
+    operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
+  });
+}
+
 function worktreeReconciliationCursorChangedError(): CodeGraphStoreError {
   return new CodeGraphStoreCorruptionError(
     'Code graph reconciliation cursor metadata changed before it could advance.',
+    {
+      operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
+    },
+  );
+}
+
+function worktreeReconciliationCursorCapacityError(): CodeGraphStoreIncompatibleSchemaError {
+  return new CodeGraphStoreIncompatibleSchemaError(
+    'Code graph reconciliation cursor metadata capacity is unavailable.',
     {
       operation: WORKTREE_RECONCILIATION_CURSOR_OPERATION,
     },

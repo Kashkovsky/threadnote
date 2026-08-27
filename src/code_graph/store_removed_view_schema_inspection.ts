@@ -7,7 +7,12 @@ import {
   REMOVED_VIEW_CLEANUP_TABLE_SQL,
   REMOVED_VIEW_CLEANUP_TRIGGER_DEFINITIONS,
 } from './store_removed_view_schema_contracts.js';
-import {SCHEMA_METADATA_TABLE_SQL, inspectBoundedSchemaMetadataValue} from './store_schema_metadata.js';
+import {
+  REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
+  SCHEMA_METADATA_TABLE_SQL,
+  type SchemaMetadataMaximumRows,
+  inspectBoundedSchemaMetadataValue,
+} from './store_schema_metadata.js';
 import {normalizeSchemaDefinition} from './store_schema_normalization.js';
 
 export const removedViewAuthorityTableState = Effect.fn('codeGraph.removedViewAuthorityTableState')(function* (
@@ -274,6 +279,7 @@ export const removedViewCleanupSchemaState = Effect.fn('codeGraph.removedViewCle
 
 export const removedViewCleanupRecordedRevision = Effect.fn('codeGraph.removedViewCleanupRecordedRevision')(function* (
   sql: SqlClient.SqlClient,
+  maximumMetadataRows: SchemaMetadataMaximumRows = REMOVED_VIEW_CLEANUP_CURRENT_MAXIMUM_METADATA_ROWS,
 ) {
   const metadataObjects = yield* sql.unsafe<{
     readonly name: unknown;
@@ -381,7 +387,12 @@ export const removedViewCleanupRecordedRevision = Effect.fn('codeGraph.removedVi
   );
   if (foreignKeys.length !== 0 || triggers.length !== 0) return {state: 'invalid'};
 
-  const revision = yield* inspectBoundedSchemaMetadataValue(sql, 'persistent_extension_schema_revision', 16);
+  const revision = yield* inspectBoundedSchemaMetadataValue(
+    sql,
+    'persistent_extension_schema_revision',
+    16,
+    maximumMetadataRows,
+  );
   if (revision.state === 'missing') return {metadataPresent: true, state: 'missing'};
   if (
     revision.state === 'invalid' ||
