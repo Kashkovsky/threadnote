@@ -3,6 +3,7 @@ import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {Effect, FileSystem} from 'effect';
+import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION} from '../../src/code_graph/types.js';
@@ -11,7 +12,15 @@ import {
   buildCodeGraphWorksetRoutingProjectionScoped,
   stageCodeGraphWorksetRoutingProjectionScoped,
 } from '../../src/code_graph/workset_catalog/projection_builder.js';
-import {CodeGraphWorksetCatalogError} from '../../src/code_graph/workset_catalog/types.js';
+import {
+  configureCodeGraphWorksetProjectionTemporaryStorage,
+  inspectCodeGraphWorksetProjectionPreparationQueryPlan,
+  prepareCodeGraphWorksetProjectionRoutingSurface,
+} from '../../src/code_graph/workset_catalog/snapshot_projection.js';
+import {
+  CODE_GRAPH_WORKSET_CATALOG_LIMITS,
+  CodeGraphWorksetCatalogError,
+} from '../../src/code_graph/workset_catalog/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
@@ -452,6 +461,141 @@ describe('code graph ready-snapshot workset routing projections', () => {
 
         expect(preparations).toBe(2);
         expect(failure).toMatchObject({reason: 'corrupt'} satisfies Partial<CodeGraphWorksetCatalogError>);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('bounds file-backed projection TEMP storage to the per-projection envelope', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const store = yield* CodeGraphStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-projection-temp-bound-'});
+        const identity = repositoryIdentity('temp-bound');
+        const graphPath = databasePath(home, identity.checkoutId);
+        yield* store.initialize(graphPath);
+
+        const configured = yield* store.withSession(
+          graphPath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const settings = yield* configureCodeGraphWorksetProjectionTemporaryStorage(sql);
+            const queryOnlyRows = yield* sql.unsafe<{readonly query_only: number}>('PRAGMA query_only');
+            return {queryOnly: queryOnlyRows[0]?.query_only, settings};
+          }),
+          {readOnly: true},
+        );
+        const {settings} = configured;
+
+        expect(configured.queryOnly).toBe(1);
+        expect(settings).toMatchObject({journalMode: 'memory', storage: 'file'});
+        expect(settings.maximumBytes).toBe(CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum);
+        expect(settings.maximumPages * settings.pageSizeBytes).toBeLessThanOrEqual(
+          CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum,
+        );
+        expect((settings.maximumPages + 1) * settings.pageSizeBytes).toBeGreaterThan(
+          CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum,
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('streams routing materialization without an unbounded sorter TEMP B-tree', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const store = yield* CodeGraphStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-projection-temp-plan-'});
+        const identity = repositoryIdentity('temp-plan');
+        const snapshotId = snapshotIdentity('temp-plan');
+        const graphPath = databasePath(home, identity.checkoutId);
+        yield* store.initialize(graphPath);
+        yield* Effect.sync(() =>
+          seedGraph(
+            home,
+            identity,
+            [
+              {
+                compact: true,
+                effectiveSymbolCount: 1,
+                id: snapshotId,
+                symbols: [symbol('planned', {aliases: ['planned.alias'], terms: [{term: 'planned', weight: 5}]})],
+                worktreeId: identity.worktreeId,
+              },
+            ],
+            [{snapshotId, worktreeId: identity.worktreeId}],
+          ),
+        );
+
+        const plans = yield* store.withSession(
+          graphPath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* configureCodeGraphWorksetProjectionTemporaryStorage(sql);
+            yield* prepareCodeGraphWorksetProjectionRoutingSurface(sql, snapshotId, undefined);
+            return yield* inspectCodeGraphWorksetProjectionPreparationQueryPlan(sql, snapshotId, undefined);
+          }),
+          {readOnly: true},
+        );
+        const details = [...plans.lookup, ...plans.terms];
+
+        expect(plans.lookup.length).toBeGreaterThan(0);
+        expect(plans.terms.length).toBeGreaterThan(0);
+        expect(details.some(detail => detail.toUpperCase().includes('USE TEMP B-TREE'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('classifies a tiny TEMP page ceiling as capacity and restores query_only', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const store = yield* CodeGraphStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-workset-projection-temp-full-'});
+        const identity = repositoryIdentity('temp-full');
+        const snapshotId = snapshotIdentity('temp-full');
+        const graphPath = databasePath(home, identity.checkoutId);
+        const symbols = Array.from({length: 32}, (_, index) =>
+          symbol(`full${index.toString().padStart(2, '0')}`, {
+            aliases: [`full.alias.${index}.${'x'.repeat(256)}`],
+            terms: [{term: `full-term-${index}-${'y'.repeat(128)}`, weight: 5}],
+          }),
+        );
+        yield* store.initialize(graphPath);
+        yield* Effect.sync(() =>
+          seedGraph(
+            home,
+            identity,
+            [
+              {
+                compact: true,
+                effectiveSymbolCount: symbols.length,
+                id: snapshotId,
+                symbols,
+                worktreeId: identity.worktreeId,
+              },
+            ],
+            [{snapshotId, worktreeId: identity.worktreeId}],
+          ),
+        );
+
+        const result = yield* store.withSession(
+          graphPath,
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            const settings = yield* configureCodeGraphWorksetProjectionTemporaryStorage(sql, 4_096);
+            const failure = yield* prepareCodeGraphWorksetProjectionRoutingSurface(sql, snapshotId, undefined).pipe(
+              Effect.flip,
+            );
+            const queryOnlyRows = yield* sql.unsafe<{readonly query_only: number}>('PRAGMA query_only');
+            return {failure, queryOnly: queryOnlyRows[0]?.query_only, settings};
+          }),
+          {readOnly: true},
+        );
+
+        expect(result.settings.maximumBytes).toBe(4_096);
+        expect(result.failure).toMatchObject({reason: 'capacity'} satisfies Partial<CodeGraphWorksetCatalogError>);
+        expect(result.queryOnly).toBe(1);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

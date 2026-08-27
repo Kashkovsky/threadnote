@@ -171,17 +171,19 @@ export function withCatalogWriter<A, E, R>(
           }),
         );
         yield* fs.chmod(layout.databasePath, 0o600);
-        yield* removeObsoleteCatalogV2Files(fs, path, threadnoteHome);
+        yield* removeObsoleteCatalogFiles(fs, path, threadnoteHome);
         return result;
       }),
     );
   }).pipe(mapCatalogError('write workset catalog'));
 }
 
-function removeObsoleteCatalogV2Files(fs: FileSystem.FileSystem, path: Path.Path, threadnoteHome: string) {
-  const legacyDatabase = path.join(threadnoteHome, 'indexes', 'code-graph', 'worksets', 'catalog-v2.sqlite');
+function removeObsoleteCatalogFiles(fs: FileSystem.FileSystem, path: Path.Path, threadnoteHome: string) {
+  const obsoleteDatabases = [2, 3].map(version =>
+    path.join(threadnoteHome, 'indexes', 'code-graph', 'worksets', `catalog-v${String(version)}.sqlite`),
+  );
   return Effect.forEach(
-    [legacyDatabase, `${legacyDatabase}-journal`, `${legacyDatabase}-shm`, `${legacyDatabase}-wal`],
+    obsoleteDatabases.flatMap(database => [database, `${database}-journal`, `${database}-shm`, `${database}-wal`]),
     candidate => fs.remove(candidate, {force: true}),
     {concurrency: 1, discard: true},
   );

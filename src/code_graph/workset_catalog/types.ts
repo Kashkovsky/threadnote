@@ -10,7 +10,7 @@ export const CODE_GRAPH_WORKSET_CATALOG_LIMITS = {
   exactKeysPerSymbol: 256,
   lookupKeysPerSymbol: 64,
   membersPerGeneration: 4_096,
-  projectionBytesMaximum: 128 * 1_024 * 1_024,
+  projectionBytesMaximum: 512 * 1_024 * 1_024,
   projectionPageBytesMaximum: 8 * 1_024 * 1_024,
   readPageMaximum: 1_000,
   resultSetBytesMaximum: 2 * 1_024 * 1_024,

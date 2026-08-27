@@ -2,6 +2,7 @@ import {Cause, Effect, Option, Ref, Result} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {sha256HexSync} from '../../crypto/sha256.js';
 import {CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION} from '../store_build_core.js';
+import {classifyCodeGraphStoreFailure} from '../store_failure.js';
 import {effectiveSnapshotParameters, effectiveSymbolsCte} from '../store_query_core.js';
 import type {CodeGraphStoreShape} from '../store_shape.js';
 import type {CodeGraphSnapshot} from '../types.js';
@@ -34,6 +35,97 @@ const MAXIMUM_SPAN_JSON_BYTES = 4 * 1_024;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const PROJECTION_LOOKUP_TABLE = 'workset_projection_lookup';
 const PROJECTION_TERMS_TABLE = 'workset_projection_terms';
+const PROJECTION_LOOKUP_MATERIALIZATION_SQL = `WITH effective_lookup AS (
+  SELECT lookup.symbol_id, lookup.lookup_key
+  FROM snapshot_symbol_lookup AS lookup
+  WHERE lookup.snapshot_id = ?
+  UNION ALL
+  SELECT lookup.symbol_id, lookup.lookup_key
+  FROM snapshot_symbol_lookup AS lookup
+  WHERE lookup.snapshot_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM symbols AS overrides
+      WHERE overrides.snapshot_id = ? AND overrides.id = lookup.symbol_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM snapshot_symbol_deletions AS deletions
+      WHERE deletions.snapshot_id = ? AND deletions.symbol_id = lookup.symbol_id
+    )
+)
+INSERT INTO temp.${PROJECTION_LOOKUP_TABLE} (symbol_id, lookup_key)
+SELECT symbol_id, lookup_key
+FROM effective_lookup
+WHERE TRUE
+ON CONFLICT(symbol_id, lookup_key) DO NOTHING`;
+const PROJECTION_TERMS_MATERIALIZATION_SQL = `WITH effective_terms AS (
+  SELECT legacy.symbol_id, legacy.term, legacy.weight
+  FROM symbol_terms AS legacy
+  WHERE legacy.snapshot_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM lexical_storage_formats AS storage
+      WHERE storage.snapshot_id = legacy.snapshot_id
+    )
+  UNION ALL
+  SELECT compact_symbol.symbol_id, compact_term.term, posting.weight
+  FROM lexical_compact_snapshots AS compact_snapshot
+  JOIN lexical_storage_formats AS storage
+    ON storage.snapshot_id = compact_snapshot.snapshot_id
+   AND storage.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+  JOIN lexical_compact_terms AS compact_term
+    ON compact_term.snapshot_key = compact_snapshot.snapshot_key
+  JOIN lexical_compact_postings AS posting
+    ON posting.snapshot_key = compact_snapshot.snapshot_key
+   AND posting.term_key = compact_term.term_key
+  JOIN lexical_compact_symbols AS compact_symbol
+    ON compact_symbol.snapshot_key = compact_snapshot.snapshot_key
+   AND compact_symbol.symbol_key = posting.symbol_key
+  WHERE compact_snapshot.snapshot_id = ?
+  UNION ALL
+  SELECT legacy.symbol_id, legacy.term, legacy.weight
+  FROM symbol_terms AS legacy
+  WHERE legacy.snapshot_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM lexical_storage_formats AS storage
+      WHERE storage.snapshot_id = legacy.snapshot_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM symbols AS overrides
+      WHERE overrides.snapshot_id = ? AND overrides.id = legacy.symbol_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM snapshot_symbol_deletions AS deletions
+      WHERE deletions.snapshot_id = ? AND deletions.symbol_id = legacy.symbol_id
+    )
+  UNION ALL
+  SELECT compact_symbol.symbol_id, compact_term.term, posting.weight
+  FROM lexical_compact_snapshots AS compact_snapshot
+  JOIN lexical_storage_formats AS storage
+    ON storage.snapshot_id = compact_snapshot.snapshot_id
+   AND storage.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+  JOIN lexical_compact_terms AS compact_term
+    ON compact_term.snapshot_key = compact_snapshot.snapshot_key
+  JOIN lexical_compact_postings AS posting
+    ON posting.snapshot_key = compact_snapshot.snapshot_key
+   AND posting.term_key = compact_term.term_key
+  JOIN lexical_compact_symbols AS compact_symbol
+    ON compact_symbol.snapshot_key = compact_snapshot.snapshot_key
+   AND compact_symbol.symbol_key = posting.symbol_key
+  WHERE compact_snapshot.snapshot_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM symbols AS overrides
+      WHERE overrides.snapshot_id = ? AND overrides.id = compact_symbol.symbol_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM snapshot_symbol_deletions AS deletions
+      WHERE deletions.snapshot_id = ? AND deletions.symbol_id = compact_symbol.symbol_id
+    )
+)
+INSERT INTO temp.${PROJECTION_TERMS_TABLE} (symbol_id, term, weight)
+SELECT symbol_id, term, weight
+FROM effective_terms
+WHERE TRUE
+ON CONFLICT(symbol_id, term) DO UPDATE
+SET weight = MAX(${PROJECTION_TERMS_TABLE}.weight, excluded.weight)`;
 
 export interface CodeGraphReadySnapshotRoutingProjectionInputV1 {
   readonly checkoutId: string;
@@ -362,7 +454,12 @@ function readProjection(selected: CodeGraphSnapshot, input: NormalizedProjection
         invalid('The ready snapshot has more symbols than one routing projection can represent.'),
       );
     }
-    yield* prepareProjectionRoutingSurface(sql, selected.id, baseSnapshotId, input.observePreparedRoutingSurface);
+    yield* prepareCodeGraphWorksetProjectionRoutingSurface(
+      sql,
+      selected.id,
+      baseSnapshotId,
+      input.observePreparedRoutingSurface,
+    );
 
     const stats: MutableProjectionStats = {
       componentCount,
@@ -499,7 +596,12 @@ function readProjectionStreamed<E, R>(
       expectedSymbolCount,
       safeCount(before.edge_count, 'snapshot edge count'),
     );
-    yield* prepareProjectionRoutingSurface(sql, selected.id, baseSnapshotId, input.observePreparedRoutingSurface);
+    yield* prepareCodeGraphWorksetProjectionRoutingSurface(
+      sql,
+      selected.id,
+      baseSnapshotId,
+      input.observePreparedRoutingSurface,
+    );
     const stats = projectionStats(componentCount, dependencyCount);
     let reservedLogicalBytes = 0;
     const firstPass = yield* scanProjectionSymbolPages(sql, selected.id, baseSnapshotId, input, stats, symbols =>
@@ -557,7 +659,12 @@ function readProjectionStreamed<E, R>(
       // Re-read the immutable source surface for the verification/publication
       // pass. Reusing the first TEMP projection would make lookup/term drift
       // invisible to the existing cross-pass digest fence.
-      yield* prepareProjectionRoutingSurface(sql, selected.id, baseSnapshotId, input.observePreparedRoutingSurface);
+      yield* prepareCodeGraphWorksetProjectionRoutingSurface(
+        sql,
+        selected.id,
+        baseSnapshotId,
+        input.observePreparedRoutingSurface,
+      );
       const verificationStats = projectionStats(componentCount, dependencyCount);
       const secondPass = yield* scanProjectionSymbolPages(
         sql,
@@ -857,14 +964,135 @@ function selectLookupRows(sql: SqlClient.SqlClient, nodeIds: readonly string[]) 
   );
 }
 
+export interface CodeGraphWorksetProjectionTemporaryStorageSettings {
+  readonly journalMode: 'memory';
+  readonly maximumBytes: number;
+  readonly maximumPages: number;
+  readonly pageSizeBytes: number;
+  readonly storage: 'file';
+}
+
 /**
  * The enclosing store session opens main with SQLite's read-only flag. Select
- * file-backed TEMP storage now; each preparation below relaxes the additional
- * query_only belt only for its connection-local TEMP writes.
+ * file-backed TEMP storage under the per-projection envelope; preparation
+ * relaxes the additional query_only belt only for connection-local writes.
+ * @internal
  */
+export const configureCodeGraphWorksetProjectionTemporaryStorage = Effect.fn(
+  'codeGraphWorksetCatalog.configureProjectionTemporaryStorage',
+)(function* (
+  sql: SqlClient.SqlClient,
+  maximumBytes: number = CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionBytesMaximum,
+) {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+    return yield* Effect.fail(invalid('Workset projection temporary storage bound is invalid.'));
+  }
+  yield* sql.unsafe('PRAGMA query_only = OFF');
+  return yield* Effect.gen(function* () {
+    yield* sql.unsafe('PRAGMA temp_store = FILE');
+    if ((yield* selectProjectionTemporaryPragma(sql, 'temp_store')) !== 1) {
+      return yield* Effect.fail(temporaryStorageIncompatible());
+    }
+    // The surface is disposable and rebuilt after any failed statement. Keep
+    // its rollback journal off disk so max_page_count bounds physical TEMP
+    // growth instead of leaving a second repository-sized journal beside it.
+    yield* sql.unsafe('PRAGMA temp.journal_mode = MEMORY');
+    if ((yield* selectProjectionTemporaryTextPragma(sql, 'journal_mode')) !== 'memory') {
+      return yield* Effect.fail(temporaryStorageIncompatible());
+    }
+    const pageSizeBytes = yield* selectProjectionTemporaryPragma(sql, 'page_size');
+    const maximumPages = Math.floor(maximumBytes / pageSizeBytes);
+    if (!Number.isSafeInteger(maximumPages) || maximumPages < 1) {
+      return yield* Effect.fail(temporaryStorageIncompatible());
+    }
+    yield* sql.unsafe(`PRAGMA temp.max_page_count = ${String(maximumPages)}`);
+    const configuredMaximumPages = yield* selectProjectionTemporaryPragma(sql, 'max_page_count');
+    if (configuredMaximumPages !== maximumPages) {
+      return yield* Effect.fail(temporaryStorageIncompatible());
+    }
+    return {
+      journalMode: 'memory',
+      maximumBytes: configuredMaximumPages * pageSizeBytes,
+      maximumPages: configuredMaximumPages,
+      pageSizeBytes,
+      storage: 'file',
+    } satisfies CodeGraphWorksetProjectionTemporaryStorageSettings;
+  }).pipe(Effect.ensuring(sql.unsafe('PRAGMA query_only = ON').pipe(Effect.orDie)));
+});
+
 function configureProjectionTemporaryStorage(sql: SqlClient.SqlClient) {
-  return sql.unsafe('PRAGMA temp_store = FILE');
+  return configureCodeGraphWorksetProjectionTemporaryStorage(sql).pipe(Effect.asVoid);
 }
+
+function selectProjectionTemporaryTextPragma(sql: SqlClient.SqlClient, pragma: 'journal_mode') {
+  return sql.unsafe<Record<string, unknown>>(`PRAGMA temp.${pragma}`).pipe(
+    Effect.flatMap(rows => {
+      const value = rows[0]?.[pragma];
+      return typeof value === 'string' && value.length > 0
+        ? Effect.succeed(value.toLowerCase())
+        : Effect.fail(temporaryStorageIncompatible());
+    }),
+  );
+}
+
+function selectProjectionTemporaryPragma(
+  sql: SqlClient.SqlClient,
+  pragma: 'max_page_count' | 'page_size' | 'temp_store',
+) {
+  const statement = pragma === 'temp_store' ? 'PRAGMA temp_store' : `PRAGMA temp.${pragma}`;
+  return sql.unsafe<Record<string, unknown>>(statement).pipe(
+    Effect.flatMap(rows => {
+      const value = rows[0]?.[pragma];
+      const parsed = typeof value === 'bigint' ? Number(value) : value;
+      return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0
+        ? Effect.succeed(parsed)
+        : Effect.fail(temporaryStorageIncompatible());
+    }),
+  );
+}
+
+function temporaryStorageIncompatible(): CodeGraphWorksetCatalogError {
+  return new CodeGraphWorksetCatalogError(
+    'incompatible',
+    'SQLite temporary routing storage cannot enforce the bounded projection capacity.',
+  );
+}
+
+function projectionLookupParameters(snapshotId: string, baseId: string): readonly string[] {
+  return [snapshotId, baseId, snapshotId, snapshotId];
+}
+
+function projectionTermsParameters(snapshotId: string, baseId: string): readonly string[] {
+  return [snapshotId, snapshotId, baseId, snapshotId, snapshotId, baseId, snapshotId, snapshotId];
+}
+
+interface ProjectionPreparationQueryPlanRow {
+  readonly detail: unknown;
+}
+
+/** @internal Inspect the exact materialization statements after the TEMP target tables exist. */
+export const inspectCodeGraphWorksetProjectionPreparationQueryPlan = Effect.fn(
+  'codeGraphWorksetCatalog.inspectProjectionPreparationQueryPlan',
+)(function* (sql: SqlClient.SqlClient, snapshotId: string, baseSnapshotId: string | undefined) {
+  const baseId = baseSnapshotId ?? '';
+  const [lookupRows, termRows] = yield* Effect.all(
+    [
+      sql.unsafe<ProjectionPreparationQueryPlanRow>(
+        `EXPLAIN QUERY PLAN ${PROJECTION_LOOKUP_MATERIALIZATION_SQL}`,
+        projectionLookupParameters(snapshotId, baseId),
+      ),
+      sql.unsafe<ProjectionPreparationQueryPlanRow>(
+        `EXPLAIN QUERY PLAN ${PROJECTION_TERMS_MATERIALIZATION_SQL}`,
+        projectionTermsParameters(snapshotId, baseId),
+      ),
+    ] as const,
+    {concurrency: 1},
+  );
+  return {
+    lookup: lookupRows.map(row => requiredText(row.detail, 'routing lookup query-plan detail')),
+    terms: termRows.map(row => requiredText(row.detail, 'routing term query-plan detail')),
+  };
+});
 
 /**
  * Materialize one symbol-first TEMP projection of the immutable routing surface.
@@ -877,13 +1105,15 @@ function configureProjectionTemporaryStorage(sql: SqlClient.SqlClient) {
  * then both digest/publication passes use symbol-first TEMP primary keys
  * without adding persistent graph indexes or graph-build write amplification.
  */
-function prepareProjectionRoutingSurface(
+export const prepareCodeGraphWorksetProjectionRoutingSurface = Effect.fn(
+  'codeGraphWorksetCatalog.prepareProjectionRoutingSurface',
+)(function* (
   sql: SqlClient.SqlClient,
   snapshotId: string,
   baseSnapshotId: string | undefined,
   observe?: (counts: {readonly lookupKeys: number; readonly terms: number}) => void,
 ) {
-  return Effect.gen(function* () {
+  yield* Effect.gen(function* () {
     yield* sql.unsafe('PRAGMA query_only = OFF');
     const counts = yield* Effect.gen(function* () {
       yield* sql.unsafe(`DROP TABLE IF EXISTS temp.${PROJECTION_LOOKUP_TABLE}`);
@@ -894,31 +1124,11 @@ function prepareProjectionRoutingSurface(
       PRIMARY KEY (symbol_id, lookup_key)
     ) WITHOUT ROWID`);
       const baseId = baseSnapshotId ?? '';
-      yield* sql.unsafe(
-        `WITH effective_lookup AS (
-       SELECT lookup.symbol_id, lookup.lookup_key
-       FROM snapshot_symbol_lookup AS lookup
-       WHERE lookup.snapshot_id = ?
-       UNION ALL
-       SELECT lookup.symbol_id, lookup.lookup_key
-       FROM snapshot_symbol_lookup AS lookup
-       WHERE lookup.snapshot_id = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM symbols AS overrides
-           WHERE overrides.snapshot_id = ? AND overrides.id = lookup.symbol_id
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM snapshot_symbol_deletions AS deletions
-           WHERE deletions.snapshot_id = ? AND deletions.symbol_id = lookup.symbol_id
-         )
-     )
-     INSERT INTO temp.${PROJECTION_LOOKUP_TABLE} (symbol_id, lookup_key)
-     SELECT symbol_id, lookup_key
-     FROM effective_lookup
-     GROUP BY symbol_id, lookup_key`,
-        [snapshotId, baseId, snapshotId, snapshotId],
-      );
-      const lookupKeys = observe === undefined ? 0 : yield* selectChangedRowCount(sql, 'routing lookup preparation');
+      yield* sql.unsafe(PROJECTION_LOOKUP_MATERIALIZATION_SQL, projectionLookupParameters(snapshotId, baseId));
+      const lookupKeys =
+        observe === undefined
+          ? 0
+          : yield* selectTemporaryRowCount(sql, PROJECTION_LOOKUP_TABLE, 'routing lookup preparation');
 
       yield* sql.unsafe(`CREATE TEMP TABLE ${PROJECTION_TERMS_TABLE} (
       symbol_id TEXT NOT NULL,
@@ -926,87 +1136,36 @@ function prepareProjectionRoutingSurface(
       weight INTEGER NOT NULL,
       PRIMARY KEY (symbol_id, term)
     ) WITHOUT ROWID`);
-      yield* sql.unsafe(
-        `WITH effective_terms AS (
-       SELECT legacy.symbol_id, legacy.term, legacy.weight
-       FROM symbol_terms AS legacy
-       WHERE legacy.snapshot_id = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM lexical_storage_formats AS storage
-           WHERE storage.snapshot_id = legacy.snapshot_id
-         )
-       UNION ALL
-       SELECT compact_symbol.symbol_id, compact_term.term, posting.weight
-       FROM lexical_compact_snapshots AS compact_snapshot
-       JOIN lexical_storage_formats AS storage
-         ON storage.snapshot_id = compact_snapshot.snapshot_id
-        AND storage.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
-       JOIN lexical_compact_terms AS compact_term
-         ON compact_term.snapshot_key = compact_snapshot.snapshot_key
-       JOIN lexical_compact_postings AS posting
-         ON posting.snapshot_key = compact_snapshot.snapshot_key
-        AND posting.term_key = compact_term.term_key
-       JOIN lexical_compact_symbols AS compact_symbol
-         ON compact_symbol.snapshot_key = compact_snapshot.snapshot_key
-        AND compact_symbol.symbol_key = posting.symbol_key
-       WHERE compact_snapshot.snapshot_id = ?
-       UNION ALL
-       SELECT legacy.symbol_id, legacy.term, legacy.weight
-       FROM symbol_terms AS legacy
-       WHERE legacy.snapshot_id = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM lexical_storage_formats AS storage
-           WHERE storage.snapshot_id = legacy.snapshot_id
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM symbols AS overrides
-           WHERE overrides.snapshot_id = ? AND overrides.id = legacy.symbol_id
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM snapshot_symbol_deletions AS deletions
-           WHERE deletions.snapshot_id = ? AND deletions.symbol_id = legacy.symbol_id
-         )
-       UNION ALL
-       SELECT compact_symbol.symbol_id, compact_term.term, posting.weight
-       FROM lexical_compact_snapshots AS compact_snapshot
-       JOIN lexical_storage_formats AS storage
-         ON storage.snapshot_id = compact_snapshot.snapshot_id
-        AND storage.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
-       JOIN lexical_compact_terms AS compact_term
-         ON compact_term.snapshot_key = compact_snapshot.snapshot_key
-       JOIN lexical_compact_postings AS posting
-         ON posting.snapshot_key = compact_snapshot.snapshot_key
-        AND posting.term_key = compact_term.term_key
-       JOIN lexical_compact_symbols AS compact_symbol
-         ON compact_symbol.snapshot_key = compact_snapshot.snapshot_key
-        AND compact_symbol.symbol_key = posting.symbol_key
-       WHERE compact_snapshot.snapshot_id = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM symbols AS overrides
-           WHERE overrides.snapshot_id = ? AND overrides.id = compact_symbol.symbol_id
-         )
-         AND NOT EXISTS (
-           SELECT 1 FROM snapshot_symbol_deletions AS deletions
-           WHERE deletions.snapshot_id = ? AND deletions.symbol_id = compact_symbol.symbol_id
-         )
-     )
-     INSERT INTO temp.${PROJECTION_TERMS_TABLE} (symbol_id, term, weight)
-     SELECT symbol_id, term, MAX(weight) AS weight
-     FROM effective_terms
-     GROUP BY symbol_id, term`,
-        [snapshotId, snapshotId, baseId, snapshotId, snapshotId, baseId, snapshotId, snapshotId],
-      );
+      yield* sql.unsafe(PROJECTION_TERMS_MATERIALIZATION_SQL, projectionTermsParameters(snapshotId, baseId));
       return observe === undefined
         ? undefined
-        : {lookupKeys, terms: yield* selectChangedRowCount(sql, 'routing term preparation')};
+        : {
+            lookupKeys,
+            terms: yield* selectTemporaryRowCount(sql, PROJECTION_TERMS_TABLE, 'routing term preparation'),
+          };
     }).pipe(Effect.ensuring(sql.unsafe('PRAGMA query_only = ON').pipe(Effect.orDie)));
     if (counts !== undefined) observe?.(counts);
-  });
+  }).pipe(Effect.mapError(projectionTemporaryStorageFailure));
+});
+
+function projectionTemporaryStorageFailure(cause: unknown): unknown {
+  if (cause instanceof CodeGraphWorksetCatalogError) return cause;
+  const classified = classifyCodeGraphStoreFailure('prepare workset routing projection temporary storage', cause);
+  return classified.code === 'no-space'
+    ? new CodeGraphWorksetCatalogError(
+        'capacity',
+        'The temporary routing projection reached its bounded storage envelope.',
+        {cause},
+      )
+    : cause;
 }
 
-function selectChangedRowCount(sql: SqlClient.SqlClient, label: string) {
+function selectTemporaryRowCount(sql: SqlClient.SqlClient, table: string, label: string) {
   return Effect.gen(function* () {
-    const rows = yield* sql.unsafe<CountRow>('SELECT changes() AS count');
+    if (table !== PROJECTION_LOOKUP_TABLE && table !== PROJECTION_TERMS_TABLE) {
+      return yield* Effect.fail(corrupt(`The ${label} table is invalid.`));
+    }
+    const rows = yield* sql.unsafe<CountRow>(`SELECT COUNT(*) AS count FROM temp.${table}`);
     if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} count is unavailable.`));
     return safeCount(rows[0]!.count, `${label} count`);
   });
