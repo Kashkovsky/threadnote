@@ -10,9 +10,9 @@ import {
   codeGraphSourceSpanFragment,
   CodeGraphStore,
   createCodeGraphSourceSpanCanonicalizer,
+  selectCodeGraphCitationContentHashTargets,
   type CodeGraphSymbolSemanticLocatorV1,
 } from '../../src/code_graph/store.js';
-import {selectCodeGraphCitationContentHashTargets} from '../../src/code_graph/store_citation_queries.js';
 import {
   codeGraphCommittedFileContentHash,
   codeGraphFileContentHashMatchesBytes,

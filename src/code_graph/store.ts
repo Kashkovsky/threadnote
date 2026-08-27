@@ -41,6 +41,7 @@ export {
   CODE_GRAPH_SOURCE_SPAN_CANONICALIZATION_V1,
   codeGraphSourceSpanFragment,
   createCodeGraphSourceSpanCanonicalizer,
+  selectCodeGraphCitationContentHashTargets,
   type CodeGraphEffectiveFileHashMatches,
   type CodeGraphEffectiveFilePathObservation,
   type CodeGraphEffectiveSnapshotCitationEvidence,

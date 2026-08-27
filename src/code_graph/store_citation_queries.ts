@@ -3,6 +3,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
   CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET,
   CODE_GRAPH_CITATION_QUERY_MAX_TARGETS,
+  selectCodeGraphCitationContentHashTargets,
   type CodeGraphCitationFileRelocationFallbackV1,
   type CodeGraphEffectiveFileHashMatches,
   type CodeGraphEffectiveFilePathObservation,
@@ -440,19 +441,6 @@ function inventoryFileFromRow(row: EffectiveFileRow): CodeGraphInventoryFile {
     size: Number(row.size),
     source: row.source,
   };
-}
-
-/** @internal Deterministic target selection shared with bounded property tests. */
-export function selectCodeGraphCitationContentHashTargets(
-  eagerContentHashes: readonly string[],
-  fileRelocationFallbacks: readonly CodeGraphCitationFileRelocationFallbackV1[],
-  presentPaths: ReadonlySet<string>,
-): readonly string[] {
-  const requestedContentHashes = new Set(eagerContentHashes);
-  for (const fallback of fileRelocationFallbacks) {
-    if (!presentPaths.has(fallback.path)) requestedContentHashes.add(fallback.contentHash);
-  }
-  return [...requestedContentHashes];
 }
 
 function validateCitationPaths(paths: readonly string[]) {

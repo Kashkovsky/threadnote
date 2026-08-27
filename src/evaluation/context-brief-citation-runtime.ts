@@ -1,12 +1,12 @@
 import {Effect, FileSystem, Layer, Path} from 'effect';
-import type {
-  CodeGraphEffectiveSnapshotCitationEvidence,
-  CodeGraphEffectiveSnapshotCitationEvidenceRequest,
+import {
+  selectCodeGraphCitationContentHashTargets,
+  type CodeGraphEffectiveSnapshotCitationEvidence,
+  type CodeGraphEffectiveSnapshotCitationEvidenceRequest,
 } from '../code_graph/citation_primitives.js';
 import {codeGraphCommittedFileContentHash} from '../code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import {selectCodeGraphCitationContentHashTargets} from '../code_graph/store_citation_queries.js';
 import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, CodeGraphStatus} from '../code_graph/types.js';
 import {
