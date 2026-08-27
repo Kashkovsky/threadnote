@@ -5497,7 +5497,7 @@ describe('native code graph lifecycle', () => {
     ).toHaveLength(2);
     expect(output.repair).toContain(
       'Would repair 2 native code graph database(s): 2 deferred, 0 disposable rebuild(s), 0 incomplete snapshot(s), ' +
-        '0 temporary vector file(s).',
+        '0 temporary graph file(s).',
     );
     expect(output.repair).toContain(
       'WARN native code graph: 2 database(s); 1 ready snapshot(s); 0 incomplete snapshot(s); ' +

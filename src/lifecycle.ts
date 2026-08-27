@@ -490,7 +490,7 @@ function codeGraphMaintenanceProgressMessage(progress: CodeGraphMaintenanceProgr
     case 'cleaning-snapshots':
       return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
     case 'cleaning-vectors':
-      return `Checking temporary vector state for ${database}.`;
+      return `Checking temporary graph state for ${database}.`;
     case 'deferred':
       if (progress.reason === 'active-build') {
         return `Deferred ${database}: an active graph build owns the checkout; update and repair will not wait for it.`;
@@ -526,7 +526,7 @@ function codeGraphRepairSummaryMessage(
     (summary.migratedDatabases > 0 ? `${summary.migratedDatabases} schema migration(s), ` : '') +
     `${summary.discarded} disposable rebuild(s), ` +
     `${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
-    `${summary.removedTemporaryFiles} temporary vector file(s).` +
+    `${summary.removedTemporaryFiles} temporary graph file(s).` +
     (summary.obsoleteStoreFiles > 0
       ? ` Preserved ${summary.obsoleteStoreFiles} obsolete store file(s), ${summary.obsoleteStoreBytes} byte(s), ` +
         `across ${summary.obsoleteStoreCheckouts} checkout(s); remove explicitly with \`threadnote graph purge --obsolete\`.`

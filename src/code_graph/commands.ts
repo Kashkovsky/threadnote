@@ -269,7 +269,7 @@ function codeGraphRepairProgressMessage(progress: CodeGraphMaintenanceProgress, 
     case 'cleaning-snapshots':
       return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
     case 'cleaning-vectors':
-      return `Checking temporary vector state for ${database}.`;
+      return `Checking temporary graph state for ${database}.`;
     case 'discarding':
       return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
     case 'deferred':
