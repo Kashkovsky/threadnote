@@ -69,6 +69,7 @@ export type {
 } from './query_contract.js';
 import {codeGraphSymbolSearchScoreMultiplier, CodeGraphStore, type CodeGraphStoreShape} from './store.js';
 import {CodeGraphEmbeddingIndex, type CodeGraphEmbeddingIndexShape} from './embedding.js';
+import {addUnavailableImpactBaseWarning} from './query_impact_base.js';
 import {
   CODE_GRAPH_RESULT_VERSION,
   CodeGraphRepositoryError,
@@ -88,6 +89,8 @@ import {
 
 export interface CodeGraphInspectOptions extends CodeGraphQueryOptions {
   readonly baseCommit?: string;
+  /** @internal Bounded read workers may reuse a ready base but must never start repository-sized indexing. */
+  readonly baseCommitPolicy?: 'ensure' | 'ready-only';
   readonly interlock?: CodeGraphQueryInterlock;
   /** @internal Evidence harnesses can isolate query work from the detached maintenance lane. */
   readonly requestMaintenance?: boolean;
@@ -577,6 +580,33 @@ export class CodeGraphQueryService extends Context.Service<
                   return result;
                 });
               if (options.operation === 'impact' && options.baseCommit) {
+                if (options.baseCommitPolicy === 'ready-only') {
+                  const readyBase = yield* store.readySnapshotForCommit(
+                    layout.databasePath,
+                    identity.repositoryId,
+                    options.baseCommit,
+                  );
+                  const readyBaseCurrent = readyBase
+                    ? yield* codeGraphSnapshotRuntimeCurrent(store, layout.databasePath, readyBase, languagePacks)
+                    : false;
+                  const result =
+                    readyBase && readyBaseCurrent
+                      ? yield* Effect.acquireUseRelease(
+                          store
+                            .acquireSnapshotLease(layout.databasePath, readyBase.id, 2 * 60_000)
+                            .pipe(Effect.map(leaseToken => ({leaseToken, snapshot: readyBase}))),
+                          base => inspect(base.snapshot.id),
+                          base =>
+                            store
+                              .releaseSnapshotLease(layout.databasePath, base.leaseToken)
+                              .pipe(Effect.catch(() => Effect.void)),
+                        )
+                      : addUnavailableImpactBaseWarning(yield* inspect());
+                  if (options.requestMaintenance !== false) {
+                    yield* requestMaintenance(options.threadnoteHome, identity);
+                  }
+                  return result;
+                }
                 const result = yield* Effect.acquireUseRelease(
                   indexer.ensureCommit({
                     commit: options.baseCommit,

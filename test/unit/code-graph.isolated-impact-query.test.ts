@@ -6,6 +6,7 @@ import {describe, expect, it} from 'vitest';
 import {
   decodeImpactQueryRequest,
   impactQueryTransportSelector,
+  impactQueryWorkerInspectOptions,
   impactQueryWorkerEnvironment,
   impactQueryWorkerInvocation,
   inspectCodeGraphImpactIsolated,
@@ -197,6 +198,25 @@ describe('isolated code graph impact query', () => {
     const oversizedLegacySelector = 'src/very-long-private-path.ts '.repeat(3_000);
     expect(impactQueryTransportSelector(oversizedLegacySelector, ['src/a.ts'])).toBe('changed paths');
     expect(impactQueryTransportSelector('cgs_symbol', undefined)).toBe('cgs_symbol');
+  });
+
+  it('keeps the bounded worker on ready-only base evidence', () => {
+    const request = decodeImpactQueryRequest(
+      JSON.stringify({
+        ...input,
+        protocol: 1,
+        query: 'changed paths',
+        seedQueryCount: input.seedQueries.length,
+      }),
+    );
+    expect(request).toBeDefined();
+    expect(impactQueryWorkerInspectOptions(request!, input.threadnoteHome)).toMatchObject({
+      baseCommit: input.baseCommit,
+      baseCommitPolicy: 'ready-only',
+      refresh: false,
+      requestMaintenance: false,
+      strictFreshness: true,
+    });
   });
 
   it('rejects NUL-bearing, over-count, and non-SHA protocol fields', () => {
