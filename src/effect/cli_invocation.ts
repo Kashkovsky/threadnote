@@ -94,7 +94,9 @@ function scanCliArguments(arguments_: readonly string[]) {
     const argument = arguments_[index] ?? '';
     const equalsIndex = argument.indexOf('=');
     const flagName = equalsIndex > 0 ? argument.slice(0, equalsIndex) : argument;
-    const valueKind = valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName);
+    const valueKind = booleanFlagNames.has(flagName)
+      ? undefined
+      : (valueFlagKinds.get(flagName) ?? cliRuntimeValueFlagKinds.get(flagName));
     if (valueKind !== undefined) {
       const value = equalsIndex > 0 ? argument.slice(equalsIndex + 1) : arguments_[index + 1];
       if (flagName === '--home') {
@@ -155,7 +157,11 @@ export function normalizeCliArguments(args: readonly string[]): readonly string[
     const current = args[index] ?? '';
     const equalsIndex = current.indexOf('=');
     const inlineName = equalsIndex > 0 ? current.slice(0, equalsIndex) : current;
-    const kind = valueFlagKinds.get(inlineName);
+    // A spelling can be boolean in one command and valued in another (for
+    // example, `init-manifest --replace` versus `remember --replace <uri>`).
+    // Effect's selected command can disambiguate those flags. Rewriting them
+    // here from the global registry would consume a following flag as a value.
+    const kind = booleanFlagNames.has(inlineName) ? undefined : valueFlagKinds.get(inlineName);
     if (!kind) {
       normalized.push(current);
       continue;
