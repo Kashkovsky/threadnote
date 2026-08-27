@@ -178,6 +178,7 @@ const queryDependencies = Layer.mergeAll(
     CodeGraphMaintenanceCoordinator,
     CodeGraphMaintenanceCoordinator.of({
       kickOrdinary: () => Effect.die(new Error('Scale benchmark must not run ordinary graph maintenance.')),
+      kickReconciliation: () => Effect.die(new Error('Scale benchmark must not run graph reconciliation maintenance.')),
       kickResidual: () => Effect.die(new Error('Scale benchmark must not run residual graph maintenance.')),
       request: () => graphInstrumentation.recordMaintenanceRequest,
       tick: () => Effect.die(new Error('Scale benchmark must not tick graph maintenance.')),

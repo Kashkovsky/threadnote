@@ -296,7 +296,7 @@ describe('all-code-graph diagnostics', () => {
       }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('advances missing-view reconciliation through the live Manager status poll', () =>
+  effectIt.effect('advances one missing-view reconciliation during a local diagnostics opportunity', () =>
     Effect.gen(function* () {
       const temporaryHome = yield* Effect.promise(() => mkdtemp('threadnote-graph-live-status-'));
       const fileSystem = yield* FileSystem.FileSystem;
@@ -350,24 +350,19 @@ describe('all-code-graph diagnostics', () => {
         execFileSync('git', ['-C', repository, 'worktree', 'remove', '--force', linked], {stdio: 'pipe'}),
       );
 
+      const beforeRevision = yield* observeManagerGraphCatalogRevision(home);
       const stale = yield* inspectAllCodeGraphsLocal(home);
       expect(stale.summary.viewCount).toBe(2);
       expect(stale.databases[0]?.views).toContainEqual(
         expect.objectContaining({localAssociation: expect.objectContaining({state: 'missing'})}),
       );
 
-      const beforeRevision = yield* observeManagerGraphCatalogRevision(home);
-      let status = yield* managerGraphBuildCatalog(home);
-      let activeViews = yield* store.loadActiveViewIdentities(database, 8);
-      expect(status.lifecyclePending || activeViews.length === 1).toBe(true);
-      for (let attempt = 0; attempt < 8 && activeViews.length > 1; attempt += 1) {
-        status = yield* managerGraphBuildCatalog(home);
-        activeViews = yield* store.loadActiveViewIdentities(database, 8);
-      }
+      const activeViews = yield* store.loadActiveViewIdentities(database, 8);
       expect(activeViews).toHaveLength(1);
       expect(activeViews[0]?.worktreeId).toBe(mainIdentity.worktreeId);
+      const status = yield* managerGraphBuildCatalog(home);
       expect(status.catalogRevision).not.toBe(beforeRevision);
-      expect((yield* managerGraphBuildCatalog(home)).lifecyclePending).toBe(false);
+      expect(status.lifecyclePending).toBe(false);
 
       const refreshed = yield* inspectAllCodeGraphsLocal(home);
       expect(refreshed.summary.viewCount).toBe(1);

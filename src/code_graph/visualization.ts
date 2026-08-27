@@ -443,6 +443,8 @@ export const managerGraphCatalog = Effect.fn('codeGraph.managerCatalog')(functio
           ...(anchor === undefined ? {} : {anchorPath: anchor}),
           checkoutId: entry.checkoutId,
           databasePath: entry.databasePath,
+          reconciliationPending:
+            'catalogs' in entry && entry.catalogs.some(observed => observed.localAssociation.state === 'missing'),
         };
       }),
       maintenance: lifecycleMaintenance.value,
