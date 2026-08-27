@@ -27,6 +27,7 @@ import {
   withPreparedCodeGraphRemovedViewVectorUnit,
 } from './vector_maintenance.js';
 import {makeLiveCodeGraphWorktreeReconciler} from './worktree_reconciliation.js';
+import {makeLiveCodeGraphOrphanProvenanceCleaner} from './orphan_provenance_cleanup.js';
 import {inspectCodeGraphViewDatabaseTarget} from './view_removal.js';
 import {type CodeGraphStoragePressure} from './storage_pressure.js';
 import {codeGraphAnonymousTelemetryComponent, emitCodeGraphBackgroundFailure} from './anonymous_telemetry.js';
@@ -175,6 +176,7 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
       const crypto = yield* Crypto.Crypto;
       const system = yield* SystemInfo;
       const reconciler = yield* makeLiveCodeGraphWorktreeReconciler();
+      const orphanProvenanceCleaner = yield* makeLiveCodeGraphOrphanProvenanceCleaner();
       const runRoutineMaintenance = (input: CodeGraphRoutineMaintenanceTick) =>
         store.runRoutineMaintenance(input.databasePath, {
           checkoutId: input.checkoutId,
@@ -307,24 +309,51 @@ export class CodeGraphMaintenanceCoordinator extends Context.Service<
         residualWorker.tick(input).pipe(Effect.map(result => residualMaintenanceResult(result)));
       const runReconciliation: CodeGraphRoutineMaintenanceRun = input =>
         reconciler.tick(input).pipe(
-          Effect.flatMap(result =>
-            result.state === 'removed'
-              ? Effect.succeed({
-                  cleanup: 'removed-worktree-view',
-                  expiredLeases: 0,
-                  remaining: true,
-                  retiredSnapshots: result.retiredSnapshots,
-                  rowsDeleted: 0,
-                  state: 'completed',
-                } as const satisfies CodeGraphRoutineMaintenanceResult)
-              : result.reason === 'external-maintenance'
-                ? Effect.succeed({reason: 'external-maintenance', state: 'deferred'} as const)
-                : result.state === 'deferred' && result.reason === 'writer-busy'
-                  ? Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const)
-                  : result.state === 'deferred' && result.reason === 'catalog-unavailable'
-                    ? Effect.succeed({reason: 'schema-unavailable', state: 'skipped'} as const)
-                    : Effect.succeed(emptyMaintenanceResult()),
-          ),
+          Effect.flatMap(result => {
+            if (result.state === 'removed') {
+              return Effect.succeed({
+                cleanup: 'removed-worktree-view',
+                expiredLeases: 0,
+                remaining: true,
+                retiredSnapshots: result.retiredSnapshots,
+                rowsDeleted: 0,
+                state: 'completed',
+              } as const satisfies CodeGraphRoutineMaintenanceResult);
+            }
+            if (result.reason === 'external-maintenance') {
+              return Effect.succeed({reason: 'external-maintenance', state: 'deferred'} as const);
+            }
+            if (result.state === 'deferred' && result.reason === 'writer-busy') {
+              return Effect.succeed({reason: 'writer-busy', state: 'deferred'} as const);
+            }
+            if (result.state === 'deferred' && result.reason === 'catalog-unavailable') {
+              return Effect.succeed({reason: 'schema-unavailable', state: 'skipped'} as const);
+            }
+            return orphanProvenanceCleaner.tick(input).pipe(
+              Effect.map(orphan => {
+                if (orphan.state === 'removed') {
+                  return {
+                    cleanup: 'orphan-provenance',
+                    expiredLeases: 0,
+                    remaining: true,
+                    retiredSnapshots: 0,
+                    rowsDeleted: 0,
+                    state: 'completed',
+                  } as const satisfies CodeGraphRoutineMaintenanceResult;
+                }
+                if (orphan.reason === 'external-maintenance') {
+                  return {reason: 'external-maintenance', state: 'deferred'} as const;
+                }
+                if (orphan.state === 'deferred' && orphan.reason === 'writer-busy') {
+                  return {reason: 'writer-busy', state: 'deferred'} as const;
+                }
+                if (orphan.state === 'deferred' && orphan.reason === 'catalog-unavailable') {
+                  return {reason: 'schema-unavailable', state: 'skipped'} as const;
+                }
+                return emptyMaintenanceResult();
+              }),
+            );
+          }),
         );
       const runReconciliationOrPreparationWithoutHistory: CodeGraphRoutineMaintenanceRun = input => {
         if (input.anchorIdentity === undefined && input.anchorPath === undefined) {

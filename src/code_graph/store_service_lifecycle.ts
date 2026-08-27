@@ -5,6 +5,8 @@ import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS, codeGraphTextFieldsCapacityBytes} f
 import {saturatingCapacityAdd} from './disk_capacity.js';
 import {ensureBoundedCodeGraphFact} from './fact_budget.js';
 import {
+  type CodeGraphOrphanProvenanceCandidatePage,
+  type CodeGraphOrphanProvenanceViewObservation,
   type CodeGraphSnapshotPurgeObservationResult,
   type CodeGraphSnapshotPurgeStoreResult,
   type CodeGraphViewObservationResult,
@@ -49,8 +51,10 @@ import {
 import {validatedSnapshotLeaseDuration} from './store_maintenance_core.js';
 import {validateSnapshotPurgeInput, observeSnapshotPurge} from './store_cleanup_core.js';
 import {
+  claimOrphanProvenanceCandidates,
   claimWorktreeReconciliationCandidates,
   claimRemovedViewCleanupCandidates,
+  observeOrphanProvenanceView,
   authorizeRemovedViewCleanup,
   updateRemovedViewCleanup,
 } from './store_reconciliation.js';
@@ -89,7 +93,9 @@ type CodeGraphStoreLifecycleMethods = Pick<
   | 'promote'
   | 'observeView'
   | 'observeSnapshotPurge'
+  | 'claimOrphanProvenanceCandidates'
   | 'claimWorktreeReconciliationCandidates'
+  | 'observeOrphanProvenanceView'
   | 'prepareWorktreeReconciliationIndexes'
   | 'removeView'
   | 'purgeSnapshot'
@@ -707,6 +713,56 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           }),
         );
       }).pipe(Effect.mapError(cause => storeError('observe code graph snapshot purge', cause))),
+    claimOrphanProvenanceCandidates: (databasePath, worktreeIds, limit, options) =>
+      withWriterGate(
+        databasePath,
+        Effect.gen(function* () {
+          yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+          if (!(yield* fs.exists(databasePath))) {
+            return {worktreeIds: []} as const satisfies CodeGraphOrphanProvenanceCandidatePage;
+          }
+          if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+          }
+          if ((yield* fs.stat(databasePath)).type !== 'File') {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+          }
+          return yield* useExistingDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* sql.unsafe('PRAGMA busy_timeout = 0');
+              return yield* claimOrphanProvenanceCandidates(sql, worktreeIds, limit);
+            }),
+          );
+        }),
+        options?.waitTimeoutMilliseconds ?? 0,
+      ).pipe(Effect.mapError(cause => storeError('claim code graph orphan provenance candidates', cause))),
+    observeOrphanProvenanceView: (databasePath, worktreeId, options) =>
+      withWriterGate(
+        databasePath,
+        Effect.gen(function* () {
+          yield* options?.beforeDatabaseOpen?.() ?? Effect.void;
+          if (!(yield* fs.exists(databasePath))) {
+            return {state: 'absent'} as const satisfies CodeGraphOrphanProvenanceViewObservation;
+          }
+          if (Option.isSome(yield* fs.readLink(databasePath).pipe(Effect.option))) {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is a symbolic link.'));
+          }
+          if ((yield* fs.stat(databasePath)).type !== 'File') {
+            return yield* Effect.fail(new CodeGraphStoreError('Code graph database target is not a regular file.'));
+          }
+          return yield* useExistingDatabase(
+            databasePath,
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient;
+              yield* sql.unsafe('PRAGMA busy_timeout = 0');
+              return yield* observeOrphanProvenanceView(sql, worktreeId);
+            }),
+          );
+        }),
+        options?.waitTimeoutMilliseconds ?? 0,
+      ).pipe(Effect.mapError(cause => storeError('observe code graph orphan provenance view', cause))),
     claimWorktreeReconciliationCandidates: (databasePath, limit, options) =>
       withWriterGate(
         databasePath,

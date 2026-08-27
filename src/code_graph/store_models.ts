@@ -216,6 +216,7 @@ export type CodeGraphRoutineMaintenanceResult =
         | 'file-blob-cache'
         | 'materialized-shard-cache'
         | 'none'
+        | 'orphan-provenance'
         | 'reconciliation-index'
         | 'removed-worktree-view'
         | 'schema-migration'
@@ -582,6 +583,13 @@ export interface CodeGraphWorktreeReconciliationCandidate {
   readonly snapshotId: string;
   readonly worktreeId: string;
 }
+
+export interface CodeGraphOrphanProvenanceCandidatePage {
+  readonly worktreeIds: readonly string[];
+}
+
+export type CodeGraphOrphanProvenanceViewObservation =
+  {readonly state: 'absent'} | {readonly snapshotId: string; readonly state: 'active'};
 
 export const CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES = [
   'vector-pointers',
