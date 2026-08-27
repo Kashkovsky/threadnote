@@ -2,6 +2,7 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runBinaryCommandEffect, runCommandEffect} from '../effect/command.js';
 import {codeGraphBlobReuseCacheKey} from './blob_reuse.js';
+import {codeGraphCommittedContentHash} from './content_identity.js';
 import {
   inspectContainedStableRegularFile,
   materializeContainedStableRegularFile,
@@ -927,11 +928,14 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
       repositoryRoot,
       relative,
       () => true,
+      undefined,
+      identity.objectFormat,
     ).pipe(Effect.option);
     if (Option.isSome(materialized)) {
-      fileRows.push(`F\0${relative}\0${materialized.value.contentHash}`);
+      const contentHash = materialized.value.codeGraphContentHash!;
+      fileRows.push(`F\0${relative}\0${contentHash}`);
       observedFiles.push({
-        contentHash: materialized.value.contentHash,
+        contentHash,
         path: relative,
         size: materialized.value.size,
       });
@@ -951,7 +955,7 @@ export const worktreeBuildRequestObservation = Effect.fn('codeGraph.worktreeBuil
       fingerprint: dirty
         ? sha256HexSync(
             [
-              'build-request-overlay-v1',
+              'build-request-overlay-v2',
               `I\0${sha256HexSync(threadnoteIgnore)}`,
               ...[...overlay.deleted].sort(compareCodeUnits).map(relative => `D\0${relative}`),
               ...fileRows,
@@ -1065,11 +1069,7 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
       files.push(
         retainResolutionContext(
           {
-            ...inventoryFileForCommittedEntry(
-              entry,
-              committedContentHash(identity.objectFormat, entry.blobId),
-              languagePacks,
-            ),
+            ...committedInventoryFile(identity, entry, languagePacks),
             content: decodeUtf8(bytes),
           },
           languagePacks,
@@ -1127,19 +1127,22 @@ const discoverOverlaySourceRoots = Effect.fn('codeGraph.discoverOverlaySourceRoo
       relative,
       size => size > CORPUS_EXTRACTION_SOURCE_BYTES_LIMIT,
       metadata.size,
+      identity.objectFormat,
     ).pipe(Effect.option);
     if (opened._tag === 'None' || opened.value.bytes === undefined) continue;
     if (appearsGitLfsPointer(opened.value.bytes) || appearsBinary(opened.value.bytes)) continue;
     const matched = languagePacks.match(relative);
+    const contentHash = opened.value.codeGraphContentHash!;
     overlayContextFiles.push(
       retainResolutionContext(
         {
-          blobId: `worktree:${opened.value.contentHash}`,
+          blobId: `worktree:${contentHash}`,
           content: decodeUtf8(opened.value.bytes),
-          contentHash: opened.value.contentHash,
+          contentHash,
           language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
           mode: '100644',
           path: relative,
+          rawContentHash: opened.value.contentHash,
           size: opened.value.size,
           source: 'worktree',
         },
@@ -1332,12 +1335,11 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
   const needsContent: Array<GitTreeEntry & {readonly parse: boolean}> = [];
   const metadataOnlyContent: CodeGraphInventoryFile[] = [];
   for (const entry of entries) {
-    const contentHash = committedContentHash(identity.objectFormat, entry.blobId);
-    const metadata = inventoryFileForCommittedEntry(entry, contentHash, languagePacks);
+    const metadata = committedInventoryFile(identity, entry, languagePacks);
     const extractorSet = Option.getOrElse(languagePacks.cacheIdentityForPath(entry.path), () => 'unmatched');
     const blobReuseKey = codeGraphBlobReuseCacheKey(metadata, extractorSet);
     const cached =
-      cachedCommittedFileKeys.has(cacheKey(entry.path, contentHash, languagePacks)) ||
+      cachedCommittedFileKeys.has(cacheKey(entry.path, metadata.contentHash, languagePacks)) ||
       (blobReuseKey !== undefined && cachedCommittedFileKeys.has(blobReuseKey));
     const preloaded = preloadedResolutionContexts.get(entry.path);
     if (preloaded && cached) {
@@ -1377,9 +1379,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     ...metadataOnlyContent,
     ...orderedNeedsContent
       .filter(entry => entry.parse)
-      .map(entry =>
-        inventoryFileForCommittedEntry(entry, committedContentHash(identity.objectFormat, entry.blobId), languagePacks),
-      ),
+      .map(entry => committedInventoryFile(identity, entry, languagePacks)),
   ]);
   for (let offset = 0; offset < metadataOnlyContent.length; offset += CAT_FILE_BATCH_ENTRIES) {
     const batch = metadataOnlyContent.slice(offset, offset + CAT_FILE_BATCH_ENTRIES);
@@ -1457,11 +1457,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
         continue;
       }
       const hydrated = {
-        ...inventoryFileForCommittedEntry(
-          entry,
-          committedContentHash(identity.objectFormat, entry.blobId),
-          languagePacks,
-        ),
+        ...committedInventoryFile(identity, entry, languagePacks),
         ...(content === undefined ? {bytes} : {content}),
       } satisfies CodeGraphInventoryFile;
       if (entry.parse) contentBatch.push(hydrated);
@@ -1522,11 +1518,7 @@ function committedBlobReuseKey(
   entry: GitTreeEntry,
   languagePacks: CodeGraphLanguagePackRegistryShape,
 ): string | undefined {
-  const file = inventoryFileForCommittedEntry(
-    entry,
-    committedContentHash(identity.objectFormat, entry.blobId),
-    languagePacks,
-  );
+  const file = committedInventoryFile(identity, entry, languagePacks);
   const extractorSet = Option.getOrElse(languagePacks.cacheIdentityForPath(entry.path), () => 'unmatched');
   return codeGraphBlobReuseCacheKey(file, extractorSet);
 }
@@ -1548,8 +1540,12 @@ function inventoryFileForCommittedEntry(
   };
 }
 
-function committedContentHash(objectFormat: RepositoryIdentity['objectFormat'], blobId: string): string {
-  return sha256HexSync(`git-object-v1\n${objectFormat}\n${blobId}`);
+function committedInventoryFile(
+  repo: RepositoryIdentity,
+  entry: GitTreeEntry,
+  packs: CodeGraphLanguagePackRegistryShape,
+): CodeGraphInventoryFile {
+  return inventoryFileForCommittedEntry(entry, codeGraphCommittedContentHash(repo.objectFormat, entry.blobId), packs);
 }
 
 export function parseGitCatFileBatch(
@@ -1826,6 +1822,7 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
       relative,
       size => shouldOmitRepositoryContent(relative, size, languagePacks),
       metadata.size,
+      identity.objectFormat,
     ).pipe(Effect.option);
     const readingMilliseconds = performance.now() - readingStarted;
     if (opened._tag === 'None') {
@@ -1833,6 +1830,7 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
       continue;
     }
     const materialized = opened.value;
+    const codeGraphContentHash = materialized.codeGraphContentHash!;
     const matched = languagePacks.match(relative);
     if (materialized.bytes === undefined) {
       const contentOmittedReason = repositoryContentOmissionReason(relative, materialized.size, languagePacks);
@@ -1841,16 +1839,17 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
         continue;
       }
       const metadata = {
-        blobId: `worktree:${materialized.contentHash}`,
-        contentHash: materialized.contentHash,
+        blobId: `worktree:${codeGraphContentHash}`,
+        contentHash: codeGraphContentHash,
         contentOmittedReason,
         language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
         mode: '100644',
         path: relative,
+        rawContentHash: materialized.contentHash,
         size: materialized.size,
         source: 'worktree',
       } satisfies CodeGraphInventoryFile;
-      if (!cachedFileKeys.has(cacheKey(relative, materialized.contentHash, languagePacks))) {
+      if (!cachedFileKeys.has(cacheKey(relative, codeGraphContentHash, languagePacks))) {
         if (contentBatch.length >= CAT_FILE_BATCH_ENTRIES) yield* flushContentBatch();
         contentBatch.push(metadata);
         contentBatchBytes += materialized.size;
@@ -1876,7 +1875,7 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
     ) {
       yield* flushContentBatch();
     }
-    const contentHash = materialized.contentHash;
+    const contentHash = codeGraphContentHash;
     const hydrated = {
       blobId: `worktree:${contentHash}`,
       ...(content === undefined ? {bytes} : {content}),
@@ -1884,6 +1883,7 @@ export const readDirtyOverlay = Effect.fn('codeGraph.readDirtyOverlay')(function
       language: Option.match(matched, {onNone: () => 'text', onSome: value => value.language}),
       mode: '100644',
       path: relative,
+      rawContentHash: materialized.contentHash,
       size: bytes.byteLength,
       source: 'worktree',
     } satisfies CodeGraphInventoryFile;

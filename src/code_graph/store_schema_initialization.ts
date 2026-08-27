@@ -154,6 +154,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
       path TEXT NOT NULL,
       content_hash TEXT NOT NULL,
+      raw_content_hash TEXT,
       language TEXT NOT NULL,
       mode TEXT NOT NULL,
       size INTEGER NOT NULL CHECK (size >= 0),
@@ -161,6 +162,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       PRIMARY KEY (snapshot_id, path)
     ) WITHOUT ROWID
   `);
+  yield* ensureColumn(sql, 'snapshot_files', 'raw_content_hash', 'TEXT');
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_file_deletions (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -501,6 +503,9 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   );
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_content_hash ON snapshot_files(content_hash)');
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS snapshot_files_raw_content_hash ON snapshot_files(raw_content_hash) WHERE raw_content_hash IS NOT NULL',
+  );
   yield* sql.unsafe(`
     CREATE INDEX IF NOT EXISTS file_blobs_blob_reuse
     ON file_blobs(blob_id, content_hash, extractor_set, reuse_class, path_hint)

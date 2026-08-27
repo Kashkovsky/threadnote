@@ -3,7 +3,7 @@ import {
   CODE_GRAPH_SOURCE_SPAN_CANONICALIZATION_V1,
   createCodeGraphSourceSpanCanonicalizer,
 } from './code_graph/citation_primitives.js';
-import {readContainedStableRegularFile} from './code_graph/inventory_contained_file.js';
+import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from './code_graph/citation_source.js';
 import {decodeUtf8} from './code_graph/inventory_content.js';
 import {CodeGraphQueryService} from './code_graph/query.js';
 import {CodeGraphStore} from './code_graph/store.js';
@@ -126,7 +126,6 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
   const query = yield* CodeGraphQueryService;
   const store = yield* CodeGraphStore;
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const before = yield* query
     .status(config.agentContextHome, cwd, {
       observeWorktree: true,
@@ -166,6 +165,25 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
         files.flatMap(observation => (observation.file ? [[observation.path, observation.file]] : [])),
       );
       const symbolById = new Map(symbols.map(symbol => [symbol.id, symbol]));
+      const sourceBytes = yield* readCodeGraphCitationSources({
+        objectFormat: before.identity.objectFormat,
+        repositoryRoot,
+        sourceCommit: snapshot.commit,
+        sources: [
+          ...fileTargets.flatMap(target => {
+            const file = fileByPath.get(target.target.path);
+            return file === undefined
+              ? []
+              : [{expectedContentHash: file.contentHash, repositoryPath: file.path, requireBytes: false}];
+          }),
+          ...symbolTargets.flatMap(target => {
+            const symbol = symbolById.get(target.target.nodeId);
+            return symbol === undefined
+              ? []
+              : [{expectedContentHash: symbol.contentHash, repositoryPath: symbol.path, requireBytes: true}];
+          }),
+        ],
+      });
       const sourceCache = new Map<
         string,
         {
@@ -173,12 +191,18 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
           readonly canonicalizer?: ReturnType<typeof createCodeGraphSourceSpanCanonicalizer>;
         }
       >();
-      const readSource = (repositoryPath: string, needsText: boolean) =>
+      const readSource = (repositoryPath: string, expectedContentHash: string, needsText: boolean) =>
         Effect.gen(function* () {
-          const cached = sourceCache.get(repositoryPath);
+          const cacheKey = `${repositoryPath}\0${expectedContentHash}`;
+          const cached = sourceCache.get(cacheKey);
           if (cached && (!needsText || cached.canonicalizer !== undefined)) return cached;
           const bytes =
-            cached?.bytes ?? (yield* readContainedStableRegularFile(fs, path, repositoryRoot, repositoryPath));
+            cached?.bytes ?? sourceBytes.get(codeGraphCitationSourceKey({expectedContentHash, repositoryPath}));
+          if (bytes === undefined) {
+            return yield* Effect.fail(
+              new MemoryCodeCitationCaptureError(`Code citation source changed during capture: ${repositoryPath}.`),
+            );
+          }
           const source = needsText ? decodeUtf8(bytes) : undefined;
           if (needsText && source === undefined) {
             return yield* Effect.fail(
@@ -189,7 +213,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
             ...(source === undefined ? {} : {canonicalizer: createCodeGraphSourceSpanCanonicalizer(source)}),
             bytes,
           };
-          sourceCache.set(repositoryPath, loaded);
+          sourceCache.set(cacheKey, loaded);
           return loaded;
         });
       const captureFileCitation = Effect.fn('memoryCodeCitation.captureFile')(function* (
@@ -197,13 +221,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
         contentHash: string,
         index: number,
       ) {
-        const loaded = yield* readSource(repositoryPath, false);
-        const observedHash = yield* sha256Hex(loaded.bytes);
-        if (observedHash !== contentHash) {
-          return yield* Effect.fail(
-            new MemoryCodeCitationCaptureError(`Code citation source changed during capture: ${repositoryPath}.`),
-          );
-        }
+        yield* readSource(repositoryPath, contentHash, false);
         return {
           citation: yield* createCitation({
             extractorSet: snapshot.extractorSet,
@@ -282,6 +300,7 @@ const captureSymbolCitation = Effect.fn('memoryCodeCitation.captureSymbol')(func
   index: number,
   readSource: (
     path: string,
+    expectedContentHash: string,
     needsText: boolean,
   ) => Effect.Effect<
     {
@@ -292,13 +311,7 @@ const captureSymbolCitation = Effect.fn('memoryCodeCitation.captureSymbol')(func
     SystemInfo
   >,
 ) {
-  const loaded = yield* readSource(symbol.path, true);
-  const observedHash = yield* sha256Hex(loaded.bytes);
-  if (observedHash !== symbol.contentHash) {
-    return yield* Effect.fail(
-      new MemoryCodeCitationCaptureError(`Code citation source changed during capture: ${symbol.path}.`),
-    );
-  }
+  const loaded = yield* readSource(symbol.path, symbol.contentHash, true);
   const fragment = loaded.canonicalizer!.fragment(symbol.span);
   if (!fragment.ok) {
     return yield* Effect.fail(

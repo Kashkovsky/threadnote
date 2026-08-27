@@ -817,7 +817,7 @@ export function sparseOverlaySnapshotIdentity(
   overlayFingerprint: string,
 ): string {
   return `cgsn_${sha256HexSync(
-    `snapshot-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${baseSnapshotId}\n${extractorSet}\n${overlayFingerprint}`,
+    `snapshot-sparse-overlay-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${baseSnapshotId}\n${extractorSet}\n${overlayFingerprint}`,
   ).slice(0, 40)}`;
 }
 
@@ -828,7 +828,7 @@ export function sparseOverlayGraphContentIdentity(
   overlayFingerprint: string,
 ): string {
   return `cgc_${sha256HexSync(
-    `graph-content-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${baseGraphContentId}\n${extractorSet}\n${overlayFingerprint}`,
+    `graph-content-sparse-overlay-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${baseGraphContentId}\n${extractorSet}\n${overlayFingerprint}`,
   ).slice(0, 40)}`;
 }
 

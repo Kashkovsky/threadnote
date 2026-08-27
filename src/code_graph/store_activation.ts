@@ -243,9 +243,9 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           yield* observe('copying-files', 'started');
           yield* sql`
             INSERT INTO snapshot_files (
-              snapshot_id, path, content_hash, language, mode, size, source
+              snapshot_id, path, content_hash, raw_content_hash, language, mode, size, source
             )
-            SELECT ${snapshot.id}, path, content_hash, language, mode, size, source
+            SELECT ${snapshot.id}, path, content_hash, raw_content_hash, language, mode, size, source
             FROM activation_files
           `;
           yield* observe('copying-files', 'completed', Number(counts.files));
@@ -282,15 +282,16 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
           yield* observe('copying-files', 'started');
           yield* sql`
             INSERT INTO snapshot_files (
-              snapshot_id, path, content_hash, language, mode, size, source
+              snapshot_id, path, content_hash, raw_content_hash, language, mode, size, source
             )
-            SELECT ${snapshot.id}, current.path, current.content_hash, current.language,
+            SELECT ${snapshot.id}, current.path, current.content_hash, current.raw_content_hash, current.language,
               current.mode, current.size, current.source
             FROM activation_files AS current
             LEFT JOIN snapshot_files AS base
               ON base.snapshot_id = ${baseSnapshotId} AND base.path = current.path
             WHERE base.path IS NULL
                OR base.content_hash IS NOT current.content_hash
+               OR base.raw_content_hash IS NOT current.raw_content_hash
                OR base.language IS NOT current.language
                OR base.mode IS NOT current.mode
                OR base.size IS NOT current.size
@@ -677,8 +678,10 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
         yield* observe('copying-workspace', 'completed');
         yield* observe('copying-files', 'started');
         yield* sql`
-          INSERT INTO snapshot_files (snapshot_id, path, content_hash, language, mode, size, source)
-          SELECT ${snapshot.id}, path, content_hash, language, mode, size, source
+          INSERT INTO snapshot_files (
+            snapshot_id, path, content_hash, raw_content_hash, language, mode, size, source
+          )
+          SELECT ${snapshot.id}, path, content_hash, raw_content_hash, language, mode, size, source
           FROM activation_files
         `;
         const fileDeletions = persistedIncrementalFileDeletionsStatement(snapshot.id, baseSnapshotId);

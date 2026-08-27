@@ -77,7 +77,7 @@ const PERSISTENT_ACTIVATION_COPY_SPECS = {
   },
   files: {
     batchRows: 10_000,
-    columns: ['path', 'content_hash', 'language', 'mode', 'size', 'source'],
+    columns: ['path', 'content_hash', 'raw_content_hash', 'language', 'mode', 'size', 'source'],
     destinationTable: 'snapshot_files',
     keyColumns: ['path'],
     maximumBatchRows: 40_000,

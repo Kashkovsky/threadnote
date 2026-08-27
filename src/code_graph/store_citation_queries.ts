@@ -26,6 +26,7 @@ interface EffectiveFileRow {
   readonly match_rank?: number;
   readonly mode: string;
   readonly path: string;
+  readonly raw_content_hash: string | null;
   readonly request_index: number;
   readonly size: number;
   readonly source: 'commit' | 'worktree';
@@ -36,6 +37,7 @@ interface EffectiveFilePathRow {
   readonly language: string | null;
   readonly mode: string | null;
   readonly path: string | null;
+  readonly raw_content_hash: string | null;
   readonly request_index: number;
   readonly requested_path: string;
   readonly size: number | null;
@@ -84,7 +86,7 @@ export function codeGraphEffectiveFilesByPathsQueryStatement(
       )
     )
     SELECT requested.request_index, requested.path AS requested_path,
-      matching_files.path, matching_files.content_hash, matching_files.language,
+      matching_files.path, matching_files.content_hash, matching_files.raw_content_hash, matching_files.language,
       matching_files.mode, matching_files.size, matching_files.source
     FROM requested
     LEFT JOIN matching_files ON matching_files.request_index = requested.request_index
@@ -102,6 +104,10 @@ export function codeGraphEffectiveFilesByContentHashesQueryStatement(
     parameters: [
       JSON.stringify(contentHashes),
       snapshotId,
+      snapshotId,
+      baseSnapshotId ?? '',
+      snapshotId,
+      snapshotId,
       baseSnapshotId ?? '',
       snapshotId,
       snapshotId,
@@ -116,10 +122,34 @@ export function codeGraphEffectiveFilesByContentHashesQueryStatement(
       CROSS JOIN snapshot_files AS current_files INDEXED BY snapshot_files_content_hash
       WHERE current_files.content_hash = requested.content_hash AND current_files.snapshot_id = ?
       UNION ALL
+      SELECT requested.request_index, current_files.*
+      FROM requested
+      CROSS JOIN snapshot_files AS current_files INDEXED BY snapshot_files_raw_content_hash
+      WHERE current_files.raw_content_hash = requested.content_hash
+        AND current_files.raw_content_hash IS NOT NULL
+        AND current_files.raw_content_hash IS NOT current_files.content_hash
+        AND current_files.snapshot_id = ?
+      UNION ALL
       SELECT requested.request_index, base_files.*
       FROM requested
       CROSS JOIN snapshot_files AS base_files INDEXED BY snapshot_files_content_hash
       WHERE base_files.content_hash = requested.content_hash AND base_files.snapshot_id = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM snapshot_files AS overrides
+          WHERE overrides.snapshot_id = ? AND overrides.path = base_files.path
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM snapshot_file_deletions AS deletions
+          WHERE deletions.snapshot_id = ? AND deletions.path = base_files.path
+        )
+      UNION ALL
+      SELECT requested.request_index, base_files.*
+      FROM requested
+      CROSS JOIN snapshot_files AS base_files INDEXED BY snapshot_files_raw_content_hash
+      WHERE base_files.raw_content_hash = requested.content_hash
+        AND base_files.raw_content_hash IS NOT NULL
+        AND base_files.raw_content_hash IS NOT base_files.content_hash
+        AND base_files.snapshot_id = ?
         AND NOT EXISTS (
           SELECT 1 FROM snapshot_files AS overrides
           WHERE overrides.snapshot_id = ? AND overrides.path = base_files.path
@@ -391,6 +421,7 @@ function inventoryFileFromRow(row: EffectiveFileRow): CodeGraphInventoryFile {
     language: row.language,
     mode: row.mode,
     path: row.path,
+    ...(row.raw_content_hash === null ? {} : {rawContentHash: row.raw_content_hash}),
     size: Number(row.size),
     source: row.source,
   };

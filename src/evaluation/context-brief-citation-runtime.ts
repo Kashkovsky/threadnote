@@ -3,6 +3,7 @@ import type {
   CodeGraphEffectiveSnapshotCitationEvidence,
   CodeGraphEffectiveSnapshotCitationEvidenceRequest,
 } from '../code_graph/citation_primitives.js';
+import {codeGraphCommittedFileContentHash} from '../code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
 import type {CodeGraphStoreShape} from '../code_graph/store_shape.js';
@@ -216,8 +217,9 @@ function makeScenarioGraph(
   fixture: ContextBriefCitationRuntimeFixtureV1,
   scenario: ContextBriefCitationRuntimeScenarioV1,
 ): ScenarioGraph {
-  const sourceHash = sha256HexSync(fixture.source.content);
-  const changedHash = sha256HexSync(`${fixture.source.content}// runtime-evaluation-changed\n`);
+  const sourceHash = codeGraphCommittedFileContentHash('sha1', new TextEncoder().encode(fixture.source.content));
+  const changedContent = `${fixture.source.content}// runtime-evaluation-changed\n`;
+  const changedHash = codeGraphCommittedFileContentHash('sha1', new TextEncoder().encode(changedContent));
   const sourceFile = inventoryFile(fixture.source.path, sourceHash, fixture.source.content);
   const sourceSnapshot = snapshot(
     fixture,

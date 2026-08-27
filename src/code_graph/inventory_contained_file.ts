@@ -1,7 +1,9 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
 import {SystemInfo} from '../effect/system.js';
+import {createCodeGraphCommittedFileContentHasher} from './content_identity.js';
 import {decodeUtf8} from './inventory_content.js';
 import {CodeGraphInventoryError} from './inventory_error.js';
+import type {RepositoryIdentity} from './types.js';
 
 export const readOptionalText = Effect.fn('codeGraph.readOptionalText')(function* (
   fs: FileSystem.FileSystem,
@@ -139,6 +141,7 @@ export function readContainedStableRegularFile(
 
 interface StableContainedMaterialization {
   readonly bytes?: Uint8Array;
+  readonly codeGraphContentHash?: string;
   readonly contentHash: string;
   readonly size: number;
 }
@@ -218,6 +221,7 @@ export function materializeContainedStableRegularFile(
   relative: string,
   omitContent: (size: number) => boolean,
   expectedSize?: number,
+  objectFormat?: RepositoryIdentity['objectFormat'],
 ): Effect.Effect<StableContainedMaterialization, Error, SystemInfo> {
   const target = path.join(repositoryRoot, ...relative.split('/'));
   return Effect.gen(function* () {
@@ -269,6 +273,8 @@ export function materializeContainedStableRegularFile(
           );
         }
         const hasher = new Bun.CryptoHasher('sha256');
+        const codeGraphHasher =
+          objectFormat === undefined ? undefined : createCodeGraphCommittedFileContentHasher(objectFormat, size);
         const bytes = omitContent(size) ? undefined : new Uint8Array(size);
         const buffer = bytes ?? new Uint8Array(Math.min(1_048_576, Math.max(1, size)));
         let offset = 0;
@@ -281,6 +287,7 @@ export function materializeContainedStableRegularFile(
             );
           }
           hasher.update(view.subarray(0, read));
+          codeGraphHasher?.update(view.subarray(0, read));
           offset += read;
         }
         const openedInfoAfter = yield* file.stat;
@@ -298,7 +305,12 @@ export function materializeContainedStableRegularFile(
             new CodeGraphInventoryError(`Repository file changed while it was being read: ${relative}`),
           );
         }
-        return {bytes, contentHash: hasher.digest('hex'), size} satisfies StableContainedMaterialization;
+        return {
+          bytes,
+          ...(codeGraphHasher === undefined ? {} : {codeGraphContentHash: codeGraphHasher.digest()}),
+          contentHash: hasher.digest('hex'),
+          size,
+        } satisfies StableContainedMaterialization;
       }),
     );
     yield* validateRepositoryAncestors(fs, path, repositoryRoot, relative);

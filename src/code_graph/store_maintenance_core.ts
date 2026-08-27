@@ -39,6 +39,14 @@ const CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX = {
   table: 'snapshot_files',
 } as const;
 
+const CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX = {
+  columns: ['raw_content_hash'],
+  definition:
+    'CREATE INDEX snapshot_files_raw_content_hash ON snapshot_files(raw_content_hash) WHERE raw_content_hash IS NOT NULL',
+  name: 'snapshot_files_raw_content_hash',
+  table: 'snapshot_files',
+} as const;
+
 const CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX = {
   columns: ['shard_id'],
   definition: 'CREATE INDEX snapshot_file_shards_shard ON snapshot_file_shards(shard_id)',
@@ -346,7 +354,7 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
       'path_hint',
       'reuse_class',
     ])) &&
-    (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_files', ['content_hash', 'path'])) &&
+    (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_files', ['content_hash', 'path', 'raw_content_hash'])) &&
     (yield* routineMaintenanceColumnsAvailable(sql, 'materialized_file_shards', ['id'])) &&
     (yield* routineMaintenanceColumnsAvailable(sql, 'snapshot_file_shards', ['shard_id'])) &&
     (yield* routineMaintenanceColumnsAvailable(sql, 'routine_cache_cleanup_state', [
@@ -359,6 +367,7 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
     ])) &&
     (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX)) === 'ready' &&
     (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX)) === 'ready' &&
+    (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX)) === 'ready' &&
     (yield* codeGraphCacheReferenceIndexState(sql, CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX)) === 'ready'
   );
 });
@@ -366,6 +375,7 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
 type CodeGraphCacheReferenceIndex =
   | typeof CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX
   | typeof CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX
+  | typeof CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX
   | typeof CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX;
 
 const codeGraphCacheReferenceIndexState = Effect.fn('codeGraph.cacheReferenceIndexState')(function* (

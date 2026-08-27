@@ -290,6 +290,7 @@ function persistentFullInventoryCapacityBoundary(
       finalFactBytes,
       codeGraphUtf8ByteLength(file.path),
       codeGraphUtf8ByteLength(file.contentHash),
+      codeGraphUtf8ByteLength(file.rawContentHash ?? ''),
       codeGraphUtf8ByteLength(file.language),
       codeGraphUtf8ByteLength(file.mode),
       codeGraphUtf8ByteLength(file.source),
@@ -318,6 +319,40 @@ type ActivationStagingObserver = (
 function activationInsertClause(mode: ActivationInsertMode): 'INSERT' | 'INSERT OR REPLACE' {
   return mode === 'insert' ? 'INSERT' : 'INSERT OR REPLACE';
 }
+
+const retainKnownRawContentAliases = Effect.fn('codeGraph.retainKnownRawContentAliases')(function* (
+  sql: SqlClient.SqlClient,
+  files: readonly CodeGraphInventoryFile[],
+) {
+  const requested = [...new Set(files.flatMap(file => (file.rawContentHash ? [] : [file.contentHash])))];
+  if (requested.length === 0) return files;
+  const rows = yield* sql.unsafe<{readonly content_hash: string; readonly raw_content_hash: string}>(
+    `WITH requested(content_hash) AS (
+       SELECT CAST(value AS TEXT) FROM json_each(?)
+     ), aliases AS (
+       SELECT requested.content_hash,
+         MIN(prior.raw_content_hash) AS minimum_raw_content_hash,
+         MAX(prior.raw_content_hash) AS maximum_raw_content_hash
+       FROM requested
+       CROSS JOIN snapshot_files AS prior INDEXED BY snapshot_files_content_hash
+       WHERE prior.content_hash = requested.content_hash AND prior.raw_content_hash IS NOT NULL
+       GROUP BY requested.content_hash
+     )
+     SELECT content_hash, minimum_raw_content_hash AS raw_content_hash
+     FROM aliases
+     WHERE minimum_raw_content_hash = maximum_raw_content_hash`,
+    [JSON.stringify(requested)],
+  );
+  const aliases = new Map(
+    rows
+      .filter(row => /^[0-9a-f]{64}$/u.test(row.raw_content_hash))
+      .map(row => [row.content_hash, row.raw_content_hash]),
+  );
+  return files.map(file => {
+    const rawContentHash = file.rawContentHash ?? aliases.get(file.contentHash);
+    return rawContentHash === undefined ? file : {...file, rawContentHash};
+  });
+});
 
 const activationMode = Effect.fn('codeGraph.activationMode')(function* (sql: SqlClient.SqlClient) {
   const rows = yield* sql<{readonly key: string; readonly value: string}>`
@@ -348,11 +383,20 @@ function stageActivationFiles(
       sortedBy(files, file => file.path),
       ACTIVATION_FILE_BATCH_ROWS,
     )) {
+      const retainedBatch = yield* retainKnownRawContentAliases(sql, batch);
       yield* sql.unsafe(
         `${activationInsertClause(mode)} INTO activation_files (
-          path, content_hash, language, mode, size, source
-        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
-        batch.flatMap(file => [file.path, file.contentHash, file.language, file.mode, file.size, file.source]),
+          path, content_hash, raw_content_hash, language, mode, size, source
+        ) VALUES ${retainedBatch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+        retainedBatch.flatMap(file => [
+          file.path,
+          file.contentHash,
+          file.rawContentHash ?? null,
+          file.language,
+          file.mode,
+          file.size,
+          file.source,
+        ]),
       );
     }
   });
@@ -847,6 +891,7 @@ export {
   assertPersistentMaterializationBatchPlanned,
   preparePersistedFullResolutionViews,
   persistentFullInventoryCapacityBoundary,
+  retainKnownRawContentAliases,
   activationMode,
   PreparedPersistedFullWorkspaceScope,
   PreparedPersistedFullWorkspaceProject,

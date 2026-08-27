@@ -128,6 +128,86 @@ describe('code graph persistent schema migration', () => {
     );
   });
 
+  effectIt.effect('upgrades revision 15 file aliases without losing persisted snapshot rows', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(migrationFixture);
+      const store = yield* CodeGraphStore;
+      const ready = snapshot(fixture.identity, 'revision-15-file-alias');
+      const symbol = graphSymbol('revision-15-file-alias');
+      yield* store.initialize(fixture.databasePath);
+      yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [symbol], []);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, ready);
+          yield* store.promote(fixture.databasePath, fixture.identity, ready.id);
+        }),
+      );
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        try {
+          database.exec(`
+            DROP INDEX snapshot_files_raw_content_hash;
+            ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
+            UPDATE schema_metadata
+            SET value = '15'
+            WHERE key = 'persistent_extension_schema_revision';
+          `);
+          expect(database.query('SELECT path, content_hash FROM snapshot_files').all()).toEqual([
+            {content_hash: fixture.file.contentHash, path: fixture.file.path},
+          ]);
+          expect(
+            database
+              .query<{readonly name: string}, []>('PRAGMA table_info(snapshot_files)')
+              .all()
+              .map(column => column.name),
+          ).not.toContain('raw_content_hash');
+        } finally {
+          database.close(false);
+        }
+      });
+
+      yield* store.initialize(fixture.databasePath);
+      const observed = yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {readonly: true, strict: true});
+        try {
+          return {
+            columns: database
+              .query<{readonly name: string}, []>('PRAGMA table_info(snapshot_files)')
+              .all()
+              .map(column => column.name),
+            index: database
+              .query<{readonly sql: string}, [string]>(
+                "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+              )
+              .get('snapshot_files_raw_content_hash'),
+            revision: database
+              .query<{readonly value: string}, []>(
+                "SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'",
+              )
+              .get(),
+            rows: database
+              .query<
+                {readonly content_hash: string; readonly path: string; readonly raw_content_hash: string | null},
+                []
+              >('SELECT path, content_hash, raw_content_hash FROM snapshot_files')
+              .all(),
+          };
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expect(observed.columns).toContain('raw_content_hash');
+      expect(observed.index?.sql).toMatch(/WHERE\s+raw_content_hash\s+IS\s+NOT\s+NULL/iu);
+      expect(observed.revision?.value).toBe(String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION));
+      expect(observed.rows).toEqual([
+        {content_hash: fixture.file.contentHash, path: fixture.file.path, raw_content_hash: null},
+      ]);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('atomically upgrades revision 11 with the cache-authority admission table', () =>
     Effect.gen(function* () {
       const fixture = yield* Effect.promise(migrationFixture);

@@ -247,6 +247,7 @@ const prepareActivationTables = Effect.fn('codeGraph.prepareActivationTables')(f
     CREATE TEMP TABLE IF NOT EXISTS activation_files (
       path TEXT PRIMARY KEY,
       content_hash TEXT NOT NULL,
+      raw_content_hash TEXT,
       language TEXT NOT NULL,
       mode TEXT NOT NULL,
       size INTEGER NOT NULL,

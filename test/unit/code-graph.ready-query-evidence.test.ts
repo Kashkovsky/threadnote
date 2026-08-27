@@ -23,6 +23,7 @@ import {
   type ReadyQueryTimingSeriesV1,
 } from '../../src/evaluation/ready_query_evidence.js';
 import {parseReadyQueryLinuxHostSample, readyQueryHostEvidence} from '../../src/evaluation/ready_query_host.js';
+import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from '../../src/code_graph/types.js';
 
 const RESULT_DIGEST = 'a'.repeat(64);
 const SNAPSHOT_DIGEST = 'b'.repeat(64);
@@ -367,7 +368,7 @@ function validArtifact(): MutableReadyQueryEvidence {
     runtime: {
       compatible: true,
       extractorSet: 'native-code-graph-13',
-      persistentExtensionRevision: 15,
+      persistentExtensionRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
       resultVersion: 1,
       schemaVersion: 3,
     },

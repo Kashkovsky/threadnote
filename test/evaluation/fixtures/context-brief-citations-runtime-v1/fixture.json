@@ -1,5 +1,5 @@
 {
-  "expectedContractHash": "79bc7cc8e209e0abc54879c80921913f3e6d42263cdfb21576bf206eef6625e6",
+  "expectedContractHash": "0f370e08baa6db7ff62f33c060232afee97bcb4cfa95e982cb6dcdae7c0707a6",
   "id": "context-brief-citations-runtime-v1",
   "scenarios": [
     {
@@ -114,7 +114,7 @@
   ],
   "source": {
     "content": "export function value() {\n  return \"runtime\";\n}\n",
-    "expectedCitationId": "tncc_48aa75324a821631f5060ed1ab9f89cddcdd84bc",
+    "expectedCitationId": "tncc_59523550566df8b6843cca1c9535c359cc1337fa",
     "extractorSet": "runtime-eval-v1",
     "foreignRepositoryId": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "graphContentId": "cgc_4444444444444444444444444444444444444444",

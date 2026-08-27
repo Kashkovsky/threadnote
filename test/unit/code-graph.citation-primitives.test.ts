@@ -12,7 +12,13 @@ import {
   createCodeGraphSourceSpanCanonicalizer,
   type CodeGraphSymbolSemanticLocatorV1,
 } from '../../src/code_graph/store.js';
+import {
+  codeGraphCommittedFileContentHash,
+  codeGraphFileContentHashMatchesBytes,
+  createCodeGraphCommittedFileContentHasher,
+} from '../../src/code_graph/content_identity.js';
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, RepositoryIdentity} from '../../src/code_graph/types.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {encodeCodeGraphInventoryReuseReceipt} from '../../src/code_graph/inventory_reuse.js';
 import {CODE_GRAPH_INVENTORY_EXCLUSION_REASONS} from '../../src/code_graph/inventory_policy.js';
 import {
@@ -31,6 +37,7 @@ const newHash = '2'.repeat(64);
 const keepHash = '3'.repeat(64);
 const deletedHash = '4'.repeat(64);
 const duplicateHash = '5'.repeat(64);
+const legacyRawHash = '8'.repeat(64);
 
 const targetLocator = {
   kind: 'function',
@@ -49,6 +56,37 @@ const inheritedLocator = {
 } as const satisfies CodeGraphSymbolSemanticLocatorV1;
 
 describe('code graph citation query primitives', () => {
+  effectIt.prop(
+    'matches current Git-blob envelopes and legacy raw hashes to the same source bytes',
+    {
+      bytes: FC.uint8Array({maxLength: 1_024}),
+      chunkWidths: FC.array(FC.integer({max: 256, min: 0}), {maxLength: 32}),
+      objectFormat: FC.constantFrom('sha1' as const, 'sha256' as const),
+    },
+    ({bytes, chunkWidths, objectFormat}) => {
+      const rawHash = sha256HexSync(bytes);
+      const committedHash = codeGraphCommittedFileContentHash(objectFormat, bytes);
+      expect(codeGraphFileContentHashMatchesBytes(rawHash, objectFormat, bytes)).toBe(true);
+      expect(codeGraphFileContentHashMatchesBytes(committedHash, objectFormat, bytes)).toBe(true);
+
+      const changed = new Uint8Array(bytes.byteLength + 1);
+      changed.set(bytes);
+      expect(codeGraphFileContentHashMatchesBytes(rawHash, objectFormat, changed)).toBe(false);
+      expect(codeGraphFileContentHashMatchesBytes(committedHash, objectFormat, changed)).toBe(false);
+
+      const streaming = createCodeGraphCommittedFileContentHasher(objectFormat, bytes.byteLength);
+      let offset = 0;
+      for (const width of chunkWidths) {
+        const end = Math.min(bytes.byteLength, offset + width);
+        streaming.update(bytes.subarray(offset, end));
+        offset = end;
+      }
+      streaming.update(bytes.subarray(offset));
+      expect(streaming.digest()).toBe(committedHash);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   effectIt.effect('merges clean/base/dirty files and symbols while suppressing overrides and deletions', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -109,6 +147,61 @@ describe('code graph citation query primitives', () => {
         );
         expect(boundedFiles[0]?.files).toHaveLength(1);
         expect(boundedFiles[0]?.truncated).toBe(true);
+
+        const legacyEvidence = yield* store.effectiveSnapshotCitationEvidence(databasePath, currentSnapshotId, {
+          contentHashes: [legacyRawHash],
+          paths: ['src/extra.ts', 'src/legacy-location.ts'],
+        });
+        expect(legacyEvidence.filesByContentHashes[0]).toMatchObject({
+          files: [
+            {
+              contentHash: '7'.repeat(64),
+              path: 'src/extra.ts',
+              rawContentHash: legacyRawHash,
+            },
+          ],
+          truncated: false,
+        });
+        const legacyCitation = (citationPath: string, contentHash = legacyRawHash) =>
+          createMemoryCodeCitation({
+            extractorSet: 'native-code-graph-13',
+            fileContentHash: {algorithm: 'sha256', value: contentHash},
+            path: citationPath,
+            repositoryId: '9'.repeat(64),
+            repositoryIdentityKind: 'local',
+            sourceCommit: 'a'.repeat(40),
+            sourceDirty: true,
+            sourceSnapshotId: `cgsn_${'a'.repeat(40)}`,
+            target: {kind: 'file'},
+            version: 1,
+          });
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation('src/extra.ts'),
+            legacyEvidence.filesByPaths[0],
+            legacyEvidence.filesByContentHashes[0],
+            currentSnapshot(),
+            '2026-08-27T00:00:00.000Z',
+          ),
+        ).toMatchObject({reason: 'exact', status: 'exact'});
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation('src/legacy-location.ts'),
+            legacyEvidence.filesByPaths[1],
+            legacyEvidence.filesByContentHashes[0],
+            currentSnapshot(),
+            '2026-08-27T00:00:00.000Z',
+          ),
+        ).toMatchObject({observedPath: 'src/extra.ts', reason: 'relocated', status: 'relocated'});
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation('src/extra.ts', 'f'.repeat(64)),
+            legacyEvidence.filesByPaths[0],
+            undefined,
+            currentSnapshot(),
+            '2026-08-27T00:00:00.000Z',
+          ),
+        ).toMatchObject({reason: 'source-changed', status: 'changed'});
 
         const byIds = yield* store.symbolsByIds(databasePath, currentSnapshotId, [
           'symbol-inherited',
@@ -179,6 +272,7 @@ describe('code graph citation query primitives', () => {
           expect(hashPlan).toMatch(
             /SEARCH current_files USING INDEX snapshot_files_content_hash \(content_hash=\? AND snapshot_id=\?\)/u,
           );
+          expect(hashPlan).toMatch(/SEARCH current_files USING INDEX snapshot_files_raw_content_hash/u);
           expect(hashPlan).not.toMatch(/SCAN current_files/u);
 
           const locatorPlan = queryPlan(
@@ -491,6 +585,9 @@ function seedCitationDatabase(database: Database): void {
   insertFile.run(currentSnapshotId, 'src/current-copy-2.ts', '6'.repeat(64), 'worktree');
   insertFile.run(currentSnapshotId, 'src/extra.ts', '7'.repeat(64), 'worktree');
   database
+    .query('UPDATE snapshot_files SET raw_content_hash = ? WHERE snapshot_id = ? AND path = ?')
+    .run(legacyRawHash, currentSnapshotId, 'src/extra.ts');
+  database
     .query('INSERT INTO snapshot_file_deletions (snapshot_id, path) VALUES (?, ?)')
     .run(currentSnapshotId, 'src/deleted.ts');
   database
@@ -590,6 +687,23 @@ function completeInventoryReuseReceipt(workspace = mergeCodeGraphWorkspaces([]))
     skipped: 0,
     version: CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
     workspace,
+  };
+}
+
+function currentSnapshot(): CodeGraphSnapshot {
+  return {
+    baseSnapshotId,
+    commit: 'b'.repeat(40),
+    dirty: true,
+    edgeCount: 0,
+    extractorSet: 'native-code-graph-13',
+    fileCount: 4,
+    id: currentSnapshotId,
+    overlayFingerprint: 'overlay-fingerprint',
+    repositoryId: 'citation-repository',
+    state: 'ready',
+    symbolCount: 5,
+    worktreeId: 'citation-worktree',
   };
 }
 

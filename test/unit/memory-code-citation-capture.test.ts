@@ -3,6 +3,7 @@ import {Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
+import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {
@@ -11,14 +12,13 @@ import type {
 } from '../../src/code_graph/citation_primitives.js';
 import type {CodeGraphInventoryFile, CodeGraphStatus, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
-import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
 import {captureMemoryCodeCitations} from '../../src/memory_code_citation_capture.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const SOURCE = 'export function value() {\n  return "😀";\n}\n';
-const SOURCE_HASH = sha256HexSync(SOURCE);
+const SOURCE_HASH = codeGraphCommittedFileContentHash('sha1', new TextEncoder().encode(SOURCE));
 const REPOSITORY_ID = '1'.repeat(64);
 const COMMIT = '2'.repeat(40);
 const SNAPSHOT_ID = `cgsn_${'3'.repeat(40)}`;

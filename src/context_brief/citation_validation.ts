@@ -1,4 +1,4 @@
-import {Clock, Effect, FileSystem, Path} from 'effect';
+import {Clock, Effect, FileSystem} from 'effect';
 import {
   createCodeGraphSourceSpanCanonicalizer,
   type CodeGraphEffectiveFileHashMatches,
@@ -7,8 +7,8 @@ import {
   type CodeGraphEffectiveSymbolLocatorMatches,
   type CodeGraphSymbolSemanticLocatorV1,
 } from '../code_graph/citation_primitives.js';
+import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_graph/citation_source.js';
 import {worktreeOverlayState} from '../code_graph/inventory.js';
-import {readContainedStableRegularFile} from '../code_graph/inventory_contained_file.js';
 import {decodeUtf8} from '../code_graph/inventory_content.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {observeCleanRepositoryWorktree, revalidateRepositoryIdentityFence} from '../code_graph/repository.js';
@@ -243,7 +243,6 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
   const store = yield* CodeGraphStore;
   const query = yield* CodeGraphQueryService;
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const snapshot = repository.status.readySnapshot!;
   return yield* Effect.scoped(
     Effect.gen(function* () {
@@ -282,6 +281,26 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         // worktree and turn recall into an unbounded cold-index path.
         const fileInventoryCoverage = evidence.fileInventoryCoverage;
         const repositoryRoot = yield* fs.realPath(repository.status.identity.repoRoot);
+        const sourceBytes = yield* readCodeGraphCitationSources({
+          objectFormat: repository.status.identity.objectFormat,
+          repositoryRoot,
+          sourceCommit: snapshot.commit,
+          sources: symbolCitations.flatMap(citation => {
+            if (citation.target.kind !== 'symbol') return [];
+            return symbolCitationSourceCandidates(
+              citation as MemoryCodeCitationV1 & {
+                readonly target: Extract<MemoryCodeCitationV1['target'], {readonly kind: 'symbol'}>;
+              },
+              exactById.get(citation.target.nodeId),
+              locatorsByKey.get(locatorKey(symbolLocator(citation))),
+              snapshot,
+            ).map(symbol => ({
+              expectedContentHash: symbol.contentHash,
+              repositoryPath: symbol.path,
+              requireBytes: true,
+            }));
+          }),
+        });
         type PreparedSource = ReturnType<typeof createCodeGraphSourceSpanCanonicalizer>;
         const sourceCache = new Map<string, PreparedSource>();
         const readSource = (repositoryPath: string, expectedHash: string) => {
@@ -289,8 +308,10 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
           const cachedSource = sourceCache.get(key);
           if (cachedSource) return Effect.succeed(cachedSource);
           return Effect.gen(function* () {
-            const bytes = yield* readContainedStableRegularFile(fs, path, repositoryRoot, repositoryPath);
-            if ((yield* sha256Hex(bytes)) !== expectedHash) return yield* Effect.fail('source-drift' as const);
+            const bytes = sourceBytes.get(
+              codeGraphCitationSourceKey({expectedContentHash: expectedHash, repositoryPath}),
+            );
+            if (bytes === undefined) return yield* Effect.fail('source-drift' as const);
             const source = decodeUtf8(bytes);
             if (source === undefined) return yield* Effect.fail('source-not-utf8' as const);
             const prepared = createCodeGraphSourceSpanCanonicalizer(source);
@@ -397,7 +418,10 @@ export function validateContextBriefFileCitation(
     observation: ReceiptObservation,
   ) => receipt(citation, snapshot, status, reason, observation, observedAt);
   const exactFile = pathObservation?.file;
-  if (exactFile?.contentHash === citation.fileContentHash.value) {
+  if (
+    exactFile?.contentHash === citation.fileContentHash.value ||
+    exactFile?.rawContentHash === citation.fileContentHash.value
+  ) {
     return result('exact', 'exact', {
       candidateCount: 1,
       coverage: 'current-complete',
@@ -632,6 +656,29 @@ export const validateContextBriefSymbolCitation = Effect.fn('contextBrief.valida
     strategy: 'none',
   });
 });
+
+function symbolCitationSourceCandidates(
+  citation: MemoryCodeCitationV1 & {
+    readonly target: Extract<MemoryCodeCitationV1['target'], {readonly kind: 'symbol'}>;
+  },
+  exactSymbol: CodeGraphSymbol | undefined,
+  locatorMatches: CodeGraphEffectiveSymbolLocatorMatches | undefined,
+  snapshot: NonNullable<CodeGraphStatus['readySnapshot']>,
+): readonly CodeGraphSymbol[] {
+  if (snapshot.extractorSet !== citation.extractorSet) return [];
+  const citedLocator = symbolLocator(citation);
+  if (exactSymbol !== undefined) {
+    return sameSymbolLocator(citedLocator, symbolLocatorFromSymbol(exactSymbol)) ? [exactSymbol] : [];
+  }
+  const candidates = new Map<string, CodeGraphSymbol>();
+  for (const symbol of locatorMatches?.symbols ?? []) candidates.set(symbol.id, symbol);
+  const originalLocatorCandidates = [...candidates.values()].filter(
+    symbol => symbol.path === citation.path && sameSpan(symbol.span, citation.target.span),
+  );
+  if (originalLocatorCandidates.length === 1) return originalLocatorCandidates;
+  if (originalLocatorCandidates.length > 1 || candidates.size > 1 || locatorMatches?.truncated) return [];
+  return [...candidates.values()];
+}
 
 function sameSpan(left: CodeGraphSymbol['span'], right: CodeGraphSymbol['span']): boolean {
   return (
