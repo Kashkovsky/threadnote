@@ -7,6 +7,10 @@ import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 
 import {canonicalMemoryDocumentContent} from './memory_document.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
 
 import {ResourceStore} from './effect/resource-store.js';
 
@@ -98,6 +102,12 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   const rawContent = yield* readMemoryContent(config, ov, sourceUri, dryRun);
+  const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, rawContent);
+  if (citationBlocker) {
+    throw new ShareOperationError(
+      `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    );
+  }
   const stripped = setMemoryVisibility(stripPersonalProvenance(rawContent), 'shared');
   const scrub = applyScrubber(stripped, {redact: options.redact === true});
   const targetUri = sharedUriFor(config, sourceUri, team.name);
@@ -130,6 +140,12 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   const message = options.message ?? `share: publish ${relativePath}`;
   const publish = Effect.fn('share.callback')(function* () {
     const currentRawContent = dryRun ? rawContent : yield* readMemoryContent(config, ov, sourceUri, false);
+    const currentCitationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, currentRawContent);
+    if (currentCitationBlocker) {
+      throw new ShareOperationError(
+        `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(currentCitationBlocker)}.`,
+      );
+    }
     const currentScrub = applyScrubber(setMemoryVisibility(stripPersonalProvenance(currentRawContent), 'shared'), {
       redact: options.redact === true,
     });

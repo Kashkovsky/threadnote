@@ -39,7 +39,9 @@ import {
 } from './resolution_surface.js';
 import {
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceipt,
+  type CodeGraphReusableBaseReceiptInput,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
@@ -904,6 +906,19 @@ export function reusableBaseFileSetFingerprint(files: readonly CodeGraphInventor
     files,
     file => `${file.path}\0${file.language}\0${file.mode}`,
   );
+}
+
+export function currentSnapshotReusableBaseReceipt(
+  inventory: CodeGraphInventory,
+  workspace: CodeGraphWorkspace,
+  packProvenance: readonly CodeGraphLanguagePackProvenance[],
+): CodeGraphReusableBaseReceiptInput {
+  return {
+    fileSetFingerprint: reusableBaseFileSetFingerprint(inventory.files),
+    ...(inventory.reuseReceipt ? {inventory: {...inventory.reuseReceipt, workspace}} : {}),
+    packProvenance,
+    workspaceFingerprint: workspace.fingerprint,
+  };
 }
 
 function attributeInventoryFacts(

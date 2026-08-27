@@ -5,6 +5,11 @@ import {safeChildDirectoryNames, scanFilesWithinBoundary} from './effect/safe_sc
 import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 import {canonicalMemoryDocumentContent, parseMemoryDocument, type MemoryRecord} from './memory_document.js';
+import {
+  assertMemoryCodeCitation,
+  formatMemoryCodeCitationLines,
+  type MemoryCodeCitationV1,
+} from './memory_code_citation.js';
 import type {MemoryKind} from './types.js';
 
 export type CandidateCategory = 'decision' | 'handoff' | 'invariant' | 'preference';
@@ -15,6 +20,7 @@ export type CandidateApplyOperation = 'create' | 'replace';
 export type CandidateApplyStage = 'cleanup_pending' | 'conflict' | 'prepared' | 'written';
 
 export interface SessionCloseoutInput {
+  readonly codeCitations?: readonly MemoryCodeCitationV1[];
   readonly decisions?: readonly string[];
   readonly evidence?: readonly string[];
   readonly handoff?: readonly string[];
@@ -55,6 +61,7 @@ export interface MemoryCandidate {
 export interface CandidateReview {
   readonly auditEvents: readonly CandidateAuditEvent[];
   readonly candidates: readonly MemoryCandidate[];
+  readonly codeCitations: readonly MemoryCodeCitationV1[];
   readonly createdAt: string;
   readonly outcome: string;
   readonly project: string;
@@ -65,7 +72,7 @@ export interface CandidateReview {
   readonly sourceSessionId?: string;
   readonly task: string;
   readonly topic: string;
-  readonly version: 1;
+  readonly version: 2;
 }
 
 export interface CandidateAuditEvent {
@@ -141,6 +148,7 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
       },
     ],
     candidates,
+    codeCitations: input.codeCitations ?? [],
     createdAt,
     outcome: input.outcome,
     project: input.project,
@@ -151,7 +159,7 @@ export const buildCandidateReview = Effect.fn('candidate.buildReview')(function*
     sourceSessionId: input.sourceSessionId,
     task: input.task,
     topic: input.topic,
-    version: 1,
+    version: 2,
   } satisfies CandidateReview;
 });
 
@@ -613,6 +621,7 @@ function normalizedItems(items: readonly string[] | undefined): readonly string[
 function candidateEvidence(input: SessionCloseoutInput): readonly string[] {
   return normalizedItems([
     ...(input.evidence ?? []),
+    ...(input.codeCitations ?? []).map(citation => `code-citation:${citation.id}`),
     ...(input.sourceSessionId ? [`session:${input.sourceSessionId}`] : []),
     ...(input.sourceCommit ? [`commit:${input.sourceCommit}`] : []),
   ]);
@@ -756,7 +765,7 @@ function parseCandidateReview(value: unknown): CandidateReview {
     typeof value !== 'object' ||
     value === null ||
     !('version' in value) ||
-    value.version !== 1 ||
+    (value.version !== 1 && value.version !== 2) ||
     !('reviewId' in value) ||
     typeof value.reviewId !== 'string' ||
     !('revision' in value) ||
@@ -766,12 +775,27 @@ function parseCandidateReview(value: unknown): CandidateReview {
   ) {
     throw new CandidateMemoryError('unsupported review document');
   }
-  const review = value as CandidateReview;
+  const review = value as Omit<CandidateReview, 'codeCitations' | 'version'> & {
+    readonly codeCitations?: readonly MemoryCodeCitationV1[];
+    readonly version: 1 | 2;
+  };
+  let codeCitations: readonly MemoryCodeCitationV1[] = [];
+  if (review.version === 2) {
+    if (!Array.isArray(review.codeCitations)) throw new CandidateMemoryError('invalid v2 code citations');
+    try {
+      codeCitations = review.codeCitations.map(assertMemoryCodeCitation);
+      formatMemoryCodeCitationLines(codeCitations);
+    } catch {
+      throw new CandidateMemoryError('invalid v2 code citations');
+    }
+  }
   return {
     ...review,
     auditEvents: Array.isArray(review.auditEvents)
       ? review.auditEvents.filter(event => candidateAuditEventIsValid(event))
       : [],
+    codeCitations,
+    version: 2,
   };
 }
 

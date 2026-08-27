@@ -1,5 +1,19 @@
 import * as BunHttpServer from '@effect/platform-bun/BunHttpServer';
-import {Console, Crypto, Effect, Encoding, FileSystem, Layer, Option, Path, Ref, Result, Scope} from 'effect';
+import {
+  Cause,
+  Console,
+  Crypto,
+  Effect,
+  Encoding,
+  Exit,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Ref,
+  Result,
+  Scope,
+} from 'effect';
 import * as HttpServer from 'effect/unstable/http/HttpServer';
 import * as HttpServerRequest from 'effect/unstable/http/HttpServerRequest';
 import * as HttpServerResponse from 'effect/unstable/http/HttpServerResponse';
@@ -38,6 +52,18 @@ import {
   runRecall,
   runRemember,
 } from './memory.js';
+import {
+  moveManagerSharedMemoryWithinTeam,
+  publishStagedManagerPersonalMemoryMove,
+  removeManagerPersonalMemorySource,
+  removeManagerSharedMemorySource,
+  storeManagerPersonalMemoryMove,
+} from './manager_memory_move.js';
+import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './manager_memory_save.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
 import {parseMemoryDocument, type MemoryRecord} from './memory_hygiene.js';
 import {
   ensureSharedDirectoryChain,
@@ -46,7 +72,6 @@ import {
   parentUri,
   publishShareGitChange,
   readTeamsFile,
-  removeMemoryUri,
   resolveTeam,
   sharedTeamNameForUri,
   resourceUriToWorktreeRelative,
@@ -1048,7 +1073,7 @@ const saveMemory = Effect.fn('manager.saveMemory')(function (
   const replaceUri = optionalString(body.replaceUri);
   if (replaceUri && isRawMemoryDocument(text)) {
     return runCaptured(() => {
-      const write = writeRawMemory(config, replaceUri, text);
+      const write = writeRawMemory(config, replaceUri, text, optionalString(body.expectedContent));
       return isInSharedNamespace(config, replaceUri) ? withSharedRepositoryLock(config, write) : write;
     }, runEffect);
   }
@@ -1071,6 +1096,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
   config: RuntimeConfig,
   uri: string,
   content: string,
+  expectedContent: string | undefined,
 ) {
   assertResourceUri(uri);
   const canonicalUri = resourceIdWithoutAnchor(parseResourceId(uri)).canonicalUri;
@@ -1079,10 +1105,16 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
     if (isInSharedNamespace(config, canonicalUri)) {
       const teamName = sharedTeamNameForUri(config, canonicalUri);
       if (!teamName) {
-        throw new ManagerOperationError(`${canonicalUri} is not in a configured shared namespace.`);
+        return yield* Effect.fail(
+          new ManagerOperationError(`${canonicalUri} is not in a configured shared namespace.`),
+        );
       }
       const team = yield* resolveTeam(config, teamName);
       const existing = yield* readManagedMemory(config, canonicalUri);
+      yield* Effect.try({
+        catch: managerOperationError,
+        try: () => assertManagerRawSharedMemorySave(config, canonicalUri, existing.content, expectedContent, content),
+      });
       const relativePath = resourceUriToWorktreeRelative(config, canonicalUri, team.name);
       yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, existing.content);
       yield* ensureSharedDirectoryChain(config, ov, canonicalUri, false);
@@ -1091,6 +1123,11 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
       yield* publishShareGitChange(team.config.worktree, relativePath, `share: update ${relativePath}`);
       return;
     }
+    const existing = yield* readManagedMemory(config, canonicalUri);
+    yield* Effect.try({
+      catch: managerOperationError,
+      try: () => assertManagerRawPersonalMemorySave(canonicalUri, existing.content, expectedContent, content),
+    });
     yield* ensurePersonalDirectoryChain(config, ov, parentUri(canonicalUri));
     yield* writeMemoryFile(config, ov, canonicalUri, content, 'replace', false);
   });
@@ -1110,11 +1147,10 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
   assertResourceUri(sourceUri);
   const source = yield* readManagedMemory(config, sourceUri);
   const sourceRecord = source.record;
-  const text = sourceRecord?.body ?? source.content;
   const metadata = {
     kind: target.kind ?? sourceRecord?.metadata.kind ?? 'durable',
     project: target.project ?? sourceRecord?.metadata.project ?? 'general',
-    sourceAgentClient: target.sourceAgentClient ?? 'manager',
+    sourceAgentClient: target.sourceAgentClient ?? sourceRecord?.metadata.sourceAgentClient ?? 'manager',
     status: target.status ?? sourceRecord?.metadata.status ?? 'active',
     topic: target.topic ?? sourceRecord?.metadata.topic ?? 'current',
   };
@@ -1133,29 +1169,58 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
         () =>
           withSharedRepositoryLock(
             config,
-            moveSharedWithinTeam(config, sourceUri, sharedTargetUri, source.content, targetTeam),
+            moveManagerSharedMemoryWithinTeam(config, sourceUri, sharedTargetUri, source.content, targetTeam),
           ),
         runEffect,
       );
       return {...output, targetUri: sharedTargetUri};
     }
+    const citationBlocker = memoryCodeCitationContentSharingBlocker(sourceUri, source.content);
+    if (citationBlocker) {
+      return yield* Effect.fail(
+        new ManagerOperationError(
+          `Refusing to move ${sourceUri} into shared memory: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+        ),
+      );
+    }
+    if (personalTargetUri === sourceUri) {
+      const published = yield* runCaptured(() => runSharePublish(config, sourceUri, {team: targetTeam}), runEffect);
+      return {...published, targetUri: sharedMemoryUriFor(config, targetTeam, metadata)};
+    }
+    // Stage the reformatted personal destination without deleting the source.
+    // Publication owns/removes the stage; only after it succeeds do we CAS-
+    // remove the original. This keeps every pre-publication failure lossless.
     const saved = yield* runCaptured(
-      () =>
-        runRemember(config, {
-          kind: metadata.kind,
-          project: metadata.project,
-          replace: sourceUri,
-          sourceAgentClient: metadata.sourceAgentClient,
-          status: metadata.status,
-          text,
-          topic: metadata.topic,
-        }),
+      () => storeManagerPersonalMemoryMove(config, sourceUri, source.content, metadata, false),
       runEffect,
     );
-    const published = yield* runCaptured(
-      () => runSharePublish(config, personalTargetUri, {team: targetTeam}),
-      runEffect,
+    const staged = yield* readManagedMemory(config, personalTargetUri);
+    const publishExit = yield* Effect.exit(
+      runCaptured(
+        () =>
+          publishStagedManagerPersonalMemoryMove(
+            config,
+            sourceUri,
+            source.content,
+            personalTargetUri,
+            staged.content,
+            targetTeam,
+          ),
+        runEffect,
+      ),
     );
+    if (Exit.isFailure(publishExit)) {
+      yield* removeManagerPersonalMemorySource(config, personalTargetUri, staged.content).pipe(
+        Effect.catch(cleanupError =>
+          Console.warn(`WARN could not clean up staged move ${personalTargetUri}: ${errorMessage(cleanupError)}`),
+        ),
+      );
+      if (Cause.hasInterrupts(publishExit.cause)) {
+        return yield* Effect.failCause(publishExit.cause);
+      }
+      return yield* Effect.fail(managerOperationError(Cause.squash(publishExit.cause)));
+    }
+    const published = publishExit.value;
     return {
       output: [saved.output, published.output].filter(Boolean).join('\n'),
       targetUri: sharedMemoryUriFor(config, targetTeam, metadata),
@@ -1163,88 +1228,20 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
   }
   if (isInSharedNamespace(config, sourceUri)) {
     const saved = yield* runCaptured(
-      () =>
-        runRemember(config, {
-          kind: metadata.kind,
-          project: metadata.project,
-          sourceAgentClient: metadata.sourceAgentClient,
-          status: metadata.status,
-          text,
-          topic: metadata.topic,
-        }),
+      () => storeManagerPersonalMemoryMove(config, sourceUri, source.content, metadata, false),
       runEffect,
     );
     const removed = yield* runCaptured(
-      () => withSharedRepositoryLock(config, removeSharedSource(config, sourceUri)),
+      () => withSharedRepositoryLock(config, removeManagerSharedMemorySource(config, sourceUri, source.content)),
       runEffect,
     );
     return {output: [saved.output, removed.output].filter(Boolean).join('\n'), targetUri: personalTargetUri};
   }
   const output = yield* runCaptured(
-    () =>
-      runRemember(config, {
-        kind: metadata.kind,
-        project: metadata.project,
-        replace: sourceUri,
-        sourceAgentClient: metadata.sourceAgentClient,
-        status: metadata.status,
-        text,
-        topic: metadata.topic,
-      }),
+    () => storeManagerPersonalMemoryMove(config, sourceUri, source.content, metadata, true),
     runEffect,
   );
   return {...output, targetUri: personalTargetUri};
-});
-
-const moveSharedWithinTeam = Effect.fn('manager.moveSharedWithinTeam')(function* (
-  config: RuntimeConfig,
-  sourceUri: string,
-  targetUri: string,
-  content: string,
-  teamName: string,
-) {
-  const team = yield* resolveTeam(config, teamName);
-  const ov = NATIVE_RESOURCE_BACKEND;
-  const targetRelativePath = resourceUriToWorktreeRelative(config, targetUri, team.name);
-  yield* assertSharedWorktreeFileReady(team.config.worktree, targetRelativePath, undefined);
-  yield* ensureSharedDirectoryChain(config, ov, targetUri, false);
-  yield* writeMemoryFile(config, ov, targetUri, content, 'create', false);
-  yield* writeSharedWorktreeFile(team.config.worktree, targetRelativePath, content);
-  yield* publishShareGitChange(
-    team.config.worktree,
-    resourceUriToWorktreeRelative(config, targetUri, team.name),
-    `share: move ${resourceUriToWorktreeRelative(config, sourceUri, team.name)} to ${resourceUriToWorktreeRelative(config, targetUri, team.name)}`,
-  );
-  yield* publishShareGitChange(
-    team.config.worktree,
-    resourceUriToWorktreeRelative(config, sourceUri, team.name),
-    `share: remove ${resourceUriToWorktreeRelative(config, sourceUri, team.name)}`,
-    {
-      verb: 'rm',
-    },
-  );
-  yield* removeMemoryUri(config, ov, sourceUri, false);
-});
-
-const removeSharedSource = Effect.fn('manager.removeSharedSource')(function* (
-  config: RuntimeConfig,
-  sourceUri: string,
-) {
-  const teamName = sharedTeamNameForUri(config, sourceUri);
-  if (!teamName) {
-    throw new ManagerOperationError(`${sourceUri} is not a shared memory.`);
-  }
-  const team = yield* resolveTeam(config, teamName);
-  const ov = NATIVE_RESOURCE_BACKEND;
-  yield* publishShareGitChange(
-    team.config.worktree,
-    resourceUriToWorktreeRelative(config, sourceUri, team.name),
-    `share: remove ${resourceUriToWorktreeRelative(config, sourceUri, team.name)}`,
-    {
-      verb: 'rm',
-    },
-  );
-  yield* removeMemoryUri(config, ov, sourceUri, false);
 });
 
 const removeManagedFolder = Effect.fn('manager.removeManagedFolder')(function* (config: RuntimeConfig, uri: string) {
@@ -1981,5 +1978,5 @@ function targetFromBody(body: Record<string, unknown>): TargetMemoryInput {
 }
 
 function isRawMemoryDocument(text: string): boolean {
-  return text.startsWith('MEMORY\n') || text.startsWith('HANDOFF\n');
+  return /^(?:HANDOFF|MEMORY)(?:\n|\r\n?)/u.test(text);
 }

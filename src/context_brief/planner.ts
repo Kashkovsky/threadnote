@@ -1,9 +1,15 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {
+  CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES,
+  CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION,
   CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS,
   CONTEXT_BRIEF_VERSION,
   parseContextBriefRequestV1,
+  type ContextBriefCitationReceiptV2,
+  type ContextBriefCitationSummaryV2,
   type ContextBriefContextIssueV1,
+  type ContextBriefCitationValidationReceiptV2,
   type ContextBriefFollowUpV1,
   type ContextBriefFreshness,
   type ContextBriefGraphEvidenceV1,
@@ -13,7 +19,7 @@ import {
   type ContextBriefPlanV1,
   type ContextBriefRequestV1,
 } from './types.js';
-import {classifyMemoryFreshness} from './memory_evidence.js';
+import {classifyMemoryFreshness, reconcileContextBriefMemoryFreshness} from './memory_evidence.js';
 
 const MAXIMUM_ISSUES = 24;
 const MAXIMUM_FOLLOW_UPS = 24;
@@ -49,12 +55,31 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
 export function assembleContextBriefLogicalResult(input: {
   readonly graph: ContextBriefGraphEvidenceV1;
   readonly memory: ContextBriefMemoryRetrievalV1;
+  readonly observedAt: string;
   readonly plan: ContextBriefPlanV1;
 }): ContextBriefLogicalResultV1 {
-  const memories = input.memory.candidates.map(candidate => ({
-    ...candidate,
-    freshness: classifyMemoryFreshness(candidate.sourceCommit, input.graph.resolvedSnapshots),
-  })) satisfies readonly ContextBriefMemoryEvidenceV1[];
+  const validations = new Map((input.memory.citationValidations ?? []).map(validation => [validation.uri, validation]));
+  const memories = input.memory.candidates.map(candidate => {
+    const privateCitationReceipts = validationReceipts(
+      candidate,
+      validations.get(candidate.uri)?.receipts,
+      input.observedAt,
+    );
+    const preciseStatus = aggregatePreciseStatus(privateCitationReceipts);
+    const citationReceipts = publicCitationReceipts(privateCitationReceipts);
+    const citationSummary = summarizeCitationReceipts(privateCitationReceipts);
+    const coarse = classifyMemoryFreshness(candidate.sourceCommit, input.graph.resolvedSnapshots);
+    const {citationErrorCount, codeCitations: _privateCodeCitations, ...publicCandidate} = candidate;
+    return {
+      ...publicCandidate,
+      ...(citationErrorCount === 0 ? {} : {citationErrorCount}),
+      ...(citationReceipts.length === 0 ? {} : {citationReceipts}),
+      ...(citationSummary === undefined ? {} : {citationSummary}),
+      freshness: preciseStatus === undefined ? coarse : reconcileContextBriefMemoryFreshness(coarse, preciseStatus),
+      freshnessBasis: preciseStatus === undefined ? ('source-commit' as const) : ('code-citations' as const),
+      ...(preciseStatus === undefined ? {} : {preciseStatus}),
+    };
+  }) satisfies readonly ContextBriefMemoryEvidenceV1[];
   const durableDecisions = stableMemories(memories.filter(memory => memory.kind === 'durable'));
   const handoffs = stableMemories(memories.filter(memory => memory.kind === 'handoff'));
   const issues = contextIssues(memories);
@@ -64,6 +89,8 @@ export function assembleContextBriefLogicalResult(input: {
     ...(input.graph.cards.length === 0 ? ['no-graph-evidence'] : []),
     ...(memories.length === 0 ? ['no-relevant-active-memory'] : []),
     ...(memories.some(memory => memory.freshness === 'unknown') ? ['memory-freshness-unknown'] : []),
+    ...(memories.some(memory => (memory.citationErrorCount ?? 0) > 0) ? ['memory-code-citations-invalid'] : []),
+    ...(memories.some(memory => memory.preciseStatus === 'relocated') ? ['memory-code-links-relocated'] : []),
   ]).slice(0, 24);
   const freshness = scopeFreshness(input.graph);
   return {
@@ -122,6 +149,24 @@ function scopeFreshness(graph: ContextBriefGraphEvidenceV1): ContextBriefFreshne
 function contextIssues(memories: readonly ContextBriefMemoryEvidenceV1[]): readonly ContextBriefContextIssueV1[] {
   const issues: ContextBriefContextIssueV1[] = [];
   for (const memory of memories) {
+    if ((memory.citationErrorCount ?? 0) > 0) {
+      issues.push({
+        id: issueId('invalid-code-citation', [memory.uri]),
+        kind: 'invalid-code-citation',
+        rank: issues.length,
+        summary: `${memory.citationErrorCount ?? 0} malformed code citation line(s) were ignored for ${memory.topic ?? memory.uri}.`,
+        uris: [memory.uri],
+      });
+    }
+    if (memory.citationReceipts?.some(receipt => receipt.status === 'relocated')) {
+      issues.push({
+        id: issueId('stale-link', [memory.uri]),
+        kind: 'stale-link',
+        rank: issues.length,
+        summary: `Cited code moved for ${memory.topic ?? memory.uri}; the memory remains fresh but its stored link is stale.`,
+        uris: [memory.uri],
+      });
+    }
     if (memory.freshness === 'fresh') continue;
     const kind = memory.freshness === 'stale' ? 'stale-memory' : 'unknown-memory-freshness';
     issues.push({
@@ -130,8 +175,12 @@ function contextIssues(memories: readonly ContextBriefMemoryEvidenceV1[]): reado
       rank: issues.length,
       summary:
         memory.freshness === 'stale'
-          ? `Source commit differs for ${memory.topic ?? memory.uri}.`
-          : `Source commit cannot be resolved unambiguously for ${memory.topic ?? memory.uri}.`,
+          ? memory.preciseStatus === 'changed' || memory.preciseStatus === 'deleted'
+            ? `Cited code changed or was deleted for ${memory.topic ?? memory.uri}.`
+            : `Source commit differs for ${memory.topic ?? memory.uri}.`
+          : memory.preciseStatus === 'unknown' || (memory.citationErrorCount ?? 0) > 0
+            ? `Cited code cannot be validated safely for ${memory.topic ?? memory.uri}.`
+            : `Source commit cannot be resolved unambiguously for ${memory.topic ?? memory.uri}.`,
       uris: [memory.uri],
     });
   }
@@ -178,6 +227,23 @@ function exactFollowUps(
       ref: card.ref,
     });
   }
+  const graphCardRefs = new Set(graph.cards.map(card => card.ref));
+  const relocatedNodeIds = stableUnique(
+    memories.flatMap(memory =>
+      (memory.citationReceipts ?? []).flatMap(receipt =>
+        receipt.status === 'relocated' && receipt.observedNodeId !== undefined ? [receipt.observedNodeId] : [],
+      ),
+    ),
+  );
+  for (const observedNodeId of relocatedNodeIds) {
+    if (graphCardRefs.has(observedNodeId)) continue;
+    followUps.push({
+      id: followUpId('inspect-node', observedNodeId),
+      operation: 'inspect-node',
+      rank: followUps.length,
+      ref: observedNodeId,
+    });
+  }
   for (const memory of stableMemories(memories)) {
     followUps.push({
       id: followUpId('read-memory', memory.uri),
@@ -214,7 +280,145 @@ function exactFollowUps(
 }
 
 function issuePriority(kind: ContextBriefContextIssueV1['kind']): number {
-  return kind === 'candidate-conflict' ? 0 : kind === 'stale-memory' ? 1 : 2;
+  switch (kind) {
+    case 'candidate-conflict':
+      return 0;
+    case 'invalid-code-citation':
+      return 1;
+    case 'stale-memory':
+      return 2;
+    case 'stale-link':
+      return 3;
+    case 'unknown-memory-freshness':
+      return 4;
+  }
+}
+
+function validationReceipts(
+  candidate: ContextBriefMemoryRetrievalV1['candidates'][number],
+  observed: readonly ContextBriefCitationValidationReceiptV2[] | undefined,
+  observedAt: string,
+): readonly ContextBriefCitationValidationReceiptV2[] {
+  const observedById = new Map((observed ?? []).map(receipt => [receipt.citationId, receipt]));
+  const receipts = candidate.codeCitations.map(
+    citation =>
+      observedById.get(citation.id) ?? {
+        candidateCount: 0,
+        citationId: citation.id,
+        coverage: 'incomplete' as const,
+        kind: citation.target.kind,
+        observedAt,
+        reason: 'repository-unavailable' as const,
+        repositoryId: citation.repositoryId,
+        sourcePath: citation.path,
+        status: 'unknown' as const,
+        strategy: 'none' as const,
+        validatorVersion: CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION,
+      },
+  );
+  for (let index = 0; index < candidate.citationErrorCount; index += 1) {
+    receipts.push({
+      candidateCount: 0,
+      citationId: `tncc_${sha256HexSync(`${candidate.uri}\u0000malformed\u0000${index}`).slice(0, 40)}`,
+      coverage: 'incomplete',
+      kind: 'malformed',
+      observedAt,
+      reason: 'malformed-citation',
+      status: 'unknown',
+      strategy: 'none',
+      validatorVersion: CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION,
+    });
+  }
+  return receipts;
+}
+
+function publicCitationReceipts(
+  receipts: readonly ContextBriefCitationValidationReceiptV2[],
+): readonly ContextBriefCitationReceiptV2[] {
+  const auditReceipt = receipts.find(
+    receipt =>
+      receipt.status === 'relocated' &&
+      (publicObservedNodeId(receipt) !== undefined || boundedRelocationHint(receipt.observedPath) !== undefined),
+  );
+  return receipts.slice(0, CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS).map(receipt => {
+    // One move hint per memory is enough to provide an exact audit follow-up
+    // without letting repeated optional metadata evict the memory itself.
+    const observedNodeId = receipt === auditReceipt ? publicObservedNodeId(receipt) : undefined;
+    const relocationHint =
+      receipt === auditReceipt && observedNodeId === undefined
+        ? boundedRelocationHint(receipt.observedPath)
+        : undefined;
+    return {
+      citationId: receipt.citationId,
+      ...(observedNodeId === undefined ? {} : {observedNodeId}),
+      reason: receipt.reason,
+      ...(relocationHint === undefined ? {} : {relocationHint}),
+      status: receipt.status,
+    };
+  });
+}
+
+function summarizeCitationReceipts(
+  receipts: readonly ContextBriefCitationValidationReceiptV2[],
+): ContextBriefCitationSummaryV2 | undefined {
+  if (receipts.length === 0) return undefined;
+  return {
+    coverage: receipts.every(isCurrentCompleteReceipt) ? 'current-complete' : 'incomplete',
+    exact: receipts.filter(receipt => receipt.status === 'exact').length,
+    relocated: receipts.filter(receipt => receipt.status === 'relocated').length,
+    stale: receipts.filter(receipt => receipt.status === 'changed' || receipt.status === 'deleted').length,
+    unknown: receipts.filter(receipt => receipt.status === 'unknown').length,
+    validatorVersion: CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION,
+  };
+}
+
+function isCurrentCompleteReceipt(receipt: ContextBriefCitationValidationReceiptV2): boolean {
+  return receipt.coverage === 'current-complete';
+}
+
+function publicObservedNodeId(receipt: ContextBriefCitationValidationReceiptV2): string | undefined {
+  if (receipt.status !== 'exact' && receipt.status !== 'relocated') return undefined;
+  return receipt.observedNodeId !== undefined &&
+    /^cgs_(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/u.test(receipt.observedNodeId)
+    ? receipt.observedNodeId
+    : undefined;
+}
+
+function boundedRelocationHint(observedPath: string | undefined): string | undefined {
+  if (observedPath === undefined || hasUnsupportedControlCharacter(observedPath)) return undefined;
+  const pathTail = observedPath
+    .replace(/\\/gu, '/')
+    .split('/')
+    .filter(segment => segment !== '' && segment !== '.' && segment !== '..')
+    .slice(-2)
+    .join('/');
+  if (pathTail === '') return undefined;
+  const encoder = new TextEncoder();
+  if (encoder.encode(pathTail).byteLength <= CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES) return pathTail;
+  let suffix = '';
+  for (const character of [...pathTail].reverse()) {
+    const candidate = `${character}${suffix}`;
+    if (encoder.encode(`…${candidate}`).byteLength > CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES) break;
+    suffix = candidate;
+  }
+  return suffix === '' ? undefined : `…${suffix}`;
+}
+
+function hasUnsupportedControlCharacter(value: string): boolean {
+  return [...value].some(character => {
+    const code = character.codePointAt(0) ?? 0;
+    return code <= 31 || code === 127 || code === 133 || code === 8_232 || code === 8_233;
+  });
+}
+
+export function aggregatePreciseStatus(
+  receipts: readonly Pick<ContextBriefCitationValidationReceiptV2, 'status'>[],
+): ContextBriefMemoryEvidenceV1['preciseStatus'] {
+  if (receipts.length === 0) return undefined;
+  if (receipts.some(receipt => receipt.status === 'changed')) return 'changed';
+  if (receipts.some(receipt => receipt.status === 'deleted')) return 'deleted';
+  if (receipts.some(receipt => receipt.status === 'unknown')) return 'unknown';
+  return receipts.some(receipt => receipt.status === 'relocated') ? 'relocated' : 'exact';
 }
 
 function issueId(kind: ContextBriefContextIssueV1['kind'], uris: readonly string[]): string {

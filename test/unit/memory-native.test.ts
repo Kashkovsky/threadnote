@@ -27,6 +27,8 @@ import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
 
@@ -182,6 +184,168 @@ describe('native memory workflow', () => {
             ),
           ),
         ).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('refuses replacement when raw schema headers are unsafe or duplicated', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-schema-guard-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const store = yield* ResourceStore;
+        const location = {account: config.account, home: config.agentContextHome, user: config.user};
+        const cases = [
+          {
+            expected: 'canonical positive safe integer',
+            schemaLines: [`schema_version: ${'9'.repeat(80)}`],
+            topic: 'unsafe-version',
+          },
+          {
+            expected: 'must appear exactly once',
+            schemaLines: ['schema_version: 4', 'schema_version: 5'],
+            topic: 'duplicate-version',
+          },
+        ] as const;
+
+        for (const testCase of cases) {
+          const uri = `threadnote://user/tester/memories/durable/projects/threadnote/${testCase.topic}.md`;
+          const original = [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            `topic: ${testCase.topic}`,
+            ...testCase.schemaLines,
+            '',
+            'Future-owned content must remain byte-for-byte unchanged.',
+          ].join('\n');
+          yield* store.write(location, uri, original, {mode: 'create'});
+
+          const error = yield* Effect.flip(
+            runRemember(config, {
+              kind: 'durable',
+              project: 'threadnote',
+              replace: uri,
+              text: 'Attempted replacement.',
+              topic: testCase.topic,
+            }),
+          );
+
+          expect(String(error)).toContain(testCase.expected);
+          expect(yield* store.read(location, uri)).toBe(original);
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('requires explicit same-topic replacement before overwriting schema or clearing citations', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-explicit-replace-'});
+        const manifestPath = path.join(home, 'seed-manifest.yaml');
+        yield* fs.writeFileString(manifestPath, 'version: 1\nprojects: []\n');
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath,
+          user: 'tester',
+        };
+        const store = yield* ResourceStore;
+        const location = {account: config.account, home: config.agentContextHome, user: config.user};
+        const futureTopic = 'implicit-future-version';
+        const futureUri = `threadnote://user/tester/memories/durable/projects/threadnote/${futureTopic}.md`;
+        const future = [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: threadnote',
+          `topic: ${futureTopic}`,
+          `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          'future_writer_field: preserve-me',
+          '',
+          'Future-owned content must remain unchanged.',
+        ].join('\n');
+        yield* store.write(location, futureUri, future, {mode: 'create'});
+
+        const futureError = yield* Effect.flip(
+          runRemember(config, {
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'Implicit overwrite attempt.',
+            topic: futureTopic,
+          }),
+        );
+        expect(String(futureError)).toContain('newer than supported');
+        expect(yield* store.read(location, futureUri)).toBe(future);
+
+        const citationTopic = 'implicit-citation-clear';
+        const citationUri = `threadnote://user/tester/memories/durable/projects/threadnote/${citationTopic}.md`;
+        const citation = createMemoryCodeCitation({
+          extractorSet: 'native-code-graph-13',
+          fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+          path: 'src/memory.ts',
+          repositoryId: 'b'.repeat(64),
+          repositoryIdentityKind: 'remote',
+          sourceCommit: 'c'.repeat(40),
+          sourceDirty: false,
+          sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+          target: {kind: 'file'},
+          version: 1,
+        });
+        const cited = formatMemoryDocument(
+          'MEMORY',
+          {
+            codeCitations: [citation],
+            kind: 'durable',
+            project: 'threadnote',
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-26T20:00:00.000Z',
+            topic: citationTopic,
+          },
+          'Citation-bearing memory.',
+        );
+        yield* store.write(location, citationUri, cited, {mode: 'create'});
+
+        const citationError = yield* Effect.flip(
+          runRemember(config, {
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'Implicit citation clear attempt.',
+            topic: citationTopic,
+          }),
+        );
+        expect(String(citationError)).toContain(`--replace ${citationUri}`);
+        expect(yield* store.read(location, citationUri)).toBe(cited);
+
+        const replacement = yield* captureConsole(
+          runRemember(config, {
+            kind: 'durable',
+            project: 'threadnote',
+            replace: citationUri,
+            text: 'Explicit citation clear.',
+            topic: citationTopic,
+          }),
+        );
+        expect(replacement.output).toContain('Cleared 1 prior code citation(s)');
+        const updated = parseMemoryDocument(citationUri, yield* store.read(location, citationUri));
+        expect(updated?.body).toBe('Explicit citation clear.');
+        expect(updated?.metadata.codeCitations).toBeUndefined();
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

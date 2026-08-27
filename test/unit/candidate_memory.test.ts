@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {provideTestLayer} from '../helpers/effect-layer.js';
-import {BunCrypto, BunPath} from '@effect/platform-bun';
-import {Effect, FileSystem, Layer, Option} from 'effect';
+import {BunCrypto, BunFileSystem, BunPath} from '@effect/platform-bun';
+import {Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
 import {
   appendCandidateAudit,
@@ -16,6 +16,7 @@ import {
   withCandidateReviewLock,
 } from '../../src/candidate_memory.js';
 import type {MemoryRecord} from '../../src/memory_document.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';
 
@@ -298,6 +299,31 @@ describe('candidate review persistence', () => {
     ]);
     expect(auditPath).toContain('/threadnote/candidates/v1/audit.jsonl');
   });
+
+  effectIt.effect('loads CandidateReview v1 with empty citations instead of dropping the review', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temporaryDirectory = yield* Effect.acquireRelease(
+        fs.makeTempDirectory({prefix: 'threadnote-candidates-v1-'}),
+        candidateDirectory => fs.remove(candidateDirectory, {force: true, recursive: true}).pipe(Effect.ignore),
+      );
+      const review = yield* buildCandidateReview(input, [], new Date('2026-07-23T10:00:00.000Z'));
+      const {codeCitations: _v2Citations, ...legacy} = review;
+      const reviewDirectory = path.join(temporaryDirectory, 'threadnote', 'candidates', 'v1', 'reviews');
+      yield* fs.makeDirectory(reviewDirectory, {recursive: true});
+      yield* fs.writeFileString(
+        path.join(reviewDirectory, `${review.reviewId}.json`),
+        `${JSON.stringify({...legacy, version: 1})}\n`,
+      );
+
+      expect(yield* loadCandidateReview(temporaryDirectory, review.reviewId)).toMatchObject({
+        codeCitations: [],
+        reviewId: review.reviewId,
+        version: 2,
+      });
+    }).pipe(provideTestLayer(Layer.mergeAll(BunCrypto.layer, BunFileSystem.layer, BunPath.layer, SystemInfo.layer))),
+  );
 
   it('serializes concurrent decisions for one review and deduplicates audit writes', async () => {
     const trace: string[] = [];

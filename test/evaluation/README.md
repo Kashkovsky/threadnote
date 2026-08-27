@@ -3,6 +3,64 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+## Memory-code citation runtime contract
+
+`fixtures/context-brief-citations-runtime-v1/fixture.json` is the reviewed, deterministic correctness contract for
+memory-to-code citations. Ordinary quality CI runs it through the real capture, validation, schema-v1 recall, Context
+Brief assembly, and projection implementations:
+
+```sh
+bun run eval:context-brief-citations:runtime
+```
+
+The gate covers exact evidence across a newer snapshot, clean/incremental parity, relocation, changed and authoritatively
+deleted files, ambiguous relocation, incomplete-graph abstention, cross-repository isolation, and legacy schema-v1 recall
+continuity. It requires zero false-fresh results, zero false deletion from incomplete coverage, no cross-repository
+authoritative leakage, a complete legacy recall result, and responses within the 1,500-token ceiling. Its measured p95
+limits are bounded runtime-smoke ratchets for this small CI fixture. They are not evidence for the separate 100k-symbol,
+50-member, or 128-member scale profiles; governed scale claims require repeated built-artifact benchmark samples on the
+pinned runner.
+
+### Memory-code citation scale gate
+
+`baselines/context-brief-citations-v1/scale-budgets.json` freezes the separate release envelope. The bundled benchmark
+target creates and indexes 100,000 real local memory documents, most of them schema-v1 compatibility records, before
+timing warm SQLite recall. It also creates real Git repositories and activates already-ready graph snapshots in real
+SQLite stores before timing. The measured path executes the production query/store session, citation grouping and
+validation, Context Brief assembly, and projection. Workset routing uses real published catalog generations; no cold
+repository indexing runs.
+
+The profiles are local/96 citations, workset-50/16 cited repositories/64 citations, and workset-128/32 cited
+repositories/96 citations. Every warmup and measured sample selects a different set of canonical schema-v4 memories,
+so validation receipts are not process-cache hits. The artifact records 25-sample p95 latency after five warmups, added
+RSS, selected memories, all validation receipts, distinct graph database paths, production graph-store sessions,
+snapshot leases, effective-evidence batches, status observations, maintenance requests, and cold graph builds. The
+session counter wraps calls that reach the real `CodeGraphStore.withSession` implementation against the prebuilt SQLite
+files; OS file-descriptor opens are not separately counted. The production query boundary owns that session across the
+initial status, lease, evidence read, final status fence, and release. Lease/evidence/status operations remain separate
+counters so session reuse cannot hide fan-out or skipped work.
+
+```sh
+# Scheduled/manual release-quality distribution; ordinary pull-request CI does not run this job.
+bun run bench:context-brief-citations -- \
+  --memory-candidates 100000 \
+  --samples 25 \
+  --warmups 5 \
+  --fail-on-budget \
+  --output artifacts/context-brief-citations-scale.json
+
+# Fast orchestration smoke. It records non-comparable evidence and does not pass the frozen scale gate.
+bun run bench:context-brief-citations -- \
+  --memory-candidates 200 \
+  --profiles local-100k,workset-50,workset-128 \
+  --samples 1 \
+  --warmups 0
+```
+
+The timing label is deliberately narrow: real prebuilt recall and graph SQLite plus the production Context Brief path.
+Git/graph fixture creation, ready-snapshot activation, recall-index construction, workset catalog publication, and cold
+graph indexing are setup evidence, not included in p95. Results must not be presented as cold-indexing performance.
+
 ## Native code graph contract
 
 `fixtures/code-graph-v1/` is the reviewed repository and query contract for native source navigation. It covers

@@ -4,7 +4,12 @@ import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {ResourceStore} from './effect/resource-store.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {parseMemoryDocument, type MemoryRecord} from './memory_hygiene.js';
-import {formatMemoryDocument, memoryHeaderValue, type MemoryMetadata} from './memory_document.js';
+import {
+  assertMemoryDocumentSchemaWritable,
+  formatMemoryDocument,
+  memoryHeaderValue,
+  type MemoryMetadata,
+} from './memory_document.js';
 import type {
   MigrateLifecycleOptions,
   MigrateMemoriesOptions,
@@ -555,6 +560,7 @@ const projectNameMigrationCandidates = Effect.fn('memory.projectNameMigrationCan
       if (!record || !canMigrateProjectName(record, context)) {
         continue;
       }
+      assertMemoryDocumentSchemaWritable(content);
       const metadata = {...record.metadata, project: context.newProject};
       const destinationDirectoryUri = memoryDirectoryUri(config, metadata);
       const destinationDirectory = yield* localMemoryPathForUri(config, destinationDirectoryUri);

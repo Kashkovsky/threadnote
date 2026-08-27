@@ -1,5 +1,6 @@
 import {uriSegment} from './manifest.js';
 import {
+  assertMemoryDocumentSchemaWritable,
   formatMemoryDocument,
   isSharedMemoryUri,
   parseMemoryDocument,
@@ -319,6 +320,7 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
 }
 
 export function memoryContentWithHygieneSources(record: MemoryRecord, sourceUris: readonly string[]): string {
+  assertMemoryDocumentSchemaWritable(record.content);
   const existingSourceUris = hygieneSourceUris(record.body);
   const body = stripHygieneSources(record.body);
   const uniqueSourceUris = [...new Set([...existingSourceUris, ...sourceUris])].sort();

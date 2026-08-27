@@ -16,12 +16,16 @@ import {
 } from '../telemetry/diagnostic.js';
 import {safeAnonymousTelemetryOperation} from '../telemetry/operations.js';
 
-const TELEMETRY_SCHEMA_VERSION = 4;
+const TELEMETRY_SCHEMA_VERSION = 5;
 const TELEMETRY_VERSION_MAX_BYTES = 96;
 const FIRST_CHECKPOINT_DELAY = '30 seconds';
 const CHECKPOINT_INTERVAL = '60 seconds';
 
 export const ANONYMOUS_TELEMETRY_PHASES = [
+  'context.brief.citation-validation',
+  'context.brief.graph',
+  'context.brief.memory',
+  'context.brief.projection',
   'graph.activating',
   'graph.embedding',
   'graph.materializing',
@@ -166,6 +170,32 @@ const ANONYMOUS_TELEMETRY_GRAPH_REQUEST_KINDS = [
 const ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES = ['local', 'workset'] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS = ['current', 'deferred', 'stale'] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS = ['active', 'borrowed', 'none', 'promoted'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES = ['local', 'workset'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES = [
+  'complete',
+  'none',
+  'partial',
+  'unavailable',
+] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS = [
+  'exact-only',
+  'mixed',
+  'none',
+  'relocated',
+  'stale',
+  'unknown',
+] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS = [
+  'ambiguous-relocation',
+  'budget-exhausted',
+  'invalid-citation',
+  'mixed',
+  'repository-unavailable',
+  'snapshot-not-current',
+  'snapshot-unavailable',
+  'store-failure',
+  'unsupported',
+] as const;
 
 type AnonymousTelemetryGraphBuildKind = (typeof ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS)[number];
 type AnonymousTelemetryAutoUpdateResult = (typeof ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS)[number];
@@ -177,6 +207,13 @@ export type AnonymousTelemetryGraphRequestKind = (typeof ANONYMOUS_TELEMETRY_GRA
 export type AnonymousTelemetryGraphRequestScope = (typeof ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES)[number];
 export type AnonymousTelemetryGraphSnapshotFreshness = (typeof ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS)[number];
 export type AnonymousTelemetryGraphSnapshotSelection = (typeof ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS)[number];
+export type AnonymousTelemetryContextBriefScope = (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES)[number];
+export type AnonymousTelemetryContextBriefCitationCoverage =
+  (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES)[number];
+export type AnonymousTelemetryContextBriefCitationResult =
+  (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS)[number];
+export type AnonymousTelemetryContextBriefCitationUnknownReason =
+  (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS)[number];
 export type AnonymousTelemetryQuantityBucket = '0' | `2^${number}`;
 
 export interface AnonymousTelemetryFields {
@@ -189,6 +226,19 @@ export interface AnonymousTelemetryFields {
   readonly changedFactBytesBucket?: AnonymousTelemetryQuantityBucket;
   readonly changedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly completed?: number;
+  readonly contextBriefCacheHitsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefCitationCoverage?: AnonymousTelemetryContextBriefCitationCoverage;
+  readonly contextBriefCitationResult?: AnonymousTelemetryContextBriefCitationResult;
+  readonly contextBriefCitationUnknownReason?: AnonymousTelemetryContextBriefCitationUnknownReason;
+  readonly contextBriefCitationsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefCitedMemoriesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefExactCitationsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefOutputTruncated?: boolean;
+  readonly contextBriefRelocatedCitationsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefRepositoriesValidatedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefScope?: AnonymousTelemetryContextBriefScope;
+  readonly contextBriefStaleCitationsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefUnknownCitationsBucket?: AnonymousTelemetryQuantityBucket;
   readonly deletedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly deltaFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly degradedFiles?: number;
@@ -486,7 +536,7 @@ function makeAnonymousTelemetryService(
                     system,
                     {
                       component: invocation.component,
-                      fields: recorder.fields,
+                      fields: completionTelemetryFields(recorder.fields, classification.outcome),
                       invocationId: recorder.invocationId,
                       operation: invocation.operation,
                     },
@@ -574,9 +624,10 @@ export function withAnonymousTelemetryCheckpoint<A, E, R>(
               const finishedAt = yield* Clock.currentTimeMillis;
               const elapsedMilliseconds = Math.max(0, finishedAt - startedAt);
               const classified = safePhaseOutcome(exit, options.successOutcome);
-              const successFields = Exit.isSuccess(exit)
-                ? Result.try(() => options.successFields?.(exit.value) ?? {})
-                : Result.succeed({});
+              const successFields =
+                Exit.isSuccess(exit) && classified.outcome === 'success'
+                  ? Result.try(() => options.successFields?.(exit.value) ?? {})
+                  : Result.succeed({});
               const fields = {
                 ...options.fields,
                 ...(Result.isSuccess(successFields) ? successFields.success : {}),
@@ -770,6 +821,33 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     attributes['threadnote.subphase'] = fields.subphase;
   }
   if (
+    fields.contextBriefScope !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES.includes(fields.contextBriefScope)
+  ) {
+    attributes['threadnote.context_brief.scope'] = fields.contextBriefScope;
+  }
+  if (
+    fields.contextBriefCitationCoverage !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES.includes(fields.contextBriefCitationCoverage)
+  ) {
+    attributes['threadnote.context_brief.citation_coverage'] = fields.contextBriefCitationCoverage;
+  }
+  if (
+    fields.contextBriefCitationResult !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS.includes(fields.contextBriefCitationResult)
+  ) {
+    attributes['threadnote.context_brief.citation_result'] = fields.contextBriefCitationResult;
+  }
+  if (
+    fields.contextBriefCitationUnknownReason !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS.includes(fields.contextBriefCitationUnknownReason)
+  ) {
+    attributes['threadnote.context_brief.citation_unknown_reason'] = fields.contextBriefCitationUnknownReason;
+  }
+  if (typeof fields.contextBriefOutputTruncated === 'boolean') {
+    attributes['threadnote.context_brief.output_truncated'] = fields.contextBriefOutputTruncated;
+  }
+  if (
     fields.phaseOutcome !== undefined &&
     ['failure', 'interrupted', 'success', 'timed-out', 'unavailable'].includes(fields.phaseOutcome)
   ) {
@@ -830,6 +908,10 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     const value = fields[key as GraphQuantityBucketField];
     if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
   }
+  for (const [key, attribute] of Object.entries(CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
+    const value = fields[key as ContextBriefQuantityBucketField];
+    if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
+  }
   for (const [key, value] of Object.entries(fields)) {
     if (
       key === 'phase' ||
@@ -853,10 +935,16 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
 
 type NumericTelemetryField = Exclude<
   keyof AnonymousTelemetryFields,
+  | ContextBriefQuantityBucketField
   | GraphQuantityBucketField
   | 'autoUpdateRepairRequired'
   | 'autoUpdateResult'
   | 'buildKind'
+  | 'contextBriefCitationCoverage'
+  | 'contextBriefCitationResult'
+  | 'contextBriefCitationUnknownReason'
+  | 'contextBriefOutputTruncated'
+  | 'contextBriefScope'
   | 'degradationReason'
   | 'efficiencyClass'
   | 'fallbackReason'
@@ -889,6 +977,27 @@ type GraphQuantityBucketField =
   | 'snapshotSymbolsBucket'
   | 'stagedFilesBucket'
   | 'totalFilesBucket';
+
+type ContextBriefQuantityBucketField =
+  | 'contextBriefCacheHitsBucket'
+  | 'contextBriefCitationsBucket'
+  | 'contextBriefCitedMemoriesBucket'
+  | 'contextBriefExactCitationsBucket'
+  | 'contextBriefRelocatedCitationsBucket'
+  | 'contextBriefRepositoriesValidatedBucket'
+  | 'contextBriefStaleCitationsBucket'
+  | 'contextBriefUnknownCitationsBucket';
+
+const CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<ContextBriefQuantityBucketField, string>> = {
+  contextBriefCacheHitsBucket: 'threadnote.context_brief.cache_hits_bucket',
+  contextBriefCitationsBucket: 'threadnote.context_brief.citations_bucket',
+  contextBriefCitedMemoriesBucket: 'threadnote.context_brief.cited_memories_bucket',
+  contextBriefExactCitationsBucket: 'threadnote.context_brief.exact_citations_bucket',
+  contextBriefRelocatedCitationsBucket: 'threadnote.context_brief.relocated_citations_bucket',
+  contextBriefRepositoriesValidatedBucket: 'threadnote.context_brief.repositories_validated_bucket',
+  contextBriefStaleCitationsBucket: 'threadnote.context_brief.stale_citations_bucket',
+  contextBriefUnknownCitationsBucket: 'threadnote.context_brief.unknown_citations_bucket',
+};
 
 const GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<GraphQuantityBucketField, string>> = {
   cachedFactReplayBytesBucket: 'threadnote.graph.cached_fact_replay_bytes_bucket',
@@ -977,6 +1086,21 @@ function mergeTelemetryFields(
       (key === 'autoUpdateRepairRequired' && typeof value === 'boolean') ||
       (key === 'autoUpdateResult' &&
         ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS.includes(value as AnonymousTelemetryAutoUpdateResult)) ||
+      (key === 'contextBriefOutputTruncated' && typeof value === 'boolean') ||
+      (key === 'contextBriefScope' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES.includes(value as AnonymousTelemetryContextBriefScope)) ||
+      (key === 'contextBriefCitationCoverage' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES.includes(
+          value as AnonymousTelemetryContextBriefCitationCoverage,
+        )) ||
+      (key === 'contextBriefCitationResult' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS.includes(
+          value as AnonymousTelemetryContextBriefCitationResult,
+        )) ||
+      (key === 'contextBriefCitationUnknownReason' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS.includes(
+          value as AnonymousTelemetryContextBriefCitationUnknownReason,
+        )) ||
       (key === 'phase' && ANONYMOUS_TELEMETRY_PHASES.includes(value as AnonymousTelemetryPhase)) ||
       (key === 'subphase' && ANONYMOUS_TELEMETRY_SUBPHASES.includes(value as AnonymousTelemetrySubphase)) ||
       (key === 'phaseOutcome' &&
@@ -993,12 +1117,37 @@ function mergeTelemetryFields(
         ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS.includes(value as AnonymousTelemetryGraphSnapshotFreshness)) ||
       (key === 'snapshotSelection' &&
         ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS.includes(value as AnonymousTelemetryGraphSnapshotSelection)) ||
-      (key in GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS && isQuantityBucket(value as string))
+      ((key in GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS || key in CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS) &&
+        isQuantityBucket(value as string))
     ) {
       merged[key] = value;
     }
   }
   return merged as AnonymousTelemetryFields;
+}
+
+/** Result-derived Context Brief classifications are terminal-success-only. */
+function completionTelemetryFields(
+  fields: AnonymousTelemetryFields,
+  outcome: 'failure' | 'interrupted' | 'success' | 'timed-out' | 'unavailable',
+): AnonymousTelemetryFields {
+  if (outcome === 'success') return fields;
+  const {
+    contextBriefCacheHitsBucket: _cacheHits,
+    contextBriefCitationCoverage: _coverage,
+    contextBriefCitationResult: _result,
+    contextBriefCitationUnknownReason: _unknownReason,
+    contextBriefCitationsBucket: _citations,
+    contextBriefCitedMemoriesBucket: _citedMemories,
+    contextBriefExactCitationsBucket: _exact,
+    contextBriefOutputTruncated: _truncated,
+    contextBriefRelocatedCitationsBucket: _relocated,
+    contextBriefRepositoriesValidatedBucket: _repositories,
+    contextBriefStaleCitationsBucket: _stale,
+    contextBriefUnknownCitationsBucket: _unknown,
+    ...safeFields
+  } = fields;
+  return safeFields;
 }
 
 function safeMemoryUsage(system: SystemInfoShape) {

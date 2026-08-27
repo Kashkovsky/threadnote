@@ -5,6 +5,10 @@ import {SystemInfo} from './effect/system.js';
 import {uriSegment} from './manifest.js';
 
 import {canonicalMemoryDocumentContent} from './memory_document.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
 import {stripGeneratedMemoryHygieneSources} from './memory_hygiene_provenance.js';
 
 import {ResourceStore} from './effect/resource-store.js';
@@ -1007,6 +1011,12 @@ const prepareSharedInboundContentEffect = Effect.fn('share.prepareSharedInboundC
 
 function prepareSharedInboundContent(uri: string, rawContent: string): string {
   const stripped = stripPersonalProvenance(canonicalMemoryDocumentContent(rawContent));
+  const citationBlocker = memoryCodeCitationContentSharingBlocker(uri, stripped);
+  if (citationBlocker) {
+    throw new ShareOperationError(
+      `Refusing to ingest ${uri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+    );
+  }
   const scrub = applyScrubber(stripped, {redact: false});
   if (scrub.blocker) {
     throw new ShareOperationError(

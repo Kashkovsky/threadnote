@@ -70,8 +70,11 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   file-count, fact-byte, and amplification buckets. MCP graph inspections can add only closed request/scope,
   snapshot-selection/freshness, phase/stage, and published file/symbol/edge-count buckets. Failed graph-build lifecycle
   observations add only bounded outcome/type and interrupted ones only outcome/duration; neither adds graph
-  classifications or buckets. Telemetry never includes prompts, payloads, query text or results, paths, repository or
-  commit identity, error messages, stacks, or a persistent installation ID.
+  classifications or buckets. Successful Context Briefs can add only closed local/workset scope, four phase timings,
+  citation coverage/result/unknown-reason classes, output truncation, and power-of-two citation/status/repository/cache
+  buckets; non-successful completions never add result-derived fields. Telemetry never includes prompts, payloads,
+  task/query/mode, paths, memory/citation/node/repository/workset/commit/snapshot/hash identity, exact private counts,
+  error messages, stacks, or a persistent installation ID.
 
 ## Quickstart
 

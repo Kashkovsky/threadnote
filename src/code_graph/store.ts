@@ -35,6 +35,23 @@ export {
   type CodeGraphProtobufMonikerV1,
   type CodeGraphSourceEvidenceV1,
 } from './cross_repository/types.js';
+export {
+  CODE_GRAPH_CITATION_QUERY_MAX_MATCHES_PER_TARGET,
+  CODE_GRAPH_CITATION_QUERY_MAX_TARGETS,
+  CODE_GRAPH_SOURCE_SPAN_CANONICALIZATION_V1,
+  codeGraphSourceSpanFragment,
+  createCodeGraphSourceSpanCanonicalizer,
+  type CodeGraphEffectiveFileHashMatches,
+  type CodeGraphEffectiveFilePathObservation,
+  type CodeGraphEffectiveSnapshotCitationEvidence,
+  type CodeGraphEffectiveSnapshotCitationEvidenceRequest,
+  type CodeGraphEffectiveSymbolLocatorMatches,
+  type CodeGraphSourceSpanFragmentFailureReason,
+  type CodeGraphSourceSpanCanonicalizerV1,
+  type CodeGraphSourceSpanFragmentResult,
+  type CodeGraphSourceSpanFragmentV1,
+  type CodeGraphSymbolSemanticLocatorV1,
+} from './citation_primitives.js';
 
 export * from './store_models.js';
 export type {
@@ -93,6 +110,11 @@ export {
   codeGraphEffectiveSymbolTermsQueryStatement,
   codeGraphTermCandidateQueryStatement,
 } from './store_queries.js';
+export {
+  codeGraphEffectiveFilesByContentHashesQueryStatement,
+  codeGraphEffectiveFilesByPathsQueryStatement,
+  codeGraphEffectiveSymbolsBySemanticLocatorsQueryStatement,
+} from './store_citation_queries.js';
 export {
   codeGraphRemovedViewCleanupAdmissionPageStatement,
   codeGraphRemovedViewCleanupDuePageStatement,

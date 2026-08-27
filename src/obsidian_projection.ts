@@ -4,6 +4,7 @@ import {sha256Hex} from './effect/digest.js';
 import {withExclusiveFileLock} from './effect/file_lock.js';
 import {ResourceStore} from './effect/resource-store.js';
 import {uriSegment} from './manifest.js';
+import {formatMemoryCodeCitation} from './memory_code_citation.js';
 import {
   canonicalMemoryDocumentContent,
   isSharedMemoryUri,
@@ -527,6 +528,7 @@ const renderProjectionMemory = Effect.fn('obsidian.renderProjectionMemory')(func
     threadnote_id: memoryId,
     threadnote_uri: record.uri,
     threadnote_generated: true,
+    ...(record.metadata.schemaVersion !== undefined ? {threadnote_memory_schema: record.metadata.schemaVersion} : {}),
     kind: record.metadata.kind,
     status: record.metadata.status,
     ...(record.metadata.project ? {project: record.metadata.project} : {}),
@@ -541,6 +543,17 @@ const renderProjectionMemory = Effect.fn('obsidian.renderProjectionMemory')(func
     ...(record.metadata.lastReviewed ? {last_reviewed: record.metadata.lastReviewed} : {}),
     source_agent_client: record.metadata.sourceAgentClient,
     source_hash: sourceHash,
+    ...(record.metadata.codeCitations && record.metadata.codeCitations.length > 0
+      ? {code_citations: record.metadata.codeCitations.map(formatMemoryCodeCitation)}
+      : {}),
+    ...(record.metadata.citationErrors && record.metadata.citationErrors.length > 0
+      ? {
+          code_citation_errors: record.metadata.citationErrors.map(error => ({
+            ...(error.index === undefined ? {} : {index: error.index}),
+            reason: error.reason,
+          })),
+        }
+      : {}),
     relations: relations.map(relation => `${relation.type} ${relation.uri}`),
     evidence: [...(record.metadata.evidence ?? [])],
   };

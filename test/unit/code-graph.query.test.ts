@@ -184,6 +184,7 @@ describe('code graph query budgets', () => {
           readyByWorktree: 0,
         });
         const storeReads = yield* Ref.make(emptyStoreReads());
+        const sessionCalls = yield* Ref.make(0);
         const recordStoreRead = (
           field: 'leasesAcquired' | 'leasesReleased' | 'provenance' | 'readyById' | 'readyByWorktree',
         ) => Ref.update(storeReads, current => ({...current, [field]: current[field] + 1}));
@@ -197,7 +198,8 @@ describe('code graph query budgets', () => {
             releaseSnapshotLease: () => recordStoreRead('leasesReleased'),
             snapshotPackProvenance: () => recordStoreRead('provenance').pipe(Effect.as([])),
             symbolsByIds: () => Effect.succeed([]),
-            withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) => effect,
+            withSession: (_databasePath: string, effect: Effect.Effect<unknown, unknown, unknown>) =>
+              Ref.update(sessionCalls, value => value + 1).pipe(Effect.andThen(effect)),
           } as unknown as CodeGraphStoreShape),
         );
         const dependencies = Layer.mergeAll(
@@ -241,6 +243,79 @@ describe('code graph query budgets', () => {
             symbolCount: 0,
             worktreeId: identity.worktreeId,
           } satisfies CodeGraphSnapshot;
+          yield* Ref.set(snapshotRef, snapshot);
+          const sessionResult = yield* query.withStatusSession!(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            undefined,
+            {observeWorktree: true, requestMaintenance: false},
+            before =>
+              Effect.gen(function* () {
+                const activeStore = yield* CodeGraphStore;
+                const token = yield* activeStore.acquireSnapshotLease(before.databasePath, snapshot.id, 60_000);
+                const after = yield* query.statusForIdentity(fixtureRoot.home, before.identity, {
+                  observeWorktree: true,
+                  requestMaintenance: false,
+                });
+                yield* activeStore.releaseSnapshotLease(before.databasePath, token);
+                return {after, before};
+              }),
+          );
+          expect(yield* Ref.get(sessionCalls)).toBe(1);
+          expect(sessionResult.before.readySnapshot?.id).toBe(snapshot.id);
+          expect(sessionResult.after.readySnapshot?.id).toBe(snapshot.id);
+          expect(sessionResult.after.freshness).toBe('current');
+
+          yield* Ref.set(commandCalls, []);
+          const publishedExpected = {
+            checkoutId: identity.checkoutId,
+            repositoryId: identity.repositoryId,
+            worktreeId: identity.worktreeId,
+          };
+          const cleanPublished = yield* query.statusForPublishedIdentity(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            publishedExpected,
+            {observeWorktree: true, requestMaintenance: false},
+          );
+          expect(cleanPublished.freshness).toBe('current');
+          expect(
+            (yield* Ref.get(commandCalls)).filter(call => call.executable === 'git' && call.args.includes('status')),
+          ).toHaveLength(1);
+
+          const racedPublished = yield* query.statusForPublishedIdentity(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            publishedExpected,
+            {
+              afterIdentityObserved: () =>
+                Effect.sync(() =>
+                  writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 2;\n'),
+                ),
+              observeWorktree: true,
+              requestMaintenance: false,
+            },
+          );
+          expect(racedPublished).toMatchObject({freshness: 'stale', stale: true});
+          yield* Effect.sync(() =>
+            writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 1;\n'),
+          );
+
+          yield* Effect.sync(() =>
+            writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 2;\n'),
+          );
+          const dirtyPublished = yield* query.statusForPublishedIdentity(
+            fixtureRoot.home,
+            fixtureRoot.repository,
+            publishedExpected,
+            {observeWorktree: true, requestMaintenance: false},
+          );
+          expect(dirtyPublished).toMatchObject({freshness: 'stale', stale: true});
+          yield* Effect.sync(() =>
+            writeFileSync(join(fixtureRoot.repository, 'source.ts'), 'export const value = 1;\n'),
+          );
+
+          yield* Ref.set(snapshotRef, undefined);
           const deferredColdStatus = yield* query.statusForIdentity(fixtureRoot.home, identity, {
             observeWorktree: false,
             requestMaintenance: false,

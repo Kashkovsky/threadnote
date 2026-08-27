@@ -88,10 +88,18 @@ describe('CI changed-path scope properties', () => {
     expect(enabledScopes(['test/unit/utils.test.ts'])).toEqual(['code']);
     expect(enabledScopes(['src/installations.ts'])).toEqual(['code', 'release', 'windows']);
     expect(enabledScopes(['src/recall/index.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
+    expect(enabledScopes(['src/context_brief/citation_validation.ts'])).toEqual([
+      'code',
+      'quality',
+      'release',
+      'windows',
+    ]);
+    expect(enabledScopes(['src/memory_code_citation_capture.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
     expect(enabledScopes(['.github/workflows/pages.yml'])).toEqual(['actions', 'site_check', 'site_build']);
     expect(enabledScopes(['README.md'])).toEqual(['site_check']);
     expect(enabledScopes(['test/ci/ci-scopes.ts'])).toEqual(ciScopeKeys);
     expect(enabledScopes(['scripts/benchmark-worktree-readiness.ts'])).toEqual(['code', 'quality']);
+    expect(enabledScopes(['scripts/evaluate-context-brief-citations-runtime.ts'])).toEqual(['code', 'quality']);
     expect(enabledScopes(['scripts/lint-file-length.ts'])).toEqual(['code', 'site_check']);
     expect(enabledScopes(['.oxlintrc.max-lines.json'])).toEqual(['code', 'site_check']);
     expect(enabledScopes(['scripts/release-targets.ts'])).toEqual(['code', 'release', 'windows']);

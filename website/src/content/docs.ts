@@ -1,4 +1,10 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
+import {
+  handoffMemoryCitationCliExamples,
+  rememberContextMemoryCitationInputs,
+  rememberMemoryCitationCliExamples,
+  reviewSessionMemoryCitationInputs,
+} from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
 import type {CliCommandReference, DocsSection, McpToolReference} from './docsTypes.js';
@@ -46,17 +52,12 @@ export const cliCommands: CliCommandReference[] = [
   {
     command: 'remember',
     summary: 'Store a lifecycle-aware memory with a stable project and topic identity.',
-    examples: [
-      'threadnote remember --kind durable --project mobile --topic auth-contract --text "..."',
-      'threadnote remember --kind durable --project mobile --topic auth-contract --replace <threadnote-uri> --text "..."',
-    ],
+    examples: rememberMemoryCitationCliExamples,
   },
   {
     command: 'handoff',
     summary: 'Capture current status, checks, blockers, references, and next step for another session or agent.',
-    examples: [
-      'threadnote handoff --project mobile --topic auth-rollout --task "Ship refresh tokens" --tests "bun test" --next-step "Open PR"',
-    ],
+    examples: handoffMemoryCitationCliExamples,
   },
   {
     command: 'share',
@@ -238,7 +239,7 @@ export const mcpTools: McpToolReference[] = [
     name: 'remember_context',
     toolset: 'core',
     summary: 'Store or replace normal durable knowledge, handoffs, incidents, or preferences.',
-    keyInputs: ['text', 'kind', 'project', 'topic', 'callerCwd', 'replaceUri', 'references', 'sourceAgentClient'],
+    keyInputs: rememberContextMemoryCitationInputs,
   },
   {
     name: 'inspect_code_graph',
@@ -280,16 +281,7 @@ export const mcpTools: McpToolReference[] = [
     name: 'review_session_context',
     toolset: 'core',
     summary: 'Create up to three additional review candidates; this never silently creates active memory.',
-    keyInputs: [
-      'task',
-      'outcome',
-      'project or callerCwd',
-      'decisions',
-      'invariants',
-      'preferences',
-      'handoff',
-      'evidence',
-    ],
+    keyInputs: reviewSessionMemoryCitationInputs,
   },
   {
     name: 'apply_memory_candidates',
@@ -782,7 +774,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. One-way references can link prior context without copying its full body into the new record.',
+            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. One-way references can link prior context without copying its full body into the new record. For cited memory, provide codeRefs or --code-ref again to recapture evidence for the edited prose; omitting them deliberately clears the old citations and reports how many were removed.',
           },
         ],
       },
@@ -871,7 +863,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. Use both when a task needs historical rationale and current source evidence.',
+            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. Use recall and the graph together when a task needs historical rationale and current source evidence.',
           },
         ],
       },
@@ -981,6 +973,7 @@ threadnote share publish threadnote://user/me/memories/durable/projects/app/cach
               'Only active durable memories are publishable.',
               'Credential and customer-like secret matches block publishing.',
               'Supported machine-local path leaks may be replaced with placeholders only when --redact is selected; preview again after redaction.',
+              'Code citations must come from clean committed source and a portable remote repository identity; dirty, local-only, or malformed citation metadata blocks publishing.',
               'Handoffs and preferences always stay personal.',
             ],
           },

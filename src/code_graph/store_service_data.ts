@@ -83,6 +83,12 @@ import {
   removePersistentMaterializationSpool,
 } from './store_materialization_spool_lifecycle.js';
 import {codeGraphMaterializationSpoolPath} from './materialization_spool.js';
+import {
+  selectEffectiveSnapshotCitationEvidence,
+  selectEffectiveSnapshotFilesByContentHashes,
+  selectEffectiveSnapshotFilesByPaths,
+  selectEffectiveSnapshotSymbolsBySemanticLocators,
+} from './store_citation_queries.js';
 
 type CodeGraphStoreDataMethods = Pick<
   CodeGraphStoreShape,
@@ -133,6 +139,10 @@ type CodeGraphStoreDataMethods = Pick<
   | 'reusableCleanBaseForCommit'
   | 'reusableCleanBaseForCommitPaths'
   | 'existingSnapshotFilePaths'
+  | 'effectiveSnapshotFilesByPaths'
+  | 'effectiveSnapshotFilesByContentHashes'
+  | 'effectiveSnapshotSymbolsBySemanticLocators'
+  | 'effectiveSnapshotCitationEvidence'
   | 'snapshotProjectClosureFiles'
   | 'reusableOverlayBase'
   | 'reusableReexports'
@@ -735,6 +745,36 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('probe existing code graph snapshot file paths', cause)),
+      ),
+    effectiveSnapshotFilesByPaths: (databasePath, snapshotId, paths) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectEffectiveSnapshotFilesByPaths(snapshotId, paths))),
+        Effect.mapError(cause => storeError('load effective code graph files by path', cause)),
+      ),
+    effectiveSnapshotFilesByContentHashes: (databasePath, snapshotId, contentHashes, limitPerHash) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(
+            databasePath,
+            selectEffectiveSnapshotFilesByContentHashes(snapshotId, contentHashes, limitPerHash),
+          ),
+        ),
+        Effect.mapError(cause => storeError('load effective code graph files by content hash', cause)),
+      ),
+    effectiveSnapshotSymbolsBySemanticLocators: (databasePath, snapshotId, locators, limitPerLocator) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useReadOnlyDatabase(
+            databasePath,
+            selectEffectiveSnapshotSymbolsBySemanticLocators(snapshotId, locators, limitPerLocator),
+          ),
+        ),
+        Effect.mapError(cause => storeError('load effective code graph symbols by semantic locator', cause)),
+      ),
+    effectiveSnapshotCitationEvidence: (databasePath, snapshotId, request) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(useReadOnlyDatabase(databasePath, selectEffectiveSnapshotCitationEvidence(snapshotId, request))),
+        Effect.mapError(cause => storeError('load effective code graph citation evidence', cause)),
       ),
     snapshotProjectClosureFiles: (databasePath, snapshotId, prefixes) =>
       fs.exists(databasePath).pipe(

@@ -171,8 +171,12 @@ describe('code graph indexer properties', () => {
       fc.property(fc.string(), fc.string(), fc.string(), fc.string(), (base, extractor, overlay, worktree) => {
         const identity = {headCommit: 'head', repositoryId: 'repository', worktreeId: worktree};
         const snapshot = sparseOverlaySnapshotIdentity(identity, base, extractor, overlay);
+        const legacySnapshot = `cgsn_${sha256HexSync(
+          `snapshot-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\n${identity.worktreeId}\n${identity.headCommit}\n${base}\n${extractor}\n${overlay}`,
+        ).slice(0, 40)}`;
 
         expect(sparseOverlaySnapshotIdentity(identity, base, extractor, overlay)).toBe(snapshot);
+        expect(snapshot).not.toBe(legacySnapshot);
         expect(sparseOverlaySnapshotIdentity(identity, `${base}\0changed`, extractor, overlay)).not.toBe(snapshot);
         expect(sparseOverlaySnapshotIdentity(identity, base, `${extractor}\0changed`, overlay)).not.toBe(snapshot);
         expect(sparseOverlaySnapshotIdentity(identity, base, extractor, `${overlay}\0changed`)).not.toBe(snapshot);
@@ -188,7 +192,11 @@ describe('code graph indexer properties', () => {
     fc.assert(
       fc.property(fc.string(), fc.string(), fc.string(), (base, extractor, overlay) => {
         const content = sparseOverlayGraphContentIdentity(base, extractor, overlay);
+        const legacyContent = `cgc_${sha256HexSync(
+          `graph-content-sparse-overlay-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${base}\n${extractor}\n${overlay}`,
+        ).slice(0, 40)}`;
         expect(sparseOverlayGraphContentIdentity(base, extractor, overlay)).toBe(content);
+        expect(content).not.toBe(legacyContent);
         expect(content).toMatch(/^cgc_[0-9a-f]{40}$/u);
         expect(sparseOverlayGraphContentIdentity(`${base}\0changed`, extractor, overlay)).not.toBe(content);
         expect(sparseOverlayGraphContentIdentity(base, `${extractor}\0changed`, overlay)).not.toBe(content);

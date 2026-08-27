@@ -21,11 +21,12 @@ threadnote telemetry disable --apply
 unsupported telemetry configuration always fails closed. Install, update, repair, doctor, help, and telemetry consent
 commands never enable telemetry implicitly.
 
-Consent is versioned independently from the configuration-file shape. Schema v4's graph-query performance surface
-requires consent version 4. A version 1, version 2, or version 3 opt-in fails closed under a v4 producer: telemetry
-remains off until the user reviews the current preview and explicitly runs `threadnote telemetry enable --apply` again.
+Consent is versioned independently from the configuration-file shape. Schema v5's Context Brief citation-quality
+surface requires consent version 5. A version 1, version 2, version 3, or version 4 opt-in fails closed under a v5
+producer: telemetry remains off until the user reviews the current preview and explicitly runs
+`threadnote telemetry enable --apply` again.
 Threadnote never migrates an earlier opt-in silently, even though the gateway continues to admit the frozen v1, v2,
-and v3 wire contracts for older supported producers.
+v3, and v4 wire contracts for older supported producers.
 
 Applied disable is observed by active exporters at their next event or transport gate. Queued requests that have not
 started are dropped. A network request that already started cannot be recalled, but no later request is sent. Enabling
@@ -68,6 +69,15 @@ The current versioned allowlist is limited to:
   subphase; the only exceptional query-stage subphases are `skipped` and `fallback`. Stage checkpoints never acquire or
   retain snapshot buckets on the terminal completion. Workset requests do not export a member repository's snapshot
   surface, and non-successful completions do not export snapshot buckets;
+- Context Brief timing and citation-quality diagnostics on successful results: closed `local` or `workset` scope;
+  `context.brief.graph`, `context.brief.memory`, `context.brief.citation-validation`, and
+  `context.brief.projection` phase durations; `none`, `complete`, `partial`, or `unavailable` validation coverage;
+  `none`, `exact-only`, `relocated`, `stale`, `unknown`, or `mixed` aggregate result; one closed unknown-reason class
+  when unknown evidence is present; a boolean output-truncated state; and power-of-two buckets for cited memories,
+  total citations, exact/relocated/stale/unknown citations, repositories validated, and cache hits. A failed,
+  interrupted, timed-out, or unavailable completion retains only its closed outcome/type and never the
+  result-derived citation surface. Live telemetry diagnoses coverage, latency, warnings, and abstention; it cannot
+  prove citation correctness or absence of stale memory;
 - a random agent-session identifier and correlation scope, plus a random per-invocation identifier that joins that
   operation's completion, phase, and liveness spans;
 - a bounded safe failure type for every failed operation, plus structured fields when a subsystem exposes a closed
@@ -76,10 +86,12 @@ The current versioned allowlist is limited to:
   trace envelope and are not Threadnote, MCP, installation, or provider request identifiers.
 
 It never contains command arguments, environment values, user/account/agent identifiers, process IDs, host names,
-paths, working directories, repository names or identities, commit hashes, branches/remotes, memory or transcript
-content, recall/code query text or results, symbol names, exact file/symbol/edge counts, MCP payloads, request IDs,
-progress tokens, logs, SQL, exception messages, or stack traces. The exporter is best-effort: network, configuration,
-batching, and shutdown failures cannot change a command or MCP result or cause application work to run twice.
+paths, working directories, repository or workset names or identities, commit/snapshot/content hashes,
+branches/remotes, memory identity or content, citation or node identity, task/mode, transcript content,
+recall/code query text or results, symbol names, exact file/symbol/edge counts, exact citation/repository/cache counts,
+MCP payloads, request IDs, progress tokens, logs, SQL, exception messages, or stack traces. The exporter is best-effort:
+network, configuration, batching, and shutdown failures cannot change a command or MCP result or cause application work
+to run twice.
 
 Threadnote deliberately has no persistent installation identifier. An MCP session identifier is random for one broker
 lifetime and survives promotion to a newer MCP child. A standalone CLI invocation has a fresh identifier. When an
@@ -132,19 +144,20 @@ Tempo-compatible trace storage
 ```
 
 The gateway, rather than the open-source binary, owns vendor credentials. It rejects logs and metrics, admits the
-immutable v1, v2, v3, and v4 trace contracts, validates the complete versioned resource/span envelope before forwarding,
+immutable v1, v2, v3, v4, and v5 trace contracts, validates the complete versioned resource/span envelope before forwarding,
 caps bodies and rates, rejects unknown fields, avoids forwarding client IP headers, and emits no application access
-logs. V1 and v2 are frozen, v3 adds only the closed automatic-update result and repair-required flag, and v4 adds only
-the closed, bucketed graph-query surface described above.
+logs. V1 and v2 are frozen, v3 adds only the closed automatic-update result and repair-required flag, v4 adds only
+the closed, bucketed graph-query surface, and v5 adds only the closed Context Brief surface described above.
 Accepted traces are stored in Grafana Cloud EU with
 the 14-day retention of its Always Free plan. The gateway's fixed accepted-byte budget keeps the required two-Machine
 deployment below 3 GB of canonical input per month, leaving headroom within the plan's 50 GB allowance for bounded
 retries. The static Threadnote GitHub Pages site cannot receive OTLP and public GitHub issues are not an appropriate
 telemetry sink.
 
-The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, all four
-immutable schemas, forwarding, and Grafana query visibility independently of the application release. Schema v4 is
-rolled out gateway and canary first, then the v4-capable dashboard, and only then the consent-v4 producer.
+The first-party gateway is separate deployment infrastructure. Its public storage canary verifies TLS, all five
+immutable schemas, every new Context Brief phase, forwarding, and Grafana query visibility independently of the
+application release. Schema v5 is rolled out gateway and canary first, then the v5-capable dashboard, and only then
+the consent-v5 producer.
 
 ## Local Jaeger dogfooding
 

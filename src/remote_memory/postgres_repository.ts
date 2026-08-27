@@ -1,6 +1,12 @@
 import type {JSONValue, Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../memory_document.js';
+import {MEMORY_SCHEMA_VERSION} from '../memory_code_citation.js';
+import {
+  assertMemoryDocumentSchemaWritable,
+  formatMemoryDocument,
+  parseMemoryDocument,
+  type MemoryMetadata,
+} from '../memory_document.js';
 import {formatRemoteMemoryUri, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {inspectRemoteMemoryContent} from '../memory_domain/content.js';
 import type {RemoteReadInputV1, RemoteRecallInputV1, RemoteRememberInputV1} from '../memory_domain/contracts.js';
@@ -1022,12 +1028,13 @@ function makeRemoteDocument(
 ): {readonly content: string; readonly contentHash: string} {
   const timestamp = now.toISOString();
   const prior = current ? parseMemoryDocument(uri, current.markdown_body) : undefined;
+  if (current) assertMemoryDocumentSchemaWritable(current.markdown_body);
   const metadata: MemoryMetadata = {
     createdAt: prior?.metadata.createdAt ?? prior?.metadata.timestamp ?? timestamp,
     kind: input.kind,
     memoryId: prior?.metadata.memoryId ?? `tn_${crypto.randomUUID().replaceAll('-', '')}`,
     project: input.project,
-    schemaVersion: 3,
+    schemaVersion: MEMORY_SCHEMA_VERSION,
     sourceAgentClient: attestation ? 'cursor' : 'remote',
     status: 'active',
     timestamp,

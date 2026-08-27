@@ -9,6 +9,15 @@ import {
   parseMemoryDocument,
   type MemoryMetadata,
 } from '../../src/memory_document.js';
+import {
+  assertMemorySchemaWritable,
+  createMemoryCodeCitation,
+  formatMemoryCodeCitation,
+  MAX_MEMORY_CODE_CITATIONS,
+  MEMORY_SCHEMA_VERSION,
+  UnsupportedMemorySchemaVersionError,
+  type MemoryCodeCitationInputV1,
+} from '../../src/memory_code_citation.js';
 
 describe('memory document contract', () => {
   it('preserves the legacy document format when versioned metadata is absent', () => {
@@ -39,6 +48,43 @@ describe('memory document contract', () => {
       ].join('\n'),
     );
     expect(parseMemoryDocument('threadnote://user/me/memory.md', document)?.metadata).toEqual(metadata);
+  });
+
+  it('parses LF, CRLF, and CR legacy bodies equivalently without normalizing canonical content bytes', () => {
+    const lf = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      'project: threadnote',
+      'topic: newline-compatibility',
+      'schema_version: 1',
+      '',
+      'Legacy body remains nonempty.',
+      'Second line remains available to recall.',
+    ].join('\n');
+    const variants = [lf, lf.replaceAll('\n', '\r\n'), lf.replaceAll('\n', '\r')];
+
+    for (const content of variants) {
+      const parsed = parseMemoryDocument('threadnote://user/me/newline-compatibility.md', content);
+      expect(parsed?.body).toBe('Legacy body remains nonempty.\nSecond line remains available to recall.');
+      expect(parsed?.metadata).toMatchObject({
+        kind: 'durable',
+        project: 'threadnote',
+        schemaVersion: 1,
+        status: 'active',
+        topic: 'newline-compatibility',
+      });
+      expect(parsed?.content).toBe(content);
+      expect(inferMemoryMetadata(content)).toMatchObject({
+        kind: 'durable',
+        project: 'threadnote',
+        schemaVersion: 1,
+        status: 'active',
+        topic: 'newline-compatibility',
+      });
+    }
+    expect(canonicalMemoryDocumentContent(variants[1]!)).not.toBe(canonicalMemoryDocumentContent(lf));
+    expect(canonicalMemoryDocumentContent(variants[2]!)).not.toBe(canonicalMemoryDocumentContent(lf));
   });
 
   it('round-trips authority, validity, provenance, evidence, and typed relations', () => {
@@ -78,6 +124,308 @@ describe('memory document contract', () => {
 
     expect(parsed?.metadata).toEqual(metadata);
     expect(parsed?.body).toBe('Effect workflows compose upward.');
+  });
+
+  it('round-trips canonical schema-v4 file and symbol citations without persisting validation state', () => {
+    const file = createMemoryCodeCitation(citationInput('src/memory.ts'));
+    const symbol = createMemoryCodeCitation({
+      ...citationInput('src/context_brief/memory_evidence.ts'),
+      target: {
+        fragmentCanonicalization: 'utf8-source-span-v1',
+        fragmentHash: hash('b'),
+        kind: 'symbol',
+        language: 'typescript',
+        name: 'validateContextBriefPreciseCodeEvidence',
+        nodeId: `cgs_${'c'.repeat(40)}`,
+        qualifiedName: 'validateContextBriefPreciseCodeEvidence',
+        signatureHash: hash('d'),
+        span: {column: 1, endColumn: 2, endLine: 63, line: 43},
+        symbolKind: 'function',
+      },
+    });
+    const metadata: MemoryMetadata = {
+      codeCitations: [file, symbol],
+      kind: 'durable',
+      project: 'threadnote',
+      schemaVersion: MEMORY_SCHEMA_VERSION,
+      sourceAgentClient: 'codex',
+      status: 'active',
+      timestamp: '2026-08-26T20:00:00.000Z',
+      topic: 'citation-contract',
+    };
+
+    const document = formatMemoryDocument('MEMORY', metadata, 'Precise evidence supersedes commit-only freshness.');
+    const parsed = parseMemoryDocument('threadnote://user/me/memory.md', document);
+    const fileWire = JSON.parse(formatMemoryCodeCitation(file)) as Record<string, unknown>;
+
+    expect(file.id).toBe('tncc_c442bcab5e3fa96c9a1ea24d3223d2dfc07f4aa7');
+    expect(Object.keys(fileWire)).toEqual([
+      'version',
+      'id',
+      'repositoryId',
+      'repositoryIdentityKind',
+      'sourceCommit',
+      'sourceSnapshotId',
+      'sourceDirty',
+      'sourceGraphContentId',
+      'extractorSet',
+      'path',
+      'fileContentHash',
+      'target',
+    ]);
+    expect(document).toContain(`\ncode_citation: ${formatMemoryCodeCitation(file)}\n`);
+    expect(document).toContain(`\ncode_citation: ${formatMemoryCodeCitation(symbol)}\n`);
+    expect(formatMemoryCodeCitation(symbol)).toMatch(
+      /^\{"version":1,"id":"tncc_[0-9a-f]{40}","repositoryId":.*,"target":\{"kind":"symbol","nodeId":.*,"fragmentCanonicalization":"utf8-source-span-v1"\}\}$/,
+    );
+    expect(parsed?.metadata.citationErrors).toBeUndefined();
+    expect(parsed?.metadata.codeCitations).toEqual([file, symbol]);
+    expect(Object.isFrozen(parsed?.metadata.codeCitations?.[1]?.target)).toBe(true);
+    expect(parsed && formatMemoryDocument(parsed.headerTitle, parsed.metadata, parsed.body)).toBe(document);
+    expect(inferMemoryMetadata(document).codeCitations).toEqual([file, symbol]);
+  });
+
+  it('preserves closed errors for malformed, unsupported, and non-canonical schema-v4 citation lines', () => {
+    const valid = formatMemoryCodeCitation(createMemoryCodeCitation(citationInput('src/valid.ts')));
+    const {version: citationVersion, ...citationRest} = JSON.parse(valid) as Record<string, unknown>;
+    const reordered = JSON.stringify({...citationRest, version: citationVersion});
+    const document = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+      'source_agent_client: codex',
+      'timestamp: 2026-08-26T20:00:00.000Z',
+      'code_citation: {not-json}',
+      'code_citation: {"version":2}',
+      `code_citation: ${reordered}`,
+      `code_citation:  ${valid}`,
+      `  code_citation: ${valid}`,
+      '',
+      'Body remains readable.',
+    ].join('\n');
+
+    const parsed = parseMemoryDocument('threadnote://user/me/malformed.md', document);
+
+    expect(parsed?.body).toBe('Body remains readable.');
+    expect(parsed?.metadata.codeCitations).toBeUndefined();
+    expect(parsed?.metadata.citationErrors).toEqual([
+      {index: 0, reason: 'invalid-json'},
+      {index: 1, reason: 'unsupported-version'},
+      {index: 2, reason: 'non-canonical'},
+      {index: 3, reason: 'non-canonical'},
+      {index: 4, reason: 'non-canonical'},
+    ]);
+    expect(inferMemoryMetadata(document).citationErrors).toEqual(parsed?.metadata.citationErrors);
+    expect(() => parsed && formatMemoryDocument(parsed.headerTitle, parsed.metadata, parsed.body)).toThrow(
+      'unresolved code-citation errors',
+    );
+  });
+
+  it('keeps imported records readable while bounding citation count, entry bytes, and aggregate bytes', () => {
+    const largeCitations = Array.from({length: MAX_MEMORY_CODE_CITATIONS + 1}, (_, index) =>
+      createMemoryCodeCitation({
+        ...citationInput(`src/${'p'.repeat(3_400)}-${index}.ts`),
+        extractorSet: 'e'.repeat(3_400),
+      }),
+    );
+    const document = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+      'source_agent_client: codex',
+      'timestamp: 2026-08-26T20:00:00.000Z',
+      ...largeCitations.map(citation => `code_citation: ${formatMemoryCodeCitation(citation)}`),
+      '',
+      'Imported body remains readable.',
+    ].join('\n');
+
+    const parsed = parseMemoryDocument('threadnote://user/me/oversized.md', document);
+
+    expect(parsed?.body).toBe('Imported body remains readable.');
+    expect(parsed?.metadata.codeCitations).toHaveLength(MAX_MEMORY_CODE_CITATIONS);
+    expect(parsed?.metadata.citationErrors).toEqual([
+      {index: MAX_MEMORY_CODE_CITATIONS, reason: 'too-many-citations'},
+      {reason: 'aggregate-too-large'},
+    ]);
+
+    const oversizedEntry = document.replace(/^code_citation: .*$/m, `code_citation: ${'x'.repeat(8 * 1_024)}`);
+    expect(
+      parseMemoryDocument('threadnote://user/me/entry.md', oversizedEntry)?.metadata.citationErrors,
+    ).toContainEqual({
+      index: 0,
+      reason: 'entry-too-large',
+    });
+  });
+
+  it('requires an exact schema-v4 header before treating a valid citation as authoritative', () => {
+    const citation = createMemoryCodeCitation(citationInput('src/schema.ts'));
+    const document = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      'schema_version: 4suffix',
+      'source_agent_client: codex',
+      'timestamp: 2026-08-26T20:00:00.000Z',
+      `code_citation: ${formatMemoryCodeCitation(citation)}`,
+      '',
+      'Body',
+    ].join('\n');
+
+    const parsed = parseMemoryDocument('threadnote://user/me/schema.md', document);
+
+    expect(parsed?.metadata.schemaVersion).toBeUndefined();
+    expect(parsed?.metadata.codeCitations).toEqual([citation]);
+    expect(parsed?.metadata.citationErrors).toEqual([{reason: 'schema-version-mismatch'}]);
+
+    const spaced = parseMemoryDocument(
+      'threadnote://user/me/schema-spaced.md',
+      document.replace('schema_version: 4suffix', `schema_version:  ${MEMORY_SCHEMA_VERSION}`),
+    );
+    expect(spaced?.metadata.schemaVersion).toBe(MEMORY_SCHEMA_VERSION);
+    expect(spaced?.metadata.citationErrors).toEqual([{reason: 'schema-version-mismatch'}]);
+  });
+
+  it('fails closed on citation injection, duplicate/count bounds, and future-schema rewrites', () => {
+    expect(() =>
+      createMemoryCodeCitation({...citationInput('src/safe.ts'), path: 'src/safe.ts\nstatus: archived'}),
+    ).toThrow('invalid shape');
+    const citation = createMemoryCodeCitation(citationInput('src/safe.ts'));
+    expect(() =>
+      formatMemoryDocument(
+        'MEMORY',
+        {
+          codeCitations: [citation, citation],
+          kind: 'durable',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'codex',
+          status: 'active',
+          timestamp: '2026-08-26T20:00:00.000Z',
+        },
+        'Body',
+      ),
+    ).toThrow('unique derived identities');
+    const tooMany = Array.from({length: MAX_MEMORY_CODE_CITATIONS + 1}, (_, index) =>
+      createMemoryCodeCitation(citationInput(`src/file-${index}.ts`)),
+    );
+    expect(() =>
+      formatMemoryDocument(
+        'MEMORY',
+        {
+          codeCitations: tooMany,
+          kind: 'durable',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'codex',
+          status: 'active',
+          timestamp: '2026-08-26T20:00:00.000Z',
+        },
+        'Body',
+      ),
+    ).toThrow(`at most ${MAX_MEMORY_CODE_CITATIONS}`);
+    expect(() =>
+      createMemoryCodeCitation({
+        ...citationInput('src/large.ts'),
+        extractorSet: 'x'.repeat(4_096),
+        path: `src/${'p'.repeat(4_000)}`,
+      }),
+    ).toThrow('per-entry byte limit');
+    expect(() => assertMemorySchemaWritable(MEMORY_SCHEMA_VERSION + 1)).toThrow(UnsupportedMemorySchemaVersionError);
+    expect(() =>
+      formatMemoryDocument(
+        'MEMORY',
+        {
+          kind: 'durable',
+          schemaVersion: MEMORY_SCHEMA_VERSION + 1,
+          sourceAgentClient: 'codex',
+          status: 'active',
+          timestamp: '2026-08-26T20:00:00.000Z',
+        },
+        'Future body',
+      ),
+    ).toThrow('newer than supported');
+    expect(() =>
+      formatMemoryDocumentWithKeywords(
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          '',
+          'Future body',
+        ].join('\n'),
+        ['must-not-rewrite'],
+      ),
+    ).toThrow('newer than supported');
+    const legacyCrLf = ['MEMORY', 'kind: durable', 'status: active', 'schema_version: 1', '', 'Legacy CRLF body'].join(
+      '\r\n',
+    );
+    expect(formatMemoryDocumentWithKeywords(legacyCrLf, ['safe-rewrite'])).toBe(
+      [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'schema_version: 1',
+        'keywords: safe-rewrite',
+        '',
+        'Legacy CRLF body',
+      ].join('\n'),
+    );
+    for (const newline of ['\r\n', '\r']) {
+      expect(() =>
+        formatMemoryDocumentWithKeywords(
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+            '',
+            'Future line-ending body',
+          ].join(newline),
+          ['must-not-rewrite'],
+        ),
+      ).toThrow('newer than supported');
+    }
+    expect(() =>
+      formatMemoryDocumentWithKeywords(
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          `  schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          '',
+          'Indented future body',
+        ].join('\n'),
+        ['must-not-rewrite'],
+      ),
+    ).toThrow('newer than supported');
+    expect(() =>
+      formatMemoryDocumentWithKeywords(
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          `schema_version: ${'9'.repeat(80)}`,
+          '',
+          'Unsafe-version body',
+        ].join('\n'),
+        ['must-not-rewrite'],
+      ),
+    ).toThrow('canonical positive safe integer');
+    expect(() =>
+      formatMemoryDocumentWithKeywords(
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+          `schema_version: ${MEMORY_SCHEMA_VERSION + 1}`,
+          '',
+          'Duplicate-version body',
+        ].join('\n'),
+        ['must-not-rewrite'],
+      ),
+    ).toThrow('must appear exactly once');
   });
 
   it('keeps enriched documents readable through the legacy header contract', () => {
@@ -253,3 +601,23 @@ describe('memory document contract', () => {
     });
   });
 });
+
+function citationInput(path: string): MemoryCodeCitationInputV1 {
+  return {
+    extractorSet: 'native-code-graph-13',
+    fileContentHash: hash('a'),
+    path,
+    repositoryId: '1'.repeat(64),
+    repositoryIdentityKind: 'remote',
+    sourceCommit: '2'.repeat(40),
+    sourceDirty: false,
+    sourceGraphContentId: `cgc_${'3'.repeat(40)}`,
+    sourceSnapshotId: `cgsn_${'4'.repeat(40)}`,
+    target: {kind: 'file'},
+    version: 1,
+  };
+}
+
+function hash(character: string): {readonly algorithm: 'sha256'; readonly value: string} {
+  return {algorithm: 'sha256', value: character.repeat(64)};
+}

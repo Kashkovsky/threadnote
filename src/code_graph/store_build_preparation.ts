@@ -34,6 +34,7 @@ import {
   type PreparedPersistedFullFactBatch,
   type PreparedPersistedFullWorkspace,
   preparePersistedFullResolutionViews,
+  retainKnownRawContentAliases,
   registerPersistentMaterializationPlan,
   type SnapshotPromotionCapacityPlan,
   stageActivationEdges,
@@ -147,19 +148,21 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
     sortedBy(files, file => file.path),
     ACTIVATION_FILE_BATCH_ROWS,
   )) {
-    const inventoryCapacity = persistentFullInventoryCapacityBoundary(snapshotId, batch);
+    const retainedBatch = yield* retainKnownRawContentAliases(sql, batch);
+    const inventoryCapacity = persistentFullInventoryCapacityBoundary(snapshotId, retainedBatch);
     const inventoryTransaction = runWrite(
       sql.withTransaction(
         Effect.gen(function* () {
           yield* assertPersistentBuildOwner(sql, snapshotId, ownerToken);
           yield* sql.unsafe(
             `INSERT OR IGNORE INTO snapshot_files (
-             snapshot_id, path, content_hash, language, mode, size, source
-           ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-            batch.flatMap(file => [
+             snapshot_id, path, content_hash, raw_content_hash, language, mode, size, source
+           ) VALUES ${retainedBatch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+            retainedBatch.flatMap(file => [
               snapshotId,
               file.path,
               file.contentHash,
+              file.rawContentHash ?? null,
               file.language,
               file.mode,
               file.size,
@@ -171,20 +174,22 @@ const preparePersistedFullActivation = Effect.fn('codeGraph.preparePersistedFull
             readonly language: string;
             readonly mode: string;
             readonly path: string;
+            readonly raw_content_hash: string | null;
             readonly size: number;
             readonly source: CodeGraphInventoryFile['source'];
           }>(
-            `SELECT path, content_hash, language, mode, size, source
+            `SELECT path, content_hash, raw_content_hash, language, mode, size, source
            FROM snapshot_files
-           WHERE snapshot_id = ? AND path IN (${batch.map(() => '?').join(', ')})`,
-            [snapshotId, ...batch.map(file => file.path)],
+           WHERE snapshot_id = ? AND path IN (${retainedBatch.map(() => '?').join(', ')})`,
+            [snapshotId, ...retainedBatch.map(file => file.path)],
           );
           const stored = new Map(rows.map(row => [row.path, row]));
-          const mismatch = batch.find(file => {
+          const mismatch = retainedBatch.find(file => {
             const row = stored.get(file.path);
             return (
               row === undefined ||
               row.content_hash !== file.contentHash ||
+              row.raw_content_hash !== (file.rawContentHash ?? null) ||
               row.language !== file.language ||
               row.mode !== file.mode ||
               Number(row.size) !== file.size ||

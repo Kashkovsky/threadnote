@@ -37,7 +37,7 @@ processors:
           - not IsString(resource.attributes["session.id"])
           - not IsMatch(resource.attributes["session.id"], "^tns_[0-9a-f]{32}$$")
           - resource.attributes["threadnote.session.scope"] != "broker" and resource.attributes["threadnote.session.scope"] != "invocation" and resource.attributes["threadnote.session.scope"] != "provider-session"
-          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3 and resource.attributes["threadnote.telemetry.schema_version"] != 4
+          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3 and resource.attributes["threadnote.telemetry.schema_version"] != 4 and resource.attributes["threadnote.telemetry.schema_version"] != 5
       - context: scope
         conditions:
           - scope.name != "threadnote"
@@ -76,6 +76,19 @@ processors:
               "threadnote.auto_update.repair_required",
               "threadnote.auto_update.result",
               "threadnote.component",
+              "threadnote.context_brief.cache_hits_bucket",
+              "threadnote.context_brief.citation_coverage",
+              "threadnote.context_brief.citation_result",
+              "threadnote.context_brief.citation_unknown_reason",
+              "threadnote.context_brief.citations_bucket",
+              "threadnote.context_brief.cited_memories_bucket",
+              "threadnote.context_brief.exact_citations_bucket",
+              "threadnote.context_brief.output_truncated",
+              "threadnote.context_brief.relocated_citations_bucket",
+              "threadnote.context_brief.repositories_validated_bucket",
+              "threadnote.context_brief.scope",
+              "threadnote.context_brief.stale_citations_bucket",
+              "threadnote.context_brief.unknown_citations_bucket",
               "threadnote.duration_ms",
               "threadnote.event",
               "threadnote.failure.code",

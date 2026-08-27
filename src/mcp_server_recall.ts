@@ -44,7 +44,19 @@ import {sha256Hex} from './effect/digest.js';
 import {withMemoryUriLocks} from './effect/memory_lock.js';
 import {SystemInfo} from './effect/system.js';
 import {syncSharedReposBeforeAgentRead} from './effect/share.js';
-import {canonicalMemoryDocumentContent, isSharedMemoryUri, type MemoryMetadata} from './memory_document.js';
+import {
+  assertMemoryRecordArchivable,
+  canonicalMemoryDocumentContent,
+  isSharedMemoryUri,
+  memoryArchiveBody,
+  type MemoryMetadata,
+} from './memory_document.js';
+import {captureMemoryCodeCitations} from './memory_code_citation_capture.js';
+import {MEMORY_SCHEMA_VERSION} from './memory_code_citation.js';
+import {
+  memoryCodeCitationSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
 import {
   MEMORY_READ_DEFAULT_BUDGET_TOKENS,
   MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
@@ -144,6 +156,9 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         'After routine durable and handoff writes, form up to three additional reviewable memory candidates. Persists a pending review, never active memory.',
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd; infers project'),
+        codeRefs: McpInput.stringOrStrings(
+          'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates',
+        ),
         decisions: McpInput.stringOrStrings('Reusable decisions'),
         evidence: McpInput.stringOrStrings('Bounded file, commit, or session pointers'),
         handoff: McpInput.stringOrStrings('Status, blockers, checks, and next steps'),
@@ -160,6 +175,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     },
     ({
       callerCwd,
+      codeRefs,
       decisions,
       evidence,
       handoff,
@@ -206,7 +222,16 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
             'review_session_context requires project or an absolute callerCwd from which the repo can be inferred.',
           );
         }
+        const requestedCodeRefs = stringList(codeRefs);
+        if (requestedCodeRefs.length > 0 && !callerCwd) {
+          return argumentError('review_session_context requires absolute callerCwd when codeRefs are provided.');
+        }
+        const codeCitations =
+          requestedCodeRefs.length === 0
+            ? []
+            : yield* captureMemoryCodeCitations(config, {callerCwd: callerCwd!, refs: requestedCodeRefs});
         const rawCloseout: SessionCloseoutInput = {
+          ...(codeCitations.length === 0 ? {} : {codeCitations}),
           decisions: candidatePolicy === 'handoff-only' ? [] : stringList(decisions),
           evidence: stringList(evidence),
           handoff: stringList(handoff),
@@ -215,7 +240,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
           preferences: candidatePolicy === 'handoff-only' ? [] : stringList(preferences),
           project: inferredProject,
           sourceAgentClient: sourceAgentClient?.trim() || 'mcp',
-          sourceCommit: normalizeOptionalMetadata(sourceCommit),
+          sourceCommit: normalizeOptionalMetadata(sourceCommit) ?? commonCitationSourceCommit(codeCitations),
           sourceSessionId: normalizeOptionalMetadata(sourceSessionId),
           task: checkedTask.value,
           topic: normalizeOptionalMetadata(topic) ?? uriSegment(checkedTask.value),
@@ -1420,6 +1445,9 @@ export function registerStoreTool(
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd for nested package/app scope'),
+        codeRefs: McpInput.stringOrStrings(
+          'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to capture as immutable code evidence',
+        ),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),
         project: McpInput.string('Project/repo namespace'),
         references: McpInput.stringOrStrings('Prior read-only threadnote:// URI(s)'),
@@ -1430,7 +1458,7 @@ export function registerStoreTool(
         topic: McpInput.string('Stable topic'),
       },
     },
-    ({callerCwd, kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
+    ({callerCwd, codeRefs, kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
       const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
       if (!checkedText.ok) {
         return checkedText.error;
@@ -1476,12 +1504,21 @@ export function registerStoreTool(
         kind: memoryKind,
         project: normalizeOptionalMetadata(project),
         references: checkedReferences.value,
+        schemaVersion: MEMORY_SCHEMA_VERSION,
         sourceAgentClient: sourceAgentClient ?? 'mcp',
         status: status ?? 'active',
         timestamp: new Date().toISOString(),
         topic: normalizeOptionalMetadata(topic),
       };
       return Effect.gen(function* () {
+        const requestedCodeRefs = stringList(codeRefs);
+        if (requestedCodeRefs.length > 0 && !callerCwd) {
+          return argumentError(`${name} requires absolute callerCwd when codeRefs are provided.`);
+        }
+        const codeCitations =
+          requestedCodeRefs.length === 0
+            ? []
+            : yield* captureMemoryCodeCitations(config, {callerCwd: callerCwd!, refs: requestedCodeRefs});
         const workspaceComponent = callerCwd
           ? yield* resolveWorkspaceComponentContext({cwd: callerCwd, includeProcessCwd: false})
           : undefined;
@@ -1490,14 +1527,25 @@ export function registerStoreTool(
           : [];
         const scopedMetadata = {
           ...metadata,
+          ...(codeCitations.length === 0 ? {} : {codeCitations}),
+          ...(commonCitationSourceCommit(codeCitations) === undefined
+            ? {}
+            : {sourceCommit: commonCitationSourceCommit(codeCitations)}),
           workspaceScope: replaced ? replaced.metadata.workspaceScope : workspaceComponent?.scope,
         } satisfies MemoryMetadata;
         if (memoryScope && memoryKind === 'durable') {
-          return yield* writeCursorCloudSharedMemory(config, memoryScope, {
+          const citationBlocker = memoryCodeCitationSharingBlocker(scopedMetadata);
+          if (citationBlocker) {
+            return argumentError(
+              `Refusing shared memory write: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
+            );
+          }
+          const result = yield* writeCursorCloudSharedMemory(config, memoryScope, {
             bodyText: checkedText.value,
             metadata: scopedMetadata,
             replaceUri: checkedReplaceUri.value,
           });
+          return withClearedCodeCitationReceipt(result, replaced?.metadata.codeCitations?.length, codeCitations.length);
         }
         const enrichedMetadata =
           memoryScope || (checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value))
@@ -1514,20 +1562,26 @@ export function registerStoreTool(
           metadata: enrichedMetadata,
           replaceUri: checkedReplaceUri.value,
         });
-        return memoryScope && memoryKind === 'handoff'
-          ? {
-              ...result,
-              _meta: {
-                ...result._meta,
-                'threadnote.io/persistence': {
-                  durability: 'cloud-workspace-local',
-                  note: 'This handoff may not survive a new Cursor Cloud session.',
-                  type: 'threadnote-cloud-persistence',
-                  version: 1,
+        const projectedResult =
+          memoryScope && memoryKind === 'handoff'
+            ? {
+                ...result,
+                _meta: {
+                  ...result._meta,
+                  'threadnote.io/persistence': {
+                    durability: 'cloud-workspace-local',
+                    note: 'This handoff may not survive a new Cursor Cloud session.',
+                    type: 'threadnote-cloud-persistence',
+                    version: 1,
+                  },
                 },
-              },
-            }
-          : result;
+              }
+            : result;
+        return withClearedCodeCitationReceipt(
+          projectedResult,
+          replaced?.metadata.codeCitations?.length,
+          codeCitations.length,
+        );
       }).pipe(Effect.flatMap(withStaleVersionNotice));
     },
   );
@@ -1537,12 +1591,39 @@ function stringList(value: string | readonly string[] | undefined): readonly str
   return typeof value === 'string' ? [value] : (value ?? []);
 }
 
+function commonCitationSourceCommit(citations: readonly {readonly sourceCommit: string}[]): string | undefined {
+  const commits = new Set(citations.map(citation => citation.sourceCommit));
+  return commits.size === 1 ? citations[0]?.sourceCommit : undefined;
+}
+
+function withClearedCodeCitationReceipt(
+  result: CallToolResult,
+  previousCount: number | undefined,
+  currentCount: number,
+): CallToolResult {
+  if (!previousCount || currentCount > 0) return result;
+  const note = `Cleared ${previousCount} prior code citation(s); provide codeRefs to recapture them.`;
+  return {
+    ...result,
+    content: [...result.content, {type: 'text', text: note}],
+    structuredContent: {
+      ...(result.structuredContent ?? {}),
+      clearedCodeCitations: previousCount,
+    },
+  };
+}
+
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {
   return [input.decisions, input.handoff, input.invariants, input.preferences].some(items => (items?.length ?? 0) > 0);
 }
 
 function sessionCloseoutHasEvidence(input: SessionCloseoutInput): boolean {
-  return (input.evidence?.length ?? 0) > 0 || input.sourceSessionId !== undefined || input.sourceCommit !== undefined;
+  return (
+    (input.codeCitations?.length ?? 0) > 0 ||
+    (input.evidence?.length ?? 0) > 0 ||
+    input.sourceSessionId !== undefined ||
+    input.sourceCommit !== undefined
+  );
 }
 
 function parseCandidatePolicy(value: string | undefined): 'handoff-only' | 'off' | 'suggest' {
@@ -1598,6 +1679,7 @@ function scrubSessionCloseout(
   try {
     return {
       input: {
+        codeCitations: input.codeCitations,
         decisions: scrubList('decisions', input.decisions),
         evidence: scrubList('evidence', input.evidence),
         handoff: scrubList('handoff', input.handoff),
@@ -1658,12 +1740,13 @@ function approvedCandidateMetadata(
   return {
     authority: 'user_approved',
     candidateId: candidate.candidateId,
+    ...(review.codeCitations.length === 0 ? {} : {codeCitations: review.codeCitations}),
     createdAt: approvedAt,
     evidence: candidate.evidence,
     kind: candidate.kind,
     lastReviewed: approvedAt,
     project: candidate.project,
-    schemaVersion: 3,
+    schemaVersion: MEMORY_SCHEMA_VERSION,
     sourceAgentClient: review.sourceAgentClient,
     sourceCommit: review.sourceCommit,
     sourceObservedAt: review.createdAt,
@@ -1865,27 +1948,26 @@ export function registerArchiveTool(
           return argumentError(`Could not resolve local memory content for ${checkedUri.value} before archiving.`);
         }
         const sourceContent = sourceRecord.content;
-        const readResult = yield* runNativeReadTool(config, [checkedUri.value]);
-        const original = textFromCallToolResult(readResult);
-        if (!original) {
-          return {
-            content: [{type: 'text', text: `Could not read ${checkedUri.value} before archiving.`}],
-            isError: true,
-          };
-        }
-        const metadata: MemoryMetadata = {
-          archivedFrom: checkedUri.value,
-          kind: kind ?? 'handoff',
-          project: normalizeOptionalMetadata(project),
-          sourceAgentClient: 'mcp',
-          status: 'archived',
-          timestamp: new Date().toISOString(),
-          topic: normalizeOptionalMetadata(topic),
-        };
+        yield* Effect.try({
+          catch: error => new McpServerOperationError(errorMessage(error)),
+          try: () => assertMemoryRecordArchivable(sourceRecord),
+        });
         const archiveResult = yield* writeDurableMemory(config, {
-          bodyText: ['Archived original Threadnote memory.', '', original].join('\n'),
+          bodyText: memoryArchiveBody(sourceRecord.body),
           expectedSourceContent: [{content: sourceContent, uri: checkedUri.value}],
-          metadata,
+          metadata: {
+            archivedFrom: checkedUri.value,
+            codeCitations: sourceRecord.metadata.codeCitations,
+            kind: kind ?? 'handoff',
+            project: normalizeOptionalMetadata(project),
+            schemaVersion: sourceRecord.metadata.schemaVersion,
+            sourceAgentClient: 'mcp',
+            sourceCommit: sourceRecord.metadata.sourceCommit,
+            sourceObservedAt: sourceRecord.metadata.sourceObservedAt,
+            status: 'archived',
+            timestamp: new Date().toISOString(),
+            topic: normalizeOptionalMetadata(topic),
+          },
         });
         if (archiveResult.isError === true) {
           return archiveResult;

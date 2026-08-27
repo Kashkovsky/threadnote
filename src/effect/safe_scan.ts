@@ -1,4 +1,5 @@
-import {Effect, FileSystem, Option, Path} from 'effect';
+import {Effect, FileSystem, Option, Path, Stream} from 'effect';
+import {runtimeTextDirectoryNames} from './system.js';
 
 export interface SafeScannedFile {
   readonly modifiedAt?: Date;
@@ -13,6 +14,100 @@ export interface SafeFileScanOptions {
 }
 
 const SAFE_SCAN_ENTRY_CONCURRENCY = 64;
+const SAFE_SCAN_INSPECTION_PAGE_SIZE = 256;
+const SAFE_SCAN_DIRECTORY_RECORD_BYTES_MAXIMUM = 1_048_576;
+
+class SafeFileScanError extends Error {
+  readonly _tag = 'SafeFileScanError' as const;
+}
+
+/** Visit live-runtime files in bounded directory pages without retaining the corpus. */
+export function forEachFileWithinBoundary<A, E, R>(
+  fs: FileSystem.FileSystem,
+  scanRoot: string,
+  boundaryRoot: string,
+  options: SafeFileScanOptions,
+  visitFile: (file: SafeScannedFile) => Effect.Effect<A, E, R>,
+  directoryNames: (path: string) => AsyncIterable<string> = runtimeTextDirectoryNames,
+) {
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const fsQueuePath = yield* fs.makeTempFileScoped({prefix: 'threadnote-safe-scan-', suffix: '.queue'});
+      const directoryQueue = yield* fs.open(fsQueuePath, {flag: 'w+'});
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true});
+      let readOffset = 0;
+      let writeOffset = 0;
+      const enqueueDirectory = (directory: string) =>
+        Effect.gen(function* () {
+          const bytes = encoder.encode(directory);
+          if (bytes.length === 0 || bytes.length > SAFE_SCAN_DIRECTORY_RECORD_BYTES_MAXIMUM) {
+            return yield* Effect.fail(new SafeFileScanError('Safe scan directory path is invalid.'));
+          }
+          const header = new Uint8Array(4);
+          new DataView(header.buffer).setUint32(0, bytes.length);
+          yield* directoryQueue.seek(writeOffset, 'start');
+          yield* directoryQueue.writeAll(header);
+          yield* directoryQueue.writeAll(bytes);
+          writeOffset += header.length + bytes.length;
+        });
+      const dequeueDirectory = () =>
+        Effect.gen(function* () {
+          if (readOffset >= writeOffset) return undefined;
+          yield* directoryQueue.seek(readOffset, 'start');
+          const header = yield* readFileBytesExactly(directoryQueue, 4);
+          const length = new DataView(header.buffer, header.byteOffset, header.byteLength).getUint32(0);
+          if (length === 0 || length > SAFE_SCAN_DIRECTORY_RECORD_BYTES_MAXIMUM) {
+            return yield* Effect.fail(new SafeFileScanError('Safe scan directory queue is invalid.'));
+          }
+          const bytes = yield* readFileBytesExactly(directoryQueue, length);
+          readOffset += header.length + bytes.length;
+          return yield* Effect.try({
+            try: () => decoder.decode(bytes),
+            catch: cause => new SafeFileScanError('Safe scan directory queue is invalid.', {cause}),
+          });
+        });
+      const pathService = yield* Path.Path;
+      const roots = yield* resolveScanRoots(fs, scanRoot, boundaryRoot);
+      if (!roots) return;
+      yield* enqueueDirectory(scanRoot);
+      while (true) {
+        const logicalDirectory = yield* dequeueDirectory();
+        if (logicalDirectory === undefined) break;
+        const inspectedDirectory = yield* inspectMappedPath(fs, logicalDirectory, roots);
+        if (!inspectedDirectory || inspectedDirectory.type !== 'Directory') continue;
+        const names = Stream.fromAsyncIterable(
+          directoryNames(logicalDirectory),
+          cause => new SafeFileScanError('Safe scan directory enumeration failed.', {cause}),
+        ).pipe(Stream.grouped(SAFE_SCAN_INSPECTION_PAGE_SIZE));
+        yield* Stream.runForEach(names, page =>
+          Effect.gen(function* () {
+            const entries = yield* Effect.forEach(
+              page,
+              name => {
+                const path = pathService.join(logicalDirectory, name);
+                return inspectMappedPath(fs, path, roots).pipe(Effect.map(inspected => ({inspected, name, path})));
+              },
+              {concurrency: SAFE_SCAN_ENTRY_CONCURRENCY},
+            );
+            for (const {inspected, name, path} of entries) {
+              if (!inspected) continue;
+              if (
+                inspected.type === 'Directory' &&
+                options.recursive !== false &&
+                (options.includeDirectory?.(path) ?? true)
+              ) {
+                yield* enqueueDirectory(path);
+              } else if (inspected.type === 'File' && options.includeFile(path, name)) {
+                yield* visitFile({modifiedAt: inspected.modifiedAt, path, size: inspected.size});
+              }
+            }
+          }),
+        );
+      }
+    }),
+  );
+}
 
 /**
  * Walks only real files and directories beneath a canonicalized boundary.
@@ -29,9 +124,7 @@ export const scanFilesWithinBoundary = Effect.fn('filesystem.scanFilesWithinBoun
 ) {
   const pathService = yield* Path.Path;
   const roots = yield* resolveScanRoots(fs, scanRoot, boundaryRoot);
-  if (!roots) {
-    return [];
-  }
+  if (!roots) return [];
   const visitedRealDirectories = new Set<string>();
   const visit = (logicalDirectory: string): Effect.Effect<readonly SafeScannedFile[], never> =>
     Effect.gen(function* () {
@@ -55,9 +148,7 @@ export const scanFilesWithinBoundary = Effect.fn('filesystem.scanFilesWithinBoun
         {concurrency: SAFE_SCAN_ENTRY_CONCURRENCY},
       );
       for (const {inspected, name, path} of entries) {
-        if (!inspected) {
-          continue;
-        }
+        if (!inspected) continue;
         if (
           inspected.type === 'Directory' &&
           options.recursive !== false &&
@@ -65,11 +156,7 @@ export const scanFilesWithinBoundary = Effect.fn('filesystem.scanFilesWithinBoun
         ) {
           files.push(...(yield* visit(path)));
         } else if (inspected.type === 'File' && options.includeFile(path, name)) {
-          files.push({
-            modifiedAt: inspected.modifiedAt,
-            path,
-            size: inspected.size,
-          });
+          files.push({modifiedAt: inspected.modifiedAt, path, size: inspected.size});
         }
       }
       return files;
@@ -154,3 +241,17 @@ function pathEscapesBoundary(relativePath: string, pathService: Path.Path): bool
     relativePath === '..' || relativePath.startsWith(`..${pathService.sep}`) || pathService.isAbsolute(relativePath)
   );
 }
+
+const readFileBytesExactly = Effect.fn('filesystem.readFileBytesExactly')(function* (
+  file: FileSystem.File,
+  length: number,
+) {
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  while (offset < length) {
+    const read = Number(yield* file.read(bytes.subarray(offset)));
+    if (read <= 0) return yield* Effect.fail(new SafeFileScanError('Safe scan directory queue is truncated.'));
+    offset += read;
+  }
+  return bytes;
+});

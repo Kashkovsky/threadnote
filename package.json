@@ -1,6 +1,6 @@
 {
   "name": "threadnote",
-  "version": "4.3.8",
+  "version": "4.4.0",
   "type": "module",
   "description": "Shared local context and handoffs for development agents",
   "license": "AGPL-3.0-or-later",
@@ -70,8 +70,10 @@
     "bench:code-graph:mixed-monorepo:fixture": "bun scripts/generate-mixed-nx-bazel-fixture.ts",
     "bench:code-graph:mixed-monorepo:gate": "bun scripts/validate-mixed-nx-bazel-gate.ts",
     "bench:worktree-readiness": "bun scripts/benchmark-worktree-readiness.ts",
+    "bench:context-brief-citations": "bun scripts/benchmark-context-brief-citations.ts",
     "eval:code-graph": "bun scripts/evaluate-code-graph.ts",
     "eval:code-graph-workset": "bun scripts/evaluate-code-graph-workset.ts",
+    "eval:context-brief-citations:runtime": "bun scripts/evaluate-context-brief-citations-runtime.ts",
     "mcp-server": "bun src/standalone.ts mcp-server",
     "typecheck": "bun --bun tsc --noEmit && bun --bun tsc -p test/tsconfig.json --noEmit && bun run site:typecheck",
     "site:dev": "bun --bun vite --config website/vite.config.ts",

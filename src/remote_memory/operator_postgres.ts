@@ -1,8 +1,7 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {parseMemoryDocument} from '../memory_document.js';
 import {parseRemoteShareAddress} from '../memory_domain/address.js';
-import {inspectRemoteMemoryContent} from '../memory_domain/content.js';
+import {parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import {migrateRemoteMemoryDatabase} from './migrations.js';
 import {PostgresRemoteControlPlane, type RemoteMemoryProvisioningInput} from './postgres_control_plane.js';
@@ -27,6 +26,15 @@ interface PortableRecordRow {
   readonly project: string;
   readonly topic: string;
 }
+
+const MAX_GIT_BETA_IMPORT_RECORDS = 10_000;
+const MAX_GIT_BETA_IMPORT_RECORD_BYTES = 1024 * 1024;
+const MAX_GIT_BETA_IMPORT_TOTAL_BYTES = 100 * 1024 * 1024;
+const MAX_GIT_BETA_IMPORT_ALIASES_PER_RECORD = 16;
+const MAX_GIT_BETA_IMPORT_TOTAL_ALIASES = 10_000;
+const MAX_GIT_BETA_IMPORT_TOTAL_ALIAS_BYTES = 8 * 1024 * 1024;
+const MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS = 4096;
+const utf8 = new TextEncoder();
 
 /** Built-in operator adapter with one atomic revision/alias/import-receipt transaction. */
 export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperatorAdapter {
@@ -61,6 +69,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
     readonly shareId: string;
   }): Promise<readonly GitBetaImportApplyOutcomeV1[]> => {
     validateApplyInput(input);
+    for (const record of input.records) validatePortableRecord(record, input.shareId);
     const tenantId = await this.controlPlane.tenantForShare(input.shareId);
     if (!tenantId) throw new Error('The remote memory share does not exist or is inactive.');
     return this.withTenant(tenantId, async transaction => {
@@ -113,16 +122,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
 
   readonly exportRecords = async (shareId: string): Promise<readonly RemoteMemoryPortableRecordV1[]> => {
     const rows = await this.portableRows(shareId);
-    return rows.map(row => ({
-      aliases: sortedAliases(row.aliases),
-      canonicalContent: row.markdown_body,
-      contentHash: row.content_hash,
-      kind: remoteMemoryKind(row.kind),
-      project: row.project,
-      topic: row.topic,
-      uri: row.canonical_uri,
-      version: REMOTE_MEMORY_PORTABILITY_VERSION,
-    }));
+    return rows.map(row => portableRecordFromRow(row, shareId));
   };
 
   async close(): Promise<void> {
@@ -299,19 +299,56 @@ function validateApplyInput(input: {
   ) {
     throw new Error('Git beta import alias compatibility end is invalid.');
   }
-  if (input.records.length > 10_000) throw new Error('Git beta import exceeds the record limit.');
+  if (!Array.isArray(input.records)) throw new Error('Git beta import records must be an array.');
+  if (input.records.length > MAX_GIT_BETA_IMPORT_RECORDS) {
+    throw new Error('Git beta import exceeds the record limit.');
+  }
   let totalBytes = 0;
+  let totalAliases = 0;
+  let totalAliasBytes = 0;
+  const uris = new Set<string>();
+  const aliases = new Set<string>();
   for (const record of input.records) {
-    const bytes = new TextEncoder().encode(record.canonicalContent).byteLength;
-    if (bytes > 1024 * 1024) throw new Error('A Git beta memory exceeds the import size limit.');
+    const recordAliases: unknown = record?.aliases;
+    if (
+      record === null ||
+      typeof record !== 'object' ||
+      typeof record.uri !== 'string' ||
+      typeof record.canonicalContent !== 'string' ||
+      !Array.isArray(recordAliases)
+    ) {
+      throw new Error('Git beta import contains an invalid record shape.');
+    }
+    if (recordAliases.length > MAX_GIT_BETA_IMPORT_ALIASES_PER_RECORD) {
+      throw new Error('A Git beta memory exceeds the alias count limit.');
+    }
+    totalAliases += recordAliases.length;
+    if (totalAliases > MAX_GIT_BETA_IMPORT_TOTAL_ALIASES) {
+      throw new Error('Git beta import exceeds the total alias count limit.');
+    }
+    for (const alias of recordAliases) {
+      if (typeof alias !== 'string') throw new Error('Git beta import contains an invalid record shape.');
+      if (alias.length > MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS) {
+        throw new Error('Git beta import alias is too long.');
+      }
+      totalAliasBytes += utf8.encode(alias).byteLength;
+      if (totalAliasBytes > MAX_GIT_BETA_IMPORT_TOTAL_ALIAS_BYTES) {
+        throw new Error('Git beta import exceeds the total alias size limit.');
+      }
+      if (aliases.has(alias)) throw new Error('Git beta import contains duplicate aliases.');
+      aliases.add(alias);
+    }
+    if (uris.has(record.uri)) throw new Error('Git beta import contains duplicate target URIs.');
+    uris.add(record.uri);
+    const bytes = utf8.encode(record.canonicalContent).byteLength;
+    if (bytes > MAX_GIT_BETA_IMPORT_RECORD_BYTES) {
+      throw new Error('A Git beta memory exceeds the import size limit.');
+    }
     totalBytes += bytes;
-    if (totalBytes > 100 * 1024 * 1024) throw new Error('Git beta import exceeds the total size limit.');
+    if (totalBytes > MAX_GIT_BETA_IMPORT_TOTAL_BYTES) {
+      throw new Error('Git beta import exceeds the total size limit.');
+    }
   }
-  if (new Set(input.records.map(record => record.uri)).size !== input.records.length) {
-    throw new Error('Git beta import contains duplicate target URIs.');
-  }
-  const aliases = input.records.flatMap(record => [...record.aliases]);
-  if (new Set(aliases).size !== aliases.length) throw new Error('Git beta import contains duplicate aliases.');
 }
 
 function validatePortableRecord(record: RemoteMemoryPortableRecordV1, shareId: string) {
@@ -327,30 +364,57 @@ function validatePortableRecord(record: RemoteMemoryPortableRecordV1, shareId: s
   ) {
     throw new Error('Portable record identity mismatch.');
   }
-  const inspection = inspectRemoteMemoryContent(record.canonicalContent);
-  if (!inspection.allowed || inspection.canonicalContent !== record.canonicalContent) {
+  const document = parseRemoteCanonicalMemoryDocument({
+    content: record.canonicalContent,
+    kind: record.kind,
+    project: record.project,
+    topic: record.topic,
+    uri: record.uri,
+  });
+  if (document.content !== record.canonicalContent) {
     throw new Error('Portable record does not pass canonical content policy.');
   }
   if (sha256HexSync(record.canonicalContent) !== record.contentHash) {
     throw new Error('Portable record content hash mismatch.');
-  }
-  const document = parseMemoryDocument(record.uri, record.canonicalContent);
-  if (
-    !document ||
-    document.headerTitle !== 'MEMORY' ||
-    document.metadata.kind !== record.kind ||
-    document.metadata.project !== address.project ||
-    document.metadata.topic !== address.topic
-  ) {
-    throw new Error('Portable record Markdown metadata mismatch.');
   }
   if (record.aliases.length === 0) throw new Error('Git beta imports require a source alias.');
   for (const alias of record.aliases) validateGitBetaAlias(alias);
   return address;
 }
 
+function portableRecordFromRow(row: PortableRecordRow, shareId: string): RemoteMemoryPortableRecordV1 {
+  const kind = remoteMemoryKind(row.kind);
+  const address = parseRemoteShareAddress(row.canonical_uri);
+  if (address.shareId !== shareId) throw new Error('The remote memory export row belongs to another share.');
+  const document = parseRemoteCanonicalMemoryDocument({
+    content: row.markdown_body,
+    kind,
+    project: row.project,
+    topic: row.topic,
+    uri: row.canonical_uri,
+  });
+  if (document.content !== row.markdown_body) {
+    throw new Error('The remote memory export row does not use canonical content bytes.');
+  }
+  if (sha256HexSync(document.content) !== row.content_hash) {
+    throw new Error('The remote memory export row content hash does not match its contents.');
+  }
+  return {
+    aliases: sortedAliases(row.aliases),
+    canonicalContent: document.content,
+    contentHash: row.content_hash,
+    kind,
+    project: row.project,
+    topic: row.topic,
+    uri: address.canonicalUri,
+    version: REMOTE_MEMORY_PORTABILITY_VERSION,
+  };
+}
+
 function validateGitBetaAlias(alias: string): void {
-  if (alias.length > 4096) throw new Error('Git beta import alias is too long.');
+  if (alias.length > MAX_GIT_BETA_IMPORT_ALIAS_CHARACTERS) {
+    throw new Error('Git beta import alias is too long.');
+  }
   const resource = parseResourceId(alias);
   const [, memories, shared, team, kind, scope, project, file] = resource.segments;
   if (

@@ -29,7 +29,11 @@ export interface CodeGraphTemporaryPublicationCounts {
 export function temporaryActivationInventoryCapacity(
   files: readonly CodeGraphInventoryFile[],
 ): CodeGraphDirectPersistentCapacityBoundary {
-  return temporaryBoundary('stage temporary code graph inventory', files.length, encodedBytes(files));
+  return temporaryBoundary(
+    'stage temporary code graph inventory',
+    files.length,
+    saturatingCapacityAdd(encodedBytes(files), maximumRetainedRawAliasBytes(files)),
+  );
 }
 
 export function temporaryActivationWorkspaceCapacity(
@@ -109,7 +113,11 @@ export function temporaryIncrementalActivationCapacity(
       // copy so the preflight cannot rely on SQLite freeing pages immediately.
       factsCapacity.rowCount,
     ),
-    saturatingCapacityAdd(encodedBytes([files, deletedPaths]), factsCapacity.finalFactBytes),
+    saturatingCapacityAdd(
+      encodedBytes([files, deletedPaths]),
+      maximumRetainedRawAliasBytes(files),
+      factsCapacity.finalFactBytes,
+    ),
   );
 }
 
@@ -156,4 +164,11 @@ function encodedBytes(value: unknown): number {
   } catch {
     return Number.NaN;
   }
+}
+
+function maximumRetainedRawAliasBytes(files: readonly CodeGraphInventoryFile[]): number {
+  return saturatingCapacityMultiply(
+    64,
+    files.reduce((count, file) => count + (file.rawContentHash === undefined ? 1 : 0), 0),
+  );
 }

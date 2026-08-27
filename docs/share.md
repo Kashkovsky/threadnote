@@ -15,6 +15,11 @@ threadnote share publish threadnote://user/me/memories/durable/projects/app/cach
 Only active durable memories are publishable. The scrubber blocks credentials, customer-like secrets, and residual
 machine-local paths; `--redact` applies only to supported soft patterns. Handoffs and preferences stay local.
 
+A memory with [code citations](memory-code-citations.md) is publishable only when every citation was captured from
+clean committed source, has a portable remote repository identity, and contains valid canonical metadata. A dirty,
+local-only, or malformed citation blocks preview and publication. Commit the cited source and recapture it; Threadnote
+never strips code evidence to make a memory shareable.
+
 Publish is transactional:
 
 1. re-read and scrub the personal source;

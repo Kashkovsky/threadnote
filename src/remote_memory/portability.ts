@@ -2,6 +2,7 @@ import {sha256HexSync} from '../crypto/sha256.js';
 import {formatRemoteMemoryUri, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {canonicalMemoryDocumentContent, formatMemoryDocument, parseMemoryDocument} from '../memory_document.js';
 import {inspectRemoteMemoryContent, parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
+import {memoryCodeCitationSharingBlocker} from '../memory_code_citation_policy.js';
 import {parseResourceId, validatePortableSegment} from '../storage/resource-id.js';
 
 export const REMOTE_MEMORY_PORTABILITY_VERSION = 1 as const;
@@ -427,6 +428,8 @@ function validatedGitBetaSource(source: GitBetaMemorySourceV1, shareId: string):
   if (!record || record.headerTitle !== 'MEMORY' || record.metadata.kind !== 'durable') {
     throw new Error('invalid_memory_document');
   }
+  const citationBlocker = memoryCodeCitationSharingBlocker(record.metadata);
+  if (citationBlocker) throw new Error(`blocked:${citationBlocker}`);
   if (record.metadata.project !== project || record.metadata.topic !== topic) throw new Error('metadata_uri_mismatch');
   if (formatMemoryDocument(record.headerTitle, record.metadata, record.body) !== canonicalContent) {
     throw new Error('noncanonical_memory_document');
@@ -587,7 +590,15 @@ export function verifyGitBetaImportPlan(plan: GitBetaImportPlanV1): void {
 }
 
 function safeImportReason(reason: string): string {
-  if (reason === 'blocked:credential' || reason === 'blocked:machine_local_path') return reason;
+  if (
+    reason === 'blocked:credential' ||
+    reason === 'blocked:dirty-source' ||
+    reason === 'blocked:local-repository-identity' ||
+    reason === 'blocked:machine_local_path' ||
+    reason === 'blocked:malformed-citation'
+  ) {
+    return reason;
+  }
   const allowed = new Set([
     'invalid_memory_document',
     'metadata_uri_mismatch',

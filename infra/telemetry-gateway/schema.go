@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -28,6 +29,9 @@ var telemetrySchemaV3JSON []byte
 
 //go:embed telemetry-schema-v4.json
 var telemetrySchemaV4JSON []byte
+
+//go:embed telemetry-schema-v5.json
+var telemetrySchemaV5JSON []byte
 
 type telemetrySchema struct {
 	SchemaVersion int `json:"schemaVersion"`
@@ -87,6 +91,24 @@ var graphQueryRegistrySpanAttributes = map[string]string{
 	"threadnote.graph.snapshot_selection": "graphSnapshotSelection",
 }
 
+var contextBriefRegistrySpanAttributes = map[string]string{
+	"threadnote.context_brief.citation_coverage":       "contextBriefCitationCoverage",
+	"threadnote.context_brief.citation_result":         "contextBriefCitationResult",
+	"threadnote.context_brief.citation_unknown_reason": "contextBriefCitationUnknownReason",
+	"threadnote.context_brief.scope":                   "contextBriefScope",
+}
+
+var contextBriefCitationBucketAttributes = []string{
+	"threadnote.context_brief.cache_hits_bucket",
+	"threadnote.context_brief.citations_bucket",
+	"threadnote.context_brief.cited_memories_bucket",
+	"threadnote.context_brief.exact_citations_bucket",
+	"threadnote.context_brief.relocated_citations_bucket",
+	"threadnote.context_brief.repositories_validated_bucket",
+	"threadnote.context_brief.stale_citations_bucket",
+	"threadnote.context_brief.unknown_citations_bucket",
+}
+
 var graphQuerySnapshotBucketAttributes = []string{
 	"threadnote.graph.snapshot_edges_bucket",
 	"threadnote.graph.snapshot_files_bucket",
@@ -114,8 +136,8 @@ var terminalGraphSpanAttributes = []string{
 }
 
 func loadTelemetrySchemas() (*compiledTelemetrySchemas, error) {
-	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 4)}
-	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON, 4: telemetrySchemaV4JSON} {
+	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 5)}
+	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON, 4: telemetrySchemaV4JSON, 5: telemetrySchemaV5JSON} {
 		compiled, err := compileTelemetrySchema(data, version)
 		if err != nil {
 			return nil, err
@@ -172,6 +194,14 @@ func compileTelemetrySchema(data []byte, expectedVersion int) (*compiledTelemetr
 			"graphRequestScope",
 			"graphSnapshotFreshness",
 			"graphSnapshotSelection",
+		)
+	}
+	if expectedVersion >= 5 {
+		requiredRegistries = append(requiredRegistries,
+			"contextBriefCitationCoverage",
+			"contextBriefCitationResult",
+			"contextBriefCitationUnknownReason",
+			"contextBriefScope",
 		)
 	}
 	for _, registry := range requiredRegistries {
@@ -579,6 +609,10 @@ func validateSpanAttributeValues(attributes map[string]*commonpb.AnyValue, schem
 			if !valueStringIn(value, schema.registries[graphQueryRegistrySpanAttributes[key]]) {
 				return errors.New("invalid telemetry graph query classification")
 			}
+		case contextBriefRegistrySpanAttributes[key] != "":
+			if !valueStringIn(value, schema.registries[contextBriefRegistrySpanAttributes[key]]) {
+				return errors.New("invalid telemetry context brief classification")
+			}
 		case contains(schema.booleanSpan, key):
 			if _, ok := value.Value.(*commonpb.AnyValue_BoolValue); !ok {
 				return errors.New("invalid telemetry boolean attribute")
@@ -717,7 +751,219 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 			}
 		}
 	}
-	return validateGraphQueryAttributeShape(attributes, schema, event, operation)
+	if err := validateGraphQueryAttributeShape(attributes, schema, event, operation); err != nil {
+		return err
+	}
+	return validateContextBriefAttributeShape(attributes, schema, event, operation)
+}
+
+func validateContextBriefAttributeShape(attributes map[string]*commonpb.AnyValue, schema *compiledTelemetrySchema, event, operation string) error {
+	phase, hasPhase := anyString(attributes["threadnote.phase"])
+	contextPhase := strings.HasPrefix(phase, "context.brief.")
+	contextOperation := operation == "context_brief" || operation == "context.brief"
+	contextAttributeCount := 0
+	for key := range contextBriefRegistrySpanAttributes {
+		if _, exists := attributes[key]; exists {
+			contextAttributeCount++
+		}
+	}
+	for _, key := range contextBriefCitationBucketAttributes {
+		if _, exists := attributes[key]; exists {
+			contextAttributeCount++
+		}
+	}
+	if _, exists := attributes["threadnote.context_brief.output_truncated"]; exists {
+		contextAttributeCount++
+	}
+
+	if !contextOperation {
+		if contextPhase || contextAttributeCount != 0 {
+			return errors.New("context brief attributes require a context brief operation")
+		}
+		return nil
+	}
+	if schema.SchemaVersion < 5 || (!contextPhase && contextAttributeCount == 0) {
+		return nil
+	}
+	if !contextPhase {
+		_, hasScope := attributes["threadnote.context_brief.scope"]
+		_, hasOperationElapsed := anyInt(attributes["threadnote.operation.elapsed_ms"])
+		if contextAttributeCount == 1 && hasScope &&
+			((event == "checkpoint" && hasOperationElapsed) || event == "completion") {
+			return nil
+		}
+		return errors.New("context brief telemetry requires a closed context brief phase")
+	}
+	if !hasPhase {
+		return errors.New("context brief telemetry requires a closed context brief phase")
+	}
+	if _, hasScope := attributes["threadnote.context_brief.scope"]; !hasScope {
+		return errors.New("context brief telemetry requires scope")
+	}
+
+	validationFieldCount := contextBriefCitationValidationFieldCount(attributes)
+	_, hasOutputTruncated := attributes["threadnote.context_brief.output_truncated"]
+	if event == "checkpoint" {
+		outcome, hasOutcome := anyString(attributes["threadnote.phase.outcome"])
+		if !hasOutcome {
+			return errors.New("context brief checkpoint requires phase outcome")
+		}
+		if outcome != "success" {
+			if validationFieldCount != 0 || hasOutputTruncated {
+				return errors.New("non-successful context brief checkpoint cannot include result fields")
+			}
+			return nil
+		}
+		switch phase {
+		case "context.brief.citation-validation":
+			if hasOutputTruncated || !hasCompleteContextBriefCitationSurface(attributes) {
+				return errors.New("successful citation validation requires the complete citation surface")
+			}
+			return validateContextBriefCitationResultShape(attributes)
+		case "context.brief.projection":
+			if validationFieldCount != 0 || !hasOutputTruncated {
+				return errors.New("successful context brief projection requires only truncation result")
+			}
+			return nil
+		case "context.brief.graph", "context.brief.memory":
+			if validationFieldCount != 0 || hasOutputTruncated {
+				return errors.New("graph and memory context brief phases cannot include result fields")
+			}
+			return nil
+		default:
+			return errors.New("invalid context brief phase")
+		}
+	}
+	if event != "completion" {
+		return errors.New("context brief telemetry requires a checkpoint or completion event")
+	}
+	outcome, _ := anyString(attributes["threadnote.outcome"])
+	if outcome != "success" {
+		if validationFieldCount != 0 || hasOutputTruncated {
+			return errors.New("non-successful context brief completion cannot include result fields")
+		}
+		return nil
+	}
+	if phase != "context.brief.projection" || !hasOutputTruncated || !hasCompleteContextBriefCitationSurface(attributes) {
+		return errors.New("successful instrumented context brief completion requires the complete result surface")
+	}
+	return validateContextBriefCitationResultShape(attributes)
+}
+
+func contextBriefCitationValidationFieldCount(attributes map[string]*commonpb.AnyValue) int {
+	count := 0
+	for _, key := range []string{
+		"threadnote.context_brief.citation_coverage",
+		"threadnote.context_brief.citation_result",
+		"threadnote.context_brief.citation_unknown_reason",
+	} {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	for _, key := range contextBriefCitationBucketAttributes {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	return count
+}
+
+func hasCompleteContextBriefCitationSurface(attributes map[string]*commonpb.AnyValue) bool {
+	for _, key := range []string{
+		"threadnote.context_brief.citation_coverage",
+		"threadnote.context_brief.citation_result",
+	} {
+		if _, exists := attributes[key]; !exists {
+			return false
+		}
+	}
+	for _, key := range contextBriefCitationBucketAttributes {
+		if _, exists := attributes[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func validateContextBriefCitationResultShape(attributes map[string]*commonpb.AnyValue) error {
+	coverage, _ := anyString(attributes["threadnote.context_brief.citation_coverage"])
+	result, _ := anyString(attributes["threadnote.context_brief.citation_result"])
+	_, hasUnknownReason := attributes["threadnote.context_brief.citation_unknown_reason"]
+	requiresUnknownReason := result == "unknown" || result == "mixed"
+	if hasUnknownReason != requiresUnknownReason {
+		return errors.New("context brief unknown reason must match the citation result")
+	}
+	citations := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.citations_bucket")
+	exact := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.exact_citations_bucket")
+	relocated := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.relocated_citations_bucket")
+	stale := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.stale_citations_bucket")
+	unknown := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.unknown_citations_bucket")
+	for _, key := range []string{
+		"threadnote.context_brief.cache_hits_bucket",
+		"threadnote.context_brief.cited_memories_bucket",
+		"threadnote.context_brief.exact_citations_bucket",
+		"threadnote.context_brief.relocated_citations_bucket",
+		"threadnote.context_brief.repositories_validated_bucket",
+		"threadnote.context_brief.stale_citations_bucket",
+		"threadnote.context_brief.unknown_citations_bucket",
+	} {
+		if contextBriefBucketOrdinal(attributes, key) > citations {
+			return errors.New("context brief work bucket cannot exceed the citation bucket")
+		}
+	}
+	if (citations < 0) != (coverage == "none") || (citations < 0) != (result == "none") {
+		return errors.New("empty context brief citations require none coverage and result")
+	}
+	switch coverage {
+	case "complete":
+		if unknown >= 0 {
+			return errors.New("complete context brief coverage cannot include unknown citations")
+		}
+	case "partial":
+		if unknown < 0 || (exact < 0 && relocated < 0 && stale < 0) {
+			return errors.New("partial context brief coverage requires known and unknown citations")
+		}
+	case "unavailable":
+		if unknown != citations || exact >= 0 || relocated >= 0 || stale >= 0 {
+			return errors.New("unavailable context brief coverage requires only unknown citations")
+		}
+	}
+	switch result {
+	case "exact-only":
+		if coverage != "complete" || exact < 0 || relocated >= 0 || stale >= 0 || unknown >= 0 {
+			return errors.New("invalid exact-only context brief result")
+		}
+	case "relocated":
+		if coverage != "complete" || relocated < 0 || stale >= 0 || unknown >= 0 {
+			return errors.New("invalid relocated context brief result")
+		}
+	case "stale":
+		if coverage != "complete" || stale < 0 || unknown >= 0 {
+			return errors.New("invalid stale context brief result")
+		}
+	case "unknown":
+		if (coverage != "partial" && coverage != "unavailable") || stale >= 0 || unknown < 0 {
+			return errors.New("invalid unknown context brief result")
+		}
+	case "mixed":
+		if coverage != "partial" || stale < 0 || unknown < 0 {
+			return errors.New("invalid mixed context brief result")
+		}
+	}
+	return nil
+}
+
+func contextBriefBucketOrdinal(attributes map[string]*commonpb.AnyValue, key string) int {
+	value, _ := anyString(attributes[key])
+	if value == "0" {
+		return -1
+	}
+	exponent, err := strconv.Atoi(strings.TrimPrefix(value, "2^"))
+	if err != nil {
+		return -1
+	}
+	return exponent
 }
 
 func validateGraphQueryAttributeShape(attributes map[string]*commonpb.AnyValue, schema *compiledTelemetrySchema, event, operation string) error {

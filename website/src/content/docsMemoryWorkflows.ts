@@ -21,8 +21,9 @@ export const memoryWorkflowsDocsSection: DocsSection = {
   --kind durable \\
   --project payments \\
   --topic idempotency-contract \\
+  --code-ref src/payments/retry.ts \\
   --source-agent-client codex \\
-  --text "Retries reuse the original idempotency key. Evidence: docs/payments.md."`,
+  --text "Retries reuse the original idempotency key."`,
         },
         {
           type: 'heading',
@@ -34,6 +35,7 @@ export const memoryWorkflowsDocsSection: DocsSection = {
           code: `threadnote handoff \\
   --project payments \\
   --topic retry-rollout \\
+  --code-ref cgs_… \\
   --task "Roll out idempotent retries" \\
   --tests "bun test payments" \\
   --blockers "Sandbox fixture is unavailable" \\
@@ -46,13 +48,115 @@ export const memoryWorkflowsDocsSection: DocsSection = {
       ],
     },
     {
+      id: 'code-citations',
+      title: 'Cite code in engineering memory',
+      summary: 'Capture immutable file or symbol evidence and let each Context Brief validate it again.',
+      keywords: [
+        'memory code citations',
+        'codeRefs',
+        'code-ref',
+        'stale memory',
+        'stale link warning',
+        'citation freshness',
+        'legacy memory compatibility',
+      ],
+      body: [
+        {
+          type: 'paragraph',
+          text: 'Use a repeatable --code-ref in CLI remember or handoff, or codeRefs in remember_context and review_session_context, when a memory makes a consequential claim about source. A reference may be a safe repository-relative path, a local cgs_ symbol handle, or a repository-qualified cgr_ handle. A path captures the file; a symbol handle captures the indexed source fragment.',
+        },
+        {
+          type: 'code',
+          language: 'sh',
+          code: `threadnote remember \\
+  --kind durable \\
+  --project payments \\
+  --topic retry-contract \\
+  --code-ref src/payments/retry.ts \\
+  --code-ref cgs_… \\
+  --text "Retries preserve the original idempotency key."`,
+        },
+        {
+          type: 'code',
+          language: 'json',
+          code: `{
+  "kind": "durable",
+  "project": "payments",
+  "topic": "retry-contract",
+  "callerCwd": "/workspace/payments",
+  "codeRefs": ["src/payments/retry.ts", "cgs_…"],
+  "text": "Retries preserve the original idempotency key."
+}`,
+        },
+        {
+          type: 'paragraph',
+          text: 'Capture resolves every explicit reference against an already-published exact-current graph, records repository and snapshot provenance, and derives file or source-fragment hashes inside Threadnote. It is atomic: an invalid, missing, ambiguous, racing, or non-current reference fails the write instead of storing a partly cited memory. Capture never starts indexing, so prepare or refresh the graph explicitly before retrying.',
+        },
+        {
+          type: 'heading',
+          text: 'Immutable capture, disposable observation',
+        },
+        {
+          type: 'paragraph',
+          text: 'The citation stored with a memory is an immutable capture receipt: what bytes were observed, where, and in which repository snapshot. A Context Brief computes a new disposable validation receipt against the selected exact-current ready graph. Validation never rewrites the citation, even when it finds the same evidence at a new location.',
+        },
+        {
+          type: 'table',
+          headers: ['Citation status', 'What Threadnote observed', 'Memory result'],
+          rows: [
+            ['exact', 'The same file bytes or symbol fragment remain at the captured locator.', 'Fresh'],
+            [
+              'relocated',
+              'One deterministic, unique match has the same evidence at a different path, node, or span.',
+              'Fresh, with a stale-link warning',
+            ],
+            ['changed', 'The captured locator or unique successor now contains different cited evidence.', 'Stale'],
+            [
+              'deleted',
+              'Complete current coverage finds neither the original evidence nor one unique relocation.',
+              'Stale',
+            ],
+            [
+              'unknown',
+              'The graph is unavailable, non-current, incomplete, ambiguous, malformed, unsupported, or over budget.',
+              'Unknown; Threadnote abstains',
+            ],
+          ],
+        },
+        {
+          type: 'paragraph',
+          text: 'For a cited memory, any changed or deleted receipt makes freshness stale; otherwise any unknown receipt makes it unknown; otherwise exact and relocated receipts make it fresh. Precise current evidence supersedes an older sourceCommit, so an unchanged cited fragment can remain fresh after later commits. Exact proves persistence of the cited evidence, not that the memory’s natural-language interpretation is semantically true.',
+        },
+        {
+          type: 'note',
+          text: 'Existing uncited v1 and other legacy memories stay in recall. Context Brief continues to use their conservative sourceCommit-based freshness when one repository snapshot resolves, and reports unknown when it cannot establish that coarse basis. Upgrading never turns legacy recall into an empty result.',
+        },
+        {
+          type: 'heading',
+          text: 'Replace and share deliberately',
+        },
+        {
+          type: 'paragraph',
+          text: 'Replacing cited memory with codeRefs or --code-ref captures new immutable evidence. Omitting them clears prior citations and reports the cleared count; citations are never silently inherited across edited prose. Approved review candidates retain the receipts captured at review time rather than minting new evidence during approval.',
+        },
+        {
+          type: 'warning',
+          text: 'A cited memory can cross a team-sharing boundary only when every citation was captured from clean committed source and has a portable remote repository identity. Dirty-worktree, local-only, or malformed citations block publishing; commit the source and recapture instead of stripping the evidence.',
+        },
+        {
+          type: 'note',
+          text: 'New writes accept at most eight deduplicated citations per memory. Context Brief validates only selected memories, at most 96 citations across at most 32 cited repositories with concurrency capped at four. Overflow and unavailable coverage become explicit unknown receipts; they never trigger a cold graph build.',
+        },
+      ],
+    },
+    {
       id: 'candidate-review',
       title: 'Additional candidate review',
       summary: 'Let the agent propose extra memories without silently turning a session summary into truth.',
       body: [
         {
           type: 'paragraph',
-          text: 'After normal durable and handoff writes, review_session_context may form up to three extra decision, invariant, preference, or handoff candidates. It compares existing active project/topic memories and persists only a pending review with audit history.',
+          text: 'After normal durable and handoff writes, review_session_context may form up to three extra decision, invariant, preference, or handoff candidates. It compares existing active project/topic memories and persists only a pending review with audit history. Optional codeRefs are captured once against the exact-current graph and carried into approved candidates.',
         },
         {
           type: 'list',
@@ -509,20 +613,28 @@ threadnote context brief \\
           text: 'CLI repository scope defaults to the current directory; an explicit --cwd must be absolute. MCP always requires absolute callerCwd. --workset scopes graph retrieval only: memory recall remains global unless --project or project narrows it independently. Modes are brief, locate, explain, trace, and impact; they tune the bounded internal evidence plan without becoming query syntax.',
         },
         {
-          type: 'warning',
-          text: 'Coarse memory freshness is fresh or stale only when exactly one repository snapshot resolves and a memory’s sourceCommit exactly matches or differs from that snapshot. A normal multi-repository workset brief therefore reports memory freshness as unknown today. The precise exact/relocated/changed/deleted citation validator exists as an internal boundary but is not yet wired to ordinary memory records.',
-        },
-        {
           type: 'paragraph',
-          text: 'Context Brief uses the same combined text-plus-structured UTF-8 estimate, defaults to 1,250 tokens, and accepts at most 1,500. A legal but tiny budget fails when mandatory scope, trust, and coverage metadata cannot fit. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
-        },
-        {
-          type: 'warning',
-          text: 'Context Brief v1 does not automatically run workset path, reverse impact, or topology. Its graph cards and contracts come from the bounded V2 query projection and retained card relationships, including an exact Protobuf bridge relationship when that query projected one; it does not traverse beyond those returned cards. Call inspect_code_graph path, impact, or topology separately when explicit bridge traversal is consequential to the task.',
+          text: 'Context Brief v2 validates code citations only for the memories selected by bounded recall. Each returned durable decision or handoff keeps freshness beside its excerpt and may include preciseStatus plus bounded citationReceipts with exact, relocated, changed, deleted, or unknown status. A relocated receipt adds a stale-link issue while the memory remains fresh; changed or deleted evidence makes it stale; incomplete or ambiguous evidence stays unknown.',
         },
         {
           type: 'note',
-          text: 'CLI text output is intentionally a one-line receipt; use --json to consume the evidence arrays and follow-ups. MCP returns the terse receipt in content and the complete bounded projection in structuredContent.',
+          text: 'Uncited legacy memories are still selected and returned. They retain conservative sourceCommit freshness when one repository snapshot resolves and otherwise report unknown, including ordinary cases where no precise citation exists. Citation support does not migrate, hide, or discard old memory.',
+        },
+        {
+          type: 'warning',
+          text: 'Validation reads only exact-current ready snapshots and never starts cold indexing. A missing, stale, deferred, failed, racing, ambiguous, or out-of-scope graph yields unknown rather than a guessed exact or deleted result. Run graph status or workset prepare explicitly when fresher evidence is required.',
+        },
+        {
+          type: 'paragraph',
+          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. The combined text-plus-structured UTF-8 estimate still defaults to 1,250 tokens and accepts at most 1,500. A legal but tiny budget fails when mandatory scope, trust, and coverage metadata cannot fit. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
+        },
+        {
+          type: 'warning',
+          text: 'Context Brief v2 does not automatically run workset path, reverse impact, or topology. Its graph cards and contracts come from the bounded V2 query projection and retained card relationships, including an exact Protobuf bridge relationship when that query projected one; it does not traverse beyond those returned cards. Call inspect_code_graph path, impact, or topology separately when explicit bridge traversal is consequential to the task.',
+        },
+        {
+          type: 'note',
+          text: 'CLI text output is intentionally a one-line receipt; use --json to consume the evidence arrays, citation receipts, staleness warnings, and follow-ups. MCP returns the terse receipt in content and the complete bounded projection in structuredContent.',
         },
         {
           type: 'heading',
@@ -547,6 +659,10 @@ threadnote context brief \\
             [
               'Token growth',
               'Adding irrelevant repositories may increase indexed routing work, but it must not linearly inflate the returned evidence envelope. Use continuation or a narrower task instead of requesting repository dumps.',
+            ],
+            [
+              'Citation work',
+              'Only selected memories are validated. The citation phase is batched by repository and bounded to 96 citations and 32 cited repositories; missing coverage becomes unknown instead of causing an unbounded scan or cold build.',
             ],
           ],
         },
@@ -577,6 +693,18 @@ threadnote context brief \\
             [
               'Response is truncated',
               'Follow continuation.cursor, increase budgetTokens only up to 1,500, or ask a narrower question. Coverage and trust remain present even when evidence cards are omitted.',
+            ],
+            [
+              'Cited code is relocated',
+              'Treat the stale-link issue as repair guidance, not stale memory. Read the memory and observed locator, review the claim, then replace the memory with fresh codeRefs or --code-ref values to recapture it.',
+            ],
+            [
+              'Cited code is changed or deleted',
+              'Treat the memory as stale. Inspect current source, revise or archive the claim, and replace it with newly reviewed prose and citations when appropriate.',
+            ],
+            [
+              'Citation status is unknown',
+              'Read the closed reason. Prepare a missing or stale workset explicitly, refresh a repository graph explicitly, narrow ambiguous evidence, or accept that unsupported and incomplete cases must abstain.',
             ],
             [
               'Budget is too small',

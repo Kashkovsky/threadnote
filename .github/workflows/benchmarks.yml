@@ -11,6 +11,8 @@ on:
       - 'scripts/benchmark-code-graph-embedding-contexts.ts'
       - 'scripts/benchmark-code-graph-workset.ts'
       - 'scripts/benchmark-code-graph-heavy-tail.ts'
+      - 'scripts/benchmark-context-brief-citations.ts'
+      - 'scripts/benchmark-context-brief-citations-target.ts'
       - 'scripts/generate-code-graph-heavy-tail-ratchet.ts'
       - 'scripts/generate-code-graph-production-ratchet.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
@@ -40,6 +42,7 @@ on:
       - 'src/storage/layout.ts'
       - 'test/evaluation/baselines/code-graph-v1/**'
       - 'test/evaluation/baselines/code-graph-workset-v1/**'
+      - 'test/evaluation/baselines/context-brief-citations-v1/**'
       - 'test/evaluation/candidates/threadnote-4.0.0/**'
       - 'test/evaluation/fixtures/code-graph-v1/**'
       - 'test/evaluation/fixtures/code-graph-workset-v1/**'
@@ -62,6 +65,11 @@ on:
         default: false
       include_heavy_tail:
         description: Run parser/cache heavy-tail coverage; this is not a production materialization benchmark
+        required: false
+        type: boolean
+        default: false
+      include_context_brief_citations_scale:
+        description: Run the built Context Brief citation 100k/50/128 scale gate
         required: false
         type: boolean
         default: false
@@ -223,6 +231,40 @@ jobs:
           path: artifacts/code-graph-workset-*.json
           if-no-files-found: error
           retention-days: 30
+
+  context-brief-citations-scale:
+    name: Context Brief citations 100k memories / 50 / 128 · pinned Linux class
+    if: github.event_name == 'schedule' || inputs.include_context_brief_citations_scale
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build and gate warm-ready Context Brief citation scale evidence
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+        run: >-
+          bun run bench:context-brief-citations --
+          --memory-candidates 100000
+          --samples 25
+          --warmups 5
+          --fail-on-budget
+          --output artifacts/context-brief-citations-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: context-brief-citations-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/context-brief-citations-scale-*.json
+          if-no-files-found: error
+          retention-days: 90
 
   code-graph-10k:
     name: Code graph 10k · ${{ matrix.os }}

@@ -219,6 +219,7 @@ function readSnapshotStorageAttribution(
       `WITH selected(snapshot_id) AS (VALUES ${values})
        SELECT file.snapshot_id, 'workspace-inventory' AS group_name, COUNT(*) AS row_count,
               COALESCE(SUM(length(CAST(file.path AS BLOB)) + length(CAST(file.content_hash AS BLOB)) +
+                length(CAST(COALESCE(file.raw_content_hash, '') AS BLOB)) +
                 length(CAST(file.language AS BLOB)) + length(CAST(file.mode AS BLOB)) +
                 length(CAST(file.source AS BLOB)) + 8), 0) AS logical_bytes,
               0 AS fact_raw_bytes
@@ -369,6 +370,7 @@ function readSnapshotClassifierStorageAttribution(
        SELECT file.snapshot_id, file.language, 'source' AS group_name, COUNT(*) AS row_count,
               COALESCE(SUM(file.size), 0) AS source_bytes,
               COALESCE(SUM(length(CAST(file.path AS BLOB)) + length(CAST(file.content_hash AS BLOB)) +
+                length(CAST(COALESCE(file.raw_content_hash, '') AS BLOB)) +
                 length(CAST(file.language AS BLOB)) + length(CAST(file.mode AS BLOB)) +
                 length(CAST(file.source AS BLOB)) + 8), 0) AS logical_bytes,
               0 AS fact_raw_bytes

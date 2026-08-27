@@ -329,6 +329,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           recordedRevision === 11 ||
           recordedRevision === 12 ||
           recordedRevision === 14 ||
+          recordedRevision === 15 ||
           recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) &&
         extensionSchemaCompatible
       ) {

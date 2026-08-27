@@ -791,6 +791,7 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
   baseSnapshotId: string,
+  currentSnapshotReceipt: CodeGraphReusableBaseReceiptInput,
 ) {
   yield* configureConnection(sql);
   if (snapshot.dirty || snapshot.baseSnapshotId !== baseSnapshotId) {
@@ -850,6 +851,18 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
           ${snapshot.graphContentId ?? baseGraphContentId}, ${baseSnapshotId}, ${snapshot.extractorSet},
           0, NULL, 'ready', ${snapshot.fileCount},
           ${snapshot.symbolCount}, ${snapshot.edgeCount}, ${completedAt}, ${completedAt}
+        )
+      `;
+      yield* sql`
+        INSERT INTO snapshot_reuse_receipts (
+          snapshot_id, format_version, resolution_surface_version, extractor_set,
+          workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
+          reexport_count, inventory_receipt_json, created_at
+        ) VALUES (
+          ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+          ${currentSnapshotReceipt.workspaceFingerprint}, ${currentSnapshotReceipt.fileSetFingerprint},
+          0, 0, 0, ${encodeCodeGraphInventoryReuseReceipt(currentSnapshotReceipt.inventory)},
+          ${completedAt}
         )
       `;
       yield* sql`

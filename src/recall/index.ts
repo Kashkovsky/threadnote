@@ -4,9 +4,8 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {SEED_STATE_FILE} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
-import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {SystemInfo} from '../effect/system.js';
-import {parseSeedManifest, uriSegment} from '../manifest.js';
+import {parseSeedManifest} from '../manifest.js';
 import {
   boundedMemoryAuthority,
   boundedMemoryTrust,
@@ -14,7 +13,6 @@ import {
   type MemoryRelation,
 } from '../memory_document.js';
 import {redactSensitiveText} from '../scrubber.js';
-import {canonicalResourceUri, parseResourceId} from '../storage/resource-id.js';
 import type {ProjectManifest} from '../types.js';
 import {errorMessage, expandPath, globToRegExp} from '../utils.js';
 import {
@@ -24,11 +22,9 @@ import {
   postingLexicalScore,
   selectQueryTerms,
   stripRecallAnchor,
-  type RecallIndexPosting,
 } from './index_lexical.js';
 import {
   deduplicateLogicalRecallCandidates,
-  recallCandidateLogicalCorpusKey,
   recallMemoryContentHash,
   recallDocumentTerms,
   type RecallCandidate,
@@ -37,12 +33,11 @@ import {
 import {normalizeRecallSearchText} from './tokenize.js';
 import {removeLegacyRecallIndexArtifacts} from './index_cleanup.js';
 import {
-  normalizeRecallProject,
   recallCandidateIsEligible,
   recallEligibilityPolicyRestrictsCandidates,
   type RecallEligibilityPolicy,
 } from './eligibility.js';
-import {recallApprovedAuthoritative, recallEligibilityPredicate} from './index_eligibility.js';
+import {recallEligibilityPredicate} from './index_eligibility.js';
 import {
   boundedRecallPhysicalCandidateLimit,
   RECALL_RECENCY_CANDIDATE_RESERVE,
@@ -52,7 +47,6 @@ import {
 import * as RecallIndexIdentity from './index_identity.js';
 import {
   combineRecallSqlPredicates,
-  normalizeRecallWorkspaceScope,
   recallUriMatchesScopes,
   recallUriScopePredicate,
   recallWorkspaceScopeMatches,
@@ -62,30 +56,33 @@ import {
   recallProjectMatches,
   recallQuerySelectionIsExhaustive,
   recallSelectionHasDocuments,
-  normalizedRecallRecordedAt,
   selectRecallDocumentRows,
   selectRecallDocumentSample,
   selectRecallQueryTermStatistics,
   selectRecallRecentTopicalDocuments,
   selectTopRecallPostingsByTerms,
 } from './index_selection.js';
+import {
+  countRecallSourceChanges,
+  dropRecallSourceScan,
+  forEachChangedRecallSourcePage,
+  hashRecallRefreshGeneration,
+  insertIndexedRecallSources,
+  RECALL_REFRESH_AFFECTED_TERM_TABLE,
+  RECALL_REFRESH_INDEXED_DOCUMENT_TABLE,
+  RECALL_REFRESH_INDEXED_POSTING_TABLE,
+  RECALL_REFRESH_REPLACED_DOCUMENT_TABLE,
+  RECALL_REFRESH_SOURCE_TABLE,
+  scanRecallSources,
+  stageRecallRefreshAffectedTerms,
+  type CanonicalResourcePolicy,
+  type IndexedRecallSource,
+} from './index_refresh.js';
 
 export {recallUriMatchesScopes} from './index_scope.js';
 
 class RecallIndexOperationError extends Error {
   readonly _tag = 'RecallIndexOperationError' as const;
-}
-
-interface RecallIndexSource {
-  readonly modifiedAt?: string;
-  readonly path: string;
-  readonly size: number;
-  readonly uri: string;
-}
-
-interface CanonicalResourcePolicy {
-  readonly entryKeyByUri: ReadonlyMap<string, string>;
-  readonly sourcePathByUri: ReadonlyMap<string, string>;
 }
 
 interface SeedStateEntry {
@@ -154,13 +151,6 @@ interface RecallDocumentRow {
   readonly uri: string;
 }
 
-interface RecallDocumentSourceRow extends RecallDocumentRow {
-  readonly authority_policy_key: string | null;
-  readonly source_modified_at: string | null;
-  readonly source_path: string;
-  readonly source_size: number;
-}
-
 interface RecallMetadataRow {
   readonly key: string;
   readonly value: string;
@@ -171,27 +161,17 @@ interface RecallTermStatisticRow {
   readonly term: string;
 }
 
-interface IndexedRecallSource {
-  readonly candidate: RecallCandidate;
-  readonly documentLength: number;
-  readonly exactSearchText: string;
-  readonly postings: ReadonlyMap<string, RecallIndexPosting>;
-  readonly source: RecallIndexSource;
-}
-
-const RECALL_INDEX_DATABASE_VERSION = 8;
+const RECALL_INDEX_DATABASE_VERSION = 9;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const INACTIVE_DATABASE_FILENAME = `with-inactive-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const CACHE_VALIDATION_INTERVAL_MILLISECONDS = 30_000;
 const MAX_RECALL_INVALIDATED_URIS = 1_024;
-const MAX_INDEXED_FILE_BYTES = 512 * 1_024;
 const DEFAULT_QUERY_RESULT_LIMIT = 100;
 const QUERY_POSTING_POOL_MULTIPLIER = 5;
 const MINIMUM_QUERY_POSTING_POOL = 500;
 const SEED_FILE_MTIME_TOLERANCE_MILLISECONDS = 1;
-const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml']);
 let staleGenerationCounter = 0;
 
 interface RecallIndexPointer {
@@ -1025,45 +1005,32 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   const staleMarker = yield* readStaleMarker(fs, staleMarkerBasePath);
   const staleGeneration = staleMarker?.generation;
   const canonicalResourcePolicy = yield* loadCanonicalResourcePolicy(config);
-  const sourceScan = yield* scanRecallSources(fs, path, config, includeInactive);
-  const sources = sourceScan.sources;
-  const storedRows = yield* sql<RecallDocumentSourceRow>`
-    SELECT
-      id,
-      uri,
-      source_path,
-      source_modified_at,
-      source_size,
-      authority_policy_key,
-      candidate_json
-    FROM documents
-    ORDER BY uri
-  `;
   const previousMetadata = yield* loadRecallMetadata(sql);
   const markerChanged = previousMetadata.get('stale_generation') !== (staleGeneration ?? '');
   const invalidatedUris = markerChanged ? new Set(staleMarker?.invalidatedUris ?? []) : new Set<string>();
   const forceFromMarker = markerChanged && staleMarker?.forceRefresh === true;
-  const storedByUri = new Map(storedRows.map(row => [row.uri, row]));
-  const sourceUris = new Set(sources.map(source => source.uri));
-  const removedUris = storedRows.map(row => row.uri).filter(uri => !sourceUris.has(uri));
-  const changedSources = sources.filter(source => {
-    const stored = storedByUri.get(source.uri);
-    return (
-      forceRefresh ||
-      forceFromMarker ||
-      invalidatedUris.has(source.uri) ||
-      !stored ||
-      !sameStoredSource(stored, source) ||
-      stored.authority_policy_key !== (canonicalResourcePolicy.entryKeyByUri.get(source.uri) ?? null)
-    );
-  });
-  const indexedSources: IndexedRecallSource[] = [];
-  yield* onProgress?.({completed: 0, phase: 'indexing', scanned: sources.length, total: changedSources.length}) ??
-    Effect.void;
-  for (const batch of chunkValues(changedSources, 64)) {
-    indexedSources.push(
-      ...(yield* Effect.forEach(
-        batch,
+  const sourceScan = yield* scanRecallSources(
+    sql,
+    fs,
+    path,
+    config,
+    includeInactive,
+    canonicalResourcePolicy,
+    invalidatedUris,
+  );
+  const forceAllSources = forceRefresh || forceFromMarker;
+  const refreshCounts = yield* countRecallSourceChanges(sql, forceAllSources);
+  yield* onProgress?.({
+    completed: 0,
+    phase: 'indexing',
+    scanned: sourceScan.scannedSourceCount,
+    total: refreshCounts.changedSourceCount,
+  }) ?? Effect.void;
+  let indexedSourceCount = 0;
+  yield* forEachChangedRecallSourcePage(sql, forceAllSources, page =>
+    Effect.gen(function* () {
+      const indexedSources = yield* Effect.forEach(
+        page,
         source =>
           Effect.gen(function* () {
             const content = yield* fs.readFileString(source.path);
@@ -1073,156 +1040,114 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             return {
               candidate,
               documentLength: recallDocumentTerms(candidate).length,
-              exactSearchText: normalizeRecallSearchText(redactSensitiveText(content)),
+              exactSearchText: recallExactSearchText(candidate),
               postings,
               source,
             } satisfies IndexedRecallSource;
           }),
         {concurrency: 16},
-      )),
-    );
-    yield* onProgress?.({
-      completed: indexedSources.length,
-      phase: 'indexing',
-      scanned: sources.length,
-      total: changedSources.length,
-    }) ?? Effect.void;
-  }
-  const changedUris = new Set([...removedUris, ...changedSources.map(source => source.uri)]);
+      );
+      yield* insertIndexedRecallSources(sql, indexedSources);
+      indexedSourceCount += indexedSources.length;
+      yield* onProgress?.({
+        completed: indexedSourceCount,
+        phase: 'indexing',
+        scanned: sourceScan.scannedSourceCount,
+        total: refreshCounts.changedSourceCount,
+      }) ?? Effect.void;
+    }),
+  );
   const previousContentGeneration = previousMetadata.get('content_generation');
   const contentGeneration =
-    changedUris.size === 0 && previousContentGeneration
+    refreshCounts.changedSourceCount === 0 && refreshCounts.removedSourceCount === 0 && previousContentGeneration
       ? previousContentGeneration
-      : yield* sha256Hex(
-          JSON.stringify({
-            changed: indexedSources.map(indexed => ({
-              candidate: indexed.candidate,
-              uri: indexed.source.uri,
-            })),
-            previous: previousContentGeneration ?? null,
-            removed: removedUris,
-          }),
-        );
-  const replacedDocumentIds = storedRows.filter(row => changedUris.has(row.uri)).map(row => row.id);
-  const affectedTerms = new Set(yield* selectPostingTermsByDocumentIds(sql, replacedDocumentIds));
-  for (const indexed of indexedSources) {
-    for (const term of indexed.postings.keys()) {
-      affectedTerms.add(term);
-    }
-  }
+      : yield* hashRecallRefreshGeneration(sql, previousContentGeneration);
   const previousValidatedAt = numericMetadata(previousMetadata, 'validated_at');
   const now = yield* Clock.currentTimeMillis;
-  yield* onProgress?.({completed: 0, phase: 'writing', removed: removedUris.length, total: indexedSources.length}) ??
-    Effect.void;
+  yield* onProgress?.({
+    completed: 0,
+    phase: 'writing',
+    removed: refreshCounts.removedSourceCount,
+    total: refreshCounts.changedSourceCount,
+  }) ?? Effect.void;
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      for (const documentIds of chunkValues(replacedDocumentIds, 400)) {
-        yield* sql`DELETE FROM exact_search WHERE ${sql.in('rowid', documentIds)}`;
+      yield* stageRecallRefreshAffectedTerms(sql);
+      yield* sql.unsafe(`
+        DELETE FROM exact_search
+        WHERE rowid IN (SELECT document_id FROM temp.${RECALL_REFRESH_REPLACED_DOCUMENT_TABLE})
+      `);
+      yield* sql.unsafe(`
+        DELETE FROM documents
+        WHERE id IN (SELECT document_id FROM temp.${RECALL_REFRESH_REPLACED_DOCUMENT_TABLE})
+      `);
+      yield* sql.unsafe(`
+        INSERT INTO documents (
+          uri,
+          project,
+          approved_authoritative,
+          workspace_scope,
+          source_path,
+          source_modified_at,
+          recorded_at,
+          source_size,
+          authority_policy_key,
+          candidate_json,
+          logical_key,
+          document_length
+        )
+        SELECT
+          indexed.uri,
+          indexed.project,
+          indexed.approved_authoritative,
+          indexed.workspace_scope,
+          source.source_path,
+          source.source_modified_at,
+          indexed.recorded_at,
+          source.source_size,
+          source.authority_policy_key,
+          indexed.candidate_json,
+          indexed.logical_key,
+          indexed.document_length
+        FROM temp.${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE} AS indexed
+        INNER JOIN temp.${RECALL_REFRESH_SOURCE_TABLE} AS source ON source.uri = indexed.uri
+        ORDER BY indexed.uri COLLATE BINARY
+      `);
+      yield* sql.unsafe(`
+        INSERT INTO exact_search (rowid, content)
+        SELECT document.id, indexed.exact_search_text
+        FROM temp.${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE} AS indexed
+        INNER JOIN documents AS document ON document.uri = indexed.uri
+        ORDER BY indexed.uri COLLATE BINARY
+      `);
+      yield* sql.unsafe(`
+        INSERT INTO postings (term, document_id, field_weight, term_frequency)
+        SELECT posting.term, document.id, posting.field_weight, posting.term_frequency
+        FROM temp.${RECALL_REFRESH_INDEXED_POSTING_TABLE} AS posting
+        INNER JOIN documents AS document ON document.uri = posting.uri
+        ORDER BY posting.term COLLATE BINARY, document.id
+      `);
+      if (refreshCounts.changedSourceCount > 0) {
+        yield* onProgress?.({
+          completed: refreshCounts.changedSourceCount,
+          phase: 'writing',
+          removed: refreshCounts.removedSourceCount,
+          total: refreshCounts.changedSourceCount,
+        }) ?? Effect.void;
       }
-      for (const uris of chunkValues([...removedUris, ...changedSources.map(source => source.uri)], 400)) {
-        yield* sql`DELETE FROM documents WHERE ${sql.in('uri', uris)}`;
-      }
-      for (const batch of chunkValues(indexedSources, 50)) {
-        yield* sql.unsafe(
-          `INSERT INTO documents (
-            uri,
-            project,
-            approved_authoritative,
-            workspace_scope,
-            source_path,
-            source_modified_at,
-            recorded_at,
-            source_size,
-            authority_policy_key,
-            candidate_json,
-            logical_key,
-            document_length
-          ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-          batch.flatMap(indexed => [
-            stripRecallAnchor(indexed.candidate.uri),
-            normalizeRecallProject(indexed.candidate.fields?.project) ?? null,
-            recallApprovedAuthoritative(indexed.candidate.authority, indexed.candidate.trust) ? 1 : 0,
-            normalizeRecallWorkspaceScope(indexed.candidate.fields?.workspaceScope) ?? null,
-            indexed.source.path,
-            indexed.source.modifiedAt ?? null,
-            normalizedRecallRecordedAt(indexed.candidate.timestamp),
-            indexed.source.size,
-            canonicalResourcePolicy.entryKeyByUri.get(indexed.source.uri) ?? null,
-            JSON.stringify(indexed.candidate),
-            recallCandidateLogicalCorpusKey(indexed.candidate),
-            indexed.documentLength,
-          ]),
-        );
-      }
-      const insertedIdByUri = new Map<string, number>();
-      for (const uris of chunkValues(
-        indexedSources.map(indexed => stripRecallAnchor(indexed.candidate.uri)),
-        400,
-      )) {
-        const rows = yield* sql<{readonly id: number; readonly uri: string}>`
-          SELECT id, uri FROM documents WHERE ${sql.in('uri', uris)}
-        `;
-        rows.forEach(row => insertedIdByUri.set(row.uri, row.id));
-      }
-      for (const batch of chunkValues(indexedSources, 50)) {
-        yield* sql.unsafe(
-          `INSERT INTO exact_search (rowid, content)
-           VALUES ${batch.map(() => '(?, ?)').join(', ')}`,
-          batch.flatMap(indexed => {
-            const documentId = insertedIdByUri.get(stripRecallAnchor(indexed.candidate.uri));
-            if (documentId === undefined) {
-              throw new RecallIndexOperationError(`Could not resolve exact-search document ${indexed.candidate.uri}.`);
-            }
-            return [documentId, indexed.exactSearchText];
-          }),
-        );
-      }
-      let postingBatch: Array<readonly [string, number, number, number]> = [];
-      const flushPostings = () => {
-        if (postingBatch.length === 0) return Effect.void;
-        const current = postingBatch;
-        postingBatch = [];
-        return sql.unsafe(
-          `INSERT INTO postings (term, document_id, field_weight, term_frequency)
-           VALUES ${current.map(() => '(?, ?, ?, ?)').join(', ')}`,
-          current.flat(),
-        );
-      };
-      let writtenDocuments = 0;
-      for (const indexed of indexedSources) {
-        const documentId = insertedIdByUri.get(stripRecallAnchor(indexed.candidate.uri));
-        if (documentId === undefined) {
-          return yield* Effect.fail(
-            new RecallIndexOperationError(`Could not resolve inserted document ${indexed.candidate.uri}.`),
-          );
-        }
-        for (const [term, posting] of indexed.postings) {
-          postingBatch.push([term, documentId, posting.fieldWeight, posting.termFrequency]);
-          if (postingBatch.length >= 400) yield* flushPostings();
-        }
-        writtenDocuments += 1;
-        if (writtenDocuments % 50 === 0 || writtenDocuments === indexedSources.length) {
-          yield* onProgress?.({
-            completed: writtenDocuments,
-            phase: 'writing',
-            removed: removedUris.length,
-            total: indexedSources.length,
-          }) ?? Effect.void;
-        }
-      }
-      yield* flushPostings();
       yield* RecallIndexIdentity.rebuildRecallIdentityConflicts(sql);
-      for (const terms of chunkValues([...affectedTerms], 400)) {
-        yield* sql`DELETE FROM term_statistics WHERE ${sql.in('term', terms)}`;
-        yield* sql`
-          INSERT INTO term_statistics (term, document_frequency)
-          SELECT p.term, COUNT(DISTINCT d.logical_key)
-          FROM postings AS p
-          INNER JOIN documents AS d ON d.id = p.document_id
-          WHERE ${sql.in('term', terms)}
-          GROUP BY p.term
-        `;
-      }
+      yield* sql.unsafe(`
+        DELETE FROM term_statistics
+        WHERE term IN (SELECT term FROM temp.${RECALL_REFRESH_AFFECTED_TERM_TABLE})
+      `);
+      yield* sql.unsafe(`
+        INSERT INTO term_statistics (term, document_frequency)
+        SELECT posting.term, COUNT(DISTINCT document.logical_key)
+        FROM postings AS posting
+        INNER JOIN documents AS document ON document.id = posting.document_id
+        WHERE posting.term IN (SELECT term FROM temp.${RECALL_REFRESH_AFFECTED_TERM_TABLE})
+        GROUP BY posting.term
+      `);
       const aggregate = yield* sql<{
         readonly document_count: number;
         readonly total_document_length: number | null;
@@ -1271,52 +1196,13 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
       yield* onProgress?.({documentCount, phase: 'activating'}) ?? Effect.void;
     }),
   );
+  yield* dropRecallSourceScan(sql);
   yield* fs.chmod(databasePath, 0o600);
   if (markerChanged && staleMarker) {
     yield* clearStaleMarkerInvalidations(fs, staleMarkerBasePath, staleMarker).pipe(Effect.catch(() => Effect.void));
   }
   yield* removeLegacyRecallIndexArtifacts(fs, path, config.agentContextHome, RECALL_INDEX_DATABASE_VERSION);
 });
-
-function scanRecallSources(
-  fs: FileSystem.FileSystem,
-  path: Path.Path,
-  config: RecallIndexConfig,
-  includeInactive: boolean,
-) {
-  return Effect.gen(function* () {
-    const sources: RecallIndexSource[] = [];
-    let skippedOversizedDocumentCount = 0;
-    for (const root of recallIndexRoots(config, path)) {
-      if (!(yield* fs.exists(root.path))) continue;
-      const files = yield* scanFilesWithinBoundary(fs, root.path, root.path, {
-        includeDirectory: candidate => !excludedDirectory(candidate, includeInactive),
-        includeFile: candidate => !excludedFile(candidate),
-      });
-      const eligibleFiles = files.filter(file => file.size <= MAX_INDEXED_FILE_BYTES);
-      skippedOversizedDocumentCount += files.length - eligibleFiles.length;
-      const rootId = parseResourceId(root.uri);
-      sources.push(
-        ...eligibleFiles.map(file => {
-          const relativeSegments = path
-            .relative(root.path, file.path)
-            .split(path.sep)
-            .map(segment => segment.normalize('NFC'));
-          return {
-            modifiedAt: file.modifiedAt?.toISOString(),
-            path: file.path,
-            size: file.size,
-            uri: canonicalResourceUri(rootId.namespace, [...rootId.segments, ...relativeSegments]),
-          };
-        }),
-      );
-    }
-    return {
-      skippedOversizedDocumentCount,
-      sources: sources.sort((left, right) => left.uri.localeCompare(right.uri)),
-    };
-  });
-}
 
 function loadRecallMetadata(sql: SqlClient.SqlClient) {
   return sql<RecallMetadataRow>`SELECT key, value FROM metadata`.pipe(
@@ -1365,19 +1251,6 @@ const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(func
   } satisfies RecallCorpusStatistics;
 });
 
-function selectPostingTermsByDocumentIds(sql: SqlClient.SqlClient, documentIds: readonly number[]) {
-  return Effect.gen(function* () {
-    const terms = new Set<string>();
-    for (const batch of chunkValues(documentIds, 400)) {
-      const rows = yield* sql<{readonly term: string}>`
-        SELECT DISTINCT term FROM postings WHERE ${sql.in('document_id', batch)}
-      `;
-      rows.forEach(row => terms.add(row.term));
-    }
-    return [...terms];
-  });
-}
-
 function decodeCandidateRow(row: RecallDocumentRow): RecallCandidate {
   let value: unknown;
   try {
@@ -1402,15 +1275,6 @@ function recallIndexCandidateIsEligible(
       project: candidate.fields?.project,
       trust: candidate.trust,
     })
-  );
-}
-
-function sameStoredSource(stored: RecallDocumentSourceRow, source: RecallIndexSource): boolean {
-  return (
-    stored.source_modified_at === (source.modifiedAt ?? null) &&
-    stored.source_path === source.path &&
-    stored.source_size === source.size &&
-    stored.uri === source.uri
   );
 }
 
@@ -1464,42 +1328,6 @@ function chunkValues<Value>(values: readonly Value[], size: number): readonly (r
   return chunks;
 }
 
-function recallIndexRoots(
-  config: RecallIndexConfig,
-  pathService: Path.Path,
-): readonly {readonly path: string; readonly uri: string}[] {
-  const storageRoot = pathService.join(config.agentContextHome, 'data', config.account);
-  return [
-    {path: pathService.join(storageRoot, 'resources'), uri: 'threadnote://resources'},
-    {
-      path: pathService.join(storageRoot, 'user', uriSegment(config.user), 'memories'),
-      uri: `threadnote://user/${uriSegment(config.user)}/memories`,
-    },
-  ];
-}
-
-function excludedDirectory(path: string, includeInactive: boolean): boolean {
-  const normalized = path.replaceAll('\\', '/');
-  if (normalized.includes('/agent-artifacts/packs/')) {
-    return true;
-  }
-  return (
-    !includeInactive &&
-    (normalized.includes('/archived/') || normalized.includes('/expired/') || normalized.includes('/superseded/'))
-  );
-}
-
-function excludedFile(path: string): boolean {
-  const extensionIndex = path.lastIndexOf('.');
-  const extension = extensionIndex === -1 ? '' : path.slice(extensionIndex).toLowerCase();
-  const normalized = path.replaceAll('\\', '/');
-  return (
-    !TEXT_EXTENSIONS.has(extension) ||
-    /\/\.(?:abstract|overview)\.md$/.test(normalized) ||
-    normalized.includes('/agent-artifacts/packs/')
-  );
-}
-
 function indexCandidate(uri: string, content: string, canonicalResource: boolean): RecallCandidate {
   const memory = parseMemoryDocument(uri, content);
   const text = redactSensitiveText(memory?.body ?? content);
@@ -1526,6 +1354,29 @@ function indexCandidate(uri: string, content: string, canonicalResource: boolean
     validFrom: memory?.metadata.validFrom,
     validTo: memory?.metadata.validTo,
   };
+}
+
+/**
+ * Exact search is a user-content surface, not a serialization search. Keep the
+ * parsed body and intentional low-entropy discovery fields while excluding
+ * machine headers such as citation IDs, hashes, snapshots, and repository IDs.
+ */
+function recallExactSearchText(candidate: RecallCandidate): string {
+  const fields = candidate.fields;
+  return normalizeRecallSearchText(
+    redactSensitiveText(
+      [
+        candidate.text,
+        fields?.title,
+        fields?.topic,
+        fields?.project,
+        fields?.workspaceScope,
+        ...(fields?.keywords ?? []),
+      ]
+        .filter((value): value is string => value !== undefined && value.length > 0)
+        .join('\n'),
+    ),
+  );
 }
 
 function memoryRelations(memory: ReturnType<typeof parseMemoryDocument>): readonly MemoryRelation[] | undefined {

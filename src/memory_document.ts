@@ -1,5 +1,14 @@
 import type {MemoryKind, MemoryStatus} from './types.js';
 import {parseResourceId} from './storage/resource-id.js';
+import {
+  assertMemorySchemaWritable,
+  formatMemoryCodeCitationLines,
+  MEMORY_CODE_CITATION_HEADER,
+  MEMORY_SCHEMA_VERSION,
+  parseMemoryCodeCitationHeaders,
+  type MemoryCodeCitationError,
+  type MemoryCodeCitationV1,
+} from './memory_code_citation.js';
 
 export type MemoryAuthority = 'agent_generated' | 'canonical_repo' | 'external' | 'reviewed_shared' | 'user_approved';
 
@@ -18,6 +27,10 @@ export interface MemoryMetadata {
   readonly archivedFrom?: string;
   readonly authority?: MemoryAuthority;
   readonly candidateId?: string;
+  /** Immutable capture-time code evidence; validation receipts are never persisted here. */
+  readonly codeCitations?: readonly MemoryCodeCitationV1[];
+  /** Closed parse/bounds errors that force precise freshness to abstain. */
+  readonly citationErrors?: readonly MemoryCodeCitationError[];
   readonly createdAt?: string;
   readonly evidence?: readonly string[];
   readonly kind: MemoryKind;
@@ -74,12 +87,13 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
   if (!trimmed) {
     return undefined;
   }
-  const separatorIndex = trimmed.indexOf('\n\n');
-  const header = separatorIndex === -1 ? trimmed : trimmed.slice(0, separatorIndex);
+  const parseable = normalizeMemoryDocumentLineEndings(trimmed);
+  const separatorIndex = parseable.indexOf('\n\n');
+  const header = separatorIndex === -1 ? parseable : parseable.slice(0, separatorIndex);
   const body =
     separatorIndex === -1
       ? ''
-      : trimmed
+      : parseable
           .slice(separatorIndex + 2)
           .replace(LEGACY_MEMORY_FIELDS_TRAILER, '')
           .trim();
@@ -91,6 +105,11 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
   if (!kind) {
     return undefined;
   }
+  const schemaVersion = parseSchemaVersion(memoryHeaderValue(header, 'schema_version'));
+  const codeCitationMetadata = parseMemoryCodeCitationHeaders(
+    memoryCodeCitationHeaderValues(header),
+    canonicalCodeCitationSchemaVersion(header, schemaVersion),
+  );
   return {
     body,
     content: trimmed,
@@ -99,6 +118,8 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
       authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
       candidateId: memoryHeaderValue(header, 'candidate_id'),
+      codeCitations: codeCitationMetadata.citations,
+      citationErrors: codeCitationMetadata.errors,
       createdAt: memoryHeaderValue(header, 'created_at'),
       evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
       kind,
@@ -108,7 +129,7 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
       project: normalizeOptionalMetadata(memoryHeaderValue(header, 'project') ?? memoryHeaderValue(header, 'repo')),
       references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
       relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
-      schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
+      schemaVersion,
       sourceHash: memoryHeaderValue(header, 'source_hash'),
       sourceAgentClient: memoryHeaderValue(header, 'source_agent_client') ?? 'unknown',
       sourceCommit: memoryHeaderValue(header, 'source_commit'),
@@ -130,6 +151,14 @@ export function parseMemoryDocument(uri: string, content: string): MemoryRecord 
 }
 
 export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: MemoryMetadata, body: string): string {
+  assertMemorySchemaWritable(metadata.schemaVersion);
+  if (metadata.citationErrors && metadata.citationErrors.length > 0) {
+    throw new Error('Cannot format memory metadata with unresolved code-citation errors.');
+  }
+  if (metadata.codeCitations && metadata.codeCitations.length > 0 && metadata.schemaVersion !== MEMORY_SCHEMA_VERSION) {
+    throw new Error(`Memory code citations require memory schema version ${MEMORY_SCHEMA_VERSION}.`);
+  }
+  const codeCitationLines = formatMemoryCodeCitationLines(metadata.codeCitations ?? []);
   const header = [
     title,
     `kind: ${metadata.kind}`,
@@ -152,6 +181,7 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
     memoryHeaderLine('source_observed_at', metadata.sourceObservedAt),
     memoryHeaderLine('source_session_id', metadata.sourceSessionId),
     memoryHeaderLine('source_commit', metadata.sourceCommit),
+    ...codeCitationLines,
     memoryHeaderLine('candidate_id', metadata.candidateId),
     memoryHeaderLine('source_hash', metadata.sourceHash),
     memoryHeaderLine('supersedes', metadata.supersedes),
@@ -164,8 +194,14 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
   return [...header, '', body.trim()].join('\n');
 }
 
+/** Preserve source prose in an archive without duplicating machine-readable headers into recall text. */
+export function memoryArchiveBody(sourceBody: string): string {
+  return ['Archived original Threadnote memory.', '', sourceBody].join('\n');
+}
+
 export function formatMemoryDocumentWithKeywords(content: string, keywords: readonly string[]): string {
-  const canonical = canonicalMemoryDocumentContent(content);
+  assertMemoryDocumentSchemaWritable(content);
+  const canonical = normalizeMemoryDocumentLineEndings(canonicalMemoryDocumentContent(content));
   const separatorIndex = canonical.indexOf('\n\n');
   const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
   const body = separatorIndex === -1 ? '' : canonical.slice(separatorIndex + 2);
@@ -180,6 +216,43 @@ export function formatMemoryDocumentWithKeywords(content: string, keywords: read
  */
 export function canonicalMemoryDocumentContent(content: string): string {
   return content.trim().replace(LEGACY_MEMORY_FIELDS_TRAILER, '').trim();
+}
+
+/**
+ * Rewriters must inspect the raw header rather than trusting parsed metadata:
+ * malformed, unsafe, or duplicate versions otherwise collapse to an absent or
+ * older version and make unknown fields look writable.
+ */
+export function assertMemoryDocumentSchemaWritable(content: string): void {
+  const canonical = normalizeMemoryDocumentLineEndings(canonicalMemoryDocumentContent(content));
+  const separatorIndex = canonical.indexOf('\n\n');
+  const header = separatorIndex === -1 ? canonical : canonical.slice(0, separatorIndex);
+  const schemaLines = header.split('\n').filter(line => /^\s*schema_version\s*:/u.test(line));
+  if (schemaLines.length === 0) return;
+  if (schemaLines.length !== 1) {
+    throw new Error('Memory schema_version header must appear exactly once before rewriting.');
+  }
+  const line = schemaLines[0]!;
+  const rawVersion = line.slice(line.indexOf(':') + 1).trim();
+  const schemaVersion = parseSchemaVersion(rawVersion);
+  if (schemaVersion === undefined) {
+    throw new Error('Memory schema_version header must be a canonical positive safe integer before rewriting.');
+  }
+  assertMemorySchemaWritable(schemaVersion);
+  if (line !== `schema_version: ${schemaVersion}`) {
+    throw new Error('Memory schema_version header must be a canonical positive safe integer before rewriting.');
+  }
+}
+
+export function assertMemoryRecordArchivable(record: Pick<MemoryRecord, 'content' | 'metadata' | 'uri'>): void {
+  assertMemoryDocumentSchemaWritable(record.content);
+  const citationErrors = record.metadata.citationErrors;
+  if (citationErrors && citationErrors.length > 0) {
+    const reasons = [...new Set(citationErrors.map(error => error.reason))].sort().join(', ');
+    throw new Error(
+      `Cannot archive ${record.uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`,
+    );
+  }
 }
 
 /**
@@ -238,12 +311,20 @@ function canonicalResourceInput(uri: string): string {
 }
 
 export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
-  const header = memory.slice(0, Math.max(0, memory.indexOf('\n\n')) || memory.length);
+  const parseable = normalizeMemoryDocumentLineEndings(memory);
+  const header = parseable.slice(0, Math.max(0, parseable.indexOf('\n\n')) || parseable.length);
   const firstLine = header.split('\n')[0]?.trim();
+  const schemaVersion = parseSchemaVersion(memoryHeaderValue(header, 'schema_version'));
+  const codeCitationMetadata = parseMemoryCodeCitationHeaders(
+    memoryCodeCitationHeaderValues(header),
+    canonicalCodeCitationSchemaVersion(header, schemaVersion),
+  );
   return {
     archivedFrom: canonicalOptionalResourceInput(memoryHeaderValue(header, 'archived_from')),
     authority: parseMemoryAuthority(memoryHeaderValue(header, 'authority')),
     candidateId: memoryHeaderValue(header, 'candidate_id'),
+    codeCitations: codeCitationMetadata.citations,
+    citationErrors: codeCitationMetadata.errors,
     createdAt: memoryHeaderValue(header, 'created_at'),
     evidence: canonicalResourceInputs(memoryHeaderValues(header, 'evidence')),
     kind: parseMemoryKind(memoryHeaderValue(header, 'kind')) ?? (firstLine === 'HANDOFF' ? 'handoff' : undefined),
@@ -257,7 +338,7 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     ),
     references: canonicalResourceInputs(memoryHeaderValues(header, 'references')),
     relations: parseMemoryRelations(memoryHeaderValues(header, 'relation')),
-    schemaVersion: parseSchemaVersion(memoryHeaderValue(header, 'schema_version')),
+    schemaVersion,
     sourceHash: memoryHeaderValue(header, 'source_hash'),
     sourceAgentClient: memoryHeaderValue(header, 'source_agent_client'),
     sourceCommit: memoryHeaderValue(header, 'source_commit'),
@@ -274,6 +355,10 @@ export function inferMemoryMetadata(memory: string): Partial<MemoryMetadata> {
     visibility: parseMemoryVisibility(memoryHeaderValue(header, 'visibility')),
     workspaceScope: normalizeOptionalMetadata(memoryHeaderValue(header, 'workspace_scope')),
   };
+}
+
+function normalizeMemoryDocumentLineEndings(content: string): string {
+  return content.replace(/\r\n?/gu, '\n');
 }
 
 export function memoryHeaderValue(header: string, key: string): string | undefined {
@@ -293,6 +378,27 @@ function memoryHeaderValues(header: string, key: string): readonly string[] | un
     .map(line => line.slice(prefix.length).trim())
     .filter(value => value.length > 0);
   return values.length > 0 ? values : undefined;
+}
+
+/** Preserve citation whitespace so a non-canonical header cannot become authoritative after trimming. */
+function memoryCodeCitationHeaderValues(header: string): readonly string[] | undefined {
+  const prefix = `${MEMORY_CODE_CITATION_HEADER}:`;
+  const values = header
+    .split('\n')
+    .filter(line => line.trimStart().startsWith(prefix))
+    .map(line => {
+      const trimmedStart = line.trimStart();
+      const suffix = trimmedStart.slice(prefix.length);
+      const value = suffix.startsWith(' ') ? suffix.slice(1) : ` ${suffix}`;
+      return line === trimmedStart ? value : ` ${value}`;
+    });
+  return values.length > 0 ? values : undefined;
+}
+
+function canonicalCodeCitationSchemaVersion(header: string, schemaVersion: number | undefined): number | undefined {
+  if (schemaVersion === undefined) return undefined;
+  const lines = header.split('\n').filter(line => line.startsWith('schema_version:'));
+  return lines.length === 1 && lines[0] === `schema_version: ${schemaVersion}` ? schemaVersion : undefined;
 }
 
 function parseMemoryKind(value: string | undefined): MemoryKind | undefined {
@@ -374,10 +480,10 @@ function isMemoryRelationType(value: string): value is MemoryRelationType {
 }
 
 function parseSchemaVersion(value: string | undefined): number | undefined {
-  if (!value) {
+  if (!value || !/^[1-9][0-9]*$/u.test(value)) {
     return undefined;
   }
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 

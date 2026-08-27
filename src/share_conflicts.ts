@@ -1,6 +1,10 @@
 import {Console, Effect, Result} from 'effect';
 
 import {applyScrubber} from './scrubber.js';
+import {
+  memoryCodeCitationContentSharingBlocker,
+  memoryCodeCitationSharingBlockerMessage,
+} from './memory_code_citation_policy.js';
 
 import type {
   ShareConflictOptions,
@@ -179,9 +183,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
       }
     } else {
       if (inspected.sharedContent === undefined) {
-        throw new ShareOperationError(
-          `Cannot take shared for ${inspected.id}: shared file is missing or not readable.`,
-        );
+        throw new ShareOperationError(`Cannot take shared for ${inspected.id}: ${inspected.reason}.`);
       }
       yield* ensureSharedDirectoryChain(config, ov, inspected.uri, dryRun);
       yield* writeMemoryFile(
@@ -480,6 +482,12 @@ const conflictResolutionContent = Effect.fn('share.conflictResolutionContent')(f
   if (scrub.blocker) {
     throw new ShareOperationError(
       `Refusing to resolve ${conflict.id}: possible ${scrub.blocker}. Strip the sensitive value before writing it to shared memory.`,
+    );
+  }
+  const citationBlocker = memoryCodeCitationContentSharingBlocker(conflict.uri, scrub.cleaned);
+  if (citationBlocker) {
+    throw new ShareOperationError(
+      `Refusing to resolve ${conflict.id}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
     );
   }
   return scrub.cleaned;

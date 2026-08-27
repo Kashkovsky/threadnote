@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "id": "context-brief-citations-scale-v1",
+  "corpusMemoryCandidates": 100000,
+  "maximumCitationsPerBrief": 96,
+  "maximumEstimatedTokens": 1500,
+  "maximumAddedRssBytes": 67108864,
+  "profiles": [
+    {
+      "id": "local-100k",
+      "worksetMembers": 1,
+      "citedRepositories": 1,
+      "selectedMemories": 24,
+      "citationCount": 96,
+      "maximumValidationP95Milliseconds": 250,
+      "maximumBriefP95Milliseconds": 1500
+    },
+    {
+      "id": "workset-50",
+      "worksetMembers": 50,
+      "citedRepositories": 16,
+      "selectedMemories": 16,
+      "citationCount": 64,
+      "maximumValidationP95Milliseconds": 500,
+      "maximumBriefP95Milliseconds": 3000
+    },
+    {
+      "id": "workset-128",
+      "worksetMembers": 128,
+      "citedRepositories": 32,
+      "selectedMemories": 24,
+      "citationCount": 96,
+      "maximumValidationP95Milliseconds": 1000,
+      "maximumBriefP95Milliseconds": 5000
+    }
+  ]
+}

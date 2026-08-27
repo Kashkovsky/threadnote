@@ -655,6 +655,7 @@ function App(): React.ReactElement {
       api('/api/memory/save', {
         kind: target.kind,
         project: target.project,
+        expectedContent: memory?.content,
         replaceUri: memory?.node.uri,
         status: target.status,
         text: content,

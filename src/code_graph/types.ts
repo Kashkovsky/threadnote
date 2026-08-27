@@ -3,7 +3,7 @@ import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 15 as const;
+export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 16 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
@@ -59,14 +59,20 @@ export interface CodeGraphInventoryFile {
   readonly language: string;
   readonly mode: string;
   readonly path: string;
+  /** Raw worktree SHA-256 retained only as a migration alias for pre-envelope citations. */
+  readonly rawContentHash?: string;
   readonly size: number;
   readonly source: 'commit' | 'worktree';
 }
 
 export interface CodeGraphSpan {
+  /** One-based UTF-16 column in `line`, matching TypeScript source positions. */
   readonly column: number;
+  /** One-based exclusive UTF-16 column in `endLine`. */
   readonly endColumn: number;
+  /** One-based line containing the exclusive end position. */
   readonly endLine: number;
+  /** One-based line containing the inclusive start position. */
   readonly line: number;
 }
 

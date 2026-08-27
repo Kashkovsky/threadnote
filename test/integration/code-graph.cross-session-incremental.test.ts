@@ -1,6 +1,6 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {execFileSync} from '../helpers/node-child-process.js';
-import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
+import {mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Database} from 'bun:sqlite';
@@ -10,6 +10,7 @@ import {TestClock} from 'effect/testing';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {CommandExecutor} from '../../src/effect/command.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
+import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {
   inventoryRepositoryFromReusableCleanBase,
   worktreeBuildRequestObservation,
@@ -30,8 +31,403 @@ import {
   type CodeGraphVisualizationCatalog,
 } from '../../src/code_graph/store.js';
 import {CODE_GRAPH_EXTRACTOR_GENERATION, type CodeGraphIndexSummary} from '../../src/code_graph/types.js';
+import {CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES} from '../../src/code_graph/inventory_policy.js';
+import {
+  validateContextBriefFileCitation,
+  validateContextBriefMemoryCitations,
+} from '../../src/context_brief/citation_validation.js';
+import {createMemoryCodeCitation} from '../../src/memory_code_citation.js';
+import {captureMemoryCodeCitations} from '../../src/memory_code_citation_capture.js';
+import type {RuntimeConfig} from '../../src/types.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 
 describe('cross-session code graph increments', () => {
+  it.effect(
+    'keeps one content identity when committed code is relocated through a dirty overlay',
+    () => {
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository();
+        home = mkdtempSync(join(tmpdir(), 'threadnote-citation-dirty-relocation-home-'));
+        const initial = yield* indexAndLoadEffect(root, home);
+        const store = yield* CodeGraphStore;
+        const originalPath = 'src/use.ts';
+        const relocatedPath = 'src/relocated-use.ts';
+        const initialEvidence = yield* store.effectiveSnapshotCitationEvidence(
+          initial.databasePath,
+          initial.summary.snapshot.id,
+          {paths: [originalPath]},
+        );
+        const citedFile = initialEvidence.filesByPaths[0]?.file;
+        expect(citedFile).toMatchObject({path: originalPath, source: 'commit'});
+        const citedSymbol = initial.graph.symbols.find(
+          symbol => symbol.path === originalPath && symbol.name === 'useHelper',
+        );
+        expect(citedSymbol).toBeDefined();
+        const config = {
+          account: 'test',
+          agentContextHome: home,
+          agentId: 'test-agent',
+          manifestPath: join(home, 'seed-manifest.yaml'),
+          user: 'test-user',
+        } satisfies RuntimeConfig;
+        const captured = yield* captureMemoryCodeCitations(config, {
+          callerCwd: root,
+          refs: [originalPath, citedSymbol!.id],
+        });
+        expect(captured).toHaveLength(2);
+        expect(captured[0]).toMatchObject({
+          fileContentHash: {value: citedFile!.contentHash},
+          target: {kind: 'file'},
+        });
+        expect(captured[1]).toMatchObject({
+          fileContentHash: {value: citedFile!.contentHash},
+          target: {kind: 'symbol', nodeId: citedSymbol!.id},
+        });
+
+        git(root, ['mv', originalPath, relocatedPath]);
+        const dirtyIdentity = yield* resolveRepositoryIdentity(root);
+        const dirtyObservation = yield* worktreeBuildRequestObservation(dirtyIdentity, home);
+        const relocatedBytes = readFileSync(join(root, relocatedPath));
+        const normalizedHash = codeGraphCommittedFileContentHash(dirtyIdentity.objectFormat, relocatedBytes);
+        const rawHash = sha256HexSync(relocatedBytes);
+        expect(normalizedHash).not.toBe(rawHash);
+        expect(dirtyObservation.overlay.files).toEqual([
+          {contentHash: normalizedHash, path: relocatedPath, size: relocatedBytes.byteLength},
+        ]);
+        const legacyFingerprint = sha256HexSync(
+          [
+            'build-request-overlay-v1',
+            `I\0${sha256HexSync('')}`,
+            ...dirtyObservation.overlay.deletedPaths.map(relative => `D\0${relative}`),
+            `F\0${relocatedPath}\0${rawHash}`,
+          ].join('\n'),
+        );
+        expect(dirtyObservation.state.fingerprint).not.toBe(legacyFingerprint);
+        const dirty = yield* indexAndLoadEffect(root, home);
+        expect(dirty.summary.snapshot.dirty).toBe(true);
+        const currentEvidence = yield* store.effectiveSnapshotCitationEvidence(
+          dirty.databasePath,
+          dirty.summary.snapshot.id,
+          {
+            contentHashes: [citedFile!.contentHash],
+            paths: [originalPath, relocatedPath],
+          },
+        );
+        expect(currentEvidence.filesByPaths).toEqual([
+          {path: originalPath},
+          {
+            file: expect.objectContaining({
+              contentHash: citedFile!.contentHash,
+              path: relocatedPath,
+              source: 'worktree',
+            }),
+            path: relocatedPath,
+          },
+        ]);
+        expect(currentEvidence.filesByContentHashes[0]).toMatchObject({
+          files: [{contentHash: citedFile!.contentHash, path: relocatedPath, source: 'worktree'}],
+          truncated: false,
+        });
+        const legacyEvidence = yield* store.effectiveSnapshotCitationEvidence(
+          dirty.databasePath,
+          dirty.summary.snapshot.id,
+          {
+            contentHashes: [rawHash],
+            paths: [relocatedPath, originalPath],
+          },
+        );
+        expect(legacyEvidence.filesByPaths[0]?.file).toMatchObject({
+          contentHash: citedFile!.contentHash,
+          path: relocatedPath,
+          rawContentHash: rawHash,
+          source: 'worktree',
+        });
+        expect(legacyEvidence.filesByContentHashes[0]).toMatchObject({
+          files: [
+            {
+              contentHash: citedFile!.contentHash,
+              path: relocatedPath,
+              rawContentHash: rawHash,
+              source: 'worktree',
+            },
+          ],
+          truncated: false,
+        });
+        const dirtyCaptured = yield* captureMemoryCodeCitations(config, {
+          callerCwd: root,
+          refs: [relocatedPath],
+        });
+        expect(dirtyCaptured).toEqual([
+          expect.objectContaining({
+            fileContentHash: expect.objectContaining({value: citedFile!.contentHash}),
+            path: relocatedPath,
+            sourceDirty: true,
+            target: {kind: 'file'},
+          }),
+        ]);
+
+        const citation = captured.find(item => item.target.kind === 'file')!;
+        expect(
+          validateContextBriefFileCitation(
+            citation,
+            currentEvidence.filesByPaths[0],
+            currentEvidence.filesByContentHashes[0],
+            dirty.summary.snapshot,
+            '2026-08-27T00:00:00.000Z',
+            currentEvidence.fileInventoryCoverage,
+          ),
+        ).toMatchObject({observedPath: relocatedPath, reason: 'relocated', status: 'relocated'});
+
+        const legacyCitation = (path: string) =>
+          createMemoryCodeCitation({
+            extractorSet: citation.extractorSet,
+            fileContentHash: {algorithm: 'sha256', value: rawHash},
+            path,
+            repositoryId: citation.repositoryId,
+            repositoryIdentityKind: citation.repositoryIdentityKind,
+            sourceCommit: citation.sourceCommit,
+            sourceDirty: true,
+            sourceSnapshotId: citation.sourceSnapshotId,
+            target: {kind: 'file'},
+            version: 1,
+          });
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation(relocatedPath),
+            legacyEvidence.filesByPaths[0],
+            legacyEvidence.filesByContentHashes[0],
+            dirty.summary.snapshot,
+            '2026-08-27T00:00:00.000Z',
+            legacyEvidence.fileInventoryCoverage,
+          ),
+        ).toMatchObject({observedPath: relocatedPath, reason: 'exact', status: 'exact'});
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation(originalPath),
+            legacyEvidence.filesByPaths[1],
+            legacyEvidence.filesByContentHashes[0],
+            dirty.summary.snapshot,
+            '2026-08-27T00:00:00.000Z',
+            legacyEvidence.fileInventoryCoverage,
+          ),
+        ).toMatchObject({observedPath: relocatedPath, reason: 'relocated', status: 'relocated'});
+
+        const capturedSymbolCitation = captured.find(item => item.target.kind === 'symbol')!;
+        const symbolValidations = yield* validateContextBriefMemoryCitations(
+          config,
+          {callerCwd: root, kind: 'repository'},
+          [
+            {
+              citationErrorCount: 0,
+              codeCitations: [capturedSymbolCitation],
+              excerpt: 'The useHelper symbol calls helper.',
+              kind: 'durable',
+              project: 'threadnote',
+              rank: 1,
+              topic: 'citation-test',
+              uri: 'threadnote://test/captured-symbol-relocation',
+            },
+          ],
+        );
+        expect(symbolValidations).toEqual([
+          {
+            receipts: [
+              expect.objectContaining({
+                citationId: capturedSymbolCitation.id,
+                kind: 'symbol',
+                observedPath: relocatedPath,
+                reason: 'relocated',
+                status: 'relocated',
+              }),
+            ],
+            uri: 'threadnote://test/captured-symbol-relocation',
+          },
+        ]);
+
+        git(root, ['add', '-A']);
+        git(root, ['commit', '-qm', 'commit relocated use helper']);
+        const committed = yield* indexAndLoadEffect(root, home);
+        expect(committed.summary.snapshot.dirty).toBe(false);
+        const committedLegacyEvidence = yield* store.effectiveSnapshotCitationEvidence(
+          committed.databasePath,
+          committed.summary.snapshot.id,
+          {
+            contentHashes: [rawHash],
+            paths: [relocatedPath, originalPath],
+          },
+        );
+        expect(committedLegacyEvidence.filesByPaths[0]?.file).toMatchObject({
+          contentHash: citedFile!.contentHash,
+          path: relocatedPath,
+          rawContentHash: rawHash,
+          source: 'commit',
+        });
+        expect(committedLegacyEvidence.filesByContentHashes[0]).toMatchObject({
+          files: [
+            {
+              contentHash: citedFile!.contentHash,
+              path: relocatedPath,
+              rawContentHash: rawHash,
+              source: 'commit',
+            },
+          ],
+          truncated: false,
+        });
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation(relocatedPath),
+            committedLegacyEvidence.filesByPaths[0],
+            committedLegacyEvidence.filesByContentHashes[0],
+            committed.summary.snapshot,
+            '2026-08-27T00:00:00.000Z',
+            committedLegacyEvidence.fileInventoryCoverage,
+          ),
+        ).toMatchObject({observedPath: relocatedPath, reason: 'exact', status: 'exact'});
+        expect(
+          validateContextBriefFileCitation(
+            legacyCitation(originalPath),
+            committedLegacyEvidence.filesByPaths[1],
+            committedLegacyEvidence.filesByContentHashes[0],
+            committed.summary.snapshot,
+            '2026-08-27T00:00:00.000Z',
+            committedLegacyEvidence.fileInventoryCoverage,
+          ),
+        ).toMatchObject({observedPath: relocatedPath, reason: 'relocated', status: 'relocated'});
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home])),
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'falls back to an incomplete full snapshot when a cited path becomes skipped but still exists',
+    () => {
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(8);
+        mkdirSync(join(root, 'data'), {recursive: true});
+        const citedPath = 'data/cited.json';
+        writeFileSync(join(root, citedPath), '{"value":"cited"}\n');
+        writeFileSync(join(root, 'data/keep.json'), '{"value":"keep"}\n');
+        git(root, ['add', 'data']);
+        git(root, ['commit', '--amend', '-qm', 'fixture with cited JSON']);
+        home = mkdtempSync(join(tmpdir(), 'threadnote-skipped-citation-home-'));
+
+        const initial = yield* indexAndLoadEffect(root, home);
+        const store = yield* CodeGraphStore;
+        const initialEvidence = yield* store.effectiveSnapshotCitationEvidence(
+          initial.databasePath,
+          initial.summary.snapshot.id,
+          {paths: [citedPath]},
+        );
+        const citedFile = initialEvidence.filesByPaths[0]?.file;
+        expect(citedFile).toBeDefined();
+        expect(initialEvidence.fileInventoryCoverage).toBe('complete');
+
+        const citedContent = JSON.stringify({value: 'x'.repeat(CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES)});
+        writeFileSync(join(root, citedPath), citedContent);
+        git(root, ['add', citedPath]);
+        git(root, ['commit', '-qm', 'make cited JSON low-value']);
+        expect(statSync(join(root, citedPath)).isFile()).toBe(true);
+
+        const current = yield* indexAndLoadEffect(root, home);
+        expect(current.summary.materialization).toMatchObject({fallbackReason: 'file-set-changed', mode: 'full'});
+        const currentEvidence = yield* store.effectiveSnapshotCitationEvidence(
+          current.databasePath,
+          current.summary.snapshot.id,
+          {
+            contentHashes: [citedFile!.contentHash],
+            paths: [citedPath],
+          },
+        );
+        expect(currentEvidence.filesByPaths).toEqual([{path: citedPath}]);
+        expect(currentEvidence.filesByContentHashes).toEqual([
+          {contentHash: citedFile!.contentHash, files: [], truncated: false},
+        ]);
+        expect(currentEvidence.fileInventoryCoverage).toBe('incomplete');
+
+        const citation = createMemoryCodeCitation({
+          extractorSet: initial.summary.snapshot.extractorSet,
+          fileContentHash: {algorithm: 'sha256', value: citedFile!.contentHash},
+          path: citedPath,
+          repositoryId: initial.summary.identity.repositoryId,
+          repositoryIdentityKind: 'local',
+          sourceCommit: initial.summary.snapshot.commit,
+          sourceDirty: false,
+          ...(initial.summary.snapshot.graphContentId === undefined
+            ? {}
+            : {sourceGraphContentId: initial.summary.snapshot.graphContentId}),
+          sourceSnapshotId: initial.summary.snapshot.id,
+          target: {kind: 'file'},
+          version: 1,
+        });
+        expect(
+          validateContextBriefFileCitation(
+            citation,
+            currentEvidence.filesByPaths[0],
+            currentEvidence.filesByContentHashes[0],
+            current.summary.snapshot,
+            '2026-08-27T00:00:00.000Z',
+            currentEvidence.fileInventoryCoverage,
+          ),
+        ).toMatchObject({coverage: 'incomplete', reason: 'graph-incomplete', status: 'unknown'});
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home])),
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'persists current skipped-inventory coverage on a real clean incremental snapshot',
+    () => {
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(8);
+        mkdirSync(join(root, 'data'), {recursive: true});
+        writeFileSync(join(root, 'data/keep.json'), '{"value":"keep"}\n');
+        git(root, ['add', 'data/keep.json']);
+        git(root, ['commit', '--amend', '-qm', 'fixture with JSON extractor context']);
+        home = mkdtempSync(join(tmpdir(), 'threadnote-incremental-skipped-receipt-home-'));
+        yield* indexAndLoadEffect(root, home);
+
+        const skippedPath = 'data/skipped.json';
+        writeFileSync(
+          join(root, skippedPath),
+          JSON.stringify({value: 'x'.repeat(CODE_GRAPH_GENERIC_JSON_EXCLUSION_BYTES)}),
+        );
+        writeUseFile(root, 'eligible change beside a skipped file');
+        git(root, ['add', skippedPath, 'src/use.ts']);
+        git(root, ['commit', '-qm', 'clean increment with skipped inventory']);
+
+        const current = yield* indexAndLoadEffect(root, home);
+        expect(current.summary.materialization).toMatchObject({mode: 'incremental-clean'});
+        const store = yield* CodeGraphStore;
+        const evidence = yield* store.effectiveSnapshotCitationEvidence(
+          current.databasePath,
+          current.summary.snapshot.id,
+          {paths: [skippedPath]},
+        );
+        expect(evidence.filesByPaths).toEqual([{path: skippedPath}]);
+        expect(evidence.fileInventoryCoverage).toBe('incomplete');
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home])),
+      );
+    },
+    60_000,
+  );
+
   it.effect(
     're-promotes a recent clean increment after a dirty-to-clean round trip',
     () => {
