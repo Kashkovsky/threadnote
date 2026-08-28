@@ -15,11 +15,8 @@ import {
   CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY,
   tableExists,
 } from './store_session.js';
-import {
-  CODE_GRAPH_EXTRACTOR_GENERATION,
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-  CodeGraphStoreError,
-} from './types.js';
+import {CODE_GRAPH_EXTRACTOR_GENERATION, CodeGraphStoreError} from './types.js';
+import {codeGraphPersistentSchemaIsCurrent} from './store/schema_revision.js';
 import {type CodeGraphActivationLease, type PersistentBuildOwnerCandidate} from './store_internal_models.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 
@@ -324,7 +321,7 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
   const revision = yield* removedViewCleanupRecordedRevision(sql);
   return (
     revision.state === 'recorded' &&
-    revision.value === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+    codeGraphPersistentSchemaIsCurrent(revision.value) &&
     (yield* tableExists(sql, 'file_blobs')) &&
     (yield* tableExists(sql, 'snapshot_files')) &&
     (yield* tableExists(sql, 'materialized_file_shards')) &&

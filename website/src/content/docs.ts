@@ -1,4 +1,5 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
+import {graphCheckpointsDocsArticle} from './docsGraphCheckpoints.js';
 import {
   handoffMemoryCitationCliExamples,
   rememberContextMemoryCitationInputs,
@@ -88,6 +89,9 @@ export const cliCommands: CliCommandReference[] = [
       'threadnote graph analyze --view full',
       'threadnote graph report --output architecture-report.md',
       'threadnote graph export --format graphml --output code-graph.graphml',
+      'threadnote graph checkpoint export --output threadnote-graph.cgcp',
+      'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:…',
+      'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:…',
     ],
   },
   {
@@ -1370,6 +1374,7 @@ threadnote graph export --format svg --output code-graph.svg`,
           },
         ],
       },
+      graphCheckpointsDocsArticle,
       {
         id: 'graph-monorepos',
         title: 'Monorepos and nested workspaces',

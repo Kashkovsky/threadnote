@@ -2,7 +2,8 @@ import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {type CodeGraphDatabaseHealth} from './store_models.js';
 import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
-import {type CodeGraphSnapshot, CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
+import {type CodeGraphSnapshot} from './types.js';
+import {codeGraphPersistentSchemaIsCurrent} from './store/schema_revision.js';
 import {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {codeGraphDatabaseIntegrity} from './store_health.js';
@@ -21,7 +22,7 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
   const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
   const snapshotFileCitation = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
   const persistentExtensionCurrent =
-    persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+    codeGraphPersistentSchemaIsCurrent(persistentExtensionSchemaRevision) &&
     (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
     snapshotFileCitation.baseIndexes === 'current' &&
     snapshotFileCitation.state === 'current' &&

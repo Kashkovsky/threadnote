@@ -1,6 +1,7 @@
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
+  CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphActivationProgressCallback,
   type CodeGraphLanguagePackProvenance,
@@ -51,7 +52,7 @@ const recordLayeredSnapshotInventoryReceipt = Effect.fn('codeGraph.recordLayered
         workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
         reexport_count, inventory_receipt_json, created_at
       ) VALUES (
-        ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+        ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}, ${snapshot.extractorSet},
         ${receipt.workspaceFingerprint}, ${receipt.fileSetFingerprint}, 0, 0, 0,
         ${encodeCodeGraphInventoryReuseReceipt(receipt.inventory)}, ${createdAt}
       )
@@ -429,7 +430,7 @@ const activateStagedSnapshot = Effect.fn('codeGraph.activateStagedSnapshot')(fun
             reexport_count, inventory_receipt_json, created_at
           )
           SELECT
-            ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+            ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}, ${snapshot.extractorSet},
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             COUNT(*), COALESCE(SUM(CASE WHEN provenance = 'alias' THEN 1 ELSE 0 END), 0),
             (SELECT COUNT(*) FROM activation_reexport_provenance),

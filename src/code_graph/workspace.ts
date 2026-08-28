@@ -35,6 +35,8 @@ interface WorkspaceProjectPathIndex {
 
 const workspaceProjectPathIndexes = new WeakMap<readonly CodeGraphWorkspaceProject[], WorkspaceProjectPathIndex>();
 
+export const CODE_GRAPH_WORKSPACE_MODEL_VERSION = 'code-graph-workspace-set-v2' as const;
+
 export const manifestWorkspaceDetector: CodeGraphWorkspaceDetector = {
   contextFiles: [],
   detect: files => Effect.succeed(discoverManifestWorkspace(files)),
@@ -237,7 +239,7 @@ function mergedWorkspaceFingerprint(
         project.workspaceRoots,
         project.diagnostics,
       ]),
-      version: 'code-graph-workspace-set-v2',
+      version: CODE_GRAPH_WORKSPACE_MODEL_VERSION,
       workspaces: workspaces.map(workspace => [
         workspace.id,
         workspace.buildSystem,

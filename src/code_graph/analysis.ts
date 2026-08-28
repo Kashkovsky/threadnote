@@ -9,6 +9,7 @@ import {
   type ResolvedCodeGraphAnalysisLimits,
 } from './analysis_configuration.js';
 import {compareCodeUnits} from './ordering.js';
+import {sanitizeCodeGraphPresentationText} from './presentation_text.js';
 import type {CodeGraphEdge, CodeGraphProvenance, CodeGraphRelation, CodeGraphSymbol} from './types.js';
 import type {
   CodeGraphAnalysisEdgeAggregate,
@@ -625,12 +626,12 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
               provenance: edge.provenance,
               relation: edge.relation,
               source: {
-                ...(edge.sourceId === undefined ? {} : {id: edge.sourceId}),
-                name: edge.sourceName,
+                ...(edge.sourceId === undefined ? {} : {id: sanitizeCodeGraphPresentationText(edge.sourceId)}),
+                name: sanitizeCodeGraphPresentationText(edge.sourceName),
               },
               target: {
-                ...(edge.targetId === undefined ? {} : {id: edge.targetId}),
-                name: edge.targetName,
+                ...(edge.targetId === undefined ? {} : {id: sanitizeCodeGraphPresentationText(edge.targetId)}),
+                name: sanitizeCodeGraphPresentationText(edge.targetName),
               },
             },
             limits.confidenceFindings,
@@ -1541,16 +1542,16 @@ function groupId(group: MutableGroup, recipe: string, prefix: string): string {
 function nodeState(symbol: CodeGraphSymbol): NodeState {
   return {
     exported: symbol.exported,
-    id: symbol.id,
+    id: sanitizeCodeGraphPresentationText(symbol.id),
     incoming: 0,
-    kind: symbol.kind,
-    language: symbol.language,
-    name: symbol.name,
+    kind: sanitizeCodeGraphPresentationText(symbol.kind),
+    language: sanitizeCodeGraphPresentationText(symbol.language),
+    name: sanitizeCodeGraphPresentationText(symbol.name),
     outgoing: 0,
-    path: symbol.path,
-    qualifiedName: symbol.qualifiedName,
+    path: sanitizeCodeGraphPresentationText(symbol.path),
+    qualifiedName: sanitizeCodeGraphPresentationText(symbol.qualifiedName),
     scope: structuralScope(symbol),
-    scopeLabel: structuralScopeLabel(symbol),
+    scopeLabel: sanitizeCodeGraphPresentationText(structuralScopeLabel(symbol)),
   };
 }
 

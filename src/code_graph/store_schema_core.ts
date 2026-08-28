@@ -17,7 +17,7 @@ import {
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
 import {tableExists} from './store_session.js';
-import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION} from './types.js';
+import {codeGraphPersistentSchemaIsCurrent} from './store/schema_revision.js';
 
 const removedViewCleanupSchemaCurrent = Effect.fn('codeGraph.removedViewCleanupSchemaCurrent')(function* (
   sql: SqlClient.SqlClient,
@@ -67,7 +67,7 @@ const codeGraphRemovedViewCleanupBaseSchemaAdmission: (
 )(function* (sql: SqlClient.SqlClient) {
   const revision = yield* removedViewCleanupRecordedRevision(sql);
   const persistentExtensionSchemaRevision = revision.state === 'recorded' ? revision.value : undefined;
-  if (persistentExtensionSchemaRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+  if (!codeGraphPersistentSchemaIsCurrent(persistentExtensionSchemaRevision)) {
     return {current: false, persistentExtensionSchemaRevision} as const;
   }
   if (!(yield* removedViewCleanupEpochSequenceCurrent(sql))) {

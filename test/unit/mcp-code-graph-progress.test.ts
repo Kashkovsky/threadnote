@@ -543,6 +543,41 @@ describe('MCP code graph indexing progress', () => {
     }),
   );
 
+  effectIt.effect('sanitizes repository controls in MCP analysis text and structured content', () =>
+    Effect.gen(function* () {
+      const repositoryText = 'danger\u001b\u009b\r\n\u202evalue';
+      const source = analysisSymbol('mcp-control-source', repositoryText, 'src/control.ts', {
+        name: repositoryText,
+        qualifiedName: repositoryText,
+      });
+      const target = analysisSymbol('mcp-control-target', repositoryText, 'src/control.ts', {
+        name: repositoryText,
+        qualifiedName: repositoryText,
+      });
+      const edges = [
+        analysisEdge('mcp-control-edge', source, target, 'calls', {
+          confidence: 0.1,
+          sourceName: repositoryText,
+          targetName: repositoryText,
+        }),
+      ];
+      const analysis = yield* analyzeCodeGraph(pagedAnalysisStore([source, target], edges), {
+        databasePath: ':memory:',
+        minimumHubDegree: 1,
+        snapshot: analysisSnapshot([source, target], edges),
+      });
+      const response = codeGraphAnalysisMcpResponse(analysis, 'full', {
+        displayName: repositoryText,
+        repositoryId: 'repository-control',
+      });
+
+      expect(containsUnsafePresentationText(response.text, true)).toBe(false);
+      expect(containsUnsafePresentationText(response.structuredContent, true)).toBe(false);
+      expect(response.text).toContain('danger');
+      expect(JSON.stringify(response.structuredContent)).toContain('danger');
+    }),
+  );
+
   effectIt.effect('excludes unrelated topology arrays before stats truncation and byte accounting', () =>
     Effect.gen(function* () {
       const first = analysisSymbol('scoped-first', '@acme/scoped', 'src/scoped.ts');
@@ -808,4 +843,22 @@ function verboseCodeGraphResult(): CodeGraphQueryResult {
     version: 1,
     warnings: Array.from({length: 20}, (_, index) => `warning ${index} ${'w'.repeat(500)}`),
   };
+}
+
+function containsUnsafePresentationText(value: unknown, allowLineFeed = false): boolean {
+  if (typeof value === 'string') {
+    return Array.from(value).some(character => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return (
+        !(allowLineFeed && codePoint === 0x0a) &&
+        (codePoint <= 0x1f ||
+          (codePoint >= 0x7f && codePoint <= 0x9f) ||
+          (codePoint >= 0x202a && codePoint <= 0x202e) ||
+          (codePoint >= 0x2066 && codePoint <= 0x2069))
+      );
+    });
+  }
+  if (Array.isArray(value)) return value.some(item => containsUnsafePresentationText(item, allowLineFeed));
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some(item => containsUnsafePresentationText(item, allowLineFeed));
 }
