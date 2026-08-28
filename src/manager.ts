@@ -82,6 +82,7 @@ import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {readManagerRuntimeState} from './manager_state.js';
 import {handleManagerProcessRequest} from './manager_processes.js';
+import {emptyManagerTree, isMissingManagerTreePath} from './manager_tree.js';
 import {
   handleManagerWorksetRequest,
   isManagerWorksetApiPath,
@@ -404,7 +405,12 @@ export function createManagerServer(
 
 export const memoryTree = Effect.fn('manager.memoryTree')(function* (config: RuntimeConfig) {
   const root = yield* localMemoriesRoot(config);
-  return yield* readTree(config, root, `threadnote://user/${uriSegment(config.user)}/memories`, '');
+  const uri = `threadnote://user/${uriSegment(config.user)}/memories`;
+  return yield* readTree(config, root, uri, '').pipe(
+    Effect.catch(error =>
+      isMissingManagerTreePath(error) ? Effect.succeed(emptyManagerTree('memories', uri)) : Effect.fail(error),
+    ),
+  );
 });
 
 export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (config: RuntimeConfig) {
@@ -413,20 +419,11 @@ export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (confi
     parseMemoryDocuments: false,
     rootName: 'resources',
   }).pipe(
-    Effect.catch(error => {
-      if (!isMissingPathError(error)) {
-        return Effect.fail(error);
-      }
-      return Effect.succeed({
-        children: [],
-        isDir: true as const,
-        isShared: false,
-        isSystem: false,
-        name: 'resources',
-        relativePath: '',
-        uri: 'threadnote://resources',
-      });
-    }),
+    Effect.catch(error =>
+      isMissingManagerTreePath(error)
+        ? Effect.succeed(emptyManagerTree('resources', 'threadnote://resources'))
+        : Effect.fail(error),
+    ),
   );
 });
 
@@ -1912,19 +1909,6 @@ const localPathForMemoryUri = Effect.fn('manager.localPathForMemoryUri')(functio
   }
   return yield* pathJoin(yield* localMemoriesRoot(config), ...segments);
 });
-
-function isMissingPathError(err: unknown): boolean {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    (('code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') ||
-      ('reason' in err &&
-        typeof err.reason === 'object' &&
-        err.reason !== null &&
-        '_tag' in err.reason &&
-        err.reason._tag === 'NotFound'))
-  );
-}
 
 const localPathToMemoryUri = Effect.fn('manager.localPathToMemoryUri')(function* (config: RuntimeConfig, path: string) {
   const relativePath = yield* pathRelative(yield* localMemoriesRoot(config), path);

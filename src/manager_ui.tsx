@@ -6,6 +6,7 @@ import type {CodeGraphLocalDiagnosticsReport} from './code_graph/diagnostics.js'
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './manager_dialog.js';
 import {WorksetsPanel} from './manager_worksets_view.js';
 import {ProcessesPanel} from './manager_processes_view.js';
+import {settleManagerRefreshTasks} from './manager_refresh.js';
 import {managerUpdateIndicator} from './manager_update_indicator.js';
 import {
   graphViewRemovalApprovalDialog,
@@ -427,28 +428,39 @@ function App(): React.ReactElement {
   );
 
   async function refreshAll(): Promise<void> {
-    const graphRequest = api<GraphCatalog>('/api/graphs', undefined, {
-      timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
-    }).then(
-      catalog => {
-        graphCatalogAuthoritativeRef.current = true;
-        graphCatalogRef.current = catalog;
-        setGraphCatalog(catalog);
-        setGraphCatalogError('');
+    const failures = await settleManagerRefreshTasks([
+      {
+        label: 'Graph indexes',
+        run: async () => {
+          try {
+            const catalog = await api<GraphCatalog>('/api/graphs', undefined, {
+              timeoutMilliseconds: GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS,
+            });
+            graphCatalogAuthoritativeRef.current = true;
+            graphCatalogRef.current = catalog;
+            setGraphCatalog(catalog);
+            setGraphCatalogError('');
+          } catch (cause) {
+            setGraphCatalogError(errorMessage(cause));
+            throw cause;
+          }
+        },
       },
-      cause => setGraphCatalogError(errorMessage(cause)),
-    );
-    const [nextState, nextTree, nextShares] = await Promise.all([
-      api<StateResponse>('/api/state'),
-      api<TreeResponse>('/api/tree'),
-      api<{shares: readonly ShareSummary[]}>('/api/shares'),
+      {label: 'Runtime', run: async () => setState(await api<StateResponse>('/api/state'))},
+      {
+        label: 'Memory library',
+        run: async () => {
+          const next = await api<TreeResponse>('/api/tree');
+          setTree(next.tree);
+          setResourceTree(next.resourcesTree);
+        },
+      },
+      {
+        label: 'Shares',
+        run: async () => setShares((await api<{shares: readonly ShareSummary[]}>('/api/shares')).shares),
+      },
     ]);
-    setState(nextState);
-    setTree(nextTree.tree);
-    setResourceTree(nextTree.resourcesTree);
-    setShares(nextShares.shares);
-    await graphRequest;
-    toastMessage('Refreshed');
+    toastMessage(failures.length === 0 ? 'Refreshed' : `Refresh incomplete · ${failures.join(' · ')}`);
   }
 
   async function refreshGraphCatalog(notify = true): Promise<void> {
