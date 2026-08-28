@@ -517,9 +517,10 @@ export const proTips: ProTip[] = [
     title: 'Carry a verified graph across machines.',
     summary:
       'Move one deterministic clean graph between local installations when the receiver is offline or a rebuild would waste time.',
-    why: 'The checkpoint carries disposable derived graph data—not source or memory—and an independently obtained digest authenticates the exact artifact bytes.',
+    why: 'The checkpoint carries disposable derived graph data—not raw source-file bytes or memory—and an independently obtained digest authenticates the exact artifact bytes.',
     practice: [
       'Export only after the current commit has an exact ready, clean root graph and a credential-free repository identity.',
+      'Treat the artifact as potentially sensitive architecture data: derived names, signatures, and documentation can carry strings embedded in source.',
       'Transfer the checkpoint file and its expected SHA-256 digest through independent trusted paths.',
       'On the receiver, inspect with the expected digest, run the full verify, then import from a checkout of the same repository where the source commit already exists.',
       'No account, hosted service, or Workset is required. Existing schema-v1 and uncited legacy memories remain recallable.',
