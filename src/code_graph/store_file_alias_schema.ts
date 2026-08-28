@@ -13,6 +13,8 @@ import {
   CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
+  type CodeGraphSnapshotFileCitationBaseIndexState,
+  type CodeGraphSnapshotFileCitationSchemaState,
   CodeGraphStoreError,
 } from './types.js';
 
@@ -90,22 +92,14 @@ const CODE_GRAPH_SNAPSHOT_FILES_MIGRATED_TABLE_SQL = `
   ) WITHOUT ROWID
 `;
 
-export type CodeGraphSnapshotFileCitationSchemaState =
-  | 'column-only'
-  | 'column-only-with-authority'
-  | 'column-only-with-predecessor-authority'
-  | 'current'
-  | 'incompatible'
-  | 'released-absent'
-  | 'released-absent-with-predecessor-authority'
-  | 'released-absent-with-authority'
-  | 'table-absent';
-
-export type CodeGraphSnapshotFileCitationBaseIndexState = 'current' | 'incompatible' | 'missing';
-
 export interface CodeGraphSnapshotFileCitationSchemaInspection {
   readonly baseIndexes: CodeGraphSnapshotFileCitationBaseIndexState;
   readonly state: CodeGraphSnapshotFileCitationSchemaState;
+}
+
+export interface CodeGraphSnapshotFileCitationSchemaAuthorization {
+  readonly allowColumnAuthority: boolean;
+  readonly allowReleasedAuthority: boolean;
 }
 
 function citationSchemaInspection(
@@ -579,35 +573,48 @@ export const assertCodeGraphSnapshotFileCitationSchemaMigratable = Effect.fn(
   ) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is incompatible.'));
   }
-  return (
-    inspection.state === 'released-absent-with-authority' &&
-    revision !== undefined &&
-    Number.isSafeInteger(revision) &&
-    revision >= CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION &&
-    revision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
-  );
+  return {
+    allowColumnAuthority: inspection.state === 'column-only-with-predecessor-authority',
+    allowReleasedAuthority:
+      inspection.state === 'released-absent-with-authority' ||
+      inspection.state === 'released-absent-with-predecessor-authority',
+  } satisfies CodeGraphSnapshotFileCitationSchemaAuthorization;
 });
 
 export const ensureCodeGraphSnapshotFileCitationSchema = Effect.fn('codeGraph.ensureSnapshotFileCitationSchema')(
-  function* (sql: SqlClient.SqlClient, allowLegacyReleasedAuthority: boolean) {
+  function* (sql: SqlClient.SqlClient, authorization: CodeGraphSnapshotFileCitationSchemaAuthorization) {
     const before = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
+    const columnAuthority =
+      before.state === 'column-only-with-authority' || before.state === 'column-only-with-predecessor-authority';
+    const releasedAuthority =
+      before.state === 'released-absent-with-authority' ||
+      before.state === 'released-absent-with-predecessor-authority';
     if (
       before.state === 'incompatible' ||
-      before.state === 'table-absent' ||
-      before.state === 'column-only-with-authority' ||
-      (before.state === 'released-absent-with-authority' && !allowLegacyReleasedAuthority) ||
-      before.baseIndexes !== 'current'
+      before.baseIndexes === 'incompatible' ||
+      (columnAuthority && !authorization.allowColumnAuthority) ||
+      (releasedAuthority && !authorization.allowReleasedAuthority)
     ) {
       return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is incompatible.'));
     }
+    yield* sql.unsafe(
+      CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'),
+    );
+    for (const index of [
+      CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
+      CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX,
+    ]) {
+      yield* sql.unsafe(index.definition.replace('CREATE INDEX', 'CREATE INDEX IF NOT EXISTS'));
+    }
+    const alias = before.state === 'table-absent' ? 'column-only' : before.state;
     if (
-      before.state === 'released-absent' ||
-      before.state === 'released-absent-with-authority' ||
-      before.state === 'released-absent-with-predecessor-authority'
+      alias === 'released-absent' ||
+      alias === 'released-absent-with-authority' ||
+      alias === 'released-absent-with-predecessor-authority'
     ) {
       yield* sql.unsafe('ALTER TABLE snapshot_files ADD COLUMN raw_content_hash TEXT');
     }
-    if (before.state !== 'current') yield* sql.unsafe(CODE_GRAPH_RAW_CONTENT_ALIAS_INDEX_SQL);
+    if (alias !== 'current') yield* sql.unsafe(CODE_GRAPH_RAW_CONTENT_ALIAS_INDEX_SQL);
     const after = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
     if (after.state !== 'current' || after.baseIndexes !== 'current') {
       return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot file citation schema is unavailable.'));

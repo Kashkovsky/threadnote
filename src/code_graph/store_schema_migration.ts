@@ -32,18 +32,23 @@ import {
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
 import {CodeGraphDatabaseSession, tableExists} from './store_session.js';
-import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
+import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  type CodeGraphSnapshotFileCitationBaseIndexState,
+  type CodeGraphSnapshotFileCitationSchemaState,
+  CodeGraphStoreError,
+} from './types.js';
 import {
   CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX,
   codeGraphReconciliationIndexState,
 } from './store_reconciliation_core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
-import type {
-  CodeGraphSnapshotFileCitationBaseIndexState,
-  CodeGraphSnapshotFileCitationSchemaState,
+import {
+  type CodeGraphSnapshotFileCitationSchemaAuthorization,
+  codeGraphSnapshotFileCitationSchemaMigrationPreserves,
+  ensureCodeGraphSnapshotFileCitationSchema,
 } from './store_file_alias_schema.js';
-import {codeGraphSnapshotFileCitationSchemaMigrationPreserves} from './store_file_alias_schema.js';
 import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 import {
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
@@ -229,6 +234,7 @@ const ensureCurrentCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureCurrentQue
 
 const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentExtensionTables')(function* (
   sql: SqlClient.SqlClient,
+  snapshotFileCitationAuthorization: CodeGraphSnapshotFileCitationSchemaAuthorization,
 ) {
   const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
   const observe = Option.isSome(session) ? session.value.onPersistentSchemaMigrationPhase : undefined;
@@ -251,6 +257,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup authority schema is incompatible.'));
       }
+      yield* ensureCodeGraphSnapshotFileCitationSchema(sql, snapshotFileCitationAuthorization);
       const cleanupSchemaState = yield* removedViewCleanupSchemaState(sql);
       yield* ensureRemovedViewCleanupSchema(sql);
       if (cleanupSchemaState === 'absent') {

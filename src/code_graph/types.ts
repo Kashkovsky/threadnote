@@ -10,6 +10,19 @@ export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
 
+export type CodeGraphSnapshotFileCitationSchemaState =
+  | 'column-only'
+  | 'column-only-with-authority'
+  | 'column-only-with-predecessor-authority'
+  | 'current'
+  | 'incompatible'
+  | 'released-absent'
+  | 'released-absent-with-predecessor-authority'
+  | 'released-absent-with-authority'
+  | 'table-absent';
+
+export type CodeGraphSnapshotFileCitationBaseIndexState = 'current' | 'incompatible' | 'missing';
+
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
 export type CodeGraphRelation =
   | 'calls'

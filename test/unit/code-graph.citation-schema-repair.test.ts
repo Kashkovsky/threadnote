@@ -27,6 +27,7 @@ import {
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join} from '../helpers/effect-filesystem.js';
+import {TestError} from '../helpers/test-error.js';
 
 describe('code graph snapshot-file citation schema repair', () => {
   effectIt.effect('migrates revision 15 with dry-run parity while preserving live lease authority', () =>
@@ -194,6 +195,71 @@ describe('code graph snapshot-file citation schema repair', () => {
         integrity: 'ok',
         persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
       });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rolls back a released revision-6 alias migration before publishing revision 16', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-revision-6-alias-fault-'});
+      const identity = legacyRepositoryIdentity(home, 'd');
+      const ready = {...legacyReadySnapshot(identity, '4'), fileCount: 1};
+      const file = {
+        blobId: '5'.repeat(40),
+        contentHash: '6'.repeat(64),
+        language: 'typescript',
+        mode: '100644',
+        path: 'src/revision-6-citation.ts',
+        size: 32,
+        source: 'commit',
+      } as const satisfies CodeGraphInventoryFile;
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.activate(databasePath, identity, ready, [file], [], []);
+      yield* store.promote(databasePath, identity, ready.id);
+      yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
+
+      const failed = yield* store
+        .withSession(databasePath, store.initialize(databasePath), {
+          onPersistentSchemaMigrationPhase: phase =>
+            phase === 'recorded-revision'
+              ? Effect.die(new TestError('fault after citation schema revision publication'))
+              : Effect.void,
+        })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(failed)).toBe(true);
+      expect(yield* Effect.sync(() => readAliasPublicationState(databasePath, ready.id))).toEqual({
+        activeSnapshotId: ready.id,
+        rawColumnPresent: false,
+        rawIndexPresent: false,
+        revision: 6,
+        snapshotState: 'ready',
+      });
+
+      yield* store.initialize(databasePath);
+      expect(yield* Effect.sync(() => readAliasPublicationState(databasePath, ready.id))).toEqual({
+        activeSnapshotId: ready.id,
+        rawColumnPresent: true,
+        rawIndexPresent: true,
+        revision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+        snapshotState: 'ready',
+      });
+      const citationMatches = yield* store.effectiveSnapshotFilesByContentHashes(
+        databasePath,
+        ready.id,
+        [file.contentHash],
+        1,
+      );
+      expect(citationMatches.map(match => match.files.map(candidate => candidate.path))).toEqual([[file.path]]);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -1010,6 +1076,75 @@ function downgradeToRevision15FileAliases(databasePath: string): void {
          WHERE singleton = 1`,
       )
       .run(schemaVersion?.schema_version ?? -1);
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeToReleasedRevision6(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
+        DROP TABLE IF EXISTS removed_view_cleanup;
+        DROP TABLE IF EXISTS snapshot_build_owner_instances;
+        DROP TABLE IF EXISTS snapshot_component_edge_aggregate_receipts;
+        DROP TABLE IF EXISTS snapshot_component_edge_aggregates;
+        DROP TABLE IF EXISTS removed_views;
+        DROP INDEX IF EXISTS snapshot_files_raw_content_hash;
+        ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
+        DELETE FROM schema_metadata
+        WHERE key IN ('removed_view_cleanup_admission_cursor', 'removed_view_cleanup_epoch_sequence');
+        UPDATE schema_metadata
+        SET value = '6'
+        WHERE key = 'persistent_extension_schema_revision';
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function readAliasPublicationState(databasePath: string, snapshotId: string) {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const columns = database.query<{readonly name: string}, []>('PRAGMA table_info(snapshot_files)').all();
+    const rawIndex = database
+      .query<{readonly present: number}, []>(
+        `SELECT 1 AS present
+         FROM sqlite_master
+         WHERE type = 'index' AND name = 'snapshot_files_raw_content_hash'`,
+      )
+      .get();
+    const revision = database
+      .query<{readonly value: string}, []>(
+        "SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'",
+      )
+      .get();
+    const snapshot = database
+      .query<{readonly state: string}, [string]>('SELECT state FROM snapshots WHERE id = ?')
+      .get(snapshotId);
+    const active = database
+      .query<{readonly snapshot_id: string}, [string]>('SELECT snapshot_id FROM active_snapshots WHERE snapshot_id = ?')
+      .get(snapshotId);
+    return {
+      activeSnapshotId: active?.snapshot_id,
+      rawColumnPresent: columns.some(column => column.name === 'raw_content_hash'),
+      rawIndexPresent: rawIndex?.present === 1,
+      revision: Number(revision?.value),
+      snapshotState: snapshot?.state,
+    };
   } finally {
     database.close(false);
   }

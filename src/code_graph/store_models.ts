@@ -2,10 +2,6 @@ import type {Effect, Option} from 'effect';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphCacheFactInput} from './fact_budget.js';
-import type {
-  CodeGraphSnapshotFileCitationBaseIndexState,
-  CodeGraphSnapshotFileCitationSchemaState,
-} from './store_file_alias_schema.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import type {
   CodeGraphWorkspaceBuildSystem,
@@ -16,6 +12,8 @@ import type {
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
+  type CodeGraphSnapshotFileCitationBaseIndexState,
+  type CodeGraphSnapshotFileCitationSchemaState,
   type CodeGraphEdge,
   type CodeGraphFileFacts,
   type CodeGraphInventoryFile,

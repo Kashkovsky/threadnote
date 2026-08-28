@@ -16,13 +16,7 @@ import {
 } from './store_schema_core.js';
 import {ensureInitialReconciliationIndexes} from './store_reconciliation_core.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
-import {
-  assertCodeGraphSnapshotFileCitationSchemaMigratable,
-  CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL,
-  CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
-  CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX,
-  ensureCodeGraphSnapshotFileCitationSchema,
-} from './store_file_alias_schema.js';
+import {assertCodeGraphSnapshotFileCitationSchemaMigratable} from './store_file_alias_schema.js';
 import {
   codeGraphSchemaInitializationReceiptCurrent,
   recordCodeGraphSchemaInitializationReceipt,
@@ -95,7 +89,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       ),
     );
   }
-  const allowLegacyReleasedAuthority = yield* assertCodeGraphSnapshotFileCitationSchemaMigratable(sql);
+  const snapshotFileCitationAuthorization = yield* assertCodeGraphSnapshotFileCitationSchemaMigratable(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS repositories (
       id TEXT PRIMARY KEY NOT NULL,
@@ -156,15 +150,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   );
   yield* ensureSnapshotLeaseSchema(sql);
   yield* ensureInitialReconciliationIndexes(sql);
-  yield* migratePersistentExtensionTables(sql);
-  yield* sql.unsafe(CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'));
-  yield* sql.unsafe(
-    CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX.definition.replace('CREATE INDEX', 'CREATE INDEX IF NOT EXISTS'),
-  );
-  yield* sql.unsafe(
-    CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX.definition.replace('CREATE INDEX', 'CREATE INDEX IF NOT EXISTS'),
-  );
-  yield* ensureCodeGraphSnapshotFileCitationSchema(sql, allowLegacyReleasedAuthority);
+  yield* migratePersistentExtensionTables(sql, snapshotFileCitationAuthorization);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_file_deletions (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
