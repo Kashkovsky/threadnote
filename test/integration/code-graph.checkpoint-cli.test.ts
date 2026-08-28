@@ -361,6 +361,6 @@ async function commit(cwd: string, message: string): Promise<void> {
 function runCli(args: readonly string[]) {
   return execFilePromise(process.execPath, ['src/standalone.ts', ...args], {
     cwd: process.cwd(),
-    env: {...process.env, NO_COLOR: '1'},
+    env: {...process.env, NO_COLOR: '1', THREADNOTE_TELEMETRY: '0'},
   });
 }
