@@ -9,7 +9,11 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {describe, expect, it} from 'vitest';
 import {renderSessionStartRecallQueue} from '../../src/hooks.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
+import {
+  createMemoryCodeCitation,
+  MAX_MEMORY_CODE_CITATIONS,
+  MEMORY_SCHEMA_VERSION,
+} from '../../src/memory_code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 
@@ -423,7 +427,7 @@ describe('Threadnote MCP toolsets', () => {
 
   it('emits and enforces Effect Schema inputs over stdio', async () => {
     await withMcpClient(
-      async client => {
+      async (client, fixture) => {
         const tools = await client.listTools();
         const recall = tools.tools.find(tool => tool.name === 'recall_context');
         expect(recall?.inputSchema).toMatchObject({
@@ -442,12 +446,36 @@ describe('Threadnote MCP toolsets', () => {
         expect(JSON.stringify(recall?.inputSchema)).not.toContain('null');
         const read = tools.tools.find(tool => tool.name === 'read_context');
         expect(read?.inputSchema.properties).not.toHaveProperty('full');
+        for (const name of ['remember_context', 'review_session_context']) {
+          const codeReferenceTool = tools.tools.find(tool => tool.name === name);
+          expect(codeReferenceTool?.inputSchema).toMatchObject({
+            properties: {
+              codeRefs: {
+                anyOf: [
+                  {type: 'string'},
+                  {
+                    items: {type: 'string'},
+                    maxItems: MAX_MEMORY_CODE_CITATIONS,
+                    type: 'array',
+                  },
+                ],
+                description: expect.stringContaining(`max ${MAX_MEMORY_CODE_CITATIONS}`),
+              },
+            },
+          });
+        }
 
         const validationError = await callErrorText(client, 'recall_context', {
           nodeLimit: 0,
           query: 'threadnote',
         });
         expect(validationError).toContain('greater than or equal to 1');
+        const tooManyCodeRefs = await callErrorText(client, 'remember_context', {
+          callerCwd: fixture.root,
+          codeRefs: Array.from({length: MAX_MEMORY_CODE_CITATIONS + 1}, (_, index) => `src/${index}.ts`),
+          text: 'This memory must not be stored.',
+        });
+        expect(tooManyCodeRefs).toContain(`at most ${MAX_MEMORY_CODE_CITATIONS}`);
       },
       {toolset: 'core'},
     );
