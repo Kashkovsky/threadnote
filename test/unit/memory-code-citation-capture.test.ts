@@ -1,12 +1,21 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Layer, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {describe, expect} from 'vitest';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
 import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {CodeGraphLanguagePackRegistry} from '../../src/code_graph/languages/registry.js';
+import {createCodeGraphWorksetRoutingProjection} from '../../src/code_graph/workset_catalog/projection.js';
+import {
+  publishCodeGraphWorksetCatalogGeneration,
+  registerCodeGraphQualifiedRef,
+  stageCodeGraphWorksetCatalogGeneration,
+} from '../../src/code_graph/workset_catalog/store.js';
+import {CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION} from '../../src/code_graph/workset_catalog/types.js';
+import {codeGraphWorksetManifestDigest} from '../../src/code_graph/workset_catalog/workset.js';
 import type {
   CodeGraphEffectiveSnapshotCitationEvidence,
   CodeGraphEffectiveSnapshotCitationEvidenceRequest,
@@ -14,7 +23,12 @@ import type {
 import type {CodeGraphInventoryFile, CodeGraphStatus, CodeGraphSymbol} from '../../src/code_graph/types.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
 import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
-import {captureMemoryCodeCitations} from '../../src/memory_code_citation_capture.js';
+import {
+  captureMemoryCodeCitations,
+  MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND,
+  MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND,
+  MemoryCodeCitationCaptureError,
+} from '../../src/memory_code_citation_capture.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -97,9 +111,155 @@ describe('memory code citation capture and validation', () => {
       expect(fixture.validationSessions()).toBe(2);
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );
+
+  effectIt.effect('routes qualified-reference recovery through its published Workset before unchanged retry', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-qualified-recovery-'});
+      const caller = path.join(root, 'caller');
+      const sibling = path.join(root, 'sibling');
+      const home = path.join(root, 'home');
+      yield* fs.makeDirectory(caller, {recursive: true});
+      yield* fs.makeDirectory(path.join(sibling, 'src'), {recursive: true});
+      yield* fs.makeDirectory(home, {recursive: true});
+      yield* fs.writeFileString(path.join(sibling, 'src', 'value.ts'), SOURCE);
+      const project = {
+        name: 'sibling',
+        path: sibling,
+        seed: [] as const,
+        uri: 'threadnote://resources/repos/sibling',
+      };
+      const workset = {name: 'citation-routing', projects: [project], unresolvedProjects: [] as const};
+      const manifestPath = path.join(home, 'seed-manifest.yaml');
+      yield* fs.writeFileString(
+        manifestPath,
+        [
+          'version: 1',
+          'projects:',
+          '  - name: sibling',
+          `    path: ${JSON.stringify(sibling)}`,
+          '    uri: threadnote://resources/repos/sibling',
+          '    seed: []',
+          'worksets:',
+          '  - name: citation-routing',
+          '    projects:',
+          '      - sibling',
+          '',
+        ].join('\n'),
+      );
+      const staged = yield* catalogTestEffect(
+        stageCodeGraphWorksetCatalogGeneration(home, {
+          manifestDigest: codeGraphWorksetManifestDigest(workset),
+          members: [{projection: routingProjection(), repositoryKey: project.name}],
+          worksetName: workset.name,
+        }),
+      );
+      yield* catalogTestEffect(
+        publishCodeGraphWorksetCatalogGeneration(home, {
+          generationId: staged.id,
+          worksetName: workset.name,
+        }),
+      );
+      const qualified = yield* catalogTestEffect(
+        registerCodeGraphQualifiedRef(home, {nodeId: SYMBOL_ID, repositoryId: REPOSITORY_ID}),
+      );
+      let siblingCurrent = false;
+      const fixture = citationFixture(sibling, {
+        statusFor: (cwd, observeWorktree) => {
+          if (cwd === caller) return callerStatus(caller);
+          return observeWorktree === false || siblingCurrent
+            ? fixture.status
+            : {...fixture.status, freshness: 'stale', stale: true};
+        },
+      });
+      const config = {...CONFIG, agentContextHome: home, manifestPath};
+
+      const failure = yield* captureMemoryCodeCitations(config, {
+        callerCwd: caller,
+        refs: [qualified.ref],
+      }).pipe(provideTestLayer(fixture.layer), Effect.flip);
+      expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
+      if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+      expect(failure.recovery?.preparation).toEqual({
+        action: 'prepare-workset',
+        arguments: [workset.name],
+        command: MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND,
+        target: 'workset',
+      });
+      expect(failure.message).toContain(`Workset ${JSON.stringify(workset.name)}`);
+      expect(failure.message).not.toContain(sibling);
+      expect(JSON.stringify(failure.recovery)).not.toContain(sibling);
+
+      siblingCurrent = true;
+      const citations = yield* captureMemoryCodeCitations(config, {
+        callerCwd: caller,
+        refs: [qualified.ref],
+      }).pipe(provideTestLayer(fixture.layer));
+      expect(citations).toMatchObject([{path: 'src/value.ts', target: {kind: 'symbol', nodeId: SYMBOL_ID}}]);
+    }).pipe(provideTestLayer(StandaloneBrokerLayer)),
+  );
+
+  effectIt.effect.prop(
+    'returns bounded manual recovery for every non-exact graph admission state',
+    {
+      status: fc
+        .record({
+          freshness: fc.constantFrom('current' as const, 'deferred' as const, 'stale' as const),
+          hasReadySnapshot: fc.boolean(),
+          stale: fc.boolean(),
+        })
+        .filter(value => !value.hasReadySnapshot || value.stale || value.freshness !== 'current'),
+    },
+    ({status}) =>
+      Effect.gen(function* () {
+        const fixture = citationFixture('/fixture', {
+          freshness: status.freshness,
+          stale: status.stale,
+          withoutReadySnapshot: !status.hasReadySnapshot,
+        });
+        const failure = yield* captureMemoryCodeCitations(CONFIG, {
+          callerCwd: '/fixture',
+          refs: ['src/value.ts'],
+        }).pipe(provideTestLayer(fixture.layer), Effect.flip);
+
+        expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
+        if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+        expect(failure.recovery).toEqual({
+          code: status.hasReadySnapshot ? 'exact-current-evidence-unavailable' : 'ready-graph-unavailable',
+          indexingStarted: false,
+          observedGraph: {
+            freshness: status.freshness,
+            readySnapshot: status.hasReadySnapshot ? 'available' : 'absent',
+            stale: status.stale,
+          },
+          preparation: {
+            action: 'index-current-graph',
+            arguments: [],
+            command: MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND,
+            target: 'callerCwd',
+          },
+          recovery: 'prepare-current-graph',
+          retryCondition: 'after-current-graph-ready',
+          retryable: true,
+          type: 'memory-code-citation-capture-recovery',
+          version: 1,
+        });
+        expect(JSON.stringify(failure.recovery)).not.toContain('/fixture');
+      }).pipe(provideTestLayer(StandaloneBrokerLayer)),
+    {fastCheck: {numRuns: 36}},
+  );
 });
 
-function citationFixture(root: string) {
+function citationFixture(
+  root: string,
+  statusOptions: {
+    readonly freshness?: CodeGraphStatus['freshness'];
+    readonly stale?: boolean;
+    readonly statusFor?: (cwd: string, observeWorktree: boolean | undefined) => CodeGraphStatus;
+    readonly withoutReadySnapshot?: boolean;
+  } = {},
+) {
   const file: CodeGraphInventoryFile = {
     blobId: 'fixture-blob',
     contentHash: SOURCE_HASH,
@@ -132,7 +292,7 @@ function citationFixture(root: string) {
   };
   const status: CodeGraphStatus = {
     databasePath: `${root}/graph.sqlite`,
-    freshness: 'current',
+    freshness: statusOptions.freshness ?? 'current',
     identity: {
       caseMode: 'sensitive',
       checkoutId: 'fixture-checkout',
@@ -146,21 +306,25 @@ function citationFixture(root: string) {
       worktreeId: 'fixture-worktree',
     },
     languagePacks: [],
-    readySnapshot: {
-      commit: COMMIT,
-      completedAt: '2026-08-26T00:00:00.000Z',
-      dirty: false,
-      edgeCount: 0,
-      extractorSet: 'fixture-extractor-set',
-      fileCount: 1,
-      graphContentId: `cgc_${'5'.repeat(40)}`,
-      id: SNAPSHOT_ID,
-      repositoryId: REPOSITORY_ID,
-      state: 'ready',
-      symbolCount: 1,
-      worktreeId: 'fixture-worktree',
-    },
-    stale: false,
+    ...(statusOptions.withoutReadySnapshot
+      ? {}
+      : {
+          readySnapshot: {
+            commit: COMMIT,
+            completedAt: '2026-08-26T00:00:00.000Z',
+            dirty: false,
+            edgeCount: 0,
+            extractorSet: 'fixture-extractor-set',
+            fileCount: 1,
+            graphContentId: `cgc_${'5'.repeat(40)}`,
+            id: SNAPSHOT_ID,
+            repositoryId: REPOSITORY_ID,
+            state: 'ready' as const,
+            symbolCount: 1,
+            worktreeId: 'fixture-worktree',
+          },
+        }),
+    stale: statusOptions.stale ?? false,
   };
   let evidenceCalls = 0;
   let acquired = 0;
@@ -215,15 +379,85 @@ function citationFixture(root: string) {
     use,
   ) => Effect.sync(() => void ++validationSessions).pipe(Effect.andThen(use(status)));
   const query = CodeGraphQueryService.of({
-    status: () => Effect.succeed(status),
+    status: (_home: string, cwd: string, options?: {readonly observeWorktree?: boolean}) =>
+      Effect.sync(() => statusOptions.statusFor?.(cwd, options?.observeWorktree) ?? status),
     withStatusSession,
   } as unknown as Parameters<typeof CodeGraphQueryService.of>[0]);
   return {
     evidenceCalls: () => evidenceCalls,
     layer: Layer.merge(Layer.succeed(CodeGraphStore, store), Layer.succeed(CodeGraphQueryService, query)),
     leases: () => ({acquired, released}),
+    status,
     symbol,
     validationSessions: () => validationSessions,
+  };
+}
+
+function catalogTestEffect<A, E>(effect: Effect.Effect<A, E, unknown>): Effect.Effect<A, E> {
+  // The enclosing platform layer provides the catalog's concrete services.
+  // oxlint-disable-next-line effecttsgo/unsafe-effect-type-assertion -- narrow the fully provided test boundary
+  return effect as Effect.Effect<A, E>;
+}
+
+function routingProjection() {
+  return createCodeGraphWorksetRoutingProjection({
+    checkoutId: '7'.repeat(64),
+    commitId: COMMIT,
+    componentCount: 1,
+    extractorGeneration: 13,
+    projectorVersion: CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
+    repositoryId: REPOSITORY_ID,
+    snapshotDigest: '8'.repeat(64),
+    snapshotId: SNAPSHOT_ID,
+    symbols: [
+      {
+        exported: true,
+        kind: 'function',
+        language: 'typescript',
+        lookupKeys: ['value'],
+        name: 'value',
+        nodeId: SYMBOL_ID,
+        path: 'src/value.ts',
+        qualifiedName: 'value',
+        span: {column: 1, endColumn: 2, endLine: 3, line: 1},
+        terms: [{term: 'value', weight: 4}],
+      },
+    ],
+    worktreeId: '9'.repeat(64),
+  });
+}
+
+function callerStatus(root: string): CodeGraphStatus {
+  const repositoryId = 'a'.repeat(64);
+  return {
+    databasePath: `${root}/graph.sqlite`,
+    freshness: 'current',
+    identity: {
+      caseMode: 'sensitive',
+      checkoutId: 'caller-checkout',
+      displayName: 'example/caller',
+      gitCommonDirectory: `${root}/.git`,
+      headCommit: COMMIT,
+      objectFormat: 'sha1',
+      remoteIdentity: 'https://github.com/example/caller.git',
+      repoRoot: root,
+      repositoryId,
+      worktreeId: 'caller-worktree',
+    },
+    languagePacks: [],
+    readySnapshot: {
+      commit: COMMIT,
+      dirty: false,
+      edgeCount: 0,
+      extractorSet: 'fixture-extractor-set',
+      fileCount: 0,
+      id: `cgsn_${'a'.repeat(40)}`,
+      repositoryId,
+      state: 'ready',
+      symbolCount: 0,
+      worktreeId: 'caller-worktree',
+    },
+    stale: false,
   };
 }
 

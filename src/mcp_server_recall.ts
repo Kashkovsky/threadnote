@@ -51,7 +51,7 @@ import {
   memoryArchiveBody,
   type MemoryMetadata,
 } from './memory_document.js';
-import {captureMemoryCodeCitations} from './memory_code_citation_capture.js';
+import {captureMemoryCodeCitationsForMcp} from './mcp/memory_code_citation.js';
 import {MEMORY_SCHEMA_VERSION} from './memory_code_citation.js';
 import {
   memoryCodeCitationSharingBlocker,
@@ -226,10 +226,13 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
         if (requestedCodeRefs.length > 0 && !callerCwd) {
           return argumentError('review_session_context requires absolute callerCwd when codeRefs are provided.');
         }
-        const codeCitations =
-          requestedCodeRefs.length === 0
-            ? []
-            : yield* captureMemoryCodeCitations(config, {callerCwd: callerCwd!, refs: requestedCodeRefs});
+        const captured = yield* captureMemoryCodeCitationsForMcp(
+          config,
+          {callerCwd: callerCwd!, refs: requestedCodeRefs},
+          'review_session_context',
+        );
+        if (!captured.ok) return captured.error;
+        const codeCitations = captured.citations;
         const rawCloseout: SessionCloseoutInput = {
           ...(codeCitations.length === 0 ? {} : {codeCitations}),
           decisions: candidatePolicy === 'handoff-only' ? [] : stringList(decisions),
@@ -1515,10 +1518,13 @@ export function registerStoreTool(
         if (requestedCodeRefs.length > 0 && !callerCwd) {
           return argumentError(`${name} requires absolute callerCwd when codeRefs are provided.`);
         }
-        const codeCitations =
-          requestedCodeRefs.length === 0
-            ? []
-            : yield* captureMemoryCodeCitations(config, {callerCwd: callerCwd!, refs: requestedCodeRefs});
+        const captured = yield* captureMemoryCodeCitationsForMcp(
+          config,
+          {callerCwd: callerCwd!, refs: requestedCodeRefs},
+          name,
+        );
+        if (!captured.ok) return captured.error;
+        const codeCitations = captured.citations;
         const workspaceComponent = callerCwd
           ? yield* resolveWorkspaceComponentContext({cwd: callerCwd, includeProcessCwd: false})
           : undefined;

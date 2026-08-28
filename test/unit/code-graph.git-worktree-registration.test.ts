@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
-import {join} from '../helpers/node-path.js';
+import {join, relative} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Fiber, Layer} from 'effect';
@@ -30,6 +30,7 @@ import {
   parseCodeGraphWorktreeReconciliationAuthorityResponse,
   scanCodeGraphGitWorktreeRegistry,
   scanCodeGraphGitWorktreeRegistryBatch,
+  scanCodeGraphWorktreeAuthorityWorkerRequest,
   validCodeGraphWorktreeAuthorityWorkerRequest,
   type CodeGraphGitWorktreeRegistryRequest,
   type CodeGraphWorktreeReconciliationAuthorityRequest,
@@ -38,6 +39,7 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {runtimeDirectoryNamePage, SystemInfo} from '../../src/effect/system.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../../src/worker_protocol.js';
+import {codeGraphGitdirBacklinkMatchesCanonicalWorktree} from '../../src/code_graph/git_worktree_backlink.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
 const roots: string[] = [];
@@ -127,8 +129,22 @@ describe('code graph common-gitdir worktree authority', () => {
       gitCommonDirectory: linkedIdentity.gitCommonDirectory,
       protocol: 1,
     });
+    const authority = await scanCodeGraphWorktreeAuthorityWorkerRequest({
+      checkoutId: linkedIdentity.checkoutId,
+      gitCommonDirectory: linkedIdentity.gitCommonDirectory,
+      kind: 'reconciliation-authority',
+      protocol: 3,
+      targets: [
+        {
+          adminNameKeys: registration.kind === 'linked' ? registration.adminNameKeys : [],
+          canonicalWorktreePath: linkedIdentity.repoRoot,
+          evidenceToken: '1'.repeat(64),
+        },
+      ],
+    });
 
     expect(observation).toMatchObject({state: 'present'});
+    expect(authority).toMatchObject({pathStates: ['missing'], registryStates: ['present'], state: 'complete'});
     expect(JSON.stringify(observation)).not.toContain(linked);
     renameSync(unavailable, linked);
     roots.splice(roots.indexOf(unavailable), 1);
@@ -316,6 +332,151 @@ describe('code graph common-gitdir worktree authority', () => {
       expect(targets.every(target => !serialized.includes(target.canonicalWorktreePath))).toBe(true);
     }).pipe(provideTestLayer(authorityWorkerLayer)),
   );
+
+  effectIt.effect(
+    'treats a reused admin name as absent unless its stable gitdir backlink targets the recorded worktree',
+    () =>
+      Effect.gen(function* () {
+        const common = commonDirectoryFixture();
+        const adminName = 'threadnote9';
+        const adminEntry = join(common, 'worktrees', adminName);
+        mkdirSync(adminEntry);
+        const targetRoot = temporaryRoot('threadnote-recycled-admin-targets-');
+        const removedWorktree = join(targetRoot, 'removed-worktree');
+        const replacementWorktree = join(targetRoot, 'replacement-worktree');
+        const targets = [
+          {
+            adminNameKeys: codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, adminName),
+            canonicalWorktreePath: removedWorktree,
+            evidenceToken: '3'.repeat(64),
+          },
+        ];
+
+        writeFileSync(join(adminEntry, 'gitdir'), `${join(replacementWorktree, '.git')}\n`);
+        const reused = yield* observeCodeGraphWorktreeReconciliationAuthority(
+          {checkoutId: CHECKOUT_ID, gitCommonDirectory: common},
+          targets,
+        );
+        expect(reused).toMatchObject({pathStates: ['missing'], registryStates: ['absent'], state: 'complete'});
+
+        writeFileSync(join(adminEntry, 'gitdir'), `${relative(adminEntry, join(removedWorktree, '.git'))}\r\n`);
+        const original = yield* observeCodeGraphWorktreeReconciliationAuthority(
+          {checkoutId: CHECKOUT_ID, gitCommonDirectory: common},
+          targets,
+        );
+        expect(original).toMatchObject({pathStates: ['missing'], registryStates: ['present'], state: 'complete'});
+        expect(JSON.stringify([reused, original])).not.toContain(targetRoot);
+      }).pipe(provideTestLayer(authorityWorkerLayer)),
+  );
+
+  it('fails closed when a matching admin entry has no stable regular gitdir backlink', async () => {
+    const common = commonDirectoryFixture();
+    const adminName = 'partial-reused-admin';
+    mkdirSync(join(common, 'worktrees', adminName));
+    const request = {
+      checkoutId: CHECKOUT_ID,
+      gitCommonDirectory: common,
+      kind: 'reconciliation-authority',
+      protocol: 3,
+      targets: [
+        {
+          adminNameKeys: codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, adminName),
+          canonicalWorktreePath: join(temporaryRoot('threadnote-partial-admin-target-'), 'missing'),
+          evidenceToken: '4'.repeat(64),
+        },
+      ],
+    } satisfies CodeGraphWorktreeReconciliationAuthorityRequest;
+
+    expect(await scanCodeGraphWorktreeAuthorityWorkerRequest(request)).toEqual({
+      reason: 'ambiguous',
+      state: 'unknown',
+    });
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'fails closed instead of following a matching admin entry or gitdir symlink',
+    async () => {
+      const targetRoot = temporaryRoot('threadnote-symlink-admin-target-');
+      const canonicalWorktreePath = join(targetRoot, 'missing');
+      const external = temporaryRoot('threadnote-external-admin-entry-');
+      writeFileSync(join(external, 'gitdir'), `${join(canonicalWorktreePath, '.git')}\n`);
+      for (const kind of ['admin', 'gitdir'] as const) {
+        const common = commonDirectoryFixture();
+        const adminName = `symlink-${kind}`;
+        const adminEntry = join(common, 'worktrees', adminName);
+        if (kind === 'admin') symlinkSync(external, adminEntry);
+        else {
+          mkdirSync(adminEntry);
+          symlinkSync(join(external, 'gitdir'), join(adminEntry, 'gitdir'));
+        }
+        const observation = await scanCodeGraphWorktreeAuthorityWorkerRequest({
+          checkoutId: CHECKOUT_ID,
+          gitCommonDirectory: common,
+          kind: 'reconciliation-authority',
+          protocol: 3,
+          targets: [
+            {
+              adminNameKeys: codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, adminName),
+              canonicalWorktreePath,
+              evidenceToken: '5'.repeat(64),
+            },
+          ],
+        });
+        expect(observation).toEqual({reason: 'ambiguous', state: 'unknown'});
+      }
+    },
+  );
+
+  it('normalizes Git LF/CRLF backlink spelling across supported platform path formats', () => {
+    expect(
+      codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        Buffer.from('/private/worktree/.git\n'),
+        '/private/worktree',
+        '/private/repository/.git/worktrees/threadnote',
+        'linux',
+      ),
+    ).toBe(true);
+    expect(
+      codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        Buffer.from('c:/Private/Worktree/.git\r\n'),
+        'C:\\private\\worktree',
+        'C:\\repository\\.git\\worktrees\\threadnote',
+        'win32',
+      ),
+    ).toBe(true);
+    expect(
+      codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        Buffer.from('/private/replacement/.git\n'),
+        '/private/worktree',
+        '/private/repository/.git/worktrees/threadnote',
+        'linux',
+      ),
+    ).toBe(false);
+    expect(
+      codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        Buffer.from('/private/worktree/.git'),
+        '/private/worktree',
+        '/private/repository/.git/worktrees/threadnote',
+        'linux',
+      ),
+    ).toBeUndefined();
+    expect(
+      codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        Buffer.from('../../../../worktree/.git\n'),
+        '/private/worktree',
+        '/private/repository/.git/worktrees/threadnote',
+        'linux',
+      ),
+    ).toBe(true);
+    expect(
+      codeGraphGitdirBacklinkMatchesCanonicalWorktree(
+        Buffer.from('..\\..\\..\\..\\worktree\\.git\r\n'),
+        'C:\\private\\worktree',
+        'C:\\private\\repository\\.git\\worktrees\\threadnote',
+        'win32',
+      ),
+    ).toBe(true);
+  });
 
   effectIt.effect('rejects over-page authority before spawning and strictly parses malformed responses', () =>
     Effect.gen(function* () {
