@@ -31,6 +31,8 @@ import {
 import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from './memory.js';
 import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from './migration/home.js';
 import {whatsNewLinesForVersionRange} from './release_notes.js';
+import {sendSystemNotification} from './system_notification.js';
+import {readTelemetryConsentRenewal} from './telemetry/config.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from './types.js';
 import {selectUpdateChannel, type UpdateChannel} from './update_channel.js';
 import {isDevelopmentBuildVersion} from './version_compare.js';
@@ -104,10 +106,12 @@ interface PostUpdateMigration {
   readonly instructions: readonly string[];
   readonly introducedIn: string;
   readonly markHandledWhenSkipped?: boolean;
+  readonly requiresExplicitTelemetryConsent?: boolean;
   readonly requiresLegacyHandoffs?: boolean;
   readonly requiresLegacyHomeMigration?: boolean;
   readonly requiresPendingHomeMigration?: boolean;
   readonly requiresProjectNameConsolidation?: boolean;
+  readonly requiresTelemetryConsentRenewal?: boolean;
   readonly title: string;
 }
 
@@ -988,6 +992,42 @@ const runApplicablePostUpdateMigrationsUnlocked = Effect.fn('update.runApplicabl
       yield* Console.log('Post-update actions are available.');
     }
     yield* printPostUpdateMigration(migration);
+    if (migration.requiresExplicitTelemetryConsent === true) {
+      yield* runStreamingSubcommand(options.dryRun, threadnoteCommand, migration.commandArgs);
+      if (options.dryRun) {
+        yield* Console.log('After reviewing the preview, explicit consent would still require:');
+        yield* Console.log(`  ${formatMigrationCommand(threadnoteCommand, [...migration.commandArgs, '--apply'])}`);
+        continue;
+      }
+      const accepted =
+        options.interactive &&
+        (yield* promptForConfirmation('Apply the current anonymous telemetry consent now? [y/N] '));
+      if (!accepted) {
+        yield* Console.log('Telemetry remains disabled. After reviewing the preview, renew explicitly with:');
+        yield* Console.log(`  ${formatMigrationCommand(threadnoteCommand, [...migration.commandArgs, '--apply'])}`);
+        if (!options.interactive) {
+          yield* sendSystemNotification({
+            body: 'Anonymous telemetry remains off after its data contract changed. Run threadnote telemetry enable, review the preview, then apply consent explicitly.',
+            title: 'Threadnote telemetry consent review',
+          });
+        }
+        continue;
+      }
+      yield* runStreamingSubcommand(false, threadnoteCommand, [...migration.commandArgs, '--apply']);
+      if (yield* migrationRequirementsSatisfied(config, migration)) {
+        return yield* Effect.fail(
+          applicationError(
+            'verify post-update telemetry consent',
+            new UpdateOperationError(
+              `Migration ${migration.id} exited successfully but telemetry consent still requires renewal; it was not marked handled.`,
+            ),
+          ),
+        );
+      }
+      yield* checkpoint(migration.id);
+      for (const instruction of migration.instructions) yield* Console.log(instruction);
+      continue;
+    }
     const accepted =
       options.dryRun ||
       options.yes ||
@@ -1037,13 +1077,10 @@ const applicablePostUpdateMigrations = Effect.fn('update.applicableMigrations')(
   const handled = new Set(options.handledMigrationIds);
   const applicable: PostUpdateMigration[] = [];
   for (const migration of migrations) {
-    if (handled.has(migration.id) && !hasAuthoritativeHomeRequirements(migration)) {
+    if (handled.has(migration.id) && !hasAuthoritativeRequirements(migration)) {
       continue;
     }
-    if (
-      compareVersions(options.fromVersion, migration.introducedIn) >= 0 &&
-      !hasAuthoritativeHomeRequirements(migration)
-    ) {
+    if (compareVersions(options.fromVersion, migration.introducedIn) >= 0 && !hasAuthoritativeRequirements(migration)) {
       continue;
     }
     if (!postUpdateMigrationReached(migration, options.fromVersion, options.toVersion)) {
@@ -1079,8 +1116,18 @@ const migrationRequirementsSatisfied = Effect.fn('update.migrationRequirementsSa
   if (migration.requiresProjectNameConsolidation === true && !(yield* hasProjectNameMigrationCandidates(config))) {
     return false;
   }
+  if (
+    migration.requiresTelemetryConsentRenewal === true &&
+    (yield* readTelemetryConsentRenewal(config).pipe(Effect.catch(() => Effect.succeed(undefined)))) === undefined
+  ) {
+    return false;
+  }
   return true;
 });
+
+function hasAuthoritativeRequirements(migration: PostUpdateMigration): boolean {
+  return hasAuthoritativeHomeRequirements(migration) || migration.requiresTelemetryConsentRenewal === true;
+}
 
 function hasAuthoritativeHomeRequirements(migration: PostUpdateMigration): boolean {
   return migration.requiresLegacyHomeMigration === true || migration.requiresPendingHomeMigration === true;
@@ -1114,18 +1161,30 @@ function parsePostUpdateMigration(value: unknown): PostUpdateMigration {
   ) {
     throw new UpdateOperationError(`Invalid entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
   }
+  const commandArgs = stringArray(value, 'commandArgs');
+  const requiresExplicitTelemetryConsent = value.requiresExplicitTelemetryConsent === true;
+  const requiresTelemetryConsentRenewal = value.requiresTelemetryConsentRenewal === true;
+  if (
+    requiresExplicitTelemetryConsent !== requiresTelemetryConsentRenewal ||
+    (requiresExplicitTelemetryConsent &&
+      (commandArgs.length !== 2 || commandArgs[0] !== 'telemetry' || commandArgs[1] !== 'enable'))
+  ) {
+    throw new UpdateOperationError(`Invalid explicit telemetry consent entry in ${POST_UPDATE_MIGRATIONS_FILE}.`);
+  }
   return {
     appliesToPrereleases: value.appliesToPrereleases === true,
-    commandArgs: stringArray(value, 'commandArgs'),
+    commandArgs,
     description: stringArray(value, 'description'),
     id: value.id,
     instructions: stringArray(value, 'instructions'),
     introducedIn: value.introducedIn,
     markHandledWhenSkipped: value.markHandledWhenSkipped === true,
+    requiresExplicitTelemetryConsent,
     requiresLegacyHandoffs: value.requiresLegacyHandoffs === true,
     requiresLegacyHomeMigration: value.requiresLegacyHomeMigration === true,
     requiresPendingHomeMigration: value.requiresPendingHomeMigration === true,
     requiresProjectNameConsolidation: value.requiresProjectNameConsolidation === true,
+    requiresTelemetryConsentRenewal,
     title: value.title,
   };
 }
