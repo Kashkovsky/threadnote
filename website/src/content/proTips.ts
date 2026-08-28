@@ -157,6 +157,7 @@ export const proTips: ProTip[] = [
     practice: [
       'Pass each agent’s absolute worktree path as callerCwd on recall and graph calls.',
       'Let the first graph call start immediately: a graph-equivalent commit can reuse ready content, while a compatible clean commit builds a bounded delta.',
+      'Manager-triggered indexing and Workset preparation run in isolated processes, with repository members prepared at bounded concurrency.',
       'Use a distinct handoff topic for each independent task; share a topic only when agents intentionally update one record.',
       'Let Threadnote coordinate graph publication and maintenance—do not copy or share derived index files between worktrees.',
     ],
@@ -441,12 +442,12 @@ export const proTips: ProTip[] = [
     category: 'graph',
     title: 'Cite the code behind consequential memory.',
     summary:
-      'Give Context Brief enough evidence to distinguish an unchanged move from code that changed, disappeared, or cannot be verified.',
+      'Give Context Brief enough evidence to distinguish a stale locator from memory backed by code that changed, disappeared, or cannot be verified.',
     why: 'A citation binds a claim to observed code without pretending that unchanged bytes automatically prove the prose.',
     practice: [
       'Add codeRefs only to consequential source-backed claims; uncited memory remains valid and recallable.',
       'For one repository, pass callerCwd. Use a prepared Workset only when the evidence really spans repositories.',
-      'Treat relocated evidence as fresh with a stale-link warning; changed or deleted evidence is stale, and unknown means Threadnote abstained.',
+      'Treat relocated evidence as fresh: stale-link warns about the locator, not the memory. Changed or deleted evidence is stale, and unknown means Threadnote abstained.',
       'When replacing cited memory, pass codeRefs again to recapture it. Omitting them deliberately clears the old citations.',
     ],
     scenario: {
@@ -504,7 +505,82 @@ export const proTips: ProTip[] = [
         {
           kind: 'assistant',
           actor: 'Agent',
-          text: 'The cited source is byte-identical at one new locator, so the memory remains fresh but its link is stale. I’ll review the claim, then replace the memory with the current code reference.',
+          text: 'The cited source is byte-identical at one new locator. The stale-link warning is about that locator, not the memory, so I’ll review the claim and then recapture the current code reference.',
+        },
+      ],
+    },
+  },
+  {
+    id: 'portable-graph-checkpoints',
+    number: '09',
+    category: 'graph',
+    title: 'Carry a verified graph across machines.',
+    summary:
+      'Move one deterministic clean graph between local installations when the receiver is offline or a rebuild would waste time.',
+    why: 'The checkpoint carries disposable derived graph data—not source or memory—and an independently obtained digest authenticates the exact artifact bytes.',
+    practice: [
+      'Export only after the current commit has an exact ready, clean root graph and a credential-free repository identity.',
+      'Transfer the checkpoint file and its expected SHA-256 digest through independent trusted paths.',
+      'On the receiver, inspect with the expected digest, run the full verify, then import from a checkout of the same repository where the source commit already exists.',
+      'No account, hosted service, or Workset is required. Existing schema-v1 and uncited legacy memories remain recallable.',
+    ],
+    scenario: {
+      eyebrow: 'Offline graph portability',
+      title: 'Verify before importing on the offline machine',
+      description:
+        'The sender exports one exact clean graph; the receiver authenticates the file, verifies every logical record, and imports it locally.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'Prepare this repository graph for an offline development machine without creating a Workset.',
+        },
+        {
+          kind: 'action',
+          actor: 'Source machine',
+          text: 'Index the clean current commit.',
+          meta: 'threadnote graph index',
+        },
+        {
+          kind: 'action',
+          actor: 'Source machine',
+          text: 'Export the exact ready graph to a new local artifact.',
+          meta: 'threadnote graph checkpoint export --output threadnote-graph.cgcp',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Exported checkpoint · sha256:<digest>',
+          evidence: ['threadnote-graph.cgcp', 'sha256:<digest>'],
+        },
+        {
+          kind: 'action',
+          actor: 'Transfer',
+          text: 'Move the artifact and independently obtained digest to the offline machine.',
+          meta: 'manual file transfer · no account or Workset',
+        },
+        {
+          kind: 'action',
+          actor: 'Offline machine',
+          text: 'Authenticate the artifact framing before inflating graph records.',
+          meta: 'threadnote graph checkpoint inspect --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+        },
+        {
+          kind: 'action',
+          actor: 'Offline machine',
+          text: 'Fully verify chunks, schema, ordering, coverage, and the logical digest.',
+          meta: 'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+        },
+        {
+          kind: 'action',
+          actor: 'Offline machine',
+          text: 'Import from a checkout of the same repository with the source commit already available.',
+          meta: 'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Agent',
+          text: 'The verified graph is ready locally. No Workset was created, and existing v1 and uncited memories were not migrated or filtered.',
         },
       ],
     },

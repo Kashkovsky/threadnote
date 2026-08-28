@@ -775,6 +775,7 @@ The body remains ordinary **Markdown**.
         'resume-later',
         'graph-operations',
         'memory-plus-graph',
+        'portable-graph-checkpoints',
       ]),
     );
     expect(operations.some(operation => operation.includes('recall_context'))).toBe(true);
@@ -783,6 +784,7 @@ The body remains ordinary **Markdown**.
     expect(operations.some(operation => operation.includes('share_publish'))).toBe(true);
     expect(JSON.stringify(proTips)).toContain('stale-link');
     expect(JSON.stringify(proTips)).toContain('no Workset required');
+    expect(JSON.stringify(proTips)).toContain('threadnote graph checkpoint export');
   });
 
   it('uses fictional, generic examples in public graph simulations', async () => {
@@ -910,6 +912,8 @@ The body remains ordinary **Markdown**.
     expect(landingSource).not.toMatch(/13\.2×|9\.9×/);
     expect(scenarios).toContain('current commit + isolated dirty overlay');
     expect(scenarios).toContain('paged SQLite analysis · no repository admission cap');
+    expect(landingSource).toContain('Free · manual · offline');
+    expect(landingSource).toContain("docsArticleHref('graph-checkpoints')");
   });
 
   it('explains the 4.4 citation contract across Home, Pro Tips, and FAQ', async () => {
@@ -922,14 +926,58 @@ The body remains ordinary **Markdown**.
 
     expect(landingSource).toContain('Optional citations · stale-link warnings · legacy recall');
     expect(landingSource).toContain('older uncited memories stay recallable');
+    expect(landingSource).toContain('A stale-link warning means the evidence moved—not that the memory');
     expect(tips).toContain('codeRefs');
     expect(tips).toContain('Memory fresh · citation relocated · warning stale-link');
+    expect(tips).toContain('stale-link warns about the locator, not the memory');
     expect(proTipsSource).toContain('source-aware memory');
     expect(proTipsSource).toContain('same memory, citation, and graph-search');
     expect(faqSource).toContain('Will my existing memories disappear after upgrading to 4.4?');
     expect(faqSource).toContain('v1 and other uncited memories stay recallable');
     expect(faqSource).toContain('Do I need a Workset to use code citations or Context Brief?');
-    expect(faqSource).toContain('queries never fan out cold graph builds');
+    expect(faqSource).toContain('That warning is about the link, not the memory');
+    expect(faqSource).toContain('Citation writes never start indexing implicitly');
+    expect(faqSource).toContain('never fan out cold graph builds');
+  });
+
+  it('surfaces the shipped 4.4 graph isolation contract across Home, Pro Tips, and FAQ', async () => {
+    const [landingSource, faqSource] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+    ]);
+    const tips = JSON.stringify(proTips);
+
+    expect(landingSource).toContain('Threadnote 4.4 · self-contained');
+    expect(landingSource).toContain('Manager-launched indexing and Workset preparation run in isolated processes');
+    expect(tips).toContain('Manager-triggered indexing and Workset preparation run in isolated processes');
+    expect(tips).toContain('repository members prepared at bounded concurrency');
+    expect(faqSource).toContain('How does Manager keep long graph work responsive?');
+    expect(faqSource).toContain('Workset repositories prepare with bounded concurrency');
+  });
+
+  it('explains the portable checkpoint workflow across Home, Pro Tips, and FAQ', async () => {
+    const [landingSource, faqSource] = await Promise.all([
+      readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
+      readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
+    ]);
+    const tips = JSON.stringify(proTips);
+
+    expect(landingSource).toContain('Export the exact ready, clean graph for the current commit');
+    expect(landingSource).toContain('No account, hosted service, or Workset is required');
+    expect(tips).toContain('threadnote graph checkpoint export --output threadnote-graph.cgcp');
+    expect(tips).toContain(
+      'threadnote graph checkpoint inspect --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+    );
+    expect(tips).toContain(
+      'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+    );
+    expect(tips).toContain(
+      'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+    );
+    expect(tips).toContain('Existing schema-v1 and uncited legacy memories remain recallable');
+    expect(faqSource).toContain('Can I move a graph to another machine without a Workset or cloud?');
+    expect(faqSource).toContain('Portable graph checkpoints are free, manual, offline files');
+    expect(faqSource).toContain('schema-v1 or uncited legacy memories are unaffected');
   });
 
   it('renders a connected, scale-stable Manager graph preview', async () => {
