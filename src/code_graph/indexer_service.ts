@@ -36,6 +36,7 @@ import {
   sparseOverlayGraphContentIdentity,
 } from './indexer_materialization.js';
 import {
+  CachedCodeGraphFactUnavailableDuringIndex,
   CodeGraphIndexOperationError,
   RepositoryMaintenanceInterrupted,
   RepositoryRegistrationLost,
@@ -97,6 +98,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
         request: CodeGraphIndexOptions,
         anonymousTelemetry: CodeGraphBuildAnonymousTelemetryReporter,
         attempt = 0,
+        bypassCachedFacts = false,
       ): Effect.Effect<CodeGraphIndexSummary, unknown> =>
         Effect.scoped(
           Effect.gen(function* () {
@@ -306,25 +308,29 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       });
                       let bypassReusableInventoryBase = false;
                       yield* cacheCoalescer.beginSparseExtractionTracking;
-                      const sparseOverlay = yield* attemptSparseReusableOverlay({
-                        anonymousTelemetry,
-                        cacheCoalescer,
-                        capacityProtection,
-                        embedding,
-                        ensureVectors,
-                        fs,
-                        identity,
-                        languagePacks,
-                        layout,
-                        observation: inventoryOverlayObservation,
-                        onInvalidBaseCache: Effect.sync(() => {
-                          bypassReusableInventoryBase = true;
-                        }),
-                        options,
-                        requestedOverlay,
-                        startedAt,
-                        store,
-                      }).pipe(
+                      const sparseOverlay = yield* (
+                        bypassCachedFacts
+                          ? Effect.succeed(Option.none<CodeGraphIndexSummary>())
+                          : attemptSparseReusableOverlay({
+                              anonymousTelemetry,
+                              cacheCoalescer,
+                              capacityProtection,
+                              embedding,
+                              ensureVectors,
+                              fs,
+                              identity,
+                              languagePacks,
+                              layout,
+                              observation: inventoryOverlayObservation,
+                              onInvalidBaseCache: Effect.sync(() => {
+                                bypassReusableInventoryBase = true;
+                              }),
+                              options,
+                              requestedOverlay,
+                              startedAt,
+                              store,
+                            })
+                      ).pipe(
                         Effect.ensuring(
                           cacheCoalescer.endSparseExtractionTracking.pipe(
                             Effect.andThen(cacheCoalescer.discard),
@@ -338,6 +344,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           inventoryOverlayObservation.changedPaths.length +
                           inventoryOverlayObservation.deletedPaths.length;
                         const reusableInventoryBase =
+                          !bypassCachedFacts &&
                           !bypassReusableInventoryBase &&
                           !options.force &&
                           options.incrementalOverlay !== false &&
@@ -372,9 +379,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                           );
                           if (Option.isSome(reusedInventory)) return reusedInventory.value;
                         }
-                        const cachedCommittedFileKeys = options.force
-                          ? new Set<string>()
-                          : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
+                        const cachedCommittedFileKeys =
+                          options.force || bypassCachedFacts
+                            ? new Set<string>()
+                            : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
                         return yield* inventoryRepository(identity, {
                           ...options,
                           cachedCommittedFileKeys,
@@ -874,7 +882,11 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(SystemInfo, system),
           Effect.catchIf(
             cause => cause instanceof WorktreeChangedDuringIndex && attempt === 0,
-            () => indexAttempt(request, anonymousTelemetry, attempt + 1),
+            () => indexAttempt(request, anonymousTelemetry, attempt + 1, bypassCachedFacts),
+          ),
+          Effect.catchIf(
+            cause => cause instanceof CachedCodeGraphFactUnavailableDuringIndex && !bypassCachedFacts,
+            () => indexAttempt(request, anonymousTelemetry, attempt, true),
           ),
         );
       const index = (request: CodeGraphIndexOptions) =>
@@ -888,7 +900,8 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
       const ensureCommitWithSummary = (
         request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
         anonymousTelemetry: CodeGraphBuildAnonymousTelemetryReporter,
-      ) =>
+        bypassCachedFacts = false,
+      ): Effect.Effect<{readonly lease: CodeGraphCommitLease; readonly summary: CodeGraphIndexSummary}, unknown> =>
         Effect.scoped(
           Effect.gen(function* () {
             const initialIdentity = yield* resolveRepositoryIdentity(request.cwd);
@@ -991,12 +1004,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                       );
                       yield* store.initialize(layout.databasePath);
                       const identity = {...currentIdentity, headCommit: options.commit};
-                      const cachedCommittedFileKeys = yield* cachedFileKeys(
-                        store,
-                        layout.databasePath,
-                        languagePacks,
-                        options.onProgress,
-                      );
+                      const cachedCommittedFileKeys = bypassCachedFacts
+                        ? new Set<string>()
+                        : yield* cachedFileKeys(store, layout.databasePath, languagePacks, options.onProgress);
                       const cacheCoalescer = cacheContentBatch({
                         databasePath: layout.databasePath,
                         languagePacks,
@@ -1091,6 +1101,10 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
           Effect.provideService(FileSystem.FileSystem, fs),
           Effect.provideService(Path.Path, path),
           Effect.provideService(SystemInfo, system),
+          Effect.catchIf(
+            cause => cause instanceof CachedCodeGraphFactUnavailableDuringIndex && !bypassCachedFacts,
+            () => ensureCommitWithSummary(request, anonymousTelemetry, true),
+          ),
         );
       const ensureCommit = (
         request: Omit<CodeGraphIndexOptions, 'force' | 'includeOverlay'> & {readonly commit: string},
