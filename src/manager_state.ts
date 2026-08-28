@@ -6,7 +6,7 @@ import type {RuntimeConfig} from './types.js';
 import {currentPackageVersion, fetchLatestVersion, releaseSource} from './update.js';
 import {selectUpdateChannel} from './update_channel.js';
 import {findExecutable} from './utils.js';
-import {compareVersions} from './version_compare.js';
+import {compareVersions, isDevelopmentBuildVersion} from './version_compare.js';
 import {readAutoUpdateStatus} from './auto_update.js';
 
 export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationAgents')(function* (
@@ -35,8 +35,22 @@ export const detectConsolidationAgents = Effect.fn('manager.detectConsolidationA
 });
 
 export function managerUpdateAvailable(currentVersion: string, latestVersion?: string): boolean {
-  return latestVersion !== undefined && compareVersions(latestVersion, currentVersion) > 0;
+  return (
+    !isDevelopmentBuildVersion(currentVersion) &&
+    latestVersion !== undefined &&
+    compareVersions(latestVersion, currentVersion) > 0
+  );
 }
+
+export const fetchManagerLatestVersion = Effect.fn('manager.fetchLatestVersion')(function* (
+  currentVersion: string,
+  source: string,
+) {
+  if (isDevelopmentBuildVersion(currentVersion)) return undefined;
+  return yield* fetchLatestVersion(source, selectUpdateChannel(currentVersion)).pipe(
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+});
 
 export const readManagerRuntimeState = Effect.fn('manager.readRuntimeState')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
@@ -47,10 +61,7 @@ export const readManagerRuntimeState = Effect.fn('manager.readRuntimeState')(fun
     readAutoUpdateStatus(),
     currentPackageVersion(),
   ]);
-  const latestVersion = yield* fetchLatestVersion(
-    releaseSource(system.environment()),
-    selectUpdateChannel(version),
-  ).pipe(Effect.catch(() => Effect.succeed(undefined)));
+  const latestVersion = yield* fetchManagerLatestVersion(version, releaseSource(system.environment()));
   return {
     agents,
     autoUpdate,
