@@ -106,14 +106,31 @@ describe('batched repository-qualified reference routing', () => {
             repositoryId: projects[77]!.repositoryId,
           }),
         );
+        const callerRef = yield* catalogTestEffect(
+          registerCodeGraphQualifiedRef(home, {
+            nodeId: `cgs_${'c'.repeat(32)}`,
+            repositoryId: projects[0]!.repositoryId,
+          }),
+        );
 
         const resolved = yield* resolveCodeGraphQualifiedRefTargets(
           config,
-          [first.ref, second.ref, first.ref],
+          [first.ref, second.ref, callerRef.ref, first.ref],
           projects[0]!.cwd,
         );
 
-        expect(resolved.map(target => target.cwd)).toEqual([projects[5]!.cwd, projects[77]!.cwd, projects[5]!.cwd]);
+        expect(resolved.map(target => target.cwd)).toEqual([
+          projects[5]!.cwd,
+          projects[77]!.cwd,
+          projects[0]!.cwd,
+          projects[5]!.cwd,
+        ]);
+        expect(resolved.map(target => target.route)).toEqual([
+          {kind: 'workset', name: 'citation-routing'},
+          {kind: 'workset', name: 'citation-routing'},
+          {kind: 'caller'},
+          {kind: 'workset', name: 'citation-routing'},
+        ]);
         expect(statusCalls).toBe(3);
       }).pipe(
         provideTestLayer(

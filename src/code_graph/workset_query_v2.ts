@@ -165,6 +165,7 @@ export interface ResolvedCodeGraphQualifiedRefTargetV1 {
   readonly nodeId: string;
   readonly ref: string;
   readonly repositoryId: string;
+  readonly route: {readonly kind: 'caller'} | {readonly kind: 'workset'; readonly name: string};
   readonly status: CodeGraphStatus;
 }
 
@@ -515,29 +516,38 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
       return published.members.flatMap(member => {
         if (!requestedRepositoryIds.has(member.repositoryId)) return [];
         const project = projectsByKey.get(member.repositoryKey);
-        return project === undefined ? [] : [project.path];
+        return project === undefined
+          ? []
+          : [{path: project.path, route: {kind: 'workset' as const, name: workset.name}}];
       });
     });
-    const orderedPaths = [...(caller === undefined ? [] : [caller]), ...publishedPaths];
-    const uniquePaths: string[] = [];
+    const orderedPaths = [
+      ...(caller === undefined ? [] : [{path: caller, route: {kind: 'caller' as const}}]),
+      ...publishedPaths,
+    ];
+    const uniquePaths: {
+      readonly cwd: string;
+      readonly route: {readonly kind: 'caller'} | {readonly kind: 'workset'; readonly name: string};
+    }[] = [];
     const seenPaths = new Set<string>();
     for (const candidate of orderedPaths) {
-      const cwd = yield* expandPath(candidate);
+      const cwd = yield* expandPath(candidate.path);
       if (seenPaths.has(cwd)) continue;
       seenPaths.add(cwd);
-      uniquePaths.push(cwd);
+      uniquePaths.push({cwd, route: candidate.route});
     }
     const matches = yield* Effect.forEach(
       uniquePaths,
-      cwd =>
+      candidate =>
         Effect.gen(function* () {
+          const {cwd} = candidate;
           if (!(yield* fs.exists(cwd))) return undefined;
           const status = yield* queryService.status(
             config.agentContextHome,
             cwd,
             CODE_GRAPH_QUALIFIED_REF_TARGET_STATUS_OPTIONS,
           );
-          return status.readySnapshot === undefined ? undefined : ({cwd, status} as const);
+          return status.readySnapshot === undefined ? undefined : ({...candidate, status} as const);
         }).pipe(Effect.catch(() => Effect.succeed(undefined))),
       {concurrency: 4},
     );
@@ -567,6 +577,7 @@ export const resolveCodeGraphQualifiedRefTargets = Effect.fn('codeGraphWorksetV2
         nodeId: record.nodeId,
         ref: record.ref,
         repositoryId: record.repositoryId,
+        route: selected.route,
         status: selected.status,
       } satisfies ResolvedCodeGraphQualifiedRefTargetV1;
     });
