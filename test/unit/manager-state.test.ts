@@ -1,6 +1,9 @@
+import {it as effectIt} from '@effect/vitest';
 import fc from 'fast-check';
+import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
-import {managerUpdateAvailable} from '../../src/manager_state.js';
+import {HttpService} from '../../src/effect/http.js';
+import {fetchManagerLatestVersion, managerUpdateAvailable} from '../../src/manager_state.js';
 import {managerUpdateIndicator} from '../../src/manager_update_indicator.js';
 
 describe('Manager runtime state', () => {
@@ -9,6 +12,11 @@ describe('Manager runtime state', () => {
     {current: '4.2.0-beta.2', expected: false, latest: '4.2.0-beta.2'},
     {current: '4.2.0', expected: false, latest: '4.2.0-beta.9'},
     {current: '4.2.0-beta.2', expected: false, latest: '4.1.9'},
+    {
+      current: '4.4.2-local.g9d9e0358d2d1ac4736480fcf199a3cafdbb62249',
+      expected: false,
+      latest: '4.4.2',
+    },
     {current: '4.2.0', expected: false, latest: undefined},
   ])('reports $latest over $current as updateAvailable=$expected', ({current, expected, latest}) => {
     expect(managerUpdateAvailable(current, latest)).toBe(expected);
@@ -32,6 +40,46 @@ describe('Manager runtime state', () => {
       }),
     );
   });
+
+  it('never advertises a release update from a development runtime', () => {
+    const version = fc.tuple(
+      fc.integer({max: 99, min: 0}),
+      fc.integer({max: 99, min: 0}),
+      fc.integer({max: 99, min: 0}),
+    );
+    const commit = fc
+      .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: 40, minLength: 40})
+      .map(characters => characters.join(''));
+    fc.assert(
+      fc.property(version, version, commit, (current, latest, revision) => {
+        const currentVersion = `${current.join('.')}-local.g${revision}`;
+        expect(managerUpdateAvailable(currentVersion, latest.join('.'))).toBe(false);
+      }),
+    );
+  });
+
+  effectIt.effect('does not check releases while reading development-runtime Manager state', () =>
+    Effect.gen(function* () {
+      let requests = 0;
+      const http = HttpService.of({
+        downloadToFile: () => Effect.die('not used'),
+        getJson: () =>
+          Effect.sync(() => {
+            requests += 1;
+            return {body: [], status: 200};
+          }),
+        getStatus: () => Effect.die('not used'),
+        getText: () => Effect.die('not used'),
+      });
+      const latestVersion = yield* fetchManagerLatestVersion(
+        `4.4.2-local.g${'a'.repeat(40)}`,
+        'https://example.invalid/releases',
+      ).pipe(Effect.provideService(HttpService, http));
+
+      expect(latestVersion).toBeUndefined();
+      expect(requests).toBe(0);
+    }),
+  );
 
   it.each([
     {
