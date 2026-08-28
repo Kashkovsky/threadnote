@@ -1504,7 +1504,7 @@ describe('automatic missing-worktree reconciliation', () => {
     ),
   );
 
-  effectIt.effect('preserves a real graph view when the linked admin child reappears as a raw file', () =>
+  effectIt.effect('defers and preserves a real graph view when the linked admin child reappears as a raw file', () =>
     TestClock.withLive(
       Effect.gen(function* () {
         const fixture = yield* createLiveReconciliationFixture('threadnote-reconciliation-live-admin-');
@@ -1517,7 +1517,7 @@ describe('automatic missing-worktree reconciliation', () => {
 
         const result = yield* observed.reconciler.tick(liveTick(fixture));
 
-        expect(result).toMatchObject({reason: 'registered', state: 'preserved'});
+        expect(result).toMatchObject({reason: 'registry-unavailable', state: 'deferred'});
         expect(yield* Ref.get(observed.workerCalls)).toBe(1);
         expect(readViewState(fixture)).toEqual({
           activeSnapshotId: fixture.snapshotId,

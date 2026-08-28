@@ -11,6 +11,7 @@ import {
   type SystemInfoShape,
 } from '../effect/system.js';
 import {CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT} from '../worker_protocol.js';
+import {observeCodeGraphGitdirBacklinkMatches} from './git_worktree_backlink.js';
 import type {RepositoryIdentity} from './types.js';
 
 const PROTOCOL_VERSION = 1 as const;
@@ -383,6 +384,7 @@ export async function scanCodeGraphWorktreeAuthorityWorkerRequest(
     request.checkoutId,
     request.gitCommonDirectory,
     request.targets.map(target => target.adminNameKeys),
+    request.targets.map(target => target.canonicalWorktreePath),
   );
   if (registry.state === 'unknown') return registry;
   return {
@@ -430,7 +432,11 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
   checkoutId: string,
   gitCommonDirectory: string,
   adminNameKeySets: readonly (readonly string[])[],
+  canonicalWorktreePaths?: readonly string[],
 ): Promise<CodeGraphGitWorktreeRegistryBatchObservation> {
+  if (canonicalWorktreePaths !== undefined && canonicalWorktreePaths.length !== adminNameKeySets.length) {
+    return {reason: 'invalid', state: 'unknown'};
+  }
   try {
     const path = platformPathFor(runtimePlatform);
     const commonBefore = await lstatStableDirectory(gitCommonDirectory);
@@ -481,8 +487,23 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
       }
       const keys = codeGraphGitWorktreeAdminNameKeys(checkoutId, nameBytes);
       exactEntryKeys.push(keys[0]!);
+      const matchingTargetIndexes = new Set<number>();
       for (const key of keys) {
-        for (const index of targetIndexesByKey.get(key) ?? []) targetPresence[index] = true;
+        for (const index of targetIndexesByKey.get(key) ?? []) matchingTargetIndexes.add(index);
+      }
+      if (canonicalWorktreePaths === undefined) {
+        for (const index of matchingTargetIndexes) targetPresence[index] = true;
+      } else if (matchingTargetIndexes.size > 0) {
+        const indexes = [...matchingTargetIndexes];
+        const matches = await observeCodeGraphGitdirBacklinkMatches(
+          registryRoot,
+          nameBytes,
+          indexes.map(index => canonicalWorktreePaths[index]!),
+        );
+        if (matches === undefined) return {reason: 'ambiguous', state: 'unknown'};
+        for (const [matchIndex, matchesTarget] of matches.entries()) {
+          if (matchesTarget) targetPresence[indexes[matchIndex]!] = true;
+        }
       }
     }
 

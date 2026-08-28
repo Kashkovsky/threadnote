@@ -63,7 +63,7 @@ export function materializeBuildWorkspaces(
       buildSystem: project.buildSystem,
       diagnostics: unique([...(existing?.diagnostics ?? []), ...project.diagnostics]).sort(compareCodeUnits),
       id: project.workspaceId,
-      name: existing?.name ?? root.split('/').at(-1) ?? project.name,
+      name: existing?.name ?? (root === '' ? project.name : basename(root)),
       provenance: existing?.provenance === 'declared' || project.provenance === 'declared' ? 'declared' : 'inferred',
       root,
     });
