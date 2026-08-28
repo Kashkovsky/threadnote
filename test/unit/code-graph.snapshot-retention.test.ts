@@ -196,35 +196,41 @@ describe('code graph ready snapshot retention', () => {
     ),
   );
 
-  it('keeps a displaced view until every overlapping lease is released', async () => {
-    const root = await mkdtemp('threadnote-ready-retention-overlapping-leases-');
-    temporaryRoots.push(root);
-    const databasePath = join(root, 'graph-v3.sqlite');
-    const identity = repositoryIdentity(root);
-    const displaced = snapshot(identity, 'overlap-displaced');
-    const current = snapshot(identity, 'overlap-current');
+  effectIt.effect('keeps a displaced view until every overlapping lease is released', () =>
+    TestClock.withLive(
+      Effect.acquireUseRelease(
+        Effect.promise(() => mkdtemp('threadnote-ready-retention-overlapping-leases-')),
+        root =>
+          Effect.gen(function* () {
+            const databasePath = join(root, 'graph-v3.sqlite');
+            const identity = repositoryIdentity(root);
+            const displaced = snapshot(identity, 'overlap-displaced');
+            const current = snapshot(identity, 'overlap-current');
+            const store = yield* CodeGraphStore;
+            yield* store.initialize(databasePath);
+            yield* registerReadySnapshots(store, databasePath, identity, [displaced]);
+            yield* store.promote(databasePath, identity, displaced.id);
+            const first = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
+            const second = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
+            yield* registerReadySnapshots(store, databasePath, identity, [current]);
+            yield* store.promote(databasePath, identity, current.id);
 
-    await runEffect(
-      Effect.gen(function* () {
-        const store = yield* CodeGraphStore;
-        yield* store.initialize(databasePath);
-        yield* registerReadySnapshots(store, databasePath, identity, [displaced]);
-        yield* store.promote(databasePath, identity, displaced.id);
-        const first = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
-        const second = yield* store.acquireSnapshotLease(databasePath, displaced.id, 60_000);
-        yield* registerReadySnapshots(store, databasePath, identity, [current]);
-        yield* store.promote(databasePath, identity, current.id);
+            yield* store.releaseSnapshotLease(databasePath, first);
+            expect(readSnapshotState(databasePath, displaced.id)).toBe('ready');
+            yield* store.releaseSnapshotLease(databasePath, second);
+            // Lease release deliberately performs one bounded foreground page and
+            // leaves physical reclamation resumable. Drive that independent state
+            // machine explicitly so this overlap test proves lease authority
+            // without racing the opportunistic detached collector's wall clock.
+            yield* store.pruneRetiredSnapshots(databasePath);
 
-        yield* store.releaseSnapshotLease(databasePath, first);
-        expect(readSnapshotState(databasePath, displaced.id)).toBe('ready');
-        yield* store.releaseSnapshotLease(databasePath, second);
-        yield* waitForSnapshotRemoval(databasePath, displaced.id);
-      }),
-    );
-
-    expect(readSnapshotState(databasePath, displaced.id)).toBeUndefined();
-    expect(readSnapshotState(databasePath, current.id)).toBe('ready');
-  });
+            expect(readSnapshotState(databasePath, displaced.id)).toBeUndefined();
+            expect(readSnapshotState(databasePath, current.id)).toBe('ready');
+          }),
+        root => Effect.promise(() => rm(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
 
   it('carries retirement provenance from an expired lease to a renewed overlapping lease', async () => {
     const root = await mkdtemp('threadnote-ready-retention-renewed-overlap-');
