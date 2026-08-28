@@ -63,6 +63,14 @@ export class WorktreeChangedDuringIndex extends Error {
   }
 }
 
+export class CachedCodeGraphFactUnavailableDuringIndex extends CodeGraphIndexOperationError {
+  override readonly name = 'CachedCodeGraphFactUnavailableDuringIndex';
+
+  constructor() {
+    super('A cached code graph fact disappeared during indexing; retry with a full rebuild.');
+  }
+}
+
 export class RepositoryRegistrationLost extends Error {
   override readonly name = 'RepositoryRegistrationLost';
 }

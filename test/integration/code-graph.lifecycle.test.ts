@@ -1827,6 +1827,106 @@ describe('native code graph lifecycle', () => {
     }
   });
 
+  effectIt.effect('retries full inventory materialization without a parser cache after a cached fact disappears', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = createManySourceRepository(12);
+        const home = join(root, '.threadnote-test-home');
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+        const databasePath = codeGraphDatabasePath(home, first);
+        yield* Effect.sync(() => {
+          invalidateCachedFactFallback(databasePath, first.snapshot.id, 'src/file-000.ts');
+          writeFileSync(join(root, 'src/file-012.ts'), 'export const file012 = 12;\n');
+          git(root, ['add', 'src/file-012.ts']);
+          git(root, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'full cache recovery target',
+          ]);
+        });
+        const extractionCompletions: string[] = [];
+
+        const recovered = yield* indexer.index({
+          cwd: root,
+          ensureVectors: false,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (
+                progress.phase === 'scanning' &&
+                progress.activity?.stage === 'extracting' &&
+                progress.activity.parseMilliseconds !== undefined
+              ) {
+                extractionCompletions.push(progress.activity.path);
+              }
+            }),
+          threadnoteHome: home,
+        });
+        const recoveredGraph = yield* store.loadGraph(databasePath, recovered.snapshot.id);
+        const oracleHome = join(root, '.threadnote-oracle-home');
+        const oracle = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: oracleHome});
+        const oracleGraph = yield* store.loadGraph(codeGraphDatabasePath(oracleHome, oracle), oracle.snapshot.id);
+
+        expect(recovered.materialization).toMatchObject({mode: 'full', stagedFiles: 13, totalFiles: 13});
+        expect(extractionCompletions).toHaveLength(14);
+        for (let index = 0; index < 13; index += 1) {
+          const path = `src/file-${String(index).padStart(3, '0')}.ts`;
+          expect(extractionCompletions.filter(candidate => candidate === path)).toHaveLength(index === 12 ? 2 : 1);
+        }
+        expect(normalizeStoredGraph(recoveredGraph)).toEqual(normalizeStoredGraph(oracleGraph));
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('retries committed-base materialization without a parser cache after a cached fact disappears', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = createManySourceRepository(4);
+        const home = join(root, '.threadnote-test-home');
+        const indexer = yield* CodeGraphIndexer;
+        const store = yield* CodeGraphStore;
+        const first = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: home});
+        const databasePath = codeGraphDatabasePath(home, first);
+        const commit = yield* Effect.sync(() => {
+          invalidateCachedFactFallback(databasePath, first.snapshot.id, 'src/file-000.ts');
+          writeFileSync(join(root, 'src/file-003.ts'), 'export const file003 = 4;\n');
+          git(root, ['add', 'src/file-003.ts']);
+          git(root, [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '-qm',
+            'committed cache recovery target',
+          ]);
+          return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {encoding: 'utf8'}).trim();
+        });
+
+        const ensured = yield* Effect.acquireUseRelease(
+          indexer.ensureCommit({commit, cwd: root, ensureVectors: false, threadnoteHome: home}),
+          lease =>
+            store
+              .loadGraph(databasePath, lease.snapshot.id)
+              .pipe(Effect.map(graph => ({graph, snapshot: lease.snapshot}))),
+          lease => store.releaseSnapshotLease(databasePath, lease.leaseToken),
+        );
+        const oracleHome = join(root, '.threadnote-oracle-home');
+        const oracle = yield* indexer.index({cwd: root, ensureVectors: false, threadnoteHome: oracleHome});
+        const oracleGraph = yield* store.loadGraph(codeGraphDatabasePath(oracleHome, oracle), oracle.snapshot.id);
+
+        expect(ensured.snapshot.commit).toBe(commit);
+        expect(ensured.snapshot.fileCount).toBe(4);
+        expect(normalizeStoredGraph(ensured.graph)).toEqual(normalizeStoredGraph(oracleGraph));
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('rebuilds a valid materialized shard payload stored under the wrong path', () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -5957,6 +6057,23 @@ function normalizeStoredGraph(graph: StoredCodeGraph): Pick<StoredCodeGraph, 'ed
     edges: [...graph.edges].sort((left, right) => left.id.localeCompare(right.id)),
     symbols: [...graph.symbols].sort((left, right) => left.id.localeCompare(right.id)),
   };
+}
+
+function invalidateCachedFactFallback(databasePath: string, snapshotId: string, path: string): void {
+  const database = new Database(databasePath);
+  try {
+    expect(
+      database
+        .query('UPDATE file_blobs SET facts_json = ? WHERE path_hint = ?')
+        .run(JSON.stringify({diagnostics: [], edges: [null], path, symbols: []}), path).changes,
+    ).toBeGreaterThan(0);
+    expect(
+      database.query('DELETE FROM snapshot_file_shards WHERE snapshot_id = ? AND path = ?').run(snapshotId, path)
+        .changes,
+    ).toBe(1);
+  } finally {
+    database.close();
+  }
 }
 
 function finalFullMaterializationMetrics(progress: readonly CodeGraphProgress[]): CodeGraphMaterializationMetrics {
