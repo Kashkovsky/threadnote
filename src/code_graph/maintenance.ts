@@ -15,7 +15,8 @@ import {
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
 import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
-import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CODE_GRAPH_SCHEMA_VERSION} from './types.js';
+import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
+import {CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR} from './store/schema_revision.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
@@ -364,7 +365,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                       diagnosed.value.snapshotFileCitationSchema === 'column-only-with-authority' ||
                       (diagnosed.value.snapshotFileCitationSchema === 'released-absent-with-authority' &&
                         diagnosed.value.persistentExtensionSchemaRevision !==
-                          CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION - 1))
+                          CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR.value))
                   ) {
                     return deep ? ('discard' as const) : ('schema-upgrade-on-use' as const);
                   }

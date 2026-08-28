@@ -3,6 +3,7 @@ import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphCacheFactInput} from './fact_budget.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
+import type {CodeGraphCheckpointRecordKind, CodeGraphCheckpointRecordV1} from './checkpoint/schema.js';
 import type {
   CodeGraphWorkspaceBuildSystem,
   CodeGraphWorkspaceComponentKind,
@@ -10,8 +11,6 @@ import type {
   CodeGraphWorkspace,
 } from './languages/types.js';
 import {
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-  CODE_GRAPH_SCHEMA_VERSION,
   type CodeGraphSnapshotFileCitationBaseIndexState,
   type CodeGraphSnapshotFileCitationSchemaState,
   type CodeGraphEdge,
@@ -28,9 +27,99 @@ import {
   CODE_GRAPH_INVENTORY_ADMISSION_POLICY_VERSION,
   type CodeGraphInventoryExclusionReason,
 } from './inventory_policy.js';
+import {
+  CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION,
+  CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
+  CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
+  CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  codeGraphRuntimeSchemaRequiresReconnect,
+} from './store/schema_revision.js';
 
-export const CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION = 2 as const;
-export const CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION = 2 as const;
+export {
+  CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION,
+  CODE_GRAPH_INVENTORY_REUSE_RECEIPT_VERSION,
+  CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
+  CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  codeGraphRuntimeSchemaRequiresReconnect,
+};
+
+export type CodeGraphCheckpointTrust = 'expected-descriptor-verified' | 'local-unverified';
+
+export interface CodeGraphCheckpointSha256Digest {
+  readonly algorithm: 'sha256';
+  readonly digest: string;
+}
+
+export interface CodeGraphCheckpointArtifactDescriptor extends CodeGraphCheckpointSha256Digest {
+  readonly mediaType: string;
+  readonly size: number;
+}
+
+export interface CodeGraphCheckpointCoverageReason {
+  readonly bytes: number;
+  readonly code: string;
+  readonly files: number;
+}
+
+export interface CodeGraphCheckpointCoverageSummary {
+  readonly eligibleFiles: number;
+  readonly excludedFiles: number;
+  readonly reasons: readonly CodeGraphCheckpointCoverageReason[];
+  readonly state: 'complete' | 'partial';
+}
+
+/**
+ * Local provenance bound to a receiving clean root. Donor process, worktree,
+ * environment, and database snapshot identities are intentionally absent.
+ */
+export interface CodeGraphCheckpointImportReceiptInput {
+  readonly abi: CodeGraphCheckpointSha256Digest;
+  readonly artifact: CodeGraphCheckpointArtifactDescriptor;
+  /** Reserved for future delta formats; v1 self-contained roots require null. */
+  readonly baseLogicalDigest: string | null;
+  readonly coverage: CodeGraphCheckpointCoverageSummary;
+  readonly formatVersion: typeof CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION;
+  readonly logical: CodeGraphCheckpointSha256Digest;
+  readonly source: {
+    readonly commit: string;
+    readonly graphContentId: string;
+    readonly repositoryId: string;
+  };
+  readonly trust: CodeGraphCheckpointTrust;
+}
+
+export interface CodeGraphCheckpointImportReceipt extends CodeGraphCheckpointImportReceiptInput {
+  readonly importedAt: string;
+  /** Newly created local receiving snapshot, never a donor database identity. */
+  readonly snapshotId: string;
+}
+
+export interface CodeGraphCheckpointImportBuildInput extends CodeGraphCheckpointImportReceiptInput {
+  readonly batchCount: number;
+  readonly packProvenance: readonly CodeGraphLanguagePackProvenance[];
+  readonly recordCounts: Readonly<Record<CodeGraphCheckpointRecordKind, number>>;
+}
+
+export interface CodeGraphCheckpointImportRecordPage {
+  readonly batchIndex: number;
+  readonly digest: CodeGraphCheckpointSha256Digest;
+  readonly records: readonly CodeGraphCheckpointRecordV1[];
+}
+
+export type CodeGraphCheckpointImportRecordPageResult =
+  {readonly records: number; readonly state: 'already-staged'} | {readonly records: number; readonly state: 'staged'};
+
+export interface CodeGraphCheckpointImportFinalizeOptions {
+  readonly onProgress?: CodeGraphActivationProgressCallback;
+  readonly persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector;
+  readonly reusableBaseReceipt?: CodeGraphReusableBaseReceiptInput;
+}
+
+export type CodeGraphCheckpointImportBuildBindingResult = {readonly state: 'already-bound'} | {readonly state: 'bound'};
+
+export type CodeGraphCheckpointImportReceiptRecordResult =
+  | {readonly receipt: CodeGraphCheckpointImportReceipt; readonly state: 'already-recorded'}
+  | {readonly receipt: CodeGraphCheckpointImportReceipt; readonly state: 'recorded'};
 
 export interface CodeGraphInventoryPolicyExclusionReasonSummary {
   readonly bytes: number;
@@ -782,19 +871,4 @@ export type CodeGraphSnapshotPurgeStoreResult =
 export interface CodeGraphSnapshotPurgeStoreOptions extends CodeGraphSnapshotLeaseWriterOptions {
   /** Final containment proof while the checkout writer gate is held and before SQLite opens. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
-}
-
-/** True only for a positive, bounded observation of storage newer than this runtime. */
-export function codeGraphRuntimeSchemaRequiresReconnect(
-  observedSchemaVersion: number | undefined,
-  observedPersistentExtensionRevision: number | undefined,
-): boolean {
-  return (
-    (typeof observedSchemaVersion === 'number' &&
-      Number.isSafeInteger(observedSchemaVersion) &&
-      observedSchemaVersion > CODE_GRAPH_SCHEMA_VERSION) ||
-    (typeof observedPersistentExtensionRevision === 'number' &&
-      Number.isSafeInteger(observedPersistentExtensionRevision) &&
-      observedPersistentExtensionRevision > CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)
-  );
 }

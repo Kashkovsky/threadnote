@@ -12,20 +12,22 @@ import {
 } from './store_schema_metadata.js';
 import {tableExists} from './store_session.js';
 import {
-  CODE_GRAPH_EXTRACTOR_GENERATION,
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-  CODE_GRAPH_SCHEMA_VERSION,
-  CodeGraphStoreError,
-} from './types.js';
+  CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
+  CODE_GRAPH_SCHEMA_INITIALIZATION_CURRENT_CONTRACT_REVISION,
+  CODE_GRAPH_SQLITE_SCHEMA_COOKIE,
+  codeGraphPersistentSchemaIsCurrent,
+} from './store/schema_revision.js';
+import {CODE_GRAPH_EXTRACTOR_GENERATION, CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
 
 // Bump when the full initializer gains a required invariant that is not
 // already represented by a main-schema DDL change or one of the exact mutable
 // metadata observations below.
-export const CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION = 3;
+export const CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION =
+  CODE_GRAPH_SCHEMA_INITIALIZATION_CURRENT_CONTRACT_REVISION;
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE = 'schema_initialization_receipt';
 // SQLite stores the schema cookie as a signed 32-bit database-header integer.
-export const CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM = 2_147_483_647;
-export const CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM = -2_147_483_648;
+export const CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM = CODE_GRAPH_SQLITE_SCHEMA_COOKIE.maximum;
+export const CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM = CODE_GRAPH_SQLITE_SCHEMA_COOKIE.minimum;
 
 /** @internal SQLite advances the signed 32-bit schema cookie with wraparound. */
 export function nextCodeGraphSqliteSchemaVersion(schemaVersion: number): number {
@@ -73,10 +75,10 @@ export function currentCodeGraphSchemaInitializationReceipt(
     observation.observedSqliteSchemaVersion <= CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM &&
     observation.receiptContractRevision === CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION &&
     observation.receiptCoreSchemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
-    observation.receiptPersistentExtensionRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+    codeGraphPersistentSchemaIsCurrent(observation.receiptPersistentExtensionRevision) &&
     observation.receiptSqliteSchemaVersion === observation.observedSqliteSchemaVersion &&
     observation.metadataCoreSchemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
-    observation.metadataPersistentExtensionRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+    codeGraphPersistentSchemaIsCurrent(observation.metadataPersistentExtensionRevision) &&
     Number.isSafeInteger(observation.metadataMinimumExtractorGeneration) &&
     observation.metadataMinimumExtractorGeneration >= CODE_GRAPH_EXTRACTOR_GENERATION &&
     observation.metadataRemovedViewCleanupEpochCurrent &&
@@ -206,7 +208,7 @@ export const recordCodeGraphSchemaInitializationReceipt = Effect.fn('codeGraph.r
           [
             CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION,
             CODE_GRAPH_SCHEMA_VERSION,
-            CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+            CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
             sqliteSchemaVersion,
           ],
         );

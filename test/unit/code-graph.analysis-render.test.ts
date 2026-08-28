@@ -45,6 +45,41 @@ describe('code graph analysis rendering', () => {
     }),
   );
 
+  effectIt.effect('removes repository-controlled terminal and bidi controls from public analysis output', () =>
+    Effect.gen(function* () {
+      const repositoryText = 'danger\u001b\u009b\r\n\u202evalue';
+      const source = analysisSymbol('source-control', repositoryText, 'src/control.ts', {
+        name: repositoryText,
+        qualifiedName: repositoryText,
+      });
+      const target = analysisSymbol('target-control', repositoryText, 'src/control.ts', {
+        name: repositoryText,
+        qualifiedName: repositoryText,
+      });
+      const edge = analysisEdge('edge-control', source, target, 'calls', {
+        confidence: 0.1,
+        sourceName: repositoryText,
+        targetName: repositoryText,
+      });
+      const result = yield* analyzeCodeGraph(pagedAnalysisStore([source, target], [edge]), {
+        databasePath: ':memory:',
+        minimumHubDegree: 1,
+        snapshot: analysisSnapshot([source, target], [edge]),
+      });
+      const rendered = renderCodeGraphAnalysis(result, 'full');
+      const report = renderCodeGraphReport(result, {
+        displayName: repositoryText,
+        repositoryId: 'repository-control',
+      });
+
+      expect(containsUnsafePresentationText(result)).toBe(false);
+      expect(containsUnsafePresentationText(rendered, true)).toBe(false);
+      expect(containsUnsafePresentationText(report, true)).toBe(false);
+      expect(rendered).toContain('danger');
+      expect(report).toContain('danger');
+    }),
+  );
+
   effectIt.effect('renders the confidence audit with provenance and review reasons', () =>
     Effect.gen(function* () {
       const rendered = renderCodeGraphAnalysis(yield* analysisResultFixture(), 'confidence');
@@ -126,4 +161,22 @@ function analysisResultFixture() {
     minimumHubDegree: 1,
     snapshot: analysisSnapshot(symbols, edges),
   });
+}
+
+function containsUnsafePresentationText(value: unknown, allowLineFeed = false): boolean {
+  if (typeof value === 'string') {
+    return Array.from(value).some(character => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return (
+        !(allowLineFeed && codePoint === 0x0a) &&
+        (codePoint <= 0x1f ||
+          (codePoint >= 0x7f && codePoint <= 0x9f) ||
+          (codePoint >= 0x202a && codePoint <= 0x202e) ||
+          (codePoint >= 0x2066 && codePoint <= 0x2069))
+      );
+    });
+  }
+  if (Array.isArray(value)) return value.some(item => containsUnsafePresentationText(item, allowLineFeed));
+  if (value === null || typeof value !== 'object') return false;
+  return Object.values(value).some(item => containsUnsafePresentationText(item, allowLineFeed));
 }
