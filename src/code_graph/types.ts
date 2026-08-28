@@ -4,9 +4,24 @@ import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
 /** Additive persistent surfaces that preserve the public graph-v3 row contract. */
 export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 16 as const;
+/** Oldest released additive extension revision that the current reader can safely serve. */
+export const CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION = 6 as const;
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;
+
+export type CodeGraphSnapshotFileCitationSchemaState =
+  | 'column-only'
+  | 'column-only-with-authority'
+  | 'column-only-with-predecessor-authority'
+  | 'current'
+  | 'incompatible'
+  | 'released-absent'
+  | 'released-absent-with-predecessor-authority'
+  | 'released-absent-with-authority'
+  | 'table-absent';
+
+export type CodeGraphSnapshotFileCitationBaseIndexState = 'current' | 'incompatible' | 'missing';
 
 export type CodeGraphProvenance = 'declared' | 'heuristic' | 'model' | 'resolved' | 'syntactic';
 export type CodeGraphRelation =

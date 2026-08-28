@@ -1,0 +1,1151 @@
+import {Database} from 'bun:sqlite';
+import {it as effectIt} from '@effect/vitest';
+import {Effect, Exit, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe, expect, it} from 'vitest';
+import {repairCodeGraphIndexes} from '../../src/code_graph/maintenance.js';
+import {
+  CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL,
+  CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
+  CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX,
+  CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX,
+} from '../../src/code_graph/store_file_alias_schema.js';
+import {
+  CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION,
+  CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM,
+  CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
+  nextCodeGraphSqliteSchemaVersion,
+} from '../../src/code_graph/store_schema_receipt.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
+import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  CODE_GRAPH_SCHEMA_VERSION,
+  type CodeGraphInventoryFile,
+  type CodeGraphSnapshot,
+  type RepositoryIdentity,
+} from '../../src/code_graph/types.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+import {join} from '../helpers/effect-filesystem.js';
+import {TestError} from '../helpers/test-error.js';
+
+describe('code graph snapshot-file citation schema repair', () => {
+  effectIt.effect('migrates revision 15 with dry-run parity while preserving live lease authority', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-migration-lease-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const snapshot = repairBuildingSnapshot(identity, '1');
+      const citationIdentity = {...identity, worktreeId: 'b'.repeat(64)};
+      const citationSnapshot = {...legacyReadySnapshot(citationIdentity, '2'), fileCount: 1};
+      const citationFile = {
+        blobId: '3'.repeat(40),
+        contentHash: 'f'.repeat(64),
+        language: 'typescript',
+        mode: '100644',
+        path: 'src/citation.ts',
+        size: 16,
+        source: 'commit',
+      } as const satisfies CodeGraphInventoryFile;
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const spool = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.activate(databasePath, citationIdentity, citationSnapshot, [citationFile], [], []);
+      yield* store.promote(databasePath, citationIdentity, citationSnapshot.id);
+      yield* store.claimPersistentBuild(databasePath, identity, snapshot, {
+        logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+        owner: {buildId: '11111111-1111-1111', processId: process.pid},
+      });
+      yield* Effect.sync(() => {
+        downgradeToRevision15FileAliases(databasePath);
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec('CREATE TABLE citation_schema_cookie_bump (id INTEGER)');
+          database.exec('DROP TABLE citation_schema_cookie_bump');
+          database
+            .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+            .run('migration-preview-live-lease', snapshot.id, Date.now() + 60_000);
+        } finally {
+          database.close(false);
+        }
+      });
+      yield* fs.writeFile(spool, new Uint8Array([1]));
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({
+        deferredDatabases: 0,
+        migratedDatabases: 1,
+        removedIncompleteSnapshots: 0,
+        removedTemporaryFiles: 0,
+      });
+      expect(yield* fs.exists(spool)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        buildingSnapshots: 1,
+        integrity: 'migration-pending',
+        persistentExtensionSchemaRevision: 15,
+      });
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(yield* fs.exists(spool)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        buildingSnapshots: 1,
+        integrity: 'ok',
+        persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+      });
+      const citationMatches = yield* store.effectiveSnapshotFilesByContentHashes(
+        databasePath,
+        citationSnapshot.id,
+        [citationFile.contentHash],
+        1,
+      );
+      expect(citationMatches.map(match => match.files.map(file => file.path))).toEqual([[citationFile.path]]);
+      const migratedIdentity = {...identity, worktreeId: 'c'.repeat(64)};
+      const migratedSnapshot = {...legacyReadySnapshot(migratedIdentity, '3'), fileCount: 1};
+      const migratedFile = {
+        ...citationFile,
+        blobId: '4'.repeat(40),
+        contentHash: 'd'.repeat(64),
+        path: 'src/migrated-citation.ts',
+        rawContentHash: 'e'.repeat(64),
+      } as const satisfies CodeGraphInventoryFile;
+      yield* store.activate(databasePath, migratedIdentity, migratedSnapshot, [migratedFile], [], []);
+      yield* store.promote(databasePath, migratedIdentity, migratedSnapshot.id);
+      const migratedMatches = yield* store.effectiveSnapshotFilesByContentHashes(
+        databasePath,
+        migratedSnapshot.id,
+        [migratedFile.contentHash, migratedFile.rawContentHash],
+        1,
+      );
+      expect(migratedMatches.map(match => match.files.map(file => file.path))).toEqual([
+        [migratedFile.path],
+        [migratedFile.path],
+      ]);
+      expect(
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            return Number(
+              database
+                .query<{readonly count: number}, [string]>(
+                  'SELECT COUNT(*) AS count FROM snapshot_leases WHERE token = ?',
+                )
+                .get('migration-preview-live-lease')?.count ?? 0,
+            );
+          } finally {
+            database.close(false);
+          }
+        }),
+      ).toBe(1);
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('post-update quick repair migrates an exact revision-15 alias schema', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-revision-15-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => downgradeToRevision15FileAliases(databasePath));
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({
+        deferredDatabases: 0,
+        migratedDatabases: 1,
+        removedIncompleteSnapshots: 0,
+        removedTemporaryFiles: 0,
+      });
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        integrity: 'migration-pending',
+        persistentExtensionSchemaRevision: 15,
+      });
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        integrity: 'ok',
+        persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rolls back a released revision-6 alias migration before publishing revision 16', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-revision-6-alias-fault-'});
+      const identity = legacyRepositoryIdentity(home, 'd');
+      const ready = {...legacyReadySnapshot(identity, '4'), fileCount: 1};
+      const file = {
+        blobId: '5'.repeat(40),
+        contentHash: '6'.repeat(64),
+        language: 'typescript',
+        mode: '100644',
+        path: 'src/revision-6-citation.ts',
+        size: 32,
+        source: 'commit',
+      } as const satisfies CodeGraphInventoryFile;
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.activate(databasePath, identity, ready, [file], [], []);
+      yield* store.promote(databasePath, identity, ready.id);
+      yield* Effect.sync(() => downgradeToReleasedRevision6(databasePath));
+
+      const failed = yield* store
+        .withSession(databasePath, store.initialize(databasePath), {
+          onPersistentSchemaMigrationPhase: phase =>
+            phase === 'recorded-revision'
+              ? Effect.die(new TestError('fault after citation schema revision publication'))
+              : Effect.void,
+        })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(failed)).toBe(true);
+      expect(yield* Effect.sync(() => readAliasPublicationState(databasePath, ready.id))).toEqual({
+        activeSnapshotId: ready.id,
+        rawColumnPresent: false,
+        rawIndexPresent: false,
+        revision: 6,
+        snapshotState: 'ready',
+      });
+
+      yield* store.initialize(databasePath);
+      expect(yield* Effect.sync(() => readAliasPublicationState(databasePath, ready.id))).toEqual({
+        activeSnapshotId: ready.id,
+        rawColumnPresent: true,
+        rawIndexPresent: true,
+        revision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+        snapshotState: 'ready',
+      });
+      const citationMatches = yield* store.effectiveSnapshotFilesByContentHashes(
+        databasePath,
+        ready.id,
+        [file.contentHash],
+        1,
+      );
+      expect(citationMatches.map(match => match.files.map(candidate => candidate.path))).toEqual([[file.path]]);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('preserves leased build spools across safe revision-16 alias interruptions', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      for (const [index, aliasState] of (['released-absent', 'column-only'] as const).entries()) {
+        const home = yield* fs.makeTempDirectoryScoped({
+          prefix: `threadnote-graph-repair-revision-16-${aliasState}-`,
+        });
+        const identity = legacyRepositoryIdentity(home, index === 0 ? 'a' : 'b');
+        const snapshot = repairBuildingSnapshot(identity, index === 0 ? '1' : '2');
+        const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
+        const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+        const spool = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+        yield* store.initialize(databasePath);
+        yield* store.claimPersistentBuild(databasePath, identity, snapshot, {
+          logicalSnapshotId: `cgsn_${index === 0 ? '1'.repeat(40) : '2'.repeat(40)}`,
+          owner: {
+            buildId: index === 0 ? '11111111-1111-1111' : '22222222-2222-2222',
+            processId: process.pid,
+          },
+        });
+        yield* Effect.sync(() => {
+          downgradeToRevision15FileAliases(databasePath);
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database.exec(
+              `UPDATE schema_metadata
+               SET value = '16'
+               WHERE key = 'persistent_extension_schema_revision'`,
+            );
+            if (aliasState === 'column-only') {
+              database.exec('ALTER TABLE snapshot_files ADD COLUMN raw_content_hash TEXT');
+            }
+            database
+              .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+              .run(`revision-16-${aliasState}-lease`, snapshot.id, Date.now() + 60_000);
+          } finally {
+            database.close(false);
+          }
+        });
+        yield* fs.writeFile(spool, new Uint8Array([1]));
+        expect(yield* store.diagnose(databasePath)).toMatchObject({
+          buildingSnapshots: 1,
+          integrity: 'incompatible',
+          persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+          snapshotFileCitationSchema:
+            aliasState === 'released-absent'
+              ? 'released-absent-with-predecessor-authority'
+              : 'column-only-with-predecessor-authority',
+        });
+
+        const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'deep',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(preview).toMatchObject({
+          deferredDatabases: 0,
+          migratedDatabases: 1,
+          removedIncompleteSnapshots: 0,
+          removedTemporaryFiles: 0,
+        });
+        expect(yield* fs.exists(spool)).toBe(true);
+        const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'deep',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(applied).toEqual(preview);
+        expect(yield* fs.exists(spool)).toBe(true);
+        expect(yield* store.diagnose(databasePath)).toMatchObject({
+          buildingSnapshots: 1,
+          integrity: 'ok',
+          snapshotFileCitationSchema: 'current',
+        });
+      }
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('defers a drifted revision-15 schema without claiming lease or spool authority', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-revision-15-drift-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const snapshot = repairBuildingSnapshot(identity, '1');
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const spool = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.claimPersistentBuild(databasePath, identity, snapshot, {
+        logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+        owner: {buildId: '11111111-1111-1111', processId: process.pid},
+      });
+      yield* Effect.sync(() => {
+        downgradeToRevision15FileAliases(databasePath);
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec('CREATE INDEX snapshot_files_raw_content_hash ON file_blobs(content_hash)');
+          database
+            .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+            .run('migration-drift-live-lease', snapshot.id, Date.now() + 60_000);
+        } finally {
+          database.close(false);
+        }
+      });
+      yield* fs.writeFile(spool, new Uint8Array([1]));
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        buildingSnapshots: 1,
+        integrity: 'migration-pending',
+        persistentExtensionSchemaRevision: 15,
+      });
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({
+        deferredDatabases: 1,
+        migratedDatabases: 0,
+        removedIncompleteSnapshots: 0,
+        removedTemporaryFiles: 0,
+      });
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(yield* fs.exists(spool)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        buildingSnapshots: 1,
+        integrity: 'migration-pending',
+        persistentExtensionSchemaRevision: 15,
+      });
+      const initialization = yield* store.initialize(databasePath).pipe(Effect.exit);
+      expect(Exit.isFailure(initialization)).toBe(true);
+      if (Exit.isFailure(initialization)) {
+        expect(String(initialization.cause)).toContain('snapshot file citation schema is incompatible');
+      }
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('rejects a legacy current receipt that blessed a wrong raw-content alias index', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-alias-receipt-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec(`
+            DROP INDEX snapshot_files_raw_content_hash;
+            CREATE INDEX snapshot_files_raw_content_hash ON file_blobs(content_hash);
+          `);
+          const schemaVersion = database.query<{readonly schema_version: number}, []>('PRAGMA schema_version').get();
+          database
+            .query(
+              `UPDATE schema_initialization_receipt
+               SET contract_revision = ?, sqlite_schema_version = ?
+               WHERE singleton = 1`,
+            )
+            .run(CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION - 1, schemaVersion?.schema_version ?? -1);
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        integrity: 'incompatible',
+        persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+        snapshotFileCitationSchema: 'incompatible',
+      });
+      const quickPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(quickPreview).toMatchObject({
+        deferredDatabases: 1,
+        discarded: 0,
+        migratedDatabases: 0,
+        removedTemporaryFiles: 0,
+      });
+      const quickApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(quickApplied).toEqual(quickPreview);
+      const initialization = yield* store.initialize(databasePath).pipe(Effect.exit);
+      expect(Exit.isFailure(initialization)).toBe(true);
+      if (Exit.isFailure(initialization)) {
+        expect(String(initialization.cause)).toContain('snapshot file citation schema is incompatible');
+      }
+      expect(
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            return database
+              .query("SELECT tbl_name FROM sqlite_master WHERE name = 'snapshot_files_raw_content_hash'")
+              .get();
+          } finally {
+            database.close(false);
+          }
+        }),
+      ).toEqual({tbl_name: 'file_blobs'});
+      const deepPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(deepPreview).toMatchObject({
+        deferredDatabases: 0,
+        discarded: 1,
+        migratedDatabases: 0,
+        removedTemporaryFiles: 0,
+      });
+      const deepApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(deepApplied).toEqual(deepPreview);
+      expect(yield* fs.exists(databasePath)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('refuses to recreate missing snapshot-file authority beneath an active ready snapshot', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-missing-files-authority-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const snapshot = legacyReadySnapshot(identity, '1');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec('DROP TABLE snapshot_files');
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 1,
+        integrity: 'incompatible',
+        snapshotFileCitationSchema: 'incompatible',
+        readySnapshots: 1,
+      });
+      const quickPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(quickPreview).toMatchObject({deferredDatabases: 1, discarded: 0, migratedDatabases: 0});
+      const quickApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(quickApplied).toEqual(quickPreview);
+      const initialization = yield* store.initialize(databasePath).pipe(Effect.exit);
+      expect(Exit.isFailure(initialization)).toBe(true);
+      if (Exit.isFailure(initialization)) {
+        expect(String(initialization.cause)).toContain('snapshot file citation schema is incompatible');
+      }
+      const deepPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(deepPreview).toMatchObject({deferredDatabases: 0, discarded: 1, migratedDatabases: 0});
+      const deepApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(deepApplied).toEqual(deepPreview);
+      expect(yield* fs.exists(databasePath)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('recreates an interrupted empty snapshot-files table with dry-run parity', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-empty-files-table-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec('DROP TABLE snapshot_files');
+        } finally {
+          database.close(false);
+        }
+      });
+
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 0,
+        integrity: 'incompatible',
+        snapshotFileCitationSchema: 'table-absent',
+        readySnapshots: 0,
+      });
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({deferredDatabases: 0, discarded: 0, migratedDatabases: 1});
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        integrity: 'ok',
+        snapshotFileCitationSchema: 'current',
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it('advances the SQLite schema cookie across its signed wrap boundary', () => {
+    expect(nextCodeGraphSqliteSchemaVersion(0)).toBe(1);
+    expect(nextCodeGraphSqliteSchemaVersion(CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM)).toBe(
+      CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
+    );
+  });
+
+  effectIt.effect('rejects post-v16 alias loss beneath ready citation authority', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      for (const [index, aliasState] of (['column-only', 'released-absent'] as const).entries()) {
+        const home = yield* fs.makeTempDirectoryScoped({prefix: `threadnote-graph-alias-loss-${aliasState}-`});
+        const identity = legacyRepositoryIdentity(home, index === 0 ? 'c' : 'd');
+        const snapshot = {...legacyReadySnapshot(identity, index === 0 ? '4' : '5'), fileCount: 1};
+        const file = {
+          blobId: index === 0 ? '6'.repeat(40) : '7'.repeat(40),
+          contentHash: index === 0 ? '8'.repeat(64) : '9'.repeat(64),
+          language: 'typescript',
+          mode: '100644',
+          path: `src/${aliasState}.ts`,
+          rawContentHash: index === 0 ? 'a'.repeat(64) : 'b'.repeat(64),
+          size: 32,
+          source: 'commit',
+        } as const satisfies CodeGraphInventoryFile;
+        const databasePath = path.join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          identity.checkoutId,
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        yield* store.activate(databasePath, identity, snapshot, [file], [], []);
+        yield* store.promote(databasePath, identity, snapshot.id);
+        expect(
+          (yield* store.effectiveSnapshotFilesByContentHashes(databasePath, snapshot.id, [file.rawContentHash], 1))[0]
+            ?.files,
+        ).toMatchObject([{path: file.path}]);
+
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            database.exec('DROP INDEX snapshot_files_raw_content_hash');
+            if (aliasState === 'released-absent') {
+              database.exec('ALTER TABLE snapshot_files DROP COLUMN raw_content_hash');
+              database.exec(
+                `UPDATE schema_initialization_receipt
+                 SET contract_revision = 2, persistent_extension_revision = 15
+                 WHERE singleton = 1`,
+              );
+            }
+          } finally {
+            database.close(false);
+          }
+        });
+        const before = snapshotFileSchemaFingerprint(databasePath);
+        expect(yield* store.diagnose(databasePath)).toMatchObject({
+          activeSnapshots: 1,
+          integrity: 'incompatible',
+          readySnapshots: 1,
+          snapshotFileCitationSchema: `${aliasState}-with-authority`,
+        });
+
+        const quickPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'quick',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(quickPreview).toMatchObject({deferredDatabases: 1, discarded: 0, migratedDatabases: 0});
+        const quickApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'quick',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(quickApplied).toEqual(quickPreview);
+        expect(snapshotFileSchemaFingerprint(databasePath)).toBe(before);
+        expect(Exit.isFailure(yield* store.initialize(databasePath).pipe(Effect.exit))).toBe(true);
+
+        const deepPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'deep',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(deepPreview).toMatchObject({deferredDatabases: 0, discarded: 1, migratedDatabases: 0});
+        const deepApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'deep',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(deepApplied).toEqual(deepPreview);
+        expect(yield* fs.exists(databasePath)).toBe(false);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects exact citation-schema drift without mutating it during quick repair', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      const mutations: readonly {
+        readonly mutate: (database: Database) => void;
+        readonly name: string;
+      }[] = [
+        {
+          name: 'raw-nocase-column',
+          mutate: database =>
+            rebuildSnapshotFiles(
+              database,
+              CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL.replace(
+                'raw_content_hash TEXT,',
+                'raw_content_hash TEXT COLLATE NOCASE,',
+              ),
+            ),
+        },
+        {
+          name: 'raw-check-constraint',
+          mutate: database =>
+            rebuildSnapshotFiles(
+              database,
+              CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL.replace(
+                'raw_content_hash TEXT,',
+                'raw_content_hash TEXT CHECK(raw_content_hash IS NULL),',
+              ),
+            ),
+        },
+        {
+          name: 'wrong-content-index-table',
+          mutate: database =>
+            database.exec(
+              `DROP INDEX snapshot_files_content_hash;
+               CREATE INDEX snapshot_files_content_hash ON file_blobs(content_hash)`,
+            ),
+        },
+        {
+          name: 'extra-unique-index',
+          mutate: database =>
+            database.exec('CREATE UNIQUE INDEX snapshot_files_raw_unique ON snapshot_files(raw_content_hash)'),
+        },
+        {
+          name: 'extra-expression-index',
+          mutate: database => database.exec('CREATE INDEX snapshot_files_path_folded ON snapshot_files(lower(path))'),
+        },
+        {
+          name: 'aborting-trigger',
+          mutate: database =>
+            database.exec(
+              `CREATE TRIGGER snapshot_files_abort_insert
+               BEFORE INSERT ON snapshot_files
+               BEGIN
+                 SELECT RAISE(ABORT, 'blocked');
+               END`,
+            ),
+        },
+      ];
+      for (const [index, mutation] of mutations.entries()) {
+        const home = yield* fs.makeTempDirectoryScoped({prefix: `threadnote-graph-citation-drift-${mutation.name}-`});
+        const identity = legacyRepositoryIdentity(home, String(index + 1));
+        const databasePath = path.join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          identity.checkoutId,
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        yield* store.initialize(databasePath);
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {strict: true});
+          try {
+            mutation.mutate(database);
+          } finally {
+            database.close(false);
+          }
+        });
+        const before = snapshotFileSchemaFingerprint(databasePath);
+        expect(yield* store.diagnose(databasePath)).toMatchObject({integrity: 'incompatible'});
+        const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'quick',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(preview).toMatchObject({deferredDatabases: 1, migratedDatabases: 0});
+        const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'quick',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(applied).toEqual(preview);
+        expect(snapshotFileSchemaFingerprint(databasePath)).toBe(before);
+        expect(Exit.isFailure(yield* store.initialize(databasePath).pipe(Effect.exit))).toBe(true);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('recreates missing base citation indexes only without snapshot authority', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const store = yield* CodeGraphStore;
+      for (const [index, missingIndex] of [
+        CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX.name,
+        CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX.name,
+      ].entries()) {
+        const home = yield* fs.makeTempDirectoryScoped({prefix: `threadnote-graph-missing-${missingIndex}-`});
+        const identity = legacyRepositoryIdentity(home, index === 0 ? 'e' : 'f');
+        const databasePath = path.join(
+          home,
+          'indexes',
+          'code-graph',
+          'repositories',
+          identity.checkoutId,
+          `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+        );
+        yield* store.initialize(databasePath);
+        yield* Effect.sync(() => dropIndex(databasePath, missingIndex));
+        expect(yield* store.diagnose(databasePath)).toMatchObject({
+          activeSnapshots: 0,
+          integrity: 'incompatible',
+          readySnapshots: 0,
+          snapshotFileCitationBaseIndexes: 'missing',
+        });
+        const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'quick',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(preview).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+        const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'quick',
+          targetCheckoutId: identity.checkoutId,
+        });
+        expect(applied).toEqual(preview);
+        expect(yield* store.diagnose(databasePath)).toMatchObject({
+          integrity: 'ok',
+          snapshotFileCitationBaseIndexes: 'current',
+        });
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('defers missing base citation indexes beneath ready authority', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-missing-base-authority-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const snapshot = legacyReadySnapshot(identity, '6');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => dropIndex(databasePath, CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX.name));
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 1,
+        integrity: 'incompatible',
+        readySnapshots: 1,
+        snapshotFileCitationBaseIndexes: 'incompatible',
+      });
+
+      const quickPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(quickPreview).toMatchObject({deferredDatabases: 1, discarded: 0, migratedDatabases: 0});
+      const quickApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(quickApplied).toEqual(quickPreview);
+      expect(Exit.isFailure(yield* store.initialize(databasePath).pipe(Effect.exit))).toBe(true);
+      const deepPreview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(deepPreview).toMatchObject({deferredDatabases: 0, discarded: 1, migratedDatabases: 0});
+      const deepApplied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(deepApplied).toEqual(deepPreview);
+      expect(yield* fs.exists(databasePath)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('treats orphan snapshot-file rows as citation authority', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-orphan-file-authority-'});
+      const identity = legacyRepositoryIdentity(home, 'b');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec('PRAGMA foreign_keys = OFF');
+          database
+            .query(
+              `INSERT INTO snapshot_files (
+                 snapshot_id, path, content_hash, raw_content_hash, language, mode, size, source
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run('cgsn_orphan', 'src/orphan.ts', '1'.repeat(64), null, 'typescript', '100644', 1, 'commit');
+          database.exec('DROP INDEX snapshot_files_content_hash');
+        } finally {
+          database.close(false);
+        }
+      });
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 0,
+        integrity: 'incompatible',
+        readySnapshots: 0,
+        snapshotFileCitationBaseIndexes: 'incompatible',
+      });
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({deferredDatabases: 1, migratedDatabases: 0});
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(Exit.isFailure(yield* store.initialize(databasePath).pipe(Effect.exit))).toBe(true);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+});
+
+function legacyRepositoryIdentity(home: string, seed: string): RepositoryIdentity {
+  return {
+    caseMode: 'sensitive',
+    checkoutId: seed.repeat(64),
+    displayName: 'acme/legacy-graph',
+    gitCommonDirectory: join(home, '.git'),
+    headCommit: seed.repeat(40),
+    objectFormat: 'sha1',
+    repoRoot: home,
+    repositoryId: seed.repeat(64),
+    worktreeId: seed.repeat(64),
+  };
+}
+
+function legacyReadySnapshot(identity: RepositoryIdentity, seed: string): CodeGraphSnapshot {
+  return {
+    commit: identity.headCommit,
+    completedAt: '2026-08-10T00:00:00.000Z',
+    dirty: false,
+    edgeCount: 0,
+    extractorSet: 'citation-schema-regression',
+    fileCount: 0,
+    id: `cgsn_${seed.repeat(40)}`,
+    repositoryId: identity.repositoryId,
+    state: 'ready',
+    symbolCount: 0,
+    worktreeId: identity.worktreeId,
+  };
+}
+
+function repairBuildingSnapshot(identity: RepositoryIdentity, seed: string): CodeGraphSnapshot {
+  return {
+    commit: identity.headCommit,
+    dirty: false,
+    edgeCount: 0,
+    extractorSet: 'citation-schema-regression',
+    fileCount: 0,
+    id: `cgsn_${seed.repeat(40)}-direct`,
+    repositoryId: identity.repositoryId,
+    state: 'building',
+    symbolCount: 0,
+    worktreeId: identity.worktreeId,
+  };
+}
+
+function dropIndex(databasePath: string, index: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.exec(`DROP INDEX ${index}`);
+  } finally {
+    database.close(false);
+  }
+}
+
+function rebuildSnapshotFiles(database: Database, tableDefinition: string): void {
+  database.exec('PRAGMA foreign_keys = OFF');
+  database.exec('DROP TABLE snapshot_files');
+  database.exec(tableDefinition);
+  database.exec(CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX.definition);
+  database.exec(CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX.definition);
+  database.exec(CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX.definition);
+  database.exec('PRAGMA foreign_keys = ON');
+}
+
+function snapshotFileSchemaFingerprint(databasePath: string): string {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return JSON.stringify(
+      database
+        .query(
+          `SELECT type, name, tbl_name, sql
+           FROM sqlite_master
+           WHERE tbl_name = 'snapshot_files' COLLATE NOCASE
+              OR name LIKE 'snapshot_files_%' ESCAPE '\\'
+           ORDER BY type, name`,
+        )
+        .all(),
+    );
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeToRevision15FileAliases(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.exec(`
+      DROP INDEX snapshot_files_raw_content_hash;
+      ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
+      UPDATE schema_metadata
+      SET value = '15'
+      WHERE key = 'persistent_extension_schema_revision';
+    `);
+    const schemaVersion = database.query<{readonly schema_version: number}, []>('PRAGMA schema_version').get();
+    database
+      .query(
+        `UPDATE schema_initialization_receipt
+         SET contract_revision = 2, persistent_extension_revision = 15, sqlite_schema_version = ?
+         WHERE singleton = 1`,
+      )
+      .run(schemaVersion?.schema_version ?? -1);
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeToReleasedRevision6(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      database.exec(`
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_delete;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_insert;
+        DROP TRIGGER IF EXISTS removed_views_cleanup_revoke_update;
+        DROP TABLE IF EXISTS removed_view_cleanup;
+        DROP TABLE IF EXISTS snapshot_build_owner_instances;
+        DROP TABLE IF EXISTS snapshot_component_edge_aggregate_receipts;
+        DROP TABLE IF EXISTS snapshot_component_edge_aggregates;
+        DROP TABLE IF EXISTS removed_views;
+        DROP INDEX IF EXISTS snapshot_files_raw_content_hash;
+        ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
+        DELETE FROM schema_metadata
+        WHERE key IN ('removed_view_cleanup_admission_cursor', 'removed_view_cleanup_epoch_sequence');
+        UPDATE schema_metadata
+        SET value = '6'
+        WHERE key = 'persistent_extension_schema_revision';
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function readAliasPublicationState(databasePath: string, snapshotId: string) {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const columns = database.query<{readonly name: string}, []>('PRAGMA table_info(snapshot_files)').all();
+    const rawIndex = database
+      .query<{readonly present: number}, []>(
+        `SELECT 1 AS present
+         FROM sqlite_master
+         WHERE type = 'index' AND name = 'snapshot_files_raw_content_hash'`,
+      )
+      .get();
+    const revision = database
+      .query<{readonly value: string}, []>(
+        "SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'",
+      )
+      .get();
+    const snapshot = database
+      .query<{readonly state: string}, [string]>('SELECT state FROM snapshots WHERE id = ?')
+      .get(snapshotId);
+    const active = database
+      .query<{readonly snapshot_id: string}, [string]>('SELECT snapshot_id FROM active_snapshots WHERE snapshot_id = ?')
+      .get(snapshotId);
+    return {
+      activeSnapshotId: active?.snapshot_id,
+      rawColumnPresent: columns.some(column => column.name === 'raw_content_hash'),
+      rawIndexPresent: rawIndex?.present === 1,
+      revision: Number(revision?.value),
+      snapshotState: snapshot?.state,
+    };
+  } finally {
+    database.close(false);
+  }
+}

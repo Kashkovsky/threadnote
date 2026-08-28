@@ -9,6 +9,7 @@ import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspe
 import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
 import {
   codeGraphRemovedViewCleanupSchemaAdmission,
+  codeGraphSchemaMigrationPreservesIncompleteSnapshots,
   ensureRemovedViewCleanupSchema,
   preflightRemovedViewCleanupSchema,
 } from './store_schema_migration.js';
@@ -21,6 +22,9 @@ import {
 } from './store_reconciliation_core.js';
 import {initializeRoutineMaintenanceSchema} from './store_leases.js';
 import {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './store_health.js';
+import {prepareCodeGraphSnapshotFileCitationSchema} from './store_file_alias_schema.js';
+
+export const CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT = 8;
 
 /** @internal Indexed cursor-page statement retained for query-plan and high-cardinality regressions. */
 
@@ -90,7 +94,21 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
   if (!preflightReady || !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false, false))) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }
-  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false))) {
+  const revision = yield* removedViewCleanupRecordedRevision(sql);
+  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  const citationPreparation = yield* prepareCodeGraphSnapshotFileCitationSchema(sql, recordedRevision);
+  if (citationPreparation.state === 'incompatible') {
+    return {reason: 'incompatible-schema', state: 'deferred'} as const;
+  }
+  if (citationPreparation.state === 'prepared') return citationPreparation;
+  const snapshotFileCitationSchema = citationPreparation.citationSchema;
+  const snapshotPreservingSchemaMigration =
+    codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+      recordedRevision,
+      snapshotFileCitationSchema,
+      citationPreparation.state === 'ready' ? 'current' : 'missing',
+    ) && (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
+  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false)) && !snapshotPreservingSchemaMigration) {
     const cleanupState = yield* removedViewCleanupSchemaState(sql);
     if (cleanupState !== 'absent') return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }
@@ -110,8 +128,7 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
     }
     return {index: missing.index.name, state: 'prepared'} as const;
   }
-  const revision = yield* removedViewCleanupRecordedRevision(sql);
-  const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
+  if (snapshotPreservingSchemaMigration) return {state: 'migration-ready'} as const;
   if (
     recordedRevision !== undefined &&
     recordedRevision >= CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION &&
@@ -124,4 +141,22 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
   return {state: 'ready'} as const;
 });
 
-export {prepareRemovedViewCleanupExtension, prepareWorktreeReconciliationIndex};
+const prepareWorktreeReconciliationIndexesBounded = Effect.fn('codeGraph.prepareWorktreeReconciliationIndexesBounded')(
+  function* (sql: SqlClient.SqlClient) {
+    let preparation = yield* prepareWorktreeReconciliationIndex(sql);
+    for (
+      let step = 1;
+      preparation.state === 'prepared' && step < CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT;
+      step += 1
+    ) {
+      preparation = yield* prepareWorktreeReconciliationIndex(sql);
+    }
+    return preparation;
+  },
+);
+
+export {
+  prepareRemovedViewCleanupExtension,
+  prepareWorktreeReconciliationIndex,
+  prepareWorktreeReconciliationIndexesBounded,
+};

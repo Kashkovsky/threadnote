@@ -16,6 +16,7 @@ import {
 } from './store_schema_core.js';
 import {ensureInitialReconciliationIndexes} from './store_reconciliation_core.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
+import {assertCodeGraphSnapshotFileCitationSchemaMigratable} from './store_file_alias_schema.js';
 import {
   codeGraphSchemaInitializationReceiptCurrent,
   recordCodeGraphSchemaInitializationReceipt,
@@ -88,6 +89,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       ),
     );
   }
+  const snapshotFileCitationAuthorization = yield* assertCodeGraphSnapshotFileCitationSchemaMigratable(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS repositories (
       id TEXT PRIMARY KEY NOT NULL,
@@ -148,21 +150,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   );
   yield* ensureSnapshotLeaseSchema(sql);
   yield* ensureInitialReconciliationIndexes(sql);
-  yield* migratePersistentExtensionTables(sql);
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS snapshot_files (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      path TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      raw_content_hash TEXT,
-      language TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      size INTEGER NOT NULL CHECK (size >= 0),
-      source TEXT NOT NULL CHECK (source IN ('commit', 'worktree')),
-      PRIMARY KEY (snapshot_id, path)
-    ) WITHOUT ROWID
-  `);
-  yield* ensureColumn(sql, 'snapshot_files', 'raw_content_hash', 'TEXT');
+  yield* migratePersistentExtensionTables(sql, snapshotFileCitationAuthorization);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_file_deletions (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -500,11 +488,6 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
-  );
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_content_hash ON snapshot_files(content_hash)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS snapshot_files_raw_content_hash ON snapshot_files(raw_content_hash) WHERE raw_content_hash IS NOT NULL',
   );
   yield* sql.unsafe(`
     CREATE INDEX IF NOT EXISTS file_blobs_blob_reuse

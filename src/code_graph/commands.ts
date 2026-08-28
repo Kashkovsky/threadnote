@@ -233,7 +233,7 @@ export const runCodeGraphRepair = Effect.fn('codeGraph.command.repair')(function
     `${options.dryRun ? 'Would repair' : 'Repaired'} ${summary.databases} native code graph database(s): ` +
       `${summary.migratedDatabases} schema migration(s), ${summary.deferredDatabases} deferred, ` +
       `${summary.discarded} disposable rebuild(s), ${summary.removedIncompleteSnapshots} incomplete snapshot(s), ` +
-      `${summary.removedTemporaryFiles} temporary vector file(s).`,
+      `${summary.removedTemporaryFiles} temporary graph file(s).`,
   );
   if (completion) {
     yield* Console.log(
@@ -269,7 +269,7 @@ function codeGraphRepairProgressMessage(progress: CodeGraphMaintenanceProgress, 
     case 'cleaning-snapshots':
       return `${dryRun ? 'Would clean' : 'Cleaning'} ${progress.snapshots ?? 0} incomplete snapshot(s) from ${database}.`;
     case 'cleaning-vectors':
-      return `Checking temporary vector state for ${database}.`;
+      return `Checking temporary graph state for ${database}.`;
     case 'discarding':
       return `${dryRun ? 'Would discard' : 'Discarding'} unreadable derived ${database}.`;
     case 'deferred':

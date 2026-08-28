@@ -73,6 +73,7 @@ import type {
   CodeGraphWorktreeReconciliationCandidate,
   CodeGraphWorktreeReconciliationClaimOptions,
   CodeGraphWorktreeReconciliationIndexPreparationResult,
+  CodeGraphWorktreeReconciliationPreparationOptions,
   LoadedCodeGraphFacts,
   StoredCodeGraph,
 } from './store_models.js';
@@ -203,7 +204,7 @@ export interface CodeGraphStoreShape {
   ) => Effect.Effect<CodeGraphOrphanProvenanceViewObservation, CodeGraphStoreError>;
   readonly prepareWorktreeReconciliationIndexes: (
     databasePath: string,
-    options?: CodeGraphWorktreeReconciliationClaimOptions,
+    options?: CodeGraphWorktreeReconciliationPreparationOptions,
   ) => Effect.Effect<CodeGraphWorktreeReconciliationIndexPreparationResult, CodeGraphStoreError>;
   readonly removeView: (
     databasePath: string,
@@ -563,6 +564,10 @@ export interface CodeGraphStoreShape {
   readonly repair: (
     databasePath: string,
     dryRun?: boolean,
+    options?: {
+      /** @internal Set only after bounded preparation proves that migration preserves incomplete snapshots. */
+      readonly allowSchemaMigrationPreview?: boolean;
+    },
   ) => Effect.Effect<CodeGraphDatabaseRepair | undefined, CodeGraphStoreError>;
   readonly runRoutineMaintenance: (
     databasePath: string,

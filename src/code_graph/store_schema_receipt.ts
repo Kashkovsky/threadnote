@@ -21,11 +21,18 @@ import {
 // Bump when the full initializer gains a required invariant that is not
 // already represented by a main-schema DDL change or one of the exact mutable
 // metadata observations below.
-export const CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION = 2;
+export const CODE_GRAPH_SCHEMA_INITIALIZATION_CONTRACT_REVISION = 3;
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE = 'schema_initialization_receipt';
 // SQLite stores the schema cookie as a signed 32-bit database-header integer.
 export const CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM = 2_147_483_647;
 export const CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM = -2_147_483_648;
+
+/** @internal SQLite advances the signed 32-bit schema cookie with wraparound. */
+export function nextCodeGraphSqliteSchemaVersion(schemaVersion: number): number {
+  return schemaVersion === CODE_GRAPH_SQLITE_SCHEMA_VERSION_MAXIMUM
+    ? CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM
+    : schemaVersion + 1;
+}
 
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ${CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_TABLE} (

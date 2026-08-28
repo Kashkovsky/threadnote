@@ -852,10 +852,12 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         ),
         Effect.mapError(cause => storeError('prune retired code graph snapshots', cause)),
       ),
-    repair: (databasePath, dryRun = false) =>
+    repair: (databasePath, dryRun = false, options) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
-          exists ? useDatabase(databasePath, repairDatabase(dryRun)) : Effect.succeed(undefined),
+          exists
+            ? useDatabase(databasePath, repairDatabase(dryRun, options?.allowSchemaMigrationPreview === true))
+            : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('repair code graph database', cause)),
       ),

@@ -2,11 +2,13 @@ import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
-import {Clock, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Clock, Crypto, Deferred, Effect, Exit, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
+import fc from 'fast-check';
 import {afterEach, describe, expect, it} from 'vitest';
 import {runCodeGraphRepair} from '../../src/code_graph/commands.js';
 import {
+  codeGraphTemporaryMaterializationSpoolSnapshotId,
   codeGraphDoctorCheck,
   diagnoseCodeGraphDatabaseReadOnly,
   repairCodeGraphIndexes,
@@ -29,6 +31,7 @@ import type {RuntimeConfig} from '../../src/types.js';
 import {join, mkdir, mkdtemp, rm, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
 import {inspectCodeGraphViewDatabaseTarget} from '../../src/code_graph/view_removal.js';
 
@@ -96,6 +99,474 @@ describe('bounded code graph maintenance', () => {
     });
     expect(progress).toEqual(['checking:none', 'deferred:active-build']);
     expect(await Bun.file(databasePath).text()).toContain('must never be opened');
+  });
+
+  effectIt.effect('deep repair removes orphaned spools while preserving live leased build state', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-spool-'});
+      const checkoutId = 'a'.repeat(64);
+      const repositoryId = 'b'.repeat(64);
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const identity: RepositoryIdentity = {
+        caseMode: 'sensitive',
+        checkoutId,
+        displayName: 'repair-spool-fixture',
+        gitCommonDirectory: home,
+        headCommit: 'c'.repeat(40),
+        objectFormat: 'sha1',
+        repoRoot: home,
+        repositoryId,
+        worktreeId: 'd'.repeat(64),
+      };
+      const unleasedSnapshot = repairBuildingSnapshot(identity, '1');
+      const leasedIdentity = {...identity, worktreeId: 'e'.repeat(64)};
+      const leasedSnapshot = repairBuildingSnapshot(leasedIdentity, '2');
+      const orphanSnapshotId = `cgsn_${'3'.repeat(40)}-direct`;
+      const spoolPath = (snapshotId: string) =>
+        path.join(repositoryRoot, `materialization-spool-v1-${snapshotId}.sqlite`);
+      const ignoredPath = path.join(repositoryRoot, `materialization-spool-v2-${orphanSnapshotId}.sqlite`);
+      const vectorTemporaryPath = path.join(repositoryRoot, 'vectors', 'model', 'scratch.tmp');
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.claimPersistentBuild(databasePath, identity, unleasedSnapshot, {
+        logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+        owner: {buildId: '11111111-1111-1111', processId: process.pid},
+      });
+      yield* store.claimPersistentBuild(databasePath, leasedIdentity, leasedSnapshot, {
+        logicalSnapshotId: `cgsn_${'2'.repeat(40)}`,
+        owner: {buildId: '22222222-2222-2222', processId: process.pid},
+      });
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database
+            .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+            .run('repair-spool-live-lease', leasedSnapshot.id, Date.now() + 60_000);
+        } finally {
+          database.close(false);
+        }
+      });
+      for (const file of [
+        spoolPath(unleasedSnapshot.id),
+        spoolPath(leasedSnapshot.id),
+        spoolPath(orphanSnapshotId),
+        ignoredPath,
+      ]) {
+        yield* fs.writeFile(file, new Uint8Array([1]));
+      }
+      yield* fs.makeDirectory(path.dirname(vectorTemporaryPath), {recursive: true});
+      yield* fs.writeFile(vectorTemporaryPath, new Uint8Array([1]));
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {mode: 'deep'});
+      expect(preview).toMatchObject({removedIncompleteSnapshots: 1, removedTemporaryFiles: 3});
+      for (const file of [
+        spoolPath(unleasedSnapshot.id),
+        spoolPath(leasedSnapshot.id),
+        spoolPath(orphanSnapshotId),
+        ignoredPath,
+      ]) {
+        expect(yield* fs.exists(file)).toBe(true);
+      }
+      expect(yield* fs.exists(vectorTemporaryPath)).toBe(true);
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {mode: 'deep'});
+      expect(applied).toMatchObject({removedIncompleteSnapshots: 1, removedTemporaryFiles: 3});
+      expect(yield* fs.exists(spoolPath(unleasedSnapshot.id))).toBe(false);
+      expect(yield* fs.exists(spoolPath(orphanSnapshotId))).toBe(false);
+      expect(yield* fs.exists(spoolPath(leasedSnapshot.id))).toBe(true);
+      expect(yield* fs.exists(ignoredPath)).toBe(true);
+      expect(yield* fs.exists(vectorTemporaryPath)).toBe(false);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({buildingSnapshots: 1});
+
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.query('DELETE FROM snapshot_leases WHERE token = ?').run('repair-spool-live-lease');
+        } finally {
+          database.close(false);
+        }
+      });
+      const released = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {mode: 'deep'});
+      expect(released).toMatchObject({removedIncompleteSnapshots: 1, removedTemporaryFiles: 1});
+      expect(yield* fs.exists(spoolPath(leasedSnapshot.id))).toBe(false);
+      expect(yield* fs.exists(ignoredPath)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({buildingSnapshots: 0, integrity: 'ok'});
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('defers a targeted repair when a builder enters after the initial drain', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-late-builder-'});
+        const identity = legacyRepositoryIdentity(home, 'a');
+        const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
+        const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+        const building = repairBuildingSnapshot(identity, '1');
+        const spoolPath = path.join(repositoryRoot, `materialization-spool-v1-${building.id}.sqlite`);
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        const drained = yield* Deferred.make<void>();
+        const continueRepair = yield* Deferred.make<void>();
+        const builderClaimed = yield* Deferred.make<void>();
+        const releaseBuilder = yield* Deferred.make<void>();
+        const repair = yield* Effect.forkScoped(
+          repairCodeGraphIndexes(home, false, undefined, undefined, {
+            interlock: {
+              afterWorktreeDrain: () =>
+                Deferred.succeed(drained, undefined).pipe(Effect.andThen(Deferred.await(continueRepair))),
+            },
+            mode: 'deep',
+            targetCheckoutId: identity.checkoutId,
+          }),
+        );
+        yield* Deferred.await(drained);
+        const builder = yield* Effect.forkScoped(
+          withExclusiveFileLock(
+            fs,
+            codeGraphWorktreeLockPath(path, home, identity.checkoutId, identity.worktreeId),
+            {
+              heartbeatIntervalMilliseconds: 20,
+              retryIntervalMilliseconds: 5,
+              staleAfterMilliseconds: 100,
+              waitTimeoutMilliseconds: 5_000,
+            },
+            Effect.gen(function* () {
+              yield* store.claimPersistentBuild(databasePath, identity, building, {
+                logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+                owner: {buildId: '11111111-1111-1111', processId: process.pid},
+              });
+              yield* fs.writeFile(spoolPath, new Uint8Array([1]));
+              yield* Deferred.succeed(builderClaimed, undefined);
+              yield* Deferred.await(releaseBuilder);
+            }),
+          ),
+        );
+        yield* Deferred.await(builderClaimed);
+        yield* Deferred.succeed(continueRepair, undefined);
+
+        const summary = yield* Fiber.join(repair);
+        expect(summary).toMatchObject({
+          databases: 1,
+          deferredDatabases: 1,
+          removedIncompleteSnapshots: 0,
+          removedTemporaryFiles: 0,
+        });
+        expect(yield* fs.exists(spoolPath)).toBe(true);
+        expect(yield* store.diagnose(databasePath)).toMatchObject({buildingSnapshots: 1});
+
+        yield* Deferred.succeed(releaseBuilder, undefined);
+        yield* Fiber.join(builder);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('reports orphan spool cleanup during a schema-migration dry-run', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-migration-preview-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const leasedIdentity = {...identity, worktreeId: 'b'.repeat(64)};
+      const unleasedSnapshot = repairBuildingSnapshot(identity, '1');
+      const leasedSnapshot = repairBuildingSnapshot(leasedIdentity, '2');
+      const orphanSnapshotId = `cgsn_${'3'.repeat(40)}-direct`;
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const spoolPath = (snapshotId: string) =>
+        path.join(repositoryRoot, `materialization-spool-v1-${snapshotId}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* store.claimPersistentBuild(databasePath, identity, unleasedSnapshot, {
+        logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+        owner: {buildId: '11111111-1111-1111', processId: process.pid},
+      });
+      yield* store.claimPersistentBuild(databasePath, leasedIdentity, leasedSnapshot, {
+        logicalSnapshotId: `cgsn_${'2'.repeat(40)}`,
+        owner: {buildId: '22222222-2222-2222', processId: process.pid},
+      });
+      yield* Effect.sync(() => {
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database
+            .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+            .run('migration-preview-live-lease', leasedSnapshot.id, Date.now() + 60_000);
+        } finally {
+          database.close(false);
+        }
+      });
+      yield* Effect.sync(() => makeRecoverableInterruptedExtension(databasePath));
+      for (const snapshotId of [unleasedSnapshot.id, leasedSnapshot.id, orphanSnapshotId]) {
+        yield* fs.writeFile(spoolPath(snapshotId), new Uint8Array([1]));
+      }
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({
+        migratedDatabases: 1,
+        removedIncompleteSnapshots: 0,
+        removedTemporaryFiles: 3,
+      });
+      for (const snapshotId of [unleasedSnapshot.id, leasedSnapshot.id, orphanSnapshotId]) {
+        expect(yield* fs.exists(spoolPath(snapshotId))).toBe(true);
+      }
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toMatchObject({
+        migratedDatabases: 1,
+        removedIncompleteSnapshots: 0,
+        removedTemporaryFiles: 3,
+      });
+      expect(yield* fs.exists(spoolPath(unleasedSnapshot.id))).toBe(false);
+      expect(yield* fs.exists(spoolPath(orphanSnapshotId))).toBe(false);
+      expect(yield* fs.exists(spoolPath(leasedSnapshot.id))).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('removes a database-less orphan spool', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-database-less-'});
+      const checkoutId = 'a'.repeat(64);
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const spoolPath = path.join(repositoryRoot, `materialization-spool-v1-cgsn_${'1'.repeat(40)}-direct.sqlite`);
+      yield* fs.makeDirectory(repositoryRoot, {recursive: true});
+      yield* fs.writeFile(spoolPath, new Uint8Array([1]));
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        mode: 'deep',
+        targetCheckoutId: checkoutId,
+      });
+      expect(preview).toMatchObject({databases: 0, removedTemporaryFiles: 1});
+      expect(yield* fs.exists(spoolPath)).toBe(true);
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        mode: 'deep',
+        targetCheckoutId: checkoutId,
+      });
+      expect(applied).toMatchObject({databases: 0, removedTemporaryFiles: 1});
+      expect(yield* fs.exists(spoolPath)).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('defers database-less cleanup when a builder publishes durable state after inventory', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* Crypto.Crypto;
+      const system = yield* SystemInfo;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-database-appeared-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const building = repairBuildingSnapshot(identity, '1');
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', identity.checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const spoolPath = path.join(repositoryRoot, `materialization-spool-v1-${building.id}.sqlite`);
+      const store = yield* CodeGraphStore;
+      yield* fs.makeDirectory(repositoryRoot, {recursive: true});
+      let built = false;
+
+      const summary = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        interlock: {
+          afterWorktreeDrain: () =>
+            Effect.gen(function* () {
+              if (built) return;
+              built = true;
+              yield* withExclusiveFileLock(
+                fs,
+                codeGraphWorktreeLockPath(path, home, identity.checkoutId, identity.worktreeId),
+                {
+                  heartbeatIntervalMilliseconds: 20,
+                  retryIntervalMilliseconds: 5,
+                  staleAfterMilliseconds: 100,
+                  waitTimeoutMilliseconds: 5_000,
+                },
+                Effect.gen(function* () {
+                  yield* store.initialize(databasePath);
+                  yield* store.claimPersistentBuild(databasePath, identity, building, {
+                    logicalSnapshotId: `cgsn_${'1'.repeat(40)}`,
+                    owner: {buildId: '11111111-1111-1111', processId: process.pid},
+                  });
+                  yield* Effect.sync(() => {
+                    const database = new Database(databasePath, {strict: true});
+                    try {
+                      database
+                        .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
+                        .run('database-appeared-live-lease', building.id, Date.now() + 60_000);
+                    } finally {
+                      database.close(false);
+                    }
+                  });
+                  yield* fs.writeFile(spoolPath, new Uint8Array([1]));
+                }),
+              ).pipe(
+                Effect.provideService(Crypto.Crypto, crypto),
+                Effect.provideService(Path.Path, path),
+                Effect.provideService(SystemInfo, system),
+              );
+            }),
+        },
+        mode: 'deep',
+        targetCheckoutId: identity.checkoutId,
+      });
+
+      expect(summary).toMatchObject({
+        databases: 1,
+        deferredDatabases: 1,
+        removedIncompleteSnapshots: 0,
+        removedTemporaryFiles: 0,
+      });
+      expect(yield* fs.exists(spoolPath)).toBe(true);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({buildingSnapshots: 1});
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('never follows a spool-shaped child symbolic link', () =>
+    Effect.gen(function* () {
+      if (process.platform === 'win32') return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-child-link-'});
+      const external = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-external-'});
+      const checkoutId = 'a'.repeat(64);
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const externalVictim = path.join(external, 'victim.sqlite');
+      const linkedSpool = path.join(repositoryRoot, `materialization-spool-v1-cgsn_${'1'.repeat(40)}-direct.sqlite`);
+      yield* fs.makeDirectory(repositoryRoot, {recursive: true});
+      yield* fs.writeFile(externalVictim, new Uint8Array([1]));
+      yield* fs.symlink(externalVictim, linkedSpool);
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        mode: 'deep',
+        targetCheckoutId: checkoutId,
+      });
+      expect(applied).toMatchObject({databases: 0, removedTemporaryFiles: 0});
+      expect(yield* fs.exists(linkedSpool)).toBe(true);
+      expect(yield* fs.exists(externalVictim)).toBe(true);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('refuses spool cleanup after the repositories ancestor is swapped', () =>
+    Effect.gen(function* () {
+      if (process.platform === 'win32') return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-ancestor-swap-'});
+      const externalRepositories = yield* fs.makeTempDirectoryScoped({
+        prefix: 'threadnote-graph-repair-external-repositories-',
+      });
+      const checkoutId = 'a'.repeat(64);
+      const repositories = path.join(home, 'indexes', 'code-graph', 'repositories');
+      const repositoryRoot = path.join(repositories, checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const movedRepositories = `${repositories}.original`;
+      const externalCheckout = path.join(externalRepositories, checkoutId);
+      const spoolName = `materialization-spool-v1-cgsn_${'1'.repeat(40)}-direct.sqlite`;
+      const originalSpool = path.join(repositoryRoot, spoolName);
+      const externalVictim = path.join(externalCheckout, 'victim.sqlite');
+      const externalReplacementSpool = path.join(externalCheckout, spoolName);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* fs.writeFile(originalSpool, new Uint8Array([1]));
+      yield* fs.makeDirectory(externalCheckout, {recursive: true});
+      yield* fs.writeFile(externalVictim, new Uint8Array([1]));
+      yield* fs.symlink(externalVictim, externalReplacementSpool);
+
+      const result = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        interlock: {
+          beforeSpoolQuarantine: () =>
+            fs
+              .rename(repositories, movedRepositories)
+              .pipe(Effect.andThen(fs.symlink(externalRepositories, repositories))),
+        },
+        mode: 'deep',
+        targetCheckoutId: checkoutId,
+      }).pipe(Effect.exit);
+
+      expect(Exit.isFailure(result)).toBe(true);
+      expect(yield* fs.exists(externalReplacementSpool)).toBe(true);
+      expect(yield* fs.readLink(externalReplacementSpool)).toBe(externalVictim);
+      expect(yield* fs.exists(externalVictim)).toBe(true);
+      expect(yield* fs.exists(path.join(movedRepositories, checkoutId, spoolName))).toBe(true);
+      expect((yield* fs.readDirectory(externalCheckout)).some(name => name.endsWith('.repair'))).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('refuses spool cleanup after the checkout root is swapped', () =>
+    Effect.gen(function* () {
+      if (process.platform === 'win32') return;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-root-swap-'});
+      const externalCheckout = yield* fs.makeTempDirectoryScoped({
+        prefix: 'threadnote-graph-repair-external-checkout-',
+      });
+      const checkoutId = 'a'.repeat(64);
+      const repositoryRoot = path.join(home, 'indexes', 'code-graph', 'repositories', checkoutId);
+      const databasePath = path.join(repositoryRoot, `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`);
+      const movedRepositoryRoot = `${repositoryRoot}.original`;
+      const spoolName = `materialization-spool-v1-cgsn_${'1'.repeat(40)}-direct.sqlite`;
+      const originalSpool = path.join(repositoryRoot, spoolName);
+      const externalVictim = path.join(externalCheckout, spoolName);
+      const store = yield* CodeGraphStore;
+      yield* store.initialize(databasePath);
+      yield* fs.writeFile(originalSpool, new Uint8Array([1]));
+      yield* fs.writeFile(externalVictim, new Uint8Array([1]));
+
+      const result = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        interlock: {
+          beforeSpoolQuarantine: () =>
+            fs
+              .rename(repositoryRoot, movedRepositoryRoot)
+              .pipe(Effect.andThen(fs.symlink(externalCheckout, repositoryRoot))),
+        },
+        mode: 'deep',
+        targetCheckoutId: checkoutId,
+      }).pipe(Effect.exit);
+
+      expect(Exit.isFailure(result)).toBe(true);
+      expect(yield* fs.exists(externalVictim)).toBe(true);
+      expect(yield* fs.exists(path.join(movedRepositoryRoot, spoolName))).toBe(true);
+      expect((yield* fs.readDirectory(externalCheckout)).some(name => name.endsWith('.repair'))).toBe(false);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it('recognizes exactly the canonical persistent spool filename family', () => {
+    const hexadecimal = (length: number) =>
+      fc
+        .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: length, minLength: length})
+        .map(value => value.join(''));
+    fc.assert(
+      fc.property(
+        hexadecimal(40),
+        fc.oneof(
+          fc.constant(''),
+          fc.constant('-direct'),
+          hexadecimal(16).map(value => `-full-${value}`),
+        ),
+        fc.constantFrom('', '-journal', '-shm', '-wal'),
+        (digest, mode, companion) => {
+          const snapshotId = `cgsn_${digest}${mode}`;
+          const fileName = `materialization-spool-v1-${snapshotId}.sqlite${companion}`;
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(fileName)).toBe(snapshotId);
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(`prefix-${fileName}`)).toBeUndefined();
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(`${fileName}.extra`)).toBeUndefined();
+          expect(codeGraphTemporaryMaterializationSpoolSnapshotId(fileName.replace('-v1-', '-v2-'))).toBeUndefined();
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('recovers an orphaned checkout lock instead of deferring doctor forever', async () => {
@@ -378,6 +849,65 @@ describe('bounded code graph maintenance', () => {
       yield* store.initialize(databasePath);
       yield* Effect.sync(() => makePreReconciliationIndexRevision7(databasePath));
 
+      const schemaBeforePreview = yield* Effect.sync(() => readReconciliationPreparationState(databasePath));
+      const filesBeforePreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
+      const repeated = yield* Effect.forEach(
+        [1, 2, 3, 4, 5],
+        () => store.prepareWorktreeReconciliationIndexes(databasePath, {preview: true}),
+        {concurrency: 1},
+      );
+      expect(repeated).toEqual(repeated.map(() => ({state: 'migration-ready'})));
+      const typedFailure = yield* store
+        .prepareWorktreeReconciliationIndexes(databasePath, {
+          afterPreviewTransactionStarted: () => Effect.fail(new TestError('stop preview')),
+          preview: true,
+        })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(typedFailure)).toBe(true);
+      const previewStarted = yield* Deferred.make<void>();
+      const interruptedPreview = yield* Effect.forkChild(
+        store.prepareWorktreeReconciliationIndexes(databasePath, {
+          afterPreviewTransactionStarted: () =>
+            Deferred.succeed(previewStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          preview: true,
+        }),
+      );
+      yield* Deferred.await(previewStarted);
+      yield* Fiber.interrupt(interruptedPreview);
+      const filesAfterPreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
+      expect(filesAfterPreview).toEqual(filesBeforePreview);
+      expect(yield* Effect.sync(() => readReconciliationPreparationState(databasePath))).toEqual(schemaBeforePreview);
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+      });
+      expect(preview).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            return {
+              indexes: database
+                .query(
+                  `SELECT name FROM sqlite_master
+                   WHERE type = 'index' AND name IN (
+                     'active_snapshots_snapshot_worktree',
+                     'snapshots_base_state_id',
+                     'snapshot_leases_snapshot_expiry'
+                   )`,
+                )
+                .all(),
+              revision: database
+                .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+                .get(),
+            };
+          } finally {
+            database.close(false);
+          }
+        }),
+      ).toEqual({indexes: [], revision: {value: '7'}});
+
       const progress: string[] = [];
       const repair = yield* repairCodeGraphIndexes(
         home,
@@ -387,7 +917,7 @@ describe('bounded code graph maintenance', () => {
         {migrateSchema: true, mode: 'quick'},
       );
 
-      expect(repair).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(repair).toEqual(preview);
       expect(progress).toEqual(['checking', 'migrating-schema']);
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
       expect(
@@ -422,7 +952,7 @@ describe('bounded code graph maintenance', () => {
         ],
         revision: {value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)},
       });
-    }).pipe(provideTestLayer(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('keeps revision-6 ready snapshots readable while background maintenance migrates them', () =>
@@ -666,6 +1196,46 @@ function readCleanupHealthSurface(database: Database): {
   };
 }
 
+function readReconciliationPreparationState(databasePath: string): {
+  readonly metadata: readonly unknown[];
+  readonly schema: readonly unknown[];
+  readonly schemaVersion: unknown;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return {
+      metadata: database.query('SELECT key, value FROM schema_metadata ORDER BY key').all(),
+      schema: database
+        .query(
+          `SELECT type, name, tbl_name, sql
+           FROM sqlite_master
+           WHERE type IN ('index', 'table', 'trigger')
+           ORDER BY type, name`,
+        )
+        .all(),
+      schemaVersion: database.query('PRAGMA schema_version').get(),
+    };
+  } finally {
+    database.close(false);
+  }
+}
+
+async function readDatabaseDurabilityEvidence(databasePath: string): Promise<{
+  readonly database: {readonly bytes: number; readonly sha256: string} | {readonly missing: true};
+  readonly wal: {readonly bytes: number; readonly sha256: string} | {readonly missing: true};
+}> {
+  const inspect = async (filePath: string) => {
+    const file = Bun.file(filePath);
+    if (!(await file.exists())) return {missing: true} as const;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return {
+      bytes: bytes.byteLength,
+      sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
+    } as const;
+  };
+  return {database: await inspect(databasePath), wal: await inspect(`${databasePath}-wal`)};
+}
+
 function makeRecoverableInterruptedExtension(databasePath: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
@@ -745,6 +1315,8 @@ function downgradeToReleasedRevision6(databasePath: string): void {
         DROP INDEX IF EXISTS active_snapshots_snapshot_worktree;
         DROP INDEX IF EXISTS snapshots_base_state_id;
         DROP INDEX IF EXISTS snapshot_leases_snapshot_expiry;
+        DROP INDEX IF EXISTS snapshot_files_raw_content_hash;
+        ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
         DELETE FROM schema_metadata
         WHERE key IN ('removed_view_cleanup_admission_cursor', 'removed_view_cleanup_epoch_sequence');
         UPDATE schema_metadata
@@ -820,6 +1392,21 @@ function legacyReadySnapshot(identity: RepositoryIdentity, seed: string): CodeGr
     id: `cgsn_${seed.repeat(40)}`,
     repositoryId: identity.repositoryId,
     state: 'ready',
+    symbolCount: 0,
+    worktreeId: identity.worktreeId,
+  };
+}
+
+function repairBuildingSnapshot(identity: RepositoryIdentity, seed: string): CodeGraphSnapshot {
+  return {
+    commit: identity.headCommit,
+    dirty: false,
+    edgeCount: 0,
+    extractorSet: 'repair-spool-regression',
+    fileCount: 0,
+    id: `cgsn_${seed.repeat(40)}-direct`,
+    repositoryId: identity.repositoryId,
+    state: 'building',
     symbolCount: 0,
     worktreeId: identity.worktreeId,
   };

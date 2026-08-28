@@ -32,13 +32,23 @@ import {
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
 import {CodeGraphDatabaseSession, tableExists} from './store_session.js';
-import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
+import {
+  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+  type CodeGraphSnapshotFileCitationBaseIndexState,
+  type CodeGraphSnapshotFileCitationSchemaState,
+  CodeGraphStoreError,
+} from './types.js';
 import {
   CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX,
   codeGraphReconciliationIndexState,
 } from './store_reconciliation_core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
+import {
+  type CodeGraphSnapshotFileCitationSchemaAuthorization,
+  codeGraphSnapshotFileCitationSchemaMigrationPreserves,
+  ensureCodeGraphSnapshotFileCitationSchema,
+} from './store_file_alias_schema.js';
 import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 import {
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
@@ -48,6 +58,19 @@ import {
 
 /** Revision that first made the exact cleanup queue part of durable graph authority. */
 const REMOVED_VIEW_CLEANUP_EXTENSION_REVISION = 8;
+
+/** Revision 16 only adds the raw-content alias column/index after extension migration. */
+export function codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+  revision: number | undefined,
+  snapshotFileCitationSchema: CodeGraphSnapshotFileCitationSchemaState,
+  snapshotFileCitationBaseIndexes: CodeGraphSnapshotFileCitationBaseIndexState,
+): boolean {
+  return codeGraphSnapshotFileCitationSchemaMigrationPreserves(
+    revision,
+    snapshotFileCitationSchema,
+    snapshotFileCitationBaseIndexes,
+  );
+}
 
 const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedViewCleanupSchema')(function* (
   sql: SqlClient.SqlClient,
@@ -211,6 +234,7 @@ const ensureCurrentCodeGraphQueryIndexes = Effect.fn('codeGraph.ensureCurrentQue
 
 const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentExtensionTables')(function* (
   sql: SqlClient.SqlClient,
+  snapshotFileCitationAuthorization: CodeGraphSnapshotFileCitationSchemaAuthorization,
 ) {
   const session = yield* Effect.serviceOption(CodeGraphDatabaseSession);
   const observe = Option.isSome(session) ? session.value.onPersistentSchemaMigrationPhase : undefined;
@@ -233,6 +257,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, true, false))) {
         return yield* Effect.fail(new CodeGraphStoreError('Code graph cleanup authority schema is incompatible.'));
       }
+      yield* ensureCodeGraphSnapshotFileCitationSchema(sql, snapshotFileCitationAuthorization);
       const cleanupSchemaState = yield* removedViewCleanupSchemaState(sql);
       yield* ensureRemovedViewCleanupSchema(sql);
       if (cleanupSchemaState === 'absent') {

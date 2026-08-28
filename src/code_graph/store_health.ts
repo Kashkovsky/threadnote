@@ -5,7 +5,9 @@ import {type CodeGraphDatabaseHealth} from './store_models.js';
 import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
 import {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
+import {inspectCodeGraphSnapshotFileCitationSchema} from './store_file_alias_schema.js';
 import {
+  CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
   type CodeGraphSnapshot,
@@ -13,8 +15,7 @@ import {
 
 export type CodeGraphDatabaseIntegrity = 'corrupt' | 'incompatible' | 'migration-pending' | 'ok';
 
-/** Oldest released additive extension revision that the current reader can safely serve. */
-export const CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION = 6;
+export {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './types.js';
 
 export function codeGraphDatabaseIntegrity(input: {
   readonly coreReadSchemaCompatible: boolean;
@@ -53,9 +54,12 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
     const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
     const cleanupAdmission = yield* codeGraphRemovedViewCleanupSchemaAdmission(sql);
     const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
+    const snapshotFileCitation = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
     const persistentExtensionCurrent =
       persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
       (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
+      snapshotFileCitation.baseIndexes === 'current' &&
+      snapshotFileCitation.state === 'current' &&
       cleanupAdmission.current;
     const coreReadSchemaCompatible = yield* codeGraphWorktreeReconciliationSchemaCompatible(
       sql,
@@ -86,6 +90,8 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
         persistentExtensionSchemaRevision,
         schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
       }),
+      snapshotFileCitationBaseIndexes: snapshotFileCitation.baseIndexes,
+      snapshotFileCitationSchema: snapshotFileCitation.state,
       readySnapshots: counts.get('ready') ?? 0,
       persistentExtensionSchemaRevision,
       schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,

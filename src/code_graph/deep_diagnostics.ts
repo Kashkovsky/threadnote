@@ -198,6 +198,24 @@ function decodeDatabaseHealth(value: unknown): CodeGraphDatabaseHealth | undefin
   if (!['corrupt', 'incompatible', 'migration-pending', 'ok'].includes(String(record.integrity))) {
     return undefined;
   }
+  if (
+    ![
+      'column-only',
+      'column-only-with-authority',
+      'column-only-with-predecessor-authority',
+      'current',
+      'incompatible',
+      'released-absent',
+      'released-absent-with-predecessor-authority',
+      'released-absent-with-authority',
+      'table-absent',
+    ].includes(String(record.snapshotFileCitationSchema))
+  ) {
+    return undefined;
+  }
+  if (!['current', 'incompatible', 'missing'].includes(String(record.snapshotFileCitationBaseIndexes))) {
+    return undefined;
+  }
   for (const revision of [record.persistentExtensionSchemaRevision, record.schemaVersion]) {
     if (revision !== undefined && (typeof revision !== 'number' || !Number.isSafeInteger(revision))) return undefined;
   }
