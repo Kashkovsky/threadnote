@@ -82,7 +82,7 @@ import {collectDoctorChecks, runRepair, runStart} from './lifecycle.js';
 import {runSeed, runSeedSkills} from './seeding.js';
 import {readManagerRuntimeState} from './manager_state.js';
 import {handleManagerProcessRequest} from './manager_processes.js';
-import {emptyManagerTree, isMissingManagerTreePath} from './manager_tree.js';
+import {emptyManagerTree, readManagerTreeRoot} from './manager_tree.js';
 import {
   handleManagerWorksetRequest,
   isManagerWorksetApiPath,
@@ -406,24 +406,16 @@ export function createManagerServer(
 export const memoryTree = Effect.fn('manager.memoryTree')(function* (config: RuntimeConfig) {
   const root = yield* localMemoriesRoot(config);
   const uri = `threadnote://user/${uriSegment(config.user)}/memories`;
-  return yield* readTree(config, root, uri, '').pipe(
-    Effect.catch(error =>
-      isMissingManagerTreePath(error) ? Effect.succeed(emptyManagerTree('memories', uri)) : Effect.fail(error),
-    ),
-  );
+  return yield* readManagerTreeRoot(lstat(root), readTree(config, root, uri, ''), emptyManagerTree('memories', uri));
 });
 
 export const resourcesTree = Effect.fn('manager.resourcesTree')(function* (config: RuntimeConfig) {
   const root = yield* localResourcesRoot(config);
-  return yield* readTree(config, root, 'threadnote://resources', '', {
-    parseMemoryDocuments: false,
-    rootName: 'resources',
-  }).pipe(
-    Effect.catch(error =>
-      isMissingManagerTreePath(error)
-        ? Effect.succeed(emptyManagerTree('resources', 'threadnote://resources'))
-        : Effect.fail(error),
-    ),
+  const uri = 'threadnote://resources';
+  return yield* readManagerTreeRoot(
+    lstat(root),
+    readTree(config, root, uri, '', {parseMemoryDocuments: false, rootName: 'resources'}),
+    emptyManagerTree('resources', uri),
   );
 });
 
