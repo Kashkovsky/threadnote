@@ -510,4 +510,79 @@ export const proTips: ProTip[] = [
       ],
     },
   },
+  {
+    id: 'portable-graph-checkpoints',
+    number: '09',
+    category: 'graph',
+    title: 'Carry a verified graph across machines.',
+    summary:
+      'Move one deterministic clean graph between local installations when the receiver is offline or a rebuild would waste time.',
+    why: 'The checkpoint carries disposable derived graph data—not source or memory—and an independently obtained digest authenticates the exact artifact bytes.',
+    practice: [
+      'Export only after the current commit has an exact ready, clean root graph and a credential-free repository identity.',
+      'Transfer the checkpoint file and its expected SHA-256 digest through independent trusted paths.',
+      'On the receiver, inspect with the expected digest, run the full verify, then import from a checkout of the same repository where the source commit already exists.',
+      'No account, hosted service, or Workset is required. Existing schema-v1 and uncited legacy memories remain recallable.',
+    ],
+    scenario: {
+      eyebrow: 'Offline graph portability',
+      title: 'Verify before importing on the offline machine',
+      description:
+        'The sender exports one exact clean graph; the receiver authenticates the file, verifies every logical record, and imports it locally.',
+      steps: [
+        {
+          kind: 'user',
+          actor: 'You',
+          text: 'Prepare this repository graph for an offline development machine without creating a Workset.',
+        },
+        {
+          kind: 'action',
+          actor: 'Source machine',
+          text: 'Index the clean current commit.',
+          meta: 'threadnote graph index',
+        },
+        {
+          kind: 'action',
+          actor: 'Source machine',
+          text: 'Export the exact ready graph to a new local artifact.',
+          meta: 'threadnote graph checkpoint export --output threadnote-graph.cgcp',
+        },
+        {
+          kind: 'result',
+          actor: 'Threadnote',
+          text: 'Exported checkpoint · sha256:<digest>',
+          evidence: ['threadnote-graph.cgcp', 'sha256:<digest>'],
+        },
+        {
+          kind: 'action',
+          actor: 'Transfer',
+          text: 'Move the artifact and independently obtained digest to the offline machine.',
+          meta: 'manual file transfer · no account or Workset',
+        },
+        {
+          kind: 'action',
+          actor: 'Offline machine',
+          text: 'Authenticate the artifact framing before inflating graph records.',
+          meta: 'threadnote graph checkpoint inspect --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+        },
+        {
+          kind: 'action',
+          actor: 'Offline machine',
+          text: 'Fully verify chunks, schema, ordering, coverage, and the logical digest.',
+          meta: 'threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+        },
+        {
+          kind: 'action',
+          actor: 'Offline machine',
+          text: 'Import from a checkout of the same repository with the source commit already available.',
+          meta: 'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
+        },
+        {
+          kind: 'assistant',
+          actor: 'Agent',
+          text: 'The verified graph is ready locally. No Workset was created, and existing v1 and uncited memories were not migrated or filtered.',
+        },
+      ],
+    },
+  },
 ];

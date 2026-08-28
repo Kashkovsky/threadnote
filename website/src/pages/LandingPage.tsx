@@ -130,6 +130,12 @@ const graphCapabilities = [
   },
   {
     number: '06',
+    label: 'Free · manual · offline',
+    title: 'Move one verified graph without a cloud.',
+    body: 'Export the exact ready, clean graph for the current commit, inspect and fully verify the artifact against an independently obtained SHA-256 digest, then import it from a local checkout of the same repository. No account, hosted service, or Workset is required.',
+  },
+  {
+    number: '07',
     label: 'Manager visualization',
     title: 'Explore the graph without reading raw rows.',
     body: 'The local Manager lets you search and walk current symbols, inspect relationship provenance, and request architecture signals on demand with mocked-data demos available publicly.',
@@ -241,6 +247,9 @@ function GraphSearchShowcase() {
             </a>
             <a className="button button--ghost" href={docsArticleHref('graph-operations')}>
               Graph search docs
+            </a>
+            <a className="button button--ghost" href={docsArticleHref('graph-checkpoints')}>
+              Graph checkpoint docs
             </a>
           </div>
         </div>

@@ -31,7 +31,7 @@ const questions = [
   {
     question: 'Will my existing memories disappear after upgrading to 4.4?',
     answer:
-      'No. v1 and other uncited memories stay recallable and can appear in Context Brief. They keep conservative commit-level freshness when Threadnote can resolve it and otherwise show unknown; Threadnote does not invent precise citations or require a migration just to keep recall working.',
+      'No. v1 and other uncited memories stay recallable and can appear in Context Brief. They keep conservative commit-level freshness when Threadnote can resolve it and otherwise show unknown; Threadnote does not invent precise citations or require a migration just to keep recall working. Portable checkpoint operations touch only disposable graph storage, so they do not migrate or filter existing memory either.',
   },
   {
     question: 'Do I need a Workset to use code citations or Context Brief?',
@@ -67,6 +67,11 @@ const questions = [
     question: 'How does Manager keep long graph work responsive?',
     answer:
       'In Threadnote 4.4, Manager launches graph indexing and Workset preparation in isolated processes instead of running those builds inside the UI service. Workset repositories prepare with bounded concurrency and report progress independently. Queries still read only a ready, atomically published generation rather than partial build state.',
+  },
+  {
+    question: 'Can I move a graph to another machine without a Workset or cloud?',
+    answer:
+      'Yes. Portable graph checkpoints are free, manual, offline files. Export the exact ready, clean graph for the current commit, transfer the artifact plus an independently obtained expected SHA-256 digest, run inspect and then the full verify with that digest, and import from a local checkout of the same repository where the source commit already exists. No account, hosted service, or Workset is required, and schema-v1 or uncited legacy memories are unaffected.',
   },
   {
     question: 'Can agents query a graph while it is still indexing?',
