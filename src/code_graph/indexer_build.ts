@@ -60,7 +60,12 @@ import {
 } from './indexer_materialization.js';
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
 import {verifyCommittedIndexInput} from './indexer_input_verification.js';
-import {CodeGraphIndexOperationError, codeGraphInventoryFileChanged, sameInventoryPaths} from './indexer_shared.js';
+import {
+  CachedCodeGraphFactUnavailableDuringIndex,
+  CodeGraphIndexOperationError,
+  codeGraphInventoryFileChanged,
+  sameInventoryPaths,
+} from './indexer_shared.js';
 import type {
   CodeGraphIndexOptions,
   CommittedBaseResult,
@@ -1555,11 +1560,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       loadingMilliseconds += batchLoadingMilliseconds;
       stageMilliseconds['loading-cache'] = loadingMilliseconds;
       if (fallbackFiles.some(file => !cached.facts.has(file.path))) {
-        return yield* Effect.fail(
-          new CodeGraphIndexOperationError(
-            'A cached code graph fact disappeared during indexing; retry with a full rebuild.',
-          ),
-        );
+        return yield* Effect.fail(new CachedCodeGraphFactUnavailableDuringIndex());
       }
       yield* input.onProgress?.({
         activity: {
