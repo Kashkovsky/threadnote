@@ -1174,8 +1174,18 @@ export const McpInput = {
   number: (description?: string, options: {readonly maximum?: number; readonly minimum?: number} = {}) =>
     Schema.optionalKey(numberSchema(description, options)),
   string: (description?: string) => Schema.optionalKey(annotate(Schema.String, description)),
-  stringOrStrings: (description?: string) =>
-    Schema.optionalKey(annotate(Schema.Union([Schema.String, Schema.Array(Schema.String)]), description)),
+  stringOrStrings: (description?: string, options: {readonly maximumItems?: number} = {}) =>
+    Schema.optionalKey(
+      annotate(
+        Schema.Union([
+          Schema.String,
+          options.maximumItems === undefined
+            ? Schema.Array(Schema.String)
+            : Schema.Array(Schema.String).check(Schema.isMaxLength(options.maximumItems)),
+        ]),
+        description,
+      ),
+    ),
 } as const;
 
 const stdioWithInstructionsLayer = (instructions: string): Layer.Layer<Stdio.Stdio> =>

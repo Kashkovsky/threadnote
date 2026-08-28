@@ -52,7 +52,7 @@ import {
   type MemoryMetadata,
 } from './memory_document.js';
 import {captureMemoryCodeCitationsForMcp} from './mcp/memory_code_citation.js';
-import {MEMORY_SCHEMA_VERSION} from './memory_code_citation.js';
+import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from './memory_code_citation.js';
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -157,7 +157,8 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd; infers project'),
         codeRefs: McpInput.stringOrStrings(
-          'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates',
+          `Repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         decisions: McpInput.stringOrStrings('Reusable decisions'),
         evidence: McpInput.stringOrStrings('Bounded file, commit, or session pointers'),
@@ -1449,7 +1450,8 @@ export function registerStoreTool(
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd for nested package/app scope'),
         codeRefs: McpInput.stringOrStrings(
-          'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to capture as immutable code evidence',
+          `Repository-relative path, cgs_ symbol, or cgr_ qualified ref to capture as immutable code evidence; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),
         project: McpInput.string('Project/repo namespace'),
