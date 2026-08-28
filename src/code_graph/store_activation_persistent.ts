@@ -6,9 +6,11 @@ import {
   type CodeGraphDirectPersistentCapacityBoundary,
 } from './disk_capacity.js';
 import {
+  CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphActivationProgressCallback,
   type CodeGraphDirectPersistentCapacityProtector,
+  type CodeGraphCheckpointImportReceiptInput,
   type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
@@ -62,6 +64,11 @@ import {
   materializeSnapshotComponentEdgeAggregates,
   selectPersistedSnapshotComponentEdges,
 } from './store_component_aggregates.js';
+import {
+  assertCheckpointImportBuild,
+  publishCheckpointImportReceipt,
+  verifyCheckpointImportRecordCounts,
+} from './store_checkpoint_import.js';
 
 /**
  * Read-only linearization point for Manager's writer-busy fallback. A cached
@@ -348,7 +355,7 @@ const activateCleanStagedSnapshot = Effect.fn('codeGraph.activateCleanStagedSnap
             reexport_count, inventory_receipt_json, created_at
           )
           VALUES (
-            ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+            ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}, ${snapshot.extractorSet},
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             ${copiedLookupKeys.rows}, ${copiedLookupKeys.talliedRows}, ${copiedReexports.rows},
             ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
@@ -627,6 +634,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
   snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
   materializedFileShardAssociationsComplete = false,
+  checkpointImportReceipt?: CodeGraphCheckpointImportReceiptInput,
 ) {
   const runWrite: CodeGraphWriterGate = writerGate ?? (effect => effect);
   const observe = activationProgressObserver(onProgress);
@@ -647,6 +655,10 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   }>`SELECT repository_id, state FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;
   if (stateRows[0]?.state !== 'building' || stateRows[0]?.repository_id !== identity.repositoryId) {
     return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build snapshot is not active.'));
+  }
+  if (checkpointImportReceipt !== undefined) {
+    yield* assertCheckpointImportBuild(sql, snapshot.id, checkpointImportReceipt);
+    yield* verifyCheckpointImportRecordCounts(sql, snapshot.id);
   }
   yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
   const validatedEdges = yield* validatePersistedFullEdgeSymbols(sql, snapshot.id, observe);
@@ -715,7 +727,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
     // callers can still publish one v3 association per inventory file. The
     // Fixed rows cover lexical/extractor/reuse/lease receipts, the ready state
     // update, build-owner deletion, and pack-provenance delete/insert writes.
-    rowCount: shardPublicationPlan.rowCount,
+    rowCount: saturatingCapacityAdd(shardPublicationPlan.rowCount, checkpointImportReceipt === undefined ? 0 : 2),
   };
   let readyTransactionStartedAt = 0;
   const readyTransaction = Effect.suspend(() => {
@@ -725,6 +737,10 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
         Effect.gen(function* () {
           yield* assertPersistentBuildOwner(sql, snapshot.id, ownerToken);
           yield* assertPersistentMaterializationComplete(sql, snapshot.id, ownerToken);
+          if (checkpointImportReceipt !== undefined) {
+            yield* assertCheckpointImportBuild(sql, snapshot.id, checkpointImportReceipt);
+            yield* verifyCheckpointImportRecordCounts(sql, snapshot.id);
+          }
           yield* publishCompactLexicalFormat(sql, snapshot.id, compactLexicalReceipt);
           if (shardPublicationPlan.associateLegacyMaterializedFileShards) {
             yield* associateSnapshotFileShards(sql, snapshot, reusableBaseReceipt);
@@ -740,7 +756,7 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
             workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
             reexport_count, inventory_receipt_json, created_at
           ) VALUES (
-            ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+            ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}, ${snapshot.extractorSet},
             ${reusableBaseReceipt.workspaceFingerprint}, ${reusableBaseReceipt.fileSetFingerprint},
             ${reuseRows.lookupCount}, ${reuseRows.aliasCount}, ${reuseRows.reexportCount},
             ${encodeCodeGraphInventoryReuseReceipt(reusableBaseReceipt.inventory)},
@@ -764,6 +780,9 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
       `;
           if (!completed[0]) {
             return yield* Effect.fail(new CodeGraphStoreError('Persistent full-build promotion lost ownership.'));
+          }
+          if (checkpointImportReceipt !== undefined) {
+            yield* publishCheckpointImportReceipt(sql, snapshot.id, checkpointImportReceipt, new Date().toISOString());
           }
           yield* sql`
         DELETE FROM snapshot_build_owners
@@ -859,7 +878,7 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
           workspace_fingerprint, file_set_fingerprint, lookup_count, alias_count,
           reexport_count, inventory_receipt_json, created_at
         ) VALUES (
-          ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, 1, ${snapshot.extractorSet},
+          ${snapshot.id}, ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}, ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}, ${snapshot.extractorSet},
           ${currentSnapshotReceipt.workspaceFingerprint}, ${currentSnapshotReceipt.fileSetFingerprint},
           0, 0, 0, ${encodeCodeGraphInventoryReuseReceipt(currentSnapshotReceipt.inventory)},
           ${completedAt}

@@ -3,12 +3,13 @@ import {mkdir, mkdtemp, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, Encoding, FileSystem, Path} from 'effect';
 import {afterEach, describe, expect, it} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {memoryProjectConsistencyCheck, runDoctor, telemetryDoctorCheck} from '../../src/lifecycle.js';
+import {DEFAULT_TELEMETRY_ENDPOINT} from '../../src/telemetry/config.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
@@ -130,6 +131,23 @@ describe('doctor report resilience', () => {
         yield* fs.writeFileString(path.join(home, 'telemetry', 'config.json'), '{invalid-json}\n');
         expect(yield* telemetryDoctorCheck(config)).toEqual({
           detail: 'invalid or unreadable configuration; telemetry fails closed',
+          name: 'anonymous telemetry',
+          status: 'warn',
+        });
+
+        yield* fs.writeFileString(
+          path.join(home, 'telemetry', 'config.json'),
+          `${JSON.stringify({
+            consentVersion: 4,
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+            sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(9)),
+            version: 1,
+          })}\n`,
+        );
+        expect(yield* telemetryDoctorCheck(config)).toEqual({
+          detail:
+            'disabled; consent v4 needs explicit renewal for v5; run `threadnote telemetry enable`, then `threadnote telemetry enable --apply` after review',
           name: 'anonymous telemetry',
           status: 'warn',
         });

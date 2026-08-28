@@ -6,7 +6,13 @@ import {
   removedViewCleanupSchemaState,
 } from './store_removed_view_schema_inspection.js';
 import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
-import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
+import {CodeGraphStoreError} from './types.js';
+import {
+  CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
+  codeGraphPersistentSchemaIsCurrent,
+  codeGraphPersistentSchemaMigrationPending,
+  codeGraphPersistentSchemaSupports,
+} from './store/schema_revision.js';
 import {
   codeGraphRemovedViewCleanupSchemaAdmission,
   codeGraphSchemaMigrationPreservesIncompleteSnapshots,
@@ -21,7 +27,6 @@ import {
   codeGraphReconciliationIndexState,
 } from './store_reconciliation_core.js';
 import {initializeRoutineMaintenanceSchema} from './store_leases.js';
-import {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './store_health.js';
 import {prepareCodeGraphSnapshotFileCitationSchema} from './store_file_alias_schema.js';
 
 export const CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT = 8;
@@ -43,13 +48,7 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
     SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'
   `;
   const revision = revisions[0]?.value;
-  if (
-    revisions.length !== 1 ||
-    (revision !== '7' &&
-      revision !== '8' &&
-      revision !== '9' &&
-      revision !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION))
-  ) {
+  if (revisions.length !== 1 || !codeGraphPersistentSchemaSupports(revision, 'explicit-cleanup-preparation')) {
     return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }
   if (!(yield* codeGraphPersistentExtensionSchemaCompatible(sql))) {
@@ -63,10 +62,10 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
       VALUES (${REMOVED_VIEW_CLEANUP_EPOCH_SEQUENCE_KEY}, '0')
     `;
   }
-  if (revision !== String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)) {
+  if (!codeGraphPersistentSchemaIsCurrent(revision)) {
     yield* sql`
       UPDATE schema_metadata
-      SET value = ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)}
+      SET value = ${String(CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION)}
       WHERE key = 'persistent_extension_schema_revision' AND value = ${revision!}
     `;
     if ((yield* lastStatementChangeCount(sql)) !== 1) {
@@ -76,7 +75,7 @@ const prepareRemovedViewCleanupExtension = Effect.fn('codeGraph.prepareRemovedVi
   if (!(yield* codeGraphRemovedViewCleanupSchemaAdmission(sql)).current) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup schema is unavailable.'));
   }
-  return wasCurrent && revision === String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)
+  return wasCurrent && codeGraphPersistentSchemaIsCurrent(revision)
     ? ({state: 'ready'} as const)
     : ({index: 'removed_view_cleanup_due', state: 'prepared'} as const);
 });
@@ -129,11 +128,7 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
     return {index: missing.index.name, state: 'prepared'} as const;
   }
   if (snapshotPreservingSchemaMigration) return {state: 'migration-ready'} as const;
-  if (
-    recordedRevision !== undefined &&
-    recordedRevision >= CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION &&
-    recordedRevision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
-  ) {
+  if (codeGraphPersistentSchemaMigrationPending(recordedRevision)) {
     return {state: 'migration-ready'} as const;
   }
   const cleanup = yield* prepareRemovedViewCleanupExtension(sql);

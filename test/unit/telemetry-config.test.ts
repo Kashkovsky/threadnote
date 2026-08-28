@@ -11,7 +11,9 @@ import {
   disabledTelemetryConfiguration,
   enabledTelemetryConfiguration,
   normalizeTelemetryEndpoint,
+  parseTelemetryConsentRenewal,
   parseTelemetryConfiguration,
+  readTelemetryConsentRenewal,
   readTelemetryConfiguration,
   renderTelemetryConfiguration,
   resolveTelemetryConfiguration,
@@ -78,6 +80,37 @@ describe('telemetry configuration', () => {
     {fastCheck: {numRuns: 50}},
   );
 
+  effectIt.effect.prop(
+    'recognizes only the exact renewable enabled-consent generation',
+    {
+      consentVersion: FC.integer({max: 8, min: 1}),
+      enabled: FC.boolean(),
+      extraField: FC.boolean(),
+      validEndpoint: FC.boolean(),
+      validSalt: FC.boolean(),
+      version: FC.integer({max: 2, min: 0}),
+    },
+    ({consentVersion, enabled, extraField, validEndpoint, validSalt, version}) =>
+      Effect.sync(() => {
+        const renewal = parseTelemetryConsentRenewal(
+          JSON.stringify({
+            consentVersion,
+            enabled,
+            endpoint: validEndpoint ? DEFAULT_TELEMETRY_ENDPOINT : 'http://collector.example/v1/traces',
+            sessionSalt: validSalt ? FIXED_SESSION_SALT : 'not-a-canonical-session-salt',
+            ...(extraField ? {unexpected: true} : {}),
+            version,
+          }),
+        );
+        expect(renewal).toEqual(
+          consentVersion === 4 && enabled && !extraField && validEndpoint && validSalt && version === 1
+            ? {consentVersion: 4, endpoint: DEFAULT_TELEMETRY_ENDPOINT}
+            : undefined,
+        );
+      }),
+    {fastCheck: {numRuns: 50}},
+  );
+
   effectIt.effect('persists private config atomically and removes the local salt on disable', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -127,6 +160,7 @@ describe('telemetry configuration', () => {
         yield* fs.symlink(outside, file);
         expect(yield* resolveTelemetryConfiguration(config)).toBeUndefined();
         expect(yield* Effect.exit(readTelemetryConfiguration(config))).toMatchObject({_tag: 'Failure'});
+        expect(yield* Effect.exit(readTelemetryConsentRenewal(config))).toMatchObject({_tag: 'Failure'});
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -154,6 +188,10 @@ describe('telemetry configuration', () => {
 
         expect(yield* resolveTelemetryConfiguration(config)).toBeUndefined();
         expect(yield* Effect.exit(readTelemetryConfiguration(config))).toMatchObject({_tag: 'Failure'});
+        expect(yield* readTelemetryConsentRenewal(config)).toEqual({
+          consentVersion: 4,
+          endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+        });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

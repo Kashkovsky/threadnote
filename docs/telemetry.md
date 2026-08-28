@@ -28,6 +28,13 @@ producer: telemetry remains off until the user reviews the current preview and e
 Threadnote never migrates an earlier opt-in silently, even though the gateway continues to admit the frozen v1, v2,
 v3, and v4 wire contracts for older supported producers.
 
+When an upgrade finds an exact enabled v4 consent, its post-update action prints the complete current preview before
+asking interactively whether to apply v5 consent. `--yes` never answers this privacy prompt, and non-interactive or
+automatic updates leave telemetry off and print the manual `threadnote telemetry enable --apply` action. The preview
+reuses the previously selected endpoint unless `--endpoint` is supplied. A non-interactive post-update action also
+sends a best-effort local desktop reminder. `threadnote telemetry status` and `threadnote doctor` distinguish this
+renewal state from malformed configuration and show the same explicit remedy.
+
 Applied disable is observed by active exporters at their next event or transport gate. Queued requests that have not
 started are dropped. A network request that already started cannot be recalled, but no later request is sent. Enabling
 telemetry, changing its endpoint, or re-enabling it after consent was removed requires restarting already-connected

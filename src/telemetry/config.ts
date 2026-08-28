@@ -6,6 +6,7 @@ import {isJsonObject} from '../utils.js';
 
 export const TELEMETRY_CONFIGURATION_VERSION = 1 as const;
 export const TELEMETRY_CONSENT_VERSION = 5 as const;
+export const TELEMETRY_RENEWABLE_CONSENT_VERSION = 4 as const;
 export const DEFAULT_TELEMETRY_ENDPOINT = 'https://telemetry.threadnote.io/v1/traces';
 
 export interface DisabledTelemetryConfiguration {
@@ -24,6 +25,16 @@ export interface EnabledTelemetryConfiguration {
 }
 
 export type TelemetryConfiguration = DisabledTelemetryConfiguration | EnabledTelemetryConfiguration;
+
+/**
+ * A previously enabled consent that is structurally valid but does not cover
+ * the current data contract. This is diagnostic state only: it never enables
+ * an exporter until the user applies the current consent explicitly.
+ */
+export interface TelemetryConsentRenewal {
+  readonly consentVersion: typeof TELEMETRY_RENEWABLE_CONSENT_VERSION;
+  readonly endpoint: string;
+}
 
 export type TelemetryEnvironmentOptOut = 'DNT' | 'DO_NOT_TRACK' | 'THREADNOTE_TELEMETRY';
 
@@ -54,28 +65,27 @@ export const telemetryConfigurationPath = Effect.fn('telemetry.configurationPath
 export const readTelemetryConfiguration = Effect.fn('telemetry.readConfiguration')(function* (
   config: Pick<RuntimeConfig, 'agentContextHome'>,
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const file = yield* telemetryConfigurationPath(config);
-  if (!(yield* fs.exists(file))) return undefined;
-  yield* assertRegularTelemetryDirectory(fs, path.dirname(file));
-  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
-    return yield* Effect.fail(new TelemetryConfigurationError('Telemetry configuration must not be a symbolic link.'));
-  }
-  const info = yield* fs.stat(file);
-  if (info.type !== 'File' || Number(info.size) > TELEMETRY_CONFIGURATION_MAX_BYTES) {
-    return yield* Effect.fail(
-      new TelemetryConfigurationError('Telemetry configuration must be a bounded regular file.'),
-    );
-  }
-  const raw = yield* fs.readFileString(file);
+  const document = yield* readTelemetryConfigurationDocument(config);
+  if (document === undefined) return undefined;
   return yield* Effect.try({
-    try: () => parseTelemetryConfiguration(raw, file),
+    try: () => parseTelemetryConfiguration(document.raw, document.file),
     catch: cause =>
       cause instanceof TelemetryConfigurationError
         ? cause
         : new TelemetryConfigurationError('Telemetry configuration could not be parsed.', {cause}),
   });
+});
+
+/**
+ * Recognizes only the exact enabled v4 shape so update/status UX can explain
+ * why telemetry stopped. Malformed, disabled, older, newer, and current
+ * configurations are not renewal candidates and continue to fail closed.
+ */
+export const readTelemetryConsentRenewal = Effect.fn('telemetry.readConsentRenewal')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  const document = yield* readTelemetryConfigurationDocument(config);
+  return document === undefined ? undefined : parseTelemetryConsentRenewal(document.raw, document.file);
 });
 
 /** Invalid, unreadable, absent, disabled, or environment-suppressed consent always resolves to off. */
@@ -161,6 +171,38 @@ export function parseTelemetryConfiguration(
   } catch (cause) {
     if (cause instanceof TelemetryConfigurationError) throw cause;
     throw new TelemetryConfigurationError(`Telemetry configuration is not valid JSON: ${source}`, {cause});
+  }
+}
+
+export function parseTelemetryConsentRenewal(
+  raw: string,
+  source = TELEMETRY_CONFIGURATION_FILE_NAME,
+): TelemetryConsentRenewal | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (
+    !isJsonObject(value) ||
+    value.version !== TELEMETRY_CONFIGURATION_VERSION ||
+    value.consentVersion !== TELEMETRY_RENEWABLE_CONSENT_VERSION ||
+    value.enabled !== true ||
+    typeof value.endpoint !== 'string' ||
+    typeof value.sessionSalt !== 'string'
+  ) {
+    return undefined;
+  }
+  try {
+    assertExactKeys(value, ['consentVersion', 'enabled', 'endpoint', 'sessionSalt', 'version'], source);
+    normalizeTelemetrySessionSalt(value.sessionSalt);
+    return {
+      consentVersion: TELEMETRY_RENEWABLE_CONSENT_VERSION,
+      endpoint: normalizeTelemetryEndpoint(value.endpoint),
+    };
+  } catch {
+    return undefined;
   }
 }
 
@@ -278,6 +320,26 @@ function prepareTelemetryDirectory(fs: FileSystem.FileSystem, directory: string)
     yield* fs.chmod(directory, TELEMETRY_DIRECTORY_MODE);
   });
 }
+
+const readTelemetryConfigurationDocument = Effect.fn('telemetry.readConfigurationDocument')(function* (
+  config: Pick<RuntimeConfig, 'agentContextHome'>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = yield* telemetryConfigurationPath(config);
+  if (!(yield* fs.exists(file))) return undefined;
+  yield* assertRegularTelemetryDirectory(fs, path.dirname(file));
+  if (Option.isSome(yield* fs.readLink(file).pipe(Effect.option))) {
+    return yield* Effect.fail(new TelemetryConfigurationError('Telemetry configuration must not be a symbolic link.'));
+  }
+  const info = yield* fs.stat(file);
+  if (info.type !== 'File' || Number(info.size) > TELEMETRY_CONFIGURATION_MAX_BYTES) {
+    return yield* Effect.fail(
+      new TelemetryConfigurationError('Telemetry configuration must be a bounded regular file.'),
+    );
+  }
+  return {file, raw: yield* fs.readFileString(file)};
+});
 
 function assertRegularTelemetryDirectory(fs: FileSystem.FileSystem, directory: string) {
   return Effect.gen(function* () {

@@ -27,6 +27,11 @@ import {
   serializeBoundedCodeGraphFact,
   type BoundedCodeGraphFact,
 } from './fact_budget.js';
+import {
+  codeGraphContentIdentity,
+  codeGraphExtractorSetIdentityFromIdentities,
+  codeGraphExtractorSetIdentityFromPackProvenance,
+} from './graph_identity.js';
 import {CodeGraphIndexOperationError, sameOverlayState, WorktreeChangedDuringIndex} from './indexer_shared.js';
 import type {DirectPersistentCapacityProtection, IncrementalOverlayAssessment} from './indexer_types.js';
 import {
@@ -752,28 +757,14 @@ export function extractorSetIdentity(
   languagePacks: CodeGraphLanguagePackRegistryShape = BUILTIN_LANGUAGE_PACK_REGISTRY,
 ): string {
   const paths = files.map(file => file.path);
-  return extractorSetIdentityFromIdentities(
+  return codeGraphExtractorSetIdentityFromIdentities(
     languagePacks.activeCacheIdentities(paths),
     languagePacks.activeDerivationIdentities(paths),
   );
 }
 
 export function extractorSetIdentityFromPackProvenance(provenance: readonly CodeGraphLanguagePackProvenance[]): string {
-  return extractorSetIdentityFromIdentities(
-    [...new Set(provenance.map(pack => pack.cacheIdentity))],
-    [...new Set(provenance.map(pack => pack.derivationIdentity))],
-  );
-}
-
-function extractorSetIdentityFromIdentities(
-  cacheIdentities: readonly string[],
-  derivationIdentities: readonly string[],
-): string {
-  const activeParsers = [...cacheIdentities].sort(compareCodeUnits).join('\n');
-  const activeDerivations = [...derivationIdentities].sort(compareCodeUnits).join('\n');
-  return sha256HexSync(
-    `${CODE_GRAPH_EXTRACTOR_SET_VERSION}\nactive-parser-packs:\n${activeParsers}\nactive-derivations:\n${activeDerivations}\nignore-policy:3\nresolution-context-policy:semantic-workspace-v1`,
-  );
+  return codeGraphExtractorSetIdentityFromPackProvenance(provenance);
 }
 
 export function parserCacheIdentity(): string {
@@ -846,12 +837,7 @@ export function graphContentIdentity(
     readonly path: string;
   }[],
 ): string {
-  const prefix = `graph-content-v1\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${extractorSet}\n`;
-  return `cgc_${codeGraphInventorySha256Hex(
-    prefix,
-    files,
-    file => `${file.path}\0${file.contentHash}\0${file.language ?? ''}\0${file.mode ?? ''}`,
-  ).slice(0, 40)}`;
+  return codeGraphContentIdentity(extractorSet, files);
 }
 
 export function selectedDecodedFactBytes(

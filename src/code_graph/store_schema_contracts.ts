@@ -1,7 +1,10 @@
-export type PersistentExtensionGroup = 'analysis' | 'build' | 'cross-repository' | 'lexical' | 'shards';
+import {CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION} from './store/schema_revision.js';
+
+export type PersistentExtensionGroup = 'analysis' | 'build' | 'checkpoint' | 'cross-repository' | 'lexical' | 'shards';
 
 export type CodeGraphPersistentSchemaMigrationPhase =
   | 'added-build-owner-instance'
+  | 'added-checkpoint-import'
   | 'added-materialization-plan'
   | 'added-removed-view-cleanup'
   | 'created-extensions'
@@ -658,6 +661,138 @@ export const PERSISTENT_EXTENSION_TABLES = [
     ],
     group: 'shards',
     name: 'snapshot_file_shards',
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('format_version', 'INTEGER'),
+      requiredColumn('source_repository_id', 'TEXT'),
+      requiredColumn('source_commit_id', 'TEXT'),
+      requiredColumn('source_graph_content_id', 'TEXT'),
+      requiredColumn('abi_algorithm', 'TEXT'),
+      requiredColumn('abi_digest', 'TEXT'),
+      requiredColumn('logical_algorithm', 'TEXT'),
+      requiredColumn('logical_digest', 'TEXT'),
+      optionalColumn('base_logical_digest', 'TEXT'),
+      requiredColumn('artifact_algorithm', 'TEXT'),
+      requiredColumn('artifact_digest', 'TEXT'),
+      requiredColumn('artifact_size', 'INTEGER'),
+      requiredColumn('artifact_media_type', 'TEXT'),
+      requiredColumn('coverage_json', 'TEXT'),
+      requiredColumn('trust', 'TEXT'),
+      requiredColumn('expected_batch_count', 'INTEGER'),
+      requiredColumn('expected_counts_json', 'TEXT'),
+      requiredColumn('expected_pack_provenance_json', 'TEXT'),
+      requiredColumn('started_at', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS checkpoint_import_builds (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      format_version INTEGER NOT NULL CHECK (format_version = ${CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION}),
+      source_repository_id TEXT NOT NULL CHECK (length(source_repository_id) = 64),
+      source_commit_id TEXT NOT NULL,
+      source_graph_content_id TEXT NOT NULL,
+      abi_algorithm TEXT NOT NULL CHECK (abi_algorithm = 'sha256'),
+      abi_digest TEXT NOT NULL CHECK (length(abi_digest) = 64),
+      logical_algorithm TEXT NOT NULL CHECK (logical_algorithm = 'sha256'),
+      logical_digest TEXT NOT NULL CHECK (length(logical_digest) = 64),
+      base_logical_digest TEXT CHECK (base_logical_digest IS NULL OR length(base_logical_digest) = 64),
+      artifact_algorithm TEXT NOT NULL CHECK (artifact_algorithm = 'sha256'),
+      artifact_digest TEXT NOT NULL CHECK (length(artifact_digest) = 64),
+      artifact_size INTEGER NOT NULL CHECK (artifact_size >= 0),
+      artifact_media_type TEXT NOT NULL,
+      coverage_json TEXT NOT NULL,
+      trust TEXT NOT NULL CHECK (trust IN ('local-unverified', 'expected-descriptor-verified')),
+      expected_batch_count INTEGER NOT NULL CHECK (expected_batch_count >= 0),
+      expected_counts_json TEXT NOT NULL,
+      expected_pack_provenance_json TEXT NOT NULL,
+      started_at TEXT NOT NULL
+    ) WITHOUT ROWID`,
+    group: 'checkpoint',
+    name: 'checkpoint_import_builds',
+    requiredDefinitionPatterns: [
+      new RegExp(`CHECK\\s*\\(\\s*format_version\\s*=\\s*${CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION}\\s*\\)`, 'i'),
+      /CHECK\s*\(\s*abi_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*logical_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*artifact_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*expected_batch_count\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*trust\s+IN\s*\(\s*'local-unverified'\s*,\s*'expected-descriptor-verified'\s*\)\s*\)/i,
+    ],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('batch_index', 'INTEGER', 2),
+      requiredColumn('digest_algorithm', 'TEXT'),
+      requiredColumn('batch_digest', 'TEXT'),
+      requiredColumn('record_count', 'INTEGER'),
+      requiredColumn('completed_at', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS checkpoint_import_batches (
+      snapshot_id TEXT NOT NULL REFERENCES checkpoint_import_builds(snapshot_id) ON DELETE CASCADE,
+      batch_index INTEGER NOT NULL CHECK (batch_index >= 0),
+      digest_algorithm TEXT NOT NULL CHECK (digest_algorithm = 'sha256'),
+      batch_digest TEXT NOT NULL CHECK (length(batch_digest) = 64),
+      record_count INTEGER NOT NULL CHECK (record_count >= 0),
+      completed_at TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, batch_index)
+    ) WITHOUT ROWID`,
+    foreignKeys: [{from: 'snapshot_id', onDelete: 'CASCADE', table: 'checkpoint_import_builds', to: 'snapshot_id'}],
+    group: 'checkpoint',
+    name: 'checkpoint_import_batches',
+    requiredDefinitionPatterns: [
+      /CHECK\s*\(\s*batch_index\s*>=\s*0\s*\)/i,
+      /CHECK\s*\(\s*digest_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*record_count\s*>=\s*0\s*\)/i,
+    ],
+  },
+  {
+    columns: [
+      requiredColumn('snapshot_id', 'TEXT', 1),
+      requiredColumn('format_version', 'INTEGER'),
+      requiredColumn('source_repository_id', 'TEXT'),
+      requiredColumn('source_commit_id', 'TEXT'),
+      requiredColumn('source_graph_content_id', 'TEXT'),
+      requiredColumn('abi_algorithm', 'TEXT'),
+      requiredColumn('abi_digest', 'TEXT'),
+      requiredColumn('logical_algorithm', 'TEXT'),
+      requiredColumn('logical_digest', 'TEXT'),
+      optionalColumn('base_logical_digest', 'TEXT'),
+      requiredColumn('artifact_algorithm', 'TEXT'),
+      requiredColumn('artifact_digest', 'TEXT'),
+      requiredColumn('artifact_size', 'INTEGER'),
+      requiredColumn('artifact_media_type', 'TEXT'),
+      requiredColumn('coverage_json', 'TEXT'),
+      requiredColumn('trust', 'TEXT'),
+      requiredColumn('imported_at', 'TEXT'),
+    ],
+    createSql: `CREATE TABLE IF NOT EXISTS checkpoint_import_receipts (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      format_version INTEGER NOT NULL CHECK (format_version = ${CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION}),
+      source_repository_id TEXT NOT NULL CHECK (length(source_repository_id) = 64),
+      source_commit_id TEXT NOT NULL,
+      source_graph_content_id TEXT NOT NULL,
+      abi_algorithm TEXT NOT NULL CHECK (abi_algorithm = 'sha256'),
+      abi_digest TEXT NOT NULL CHECK (length(abi_digest) = 64),
+      logical_algorithm TEXT NOT NULL CHECK (logical_algorithm = 'sha256'),
+      logical_digest TEXT NOT NULL CHECK (length(logical_digest) = 64),
+      base_logical_digest TEXT CHECK (base_logical_digest IS NULL OR length(base_logical_digest) = 64),
+      artifact_algorithm TEXT NOT NULL CHECK (artifact_algorithm = 'sha256'),
+      artifact_digest TEXT NOT NULL CHECK (length(artifact_digest) = 64),
+      artifact_size INTEGER NOT NULL CHECK (artifact_size >= 0),
+      artifact_media_type TEXT NOT NULL,
+      coverage_json TEXT NOT NULL,
+      trust TEXT NOT NULL CHECK (trust IN ('local-unverified', 'expected-descriptor-verified')),
+      imported_at TEXT NOT NULL
+    ) WITHOUT ROWID`,
+    group: 'checkpoint',
+    name: 'checkpoint_import_receipts',
+    requiredDefinitionPatterns: [
+      new RegExp(`CHECK\\s*\\(\\s*format_version\\s*=\\s*${CODE_GRAPH_CHECKPOINT_IMPORT_FORMAT_VERSION}\\s*\\)`, 'i'),
+      /CHECK\s*\(\s*abi_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*logical_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*artifact_algorithm\s*=\s*'sha256'\s*\)/i,
+      /CHECK\s*\(\s*trust\s+IN\s*\(\s*'local-unverified'\s*,\s*'expected-descriptor-verified'\s*\)\s*\)/i,
+    ],
   },
 ] as const satisfies readonly PersistentExtensionTableContract[];
 

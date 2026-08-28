@@ -4,6 +4,7 @@ import {makeCodeGraphStoreDataMethods} from './store_service_data.js';
 import {makeCodeGraphStoreLifecycleMethods} from './store_service_lifecycle.js';
 import {makeCodeGraphStoreMaintenanceMethods} from './store_service_maintenance.js';
 import {makeCodeGraphStoreStagingMethods} from './store_service_staging.js';
+import {makeCodeGraphStoreCheckpointMethods} from './store_service_checkpoint.js';
 import {type CodeGraphStoreShape} from './store_shape.js';
 
 export {
@@ -140,6 +141,10 @@ export {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migrati
 export {type CodeGraphPersistentReferencePageLimits} from './store_staging_core.js';
 export {normalizedTerms, sanitizeCodeGraphStoreDiagnostic} from './store_utilities.js';
 export {
+  CodeGraphCheckpointReuseHydrationError,
+  hydrateCodeGraphCheckpointReusableBaseReceipt,
+} from './checkpoint/import_reuse.js';
+export {
   codeGraphVisualizationCatalogComponentStatement,
   codeGraphVisualizationScopeEndpointStatement,
   codeGraphVisualizationScopeSummaryStatementCount,
@@ -159,6 +164,7 @@ export class CodeGraphStore extends Context.Service<CodeGraphStore, CodeGraphSto
     Effect.gen(function* () {
       const runtime = yield* makeCodeGraphStoreRuntime;
       return CodeGraphStore.of({
+        ...makeCodeGraphStoreCheckpointMethods(runtime),
         ...makeCodeGraphStoreLifecycleMethods(runtime),
         ...makeCodeGraphStoreDataMethods(runtime),
         ...makeCodeGraphStoreMaintenanceMethods(runtime),

@@ -4,6 +4,7 @@ import type {
   CodeGraphConfidenceAudit,
   ResolvedCodeGraphAnalysisLimits,
 } from './analysis.js';
+import {sanitizeCodeGraphPresentationValue} from './presentation_text.js';
 
 export type CodeGraphAnalysisView =
   'communities' | 'community' | 'confidence' | 'full' | 'groups' | 'hubs' | 'stats' | 'surprises';
@@ -32,6 +33,7 @@ export function renderCodeGraphAnalysis(
   view: CodeGraphAnalysisView,
   target: CodeGraphAnalysisRenderTarget = 'standalone',
 ): string {
+  result = sanitizeCodeGraphPresentationValue(result);
   const lines = [`Graph analysis: ${result.snapshot.id}`, renderCoverageSummary(result)];
   if (target === 'standalone') {
     lines.push(
@@ -54,6 +56,8 @@ export function renderCodeGraphReport(
   result: CodeGraphAnalysisResult,
   repository: {readonly displayName: string; readonly repositoryId: string},
 ): string {
+  result = sanitizeCodeGraphPresentationValue(result);
+  repository = sanitizeCodeGraphPresentationValue(repository);
   return [
     '# Code graph report',
     '',

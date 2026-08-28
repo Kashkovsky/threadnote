@@ -5,7 +5,7 @@ import {mkdtemp, rm} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import fc from 'fast-check';
-import {Crypto, Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
+import {Crypto, Deferred, Effect, Encoding, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
@@ -16,6 +16,13 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {activateStandaloneRelease, withStandaloneInstallationLock} from '../../src/installations.js';
 import {migrateThreadnoteStorageLayout} from '../../src/migration/layout.js';
+import {
+  DEFAULT_TELEMETRY_ENDPOINT,
+  enabledTelemetryConfiguration,
+  readTelemetryConfiguration,
+  renderTelemetryConfiguration,
+  telemetryConfigurationPath,
+} from '../../src/telemetry/config.js';
 import type {RuntimeConfig, UpdateOptions} from '../../src/types.js';
 
 vi.mock('../../src/utils.js', async importOriginal => {
@@ -1380,6 +1387,134 @@ describe('post-update validation', () => {
     }),
   );
 
+  effectIt.effect('previews renewed telemetry consent and never lets non-interactive --yes apply it', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-telemetry-'});
+          const fixtureRoot = path.join(temporaryRoot, 'tool');
+          const home = path.join(temporaryRoot, '.threadnote');
+          const config = runtimeConfig(home);
+          yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+            {
+              ...fixtureMigration('telemetry-consent-renewal', {
+                requiresExplicitTelemetryConsent: true,
+                requiresTelemetryConsentRenewal: true,
+              }),
+              commandArgs: ['telemetry', 'enable'],
+            },
+          ]);
+          yield* Effect.sync(() => {
+            vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+          });
+          const telemetryFile = yield* telemetryConfigurationPath(config);
+          yield* fs.makeDirectory(path.dirname(telemetryFile), {recursive: true});
+          yield* fs.writeFileString(
+            telemetryFile,
+            `${JSON.stringify({
+              consentVersion: 4,
+              enabled: true,
+              endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+              sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(5)),
+              version: 1,
+            })}\n`,
+          );
+
+          const attempts: string[][] = [];
+          let notificationAttempts = 0;
+          const commandExecutor = CommandExecutor.of({
+            execute: () =>
+              Effect.sync(() => {
+                notificationAttempts += 1;
+                return {exitCode: 127, stderr: '', stdout: ''};
+              }),
+            executeStreaming: (_executable, args) =>
+              Effect.gen(function* () {
+                attempts.push([...args]);
+                if (args.includes('--apply')) {
+                  yield* fs
+                    .writeFileString(
+                      telemetryFile,
+                      renderTelemetryConfiguration(
+                        enabledTelemetryConfiguration(
+                          DEFAULT_TELEMETRY_ENDPOINT,
+                          Encoding.encodeBase64Url(new Uint8Array(32).fill(6)),
+                        ),
+                      ),
+                    )
+                    .pipe(Effect.orDie);
+                }
+                return {exitCode: 0, stderr: '', stdout: ''};
+              }),
+          });
+          const nonInteractiveSystem = SystemInfo.of({
+            ...baseSystem,
+            homeDirectory: temporaryRoot,
+            stdinIsTTY: false,
+            stdoutIsTTY: false,
+          });
+          const nonInteractive = yield* captureConsole(
+            runPostUpdate(config, {fromVersion: '4.4.3', toVersion: '4.4.4', yes: true}).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(SystemInfo, nonInteractiveSystem),
+            ),
+          );
+          const afterNonInteractive = yield* fs.readFileString(telemetryFile);
+          const notificationAttemptsAfterNonInteractive = notificationAttempts;
+
+          const interactiveSystem = SystemInfo.of({
+            ...nonInteractiveSystem,
+            stdinIsTTY: true,
+            stdoutIsTTY: true,
+            readLine: (_prompt, onLine) => {
+              onLine('yes');
+              return () => undefined;
+            },
+          });
+          const interactive = yield* captureConsole(
+            runPostUpdate(config, {fromVersion: '4.4.3', toVersion: '4.4.4', yes: true}).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(SystemInfo, interactiveSystem),
+            ),
+          );
+          const second = yield* captureConsole(
+            runPostUpdate(config, {fromVersion: '4.4.3', toVersion: '4.4.4', yes: true}).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+              Effect.provideService(SystemInfo, interactiveSystem),
+            ),
+          );
+          return {
+            afterNonInteractive: JSON.parse(afterNonInteractive),
+            attempts,
+            current: yield* readTelemetryConfiguration(config),
+            interactive: interactive.output,
+            nonInteractive: nonInteractive.output,
+            notificationAttempts,
+            notificationAttemptsAfterNonInteractive,
+            second: second.output,
+          };
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.afterNonInteractive).toMatchObject({consentVersion: 4, enabled: true});
+      expect(result.nonInteractive).toContain('Telemetry remains disabled');
+      expect(result.nonInteractive).toContain('telemetry enable --apply');
+      expect(result.attempts).toEqual([
+        ['telemetry', 'enable'],
+        ['telemetry', 'enable'],
+        ['telemetry', 'enable', '--apply'],
+      ]);
+      expect(result.current).toMatchObject({consentVersion: 5, enabled: true});
+      expect(result.interactive).toContain('Finished telemetry-consent-renewal');
+      expect(result.notificationAttemptsAfterNonInteractive).toBe(1);
+      expect(result.notificationAttempts).toBe(1);
+      expect(result.second).toBe('');
+    }),
+  );
+
   effectIt.effect('does not announce an action when migration evidence disappears at the locked recheck', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(
@@ -1901,8 +2036,10 @@ function writeUpdateCacheFixture(
 function fixtureMigration(
   id: string,
   requirements: {
+    readonly requiresExplicitTelemetryConsent?: boolean;
     readonly requiresLegacyHomeMigration?: boolean;
     readonly requiresPendingHomeMigration?: boolean;
+    readonly requiresTelemetryConsentRenewal?: boolean;
   } = {},
 ) {
   return {

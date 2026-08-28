@@ -6,12 +6,11 @@ import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspe
 import {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {inspectCodeGraphSnapshotFileCitationSchema} from './store_file_alias_schema.js';
+import {CODE_GRAPH_SCHEMA_VERSION, type CodeGraphSnapshot} from './types.js';
 import {
-  CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
-  CODE_GRAPH_SCHEMA_VERSION,
-  type CodeGraphSnapshot,
-} from './types.js';
+  codeGraphPersistentSchemaIsCurrent,
+  codeGraphPersistentSchemaMigrationPending,
+} from './store/schema_revision.js';
 
 export type CodeGraphDatabaseIntegrity = 'corrupt' | 'incompatible' | 'migration-pending' | 'ok';
 
@@ -26,13 +25,9 @@ export function codeGraphDatabaseIntegrity(input: {
 }): CodeGraphDatabaseIntegrity {
   if (input.schemaVersion !== CODE_GRAPH_SCHEMA_VERSION) return 'incompatible';
   if (input.persistentExtensionCurrent) return input.integrityOk ? 'ok' : 'corrupt';
-  const revision = input.persistentExtensionSchemaRevision;
   const migrationPending =
     input.coreReadSchemaCompatible &&
-    revision !== undefined &&
-    Number.isSafeInteger(revision) &&
-    revision >= CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION &&
-    revision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION;
+    codeGraphPersistentSchemaMigrationPending(input.persistentExtensionSchemaRevision);
   if (migrationPending) return input.integrityOk ? 'migration-pending' : 'corrupt';
   return 'incompatible';
 }
@@ -56,7 +51,7 @@ export const diagnoseCodeGraphDatabaseReadOnly = Effect.fn('codeGraph.diagnoseDa
     const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
     const snapshotFileCitation = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
     const persistentExtensionCurrent =
-      persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
+      codeGraphPersistentSchemaIsCurrent(persistentExtensionSchemaRevision) &&
       (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
       snapshotFileCitation.baseIndexes === 'current' &&
       snapshotFileCitation.state === 'current' &&

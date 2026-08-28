@@ -401,6 +401,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
       persistentCapacityProtector,
       snapshotPackProvenance,
       materializedFileShardAssociationsComplete,
+      checkpointImportReceipt,
     ) =>
       Effect.gen(function* () {
         const activationPackProvenance = snapshotPackProvenance ?? reusableBaseReceipt?.packProvenance;
@@ -418,6 +419,11 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
             const sql = yield* SqlClient.SqlClient;
             const mode = yield* activationMode(sql);
             if (mode?.mode === 'persisted-delta') {
+              if (checkpointImportReceipt !== undefined) {
+                return yield* Effect.fail(
+                  new CodeGraphStoreError('Checkpoint imports require a self-contained persistent full build.'),
+                );
+              }
               const publication = withWriterGate(
                 databasePath,
                 activatePersistedIncrementalSnapshot(
@@ -453,8 +459,14 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
                 persistentCapacityProtector,
                 activationPackProvenance,
                 materializedFileShardAssociationsComplete,
+                checkpointImportReceipt,
               );
               return snapshot.id;
+            }
+            if (checkpointImportReceipt !== undefined) {
+              return yield* Effect.fail(
+                new CodeGraphStoreError('Checkpoint imports require a self-contained persistent full build.'),
+              );
             }
             const publication = withWriterGate(
               databasePath,
