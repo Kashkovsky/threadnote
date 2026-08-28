@@ -22,6 +22,7 @@ import {
 } from '../../scripts/development-runtime.js';
 import {
   activateLocalStandaloneRelease,
+  developmentDoctorHasOnlyConcurrentRecallProjectionFailures,
   developmentRuntimeOwnershipConflict,
   parseLocalStandaloneInstallArguments,
 } from '../../scripts/install-local-standalone.js';
@@ -38,9 +39,70 @@ const sourceCommitArbitrary = fc
       .array(fc.constantFrom(...'0123456789abcdef'), {maxLength: length, minLength: length})
       .map(characters => characters.join('')),
   );
+const doctorFieldArbitrary = fc
+  .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz '), {maxLength: 40, minLength: 1})
+  .map(characters => characters.join('').trim())
+  .filter(value => value.length > 0);
+const lexicalInvalidationDetail = 'canonical documents changed; run `threadnote repair`';
+const vectorUnavailableDetail = 'unavailable until the lexical recall index is ready';
+const vectorStaleSuffix = '; stale; canonical documents changed; run `threadnote repair`';
+const doctorFailureArbitrary = fc.oneof(
+  fc.constant({allowed: true, detail: lexicalInvalidationDetail, name: 'lexical recall index'}),
+  fc.constant({allowed: true, detail: vectorUnavailableDetail, name: 'vector recall index'}),
+  doctorFieldArbitrary.map(model => ({
+    allowed: true,
+    detail: `${model}${vectorStaleSuffix}`,
+    name: 'vector recall index',
+  })),
+  doctorFieldArbitrary
+    .filter(detail => detail !== lexicalInvalidationDetail)
+    .map(detail => ({allowed: false, detail, name: 'lexical recall index'})),
+  doctorFieldArbitrary
+    .filter(detail => detail !== vectorUnavailableDetail && !detail.endsWith(vectorStaleSuffix))
+    .map(detail => ({allowed: false, detail, name: 'vector recall index'})),
+  fc
+    .tuple(
+      doctorFieldArbitrary.filter(name => name !== 'lexical recall index' && name !== 'vector recall index'),
+      doctorFieldArbitrary,
+    )
+    .map(([name, detail]) => ({allowed: false, detail, name})),
+);
 const TEST_TARGET = `bun-${process.platform === 'win32' ? 'windows' : process.platform}-${process.arch}`;
 
 describe('exact-head development runtime', () => {
+  it('matches the fail-closed recall invalidation allowlist for arbitrary doctor reports', () => {
+    fc.assert(
+      fc.property(
+        fc.array(doctorFailureArbitrary, {maxLength: 6, minLength: 1}),
+        fc.integer({max: 7, min: 0}),
+        fc.constantFrom('\n', '\r\n'),
+        (failures, declaredFailureCount, lineEnding) => {
+          const output = [
+            ...failures.map(({detail, name}) => `FAIL ${name}: ${detail}`),
+            `Summary: ${declaredFailureCount} failure(s), 0 warning(s)`,
+            '',
+          ].join(lineEnding);
+          const expected = declaredFailureCount === failures.length && failures.every(({allowed}) => allowed === true);
+          expect(developmentDoctorHasOnlyConcurrentRecallProjectionFailures(output, declaredFailureCount)).toBe(
+            expected,
+          );
+        },
+      ),
+      {numRuns: 200},
+    );
+  });
+
+  it.each(['\n', '\r\n'])('recognizes bounded recall invalidation with %j line endings', lineEnding => {
+    const output = [
+      'FAIL lexical recall index: canonical documents changed; run `threadnote repair`',
+      'FAIL vector recall index: unavailable until the lexical recall index is ready',
+      'Summary: 2 failure(s), 0 warning(s)',
+      '',
+    ].join(lineEnding);
+    expect(developmentDoctorHasOnlyConcurrentRecallProjectionFailures(output, 2)).toBe(true);
+    expect(developmentDoctorHasOnlyConcurrentRecallProjectionFailures(output, 1)).toBe(false);
+  });
+
   it('parses only the explicit developer installer switches', () => {
     expect(parseLocalStandaloneInstallArguments(['--', '--terminate-superseded', '--json'])).toEqual({
       json: true,
@@ -930,7 +992,7 @@ describe('exact-head development runtime', () => {
       }),
   );
 
-  effectIt.effect('repairs failed doctor state after activation and requires a clean recheck', () =>
+  effectIt.effect('stabilizes recall projections invalidated by a concurrent write during repair', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(
         Effect.gen(function* () {
@@ -969,11 +1031,17 @@ describe('exact-head development runtime', () => {
               if (arguments_[0] === 'doctor') {
                 const strict = arguments_.includes('--strict');
                 if (strict) strictDoctorChecks += 1;
-                const failures = strict && strictDoctorChecks > 1 ? 0 : 2;
+                const failures = strict && strictDoctorChecks > 2 ? 0 : 2;
                 return Effect.succeed({
                   exitCode: strict && failures > 0 ? 1 : 0,
                   stderr: '',
-                  stdout: `Running Threadnote doctor checks.\nSummary: ${failures} failure(s), 1 warning(s)\n`,
+                  stdout:
+                    'Running Threadnote doctor checks.\n' +
+                    (failures > 0
+                      ? 'FAIL lexical recall index: canonical documents changed; run `threadnote repair`\n' +
+                        'FAIL vector recall index: unavailable until the lexical recall index is ready\n'
+                      : '') +
+                    `Summary: ${failures} failure(s), 1 warning(s)\n`,
                 });
               }
               if (arguments_[0] === 'development-install-repair') {
@@ -1008,11 +1076,10 @@ describe('exact-head development runtime', () => {
 
       expect(result.installed.doctorVerified).toBe(true);
       expect(result.repairObservedInstallationLock).toBe(true);
-      expect(result.strictDoctorChecks).toBe(2);
-      expect(result.invocations).toContainEqual([
-        'development-install-repair',
-        '--expected-version',
-        result.installed.version,
+      expect(result.strictDoctorChecks).toBe(3);
+      expect(result.invocations.filter(invocation => invocation[0] === 'development-install-repair')).toEqual([
+        ['development-install-repair', '--expected-version', result.installed.version],
+        ['development-install-repair', '--expected-version', result.installed.version],
       ]);
       expect(result.invocations.at(-1)).toEqual(['doctor', '--dry-run', '--strict']);
     }),

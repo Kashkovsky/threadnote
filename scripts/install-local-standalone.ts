@@ -564,6 +564,8 @@ const verifyActivatedDevelopmentRelease = Effect.fn('developmentInstall.verifyAc
   } as const;
   const runDoctorStrict = () =>
     runCommandEffect(executable, ['doctor', '--dry-run', '--strict'], {...commandOptions, allowFailure: true});
+  const repair = () =>
+    runCommandEffect(executable, ['development-install-repair', '--expected-version', expectedVersion], commandOptions);
   const initial = yield* runDoctorStrict();
   const initialFailures = developmentDoctorFailureCount(initial.stdout);
   if (initialFailures === undefined || (initial.exitCode !== 0 && initialFailures === 0)) {
@@ -573,13 +575,23 @@ const verifyActivatedDevelopmentRelease = Effect.fn('developmentInstall.verifyAc
   }
   if (initial.exitCode === 0 && initialFailures === 0) return;
 
-  yield* runCommandEffect(
-    executable,
-    ['development-install-repair', '--expected-version', expectedVersion],
-    commandOptions,
-  );
+  yield* repair();
   const repaired = yield* runDoctorStrict();
-  if (repaired.exitCode !== 0 || developmentDoctorFailureCount(repaired.stdout) !== 0) {
+  const repairedFailures = developmentDoctorFailureCount(repaired.stdout);
+  if (repaired.exitCode === 0 && repairedFailures === 0) return;
+  if (
+    repaired.exitCode === 0 ||
+    repairedFailures === undefined ||
+    !developmentDoctorHasOnlyConcurrentRecallProjectionFailures(repaired.stdout, repairedFailures)
+  ) {
+    return yield* Effect.fail(
+      new ScriptError('The activated development executable still has doctor failures after repair.'),
+    );
+  }
+
+  yield* repair();
+  const stabilized = yield* runDoctorStrict();
+  if (stabilized.exitCode !== 0 || developmentDoctorFailureCount(stabilized.stdout) !== 0) {
     return yield* Effect.fail(
       new ScriptError('The activated development executable still has doctor failures after repair.'),
     );
@@ -591,6 +603,31 @@ function developmentDoctorFailureCount(stdout: string): number | undefined {
   if (match?.[1] === undefined) return undefined;
   const failures = Number(match[1]);
   return Number.isSafeInteger(failures) ? failures : undefined;
+}
+
+export function developmentDoctorHasOnlyConcurrentRecallProjectionFailures(
+  stdout: string,
+  failureCount: number,
+): boolean {
+  const failures = stdout
+    .split(/\r?\n/u)
+    .map(line => /^FAIL\s+([^:]+):\s*(.*)$/u.exec(line.trim()))
+    .filter((match): match is RegExpExecArray => match !== null)
+    .map(match => ({detail: match[2] ?? '', name: match[1] ?? ''}));
+  return (
+    failures.length === failureCount &&
+    failures.length > 0 &&
+    failures.every(({detail, name}) => {
+      if (name === 'lexical recall index') {
+        return detail === 'canonical documents changed; run `threadnote repair`';
+      }
+      if (name !== 'vector recall index') return false;
+      return (
+        detail === 'unavailable until the lexical recall index is ready' ||
+        /; stale; canonical documents changed; run `threadnote repair`$/u.test(detail)
+      );
+    })
+  );
 }
 
 function requireEvidenceVersion(evidence: DevelopmentRuntimeEvidence, expectedVersion: string) {
