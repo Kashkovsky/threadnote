@@ -63,11 +63,11 @@ export default function ProTipsPage() {
     <SiteShell page="pro-tips" fullBleed>
       <section className="subpage-hero">
         <div>
-          <span className="eyebrow">Field guide</span>
+          <span className="eyebrow">Threadnote 4.4 field guide</span>
           <h1>Keep context moving at the speed of the work.</h1>
           <p>
-            Practical patterns for turning individual agent sessions into durable team leverage—with explicit
-            boundaries, source-aware memory, and evidence you can inspect.
+            Practical patterns for turning individual agent sessions into durable team leverage—with source-aware
+            memory, optional code citations, reusable graph work, and explicit trust boundaries.
           </p>
         </div>
         <div className="subpage-hero__metric">

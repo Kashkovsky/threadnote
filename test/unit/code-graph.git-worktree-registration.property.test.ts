@@ -1,6 +1,6 @@
-import {mkdirSync, mkdtempSync, rmSync} from '../helpers/node-fs.js';
+import {mkdirSync, mkdtempSync, rmSync, writeFileSync} from '../helpers/node-fs.js';
 import {tmpdir} from '../helpers/node-os.js';
-import {join} from '../helpers/node-path.js';
+import {join, relative} from '../helpers/node-path.js';
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import fc from 'fast-check';
@@ -9,6 +9,7 @@ import {
   codeGraphGitWorktreeAdminNameKeys,
   scanCodeGraphGitWorktreeRegistry,
   scanCodeGraphGitWorktreeRegistryBatch,
+  scanCodeGraphWorktreeAuthorityWorkerRequest,
   type CodeGraphGitWorktreeRegistryRequest,
 } from '../../src/code_graph/git_worktree_registration.js';
 
@@ -93,6 +94,64 @@ describe('code graph common-gitdir authority properties', () => {
         registry => Effect.sync(() => rmSync(registry, {force: true, recursive: true})),
       );
     },
+  );
+
+  effectIt.effect.prop(
+    'classifies a recycled admin name by its exact backlink target for either Git line ending',
+    {
+      lineEnding: fc.constantFrom('\n', '\r\n'),
+      relativeBacklink: fc.boolean(),
+      segments: fc.uniqueArray(fc.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._-]{0,15}$/), {
+        maxLength: 2,
+        minLength: 2,
+      }),
+      targetMatches: fc.boolean(),
+    },
+    ({lineEnding, relativeBacklink, segments, targetMatches}) =>
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const common = registryFixture([]);
+          const adminName = 'recycled-admin';
+          const adminEntry = join(common, 'worktrees', adminName);
+          mkdirSync(adminEntry);
+          const target = join(common, 'removed', segments[0]!);
+          const replacement = join(common, 'replacement', segments[1]!);
+          const pointedAt = join(targetMatches ? target : replacement, '.git');
+          writeFileSync(
+            join(adminEntry, 'gitdir'),
+            `${relativeBacklink ? relative(adminEntry, pointedAt) : pointedAt}${lineEnding}`,
+          );
+          return {adminName, common, target};
+        }),
+        ({adminName, common, target}) =>
+          Effect.promise(() =>
+            scanCodeGraphWorktreeAuthorityWorkerRequest({
+              checkoutId: CHECKOUT_ID,
+              gitCommonDirectory: common,
+              kind: 'reconciliation-authority',
+              protocol: 3,
+              targets: [
+                {
+                  adminNameKeys: codeGraphGitWorktreeAdminNameKeys(CHECKOUT_ID, adminName),
+                  canonicalWorktreePath: target,
+                  evidenceToken: 'b'.repeat(64),
+                },
+              ],
+            }),
+          ).pipe(
+            Effect.tap(observation =>
+              Effect.sync(() => {
+                expect(observation).toMatchObject({
+                  pathStates: ['missing'],
+                  registryStates: [targetMatches ? 'present' : 'absent'],
+                  state: 'complete',
+                });
+              }),
+            ),
+            Effect.asVoid,
+          ),
+        ({common}) => Effect.sync(() => rmSync(common, {force: true, recursive: true})),
+      ),
   );
 });
 

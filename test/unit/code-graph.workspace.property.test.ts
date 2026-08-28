@@ -132,6 +132,40 @@ describe('code graph workspace properties', () => {
     {fastCheck: {numRuns: 150}},
   );
 
+  it('uses the declared project name for a repository-root workspace', () => {
+    const workspace = discoverManifestWorkspace([
+      workspaceFile(
+        'package.json',
+        JSON.stringify({name: 'threadnote-root', private: true, workspaces: ['packages/*']}),
+        'npm-manifest',
+      ),
+    ]);
+
+    expect(workspace.workspaces).toContainEqual(expect.objectContaining({name: 'threadnote-root', root: ''}));
+  });
+
+  it.prop(
+    'never derives an empty repository-root workspace name from a non-empty declared project name',
+    {name: shortText},
+    ({name}) => {
+      const workspace = discoverManifestWorkspace([
+        workspaceFile(
+          'package.json',
+          JSON.stringify({name, private: true, workspaces: ['packages/*']}),
+          'npm-manifest',
+        ),
+      ]);
+
+      const rootProject = workspace.projects.find(project => project.root === '');
+      const rootWorkspace = workspace.workspaces.find(candidate => candidate.root === '');
+      expect(rootProject).toBeDefined();
+      expect(rootWorkspace).toBeDefined();
+      expect(rootProject!.name).not.toBe('');
+      expect(rootWorkspace!.name).toBe(rootProject!.name);
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('discovers npm, Bun, pnpm, and TypeScript-reference package hierarchy without hiding nested polyglot workspaces', () => {
     const workspace = discoverManifestWorkspace([
       workspaceFile(

@@ -26,12 +26,33 @@ export interface PlatformPathShape {
 
 interface NativeFileSystemPromisesShape {
   readonly lstat: (path: string, options: {readonly bigint: true}) => Promise<RuntimeBigIntStats>;
+  readonly open: (path: string, flags: number) => Promise<RuntimeFileHandle>;
   readonly opendir: (
     path: string,
     options: {readonly bufferSize: number; readonly encoding: 'buffer' | 'utf8'},
   ) => Promise<RuntimeDirectoryHandle>;
   readonly stat: (path: string, options: {readonly bigint: true}) => Promise<RuntimeBigIntStats>;
   readonly statfs?: (path: string, options: {readonly bigint: true}) => Promise<unknown>;
+}
+
+interface RuntimeFileHandle {
+  readonly close: () => Promise<void>;
+  readonly read: (
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: null,
+  ) => Promise<{readonly bytesRead: number}>;
+  readonly stat: (options: {readonly bigint: true}) => Promise<RuntimeBigIntStats>;
+}
+
+interface NativeFileSystemModuleShape {
+  readonly constants: {
+    readonly O_NOFOLLOW?: number;
+    readonly O_NONBLOCK?: number;
+    readonly O_RDONLY: number;
+  };
+  readonly promises: NativeFileSystemPromisesShape;
 }
 
 interface NativePathModuleShape {
@@ -101,8 +122,8 @@ export const runtimeArchitecture = process.arch;
 export const runtimePlatform = process.platform;
 const nativeOperatingSystemModule = process.getBuiltinModule('os') as NativeOperatingSystemModuleShape;
 export const runtimeOperatingSystemRelease = nativeOperatingSystemModule.release();
-const nativeFileSystemPromises = (process.getBuiltinModule('fs') as {readonly promises: NativeFileSystemPromisesShape})
-  .promises;
+const nativeFileSystemModule = process.getBuiltinModule('fs') as NativeFileSystemModuleShape;
+const nativeFileSystemPromises = nativeFileSystemModule.promises;
 const nativePathModule = process.getBuiltinModule('path') as NativePathModuleShape;
 
 export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {
@@ -127,9 +148,76 @@ export function runtimeLstat(path: string): Promise<RuntimeBigIntStats> {
   return nativeFileSystemPromises.lstat(path, {bigint: true});
 }
 
+/** Read one regular file without following a stable symbolic-link target and reject path/file races. */
+export async function runtimeReadBoundedStableRegularFile(path: string, maximumBytes: number): Promise<Uint8Array> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes >= Number.MAX_SAFE_INTEGER) {
+    throw new SystemOperationError('Invalid read bound.');
+  }
+  const pathBefore = await nativeFileSystemPromises.lstat(path, {bigint: true});
+  if (!stableRegularFile(pathBefore) || pathBefore.size > BigInt(maximumBytes)) {
+    throw new SystemOperationError('Target is not a bounded stable regular file.');
+  }
+  const flags =
+    nativeFileSystemModule.constants.O_RDONLY |
+    (nativeFileSystemModule.constants.O_NONBLOCK ?? 0) |
+    (runtimePlatform === 'win32' ? 0 : (nativeFileSystemModule.constants.O_NOFOLLOW ?? 0));
+  const opened = await nativeFileSystemPromises.open(path, flags);
+  try {
+    const [openedBefore, pathOpened] = await Promise.all([
+      opened.stat({bigint: true}),
+      nativeFileSystemPromises.lstat(path, {bigint: true}),
+    ]);
+    if (!sameStableRegularFile(pathBefore, openedBefore) || !sameStableRegularFile(pathBefore, pathOpened)) {
+      throw new SystemOperationError('Target changed while opening.');
+    }
+    const bytes = new Uint8Array(maximumBytes + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const {bytesRead} = await opened.read(bytes, offset, bytes.length - offset, null);
+      if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > bytes.length - offset) {
+        throw new SystemOperationError('Target returned an invalid read size.');
+      }
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const [openedAfter, pathAfter] = await Promise.all([
+      opened.stat({bigint: true}),
+      nativeFileSystemPromises.lstat(path, {bigint: true}),
+    ]);
+    if (
+      !sameStableRegularFile(pathBefore, openedAfter) ||
+      !sameStableRegularFile(pathBefore, pathAfter) ||
+      offset > maximumBytes ||
+      BigInt(offset) !== pathBefore.size
+    ) {
+      throw new SystemOperationError('Target changed during bounded read.');
+    }
+    return bytes.slice(0, offset);
+  } finally {
+    await opened.close();
+  }
+}
+
 /** Follows links while retaining exact device/inode identity beyond JavaScript's safe-integer range. */
 export function runtimeStat(path: string): Promise<RuntimeBigIntStats> {
   return nativeFileSystemPromises.stat(path, {bigint: true});
+}
+
+function stableRegularFile(info: RuntimeBigIntStats): boolean {
+  return info.isFile() && !info.isSymbolicLink() && info.dev !== 0n && info.ino !== 0n;
+}
+
+function sameStableRegularFile(left: RuntimeBigIntStats, right: RuntimeBigIntStats): boolean {
+  return (
+    stableRegularFile(left) &&
+    stableRegularFile(right) &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
 }
 
 /** Raw POSIX directory names stay bytes; enumeration stops immediately after the first over-limit entry. */
