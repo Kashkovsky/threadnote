@@ -1,6 +1,7 @@
 import {readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
+import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 
 interface PackageManifest {
   readonly dependencies?: Readonly<Record<string, string>>;
@@ -82,5 +83,43 @@ describe('Bun distribution contract', () => {
 
     expect(manifest.dependencies?.jose).toMatch(/^\d+\.\d+\.\d+$/u);
     expect(noticeVersion).toBe(manifest.dependencies?.jose);
+  });
+
+  it('keeps release-coupled native and type packages exact in the manifest and lockfile', async () => {
+    const [manifestText, lockfile, thirdPartyNotices] = await Promise.all([
+      readFile(join(process.cwd(), 'package.json'), 'utf8'),
+      readFile(join(process.cwd(), 'bun.lock'), 'utf8'),
+      readFile(join(process.cwd(), 'THIRD_PARTY.md'), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as PackageManifest;
+    const nodeLlamaCppVersion = manifest.dependencies?.['node-llama-cpp'];
+    const postgresVersion = manifest.dependencies?.postgres;
+    const bunTypesVersion = manifest.devDependencies?.['@types/bun'];
+    const bunRuntimeVersion = manifest.packageManager?.match(/^bun@(.+)$/u)?.[1];
+    const exactVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u;
+
+    for (const version of [nodeLlamaCppVersion, postgresVersion, bunTypesVersion]) {
+      expect(version).toMatch(exactVersion);
+    }
+    expect(lockfile).toContain(`"node-llama-cpp": ["node-llama-cpp@${nodeLlamaCppVersion}"`);
+    expect(lockfile).toContain(`"postgres": ["postgres@${postgresVersion}"`);
+    expect(thirdPartyNotices).toContain(`\`postgres\` ${postgresVersion} (MIT)`);
+    expect(lockfile).toContain(`"@types/bun": ["@types/bun@${bunTypesVersion}"`);
+    expect(lockfile).toContain(`"bun-types": ["bun-types@${bunTypesVersion}"`);
+    expect(bunTypesVersion).toBe(bunRuntimeVersion);
+
+    for (const packageName of [
+      '@node-llama-cpp/linux-arm64',
+      '@node-llama-cpp/linux-x64',
+      '@node-llama-cpp/mac-arm64-metal',
+      '@node-llama-cpp/mac-x64',
+      '@node-llama-cpp/win-arm64',
+      '@node-llama-cpp/win-x64',
+    ]) {
+      expect(lockfile).toContain(`"${packageName}": ["${packageName}@${nodeLlamaCppVersion}"`);
+    }
+    expect(
+      BUILTIN_MODEL_MANIFESTS.find(manifest => manifest.id === CORE_EMBEDDING_MODEL_ID)?.runtime.nodeLlamaCpp,
+    ).toBe(nodeLlamaCppVersion);
   });
 });

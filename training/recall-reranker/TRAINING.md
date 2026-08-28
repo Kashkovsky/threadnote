@@ -57,7 +57,8 @@ review, split, evaluation, and performance requirements below.
   dependencies in `uv.lock`.
 - Enough free storage for the Hugging Face snapshot, checkpoints, exported GGUF, a `llama.cpp` checkout, and retained
   evidence. Keep each candidate in a new run directory; never reuse an interrupted run directory.
-- A compatible Threadnote `node-llama-cpp` runtime. The current target is `3.19.1`.
+- A compatible Threadnote `node-llama-cpp` runtime. The last parity-validated reranker target is `3.19.1`; rerun the
+  native parity gates before promoting a candidate on a newer application runtime.
 - The pinned base model is Apache-2.0 ModernBERT-base at an immutable snapshot. The harness uses its native
   `ModernBertForSequenceClassification` head, an 8,192-token architecture context, and a reviewed 1,024-token training
   limit; the configured document guard additionally truncates source text at 4,000 characters.
