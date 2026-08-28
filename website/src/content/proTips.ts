@@ -157,6 +157,7 @@ export const proTips: ProTip[] = [
     practice: [
       'Pass each agent’s absolute worktree path as callerCwd on recall and graph calls.',
       'Let the first graph call start immediately: a graph-equivalent commit can reuse ready content, while a compatible clean commit builds a bounded delta.',
+      'Manager-triggered indexing and Workset preparation run in isolated processes, with repository members prepared at bounded concurrency.',
       'Use a distinct handoff topic for each independent task; share a topic only when agents intentionally update one record.',
       'Let Threadnote coordinate graph publication and maintenance—do not copy or share derived index files between worktrees.',
     ],
@@ -441,12 +442,12 @@ export const proTips: ProTip[] = [
     category: 'graph',
     title: 'Cite the code behind consequential memory.',
     summary:
-      'Give Context Brief enough evidence to distinguish an unchanged move from code that changed, disappeared, or cannot be verified.',
+      'Give Context Brief enough evidence to distinguish a stale locator from memory backed by code that changed, disappeared, or cannot be verified.',
     why: 'A citation binds a claim to observed code without pretending that unchanged bytes automatically prove the prose.',
     practice: [
       'Add codeRefs only to consequential source-backed claims; uncited memory remains valid and recallable.',
       'For one repository, pass callerCwd. Use a prepared Workset only when the evidence really spans repositories.',
-      'Treat relocated evidence as fresh with a stale-link warning; changed or deleted evidence is stale, and unknown means Threadnote abstained.',
+      'Treat relocated evidence as fresh: stale-link warns about the locator, not the memory. Changed or deleted evidence is stale, and unknown means Threadnote abstained.',
       'When replacing cited memory, pass codeRefs again to recapture it. Omitting them deliberately clears the old citations.',
     ],
     scenario: {
@@ -504,7 +505,7 @@ export const proTips: ProTip[] = [
         {
           kind: 'assistant',
           actor: 'Agent',
-          text: 'The cited source is byte-identical at one new locator, so the memory remains fresh but its link is stale. I’ll review the claim, then replace the memory with the current code reference.',
+          text: 'The cited source is byte-identical at one new locator. The stale-link warning is about that locator, not the memory, so I’ll review the claim and then recapture the current code reference.',
         },
       ],
     },

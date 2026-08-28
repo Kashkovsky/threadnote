@@ -26,7 +26,7 @@ const questions = [
   {
     question: 'What do memory-to-code citations and stale-link warnings mean?',
     answer:
-      'Code citations are optional capture-time evidence for exact files or symbols. Context Brief checks selected citations against an already-ready current graph: exact or uniquely relocated evidence keeps the memory fresh, relocation adds a stale-link warning so you can recapture the new locator, changed or deleted evidence makes the memory stale, and unavailable or ambiguous evidence stays unknown. Even an exact citation proves that the cited bytes survived—not that the memory prose is automatically correct.',
+      'Code citations are optional capture-time evidence for exact files or symbols. Context Brief checks selected citations against an already-ready current graph: exact or uniquely relocated evidence keeps the memory fresh, while relocation adds a stale-link warning so you can recapture the new locator. That warning is about the link, not the memory. Changed or deleted evidence makes the memory stale, and unavailable or ambiguous evidence stays unknown. Even an exact citation proves that the cited bytes survived—not that the memory prose is automatically correct.',
   },
   {
     question: 'Will my existing memories disappear after upgrading to 4.4?',
@@ -36,7 +36,7 @@ const questions = [
   {
     question: 'Do I need a Workset to use code citations or Context Brief?',
     answer:
-      'No. For an ordinary one-repository task, pass the absolute callerCwd—or run the CLI from that checkout—and use its ready current graph. A named, explicitly prepared Workset is only for bounded multi-repository evidence; queries never fan out cold graph builds.',
+      'No. For an ordinary one-repository task, pass the absolute callerCwd—or run the CLI from that checkout—and use its ready current graph. A named, explicitly prepared Workset is only for bounded multi-repository evidence. Citation validation and queries never fan out cold graph builds or silently start indexing.',
   },
   {
     question: 'Which agents can use it?',
@@ -62,6 +62,11 @@ const questions = [
     question: 'Will every new worktree rebuild its graph from scratch?',
     answer:
       'No. Linked worktrees share one checkout graph store. Threadnote 4.1 can immediately alias a graph-equivalent commit, build a compatible clean commit as a bounded delta from a ready full anchor, or construct an already-dirty worktree directly from that anchor. Extractor, workspace, manifest, or unbounded resolution changes still fall back to a full build for correctness.',
+  },
+  {
+    question: 'How does Manager keep long graph work responsive?',
+    answer:
+      'In Threadnote 4.4, Manager launches graph indexing and Workset preparation in isolated processes instead of running those builds inside the UI service. Workset repositories prepare with bounded concurrency and report progress independently. Queries still read only a ready, atomically published generation rather than partial build state.',
   },
   {
     question: 'Can agents query a graph while it is still indexing?',

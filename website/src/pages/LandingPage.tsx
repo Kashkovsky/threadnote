@@ -101,8 +101,8 @@ const graphCapabilities = [
   {
     number: '01',
     label: 'Current-worktree truth',
-    title: 'Reuse the graph work. Keep the checkout truth.',
-    body: 'Graph-equivalent commits reuse ready content, and compatible clean commits build a bounded delta. Staged, unstaged, renamed, deleted, and eligible untracked files still become an isolated overlay for this linked worktree—even when an orchestrator is running other agents beside it.',
+    title: 'Reuse graph work without pinning the control plane.',
+    body: 'Graph-equivalent commits reuse ready content, while compatible clean commits build bounded deltas. Manager-launched indexing and Workset preparation run in isolated processes, with bounded member concurrency; dirty overlays remain scoped to their own linked worktree.',
   },
   {
     number: '02',
@@ -204,7 +204,7 @@ function GraphSearchShowcase() {
 
       <a className="graph-showcase__performance-cta" href={siteHref('performance/')}>
         <div>
-          <span className="eyebrow">Large repositories · fast worktrees</span>
+          <span className="eyebrow">4.4 graph pipeline · large repositories · fast worktrees</span>
           <h3>Inspect the exact-release evidence behind proportional graph updates.</h3>
         </div>
         <p>
@@ -316,7 +316,7 @@ export default function LandingPage() {
         <div className="hero__copy">
           <div className="hero__version">
             <span className="status-dot" />
-            Threadnote 4 · self-contained
+            Threadnote 4.4 · self-contained
           </div>
           <h1>
             Your team remembers.
@@ -389,8 +389,9 @@ export default function LandingPage() {
           <h2>One prompt. Memory, current code, and honest freshness.</h2>
           <p>
             Memory explains what people learned and decided. The graph explains what the current worktree contains.
-            Optional citations let Context Brief keep warnings beside moved, changed, deleted, or unverifiable evidence;
-            uncited memories still participate in recall.
+            Optional citations let Context Brief distinguish evidence that moved unchanged from evidence that changed,
+            disappeared, or could not be verified. A stale-link warning means the evidence moved—not that the memory
+            became stale—and older uncited memories still participate in recall.
           </p>
         </header>
         <AgentTrace scenario={heroScenario} />
