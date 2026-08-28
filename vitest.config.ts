@@ -1,5 +1,6 @@
 import {defineConfig} from 'vitest/config';
 import {
+  CI_STANDARD_TEST_TIMEOUT_MILLISECONDS,
   ciLongRunningTestGroups,
   ciSerializedLongRunningTestGroups,
   type CiLongRunningTestGroupName,
@@ -58,7 +59,12 @@ export default defineConfig({
     testNamePattern: ciLongRunningGroupName ? ciLongRunningTestPatterns[ciLongRunningGroupName] : undefined,
     // Long groups are independently bounded jobs; ordinary shards retain the
     // same fast timeout as local runs so new regressions fail promptly.
-    testTimeout: ciLongRunningGroupName === 'load-evidence' ? 600_000 : ciLongRunningGroupName ? 180_000 : 30_000,
+    testTimeout:
+      ciLongRunningGroupName === 'load-evidence'
+        ? 600_000
+        : ciLongRunningGroupName
+          ? 180_000
+          : CI_STANDARD_TEST_TIMEOUT_MILLISECONDS,
     coverage: {
       provider: 'istanbul',
       reporter: ['text', 'html', 'lcov'],

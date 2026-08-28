@@ -3,6 +3,7 @@ import {JSON_SCHEMA, load} from 'js-yaml';
 import {describe, expect, it} from 'vitest';
 import {ciScopeKeys} from '../ci/ci-scopes.js';
 import {
+  CI_STANDARD_TEST_TIMEOUT_MILLISECONDS,
   ciLongRunningTestGroupNames,
   ciLongRunningTestGroups,
   ciRequiredLongRunningTestGroupNames,
@@ -166,9 +167,10 @@ describe('dependency-aware CI workflow', () => {
     ]);
   });
 
-  it('serializes the SQLite-heavy workset projection suite outside ordinary shards', () => {
+  it('serializes the SQLite-heavy workset projection suite without relaxing its ordinary timeout', () => {
     expect(ciLongRunningTestGroups['heavy-state']).toContain('test/unit/code-graph.workset-catalog-projection.test.ts');
     expect(ciSerializedLongRunningTestGroups.has('heavy-state')).toBe(true);
+    expect(CI_STANDARD_TEST_TIMEOUT_MILLISECONDS).toBe(30_000);
   });
 
   it('runs the actual-runtime citation gate on quality-relevant changes', () => {

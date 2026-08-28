@@ -27,11 +27,14 @@ import {
   type CodeGraphWorksetRoutingSymbolV1,
 } from '../../src/code_graph/workset_catalog/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {CI_STANDARD_TEST_TIMEOUT_MILLISECONDS} from '../ci/vitest-plan.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
-describe('code graph ready-snapshot workset routing projections', () => {
+// This suite is serialized in CI but deliberately keeps the ordinary regression ceiling.
+// prettier-ignore
+describe('code graph ready-snapshot workset routing projections', {timeout: CI_STANDARD_TEST_TIMEOUT_MILLISECONDS}, () => {
   const homes: string[] = [];
 
   afterEach(async () => {

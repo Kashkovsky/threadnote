@@ -1,3 +1,5 @@
+export const CI_STANDARD_TEST_TIMEOUT_MILLISECONDS = 30_000;
+
 export const ciLongRunningTestGroups = {
   'lifecycle-alpha': ['test/integration/code-graph.lifecycle.test.ts'],
   'lifecycle-beta': ['test/integration/code-graph.lifecycle.test.ts'],
