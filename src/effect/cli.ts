@@ -1308,7 +1308,7 @@ const remember = Command.make(
   {
     codeRefs: repeatedString(
       'code-ref',
-      'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
+      'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
     ),
     dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
     kind: defaultChoice(
@@ -1534,7 +1534,7 @@ const handoff = Command.make(
     ci: optionalString('ci', 'Captured CI status snapshot'),
     codeRefs: repeatedString(
       'code-ref',
-      'Repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
+      'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
     ),
     dryRun: boolean('dry-run', 'Print handoff without storing'),
     issue: optionalString('issue', 'Related issue reference'),

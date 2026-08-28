@@ -308,7 +308,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
               if (!file) {
                 return yield* Effect.fail(
                   new MemoryCodeCitationCaptureError(
-                    `Code citation path is absent from the exact current graph: ${target.target.path}.`,
+                    `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
                   ),
                 );
               }

@@ -23,7 +23,7 @@ where Threadnote deliberately refuses to guess.
 
 ## Capture a receipt, not a verdict
 
-A citation starts with something the caller is allowed to know: a repository-relative path or a stable `cgs_`/`cgr_`
+A citation starts with something the caller is allowed to know: a graph-indexed repository-relative path or a stable `cgs_`/`cgr_`
 graph handle.
 
 ```sh

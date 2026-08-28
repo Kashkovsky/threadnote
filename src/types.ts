@@ -174,7 +174,7 @@ export interface McpInstallOptions {
 }
 
 export interface RememberOptions {
-  /** Repository-relative paths or stable code-graph refs captured as immutable code citations. */
+  /** Graph-indexed repository-relative paths or stable code-graph refs captured as immutable code citations. */
   readonly codeRefs?: readonly string[];
   readonly dryRun?: boolean;
   readonly kind?: MemoryKind;
@@ -250,7 +250,7 @@ export interface ListOptions {
 export interface HandoffOptions {
   readonly blockers?: string;
   readonly ci?: string;
-  /** Repository-relative paths or stable code-graph refs captured as immutable code citations. */
+  /** Graph-indexed repository-relative paths or stable code-graph refs captured as immutable code citations. */
   readonly codeRefs?: readonly string[];
   readonly dryRun?: boolean;
   readonly issue?: string;

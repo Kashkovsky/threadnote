@@ -463,6 +463,7 @@ describe('Threadnote MCP toolsets', () => {
               },
             },
           });
+          expect(JSON.stringify(codeReferenceTool?.inputSchema)).toContain('Graph-indexed repository-relative path');
         }
 
         const validationError = await callErrorText(client, 'recall_context', {

@@ -922,12 +922,15 @@ The body remains ordinary **Markdown**.
       readFile(join(root, 'website', 'src', 'pages', 'ProTipsPage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
     ]);
+    const docs = JSON.stringify(docsSections);
     const tips = JSON.stringify(proTips);
 
     expect(landingSource).toContain('Optional citations · stale-link warnings · legacy recall');
     expect(landingSource).toContain('older uncited memories stay recallable');
     expect(landingSource).toContain('A stale-link warning means the evidence moved—not that the memory');
     expect(tips).toContain('codeRefs');
+    expect(docs).toContain('graph-indexed repository-relative path');
+    expect(docs).toContain('Tracked files outside the exact-current graph inventory');
     expect(tips).toContain('Memory fresh · citation relocated · warning stale-link');
     expect(tips).toContain('stale-link warns about the locator, not the memory');
     expect(proTipsSource).toContain('source-aware memory');
