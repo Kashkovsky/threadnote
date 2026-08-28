@@ -132,7 +132,7 @@
     "@modelcontextprotocol/sdk": "1.30.0",
     "effect": "4.0.0-rc.112",
     "fflate": "0.8.3",
-    "jose": "6.2.3",
+    "jose": "6.2.10",
     "node-llama-cpp": "3.19.1",
     "postgres": "3.4.7",
     "react-markdown": "^10.1.0",
