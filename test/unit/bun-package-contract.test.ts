@@ -51,4 +51,24 @@ describe('Bun distribution contract', () => {
     expect(lockfile).toContain('"postcss/nanoid": ["nanoid@3.3.18"');
     expect(lockfile).not.toContain('"postcss/nanoid": ["nanoid@3.3.16"');
   });
+
+  it('keeps Vitest and Istanbul coverage on one exact release', async () => {
+    const [manifestText, lockfile] = await Promise.all([
+      readFile(join(process.cwd(), 'package.json'), 'utf8'),
+      readFile(join(process.cwd(), 'bun.lock'), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as PackageManifest;
+    const vitestVersion = manifest.devDependencies?.vitest;
+    const coverageVersion = manifest.devDependencies?.['@vitest/coverage-istanbul'];
+    const vitestLockEntry = lockfile.match(/^\s+"vitest": \["vitest@([^"\r\n]+)"[^\r\n]*$/mu);
+    const coverageLockEntry = lockfile.match(
+      /^\s+"@vitest\/coverage-istanbul": \["@vitest\/coverage-istanbul@([^"\r\n]+)"[^\r\n]*$/mu,
+    );
+
+    expect(vitestVersion).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u);
+    expect(coverageVersion).toBe(vitestVersion);
+    expect(vitestLockEntry?.[1]).toBe(vitestVersion);
+    expect(coverageLockEntry?.[1]).toBe(vitestVersion);
+    expect(coverageLockEntry?.[0]).toContain(`"peerDependencies": { "vitest": "${vitestVersion}" }`);
+  });
 });
