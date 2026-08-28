@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
-import {codeGraphRuntimeSchemaRequiresReconnect} from './store_models.js';
+import {codeGraphRuntimeSchemaRequiresReconnect} from './store/schema_revision.js';
 import {tableExists} from './store_session.js';
 import {CodeGraphRuntimeReconnectRequiredError, CodeGraphStoreError} from './types.js';
 

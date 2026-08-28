@@ -1,11 +1,11 @@
 import type {CodeGraphScanningMetrics, CodeGraphSourceSizeBucket} from './progress_telemetry.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 
-export const CODE_GRAPH_SCHEMA_VERSION = 3 as const;
-/** Additive persistent surfaces that preserve the public graph-v3 row contract. */
-export const CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION = 16 as const;
-/** Oldest released additive extension revision that the current reader can safely serve. */
-export const CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION = 6 as const;
+export {
+  CODE_GRAPH_CORE_SCHEMA_VERSION as CODE_GRAPH_SCHEMA_VERSION,
+  CODE_GRAPH_MINIMUM_BACKGROUND_SCHEMA_REVISION as CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
+  CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION as CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+} from './store/schema_revision.js';
 export const CODE_GRAPH_RESULT_VERSION = 1 as const;
 export const CODE_GRAPH_EXTRACTOR_GENERATION = 13 as const;
 export const CODE_GRAPH_EXTRACTOR_SET_VERSION = `native-code-graph-${CODE_GRAPH_EXTRACTOR_GENERATION}` as const;

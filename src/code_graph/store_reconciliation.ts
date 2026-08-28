@@ -29,12 +29,12 @@ import {
   inspectBoundedSchemaMetadataValue,
 } from './store_schema_metadata.js';
 import {
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
   CodeGraphStoreCorruptionError,
   CodeGraphStoreError,
   CodeGraphStoreIncompatibleSchemaError,
 } from './types.js';
+import {codeGraphPersistentSchemaIsCurrent} from './store/schema_revision.js';
 import {
   allocateRemovedViewCleanupEpoch,
   authorityPrimaryKeyBinary,
@@ -94,7 +94,7 @@ const admitOrRecoverWorktreeReconciliationSchema = Effect.fn('codeGraph.admitOrR
       sql,
       WORKTREE_RECONCILIATION_LEGACY_MAXIMUM_METADATA_ROWS,
     );
-    if (revision.state !== 'recorded' || revision.value !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+    if (revision.state !== 'recorded' || !codeGraphPersistentSchemaIsCurrent(revision.value)) {
       return false;
     }
     const metadataRowCount = yield* inspectBoundedSchemaMetadataRowCount(

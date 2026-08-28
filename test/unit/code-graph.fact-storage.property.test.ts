@@ -113,4 +113,90 @@ describe('compact code graph fact storage', () => {
       decodeStoredCodeGraphFact(JSON.stringify({...envelope, payload: `${envelope.payload as string}\n`})),
     ).toThrow(/malformed|base64/);
   });
+
+  it('rejects malformed nested fact shapes at both persistence and decode boundaries', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 6, min: 0}), mutation => {
+        const facts = richFacts();
+        const candidate = structuredClone(facts) as unknown as Record<string, unknown>;
+        const symbols = candidate.symbols as Array<Record<string, unknown>>;
+        const edges = candidate.edges as Array<Record<string, unknown>>;
+        const references = candidate.references as Array<Record<string, unknown>>;
+        switch (mutation) {
+          case 0:
+            symbols[0]!.unexpected = true;
+            break;
+          case 1:
+            symbols[0]!.span = {...(symbols[0]!.span as object), line: 0};
+            break;
+          case 2:
+            edges[0]!.confidence = 2;
+            break;
+          case 3:
+            edges[0]!.relation = 'future-relation';
+            break;
+          case 4:
+            references[0]!.lookupTiers = [['valid'], [1]];
+            break;
+          case 5:
+            references[0]!.evidencePath = '../escape.ts';
+            break;
+          case 6:
+            candidate.derivationInputs = {rationale: [{documentation: '', line: -1, marker: 'why', name: 'x'}]};
+            break;
+        }
+        expect(() => serializeBoundedCodeGraphFact(candidate as unknown as CodeGraphFileFacts)).toThrow();
+        expect(() => decodeStoredCodeGraphFact(JSON.stringify(candidate))).toThrow();
+      }),
+      {numRuns: 50},
+    );
+  });
 });
+
+function richFacts(): CodeGraphFileFacts {
+  const span = {column: 1, endColumn: 2, endLine: 1, line: 1};
+  return {
+    diagnostics: [],
+    edges: [
+      {
+        confidence: 1,
+        evidencePath: 'src/rich.ts',
+        evidenceSpan: span,
+        id: 'edge-1',
+        provenance: 'syntactic',
+        relation: 'calls',
+        sourceId: 'symbol-1',
+        sourceName: 'source',
+        targetName: 'target',
+      },
+    ],
+    path: 'src/rich.ts',
+    references: [
+      {
+        edgeId: 'edge-1',
+        evidencePath: 'src/rich.ts',
+        evidenceSpan: span,
+        lookupTiers: [['typescript:name:target']],
+        provenance: 'syntactic',
+        relation: 'calls',
+        resolutionDomain: 'typescript',
+        sourceId: 'symbol-1',
+        sourceName: 'source',
+        targetName: 'target',
+      },
+    ],
+    symbols: [
+      {
+        contentHash: '0'.repeat(64),
+        exported: true,
+        id: 'symbol-1',
+        kind: 'function',
+        language: 'typescript',
+        name: 'source',
+        path: 'src/rich.ts',
+        qualifiedName: 'source',
+        span,
+      },
+    ],
+  };
+}

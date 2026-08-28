@@ -7,6 +7,7 @@ import {compareCodeUnits} from './ordering.js';
 import {decodeCodeGraphInventoryReuseReceipt} from './inventory_reuse.js';
 import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {
+  CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphEdgeCursor,
   type CodeGraphReusableBaseReceipt,
@@ -183,7 +184,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
         AND snapshot.base_snapshot_id IS NULL
         AND snapshot.graph_content_id = ${graphContentId}
         AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-        AND receipt.resolution_surface_version = 1
+        AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
         AND receipt.workspace_fingerprint = ${workspaceFingerprint}
       ORDER BY
         CASE WHEN receipt.file_set_fingerprint = ${fileSetFingerprint} THEN 0 ELSE 1 END,
@@ -216,7 +217,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL
         AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-        AND receipt.resolution_surface_version = 1
+        AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
         AND receipt.workspace_fingerprint = ${workspaceFingerprint}
         AND ${sql.in('commit_id', candidateCommits)}
     `;
@@ -237,7 +238,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
           AND snapshot.base_snapshot_id IS NULL
           AND snapshot.commit_id = ${matches[0]!}
           AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-          AND receipt.resolution_surface_version = 1
+          AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
           AND receipt.workspace_fingerprint = ${workspaceFingerprint}
         ORDER BY
           CASE WHEN snapshot.extractor_set = ${extractorSet} THEN 0 ELSE 1 END,
@@ -261,7 +262,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
       AND snapshot.dirty = 0
       AND snapshot.base_snapshot_id IS NULL
       AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-      AND receipt.resolution_surface_version = 1
+      AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
       AND receipt.workspace_fingerprint = ${workspaceFingerprint}
     ORDER BY
       CASE WHEN snapshot.extractor_set = ${extractorSet} THEN 0 ELSE 1 END,
@@ -289,7 +290,7 @@ const selectReusableCleanBaseForCommit = Effect.fn('codeGraph.selectReusableClea
       AND snapshot.dirty = 0
       AND snapshot.base_snapshot_id IS NULL
       AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-      AND receipt.resolution_surface_version = 1
+      AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
       AND receipt.inventory_receipt_json IS NOT NULL
     ORDER BY snapshot.completed_at DESC, snapshot.id
     LIMIT 8
@@ -338,7 +339,7 @@ const selectReusableCleanBaseForCommitPaths = Effect.fn('codeGraph.selectReusabl
         AND snapshot.dirty = 0
         AND snapshot.base_snapshot_id IS NULL
         AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-        AND receipt.resolution_surface_version = 1
+        AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
         AND receipt.inventory_receipt_json IS NOT NULL
       ORDER BY snapshot.completed_at DESC, snapshot.id
       LIMIT 8
@@ -428,7 +429,7 @@ const selectReusableOverlayBase = Effect.fn('codeGraph.selectReusableOverlayBase
       AND snapshot.dirty = 1
       AND snapshot.base_snapshot_id IS NULL
       AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-      AND receipt.resolution_surface_version = 1
+      AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
     ORDER BY CASE WHEN snapshot.overlay_fingerprint = ${overlayFingerprint} THEN 0 ELSE 1 END,
              CASE WHEN EXISTS (
                SELECT 1 FROM snapshot_leases AS lease
@@ -546,7 +547,7 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
     JOIN snapshots AS snapshot ON snapshot.id = receipt.snapshot_id
     WHERE receipt.snapshot_id = ${snapshotId}
       AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
-      AND receipt.resolution_surface_version = 1
+      AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
       AND receipt.extractor_set = snapshot.extractor_set
       AND snapshot.state = 'ready'
       AND (${allowDirtyRoot ? 1 : 0} = 1 OR snapshot.dirty = 0)

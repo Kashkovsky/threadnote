@@ -9,6 +9,7 @@ import type {
 } from './types.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
+import {parseCodeGraphFileFacts} from './fact_validation.js';
 
 export const CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM = 8 * 1_048_576;
 export const CODE_GRAPH_REFERENCE_CANDIDATES_PER_REFERENCE_MAXIMUM = 100_000;
@@ -57,7 +58,7 @@ export function serializeBoundedCodeGraphFact(
   facts: CodeGraphFileFacts,
   maximumBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
 ): BoundedCodeGraphFact {
-  const measured = measureBoundedCodeGraphFactWithJson(facts, maximumBytes);
+  const measured = measureBoundedCodeGraphFactWithJson(parseCodeGraphFileFacts(facts), maximumBytes);
   return {
     [boundedCodeGraphFactBrand]: true,
     ...measured,

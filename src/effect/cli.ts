@@ -118,6 +118,12 @@ import {
   runCodeGraphWorksetTopology,
 } from '../code_graph/commands.js';
 import {
+  runCodeGraphCheckpointExport,
+  runCodeGraphCheckpointImport,
+  runCodeGraphCheckpointInspect,
+  runCodeGraphCheckpointVerify,
+} from '../code_graph/checkpoint/commands.js';
+import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
   CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
 } from '../code_graph/workset_evidence.js';
@@ -953,6 +959,57 @@ const graphExport = Command.make(
   options => withRuntimeEffect(config => runCodeGraphExport(config, options)),
 ).pipe(Command.withDescription('Stream a portable JSON, GraphML, HTML, or SVG graph snapshot'));
 
+const graphCheckpointExport = Command.make(
+  'export',
+  {
+    cwd: graphBounds.cwd,
+    json: graphBounds.json,
+    output: requiredString('output', 'New checkpoint file; existing files are never overwritten'),
+  },
+  options => withRuntimeEffect(config => runCodeGraphCheckpointExport(config, options)),
+).pipe(Command.withDescription('Export an exact clean ready graph as a deterministic portable checkpoint'));
+
+const graphCheckpointInspect = Command.make(
+  'inspect',
+  {
+    expectedDigest: optionalString('expected-digest', 'Expected SHA-256 artifact digest'),
+    input: requiredString('input', 'Checkpoint file to inspect without inflating logical chunks'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(() => runCodeGraphCheckpointInspect(options)),
+).pipe(Command.withDescription('Inspect checkpoint metadata and exact framing without inflating graph records'));
+
+const graphCheckpointVerify = Command.make(
+  'verify',
+  {
+    expectedDigest: optionalString('expected-digest', 'Expected SHA-256 artifact digest'),
+    input: requiredString('input', 'Checkpoint file to verify'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(() => runCodeGraphCheckpointVerify(options)),
+).pipe(Command.withDescription('Fully verify checkpoint framing, chunks, records, ordering, and logical digest'));
+
+const graphCheckpointImport = Command.make(
+  'import',
+  {
+    cwd: graphBounds.cwd,
+    expectedDigest: optionalString('expected-digest', 'Expected SHA-256 artifact digest'),
+    input: requiredString('input', 'Checkpoint file to import'),
+    json: graphBounds.json,
+  },
+  options => withRuntimeEffect(config => runCodeGraphCheckpointImport(config, options)),
+).pipe(Command.withDescription('Verify and safely publish a compatible clean graph checkpoint for this repository'));
+
+const graphCheckpoint = Command.make('checkpoint').pipe(
+  Command.withDescription('Export, inspect, verify, and import portable native graph checkpoints'),
+  Command.withSubcommands([
+    graphCheckpointExport,
+    graphCheckpointInspect,
+    graphCheckpointVerify,
+    graphCheckpointImport,
+  ]),
+);
+
 const graphPurge = Command.make(
   'purge',
   {
@@ -1018,6 +1075,7 @@ const graphCommand = Command.make('graph').pipe(
     graphReport,
     graphWatch,
     graphExport,
+    graphCheckpoint,
     graphCompact,
     graphRemoveView,
     graphPurge,
