@@ -121,6 +121,17 @@ reviewed repeated before/after evidence and rationale; do not widen a limit to m
 required with `--ratchet`; a provenance-valid artifact is written before a ratchet failure is reported so the
 regression remains reviewable.
 
+The pull-request production ratchet first applies those reviewed limits unchanged. If only that static gate fails, CI
+measures the exact protected-base commit in a detached worktree on the same runner and retries with the paired control.
+Pairing is admitted only when `sameRunnerComparisonKey`, privacy-safe `runnerIdentity`, fixture/output/runtime/storage
+metadata, and the assessed measurement set match. Non-wall CPU, work, storage, RSS, correctness, and shape limits stay
+static. Cumulative parser, serialization, persistence, transaction, materialization-stage, and subphase timers are work
+even though their unit is milliseconds, so they also stay static; new timings require explicit elapsed-wall
+classification before they can pair. An allowlisted wall limit becomes relative only when the protected-base control
+also misses that same static limit; the existing relative/absolute headroom and hard objectives then apply to the
+control observation. This separates hosted VM scheduling noise from branch regressions without widening the checked-in
+ratchet or accepting a candidate that is slower than a passing same-runner control.
+
 ### Cross-repository workset contract
 
 The workset fixture scales one deterministic set of repository archetypes into prefix worksets. Sizes 1, 8, 32, 64,

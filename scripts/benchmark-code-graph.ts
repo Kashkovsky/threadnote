@@ -6864,6 +6864,11 @@ export interface CodeGraphBenchmarkRatchetV1 {
   readonly version: 1;
 }
 
+export interface CodeGraphBenchmarkRatchetPairedControl {
+  readonly artifact: BenchmarkArtifactV1;
+  readonly expectedCommit: string;
+}
+
 const BENCHMARK_RATCHET_UNITS = new Set<BenchmarkMeasurementUnit>([
   'bytes',
   'count',
@@ -7288,7 +7293,11 @@ function productionDeterministicMeasurement(name: string, unit: BenchmarkMeasure
  * unrelated or partial artifacts fail closed instead of silently skipping a
  * threshold.
  */
-export function enforceCodeGraphBenchmarkRatchet(artifact: BenchmarkArtifactV1, value: unknown): void {
+export function enforceCodeGraphBenchmarkRatchet(
+  artifact: BenchmarkArtifactV1,
+  value: unknown,
+  pairedControl?: CodeGraphBenchmarkRatchetPairedControl,
+): void {
   const ratchet = parseCodeGraphBenchmarkRatchet(value);
   const failures: string[] = [];
   if (artifact.suite !== ratchet.suite) {
@@ -7333,6 +7342,9 @@ export function enforceCodeGraphBenchmarkRatchet(artifact: BenchmarkArtifactV1, 
     matches.push(measurement);
     measurementsByName.set(measurement.name, matches);
   }
+  const pairedMeasurementsByName = pairedControl
+    ? prepareCodeGraphBenchmarkRatchetPairedControl(artifact, pairedControl, ratchet, failures)
+    : undefined;
   for (const [name, limit] of Object.entries(ratchet.measurements).sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
@@ -7350,31 +7362,167 @@ export function enforceCodeGraphBenchmarkRatchet(artifact: BenchmarkArtifactV1, 
       failures.push(`${name} unit ${measurement.unit} does not match ${limit.unit}`);
       continue;
     }
-    if (limit.samplesMinimum !== undefined && measurement.samples < limit.samplesMinimum) {
-      failures.push(`${name} has ${measurement.samples} samples, below ${limit.samplesMinimum}`);
+    const staticFailures = codeGraphBenchmarkMeasurementRatchetFailures(name, measurement, limit);
+    if (
+      staticFailures.length > 0 &&
+      pairedMeasurementsByName &&
+      productionHostSensitiveWallMeasurement(name, limit) &&
+      limit.p95Maximum !== undefined &&
+      measurement.p95 > limit.p95Maximum
+    ) {
+      const pairedMatches = pairedMeasurementsByName.get(name) ?? [];
+      if (pairedMatches.length !== 1) {
+        failures.push(
+          `paired control ${name} measurement occurs ${pairedMatches.length} times instead of exactly once`,
+        );
+        continue;
+      }
+      const pairedMeasurement = pairedMatches[0]!;
+      if (pairedMeasurement.unit !== measurement.unit || pairedMeasurement.samples !== measurement.samples) {
+        failures.push(`paired control ${name} unit or sample count does not match the candidate`);
+        continue;
+      }
+      if (pairedMeasurement.p95 > limit.p95Maximum) {
+        let pairedLimit: CodeGraphBenchmarkMeasurementRatchetV1;
+        try {
+          pairedLimit = productionMeasurementRatchet(name, measurement.unit, [pairedMeasurement.p95]);
+        } catch (error) {
+          failures.push(
+            `paired control ${name} is not admissible: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          continue;
+        }
+        failures.push(
+          ...codeGraphBenchmarkMeasurementRatchetFailures(name, measurement, pairedLimit).map(
+            failure => `${failure} against the exact protected-base control`,
+          ),
+        );
+        continue;
+      }
     }
-    if (limit.maximum !== undefined && measurement.maximum > limit.maximum) {
-      failures.push(`${name} maximum ${measurement.maximum} exceeds ${limit.maximum}`);
-    }
-    if (limit.meanMaximum !== undefined && measurement.mean > limit.meanMaximum) {
-      failures.push(`${name} mean ${measurement.mean} exceeds ${limit.meanMaximum}`);
-    }
-    if (limit.p50Maximum !== undefined && measurement.p50 > limit.p50Maximum) {
-      failures.push(`${name} p50 ${measurement.p50} exceeds ${limit.p50Maximum}`);
-    }
-    if (limit.p95Maximum !== undefined && measurement.p95 > limit.p95Maximum) {
-      failures.push(`${name} p95 ${measurement.p95} exceeds ${limit.p95Maximum}`);
-    }
-    if (limit.p99Maximum !== undefined && measurement.p99 > limit.p99Maximum) {
-      failures.push(`${name} p99 ${measurement.p99} exceeds ${limit.p99Maximum}`);
-    }
-    if (limit.minimum !== undefined && measurement.minimum < limit.minimum) {
-      failures.push(`${name} minimum ${measurement.minimum} is below ${limit.minimum}`);
-    }
+    failures.push(...staticFailures);
   }
   if (failures.length > 0) {
     throw new ScriptError(`Code graph performance ratchet failed: ${failures.join('; ')}`);
   }
+}
+
+const PRODUCTION_PAIRED_WALL_MEASUREMENT_PATTERNS = [
+  /^(?:cold|one-file-reindex|same-overlay-full-rebuild)-index$/u,
+  /^(?:cold|one-file-reindex|same-overlay-reference)-(?:activation-(?:and-vectors|lexical-only)|inventory-and-extraction|materialization|maximum-progress-heartbeat-gap-n1|post-committed-scan-overlay-and-workspace|pre-activation|pre-activation-validation|reference-resolution|registration-lock-and-database-setup|resolved-fact-accounting|snapshot-promotion|snapshot-write-and-checkpoint|vector-index)$/u,
+  /^(?:cold|one-file-reindex|same-overlay-reference)-activation-(?:checkpointing-snapshot|committing-snapshot|copying-(?:edges|files|lookup-keys|reexports|symbols|terms|workspace)|recording-completion|validating-input)-duration-n1$/u,
+  /^(?:cold|one-file-reindex|same-overlay-reference)-(?:activation|reference-resolution)-longest-transaction-n1$/u,
+  /^(?:first-repository-status-read|hot-build-sidecar-status-read|hot-deferred-ready-query-orchestration|hot-exact-lexical-query|hot-exact-ready-query-orchestration|hot-repository-status-read|whole-graph-structural-analysis)$/u,
+  /^mcp-(?:explain|impact|neighbors|node|path|query)-duration$/u,
+] as const;
+
+function productionHostSensitiveWallMeasurement(name: string, limit: CodeGraphBenchmarkMeasurementRatchetV1): boolean {
+  return (
+    limit.unit === 'milliseconds' &&
+    limit.samplesMinimum === 1 &&
+    limit.p95Maximum !== undefined &&
+    Object.keys(limit).every(key => key === 'p95Maximum' || key === 'samplesMinimum' || key === 'unit') &&
+    // Default every new millisecond metric to the static ratchet. Only
+    // explicitly reviewed elapsed intervals may use a same-runner control;
+    // cumulative parser, serialization, persistence, transaction, stage, and
+    // subphase work timers deliberately do not match this allowlist.
+    PRODUCTION_PAIRED_WALL_MEASUREMENT_PATTERNS.some(pattern => pattern.test(name))
+  );
+}
+
+function codeGraphBenchmarkMeasurementRatchetFailures(
+  name: string,
+  measurement: BenchmarkArtifactV1['measurements'][number],
+  limit: CodeGraphBenchmarkMeasurementRatchetV1,
+): readonly string[] {
+  const failures: string[] = [];
+  if (limit.samplesMinimum !== undefined && measurement.samples < limit.samplesMinimum) {
+    failures.push(`${name} has ${measurement.samples} samples, below ${limit.samplesMinimum}`);
+  }
+  if (limit.maximum !== undefined && measurement.maximum > limit.maximum) {
+    failures.push(`${name} maximum ${measurement.maximum} exceeds ${limit.maximum}`);
+  }
+  if (limit.meanMaximum !== undefined && measurement.mean > limit.meanMaximum) {
+    failures.push(`${name} mean ${measurement.mean} exceeds ${limit.meanMaximum}`);
+  }
+  if (limit.p50Maximum !== undefined && measurement.p50 > limit.p50Maximum) {
+    failures.push(`${name} p50 ${measurement.p50} exceeds ${limit.p50Maximum}`);
+  }
+  if (limit.p95Maximum !== undefined && measurement.p95 > limit.p95Maximum) {
+    failures.push(`${name} p95 ${measurement.p95} exceeds ${limit.p95Maximum}`);
+  }
+  if (limit.p99Maximum !== undefined && measurement.p99 > limit.p99Maximum) {
+    failures.push(`${name} p99 ${measurement.p99} exceeds ${limit.p99Maximum}`);
+  }
+  if (limit.minimum !== undefined && measurement.minimum < limit.minimum) {
+    failures.push(`${name} minimum ${measurement.minimum} is below ${limit.minimum}`);
+  }
+  return failures;
+}
+
+function prepareCodeGraphBenchmarkRatchetPairedControl(
+  artifact: BenchmarkArtifactV1,
+  pairedControl: CodeGraphBenchmarkRatchetPairedControl,
+  ratchet: CodeGraphBenchmarkRatchetV1,
+  failures: string[],
+): ReadonlyMap<string, BenchmarkArtifactV1['measurements'][number][]> | undefined {
+  if (!EXACT_GIT_COMMIT_PATTERN.test(pairedControl.expectedCommit)) {
+    failures.push('paired control expected commit is not an exact Git commit');
+    return undefined;
+  }
+  assertProductionLargeEvidence(artifact);
+  const control = parseBenchmarkArtifactV1(pairedControl.artifact);
+  assertProductionLargeEvidence(control);
+  if (control.environment.commit !== pairedControl.expectedCommit) {
+    failures.push(
+      `paired control commit ${JSON.stringify(control.environment.commit)} does not match ` +
+        JSON.stringify(pairedControl.expectedCommit),
+    );
+  }
+  if (control.environment.commit === artifact.environment.commit) {
+    failures.push('paired control must use a different protected-base commit');
+  }
+  if (control.suite !== ratchet.suite || control.suite !== artifact.suite) {
+    failures.push('paired control suite does not match the candidate and reviewed ratchet');
+  }
+  for (const [name, expected] of Object.entries(ratchet.environment)) {
+    const actual = control.environment[name as keyof BenchmarkArtifactV1['environment']];
+    if (actual !== expected) {
+      failures.push(
+        `paired control environment.${name} ${formatRatchetValue(actual)} does not match ` +
+          formatRatchetValue(expected),
+      );
+    }
+  }
+  for (const name of ['sameRunnerComparisonKey', 'runnerIdentity'] as const) {
+    if (
+      typeof control.metadata[name] !== 'string' ||
+      control.metadata[name] !== artifact.metadata[name] ||
+      control.metadata[name].length === 0
+    ) {
+      failures.push(`paired control metadata.${name} does not match the candidate`);
+    }
+  }
+  if (JSON.stringify(productionRatchetMetadata(control)) !== JSON.stringify(productionRatchetMetadata(artifact))) {
+    failures.push('paired control does not share the candidate fixture, output, runtime, and storage contract');
+  }
+  const controlNames = productionRatchetMeasurements(control)
+    .map(measurement => measurement.name)
+    .sort();
+  const candidateNames = productionRatchetMeasurements(artifact)
+    .map(measurement => measurement.name)
+    .sort();
+  if (JSON.stringify(controlNames) !== JSON.stringify(candidateNames)) {
+    failures.push('paired control assessed measurement set does not match the candidate');
+  }
+  if (failures.length > 0) return undefined;
+  const measurementsByName = new Map<string, BenchmarkArtifactV1['measurements'][number][]>();
+  for (const measurement of control.measurements) {
+    const matches = measurementsByName.get(measurement.name) ?? [];
+    matches.push(measurement);
+    measurementsByName.set(measurement.name, matches);
+  }
+  return measurementsByName;
 }
 
 export function validateCodeGraphBenchmarkRatchet(value: unknown): void {

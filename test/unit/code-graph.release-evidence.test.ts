@@ -1364,6 +1364,136 @@ describe('code graph release evidence', () => {
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskFilesystem');
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskLocation');
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskMedium');
+    const pairedArtifact = (
+      artifact: BenchmarkArtifactV1,
+      commit: string,
+      measurementValues: Readonly<Record<string, number>>,
+    ): BenchmarkArtifactV1 => ({
+      ...artifact,
+      environment: {...artifact.environment, commit},
+      measurements: artifact.measurements.map(measurement =>
+        measurementValues[measurement.name] === undefined
+          ? measurement
+          : benchmarkMeasurement(measurement.name, measurement.unit, [measurementValues[measurement.name]!]),
+      ),
+      metadata: {
+        ...artifact.metadata,
+        benchmarkMeasuredSourceCommit: commit,
+        runnerIdentity: 'runner-0123456789abcdef',
+        sameRunnerComparisonKey: 'github-hosted-linux-x64|Linux|x64|Intel test|17179869184',
+      },
+    });
+    const controlCommit = 'a'.repeat(40);
+    const candidateCommit = 'b'.repeat(40);
+    const pairedControlArtifact = pairedArtifact(githubHostedArtifacts[0]!, controlCommit, {'cold-index': 1_000});
+    const noisyCandidate = pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, {'cold-index': 1_200});
+    const pairedControl = {artifact: pairedControlArtifact, expectedCommit: controlCommit};
+
+    expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet)).toThrow(/cold-index/u);
+    expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, pairedControl)).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, {'cold-index': 1_251}),
+        githubHostedRatchet,
+        pairedControl,
+      ),
+    ).toThrow(/cold-index.*exact protected-base control/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, {'cold-index': 211}),
+        githubHostedRatchet,
+        {
+          artifact: pairedArtifact(githubHostedArtifacts[0]!, controlCommit, {'cold-index': 210}),
+          expectedCommit: controlCommit,
+        },
+      ),
+    ).toThrow(/cold-index/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, {'one-file-reindex-index': 30_000}),
+        githubHostedRatchet,
+        {
+          artifact: pairedArtifact(githubHostedArtifacts[0]!, controlCommit, {'one-file-reindex-index': 30_000}),
+          expectedCommit: controlCommit,
+        },
+      ),
+    ).toThrow(/objective one-file-reindex-index has not been attained/u);
+    for (const [metadataName, value] of [
+      ['runnerIdentity', 'another-runner'],
+      ['sameRunnerComparisonKey', 'another-host'],
+    ] as const) {
+      expect(() =>
+        enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+          artifact: {
+            ...pairedControlArtifact,
+            metadata: {...pairedControlArtifact.metadata, [metadataName]: value},
+          },
+          expectedCommit: controlCommit,
+        }),
+      ).toThrow(new RegExp(`metadata\\.${metadataName}`));
+    }
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        artifact: pairedControlArtifact,
+        expectedCommit: 'c'.repeat(40),
+      }),
+    ).toThrow(/paired control commit/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        artifact: {
+          ...pairedControlArtifact,
+          environment: {...pairedControlArtifact.environment, fixtureHash: 'another-fixture'},
+        },
+        expectedCommit: controlCommit,
+      }),
+    ).toThrow(/paired control environment\.fixtureHash/u);
+    const invariantGuardNames = [
+      'cold-registration-process-cpu-n1',
+      'one-file-reindex-incremental-work-planned-rows-n1',
+      'cold-sqlite-wal-peak-observed',
+    ] as const;
+    fc.assert(
+      fc.property(fc.constantFrom(...invariantGuardNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
+        const limit = githubHostedRatchet.measurements[name]!;
+        const upperBound = limit.maximum ?? limit.p95Maximum;
+        expect(upperBound, name).toBeDefined();
+        const candidate = pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, {
+          'cold-index': 1_200,
+          [name]: upperBound! + delta,
+        });
+        expect(() => enforceCodeGraphBenchmarkRatchet(candidate, githubHostedRatchet, pairedControl)).toThrow(
+          new RegExp(name),
+        );
+      }),
+      {numRuns: 30},
+    );
+    const cumulativeWorkTimingNames = [
+      'cold-inventory-cache-persistence-n1',
+      'cold-inventory-parser-extraction-summed-n1',
+      'cold-inventory-parser-fact-serialization-n1',
+      'cold-inventory-source-reading-n1',
+      'cold-materialization-stage-preparing-rows-n1',
+    ] as const;
+    fc.assert(
+      fc.property(fc.constantFrom(...cumulativeWorkTimingNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
+        const limit = githubHostedRatchet.measurements[name]!;
+        expect(limit.p95Maximum, name).toBeDefined();
+        const regressedValue = limit.p95Maximum! + delta;
+        const regressedControl = pairedArtifact(githubHostedArtifacts[0]!, controlCommit, {
+          [name]: regressedValue,
+        });
+        const regressedCandidate = pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, {
+          [name]: regressedValue,
+        });
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(regressedCandidate, githubHostedRatchet, {
+            artifact: regressedControl,
+            expectedCommit: controlCommit,
+          }),
+        ).toThrow(new RegExp(name));
+      }),
+      {numRuns: 30},
+    );
     expect(
       createCodeGraphProductionRatchet(
         githubHostedArtifacts.map((artifact, index) => {

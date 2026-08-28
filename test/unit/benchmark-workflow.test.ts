@@ -150,6 +150,7 @@ describe('platform benchmark workflow', () => {
       expect.arrayContaining([
         '.github/workflows/code-graph-production-ratchet.yml',
         'scripts/benchmark-code-graph.ts',
+        'test/ci/code-graph-production-ratchet-gate.ts',
         'test/ci/code-graph-production-ratchet-scope.ts',
         'src/code_graph/**',
         'src/effect/errors.ts',
@@ -166,7 +167,7 @@ describe('platform benchmark workflow', () => {
     expect(paths).not.toContain('src/recall/**');
     expect(paths.join('\n').toLowerCase()).not.toContain('intellij');
     expect(job['runs-on']).toBe('ubuntu-24.04');
-    expect(job['timeout-minutes']).toBe(15);
+    expect(job['timeout-minutes']).toBe(25);
     expect(job.needs).toBe('classify');
     expect(job.if).toBe('always()');
     expect(classifier.outputs?.release_metadata_only).toBe('${{ steps.scope.outputs.release_metadata_only }}');
@@ -179,25 +180,49 @@ describe('platform benchmark workflow', () => {
         step.uses === 'actions/checkout@v7' ||
         step.uses === 'oven-sh/setup-bun@v2' ||
         step.run === 'bun install --frozen-lockfile' ||
-        step.name === 'Gate the governed reduced production profile',
+        step.name === 'Measure the governed reduced production profile' ||
+        step.name === 'Enforce the reviewed static ratchet',
     );
-    expect(guardedSteps).toHaveLength(4);
+    expect(guardedSteps).toHaveLength(5);
     for (const step of guardedSteps ?? []) {
       expect(step.if).toBe(
         "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
       );
     }
+    expect(job.steps?.find(step => step.uses === 'actions/checkout@v7')?.with).toMatchObject({'fetch-depth': '0'});
+    const candidateMeasurement = job.steps?.find(
+      step => step.name === 'Measure the governed reduced production profile',
+    );
+    expect(candidateMeasurement?.run).not.toContain('--ratchet');
+    const staticGate = job.steps?.find(step => step.id === 'static-ratchet');
+    expect(staticGate).toMatchObject({
+      'continue-on-error': true,
+      name: 'Enforce the reviewed static ratchet',
+    });
+    expect(staticGate?.run).toContain('test/ci/code-graph-production-ratchet-gate.ts');
+    const pairedMeasurement = job.steps?.find(
+      step => step.name === 'Measure the exact protected-base control on the same runner',
+    );
+    expect(pairedMeasurement?.if).toBe("steps.static-ratchet.outcome == 'failure'");
+    expect(pairedMeasurement?.run).toContain('git worktree add --detach "$control_root" "$BASE_SHA"');
+    expect(pairedMeasurement?.run).toContain('GITHUB_WORKSPACE="$control_root" GITHUB_SHA="$BASE_SHA"');
+    expect(pairedMeasurement?.run).toContain('code-graph-production-ratchet-control-Linux-');
+    const pairedGate = job.steps?.find(
+      step => step.name === 'Enforce same-runner paired fallback without changing reviewed limits',
+    );
+    expect(pairedGate?.if).toBe("steps.static-ratchet.outcome == 'failure'");
+    expect(pairedGate?.run).toContain('--expected-control-commit "$BASE_SHA"');
     expect(job.steps?.find(step => step.uses === 'actions/upload-artifact@v7')?.if).toContain(
       "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
     );
-    expect(command.match(/--samples 1/g)).toHaveLength(1);
-    expect(command).toContain('--profile production-large');
-    expect(command).toContain('--profile-files 3000');
-    expect(command).toContain('--profile-symbols 110000');
-    expect(command).toContain('--minimum-free-gib 20');
-    expect(command).toContain(
-      '--ratchet test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json',
-    );
+    expect(command.match(/--samples 1/g)).toHaveLength(2);
+    expect(command.match(/--profile production-large/g)).toHaveLength(2);
+    expect(command.match(/--profile-files 3000/g)).toHaveLength(2);
+    expect(command.match(/--profile-symbols 110000/g)).toHaveLength(2);
+    expect(command.match(/--minimum-free-gib 20/g)).toHaveLength(2);
+    expect(
+      command.match(/--ratchet test\/evaluation\/baselines\/code-graph-v1\/production-ratchet-github-linux-x64.json/g),
+    ).toHaveLength(2);
     expect(command).not.toContain('bench:code-graph:production:ratchet');
   });
 
