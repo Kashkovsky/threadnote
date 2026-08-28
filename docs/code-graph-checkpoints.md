@@ -13,8 +13,10 @@ threadnote graph checkpoint export --output ./threadnote-graph.cgcp
 ```
 
 Export accepts only the exact ready, clean root snapshot for the current `HEAD`. The repository must have a
-credential-free remote identity such as `github.com/org/repository`; local paths, remote credentials, dirty source,
-worktree identifiers, and source file contents are not embedded. Existing output files are never overwritten.
+credential-free remote identity such as `github.com/org/repository`; absolute local paths, configured remote credential
+material, dirty source state, worktree identifiers, and raw source-file bytes are not embedded. Checkpoints do contain
+source-derived names, signatures, and documentation, so a secret embedded in source can be carried into the artifact.
+Existing output files are never overwritten.
 
 The v1 artifact uses canonical JSON metadata, independently compressed deterministic chunks, and SHA-256 identities
 for the artifact, every chunk, the logical record stream, and its runtime ABI. Export reads SQLite through one
@@ -87,6 +89,7 @@ A Workset remains optional and is used only for explicitly prepared multi-reposi
 
 - Treat the expected artifact digest like a release checksum and obtain it independently from the checkpoint file.
 - Keep the source commit locally available; import deliberately disables lazy Git fetching.
-- Checkpoints contain derived source structure and identifiers. Review their destination as you would any internal
-  architecture artifact, even though local paths, credentials, and raw source bytes are excluded.
+- Checkpoints contain derived source structure, names, signatures, and documentation. Review their destination as you
+  would any potentially sensitive internal architecture artifact. Absolute local paths, configured remote credential
+  material, and raw source-file bytes are omitted, but source-embedded secrets can still appear in derived fields.
 - Use `--json` on every checkpoint command for a versioned machine-readable receipt.

@@ -29,7 +29,7 @@ threadnote graph checkpoint import \\
     },
     {
       type: 'paragraph',
-      text: 'Checkpoints are a free, manual, offline transport. Export accepts only the exact ready clean root for the current commit and a credential-free repository identity. It reads one SQLite transaction in bounded pages, checks committed file identities against Git, excludes local paths, credentials, and raw source bytes, and never overwrites an existing destination. Canonical metadata, deterministic gzip chunks, and SHA-256 identities make the same compatible logical graph reproducible.',
+      text: 'Checkpoints are a free, manual, offline transport. Export accepts only the exact ready clean root for the current commit and a credential-free repository identity. It reads one SQLite transaction in bounded pages, checks committed file identities against Git, omits absolute local paths, configured remote credential material, and raw source-file bytes, and never overwrites an existing destination. Checkpoints still contain source-derived names, signatures, and documentation. Canonical metadata, deterministic gzip chunks, and SHA-256 identities make the same compatible logical graph reproducible.',
     },
     {
       type: 'paragraph',
@@ -55,7 +55,7 @@ threadnote graph checkpoint import \\
     },
     {
       type: 'warning',
-      text: 'A digest computed from the same untrusted file proves integrity, not provenance. Obtain the expected SHA-256 digest independently, and treat derived graph structure and repository-relative identifiers as internal architecture data when sharing an artifact.',
+      text: 'A digest computed from the same untrusted file proves integrity, not provenance. Obtain the expected SHA-256 digest independently, and treat derived graph structure, names, signatures, and documentation as potentially sensitive internal architecture data. A secret embedded in source can appear in those derived fields even though raw source-file bytes and configured remote credential material are omitted.',
     },
   ],
 };

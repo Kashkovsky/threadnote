@@ -963,6 +963,7 @@ The body remains ordinary **Markdown**.
       readFile(join(root, 'website', 'src', 'pages', 'LandingPage.tsx'), 'utf8'),
       readFile(join(root, 'website', 'src', 'pages', 'FaqPage.tsx'), 'utf8'),
     ]);
+    const docs = JSON.stringify(docsSections);
     const tips = JSON.stringify(proTips);
 
     expect(landingSource).toContain('Export the exact ready, clean graph for the current commit');
@@ -977,6 +978,9 @@ The body remains ordinary **Markdown**.
     expect(tips).toContain(
       'threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:<digest>',
     );
+    expect(tips).toContain('derived names, signatures, and documentation');
+    expect(docs).toContain('source-derived names, signatures, and documentation');
+    expect(docs).toContain('A secret embedded in source can appear');
     expect(tips).toContain('Existing schema-v1 and uncited legacy memories remain recallable');
     expect(faqSource).toContain('Can I move a graph to another machine without a Workset or cloud?');
     expect(faqSource).toContain('Portable graph checkpoints are free, manual, offline files');
