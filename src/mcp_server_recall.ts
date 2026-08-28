@@ -157,7 +157,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd; infers project'),
         codeRefs: McpInput.stringOrStrings(
-          `Repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          `Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         decisions: McpInput.stringOrStrings('Reusable decisions'),
@@ -1450,7 +1450,7 @@ export function registerStoreTool(
       inputSchema: {
         callerCwd: McpInput.string('Absolute cwd for nested package/app scope'),
         codeRefs: McpInput.stringOrStrings(
-          `Repository-relative path, cgs_ symbol, or cgr_ qualified ref to capture as immutable code evidence; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          `Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to capture as immutable code evidence; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),

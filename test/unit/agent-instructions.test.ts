@@ -50,6 +50,7 @@ describe('agent instructions', () => {
       'If graph tooling is unavailable, say so',
       'Before pausing or ending meaningful work',
       '`threadnote` CLI',
+      'graph-indexed repo paths',
     ]) {
       expect(instructions).toContain(requiredText);
     }

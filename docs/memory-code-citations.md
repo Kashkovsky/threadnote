@@ -45,13 +45,16 @@ when references are present:
 
 Pass that payload to `remember_context`. Supported references are:
 
-- a safe repository-relative POSIX path, which creates a file citation;
+- a safe repository-relative POSIX path present in the exact-current graph, which creates a file citation;
 - a local `cgs_` graph handle, which normally creates a symbol citation;
 - a repository-qualified `cgr_` handle, which selects its bound repository and symbol.
 
 Callers supply locators, not hashes, status, snapshot data, or raw citation JSON. Threadnote resolves every reference
 against an exact-current ready graph and derives the citation internally. Capture is deduplicated and atomic: if one
 explicit reference is invalid, absent, ambiguous, non-current, or changes during capture, the memory is not written.
+
+Path references are graph locators, not arbitrary tracked-file readers. A tracked file that is outside the graph
+inventory cannot be cited by path; choose a path or stable handle that is present in the exact-current graph.
 
 Capture never starts or refreshes indexing. Check the graph first and prepare it explicitly when needed:
 

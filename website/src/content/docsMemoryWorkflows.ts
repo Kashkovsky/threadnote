@@ -63,7 +63,7 @@ export const memoryWorkflowsDocsSection: DocsSection = {
       body: [
         {
           type: 'paragraph',
-          text: 'Use a repeatable --code-ref in CLI remember or handoff, or codeRefs in remember_context and review_session_context, when a memory makes a consequential claim about source. A reference may be a safe repository-relative path, a local cgs_ symbol handle, or a repository-qualified cgr_ handle. A path captures the file; a symbol handle captures the indexed source fragment.',
+          text: 'Use a repeatable --code-ref in CLI remember or handoff, or codeRefs in remember_context and review_session_context, when a memory makes a consequential claim about source. A reference may be a safe graph-indexed repository-relative path, a local cgs_ symbol handle, or a repository-qualified cgr_ handle. A path captures the indexed file; a symbol handle captures the indexed source fragment. Tracked files outside the exact-current graph inventory are not valid path references.',
         },
         {
           type: 'code',

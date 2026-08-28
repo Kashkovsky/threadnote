@@ -30,7 +30,7 @@ and `topic` identities; update memories with `replaceUri`. Store routine durable
 directly; use `review_session_context` only for additional session-extracted candidates requiring explicit approval.
 Before pausing or ending meaningful work, leave a concise handoff.
 
-For consequential source-backed claims, cite repo-relative paths/returned `cgs_`/`cgr_` handles via MCP `codeRefs` or
+For consequential source claims, cite graph-indexed repo paths or returned `cgs_`/`cgr_` handles via MCP `codeRefs` or
 repeated CLI `--code-ref`. Capture needs a ready exact-current graph; it never indexes. Replacement without refs clears
 citations. Legacy uncited memories stay recallable at coarse/unknown freshness; see
 [Citations](https://threadnote.io/docs/code-citations/).

@@ -40,6 +40,14 @@ describe('Effect CLI', () => {
     expect(disable.stdout).toContain('--apply');
   });
 
+  it('describes citation paths as exact-current graph locators', async () => {
+    const remember = await runCli(['remember', '--help']);
+    const handoff = await runCli(['handoff', '--help']);
+
+    expect(remember.stdout).toContain('Graph-indexed repository-relative path');
+    expect(handoff.stdout).toContain('Graph-indexed repository-relative path');
+  });
+
   it('keeps regular and negated boolean flags optional with their historical defaults', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-boolean-defaults-'));
     const environment = {

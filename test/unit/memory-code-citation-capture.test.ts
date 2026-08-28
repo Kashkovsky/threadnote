@@ -112,6 +112,28 @@ describe('memory code citation capture and validation', () => {
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );
 
+  effectIt.effect('requires path references to be present in the exact-current graph', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-unindexed-path-'});
+      const fixture = citationFixture(root);
+
+      const failure = yield* captureMemoryCodeCitations(CONFIG, {
+        callerCwd: root,
+        refs: ['.github/workflows/ci.yml'],
+      }).pipe(provideTestLayer(fixture.layer), Effect.flip);
+
+      expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
+      if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+      expect(failure.message).toBe(
+        'Code citation path is not present in the exact current graph: .github/workflows/ci.yml. Use a graph-indexed repository-relative path.',
+      );
+      expect(failure.message).not.toContain(root);
+      expect(failure.recovery).toBeUndefined();
+      expect(fixture.leases()).toEqual({acquired: 1, released: 1});
+    }).pipe(provideTestLayer(StandaloneBrokerLayer)),
+  );
+
   effectIt.effect('routes qualified-reference recovery through its published Workset before unchanged retry', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
