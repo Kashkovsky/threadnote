@@ -1,5 +1,6 @@
 import {describe, expect, it} from 'vitest';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import {TREE_SITTER_RUNTIME_CACHE_IDENTITY} from '../../src/code_graph/tree_sitter/runtime.js';
 
 interface GrammarManifestEntry {
   readonly abi: number;
@@ -12,7 +13,48 @@ interface GrammarManifestEntry {
   readonly version: string;
 }
 
+interface RuntimeManifestEntry {
+  readonly id: string;
+  readonly path: string;
+  readonly sha256: string;
+  readonly source: string;
+  readonly version: string;
+}
+
 describe('code graph grammar assets', () => {
+  it('keeps the parser package, lockfile, vendored runtime, and cache identity on one exact release', async () => {
+    const [assetManifest, lockfile, packageManifest, installedManifest, thirdPartyNotices] = await Promise.all([
+      Bun.file('assets/code-graph/manifest.json').json() as Promise<{readonly runtime: RuntimeManifestEntry}>,
+      Bun.file('bun.lock').text(),
+      Bun.file('package.json').json() as Promise<{
+        readonly dependencies?: Readonly<Record<string, string>>;
+      }>,
+      Bun.file('node_modules/web-tree-sitter/package.json').json() as Promise<{readonly version?: string}>,
+      Bun.file('THIRD_PARTY.md').text(),
+    ]);
+    const expectedVersion = packageManifest.dependencies?.['web-tree-sitter'];
+    const runtime = assetManifest.runtime;
+    const [packagedRuntime, vendoredRuntime] = await Promise.all([
+      Bun.file('node_modules/web-tree-sitter/web-tree-sitter.wasm').arrayBuffer(),
+      Bun.file(`assets/code-graph/${runtime.path}`).arrayBuffer(),
+    ]);
+    const packagedSha256 = new Bun.CryptoHasher('sha256').update(packagedRuntime).digest('hex');
+    const vendoredSha256 = new Bun.CryptoHasher('sha256').update(vendoredRuntime).digest('hex');
+
+    expect(expectedVersion).toMatch(/^\d+\.\d+\.\d+$/u);
+    expect(installedManifest.version).toBe(expectedVersion);
+    expect(lockfile).toContain(`"web-tree-sitter": ["web-tree-sitter@${expectedVersion}"`);
+    expect(thirdPartyNotices).toContain(`\`web-tree-sitter\` ${expectedVersion} (MIT)`);
+    expect(runtime).toMatchObject({
+      id: 'web-tree-sitter',
+      sha256: vendoredSha256,
+      source: `https://github.com/tree-sitter/tree-sitter/tree/v${expectedVersion}/lib/binding_web`,
+      version: expectedVersion,
+    });
+    expect(packagedSha256).toBe(vendoredSha256);
+    expect(TREE_SITTER_RUNTIME_CACHE_IDENTITY).toBe(`web-tree-sitter:${expectedVersion}:${vendoredSha256}`);
+  });
+
   it('maps every runtime language asset to checksum-pinned release metadata', async () => {
     const manifest = (await Bun.file('assets/code-graph/manifest.json').json()) as {
       readonly grammars: Readonly<Record<string, GrammarManifestEntry>>;
