@@ -21,7 +21,12 @@ import {
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
 import {legacyProcessDoctorCheck} from './process_diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
-import {readTelemetryConfiguration, telemetryEnvironmentOptOut} from './telemetry/config.js';
+import {
+  TELEMETRY_CONSENT_VERSION,
+  readTelemetryConfiguration,
+  readTelemetryConsentRenewal,
+  telemetryEnvironmentOptOut,
+} from './telemetry/config.js';
 import {
   currentRecallCorpusGeneration,
   loadRecallIndexData,
@@ -214,6 +219,14 @@ export const telemetryDoctorCheck = Effect.fn('lifecycle.telemetryDoctorCheck')(
   const system = yield* SystemInfo;
   const loaded = yield* Effect.result(readTelemetryConfiguration(config));
   if (Result.isFailure(loaded)) {
+    const renewal = yield* readTelemetryConsentRenewal(config).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (renewal !== undefined) {
+      return {
+        detail: `disabled; consent v${renewal.consentVersion} needs explicit renewal for v${TELEMETRY_CONSENT_VERSION}; run \`threadnote telemetry enable\`, then \`threadnote telemetry enable --apply\` after review`,
+        name: 'anonymous telemetry',
+        status: 'warn' as const,
+      };
+    }
     return {
       detail: 'invalid or unreadable configuration; telemetry fails closed',
       name: 'anonymous telemetry',

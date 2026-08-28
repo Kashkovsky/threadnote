@@ -110,14 +110,29 @@ describe('telemetry commands', () => {
         yield* runTelemetryEnable(config, {apply: true});
         const file = yield* telemetryConfigurationPath(config);
         const previous = JSON.parse(yield* fs.readFileString(file)) as Record<string, unknown>;
-        yield* fs.writeFileString(file, `${JSON.stringify({...previous, consentVersion: 4}, undefined, 2)}\n`);
+        const previousEndpoint = 'https://collector.example/v1/traces';
+        yield* fs.writeFileString(
+          file,
+          `${JSON.stringify({...previous, consentVersion: 4, endpoint: previousEndpoint}, undefined, 2)}\n`,
+        );
+
+        const status = yield* captureConsole(runTelemetryStatus(config));
+        expect(status.output).toContain('does not cover the current version 5 data contract');
+        expect(status.output).toContain('threadnote telemetry enable --apply');
+        expect(status.output).toContain(`Endpoint: ${previousEndpoint}`);
 
         const preview = yield* captureConsole(runTelemetryEnable(config, {}));
+        expect(preview.output).toContain('Existing consent version 4 remains fail-closed');
+        expect(preview.output).toContain(`Endpoint: ${previousEndpoint}`);
         expect(preview.output).toContain('No changes made. Re-run with --apply');
         expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({consentVersion: 4, enabled: true});
 
         yield* runTelemetryEnable(config, {apply: true});
-        expect(yield* readTelemetryConfiguration(config)).toMatchObject({consentVersion: 5, enabled: true});
+        expect(yield* readTelemetryConfiguration(config)).toMatchObject({
+          consentVersion: 5,
+          enabled: true,
+          endpoint: previousEndpoint,
+        });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

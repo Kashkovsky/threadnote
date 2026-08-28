@@ -75,6 +75,22 @@
         "Recovery migration finished. Run `threadnote repair`, then verify memory/resource/share counts in `threadnote manager`.",
         "An already-installed verified 3.x generation model is adopted and selected without downloading it again."
       ]
+    },
+    {
+      "id": "telemetry-consent-v5-renewal",
+      "introducedIn": "4.4.0",
+      "title": "Review the current anonymous telemetry contract",
+      "description": [
+        "Threadnote 4.4 added bounded Context Brief citation-quality diagnostics, so an earlier telemetry opt-in no longer covers the current data contract.",
+        "Telemetry remains off and the previous configuration is left untouched until you review the complete current preview and explicitly apply consent again.",
+        "The preview preserves your previously selected endpoint by default; it never sends telemetry or writes configuration."
+      ],
+      "commandArgs": ["telemetry", "enable"],
+      "instructions": [
+        "Current anonymous telemetry consent is enabled. Restart connected MCP clients that started before this consent change."
+      ],
+      "requiresExplicitTelemetryConsent": true,
+      "requiresTelemetryConsentRenewal": true
     }
   ]
 }
