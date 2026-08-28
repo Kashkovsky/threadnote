@@ -166,6 +166,11 @@ describe('dependency-aware CI workflow', () => {
     ]);
   });
 
+  it('serializes the SQLite-heavy workset projection suite outside ordinary shards', () => {
+    expect(ciLongRunningTestGroups['heavy-state']).toContain('test/unit/code-graph.workset-catalog-projection.test.ts');
+    expect(ciSerializedLongRunningTestGroups.has('heavy-state')).toBe(true);
+  });
+
   it('runs the actual-runtime citation gate on quality-relevant changes', () => {
     const ci = workflow('.github/workflows/ci.yml');
     const recallQuality = ci.jobs['recall-quality']!;

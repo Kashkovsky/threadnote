@@ -3,6 +3,12 @@ import {codeGraphWorksetRoutingExactKeys} from './routing_normalization.js';
 import type {CodeGraphWorksetRoutingSymbolV1} from './types.js';
 
 const ROUTING_ROW_STORAGE_CHARGE_BYTES = 256;
+export const CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM = 512;
+
+export interface CodeGraphWorksetRoutingProjectionPageOptions {
+  readonly pageBytesMaximum?: number;
+  readonly pageSymbolsMaximum?: number;
+}
 
 /** Canonical additive charge for every routing row and derived exact-key row. */
 export function codeGraphWorksetRoutingProjectionLogicalBytes(
@@ -41,6 +47,55 @@ export function codeGraphWorksetRoutingProjectionLogicalBytesAppend(
     }
   }
   return bytes;
+}
+
+/** Lazily partition one source page by both catalog writer bounds. */
+export function* codeGraphWorksetRoutingProjectionPages(
+  symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
+  options: CodeGraphWorksetRoutingProjectionPageOptions = {},
+): Generator<readonly CodeGraphWorksetRoutingSymbolV1[]> {
+  const pageBytesMaximum = boundedPageLimit(
+    options.pageBytesMaximum,
+    CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum,
+    'byte',
+  );
+  const pageSymbolsMaximum = boundedPageLimit(
+    options.pageSymbolsMaximum,
+    CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM,
+    'symbol',
+  );
+  let page: CodeGraphWorksetRoutingSymbolV1[] = [];
+  let pageBytes = 0;
+  for (const symbol of symbols) {
+    // The charge is additive, so calculate each symbol once instead of
+    // serializing its complete routing surface twice at every boundary.
+    const symbolBytes = codeGraphWorksetRoutingProjectionLogicalBytes([symbol]);
+    if (symbolBytes > pageBytesMaximum) {
+      throw new CodeGraphWorksetCatalogError(
+        'capacity',
+        'A routing symbol exceeds the supported projection page bound.',
+      );
+    }
+    if (page.length > 0 && (page.length === pageSymbolsMaximum || pageBytes > pageBytesMaximum - symbolBytes)) {
+      yield page;
+      page = [];
+      pageBytes = 0;
+    }
+    page.push(symbol);
+    pageBytes += symbolBytes;
+  }
+  if (page.length > 0) yield page;
+}
+
+function boundedPageLimit(value: number | undefined, maximum: number, label: string): number {
+  const selected = value ?? maximum;
+  if (!Number.isSafeInteger(selected) || selected < 1 || selected > maximum) {
+    throw new CodeGraphWorksetCatalogError(
+      'invalid-input',
+      `Workset routing projection page ${label} bound is invalid.`,
+    );
+  }
+  return selected;
 }
 
 function projectionCapacityError(): CodeGraphWorksetCatalogError {

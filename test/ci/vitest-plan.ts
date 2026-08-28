@@ -39,6 +39,7 @@ export const ciLongRunningTestGroups = {
     'test/unit/code-graph.languages.test.ts',
   ],
   'heavy-state': [
+    'test/unit/code-graph.workset-catalog-projection.test.ts',
     'test/unit/code-graph.removed-view-cleanup.property.test.ts',
     'test/unit/code-graph.view-removal.property.test.ts',
     'test/unit/code-graph.worktree-reconciliation.test.ts',
