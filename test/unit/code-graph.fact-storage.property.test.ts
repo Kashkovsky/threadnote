@@ -29,6 +29,10 @@ const factArbitrary = fc
     symbols: [],
   }));
 
+const repositoryTextArbitrary = fc
+  .array(fc.integer({max: 0x9f, min: 0}), {maxLength: 64, minLength: 1})
+  .map(codeUnits => String.fromCharCode(...codeUnits));
+
 describe('compact code graph fact storage', () => {
   it('round-trips legacy and compact rows deterministically without mutating facts', () => {
     fc.assert(
@@ -96,6 +100,68 @@ describe('compact code graph fact storage', () => {
     expect(decodeStoredCodeGraphFact(JSON.stringify(legacyEnvelope), facts.path).facts).toEqual(facts);
   });
 
+  it('round-trips bounded repository text while keeping presentation sanitization separate', () => {
+    fc.assert(
+      fc.property(repositoryTextArbitrary, repositoryText => {
+        const span = {column: 1, endColumn: 2, endLine: 1, line: 1};
+        const facts: CodeGraphFileFacts = {
+          derivationInputs: {
+            rationale: [{documentation: '', line: 1, marker: 'test', name: repositoryText}],
+          },
+          diagnostics: [repositoryText],
+          edges: [
+            {
+              confidence: 1,
+              evidencePath: 'docs/control.md',
+              evidenceSpan: span,
+              id: 'edge-control',
+              provenance: 'syntactic',
+              relation: 'contains',
+              sourceId: 'symbol-control',
+              sourceName: repositoryText,
+              targetName: repositoryText,
+            },
+          ],
+          path: 'docs/control.md',
+          references: [
+            {
+              aliasLookupKeys: [repositoryText],
+              edgeId: 'edge-control',
+              evidencePath: 'docs/control.md',
+              evidenceSpan: span,
+              lookupTiers: [[repositoryText]],
+              provenance: 'syntactic',
+              relation: 'contains',
+              resolutionDomain: 'document',
+              sourceId: 'symbol-control',
+              sourceName: repositoryText,
+              targetName: repositoryText,
+            },
+          ],
+          symbols: [
+            {
+              contentHash: '0'.repeat(64),
+              exported: true,
+              id: 'symbol-control',
+              kind: 'heading',
+              language: 'markdown',
+              lookupKeys: [repositoryText],
+              name: repositoryText,
+              packageName: repositoryText,
+              path: 'docs/control.md',
+              qualifiedName: repositoryText,
+              span,
+            },
+          ],
+        };
+
+        const bounded = serializeBoundedCodeGraphFact(facts);
+        expect(decodeStoredCodeGraphFact(bounded.json, facts.path).facts).toEqual(facts);
+      }),
+      {numRuns: 50},
+    );
+  });
+
   it('rejects corrupt, non-canonical, or path-mismatched envelopes', () => {
     const facts = serializeBoundedCodeGraphFact({
       diagnostics: Array.from({length: 200}, () => 'compress me'),
@@ -116,7 +182,7 @@ describe('compact code graph fact storage', () => {
 
   it('rejects malformed nested fact shapes at both persistence and decode boundaries', () => {
     fc.assert(
-      fc.property(fc.integer({max: 6, min: 0}), mutation => {
+      fc.property(fc.integer({max: 7, min: 0}), mutation => {
         const facts = richFacts();
         const candidate = structuredClone(facts) as unknown as Record<string, unknown>;
         const symbols = candidate.symbols as Array<Record<string, unknown>>;
@@ -143,6 +209,9 @@ describe('compact code graph fact storage', () => {
             break;
           case 6:
             candidate.derivationInputs = {rationale: [{documentation: '', line: -1, marker: 'why', name: 'x'}]};
+            break;
+          case 7:
+            candidate.derivationInputs = {rationale: [{documentation: '', line: 1, marker: 'why', name: ''}]};
             break;
         }
         expect(() => serializeBoundedCodeGraphFact(candidate as unknown as CodeGraphFileFacts)).toThrow();

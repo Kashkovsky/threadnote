@@ -53,6 +53,7 @@ import {
   renderCodeGraphAnalysis,
   type CodeGraphAnalysisView,
 } from './code_graph/analysis_render.js';
+import {sanitizeCodeGraphPresentationText} from './code_graph/presentation_text.js';
 import {AgentResponseBudgetTooSmallError} from './evaluation/agent-response.js';
 import {codeGraphMcpResponse, compactCodeGraphMcpResult} from './mcp_code_graph_projection.js';
 import {argumentError, mcpErrorResult, requiredText, type RuntimeConfig} from './mcp_server_common.js';
@@ -1096,8 +1097,9 @@ function mutableAnalysisArray<Value>(value: readonly Value[]): Value[] {
 
 function compactCodeGraphAnalysisStrings(value: unknown, observation: CodeGraphMcpAnalysisStringObservation): unknown {
   if (typeof value === 'string') {
-    const compact = compactMcpUtf8Text(value, 512);
-    if (compact !== value) observation.truncated += 1;
+    const sanitized = sanitizeCodeGraphPresentationText(value);
+    const compact = compactMcpUtf8Text(sanitized, 512);
+    if (compact !== sanitized) observation.truncated += 1;
     return compact;
   }
   if (Array.isArray(value)) return value.map(item => compactCodeGraphAnalysisStrings(item, observation));

@@ -44,7 +44,7 @@ export function parseCodeGraphFileFacts(value: unknown): CodeGraphFileFacts {
   const input = object(value, 'Code graph file facts');
   exactKeys(input, ['diagnostics', 'edges', 'path', 'symbols'], ['derivationInputs', 'monikers', 'references']);
   repositoryPath(input.path, 'File-fact path');
-  stringArray(input.diagnostics, 'File-fact diagnostics', false);
+  stringArray(input.diagnostics, 'File-fact diagnostics', TEXT_LENGTH_MAXIMUM);
   array(input.symbols, 'File-fact symbols').forEach((symbol, index) => parseSymbol(symbol, index));
   array(input.edges, 'File-fact edges').forEach((edge, index) => parseEdge(edge, index));
   if (input.references !== undefined) {
@@ -77,11 +77,11 @@ function parseSymbol(value: unknown, index: number): CodeGraphSymbol {
   shortText(input.id, 'Symbol ID');
   shortText(input.kind, 'Symbol kind');
   shortText(input.language, 'Symbol language');
-  if (input.lookupKeys !== undefined) stringArray(input.lookupKeys, 'Symbol lookup keys', true);
-  shortText(input.name, 'Symbol name');
-  optionalShortText(input.packageName, 'Symbol package name');
+  if (input.lookupKeys !== undefined) nonEmptyStringArray(input.lookupKeys, 'Symbol lookup keys', false);
+  boundedNonEmptyText(input.name, 'Symbol name');
+  optionalBoundedNonEmptyText(input.packageName, 'Symbol package name');
   repositoryPath(input.path, 'Symbol path');
-  shortText(input.qualifiedName, 'Symbol qualified name');
+  boundedNonEmptyText(input.qualifiedName, 'Symbol qualified name');
   optionalShortText(input.resolutionDomain, 'Symbol resolution domain');
   optionalShortText(input.resolutionScopeId, 'Symbol resolution scope');
   optionalText(input.signature, 'Symbol signature');
@@ -103,9 +103,9 @@ function parseEdge(value: unknown, index: number): CodeGraphEdge {
   provenance(input.provenance, 'Edge provenance');
   relation(input.relation, 'Edge relation');
   optionalShortText(input.sourceId, 'Edge source ID');
-  shortText(input.sourceName, 'Edge source name');
+  boundedNonEmptyText(input.sourceName, 'Edge source name');
   optionalShortText(input.targetId, 'Edge target ID');
-  shortText(input.targetName, 'Edge target name');
+  boundedNonEmptyText(input.targetName, 'Edge target name');
   return input as unknown as CodeGraphEdge;
 }
 
@@ -126,21 +126,23 @@ function parseReference(value: unknown, index: number): CodeGraphReference {
     ],
     ['aliasLookupKeys', 'arity', 'exportedOnly', 'sourceId'],
   );
-  if (input.aliasLookupKeys !== undefined) stringArray(input.aliasLookupKeys, 'Reference alias lookup keys', true);
+  if (input.aliasLookupKeys !== undefined) {
+    nonEmptyStringArray(input.aliasLookupKeys, 'Reference alias lookup keys', false);
+  }
   optionalNonNegativeInteger(input.arity, 'Reference arity');
   shortText(input.edgeId, 'Reference edge ID');
   repositoryPath(input.evidencePath, 'Reference evidence path');
   parseSpan(input.evidenceSpan, 'Reference evidence span');
   if (input.exportedOnly !== undefined) bool(input.exportedOnly, 'Reference exported-only state');
   array(input.lookupTiers, 'Reference lookup tiers').forEach((tier, tierIndex) =>
-    stringArray(tier, `Reference lookup tier ${tierIndex}`, true),
+    nonEmptyStringArray(tier, `Reference lookup tier ${tierIndex}`, false),
   );
   provenance(input.provenance, 'Reference provenance');
   relation(input.relation, 'Reference relation');
   shortText(input.resolutionDomain, 'Reference resolution domain');
   optionalShortText(input.sourceId, 'Reference source ID');
-  shortText(input.sourceName, 'Reference source name');
-  shortText(input.targetName, 'Reference target name');
+  boundedNonEmptyText(input.sourceName, 'Reference source name');
+  boundedNonEmptyText(input.targetName, 'Reference target name');
   return input as unknown as CodeGraphReference;
 }
 
@@ -154,7 +156,7 @@ function parseDerivationInputs(value: unknown): void {
     text(rationale.documentation, 'Rationale documentation');
     positiveInteger(rationale.line, 'Rationale line');
     shortText(rationale.marker, 'Rationale marker');
-    shortText(rationale.name, 'Rationale name');
+    boundedNonEmptyText(rationale.name, 'Rationale name');
   });
 }
 
@@ -205,10 +207,20 @@ function text(value: unknown, label: string, maximum = TEXT_LENGTH_MAXIMUM): ass
 }
 
 function shortText(value: unknown, label: string): asserts value is string {
-  text(value, label, SHORT_TEXT_LENGTH_MAXIMUM);
-  if (value.length === 0 || containsControlCharacter(value)) {
+  boundedNonEmptyText(value, label);
+  if (containsControlCharacter(value)) {
     throw new CodeGraphFactValidationError(`${label} must be non-empty and control-free.`);
   }
+}
+
+/**
+ * Repository-controlled semantic text may contain terminal controls. It is
+ * persisted verbatim for graph fidelity and sanitized only at presentation
+ * boundaries; structural IDs and paths remain control-free.
+ */
+function boundedNonEmptyText(value: unknown, label: string): asserts value is string {
+  text(value, label, SHORT_TEXT_LENGTH_MAXIMUM);
+  if (value.length === 0) throw new CodeGraphFactValidationError(`${label} must be non-empty.`);
 }
 
 function optionalText(value: unknown, label: string): void {
@@ -219,10 +231,20 @@ function optionalShortText(value: unknown, label: string): void {
   if (value !== undefined) shortText(value, label);
 }
 
-function stringArray(value: unknown, label: string, controlFree: boolean): void {
+function optionalBoundedNonEmptyText(value: unknown, label: string): void {
+  if (value !== undefined) boundedNonEmptyText(value, label);
+}
+
+function stringArray(value: unknown, label: string, maximum = SHORT_TEXT_LENGTH_MAXIMUM): void {
+  for (const entry of array(value, label)) {
+    text(entry, `${label} entry`, maximum);
+  }
+}
+
+function nonEmptyStringArray(value: unknown, label: string, controlFree: boolean): void {
   for (const entry of array(value, label)) {
     if (controlFree) shortText(entry, `${label} entry`);
-    else text(entry, `${label} entry`, SHORT_TEXT_LENGTH_MAXIMUM);
+    else boundedNonEmptyText(entry, `${label} entry`);
   }
 }
 

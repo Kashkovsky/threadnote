@@ -7,6 +7,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {afterEach, describe, expect, it} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {codeGraphBlobReuseCacheKey} from '../../src/code_graph/blob_reuse.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {CODE_GRAPH_CACHE_TRANSACTION_LIMITS} from '../../src/code_graph/cache_capacity.js';
 import {
   cachedCodeGraphFactBytes,
@@ -5912,7 +5913,7 @@ function structuredCacheFile(path: string, content: string): CodeGraphInventoryF
 
 function symbol(id: string, name: string, lookupKeys: readonly string[]): CodeGraphSymbol {
   return {
-    contentHash: `hash-${id}`,
+    contentHash: sha256HexSync(id),
     exported: true,
     id,
     kind: 'function',
