@@ -715,6 +715,34 @@ describe('manager http API', () => {
     }
   });
 
+  it('serves an empty memory tree from a fresh Threadnote home', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-manager-fresh-'));
+    homes.push(home);
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'manifest.yaml'),
+      user: 'denys',
+    };
+    const server = await startServer(config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/tree`, {headers: {authorization: 'Bearer secret'}});
+      const body = (await response.json()) as {readonly tree?: TreeNode};
+
+      expect(response.status).toBe(200);
+      expect(body.tree).toMatchObject({
+        children: [],
+        isDir: true,
+        name: 'memories',
+        relativePath: '',
+        uri: 'threadnote://user/denys/memories',
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
   effectIt.effect('serializes raw personal Manager saves with the managed-memory URI lock', () =>
     TestClock.withLive(
       Effect.scoped(
