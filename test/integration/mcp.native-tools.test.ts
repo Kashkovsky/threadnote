@@ -2373,14 +2373,11 @@ describe('Threadnote MCP toolsets', () => {
         execFileSync('git', ['add', '.'], {cwd: repository});
         execFileSync('git', ['commit', '-qm', 'fixture'], {cwd: repository});
 
-        const first = await client.callTool(
-          {
-            arguments: {callerCwd: repository, operation: 'query', query: 'beforeSessionWatch'},
-            name: 'inspect_code_graph',
-          },
-          undefined,
-          {timeout: 30_000},
-        );
+        const first = await callCodeGraphUntilReady(client, {
+          callerCwd: repository,
+          operation: 'query',
+          query: 'beforeSessionWatch',
+        });
         expect(first.structuredContent).toMatchObject({
           nodes: expect.arrayContaining([expect.objectContaining({name: 'beforeSessionWatch'})]),
         });
