@@ -36,7 +36,7 @@ const questions = [
   {
     question: 'Do I need a Workset to use code citations or Context Brief?',
     answer:
-      'No. For an ordinary one-repository task, pass the absolute callerCwd—or run the CLI from that checkout—and use its ready current graph. A named, explicitly prepared Workset is only for bounded multi-repository evidence. Citation validation and queries never fan out cold graph builds or silently start indexing.',
+      'No. For an ordinary one-repository task, pass the absolute callerCwd—or run the CLI from that checkout—and use its ready current graph. A named, explicitly prepared Workset is only for bounded multi-repository evidence. Citation writes never start indexing implicitly: unavailable evidence returns a recovery receipt. Queries against a prepared Workset use only its published ready generation and never fan out cold graph builds.',
   },
   {
     question: 'Which agents can use it?',

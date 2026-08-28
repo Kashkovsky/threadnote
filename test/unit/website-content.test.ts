@@ -936,7 +936,8 @@ The body remains ordinary **Markdown**.
     expect(faqSource).toContain('v1 and other uncited memories stay recallable');
     expect(faqSource).toContain('Do I need a Workset to use code citations or Context Brief?');
     expect(faqSource).toContain('That warning is about the link, not the memory');
-    expect(faqSource).toContain('never fan out cold graph builds or silently start indexing');
+    expect(faqSource).toContain('Citation writes never start indexing implicitly');
+    expect(faqSource).toContain('never fan out cold graph builds');
   });
 
   it('surfaces the shipped 4.4 graph isolation contract across Home, Pro Tips, and FAQ', async () => {
