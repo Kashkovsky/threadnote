@@ -1961,7 +1961,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   }, 40_000);
 
-  it('returns a ready stale graph without waiting for refresh during dirty and clean repository changes', async () => {
+  it('serves ready stale graphs and rejects cited replacements with typed recovery before mutation', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const repository = join(fixture.root, 'stale-ready-repository');
@@ -1990,6 +1990,28 @@ describe('Threadnote MCP toolsets', () => {
         const firstSnapshotId = (first.structuredContent as {readonly snapshot?: {readonly id?: unknown}} | undefined)
           ?.snapshot?.id;
         expect(typeof firstSnapshotId).toBe('string');
+        const citationTopic = 'deferred-citation-retry';
+        const citationUri = `threadnote://user/test-user/memories/durable/projects/threadnote/${citationTopic}.md`;
+        const citationPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'durable',
+          'projects',
+          'threadnote',
+          `${citationTopic}.md`,
+        );
+        await callText(client, 'remember_context', {
+          callerCwd: repository,
+          kind: 'durable',
+          project: 'threadnote',
+          text: 'Original memory that must survive a rejected cited replacement.',
+          topic: citationTopic,
+        });
+        const citationBefore = await readFile(citationPath, 'utf8');
 
         const gitCommonDirectory = await realpath(
           execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
@@ -2036,6 +2058,48 @@ describe('Threadnote MCP toolsets', () => {
             snapshot: {commit: indexedCommit, id: firstSnapshotId},
           });
           expect((dirtyStale.structuredContent as {readonly state?: unknown} | undefined)?.state).toBeUndefined();
+
+          const rejectedCitation = await client.callTool(
+            {
+              arguments: {
+                callerCwd: repository,
+                codeRefs: ['src/index.ts'],
+                kind: 'durable',
+                project: 'threadnote',
+                replaceUri: citationUri,
+                text: 'This replacement must remain unapplied until exact-current graph evidence exists.',
+                topic: citationTopic,
+              },
+              name: 'remember_context',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          expect(rejectedCitation.isError).toBe(true);
+          expect(rejectedCitation.structuredContent).toMatchObject({
+            code: 'exact-current-evidence-unavailable',
+            graph: {readySnapshot: 'available', stale: true},
+            indexingStarted: false,
+            operation: 'remember_context',
+            recovery: {
+              action: 'index-current-graph',
+              arguments: [],
+              command: 'threadnote graph index --no-vectors',
+              retry: 'same-request',
+              runFrom: 'callerCwd',
+              target: 'callerCwd',
+            },
+            retryCondition: 'after-current-graph-ready',
+            retryable: true,
+            state: 'blocked',
+            type: 'memory-code-citation-write-recovery',
+            version: 1,
+            writeApplied: false,
+          });
+          expect(JSON.stringify(rejectedCitation.content)).toContain('No memory was written');
+          expect(JSON.stringify(rejectedCitation.content)).toContain('threadnote graph index --no-vectors');
+          expect(JSON.stringify(rejectedCitation)).not.toContain(repository);
+          await expect(readFile(citationPath, 'utf8')).resolves.toBe(citationBefore);
 
           execFileSync('git', ['add', '.'], {cwd: repository});
           execFileSync('git', ['commit', '-qm', 'clean pulled commit'], {cwd: repository});

@@ -8,7 +8,10 @@ import {decodeUtf8} from './code_graph/inventory_content.js';
 import {CodeGraphQueryService} from './code_graph/query.js';
 import {CodeGraphStore} from './code_graph/store.js';
 import type {CodeGraphStatus, CodeGraphSymbol} from './code_graph/types.js';
-import {resolveCodeGraphQualifiedRefTargets} from './code_graph/workset_query_v2.js';
+import {
+  resolveCodeGraphQualifiedRefTargets,
+  type ResolvedCodeGraphQualifiedRefTargetV1,
+} from './code_graph/workset_query_v2.js';
 import {sha256Hex} from './effect/digest.js';
 import {SystemInfo} from './effect/system.js';
 import {
@@ -22,13 +25,55 @@ import type {RuntimeConfig} from './types.js';
 const LOCAL_SYMBOL_REF = /^cgs_(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})$/u;
 const QUALIFIED_SYMBOL_REF = /^cgr_[0-9a-f]{40}$/u;
 
+export const MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND = 'threadnote graph index --no-vectors' as const;
+export const MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND = 'threadnote workset prepare' as const;
+
+export type MemoryCodeCitationCaptureRecoveryCode = 'exact-current-evidence-unavailable' | 'ready-graph-unavailable';
+
+export type MemoryCodeCitationGraphPreparationV1 =
+  | {
+      readonly action: 'index-current-graph';
+      readonly arguments: readonly [];
+      readonly command: typeof MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND;
+      readonly target: 'callerCwd';
+    }
+  | {
+      readonly action: 'prepare-workset';
+      readonly arguments: readonly [worksetName: string];
+      readonly command: typeof MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND;
+      readonly target: 'workset';
+    };
+
+export interface MemoryCodeCitationCaptureRecoveryV1 {
+  readonly code: MemoryCodeCitationCaptureRecoveryCode;
+  readonly indexingStarted: false;
+  readonly observedGraph: {
+    readonly freshness: CodeGraphStatus['freshness'];
+    readonly readySnapshot: 'absent' | 'available';
+    readonly stale: boolean;
+  };
+  readonly preparation: MemoryCodeCitationGraphPreparationV1;
+  readonly recovery: 'prepare-current-graph';
+  readonly retryCondition: 'after-current-graph-ready';
+  readonly retryable: true;
+  readonly type: 'memory-code-citation-capture-recovery';
+  readonly version: 1;
+}
+
 export class MemoryCodeCitationCaptureError extends Error {
   override readonly name = 'MemoryCodeCitationCaptureError';
+  readonly recovery?: MemoryCodeCitationCaptureRecoveryV1;
+
+  constructor(message: string, recovery?: MemoryCodeCitationCaptureRecoveryV1) {
+    super(message);
+    this.recovery = recovery;
+  }
 }
 
 interface CaptureTarget {
   readonly cwd: string;
   readonly index: number;
+  readonly preparation: MemoryCodeCitationGraphPreparationV1;
   readonly ref: string;
   readonly target: {readonly kind: 'file'; readonly path: string} | {readonly kind: 'symbol'; readonly nodeId: string};
 }
@@ -91,7 +136,7 @@ function resolveCaptureTarget(
   callerCwd: string,
   ref: string,
   index: number,
-  qualifiedByRef: ReadonlyMap<string, {readonly cwd: string; readonly nodeId: string}>,
+  qualifiedByRef: ReadonlyMap<string, ResolvedCodeGraphQualifiedRefTargetV1>,
 ) {
   return Effect.gen(function* () {
     if (QUALIFIED_SYMBOL_REF.test(ref)) {
@@ -104,17 +149,31 @@ function resolveCaptureTarget(
       return {
         cwd: target.cwd,
         index,
+        preparation:
+          target.route.kind === 'caller' ? callerGraphPreparation() : worksetGraphPreparation(target.route.name),
         ref,
         target: {kind: 'symbol', nodeId: target.nodeId},
       } satisfies CaptureTarget;
     }
     if (LOCAL_SYMBOL_REF.test(ref)) {
-      return {cwd: callerCwd, index, ref, target: {kind: 'symbol', nodeId: ref}} satisfies CaptureTarget;
+      return {
+        cwd: callerCwd,
+        index,
+        preparation: callerGraphPreparation(),
+        ref,
+        target: {kind: 'symbol', nodeId: ref},
+      } satisfies CaptureTarget;
     }
     if (ref.startsWith('cgs_')) {
       return yield* Effect.fail(new MemoryCodeCitationCaptureError(`Invalid local code graph reference: ${ref}.`));
     }
-    return {cwd: callerCwd, index, ref, target: {kind: 'file', path: ref}} satisfies CaptureTarget;
+    return {
+      cwd: callerCwd,
+      index,
+      preparation: callerGraphPreparation(),
+      ref,
+      target: {kind: 'file', path: ref},
+    } satisfies CaptureTarget;
   });
 }
 
@@ -133,7 +192,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
     })
     .pipe(Effect.mapError(error => captureError(cwd, error)));
   const snapshot = yield* Effect.try({
-    try: () => requireExactCurrentSnapshot(before),
+    try: () => requireExactCurrentSnapshot(before, captureGroupPreparation(targets)),
     catch: cause => captureError(cwd, cause),
   });
   return yield* Effect.scoped(
@@ -383,18 +442,73 @@ function createCitation(input: Parameters<typeof createMemoryCodeCitation>[0]) {
   });
 }
 
-function requireExactCurrentSnapshot(status: CodeGraphStatus): NonNullable<CodeGraphStatus['readySnapshot']> {
+function requireExactCurrentSnapshot(
+  status: CodeGraphStatus,
+  preparation: MemoryCodeCitationGraphPreparationV1,
+): NonNullable<CodeGraphStatus['readySnapshot']> {
   if (status.readySnapshot === undefined) {
     throw new MemoryCodeCitationCaptureError(
-      'Code citations require an already-published ready graph; run `threadnote graph status` and prepare it first.',
+      `Code citations require an already-published ready graph; ${captureRecoveryMessage(preparation)} No indexing was started.`,
+      captureRecovery(status, 'ready-graph-unavailable', preparation),
     );
   }
   if (status.stale || status.freshness !== 'current') {
     throw new MemoryCodeCitationCaptureError(
-      'Code citations require exact current graph evidence; wait for indexing to finish and retry.',
+      `Code citations require exact current graph evidence; ${captureRecoveryMessage(preparation)} No indexing was started.`,
+      captureRecovery(status, 'exact-current-evidence-unavailable', preparation),
     );
   }
   return status.readySnapshot;
+}
+
+function captureRecovery(
+  status: CodeGraphStatus,
+  code: MemoryCodeCitationCaptureRecoveryCode,
+  preparation: MemoryCodeCitationGraphPreparationV1,
+): MemoryCodeCitationCaptureRecoveryV1 {
+  return {
+    code,
+    indexingStarted: false,
+    observedGraph: {
+      freshness: status.freshness,
+      readySnapshot: status.readySnapshot === undefined ? 'absent' : 'available',
+      stale: status.stale,
+    },
+    preparation,
+    recovery: 'prepare-current-graph',
+    retryCondition: 'after-current-graph-ready',
+    retryable: true,
+    type: 'memory-code-citation-capture-recovery',
+    version: 1,
+  };
+}
+
+function callerGraphPreparation(): MemoryCodeCitationGraphPreparationV1 {
+  return {
+    action: 'index-current-graph',
+    arguments: [],
+    command: MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND,
+    target: 'callerCwd',
+  };
+}
+
+function worksetGraphPreparation(worksetName: string): MemoryCodeCitationGraphPreparationV1 {
+  return {
+    action: 'prepare-workset',
+    arguments: [worksetName],
+    command: MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND,
+    target: 'workset',
+  };
+}
+
+function captureGroupPreparation(targets: readonly CaptureTarget[]): MemoryCodeCitationGraphPreparationV1 {
+  return targets.find(target => target.preparation.target === 'callerCwd')?.preparation ?? targets[0]!.preparation;
+}
+
+function captureRecoveryMessage(preparation: MemoryCodeCitationGraphPreparationV1): string {
+  return preparation.target === 'callerCwd'
+    ? `run \`${preparation.command}\` from callerCwd, then retry.`
+    : `prepare the routed Workset ${JSON.stringify(preparation.arguments[0])} with \`${preparation.command} <workset>\`, then retry.`;
 }
 
 function sameExactSnapshot(before: CodeGraphStatus, after: CodeGraphStatus): boolean {
