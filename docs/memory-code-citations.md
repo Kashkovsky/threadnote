@@ -57,8 +57,15 @@ Capture never starts or refreshes indexing. Check the graph first and prepare it
 
 ```sh
 threadnote graph status
-threadnote graph query --freshness current --query RetryPolicy
+threadnote graph index --no-vectors
 ```
+
+When an MCP citation write reaches a missing, stale, or deferred graph admission state, it fails before changing memory
+and returns a `memory-code-citation-write-recovery` receipt in `structuredContent`. The receipt keeps paths and graph
+identities out of the response and reports `writeApplied: false` and `indexingStarted: false`. Caller-local references
+use the command above from `callerCwd`; a `cgr_` reference routed through a named Workset returns an explicit
+`threadnote workset prepare` action and the Workset name as a separate argument. Retry the same write only after the
+selected preparation reports current ready evidence.
 
 A newly written memory accepts at most eight citations. Each canonical citation line is limited to 8 KiB and total
 citation metadata to 64 KiB.
