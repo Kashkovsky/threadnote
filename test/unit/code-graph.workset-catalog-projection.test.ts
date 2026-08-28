@@ -13,6 +13,10 @@ import {
   stageCodeGraphWorksetRoutingProjectionScoped,
 } from '../../src/code_graph/workset_catalog/projection_builder.js';
 import {
+  codeGraphWorksetRoutingProjectionLogicalBytes,
+  codeGraphWorksetRoutingProjectionPages,
+} from '../../src/code_graph/workset_catalog/projection_storage.js';
+import {
   configureCodeGraphWorksetProjectionTemporaryStorage,
   inspectCodeGraphWorksetProjectionPreparationQueryPlan,
   prepareCodeGraphWorksetProjectionRoutingSurface,
@@ -20,13 +24,17 @@ import {
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CodeGraphWorksetCatalogError,
+  type CodeGraphWorksetRoutingSymbolV1,
 } from '../../src/code_graph/workset_catalog/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {CI_STANDARD_TEST_TIMEOUT_MILLISECONDS} from '../ci/vitest-plan.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 
-describe('code graph ready-snapshot workset routing projections', () => {
+// This suite is serialized in CI but deliberately keeps the ordinary regression ceiling.
+// prettier-ignore
+describe('code graph ready-snapshot workset routing projections', {timeout: CI_STANDARD_TEST_TIMEOUT_MILLISECONDS}, () => {
   const homes: string[] = [];
 
   afterEach(async () => {
@@ -329,38 +337,84 @@ describe('code graph ready-snapshot workset routing projections', () => {
     );
   });
 
-  it('splits a source page when its derived routing storage charge exceeds the catalog page bound', async () => {
-    const home = await temporaryHome(homes);
-    const identity = repositoryIdentity('storage-page-split');
-    const snapshotId = snapshotIdentity('storage-page-split');
+  it('splits a source page when its derived routing storage charge exceeds the catalog page bound', () => {
     const symbols = Array.from({length: 40}, (_, symbolIndex) =>
-      symbol(`wide${symbolIndex.toString().padStart(2, '0')}`, {
-        lookupKeys: Array.from(
+      routingSymbol(
+        `wide${symbolIndex.toString().padStart(2, '0')}`,
+        Array.from(
           {length: 64},
           (_, lookupIndex) =>
             `wide.${symbolIndex.toString().padStart(2, '0')}.${lookupIndex.toString().padStart(2, '0')}.${'x'.repeat(1_800)}`,
         ),
-      }),
-    );
-    await initializeGraph(home, identity.checkoutId);
-    seedGraph(
-      home,
-      identity,
-      [{effectiveSymbolCount: symbols.length, id: snapshotId, symbols, worktreeId: identity.worktreeId}],
-      [{snapshotId, worktreeId: identity.worktreeId}],
-    );
-
-    const staged = await runEffect(
-      Effect.scoped(
-        stageCodeGraphWorksetRoutingProjectionScoped({
-          identity,
-          pageSize: 512,
-          snapshotId,
-          threadnoteHome: home,
-        }),
       ),
     );
-    expect(staged.receipt.symbolCount).toBe(symbols.length);
+    const pages = [...codeGraphWorksetRoutingProjectionPages(symbols)];
+
+    expect(codeGraphWorksetRoutingProjectionLogicalBytes(symbols)).toBeGreaterThan(
+      CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum,
+    );
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.flat()).toEqual(symbols);
+    for (const page of pages) {
+      expect(codeGraphWorksetRoutingProjectionLogicalBytes(page)).toBeLessThanOrEqual(
+        CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum,
+      );
+    }
+  });
+
+  it('greedily partitions arbitrary routing surfaces without reordering or overflowing a page', () => {
+    const shapes = fc.array(
+      fc.record({
+        lookupKeyCount: fc.integer({min: 1, max: 8}),
+        lookupKeyPayloadBytes: fc.integer({min: 1, max: 128}),
+      }),
+      {minLength: 1, maxLength: 48},
+    );
+
+    fc.assert(
+      fc.property(
+        shapes,
+        fc.integer({min: 0, max: 16_384}),
+        fc.integer({min: 1, max: 16}),
+        (entries, extraPageBytes, pageSymbolsMaximum) => {
+          const symbols = entries.map((entry, symbolIndex) =>
+            routingSymbol(
+              `property${symbolIndex.toString().padStart(2, '0')}`,
+              Array.from(
+                {length: entry.lookupKeyCount},
+                (_, lookupIndex) => `property.${symbolIndex}.${lookupIndex}.${'x'.repeat(entry.lookupKeyPayloadBytes)}`,
+              ),
+            ),
+          );
+          const largestSymbolBytes = Math.max(
+            ...symbols.map(symbol => codeGraphWorksetRoutingProjectionLogicalBytes([symbol])),
+          );
+          const pageBytesMaximum = Math.min(
+            CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum,
+            largestSymbolBytes + extraPageBytes,
+          );
+          const options = {pageBytesMaximum, pageSymbolsMaximum};
+          const pages = [...codeGraphWorksetRoutingProjectionPages(symbols, options)];
+
+          expect(pages.flat()).toEqual(symbols);
+          expect([...codeGraphWorksetRoutingProjectionPages(symbols, options)]).toEqual(pages);
+          for (const page of pages) {
+            expect(page).not.toHaveLength(0);
+            expect(page.length).toBeLessThanOrEqual(pageSymbolsMaximum);
+            expect(codeGraphWorksetRoutingProjectionLogicalBytes(page)).toBeLessThanOrEqual(pageBytesMaximum);
+          }
+          for (let index = 0; index + 1 < pages.length; index += 1) {
+            const page = pages[index]!;
+            const next = pages[index + 1]!;
+            expect(
+              page.length === pageSymbolsMaximum ||
+                codeGraphWorksetRoutingProjectionLogicalBytes([...page, next[0]!]) > pageBytesMaximum,
+            ).toBe(true);
+          }
+        },
+      ),
+      {numRuns: 80},
+    );
   });
 
   effectIt.effect('prepares compact routing once per streamed pass instead of once per symbol page', () =>
@@ -879,6 +933,22 @@ function symbol(
     path: options.path ?? `src/${key}.ts`,
     qualifiedName: `fixture.${name}`,
     terms: options.terms ?? [{term: name.toLowerCase(), weight: 5}],
+  };
+}
+
+function routingSymbol(key: string, lookupKeys: readonly string[]): CodeGraphWorksetRoutingSymbolV1 {
+  return {
+    exported: true,
+    kind: 'function',
+    language: 'typescript',
+    lookupKeys,
+    name: key,
+    nodeId: nodeIdentity(key),
+    packageName: '@fixture/api',
+    path: `src/${key}.ts`,
+    qualifiedName: `fixture.${key}`,
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    terms: [{term: key.toLowerCase(), weight: 5}],
   };
 }
 

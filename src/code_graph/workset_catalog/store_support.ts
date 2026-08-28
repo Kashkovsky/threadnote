@@ -48,7 +48,7 @@ const CATALOG_LOCK_OPTIONS = {
   waitTimeoutMilliseconds: 30_000,
 } as const;
 const PROJECTION_INSERT_BATCH_SIZE = 256;
-export const CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM = 512;
+export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection_storage.js';
 const CATALOG_RETIREMENT_LIMIT_MAXIMUM = 1_000;
 const GENERATION_ID = /^cgwg_[0-9a-f]{40}$/u;
 const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;

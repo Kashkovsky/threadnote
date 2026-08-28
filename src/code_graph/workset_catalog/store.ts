@@ -98,8 +98,9 @@ import {
   corrupt,
 } from './store_support.js';
 import {
+  CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM,
   codeGraphWorksetRoutingProjectionLogicalBytes,
-  codeGraphWorksetRoutingProjectionLogicalBytesAppend,
+  codeGraphWorksetRoutingProjectionPages,
 } from './projection_storage.js';
 import {
   codeGraphWorksetCatalogWriteRequiredFreeBytes,
@@ -113,7 +114,7 @@ const CATALOG_LOCK_OPTIONS = {
   staleAfterMilliseconds: 30_000,
   waitTimeoutMilliseconds: 30_000,
 } as const;
-export const CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM = 512;
+export {CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM} from './projection_storage.js';
 const GENERATION_ID = /^cgwg_[0-9a-f]{40}$/u;
 const QUALIFIED_REF = /^cgr_[0-9a-f]{40}$/u;
 const CONTINUATION_CURSOR = /^cgwc_[0-9a-f]{40}$/u;
@@ -527,32 +528,7 @@ function appendFullProjectionPages(
   symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
 ) {
   return Effect.gen(function* () {
-    let page: CodeGraphWorksetRoutingSymbolV1[] = [];
-    let pageBytes = 0;
-    for (const symbol of symbols) {
-      const nextBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
-      if (
-        page.length > 0 &&
-        (page.length === CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM ||
-          nextBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum)
-      ) {
-        yield* appendCodeGraphWorksetCatalogProjectionPage(threadnoteHome, {
-          projectionDigest,
-          stagingToken,
-          symbols: page,
-        });
-        page = [];
-        pageBytes = 0;
-      }
-      pageBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
-      if (pageBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError('capacity', 'A routing symbol exceeds the supported projection page bound.'),
-        );
-      }
-      page.push(symbol);
-    }
-    if (page.length > 0) {
+    for (const page of codeGraphWorksetRoutingProjectionPages(symbols)) {
       yield* appendCodeGraphWorksetCatalogProjectionPage(threadnoteHome, {
         projectionDigest,
         stagingToken,

@@ -13,7 +13,11 @@ import {
   createCodeGraphWorksetRoutingProjection,
   normalizeCodeGraphWorksetRoutingSymbol,
 } from './projection.js';
-import {codeGraphWorksetRoutingProjectionLogicalBytesAppend} from './projection_storage.js';
+import {
+  CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM,
+  codeGraphWorksetRoutingProjectionLogicalBytesAppend,
+  codeGraphWorksetRoutingProjectionPages,
+} from './projection_storage.js';
 import {
   CODE_GRAPH_WORKSET_CATALOG_LIMITS,
   CODE_GRAPH_WORKSET_CATALOG_PROJECTOR_VERSION,
@@ -26,7 +30,7 @@ import {
 } from './types.js';
 
 const DEFAULT_PAGE_SIZE = 256;
-const MAXIMUM_PAGE_SIZE = 512;
+const MAXIMUM_PAGE_SIZE = CODE_GRAPH_WORKSET_CATALOG_PROJECTION_PAGE_MAXIMUM;
 const DEFAULT_LEASE_MILLISECONDS = 2 * 60_000;
 const MINIMUM_LEASE_MILLISECONDS = 30_000;
 const MAXIMUM_LEASE_MILLISECONDS = 10 * 60_000;
@@ -718,24 +722,9 @@ function appendBoundedProjectionPages<E, R>(
   symbols: readonly CodeGraphWorksetRoutingSymbolV1[],
 ) {
   return Effect.gen(function* () {
-    let page: CodeGraphWorksetRoutingSymbolV1[] = [];
-    let pageBytes = 0;
-    for (const symbol of symbols) {
-      const nextBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
-      if (page.length > 0 && nextBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
-        yield* sink.append(projectionDigest, stagingToken, page);
-        page = [];
-        pageBytes = 0;
-      }
-      pageBytes = codeGraphWorksetRoutingProjectionLogicalBytesAppend(pageBytes, [symbol]);
-      if (pageBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.projectionPageBytesMaximum) {
-        return yield* Effect.fail(
-          new CodeGraphWorksetCatalogError('capacity', 'A routing symbol exceeds the supported projection page bound.'),
-        );
-      }
-      page.push(symbol);
+    for (const page of codeGraphWorksetRoutingProjectionPages(symbols)) {
+      yield* sink.append(projectionDigest, stagingToken, page);
     }
-    if (page.length > 0) yield* sink.append(projectionDigest, stagingToken, page);
   });
 }
 
