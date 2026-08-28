@@ -11,13 +11,19 @@ describe('code graph production ratchet gate', () => {
         'ratchet.json',
         '--control',
         'control.json',
+        '--expected-candidate-commit',
+        'b'.repeat(40),
         '--expected-control-commit',
         'a'.repeat(40),
+        '--initial-candidate',
+        'initial-candidate.json',
       ]),
     ).toEqual({
       artifactPath: 'candidate.json',
       controlPath: 'control.json',
+      expectedCandidateCommit: 'b'.repeat(40),
       expectedControlCommit: 'a'.repeat(40),
+      initialCandidatePath: 'initial-candidate.json',
       ratchetPath: 'ratchet.json',
     });
     expect(() =>
@@ -28,6 +34,32 @@ describe('code graph production ratchet gate', () => {
         'ratchet.json',
         '--control',
         'control.json',
+      ]),
+    ).toThrow(/must be provided together/u);
+    expect(() =>
+      parseCodeGraphProductionRatchetGateArguments([
+        '--artifact',
+        'candidate.json',
+        '--ratchet',
+        'ratchet.json',
+        '--control',
+        'control.json',
+        '--expected-candidate-commit',
+        'b'.repeat(40),
+        '--expected-control-commit',
+        'a'.repeat(40),
+      ]),
+    ).toThrow(/must be provided together/u);
+    expect(() =>
+      parseCodeGraphProductionRatchetGateArguments([
+        '--artifact',
+        'candidate.json',
+        '--ratchet',
+        'ratchet.json',
+        '--control',
+        'control.json',
+        '--expected-candidate-commit',
+        'b'.repeat(40),
       ]),
     ).toThrow(/must be provided together/u);
     expect(() =>

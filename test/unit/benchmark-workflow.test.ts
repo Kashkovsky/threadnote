@@ -167,7 +167,7 @@ describe('platform benchmark workflow', () => {
     expect(paths).not.toContain('src/recall/**');
     expect(paths.join('\n').toLowerCase()).not.toContain('intellij');
     expect(job['runs-on']).toBe('ubuntu-24.04');
-    expect(job['timeout-minutes']).toBe(25);
+    expect(job['timeout-minutes']).toBe(40);
     expect(job.needs).toBe('classify');
     expect(job.if).toBe('always()');
     expect(classifier.outputs?.release_metadata_only).toBe('${{ steps.scope.outputs.release_metadata_only }}');
@@ -194,32 +194,44 @@ describe('platform benchmark workflow', () => {
       step => step.name === 'Measure the governed reduced production profile',
     );
     expect(candidateMeasurement?.run).not.toContain('--ratchet');
+    expect(candidateMeasurement?.run).toContain('code-graph-production-ratchet-Linux-');
     const staticGate = job.steps?.find(step => step.id === 'static-ratchet');
     expect(staticGate).toMatchObject({
       'continue-on-error': true,
       name: 'Enforce the reviewed static ratchet',
     });
     expect(staticGate?.run).toContain('test/ci/code-graph-production-ratchet-gate.ts');
-    const pairedMeasurement = job.steps?.find(
+    const controlMeasurement = job.steps?.find(
       step => step.name === 'Measure the exact protected-base control on the same runner',
     );
-    expect(pairedMeasurement?.if).toBe("steps.static-ratchet.outcome == 'failure'");
-    expect(pairedMeasurement?.run).toContain('git worktree add --detach "$control_root" "$BASE_SHA"');
-    expect(pairedMeasurement?.run).toContain('GITHUB_WORKSPACE="$control_root" GITHUB_SHA="$BASE_SHA"');
-    expect(pairedMeasurement?.run).toContain('code-graph-production-ratchet-control-Linux-');
+    expect(controlMeasurement?.if).toBe("steps.static-ratchet.outcome == 'failure'");
+    expect(controlMeasurement?.run).toContain('git worktree add --detach "$control_root" "$BASE_SHA"');
+    expect(controlMeasurement?.run).toContain('GITHUB_WORKSPACE="$control_root" GITHUB_SHA="$BASE_SHA"');
+    expect(controlMeasurement?.run).toContain('code-graph-production-ratchet-control-Linux-');
+    const pairedCandidateMeasurement = job.steps?.find(
+      step => step.name === 'Remeasure the exact candidate immediately after the control',
+    );
+    expect(pairedCandidateMeasurement?.if).toBe("steps.static-ratchet.outcome == 'failure'");
+    expect(pairedCandidateMeasurement?.run).toContain('code-graph-production-ratchet-paired-candidate-Linux-');
+    expect(job.steps?.indexOf(candidateMeasurement!)).toBeLessThan(job.steps?.indexOf(controlMeasurement!) ?? 0);
+    expect(job.steps?.indexOf(controlMeasurement!)).toBeLessThan(job.steps?.indexOf(pairedCandidateMeasurement!) ?? 0);
     const pairedGate = job.steps?.find(
       step => step.name === 'Enforce same-runner paired fallback without changing reviewed limits',
     );
     expect(pairedGate?.if).toBe("steps.static-ratchet.outcome == 'failure'");
+    expect(pairedGate?.run).toContain('--artifact artifacts/code-graph-production-ratchet-paired-candidate-Linux-');
+    expect(pairedGate?.run).toContain('--expected-candidate-commit "$GITHUB_SHA"');
     expect(pairedGate?.run).toContain('--expected-control-commit "$BASE_SHA"');
+    expect(pairedGate?.run).toContain('--initial-candidate artifacts/code-graph-production-ratchet-Linux-');
+    expect(job.steps?.indexOf(pairedCandidateMeasurement!)).toBeLessThan(job.steps?.indexOf(pairedGate!) ?? 0);
     expect(job.steps?.find(step => step.uses === 'actions/upload-artifact@v7')?.if).toContain(
       "needs.classify.result != 'success' || needs.classify.outputs.release_metadata_only != 'true'",
     );
-    expect(command.match(/--samples 1/g)).toHaveLength(2);
-    expect(command.match(/--profile production-large/g)).toHaveLength(2);
-    expect(command.match(/--profile-files 3000/g)).toHaveLength(2);
-    expect(command.match(/--profile-symbols 110000/g)).toHaveLength(2);
-    expect(command.match(/--minimum-free-gib 20/g)).toHaveLength(2);
+    expect(command.match(/--samples 1/g)).toHaveLength(3);
+    expect(command.match(/--profile production-large/g)).toHaveLength(3);
+    expect(command.match(/--profile-files 3000/g)).toHaveLength(3);
+    expect(command.match(/--profile-symbols 110000/g)).toHaveLength(3);
+    expect(command.match(/--minimum-free-gib 20/g)).toHaveLength(3);
     expect(
       command.match(/--ratchet test\/evaluation\/baselines\/code-graph-v1\/production-ratchet-github-linux-x64.json/g),
     ).toHaveLength(2);

@@ -72,7 +72,7 @@ jobs:
     needs: classify
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     steps:
       - name: Record strict release-metadata skip
@@ -142,16 +142,35 @@ jobs:
             --quiet \
             --output "$candidate_root/artifacts/code-graph-production-ratchet-control-Linux-${{ runner.arch }}.json"
 
+      - name: Remeasure the exact candidate immediately after the control
+        if: steps.static-ratchet.outcome == 'failure'
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+          THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '4'
+        run: >-
+          bun run bench:code-graph --
+          --profile production-large
+          --profile-files 3000
+          --profile-symbols 110000
+          --minimum-free-gib 20
+          --samples 1
+          --warmups 0
+          --quiet
+          --output artifacts/code-graph-production-ratchet-paired-candidate-Linux-${{ runner.arch }}.json
+
       - name: Enforce same-runner paired fallback without changing reviewed limits
         if: steps.static-ratchet.outcome == 'failure'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: >-
           bun test/ci/code-graph-production-ratchet-gate.ts
-          --artifact artifacts/code-graph-production-ratchet-Linux-${{ runner.arch }}.json
+          --artifact artifacts/code-graph-production-ratchet-paired-candidate-Linux-${{ runner.arch }}.json
           --ratchet test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json
           --control artifacts/code-graph-production-ratchet-control-Linux-${{ runner.arch }}.json
+          --expected-candidate-commit "$GITHUB_SHA"
           --expected-control-commit "$BASE_SHA"
+          --initial-candidate artifacts/code-graph-production-ratchet-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
         if: >-
