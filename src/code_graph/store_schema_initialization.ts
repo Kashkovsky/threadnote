@@ -17,6 +17,13 @@ import {
 import {ensureInitialReconciliationIndexes} from './store_reconciliation_core.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
 import {
+  assertCodeGraphSnapshotFileCitationSchemaMigratable,
+  CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL,
+  CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
+  CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX,
+  ensureCodeGraphSnapshotFileCitationSchema,
+} from './store_file_alias_schema.js';
+import {
   codeGraphSchemaInitializationReceiptCurrent,
   recordCodeGraphSchemaInitializationReceipt,
 } from './store_schema_receipt.js';
@@ -88,6 +95,7 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       ),
     );
   }
+  const allowLegacyReleasedAuthority = yield* assertCodeGraphSnapshotFileCitationSchemaMigratable(sql);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS repositories (
       id TEXT PRIMARY KEY NOT NULL,
@@ -149,20 +157,14 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   yield* ensureSnapshotLeaseSchema(sql);
   yield* ensureInitialReconciliationIndexes(sql);
   yield* migratePersistentExtensionTables(sql);
-  yield* sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS snapshot_files (
-      snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
-      path TEXT NOT NULL,
-      content_hash TEXT NOT NULL,
-      raw_content_hash TEXT,
-      language TEXT NOT NULL,
-      mode TEXT NOT NULL,
-      size INTEGER NOT NULL CHECK (size >= 0),
-      source TEXT NOT NULL CHECK (source IN ('commit', 'worktree')),
-      PRIMARY KEY (snapshot_id, path)
-    ) WITHOUT ROWID
-  `);
-  yield* ensureColumn(sql, 'snapshot_files', 'raw_content_hash', 'TEXT');
+  yield* sql.unsafe(CODE_GRAPH_SNAPSHOT_FILES_CURRENT_TABLE_SQL.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'));
+  yield* sql.unsafe(
+    CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX.definition.replace('CREATE INDEX', 'CREATE INDEX IF NOT EXISTS'),
+  );
+  yield* sql.unsafe(
+    CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX.definition.replace('CREATE INDEX', 'CREATE INDEX IF NOT EXISTS'),
+  );
+  yield* ensureCodeGraphSnapshotFileCitationSchema(sql, allowLegacyReleasedAuthority);
   yield* sql.unsafe(`
     CREATE TABLE IF NOT EXISTS snapshot_file_deletions (
       snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
@@ -500,11 +502,6 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
   yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_leases_expiry ON snapshot_leases(expires_at)');
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS snapshot_leases_snapshot_expiry ON snapshot_leases(snapshot_id, expires_at)',
-  );
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_blob ON snapshot_files(path, content_hash)');
-  yield* sql.unsafe('CREATE INDEX IF NOT EXISTS snapshot_files_content_hash ON snapshot_files(content_hash)');
-  yield* sql.unsafe(
-    'CREATE INDEX IF NOT EXISTS snapshot_files_raw_content_hash ON snapshot_files(raw_content_hash) WHERE raw_content_hash IS NOT NULL',
   );
   yield* sql.unsafe(`
     CREATE INDEX IF NOT EXISTS file_blobs_blob_reuse

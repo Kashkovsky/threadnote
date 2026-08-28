@@ -268,10 +268,14 @@ jobs:
           test/unit/windows-support.test.ts
           test/unit/effect-command.test.ts
           test/unit/effect-system.test.ts
-          test/unit/code-graph.maintenance-bounded.test.ts
           test/unit/local-ai.test.ts
           test/unit/update.test.ts
           test/unit/mcp.test.ts
+      - name: Graph repair quarantine smoke
+        run: >-
+          bun --bun vitest run
+          test/unit/code-graph.maintenance-bounded.test.ts
+          -t "removes a database-less orphan spool"
 
   standalone-targets:
     name: Bytecode compile · ${{ matrix.target }}

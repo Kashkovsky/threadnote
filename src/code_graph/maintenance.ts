@@ -15,18 +15,18 @@ import {
   withCodeGraphMaintenanceIntent,
 } from './maintenance_gate.js';
 import {CodeGraphStore, type CodeGraphDatabaseHealth} from './store.js';
-import {CODE_GRAPH_SCHEMA_VERSION} from './types.js';
+import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CODE_GRAPH_SCHEMA_VERSION} from './types.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from './languages/registry.js';
 import {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 import {diagnoseCodeGraphDatabase} from './deep_diagnostics.js';
+import {CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT} from './store_reconciliation_preparation.js';
+import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store_schema_migration.js';
 
 export {diagnoseCodeGraphDatabaseReadOnly} from './store_health.js';
 
 class CodeGraphMaintenanceError extends Error {
   readonly _tag = 'CodeGraphMaintenanceError' as const;
 }
-
-const CODE_GRAPH_EXPLICIT_SCHEMA_PREPARATION_STEP_LIMIT = 8;
 
 export interface CodeGraphRepairSummary {
   readonly databases: number;
@@ -350,6 +350,31 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                 Effect.gen(function* () {
                   let diagnosed = yield* diagnoseCodeGraphDatabase(threadnoteHome, database, deep).pipe(Effect.option);
                   let previewingSchemaMigration = false;
+                  let previewedMigrationPreservesIncompleteSnapshots = false;
+                  // A same-name alias index can belong to another table or carry
+                  // incompatible keys. The initializer must never bless that drift.
+                  // Quick repair preserves the derived store for an explicit deep
+                  // decision; deep repair can discard it identically in preview and
+                  // apply without claiming that schema migration succeeded.
+                  if (
+                    diagnosed._tag === 'Some' &&
+                    diagnosed.value.integrity === 'incompatible' &&
+                    (diagnosed.value.snapshotFileCitationBaseIndexes === 'incompatible' ||
+                      diagnosed.value.snapshotFileCitationSchema === 'incompatible' ||
+                      diagnosed.value.snapshotFileCitationSchema === 'column-only-with-authority' ||
+                      (diagnosed.value.snapshotFileCitationSchema === 'released-absent-with-authority' &&
+                        diagnosed.value.persistentExtensionSchemaRevision !==
+                          CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION - 1))
+                  ) {
+                    return deep ? ('discard' as const) : ('schema-upgrade-on-use' as const);
+                  }
+                  const schemaMigrationPreservesIncompleteSnapshots =
+                    diagnosed._tag === 'Some' &&
+                    codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+                      diagnosed.value.persistentExtensionSchemaRevision,
+                      diagnosed.value.snapshotFileCitationSchema,
+                      diagnosed.value.snapshotFileCitationBaseIndexes,
+                    );
                   if (
                     diagnosed._tag === 'Some' &&
                     diagnosed.value?.schemaVersion === CODE_GRAPH_SCHEMA_VERSION &&
@@ -358,10 +383,28 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                     if (options.migrateSchema) {
                       yield* progress({phase: 'migrating-schema'});
                       if (dryRun) {
+                        if (
+                          diagnosed.value.integrity === 'migration-pending' ||
+                          schemaMigrationPreservesIncompleteSnapshots
+                        ) {
+                          const preparation = yield* store.prepareWorktreeReconciliationIndexes(database, {
+                            preview: true,
+                          });
+                          if (preparation.state === 'deferred') return 'schema-upgrade-on-use' as const;
+                          previewedMigrationPreservesIncompleteSnapshots =
+                            codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+                              diagnosed.value.persistentExtensionSchemaRevision,
+                              diagnosed.value.snapshotFileCitationSchema,
+                              diagnosed.value.snapshotFileCitationBaseIndexes,
+                            );
+                        }
                         migratedDatabases += 1;
                         previewingSchemaMigration = true;
                       } else {
-                        if (diagnosed.value.integrity === 'migration-pending') {
+                        if (
+                          diagnosed.value.integrity === 'migration-pending' ||
+                          schemaMigrationPreservesIncompleteSnapshots
+                        ) {
                           let preparation = yield* store.prepareWorktreeReconciliationIndexes(database);
                           for (
                             let step = 1;
@@ -407,9 +450,14 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
                   readySnapshots += diagnosed.value.readySnapshots;
                   if (!deep && incomplete > 0) return 'deep-check-required' as const;
                   if (!deep) return 'maintained' as const;
-                  if (incomplete > 0 && !previewingSchemaMigration) {
+                  if (
+                    incomplete > 0 &&
+                    (!previewingSchemaMigration || previewedMigrationPreservesIncompleteSnapshots)
+                  ) {
                     yield* progress({phase: 'cleaning-snapshots', snapshots: incomplete});
-                    const repaired = yield* store.repair(database, dryRun);
+                    const repaired = yield* store.repair(database, dryRun, {
+                      allowSchemaMigrationPreview: previewedMigrationPreservesIncompleteSnapshots,
+                    });
                     const removed = repaired?.removedSnapshots ?? 0;
                     retainedIncompleteSnapshotIds = repaired?.retainedIncompleteSnapshotIds ?? [];
                     removedIncompleteSnapshots += removed;

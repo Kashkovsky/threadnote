@@ -67,7 +67,10 @@ import {
   activatePersistedFullSnapshot,
   activateCleanSnapshotAlias,
 } from './store_activation_persistent.js';
-import {prepareWorktreeReconciliationIndex} from './store_reconciliation_preparation.js';
+import {
+  prepareWorktreeReconciliationIndex,
+  prepareWorktreeReconciliationIndexesBounded,
+} from './store_reconciliation_preparation.js';
 import {activateStagedSnapshot, activatePersistedIncrementalSnapshot} from './store_activation.js';
 import {prepareSnapshotPromotionCapacity} from './store_build_preparation.js';
 import {promoteSnapshot} from './store_resolution.js';
@@ -807,7 +810,14 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
               const sql = yield* SqlClient.SqlClient;
               yield* sql.unsafe('PRAGMA foreign_keys = ON');
               yield* sql.unsafe('PRAGMA busy_timeout = 0');
-              return yield* sql.withTransaction(prepareWorktreeReconciliationIndex(sql));
+              if (options?.preview !== true) {
+                return yield* sql.withTransaction(prepareWorktreeReconciliationIndex(sql));
+              }
+              yield* sql.unsafe('BEGIN IMMEDIATE');
+              return yield* (options.afterPreviewTransactionStarted?.() ?? Effect.void).pipe(
+                Effect.andThen(prepareWorktreeReconciliationIndexesBounded(sql)),
+                Effect.ensuring(sql.unsafe('ROLLBACK').pipe(Effect.orDie)),
+              );
             }),
           );
         }),

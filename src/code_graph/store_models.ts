@@ -2,6 +2,10 @@ import type {Effect, Option} from 'effect';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import type {CodeGraphDirectPersistentCapacityBoundary} from './disk_capacity.js';
 import type {CodeGraphCacheFactInput} from './fact_budget.js';
+import type {
+  CodeGraphSnapshotFileCitationBaseIndexState,
+  CodeGraphSnapshotFileCitationSchemaState,
+} from './store_file_alias_schema.js';
 import type {CodeGraphMonikerV1} from './cross_repository/types.js';
 import type {
   CodeGraphWorkspaceBuildSystem,
@@ -199,6 +203,8 @@ export interface CodeGraphDatabaseHealth {
   readonly foreignKeyViolations: number;
   readonly integrity: 'corrupt' | 'incompatible' | 'migration-pending' | 'ok';
   readonly persistentExtensionSchemaRevision?: number;
+  readonly snapshotFileCitationBaseIndexes: CodeGraphSnapshotFileCitationBaseIndexState;
+  readonly snapshotFileCitationSchema: CodeGraphSnapshotFileCitationSchemaState;
   readonly readySnapshots: number;
   readonly schemaVersion?: number;
 }
@@ -593,6 +599,13 @@ export interface CodeGraphViewRemovalStoreOptions extends CodeGraphSnapshotLease
 export interface CodeGraphWorktreeReconciliationClaimOptions extends CodeGraphSnapshotLeaseWriterOptions {
   /** Final containment proof run under the writer gate immediately before SQLite is opened. */
   readonly beforeDatabaseOpen?: () => Effect.Effect<void, unknown>;
+}
+
+export interface CodeGraphWorktreeReconciliationPreparationOptions extends CodeGraphWorktreeReconciliationClaimOptions {
+  /** @internal Deterministic rollback seam after the preview transaction starts. */
+  readonly afterPreviewTransactionStarted?: () => Effect.Effect<void, unknown>;
+  /** Simulate the bounded preparation transaction and roll every schema change back before returning. */
+  readonly preview?: boolean;
 }
 
 export interface CodeGraphWorktreeReconciliationCandidate {

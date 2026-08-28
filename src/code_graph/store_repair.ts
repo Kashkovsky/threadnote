@@ -5,13 +5,28 @@ import {CodeGraphStoreError} from './types.js';
 import {diagnoseDatabase} from './store_diagnostics.js';
 import {pruneRetiredSnapshotRows} from './store_retirement.js';
 import {pruneUnreferencedFileBlobs} from './store_cleanup_core.js';
+import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
+import {codeGraphSchemaMigrationPreservesIncompleteSnapshots} from './store_schema_migration.js';
 
-/** Exact read-only admission shared by cleanup writers and both health paths. */
+/** Exact read-only cleanup admission, including a preparation-proven migration preview. */
 
-const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (dryRun: boolean) {
+const repairDatabase = Effect.fn('codeGraph.repairDatabase')(function* (
+  dryRun: boolean,
+  allowSchemaMigrationPreview = false,
+) {
   const sql = yield* SqlClient.SqlClient;
   const health = yield* diagnoseDatabase();
-  if (health.integrity !== 'ok') {
+  const schemaMigrationPreviewAllowed =
+    dryRun &&
+    allowSchemaMigrationPreview &&
+    (health.integrity === 'incompatible' || health.integrity === 'migration-pending') &&
+    codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+      health.persistentExtensionSchemaRevision,
+      health.snapshotFileCitationSchema,
+      health.snapshotFileCitationBaseIndexes,
+    ) &&
+    (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
+  if (health.integrity !== 'ok' && !schemaMigrationPreviewAllowed) {
     return yield* Effect.fail(
       new CodeGraphStoreError(`Code graph database is ${health.integrity}; discard and rebuild it.`),
     );

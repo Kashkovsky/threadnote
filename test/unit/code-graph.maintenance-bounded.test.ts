@@ -849,6 +849,65 @@ describe('bounded code graph maintenance', () => {
       yield* store.initialize(databasePath);
       yield* Effect.sync(() => makePreReconciliationIndexRevision7(databasePath));
 
+      const schemaBeforePreview = yield* Effect.sync(() => readReconciliationPreparationState(databasePath));
+      const filesBeforePreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
+      const repeated = yield* Effect.forEach(
+        [1, 2, 3, 4, 5],
+        () => store.prepareWorktreeReconciliationIndexes(databasePath, {preview: true}),
+        {concurrency: 1},
+      );
+      expect(repeated).toEqual(repeated.map(() => ({state: 'migration-ready'})));
+      const typedFailure = yield* store
+        .prepareWorktreeReconciliationIndexes(databasePath, {
+          afterPreviewTransactionStarted: () => Effect.fail(new TestError('stop preview')),
+          preview: true,
+        })
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(typedFailure)).toBe(true);
+      const previewStarted = yield* Deferred.make<void>();
+      const interruptedPreview = yield* Effect.forkChild(
+        store.prepareWorktreeReconciliationIndexes(databasePath, {
+          afterPreviewTransactionStarted: () =>
+            Deferred.succeed(previewStarted, undefined).pipe(Effect.andThen(Effect.never)),
+          preview: true,
+        }),
+      );
+      yield* Deferred.await(previewStarted);
+      yield* Fiber.interrupt(interruptedPreview);
+      const filesAfterPreview = yield* Effect.promise(() => readDatabaseDurabilityEvidence(databasePath));
+      expect(filesAfterPreview).toEqual(filesBeforePreview);
+      expect(yield* Effect.sync(() => readReconciliationPreparationState(databasePath))).toEqual(schemaBeforePreview);
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+      });
+      expect(preview).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(
+        yield* Effect.sync(() => {
+          const database = new Database(databasePath, {readonly: true, strict: true});
+          try {
+            return {
+              indexes: database
+                .query(
+                  `SELECT name FROM sqlite_master
+                   WHERE type = 'index' AND name IN (
+                     'active_snapshots_snapshot_worktree',
+                     'snapshots_base_state_id',
+                     'snapshot_leases_snapshot_expiry'
+                   )`,
+                )
+                .all(),
+              revision: database
+                .query("SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision'")
+                .get(),
+            };
+          } finally {
+            database.close(false);
+          }
+        }),
+      ).toEqual({indexes: [], revision: {value: '7'}});
+
       const progress: string[] = [];
       const repair = yield* repairCodeGraphIndexes(
         home,
@@ -858,7 +917,7 @@ describe('bounded code graph maintenance', () => {
         {migrateSchema: true, mode: 'quick'},
       );
 
-      expect(repair).toMatchObject({deferredDatabases: 0, migratedDatabases: 1});
+      expect(repair).toEqual(preview);
       expect(progress).toEqual(['checking', 'migrating-schema']);
       expect(yield* codeGraphDoctorCheck(home)).toMatchObject({status: 'ok'});
       expect(
@@ -893,7 +952,7 @@ describe('bounded code graph maintenance', () => {
         ],
         revision: {value: String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)},
       });
-    }).pipe(provideTestLayer(ApplicationLayer)),
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
   effectIt.effect('keeps revision-6 ready snapshots readable while background maintenance migrates them', () =>
@@ -1137,6 +1196,46 @@ function readCleanupHealthSurface(database: Database): {
   };
 }
 
+function readReconciliationPreparationState(databasePath: string): {
+  readonly metadata: readonly unknown[];
+  readonly schema: readonly unknown[];
+  readonly schemaVersion: unknown;
+} {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return {
+      metadata: database.query('SELECT key, value FROM schema_metadata ORDER BY key').all(),
+      schema: database
+        .query(
+          `SELECT type, name, tbl_name, sql
+           FROM sqlite_master
+           WHERE type IN ('index', 'table', 'trigger')
+           ORDER BY type, name`,
+        )
+        .all(),
+      schemaVersion: database.query('PRAGMA schema_version').get(),
+    };
+  } finally {
+    database.close(false);
+  }
+}
+
+async function readDatabaseDurabilityEvidence(databasePath: string): Promise<{
+  readonly database: {readonly bytes: number; readonly sha256: string} | {readonly missing: true};
+  readonly wal: {readonly bytes: number; readonly sha256: string} | {readonly missing: true};
+}> {
+  const inspect = async (filePath: string) => {
+    const file = Bun.file(filePath);
+    if (!(await file.exists())) return {missing: true} as const;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    return {
+      bytes: bytes.byteLength,
+      sha256: new Bun.CryptoHasher('sha256').update(bytes).digest('hex'),
+    } as const;
+  };
+  return {database: await inspect(databasePath), wal: await inspect(`${databasePath}-wal`)};
+}
+
 function makeRecoverableInterruptedExtension(databasePath: string): void {
   const database = new Database(databasePath, {strict: true});
   try {
@@ -1216,6 +1315,8 @@ function downgradeToReleasedRevision6(databasePath: string): void {
         DROP INDEX IF EXISTS active_snapshots_snapshot_worktree;
         DROP INDEX IF EXISTS snapshots_base_state_id;
         DROP INDEX IF EXISTS snapshot_leases_snapshot_expiry;
+        DROP INDEX IF EXISTS snapshot_files_raw_content_hash;
+        ALTER TABLE snapshot_files DROP COLUMN raw_content_hash;
         DELETE FROM schema_metadata
         WHERE key IN ('removed_view_cleanup_admission_cursor', 'removed_view_cleanup_epoch_sequence');
         UPDATE schema_metadata

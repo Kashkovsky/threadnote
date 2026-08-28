@@ -4,7 +4,12 @@ import {SystemInfo} from '../effect/system.js';
 import {classifyCodeGraphBuildOwner} from './build_owner.js';
 import {MAXIMUM_CANONICAL_DATE_MILLISECONDS} from './store_removed_view_schema_contracts.js';
 import {removedViewCleanupRecordedRevision} from './store_removed_view_schema_inspection.js';
-import {normalizeSchemaDefinition} from './store_schema_normalization.js';
+import {
+  codeGraphCacheReferenceIndexState,
+  CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX,
+  CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX,
+  CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX,
+} from './store_file_alias_schema.js';
 import {
   CODE_GRAPH_ABANDONED_BUILD_CANDIDATE_LIMIT,
   CODE_GRAPH_ABANDONED_BUILD_CURSOR_KEY,
@@ -24,28 +29,6 @@ const CODE_GRAPH_ROUTINE_CACHE_PAGE_SIZE = 100;
 
 /** Fresh facts are written before the durable building snapshot owns its inventory. */
 const CODE_GRAPH_ROUTINE_CACHE_MINIMUM_AGE_MILLISECONDS = 24 * 60 * 60_000;
-
-const CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX = {
-  columns: ['path', 'content_hash'],
-  definition: 'CREATE INDEX snapshot_files_blob ON snapshot_files(path, content_hash)',
-  name: 'snapshot_files_blob',
-  table: 'snapshot_files',
-} as const;
-
-const CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX = {
-  columns: ['content_hash'],
-  definition: 'CREATE INDEX snapshot_files_content_hash ON snapshot_files(content_hash)',
-  name: 'snapshot_files_content_hash',
-  table: 'snapshot_files',
-} as const;
-
-const CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX = {
-  columns: ['raw_content_hash'],
-  definition:
-    'CREATE INDEX snapshot_files_raw_content_hash ON snapshot_files(raw_content_hash) WHERE raw_content_hash IS NOT NULL',
-  name: 'snapshot_files_raw_content_hash',
-  table: 'snapshot_files',
-} as const;
 
 const CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX = {
   columns: ['shard_id'],
@@ -372,72 +355,6 @@ const routineCacheSchemaCurrent = Effect.fn('codeGraph.routineCacheSchemaCurrent
   );
 });
 
-type CodeGraphCacheReferenceIndex =
-  | typeof CODE_GRAPH_SNAPSHOT_FILE_BLOB_REFERENCE_INDEX
-  | typeof CODE_GRAPH_SNAPSHOT_FILE_CONTENT_REFERENCE_INDEX
-  | typeof CODE_GRAPH_SNAPSHOT_FILE_RAW_CONTENT_REFERENCE_INDEX
-  | typeof CODE_GRAPH_MATERIALIZED_SHARD_REFERENCE_INDEX;
-
-const codeGraphCacheReferenceIndexState = Effect.fn('codeGraph.cacheReferenceIndexState')(function* (
-  sql: SqlClient.SqlClient,
-  index: CodeGraphCacheReferenceIndex,
-) {
-  const definitions = yield* sql.unsafe<{
-    readonly bounded_sql: unknown;
-    readonly name: unknown;
-    readonly sql_bytes: unknown;
-    readonly tbl_name: unknown;
-    readonly type: unknown;
-  }>(
-    `SELECT name, type, tbl_name,
-            CASE
-              WHEN typeof(sql) = 'text' AND length(CAST(sql AS BLOB)) <= 1024 THEN sql
-              ELSE NULL
-            END AS bounded_sql,
-            length(CAST(sql AS BLOB)) AS sql_bytes
-     FROM sqlite_master
-     WHERE name = ? COLLATE NOCASE
-     LIMIT 2`,
-    [index.name],
-  );
-  if (definitions.length === 0) return 'missing' as const;
-  if (
-    definitions.length !== 1 ||
-    definitions[0]?.name !== index.name ||
-    definitions[0]?.type !== 'index' ||
-    definitions[0]?.tbl_name !== index.table ||
-    typeof definitions[0]?.sql_bytes !== 'number' ||
-    !Number.isSafeInteger(definitions[0].sql_bytes) ||
-    definitions[0].sql_bytes > 1024 ||
-    typeof definitions[0]?.bounded_sql !== 'string' ||
-    normalizeSchemaDefinition(definitions[0].bounded_sql) !== normalizeSchemaDefinition(index.definition)
-  ) {
-    return 'incompatible' as const;
-  }
-  const xinfo = yield* sql.unsafe<{
-    readonly coll: string;
-    readonly desc: number;
-    readonly key: number;
-    readonly name: string | null;
-    readonly seqno: number;
-  }>(`SELECT * FROM pragma_index_xinfo(?) LIMIT 8`, [index.name]);
-  const keyColumns = xinfo.filter(column => Number(column.key) === 1).sort((left, right) => left.seqno - right.seqno);
-  // WITHOUT ROWID secondary indexes carry the table primary-key columns as
-  // non-key payload. The stored SQL fixes the declared key surface; admit the
-  // SQLite-added payload while still requiring the exact ordered BINARY keys.
-  return xinfo.length > 0 &&
-    xinfo.length < 8 &&
-    keyColumns.length === index.columns.length &&
-    keyColumns.every(
-      (column, columnIndex) =>
-        column.name === index.columns[columnIndex] &&
-        column.coll.toUpperCase() === 'BINARY' &&
-        Number(column.desc) === 0,
-    )
-    ? ('ready' as const)
-    : ('incompatible' as const);
-});
-
 interface RawRoutineCacheCleanupState {
   readonly file_content_hash: unknown;
   readonly file_extractor_set: unknown;
@@ -745,7 +662,6 @@ export {
   decodeSnapshotLeaseManifest,
   RawRoutineCacheCleanupState,
   RoutineExpiredLeasePage,
-  CodeGraphCacheReferenceIndex,
   codeGraphCacheReferenceIndexState,
   routineCacheSchemaCurrent,
   decodeRoutineCacheCleanupState,

@@ -39,6 +39,11 @@ import {
 } from './store_reconciliation_core.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {ensureCodeGraphFileBlobAuthority} from './store_cache_authority.js';
+import type {
+  CodeGraphSnapshotFileCitationBaseIndexState,
+  CodeGraphSnapshotFileCitationSchemaState,
+} from './store_file_alias_schema.js';
+import {codeGraphSnapshotFileCitationSchemaMigrationPreserves} from './store_file_alias_schema.js';
 import {CODE_GRAPH_QUERY_INDEX_DEFINITIONS, ensureCodeGraphQueryIndexes} from './store_query_indexes.js';
 import {
   codeGraphRemovedViewCleanupBaseSchemaAdmission,
@@ -48,6 +53,19 @@ import {
 
 /** Revision that first made the exact cleanup queue part of durable graph authority. */
 const REMOVED_VIEW_CLEANUP_EXTENSION_REVISION = 8;
+
+/** Revision 16 only adds the raw-content alias column/index after extension migration. */
+export function codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+  revision: number | undefined,
+  snapshotFileCitationSchema: CodeGraphSnapshotFileCitationSchemaState,
+  snapshotFileCitationBaseIndexes: CodeGraphSnapshotFileCitationBaseIndexState,
+): boolean {
+  return codeGraphSnapshotFileCitationSchemaMigrationPreserves(
+    revision,
+    snapshotFileCitationSchema,
+    snapshotFileCitationBaseIndexes,
+  );
+}
 
 const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedViewCleanupSchema')(function* (
   sql: SqlClient.SqlClient,

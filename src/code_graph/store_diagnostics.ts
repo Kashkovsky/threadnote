@@ -6,6 +6,7 @@ import {type CodeGraphSnapshot, CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}
 import {codeGraphRemovedViewCleanupSchemaAdmission} from './store_schema_migration.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {codeGraphDatabaseIntegrity} from './store_health.js';
+import {inspectCodeGraphSnapshotFileCitationSchema} from './store_file_alias_schema.js';
 
 const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -18,9 +19,12 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
   const schemaVersion = Number.parseInt(schemaRows[0]?.value ?? '', 10);
   const cleanupAdmission = yield* codeGraphRemovedViewCleanupSchemaAdmission(sql);
   const persistentExtensionSchemaRevision = cleanupAdmission.persistentExtensionSchemaRevision;
+  const snapshotFileCitation = yield* inspectCodeGraphSnapshotFileCitationSchema(sql);
   const persistentExtensionCurrent =
     persistentExtensionSchemaRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
     (yield* codeGraphPersistentExtensionSchemaCompatible(sql)) &&
+    snapshotFileCitation.baseIndexes === 'current' &&
+    snapshotFileCitation.state === 'current' &&
     cleanupAdmission.current;
   const coreReadSchemaCompatible = yield* codeGraphWorktreeReconciliationSchemaCompatible(
     sql,
@@ -51,6 +55,8 @@ const diagnoseDatabase = Effect.fn('codeGraph.diagnoseDatabase')(function* () {
       persistentExtensionSchemaRevision,
       schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
     }),
+    snapshotFileCitationBaseIndexes: snapshotFileCitation.baseIndexes,
+    snapshotFileCitationSchema: snapshotFileCitation.state,
     readySnapshots: counts.get('ready') ?? 0,
     persistentExtensionSchemaRevision,
     schemaVersion: Number.isSafeInteger(schemaVersion) ? schemaVersion : undefined,
