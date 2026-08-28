@@ -1011,6 +1011,9 @@ describe('code graph release evidence', () => {
           benchmarkMeasurement('same-overlay-reference-registration-lock-and-database-setup', 'milliseconds', [
             coldIndexMilliseconds + 10,
           ]),
+          benchmarkMeasurement('cold-materialization-stage-committing-n1', 'milliseconds', [100]),
+          benchmarkMeasurement('one-file-reindex-materialization-stage-committing-n1', 'milliseconds', [100]),
+          benchmarkMeasurement('same-overlay-reference-materialization-stage-committing-n1', 'milliseconds', [100]),
           benchmarkMeasurement('cold-materialization-stage-preparing-rows-n1', 'milliseconds', [100]),
           benchmarkMeasurement('cold-hosted-subphase-n1', 'milliseconds', [1_000]),
           benchmarkMeasurement('cold-hosted-microphase-n1', 'milliseconds', [128]),
@@ -1364,6 +1367,296 @@ describe('code graph release evidence', () => {
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskFilesystem');
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskLocation');
     expect(githubHostedRatchet.metadata).not.toHaveProperty('benchmarkReferenceDiskMedium');
+    const pairedArtifact = (
+      artifact: BenchmarkArtifactV1,
+      commit: string,
+      measurementValues: Readonly<Record<string, number>>,
+      createdAt = artifact.createdAt,
+    ): BenchmarkArtifactV1 => ({
+      ...artifact,
+      createdAt,
+      environment: {...artifact.environment, commit},
+      measurements: artifact.measurements.map(measurement =>
+        measurementValues[measurement.name] === undefined
+          ? measurement
+          : benchmarkMeasurement(measurement.name, measurement.unit, [measurementValues[measurement.name]!]),
+      ),
+      metadata: {
+        ...artifact.metadata,
+        benchmarkMeasuredSourceCommit: commit,
+        runnerIdentity: 'runner-0123456789abcdef',
+        sameRunnerComparisonKey: 'github-hosted-linux-x64|Linux|x64|Intel test|17179869184',
+      },
+    });
+    const controlCommit = 'a'.repeat(40);
+    const candidateCommit = 'b'.repeat(40);
+    const sandwichStart = Date.parse('2026-08-28T00:00:00.000Z');
+    const sandwichTime = (minutes: number) => new Date(sandwichStart + minutes * 60_000).toISOString();
+    const pairedInitialCandidateArtifact = pairedArtifact(
+      githubHostedArtifacts[0]!,
+      candidateCommit,
+      {'cold-index': 1_200},
+      sandwichTime(0),
+    );
+    const pairedControlArtifact = pairedArtifact(
+      githubHostedArtifacts[0]!,
+      controlCommit,
+      {'cold-index': 1_000},
+      sandwichTime(10),
+    );
+    const noisyCandidate = pairedArtifact(
+      githubHostedArtifacts[0]!,
+      candidateCommit,
+      {'cold-index': 1_200},
+      sandwichTime(20),
+    );
+    const pairedControl = {
+      artifact: pairedControlArtifact,
+      expectedCandidateCommit: candidateCommit,
+      expectedCommit: controlCommit,
+      initialCandidateArtifact: pairedInitialCandidateArtifact,
+    };
+    const sandwichCandidate = (measurementValues: Readonly<Record<string, number>>) =>
+      pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, measurementValues, sandwichTime(20));
+    const sandwichControl = (measurementValues: Readonly<Record<string, number>>) =>
+      pairedArtifact(githubHostedArtifacts[0]!, controlCommit, measurementValues, sandwichTime(10));
+    const sandwichEvidence = (
+      initialMeasurementValues: Readonly<Record<string, number>>,
+      controlArtifact = pairedControlArtifact,
+    ) => ({
+      artifact: controlArtifact,
+      expectedCandidateCommit: candidateCommit,
+      expectedCommit: controlCommit,
+      initialCandidateArtifact: pairedArtifact(
+        githubHostedArtifacts[0]!,
+        candidateCommit,
+        initialMeasurementValues,
+        sandwichTime(0),
+      ),
+    });
+
+    expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet)).toThrow(/cold-index/u);
+    expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, pairedControl)).not.toThrow();
+    fc.assert(
+      fc.property(fc.integer({max: 500, min: -500}), fc.integer({max: 50_000, min: 30_000}), (slope, regression) => {
+        const baseline = 100_000;
+        const remeasuredMinute = 25;
+        const initialValue = baseline;
+        const controlValue = baseline + slope * 10;
+        const remeasuredValue = baseline + slope * remeasuredMinute;
+        const linearControl = sandwichControl({'cold-index': controlValue});
+        const linearCandidate = (value: number) =>
+          pairedArtifact(
+            githubHostedArtifacts[0]!,
+            candidateCommit,
+            {'cold-index': value},
+            sandwichTime(remeasuredMinute),
+          );
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(
+            linearCandidate(remeasuredValue),
+            githubHostedRatchet,
+            sandwichEvidence({'cold-index': initialValue}, linearControl),
+          ),
+        ).not.toThrow();
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(
+            linearCandidate(remeasuredValue + regression),
+            githubHostedRatchet,
+            sandwichEvidence({'cold-index': initialValue + regression}, linearControl),
+          ),
+        ).toThrow(/cold-index.*bounded candidate sandwich.*exact protected-base control/u);
+      }),
+      {numRuns: 30},
+    );
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'cold-index': 140_000}),
+        githubHostedRatchet,
+        sandwichEvidence({'cold-index': 80_000}, sandwichControl({'cold-index': 100_000})),
+      ),
+    ).toThrow(/candidate sandwich dispersion cold-index/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'cold-index': 1_251}),
+        githubHostedRatchet,
+        sandwichEvidence({'cold-index': 1_251}),
+      ),
+    ).toThrow(/cold-index.*exact protected-base control/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'cold-index': 211}),
+        githubHostedRatchet,
+        sandwichEvidence({'cold-index': 211}, sandwichControl({'cold-index': 210})),
+      ),
+    ).toThrow(/cold-index/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'one-file-reindex-index': 30_000}),
+        githubHostedRatchet,
+        sandwichEvidence({'one-file-reindex-index': 30_000}, sandwichControl({'one-file-reindex-index': 30_000})),
+      ),
+    ).toThrow(/objective one-file-reindex-index has not been attained/u);
+    for (const [metadataName, value] of [
+      ['runnerIdentity', 'another-runner'],
+      ['sameRunnerComparisonKey', 'another-host'],
+    ] as const) {
+      expect(() =>
+        enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+          ...pairedControl,
+          artifact: {
+            ...pairedControlArtifact,
+            metadata: {...pairedControlArtifact.metadata, [metadataName]: value},
+          },
+        }),
+      ).toThrow(new RegExp(`metadata\\.${metadataName}`));
+      expect(() =>
+        enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+          ...pairedControl,
+          initialCandidateArtifact: {
+            ...pairedInitialCandidateArtifact,
+            metadata: {...pairedInitialCandidateArtifact.metadata, [metadataName]: value},
+          },
+        }),
+      ).toThrow(new RegExp(`initial candidate metadata\\.${metadataName}`));
+    }
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        ...pairedControl,
+        expectedCommit: 'c'.repeat(40),
+      }),
+    ).toThrow(/paired control commit/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        ...pairedControl,
+        expectedCandidateCommit: 'c'.repeat(40),
+      }),
+    ).toThrow(/paired candidate commit/u);
+    const anotherCandidateCommit = 'c'.repeat(40);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        ...pairedControl,
+        initialCandidateArtifact: {
+          ...pairedInitialCandidateArtifact,
+          environment: {...pairedInitialCandidateArtifact.environment, commit: anotherCandidateCommit},
+          metadata: {
+            ...pairedInitialCandidateArtifact.metadata,
+            benchmarkMeasuredSourceCommit: anotherCandidateCommit,
+          },
+        },
+      }),
+    ).toThrow(/initial candidate commit/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        ...pairedControl,
+        initialCandidateArtifact: {...pairedInitialCandidateArtifact, createdAt: sandwichTime(10)},
+      }),
+    ).toThrow(/creation times.*strictly ordered/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        {...noisyCandidate, createdAt: sandwichTime(41)},
+        githubHostedRatchet,
+        pairedControl,
+      ),
+    ).toThrow(/creation times.*within 40 minutes/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, {
+        ...pairedControl,
+        artifact: {
+          ...pairedControlArtifact,
+          environment: {...pairedControlArtifact.environment, fixtureHash: 'another-fixture'},
+        },
+      }),
+    ).toThrow(/paired control environment\.fixtureHash/u);
+    const invariantGuardNames = [
+      'cold-registration-process-cpu-n1',
+      'one-file-reindex-incremental-work-planned-rows-n1',
+      'cold-sqlite-wal-peak-observed',
+    ] as const;
+    fc.assert(
+      fc.property(fc.constantFrom(...invariantGuardNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
+        const limit = githubHostedRatchet.measurements[name]!;
+        const upperBound = limit.maximum ?? limit.p95Maximum;
+        expect(upperBound, name).toBeDefined();
+        const candidate = sandwichCandidate({
+          'cold-index': 1_200,
+          [name]: upperBound! + delta,
+        });
+        expect(() => enforceCodeGraphBenchmarkRatchet(candidate, githubHostedRatchet, pairedControl)).toThrow(
+          new RegExp(name),
+        );
+      }),
+      {numRuns: 30},
+    );
+    fc.assert(
+      fc.property(fc.constantFrom(...invariantGuardNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
+        const limit = githubHostedRatchet.measurements[name]!;
+        const upperBound = limit.maximum ?? limit.p95Maximum;
+        expect(upperBound, name).toBeDefined();
+        const initialOnlyRegression = sandwichEvidence({
+          'cold-index': 1_200,
+          [name]: upperBound! + delta,
+        });
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, initialOnlyRegression),
+        ).toThrow(new RegExp(`initial candidate ${name}`));
+      }),
+      {numRuns: 30},
+    );
+    const cumulativeWorkTimingNames = [
+      'cold-inventory-parser-extraction-summed-n1',
+      'cold-inventory-parser-fact-serialization-n1',
+      'cold-inventory-source-reading-n1',
+      'cold-materialization-stage-preparing-rows-n1',
+    ] as const;
+    fc.assert(
+      fc.property(fc.constantFrom(...cumulativeWorkTimingNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
+        const limit = githubHostedRatchet.measurements[name]!;
+        expect(limit.p95Maximum, name).toBeDefined();
+        const regressedValue = limit.p95Maximum! + delta;
+        const regressedControl = sandwichControl({[name]: regressedValue});
+        const regressedCandidate = sandwichCandidate({[name]: regressedValue});
+        expect(() =>
+          enforceCodeGraphBenchmarkRatchet(
+            regressedCandidate,
+            githubHostedRatchet,
+            sandwichEvidence({[name]: regressedValue}, regressedControl),
+          ),
+        ).toThrow(new RegExp(name));
+      }),
+      {numRuns: 30},
+    );
+    const hostedStorageWallTimingNames = [
+      'cold-inventory-cache-persistence-n1',
+      'cold-materialization-stage-committing-n1',
+      'one-file-reindex-inventory-cache-persistence-n1',
+      'one-file-reindex-materialization-stage-committing-n1',
+      'same-overlay-reference-inventory-cache-persistence-n1',
+      'same-overlay-reference-materialization-stage-committing-n1',
+    ] as const;
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...hostedStorageWallTimingNames),
+        fc.integer({max: 10_000, min: 1}),
+        (name, delta) => {
+          const limit = githubHostedRatchet.measurements[name]!;
+          expect(limit.p95Maximum, name).toBeDefined();
+          const controlValue = limit.p95Maximum! + delta;
+          const control = sandwichControl({[name]: controlValue});
+          const candidate = sandwichCandidate({[name]: controlValue});
+          const boundedPair = sandwichEvidence({[name]: controlValue}, control);
+          expect(() => enforceCodeGraphBenchmarkRatchet(candidate, githubHostedRatchet, boundedPair)).not.toThrow();
+          expect(() =>
+            enforceCodeGraphBenchmarkRatchet(
+              sandwichCandidate({[name]: controlValue * 4 + 1_000}),
+              githubHostedRatchet,
+              sandwichEvidence({[name]: controlValue * 4 + 1_000}, control),
+            ),
+          ).toThrow(new RegExp(`${name}.*exact protected-base control`));
+        },
+      ),
+      {numRuns: 30},
+    );
     expect(
       createCodeGraphProductionRatchet(
         githubHostedArtifacts.map((artifact, index) => {
