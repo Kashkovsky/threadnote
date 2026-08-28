@@ -71,4 +71,16 @@ describe('Bun distribution contract', () => {
     expect(coverageLockEntry?.[1]).toBe(vitestVersion);
     expect(coverageLockEntry?.[0]).toContain(`"peerDependencies": { "vitest": "${vitestVersion}" }`);
   });
+
+  it('keeps the direct jose attribution aligned with the runtime dependency', async () => {
+    const [manifestText, thirdPartyNotice] = await Promise.all([
+      readFile(join(process.cwd(), 'package.json'), 'utf8'),
+      readFile(join(process.cwd(), 'THIRD_PARTY.md'), 'utf8'),
+    ]);
+    const manifest = JSON.parse(manifestText) as PackageManifest;
+    const noticeVersion = thirdPartyNotice.match(/^- `jose` ([^\s]+) \(MIT\),/mu)?.[1];
+
+    expect(manifest.dependencies?.jose).toMatch(/^\d+\.\d+\.\d+$/u);
+    expect(noticeVersion).toBe(manifest.dependencies?.jose);
+  });
 });
