@@ -19,6 +19,14 @@ import type {
   CodeGraphAnalysisEdgeAggregatePage,
   CodeGraphAnalysisSummary,
   CodeGraphAnalysisSymbolAggregatePage,
+  CodeGraphCheckpointImportBuildBindingResult,
+  CodeGraphCheckpointImportBuildInput,
+  CodeGraphCheckpointImportFinalizeOptions,
+  CodeGraphCheckpointImportReceipt,
+  CodeGraphCheckpointImportReceiptInput,
+  CodeGraphCheckpointImportReceiptRecordResult,
+  CodeGraphCheckpointImportRecordPage,
+  CodeGraphCheckpointImportRecordPageResult,
   CodeGraphDatabaseHealth,
   CodeGraphDatabaseRepair,
   CodeGraphDirectPersistentCapacityProtector,
@@ -101,6 +109,40 @@ export interface CodeGraphStoreShape {
   readonly shrinkMemory: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
   /** Read-only preflight used before a long-lived process starts an isolated builder. */
   readonly assertRuntimeSchemaCompatible: (databasePath: string) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly bindCheckpointImportBuild: (
+    databasePath: string,
+    snapshotId: string,
+    input: CodeGraphCheckpointImportBuildInput,
+  ) => Effect.Effect<CodeGraphCheckpointImportBuildBindingResult, CodeGraphStoreError>;
+  readonly checkpointImportReceipt: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<CodeGraphCheckpointImportReceipt | undefined, CodeGraphStoreError>;
+  readonly finalizeCheckpointImport: (
+    databasePath: string,
+    identity: RepositoryIdentity,
+    snapshot: CodeGraphSnapshot,
+    ownerToken: string,
+    input: CodeGraphCheckpointImportReceiptInput,
+    options?: CodeGraphCheckpointImportFinalizeOptions,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
+  readonly readySnapshotByLogicalDigest: (
+    databasePath: string,
+    repositoryId: string,
+    logicalDigest: string,
+    abiDigest?: string,
+  ) => Effect.Effect<CodeGraphSnapshot | undefined, CodeGraphStoreError>;
+  readonly recordCheckpointImportReceipt: (
+    databasePath: string,
+    snapshotId: string,
+    input: CodeGraphCheckpointImportReceiptInput,
+  ) => Effect.Effect<CodeGraphCheckpointImportReceiptRecordResult, CodeGraphStoreError>;
+  readonly stageCheckpointImportRecordPage: (
+    databasePath: string,
+    snapshotId: string,
+    ownerToken: string,
+    page: CodeGraphCheckpointImportRecordPage,
+  ) => Effect.Effect<CodeGraphCheckpointImportRecordPageResult, CodeGraphStoreError>;
   readonly activate: (
     databasePath: string,
     identity: RepositoryIdentity,
@@ -120,6 +162,7 @@ export interface CodeGraphStoreShape {
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
     snapshotPackProvenance?: readonly CodeGraphLanguagePackProvenance[],
     materializedFileShardAssociationsComplete?: boolean,
+    checkpointImportReceipt?: CodeGraphCheckpointImportReceiptInput,
   ) => Effect.Effect<Option.Option<string>, CodeGraphStoreError>;
   readonly activateCleanSnapshotAlias?: (
     databasePath: string,

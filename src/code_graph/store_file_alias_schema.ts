@@ -10,13 +10,18 @@ import {
   nextCodeGraphSqliteSchemaVersion,
 } from './store_schema_receipt.js';
 import {
-  CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION,
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   CODE_GRAPH_SCHEMA_VERSION,
   type CodeGraphSnapshotFileCitationBaseIndexState,
   type CodeGraphSnapshotFileCitationSchemaState,
   CodeGraphStoreError,
 } from './types.js';
+import {
+  CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR,
+  CODE_GRAPH_SCHEMA_INITIALIZATION_CITATION_PREDECESSOR_CONTRACT_REVISION,
+  codeGraphPersistentSchemaMigrationPending,
+  codeGraphPersistentSchemaProfile,
+  codeGraphPersistentSchemaSupports,
+} from './store/schema_revision.js';
 
 interface CodeGraphReferenceIndex {
   readonly columns: readonly string[];
@@ -116,7 +121,8 @@ export function codeGraphSnapshotFileCitationSchemaMigrationPreserves(
   baseIndexes: CodeGraphSnapshotFileCitationBaseIndexState,
 ): boolean {
   if (baseIndexes === 'incompatible') return false;
-  if (revision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION - 1) {
+  const citationState = codeGraphPersistentSchemaProfile(revision)?.citationState;
+  if (citationState === 'released-predecessor') {
     return (
       state === 'released-absent' ||
       state === 'released-absent-with-authority' ||
@@ -125,7 +131,16 @@ export function codeGraphSnapshotFileCitationSchemaMigrationPreserves(
       state === 'current'
     );
   }
-  if (revision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) return false;
+  if (citationState === 'column-predecessor') {
+    return (
+      state === 'released-absent' ||
+      state === 'released-absent-with-predecessor-authority' ||
+      state === 'column-only' ||
+      state === 'column-only-with-predecessor-authority' ||
+      state === 'current'
+    );
+  }
+  if (citationState !== 'current') return false;
   return (
     state === 'released-absent' ||
     state === 'released-absent-with-predecessor-authority' ||
@@ -144,16 +159,11 @@ export function codeGraphSnapshotFileCitationSchemaMigrationAdmitted(
   if (baseIndexes === 'incompatible') return false;
   switch (state) {
     case 'released-absent-with-authority':
-      return (
-        revision !== undefined &&
-        Number.isSafeInteger(revision) &&
-        revision >= CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION &&
-        revision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
-      );
+      return codeGraphPersistentSchemaMigrationPending(revision);
     case 'released-absent-with-predecessor-authority':
-      return revision === 15 || revision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION;
+      return codeGraphPersistentSchemaSupports(revision, 'citation-released-predecessor-authority');
     case 'column-only-with-predecessor-authority':
-      return revision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION;
+      return codeGraphPersistentSchemaSupports(revision, 'citation-column-predecessor-authority');
     case 'column-only-with-authority':
     case 'incompatible':
       return false;
@@ -327,11 +337,14 @@ const predecessorInitializationReceiptPresent = Effect.fn('codeGraph.predecessor
       receipt?.singleton_type === 'integer' &&
       receipt?.singleton === 1 &&
       receipt.contract_revision_type === 'integer' &&
-      receipt.contract_revision === 2 &&
+      receipt.contract_revision === CODE_GRAPH_SCHEMA_INITIALIZATION_CITATION_PREDECESSOR_CONTRACT_REVISION &&
       receipt.core_schema_version_type === 'integer' &&
       receipt.core_schema_version === CODE_GRAPH_SCHEMA_VERSION &&
       receipt.persistent_extension_revision_type === 'integer' &&
-      receipt.persistent_extension_revision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION - 1 &&
+      // The raw-content citation alias was introduced by revision 16. Its
+      // interruption receipt is therefore permanently bound to revision 15,
+      // even after later additive extension revisions are introduced.
+      receipt.persistent_extension_revision === CODE_GRAPH_PERSISTENT_SCHEMA_CITATION_PREDECESSOR.value &&
       receipt.sqlite_schema_version_type === 'integer' &&
       typeof receiptSchemaVersion === 'number' &&
       Number.isSafeInteger(receiptSchemaVersion) &&

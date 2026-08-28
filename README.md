@@ -267,11 +267,23 @@ threadnote graph hubs
 threadnote graph surprises
 threadnote graph report --output architecture-report.md
 threadnote graph export --format graphml --output code-graph.graphml
+threadnote graph checkpoint export --output threadnote-graph.cgcp
+threadnote graph checkpoint inspect --input threadnote-graph.cgcp --expected-digest sha256:…
+threadnote graph checkpoint verify --input threadnote-graph.cgcp --expected-digest sha256:…
+threadnote graph checkpoint import --input threadnote-graph.cgcp --expected-digest sha256:…
 threadnote graph index --full
 threadnote graph diagnostics --analyze
 threadnote graph repair --all --dry-run
 threadnote graph compact --dry-run
 ```
+
+Portable graph checkpoints move one deterministic, verified clean graph between local installations without a
+Threadnote account, hosted transport, or Workset. Export never overwrites a file; import requires the same repository
+and a locally available source commit, never fetches Git objects, and activates directly only at the exact clean
+commit. A dirty or descendant checkout rebuilds its current graph from the compatible imported base, while divergent
+history keeps the verified snapshot inactive. Checkpoints affect only disposable graph state, so existing schema-v1
+and uncited legacy memories remain recallable. See [portable code graph checkpoints](./docs/code-graph-checkpoints.md)
+for the digest, ABI, privacy, and publication contract.
 
 `graph status` reports physical SQLite database, WAL, and SHM bytes separately from pages in use and freelist bytes
 already reusable inside the database. A large physical file can therefore contain little live graph data without

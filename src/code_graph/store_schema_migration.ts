@@ -33,11 +33,19 @@ import {
 } from './store_schema_metadata.js';
 import {CodeGraphDatabaseSession, tableExists} from './store_session.js';
 import {
-  CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
   type CodeGraphSnapshotFileCitationBaseIndexState,
   type CodeGraphSnapshotFileCitationSchemaState,
   CodeGraphStoreError,
 } from './types.js';
+import {
+  CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
+  codeGraphPersistentSchemaIsCurrent,
+  codeGraphPersistentSchemaIsOlder,
+  codeGraphPersistentSchemaRevisionValue,
+  codeGraphPersistentSchemaSupports,
+  observeCodeGraphPersistentSchemaRevision,
+  planCodeGraphPersistentSchemaUpgrade,
+} from './store/schema_revision.js';
 import {
   CODE_GRAPH_SNAPSHOT_LEASE_EXPIRY_INDEX,
   codeGraphReconciliationIndexState,
@@ -56,10 +64,7 @@ import {
   removedViewCleanupSchemaCurrent,
 } from './store_schema_core.js';
 
-/** Revision that first made the exact cleanup queue part of durable graph authority. */
-const REMOVED_VIEW_CLEANUP_EXTENSION_REVISION = 8;
-
-/** Revision 16 only adds the raw-content alias column/index after extension migration. */
+/** Additive revisions 16 and 17 preserve incomplete resumable-build rows. */
 export function codeGraphSchemaMigrationPreservesIncompleteSnapshots(
   revision: number | undefined,
   snapshotFileCitationSchema: CodeGraphSnapshotFileCitationSchemaState,
@@ -85,10 +90,11 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
   }
   const revision = yield* removedViewCleanupRecordedRevision(sql);
   const recordedRevision = revision.state === 'recorded' ? revision.value : undefined;
-  if (recordedRevision !== undefined && recordedRevision > CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+  const revisionObservation = observeCodeGraphPersistentSchemaRevision(recordedRevision);
+  if (revisionObservation.state === 'newer') {
     return yield* Effect.fail(
       new CodeGraphStoreError(
-        `Code graph persistent extension schema ${recordedRevision} is newer than ${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}.`,
+        `Code graph persistent extension schema ${revisionObservation.value} is newer than ${CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION}.`,
       ),
     );
   }
@@ -139,32 +145,28 @@ const preflightRemovedViewCleanupSchema = Effect.fn('codeGraph.preflightRemovedV
            LIMIT 1`,
         )
       : [];
-  const coreAuthorityCurrent =
-    recordedRevision !== undefined && recordedRevision >= 7
-      ? yield* codeGraphWorktreeReconciliationSchemaCompatible(
-          sql,
-          schema === 'compatible',
-          false,
-          removedViewAuthority === 'compatible',
-        )
-      : true;
+  const coreAuthorityCurrent = codeGraphPersistentSchemaSupports(recordedRevision, 'worktree-reconciliation-authority')
+    ? yield* codeGraphWorktreeReconciliationSchemaCompatible(
+        sql,
+        schema === 'compatible',
+        false,
+        removedViewAuthority === 'compatible',
+      )
+    : true;
   if (
     revision.state === 'invalid' ||
     metadataRowCount === undefined ||
     epochSequence.state === 'invalid' ||
     (epochSequence.state === 'recorded' && !epochSequenceCurrent) ||
     !cursorCurrent ||
-    (schema === 'absent' &&
-      recordedRevision !== undefined &&
-      recordedRevision >= REMOVED_VIEW_CLEANUP_EXTENSION_REVISION) ||
+    (schema === 'absent' && codeGraphPersistentSchemaSupports(recordedRevision, 'removed-view-cleanup-authority')) ||
     (schema === 'absent' && (epochSequence.state !== 'missing' || admissionCursor.state !== 'missing')) ||
     (schema === 'absent' &&
       metadataRowCount >
         REMOVED_VIEW_CLEANUP_LEGACY_MAXIMUM_METADATA_ROWS -
           (revision.state === 'missing' && revision.metadataPresent ? 1 : 0)) ||
     (schema === 'compatible' &&
-      (recordedRevision === undefined ||
-        recordedRevision < REMOVED_VIEW_CLEANUP_EXTENSION_REVISION ||
+      (!codeGraphPersistentSchemaSupports(recordedRevision, 'removed-view-cleanup-authority') ||
         !epochSequenceCurrent)) ||
     (schema === 'compatible' && removedViewAuthority !== 'compatible') ||
     (schema === 'compatible' &&
@@ -243,14 +245,12 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       const revision = yield* sql<{readonly value: string}>`
         SELECT value FROM schema_metadata WHERE key = 'persistent_extension_schema_revision' LIMIT 1
       `;
-      const recordedRevision = Number(revision[0]?.value);
-      if (
-        Number.isSafeInteger(recordedRevision) &&
-        recordedRevision > CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
-      ) {
+      const revisionPlan = planCodeGraphPersistentSchemaUpgrade(revision[0]?.value);
+      const recordedRevision = codeGraphPersistentSchemaRevisionValue(revision[0]?.value);
+      if (revisionPlan.state === 'reject-newer') {
         return yield* Effect.fail(
           new CodeGraphStoreError(
-            `Code graph persistent extension schema ${recordedRevision} is newer than ${CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION}.`,
+            `Code graph persistent extension schema ${revisionPlan.value} is newer than ${CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION}.`,
           ),
         );
       }
@@ -267,14 +267,11 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         `;
         yield* observe?.('added-removed-view-cleanup') ?? Effect.void;
       }
-      if (
-        Number.isSafeInteger(recordedRevision) &&
-        recordedRevision < CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
-      ) {
+      if (codeGraphPersistentSchemaIsOlder(recordedRevision)) {
         yield* ensureCurrentCodeGraphQueryIndexes(sql);
         yield* observe?.('migrated-query-indexes') ?? Effect.void;
       }
-      if (recordedRevision === 6) {
+      if (revisionPlan.state === 'upgrade' && revisionPlan.route === 'bridge-build-owner-instance') {
         const ownerInstances = PERSISTENT_EXTENSION_TABLES.find(
           table => table.name === 'snapshot_build_owner_instances',
         );
@@ -289,6 +286,19 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
           yield* sql.unsafe(ownerInstances.createSql);
           yield* observe?.('added-build-owner-instance') ?? Effect.void;
         }
+      }
+      if (revisionPlan.state === 'upgrade' && revisionPlan.route === 'extend-checkpoint-import') {
+        const checkpointTables = PERSISTENT_EXTENSION_TABLES.filter(table => table.group === 'checkpoint');
+        for (const table of checkpointTables) {
+          const inspection = yield* persistentExtensionTableInspection(sql, table);
+          if (inspection.exists && !inspection.compatible) {
+            return yield* Effect.fail(
+              new CodeGraphStoreError(`Code graph checkpoint import schema ${table.name} is incompatible.`),
+            );
+          }
+          if (!inspection.exists) yield* sql.unsafe(table.createSql);
+        }
+        yield* observe?.('added-checkpoint-import') ?? Effect.void;
       }
       const legacyBuildOwners = yield* persistentExtensionTableInspection(sql, LEGACY_SNAPSHOT_BUILD_OWNERS_CONTRACT);
       if (legacyBuildOwners.compatible) {
@@ -315,7 +325,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         `);
         yield* observe?.('added-materialization-plan') ?? Effect.void;
       }
-      if (revision[0]?.value === '3') {
+      if (revisionPlan.state === 'upgrade' && revisionPlan.route === 'retire-legacy-references-and-rebuild') {
         const legacyReferences = yield* persistentExtensionTableInspection(sql, LEGACY_BUILDING_REFERENCES_V3_CONTRACT);
         const alreadyRenamed = yield* tableExists(sql, LEGACY_BUILDING_REFERENCES_V3_TABLE);
         if (legacyReferences.compatible && !alreadyRenamed) {
@@ -347,21 +357,13 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       const inspections = yield* inspectPersistentExtensionTables(sql);
       const extensionSchemaCompatible = inspections.every(inspection => inspection.exists && inspection.compatible);
       if (
-        (recordedRevision === 7 ||
-          recordedRevision === 8 ||
-          recordedRevision === 9 ||
-          recordedRevision === 10 ||
-          recordedRevision === 11 ||
-          recordedRevision === 12 ||
-          recordedRevision === 14 ||
-          recordedRevision === 15 ||
-          recordedRevision === CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) &&
+        codeGraphPersistentSchemaSupports(recordedRevision, 'direct-current-contract-adoption') &&
         extensionSchemaCompatible
       ) {
-        if (recordedRevision !== CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION) {
+        if (!codeGraphPersistentSchemaIsCurrent(recordedRevision)) {
           yield* sql`
             INSERT INTO schema_metadata (key, value)
-            VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)})
+            VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION)})
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
           `;
           yield* observe?.('recorded-revision') ?? Effect.void;
@@ -384,7 +386,8 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
         inspection => inspection.group === 'cross-repository' && (!inspection.exists || !inspection.compatible),
       );
       const crossRepositorySnapshotAuthorityLost =
-        crossRepositoryAuthorityUnavailable && Number.isSafeInteger(recordedRevision) && recordedRevision >= 7;
+        crossRepositoryAuthorityUnavailable &&
+        codeGraphPersistentSchemaSupports(recordedRevision, 'worktree-reconciliation-authority');
       const incomplete = yield* sql<{readonly count: number}>`
         SELECT COUNT(*) AS count FROM snapshots WHERE state IN ('building', 'failed')
       `;
@@ -441,7 +444,10 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       // pointer atomically and let the normal snapshot-identity path rebuild it.
       // Revision 4 snapshots remain readable from legacy symbol_terms while the
       // new compact tables are introduced alongside them.
-      if (recordedRevision >= 5 && (incompatibleGroups.has('lexical') || lexicalReadSurfaceMissing)) {
+      if (
+        codeGraphPersistentSchemaSupports(recordedRevision, 'compact-lexical-authority') &&
+        (incompatibleGroups.has('lexical') || lexicalReadSurfaceMissing)
+      ) {
         if (yield* tableExists(sql, 'active_snapshots')) {
           yield* sql`
             DELETE FROM active_snapshots
@@ -474,7 +480,7 @@ const migratePersistentExtensionTables = Effect.fn('codeGraph.migratePersistentE
       yield* observe?.('validated') ?? Effect.void;
       yield* sql`
         INSERT INTO schema_metadata (key, value)
-        VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION)})
+        VALUES ('persistent_extension_schema_revision', ${String(CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION)})
         ON CONFLICT(key) DO UPDATE SET value = excluded.value
       `;
       yield* observe?.('recorded-revision') ?? Effect.void;

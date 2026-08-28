@@ -38,6 +38,7 @@ import {
   type CodeGraphResolutionPublicationAssessment,
 } from './resolution_surface.js';
 import {
+  CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceipt,
@@ -118,7 +119,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
     if (
       !receipt ||
       receipt.formatVersion !== CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION ||
-      receipt.resolutionSurfaceVersion !== 1 ||
+      receipt.resolutionSurfaceVersion !== CODE_GRAPH_RESOLUTION_SURFACE_VERSION ||
       receipt.workspaceFingerprint !== preassessment.committedWorkspace.fingerprint ||
       (preassessment.resolutionClosure !== 'full' &&
         receipt.fileSetFingerprint !== preassessment.baseFileSetFingerprint)

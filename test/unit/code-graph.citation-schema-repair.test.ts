@@ -198,7 +198,7 @@ describe('code graph snapshot-file citation schema repair', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('rolls back a released revision-6 alias migration before publishing revision 16', () =>
+  effectIt.effect('rolls back a released revision-6 alias migration before publishing the current revision', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -307,14 +307,13 @@ describe('code graph snapshot-file citation schema repair', () => {
         yield* fs.writeFile(spool, new Uint8Array([1]));
         expect(yield* store.diagnose(databasePath)).toMatchObject({
           buildingSnapshots: 1,
-          integrity: 'incompatible',
-          persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+          integrity: 'migration-pending',
+          persistentExtensionSchemaRevision: 16,
           snapshotFileCitationSchema:
             aliasState === 'released-absent'
               ? 'released-absent-with-predecessor-authority'
               : 'column-only-with-predecessor-authority',
         });
-
         const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
           migrateSchema: true,
           mode: 'deep',

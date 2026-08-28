@@ -6,6 +6,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
 import {Effect, FileSystem, Fiber, Layer} from 'effect';
 import {cachedCodeGraphFactBytes, CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
+import {sha256HexSync} from '../../src/crypto/sha256.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {
   CODE_GRAPH_PARSER_RSS_BYTES_ENV,
@@ -734,7 +735,7 @@ function inventoryFile(path: string, content: string, language = 'typescript'): 
   return {
     blobId: `blob-${path}`,
     content,
-    contentHash: Bun.hash(content).toString(16),
+    contentHash: sha256HexSync(content),
     language,
     mode: '100644',
     path,

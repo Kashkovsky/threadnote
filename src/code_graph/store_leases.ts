@@ -11,7 +11,11 @@ import {
   removedViewCleanupRecordedRevision,
 } from './store_removed_view_schema_inspection.js';
 import {configureConnection, tableExists} from './store_session.js';
-import {CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION, CodeGraphStoreError} from './types.js';
+import {CodeGraphStoreError} from './types.js';
+import {
+  codeGraphPersistentSchemaIsCurrentOrNewer,
+  codeGraphPersistentSchemaMigrationPending,
+} from './store/schema_revision.js';
 import {
   boundedSnapshotLeaseProjection,
   type BoundedSnapshotLeaseRow,
@@ -33,7 +37,6 @@ import {type PersistentBuildOwnerCandidate} from './store_internal_models.js';
 import {codeGraphWorktreeReconciliationSchemaCompatible} from './store_reconciliation.js';
 import {lastStatementChangeCount} from './store_activation_core.js';
 import {retireReadySnapshotsIfUnused} from './store_cleanup_core.js';
-import {CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION} from './store_health.js';
 import {
   CODE_GRAPH_DETACHED_READY_COUNT_MAXIMUM,
   CODE_GRAPH_DETACHED_READY_ESTIMATED_BYTES_MAXIMUM,
@@ -69,12 +72,7 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
   const removedViewAuthority = yield* removedViewAuthorityTableState(sql);
   if (removedViewAuthority === 'incompatible') return false;
   if (removedViewAuthority === 'absent' && recordedRevision !== undefined) {
-    if (
-      recordedRevision < CODE_GRAPH_MINIMUM_BACKGROUND_MIGRATION_REVISION ||
-      recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION
-    ) {
-      return false;
-    }
+    if (!codeGraphPersistentSchemaMigrationPending(recordedRevision)) return false;
     yield* sql.unsafe(REMOVED_VIEWS_TABLE_SQL);
     if ((yield* removedViewAuthorityTableState(sql)) !== 'compatible') return false;
   }
@@ -90,9 +88,7 @@ const initializeRoutineMaintenanceSchema = Effect.fn('codeGraph.initializeRoutin
     : ('missing' as const);
   if (
     successorIndexState === 'incompatible' ||
-    (recordedRevision !== undefined &&
-      recordedRevision >= CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION &&
-      successorIndexState !== 'ready')
+    (codeGraphPersistentSchemaIsCurrentOrNewer(recordedRevision) && successorIndexState !== 'ready')
   ) {
     return false;
   }

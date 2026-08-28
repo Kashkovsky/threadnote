@@ -27,6 +27,7 @@ import {
   resolveAndRecordCodeGraphLocalAssociation,
 } from './local_provenance.js';
 import {compareCodeUnits} from './ordering.js';
+import {sanitizeCodeGraphPresentationText as sanitizeText} from './presentation_text.js';
 import {resolveRepositoryIdentity} from './repository.js';
 import {
   attachCodeGraphStatusObservation,
@@ -1946,21 +1947,6 @@ function sanitizeSelection(selection: {
       : {}),
     warnings: truncated ? [...warnings, 'Graph result reached its output byte budget; results are partial.'] : warnings,
   };
-}
-
-function sanitizeText(value: string, maximumCharacters: number): string {
-  return [...value]
-    .map(character => {
-      const codePoint = character.codePointAt(0) ?? 0;
-      return codePoint <= 0x1f ||
-        (codePoint >= 0x7f && codePoint <= 0x9f) ||
-        (codePoint >= 0x202a && codePoint <= 0x202e) ||
-        (codePoint >= 0x2066 && codePoint <= 0x2069)
-        ? ' '
-        : character;
-    })
-    .slice(0, maximumCharacters)
-    .join('');
 }
 
 function encodedSize(value: unknown): number {

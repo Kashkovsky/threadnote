@@ -6,6 +6,7 @@ import {compareCodeUnits} from './ordering.js';
 import {CodeGraphStore} from './store.js';
 import {type CodeGraphActiveViewIdentity} from './store_models.js';
 import type {CodeGraphLifecycleOpportunityTarget} from './lifecycle_opportunity.js';
+import {CODE_GRAPH_MANAGER_CATALOG_REVISION_VERSION} from './store/schema_revision.js';
 
 export const MANAGER_CATALOG_REVISION_VISIBLE_VIEW_LIMIT = 32;
 
@@ -39,7 +40,9 @@ export function managerGraphCatalogRevision(databases: readonly ManagerGraphCata
       viewsTruncated: database.viewsTruncated,
     }))
     .sort((left, right) => compareCodeUnits(left.checkoutId, right.checkoutId));
-  return sha256HexSync(`threadnote-manager-graph-catalog-revision-v1\n${JSON.stringify(canonical)}`);
+  return sha256HexSync(
+    `threadnote-manager-graph-catalog-revision-v${CODE_GRAPH_MANAGER_CATALOG_REVISION_VERSION}\n${JSON.stringify(canonical)}`,
+  );
 }
 
 /** Read the visible active pointers and path-free missing-view status in one bounded pass. */
