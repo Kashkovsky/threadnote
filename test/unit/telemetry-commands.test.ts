@@ -46,6 +46,7 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('Grafana Cloud EU');
         expect(preview.output).toContain('14-day trace retention');
         expect(preview.output).toContain('transport providers process source IP addresses');
+        expect(preview.output).toContain('use --auto-accept to opt into automatic acceptance');
         expect(preview.output).toContain('No changes made. Re-run with --apply');
         expect(yield* fs.exists(yield* telemetryConfigurationPath(config))).toBe(false);
       }),
@@ -127,12 +128,16 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('No changes made. Re-run with --apply');
         expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({consentVersion: 4, enabled: true});
 
-        yield* runTelemetryEnable(config, {apply: true});
+        yield* runTelemetryEnable(config, {apply: true, autoAccept: true});
         expect(yield* readTelemetryConfiguration(config)).toMatchObject({
+          autoAccept: true,
           consentVersion: 5,
           enabled: true,
           endpoint: previousEndpoint,
         });
+
+        const statusAfterRenewal = yield* captureConsole(runTelemetryStatus(config));
+        expect(statusAfterRenewal.output).toContain('Future telemetry data-contract updates: accepted automatically');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

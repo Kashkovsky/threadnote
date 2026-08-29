@@ -151,6 +151,23 @@ describe('doctor report resilience', () => {
           name: 'anonymous telemetry',
           status: 'warn',
         });
+
+        yield* fs.writeFileString(
+          path.join(home, 'telemetry', 'config.json'),
+          `${JSON.stringify({
+            autoAccept: true,
+            consentVersion: 4,
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+            sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(9)),
+            version: 1,
+          })}\n`,
+        );
+        expect(yield* telemetryDoctorCheck(config)).toEqual({
+          detail: `enabled by explicit consent with automatic future scope acceptance; endpoint ${DEFAULT_TELEMETRY_ENDPOINT}`,
+          name: 'anonymous telemetry',
+          status: 'ok',
+        });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

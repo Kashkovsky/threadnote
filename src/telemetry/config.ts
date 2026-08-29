@@ -16,6 +16,8 @@ export interface DisabledTelemetryConfiguration {
 }
 
 export interface EnabledTelemetryConfiguration {
+  /** Keep telemetry enabled when later releases expand the versioned data contract. */
+  readonly autoAccept?: true;
   readonly consentVersion: typeof TELEMETRY_CONSENT_VERSION;
   readonly enabled: true;
   readonly endpoint: string;
@@ -136,16 +138,23 @@ export const writeTelemetryConfiguration = Effect.fn('telemetry.writeConfigurati
 
 export const createEnabledTelemetryConfiguration = Effect.fn('telemetry.createEnabledConfiguration')(function* (
   endpoint = DEFAULT_TELEMETRY_ENDPOINT,
+  autoAccept = false,
 ) {
   const crypto = yield* Crypto.Crypto;
   return enabledTelemetryConfiguration(
     endpoint,
     Encoding.encodeBase64Url(yield* crypto.randomBytes(TELEMETRY_SESSION_SALT_BYTES)),
+    autoAccept,
   );
 });
 
-export function enabledTelemetryConfiguration(endpoint: string, sessionSalt: string): EnabledTelemetryConfiguration {
+export function enabledTelemetryConfiguration(
+  endpoint: string,
+  sessionSalt: string,
+  autoAccept = false,
+): EnabledTelemetryConfiguration {
   return {
+    ...(autoAccept ? {autoAccept: true as const} : {}),
     consentVersion: TELEMETRY_CONSENT_VERSION,
     enabled: true,
     endpoint: normalizeTelemetryEndpoint(endpoint),
@@ -189,13 +198,26 @@ export function parseTelemetryConsentRenewal(
     value.version !== TELEMETRY_CONFIGURATION_VERSION ||
     value.consentVersion !== TELEMETRY_RENEWABLE_CONSENT_VERSION ||
     value.enabled !== true ||
+    value.autoAccept === true ||
+    (value.autoAccept !== undefined && typeof value.autoAccept !== 'boolean') ||
     typeof value.endpoint !== 'string' ||
     typeof value.sessionSalt !== 'string'
   ) {
     return undefined;
   }
   try {
-    assertExactKeys(value, ['consentVersion', 'enabled', 'endpoint', 'sessionSalt', 'version'], source);
+    assertExactKeys(
+      value,
+      [
+        ...(value.autoAccept === undefined ? [] : ['autoAccept']),
+        'consentVersion',
+        'enabled',
+        'endpoint',
+        'sessionSalt',
+        'version',
+      ],
+      source,
+    );
     normalizeTelemetrySessionSalt(value.sessionSalt);
     return {
       consentVersion: TELEMETRY_RENEWABLE_CONSENT_VERSION,
@@ -265,25 +287,57 @@ function parseTelemetryConfigurationValue(value: unknown, source: string): Telem
       `Unsupported telemetry configuration version in ${source}. Expected ${TELEMETRY_CONFIGURATION_VERSION}.`,
     );
   }
-  if (value.consentVersion !== TELEMETRY_CONSENT_VERSION) {
-    throw new TelemetryConfigurationError(
-      `Unsupported telemetry consent version in ${source}. Expected ${TELEMETRY_CONSENT_VERSION}.`,
-    );
-  }
   if (value.enabled === false) {
+    assertCurrentTelemetryConsentVersion(value.consentVersion, source);
     assertExactKeys(value, ['consentVersion', 'enabled', 'version'], source);
     return disabledTelemetryConfiguration();
   }
   if (value.enabled === true) {
-    assertExactKeys(value, ['consentVersion', 'enabled', 'endpoint', 'sessionSalt', 'version'], source);
+    const autoAccept = value.autoAccept;
+    if (autoAccept !== undefined && typeof autoAccept !== 'boolean') {
+      throw new TelemetryConfigurationError(`Telemetry auto-accept must be a boolean: ${source}`);
+    }
+    if (
+      value.consentVersion !== TELEMETRY_CONSENT_VERSION &&
+      !(autoAccept === true && isEarlierTelemetryConsentVersion(value.consentVersion))
+    ) {
+      throw unsupportedTelemetryConsentVersion(source);
+    }
+    assertExactKeys(
+      value,
+      [
+        ...(autoAccept === undefined ? [] : ['autoAccept']),
+        'consentVersion',
+        'enabled',
+        'endpoint',
+        'sessionSalt',
+        'version',
+      ],
+      source,
+    );
     if (typeof value.endpoint !== 'string' || typeof value.sessionSalt !== 'string') {
       throw new TelemetryConfigurationError(
         `Enabled telemetry configuration requires an endpoint and local session salt: ${source}`,
       );
     }
-    return enabledTelemetryConfiguration(value.endpoint, value.sessionSalt);
+    return enabledTelemetryConfiguration(value.endpoint, value.sessionSalt, autoAccept === true);
   }
+  assertCurrentTelemetryConsentVersion(value.consentVersion, source);
   throw new TelemetryConfigurationError(`Telemetry configuration requires a boolean enabled field: ${source}`);
+}
+
+function assertCurrentTelemetryConsentVersion(value: unknown, source: string): void {
+  if (value !== TELEMETRY_CONSENT_VERSION) throw unsupportedTelemetryConsentVersion(source);
+}
+
+function isEarlierTelemetryConsentVersion(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 1 && Number(value) < TELEMETRY_CONSENT_VERSION;
+}
+
+function unsupportedTelemetryConsentVersion(source: string): TelemetryConfigurationError {
+  return new TelemetryConfigurationError(
+    `Unsupported telemetry consent version in ${source}. Expected ${TELEMETRY_CONSENT_VERSION}.`,
+  );
 }
 
 function assertExactKeys(value: Record<string, unknown>, expected: readonly string[], source: string): void {

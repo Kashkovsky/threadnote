@@ -27,7 +27,9 @@ const FIXED_SESSION_SALT = Encoding.encodeBase64Url(new Uint8Array(32).fill(7));
 describe('telemetry configuration', () => {
   it('accepts only the strict versioned consent schema', () => {
     const enabled = enabledTelemetryConfiguration(DEFAULT_TELEMETRY_ENDPOINT, FIXED_SESSION_SALT);
+    const autoAccepted = enabledTelemetryConfiguration(DEFAULT_TELEMETRY_ENDPOINT, FIXED_SESSION_SALT, true);
     expect(parseTelemetryConfiguration(renderTelemetryConfiguration(enabled))).toEqual(enabled);
+    expect(parseTelemetryConfiguration(renderTelemetryConfiguration(autoAccepted))).toEqual(autoAccepted);
     expect(parseTelemetryConfiguration(renderTelemetryConfiguration(disabledTelemetryConfiguration()))).toEqual(
       disabledTelemetryConfiguration(),
     );
@@ -38,6 +40,15 @@ describe('telemetry configuration', () => {
       {consentVersion: 2, enabled: false, endpoint: DEFAULT_TELEMETRY_ENDPOINT, version: 1},
       {
         consentVersion: 5,
+        autoAccept: 'yes',
+        enabled: true,
+        endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+        sessionSalt: FIXED_SESSION_SALT,
+        version: 1,
+      },
+      {
+        consentVersion: 6,
+        autoAccept: true,
         enabled: true,
         endpoint: DEFAULT_TELEMETRY_ENDPOINT,
         sessionSalt: FIXED_SESSION_SALT,
@@ -70,11 +81,15 @@ describe('telemetry configuration', () => {
   });
 
   effectIt.effect.prop(
-    'round-trips every canonical 32-byte local session salt',
-    {bytes: FC.uint8Array({maxLength: 32, minLength: 32})},
-    ({bytes}) =>
+    'round-trips every canonical 32-byte local session salt and acceptance mode',
+    {autoAccept: FC.boolean(), bytes: FC.uint8Array({maxLength: 32, minLength: 32})},
+    ({autoAccept, bytes}) =>
       Effect.sync(() => {
-        const value = enabledTelemetryConfiguration(DEFAULT_TELEMETRY_ENDPOINT, Encoding.encodeBase64Url(bytes));
+        const value = enabledTelemetryConfiguration(
+          DEFAULT_TELEMETRY_ENDPOINT,
+          Encoding.encodeBase64Url(bytes),
+          autoAccept,
+        );
         expect(parseTelemetryConfiguration(renderTelemetryConfiguration(value))).toEqual(value);
       }),
     {fastCheck: {numRuns: 50}},
@@ -83,6 +98,7 @@ describe('telemetry configuration', () => {
   effectIt.effect.prop(
     'recognizes only the exact renewable enabled-consent generation',
     {
+      autoAccept: FC.option(FC.boolean(), {nil: undefined}),
       consentVersion: FC.integer({max: 8, min: 1}),
       enabled: FC.boolean(),
       extraField: FC.boolean(),
@@ -90,10 +106,11 @@ describe('telemetry configuration', () => {
       validSalt: FC.boolean(),
       version: FC.integer({max: 2, min: 0}),
     },
-    ({consentVersion, enabled, extraField, validEndpoint, validSalt, version}) =>
+    ({autoAccept, consentVersion, enabled, extraField, validEndpoint, validSalt, version}) =>
       Effect.sync(() => {
         const renewal = parseTelemetryConsentRenewal(
           JSON.stringify({
+            ...(autoAccept === undefined ? {} : {autoAccept}),
             consentVersion,
             enabled,
             endpoint: validEndpoint ? DEFAULT_TELEMETRY_ENDPOINT : 'http://collector.example/v1/traces',
@@ -103,10 +120,51 @@ describe('telemetry configuration', () => {
           }),
         );
         expect(renewal).toEqual(
-          consentVersion === 4 && enabled && !extraField && validEndpoint && validSalt && version === 1
+          consentVersion === 4 &&
+            enabled &&
+            autoAccept !== true &&
+            !extraField &&
+            validEndpoint &&
+            validSalt &&
+            version === 1
             ? {consentVersion: 4, endpoint: DEFAULT_TELEMETRY_ENDPOINT}
             : undefined,
         );
+      }),
+    {fastCheck: {numRuns: 50}},
+  );
+
+  effectIt.effect.prop(
+    'accepts earlier consent generations only when future scope updates were auto-accepted',
+    {
+      autoAccept: FC.boolean(),
+      consentVersion: FC.integer({max: 8, min: 1}),
+    },
+    ({autoAccept, consentVersion}) =>
+      Effect.sync(() => {
+        const parse = () =>
+          parseTelemetryConfiguration(
+            JSON.stringify({
+              ...(autoAccept ? {autoAccept: true} : {}),
+              consentVersion,
+              enabled: true,
+              endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+              sessionSalt: FIXED_SESSION_SALT,
+              version: 1,
+            }),
+          );
+        if (consentVersion === 5 || (consentVersion < 5 && autoAccept)) {
+          expect(parse()).toEqual({
+            ...(autoAccept ? {autoAccept: true} : {}),
+            consentVersion: 5,
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+            sessionSalt: FIXED_SESSION_SALT,
+            version: 1,
+          });
+        } else {
+          expect(parse).toThrow(TelemetryConfigurationError);
+        }
       }),
     {fastCheck: {numRuns: 50}},
   );
@@ -165,7 +223,7 @@ describe('telemetry configuration', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('fails closed for enabled consent from the previous allowlist version', () =>
+  effectIt.effect('fails closed for manual consent but honors prior automatic scope acceptance', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -192,6 +250,28 @@ describe('telemetry configuration', () => {
           consentVersion: 4,
           endpoint: DEFAULT_TELEMETRY_ENDPOINT,
         });
+
+        yield* fs.writeFileString(
+          file,
+          `${JSON.stringify({
+            autoAccept: true,
+            consentVersion: 4,
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+            sessionSalt: FIXED_SESSION_SALT,
+            version: 1,
+          })}\n`,
+          {mode: 0o600},
+        );
+        expect(yield* resolveTelemetryConfiguration(config)).toEqual({
+          autoAccept: true,
+          consentVersion: 5,
+          enabled: true,
+          endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+          sessionSalt: FIXED_SESSION_SALT,
+          version: 1,
+        });
+        expect(yield* readTelemetryConsentRenewal(config)).toBeUndefined();
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
