@@ -22,6 +22,7 @@ import {delimiter, dirname, extname, isAbsolute, join, posix, relative, resolve,
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {Effect} from 'effect';
+import {codeGraphCommittedFileContentHash} from '../src/code_graph/content_identity.js';
 import {
   CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION,
   codeMemoryLinkAgentAbAssignmentHash,
@@ -226,11 +227,15 @@ interface PreparedBinaryFile {
 
 export interface PreparedGraphIdentity {
   readonly commit: string;
+  readonly extractorSet: string;
   readonly graphContentId: string;
+  readonly objectFormat: 'sha1';
   readonly origin: string;
   readonly repositoryId: string;
   readonly snapshotId: string;
 }
+
+type GitObjectFormat = 'sha1' | 'sha256';
 
 interface FixtureMapping {
   readonly artifactId: string;
@@ -807,7 +812,12 @@ async function prepareTask(
     taskId: definition.taskId,
   });
   const environment = candidateEnvironment(home, options.safeExecutablePath, options.temporaryRoot);
-  const localGraph = await indexGraph(candidate.executable, repository, home, environment, {commit, origin});
+  const localGraph = await indexGraph(candidate.executable, repository, home, environment, {
+    commit,
+    gitExecutable: options.gitExecutable,
+    origin,
+    safeExecutablePath: options.safeExecutablePath,
+  });
   let foreignGraph: PreparedGraphIdentity | null = null;
 
   if (definition.memorySeeds.some(seed => seed.foreignRepository)) {
@@ -824,7 +834,9 @@ async function prepareTask(
     });
     foreignGraph = await indexGraph(candidate.executable, foreign, home, environment, {
       commit: foreignCommit,
+      gitExecutable: options.gitExecutable,
       origin: foreignOrigin,
+      safeExecutablePath: options.safeExecutablePath,
     });
     for (const seed of definition.memorySeeds.filter(seed => seed.foreignRepository)) {
       await rememberSeed(candidate.executable, foreign, home, seed, environment);
@@ -889,7 +901,12 @@ async function prepareTask(
   // written, while the production preflight must exercise the final public checkout.
   // Rebuilding here is what makes stale/changed/deleted controls representative of the
   // runtime adapter, which also indexes its freshly copied final repository.
-  await indexGraph(candidate.executable, repository, home, environment, {commit: finalCommit, origin});
+  await indexGraph(candidate.executable, repository, home, environment, {
+    commit: finalCommit,
+    gitExecutable: options.gitExecutable,
+    origin,
+    safeExecutablePath: options.safeExecutablePath,
+  });
   const anchoredBrief = await runPreparedContextBrief(candidate.executable, definition, repository, home, environment, [
     'policy.json',
   ]);
@@ -1260,7 +1277,7 @@ async function initializeRepository(input: {
       maxOutputBytes: 64 * 1_024,
       timeoutMilliseconds: 30_000,
     });
-  await run(['-c', 'init.defaultBranch=main', 'init', '--quiet']);
+  await run(['-c', 'init.defaultBranch=main', 'init', '--object-format=sha1', '--quiet']);
   await run(['remote', 'add', 'origin', input.remote]);
   await run(['add', '--all']);
   await capture(input.gitExecutable, ['commit', '--quiet', '--no-gpg-sign', '-m', `fixture ${input.taskId}`], {
@@ -1327,7 +1344,12 @@ async function indexGraph(
   repository: string,
   home: string,
   environment: Readonly<Record<string, string>>,
-  expected: {readonly commit: string; readonly origin: string},
+  expected: {
+    readonly commit: string;
+    readonly gitExecutable: string;
+    readonly origin: string;
+    readonly safeExecutablePath: string;
+  },
 ): Promise<PreparedGraphIdentity> {
   await capture(
     candidateExecutable,
@@ -1357,14 +1379,58 @@ async function indexGraph(
   });
   const statusRecord = object(parsed, 'prepared graph status');
   const identity = object(statusRecord.identity, 'prepared graph identity');
+  const readySnapshot = object(statusRecord.readySnapshot, 'prepared ready graph snapshot');
+  const extractorSet = matching(readySnapshot.extractorSet, HASH, 'prepared graph extractor set');
+  const repositoryObjectFormat = await readRepositoryObjectFormat(
+    expected.gitExecutable,
+    repository,
+    expected.safeExecutablePath,
+  );
+  const objectFormat = assertPreparedGraphObjectFormat(identity.objectFormat, repositoryObjectFormat);
   const repositoryId = boundedText(identity.repositoryId, 'prepared graph repository id', 256);
   return {
     commit: expected.commit,
+    extractorSet,
     graphContentId: validated.graphContentId,
+    objectFormat,
     origin: expected.origin,
     repositoryId,
     snapshotId: validated.snapshotId,
   };
+}
+
+export function assertPreparedGraphObjectFormat(
+  reported: unknown,
+  repositoryObjectFormat: GitObjectFormat,
+): PreparedGraphIdentity['objectFormat'] {
+  if (reported !== 'sha1' && reported !== 'sha256') {
+    throw new Error('Prepared fixture graph has an unsupported Git object format.');
+  }
+  if (repositoryObjectFormat !== 'sha1') {
+    throw new Error('Prepared fixture repository must use the SHA-1 object format.');
+  }
+  if (reported !== repositoryObjectFormat) {
+    throw new Error('Prepared fixture graph Git object format differs from the repository.');
+  }
+  return 'sha1';
+}
+
+async function readRepositoryObjectFormat(
+  gitExecutable: string,
+  repository: string,
+  safeExecutablePath: string,
+): Promise<GitObjectFormat> {
+  const result = await capture(gitExecutable, ['rev-parse', '--show-object-format'], {
+    cwd: repository,
+    environment: gitEnvironment(safeExecutablePath, dirname(repository)),
+    maxOutputBytes: 64 * 1_024,
+    timeoutMilliseconds: 30_000,
+  });
+  const objectFormat = result.stdout.trim();
+  if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
+    throw new Error('Prepared fixture repository has an unsupported Git object format.');
+  }
+  return objectFormat;
 }
 
 async function rememberSeed(
@@ -1553,8 +1619,10 @@ export function validateCodeMemoryLinkPreparedMemories(
       citation.sourceDirty !== false ||
       citation.sourceSnapshotId !== graph.snapshotId ||
       citation.sourceGraphContentId !== graph.graphContentId ||
+      citation.extractorSet !== graph.extractorSet ||
       citation.fileContentHash.algorithm !== 'sha256' ||
-      citation.fileContentHash.value !== sha256(source.content) ||
+      citation.fileContentHash.value !==
+        codeGraphCommittedFileContentHash(graph.objectFormat, new TextEncoder().encode(source.content)) ||
       citation.target.kind !== 'file' ||
       metadata.sourceCommit !== graph.commit
     ) {
