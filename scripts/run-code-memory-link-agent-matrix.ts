@@ -52,6 +52,7 @@ import {
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
+import {resolveManagedDevelopmentExecutableForSource} from './development-runtime.js';
 
 export const CODE_MEMORY_LINK_MATRIX_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_CALIBRATION_RESULT_VERSION = 1 as const;
@@ -64,6 +65,7 @@ const MAXIMUM_TRIAL_LEDGER_BYTES = 16 * 1_024 * 1_024;
 const MAXIMUM_EVIDENCE_LEDGER_BYTES = 128 * 1_024 * 1_024;
 const MAXIMUM_CALIBRATION_LEDGER_BYTES = 4 * 1_024 * 1_024;
 const MAXIMUM_PENDING_BYTES = 32 * 1_024 * 1_024;
+const MAXIMUM_CHILD_FAILURE_DIAGNOSTIC_CHARACTERS = 2_048;
 const CALIBRATION_FORBIDDEN_FIELDS = new Set([
   'approvalCommit',
   'attestation',
@@ -118,14 +120,25 @@ interface ClientRegistryV1 {
 
 const program = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
+  if (options.mode === 'release') {
+    const candidateRuntime = yield* resolveManagedDevelopmentExecutableForSource(options.candidateCommit);
+    return yield* Effect.tryPromise({
+      try: () => runReleaseMatrix(options, candidateRuntime.installRoot),
+      catch: cause => new ScriptError('Code Memory Link matrix execution stopped.', {cause}),
+    });
+  }
   yield* Effect.tryPromise({
-    try: () => (options.mode === 'release' ? runReleaseMatrix(options) : runCalibrationMatrix(options)),
+    try: () => runCalibrationMatrix(options),
     catch: cause => new ScriptError('Code Memory Link matrix execution stopped.', {cause}),
   });
 });
 
-export async function runReleaseMatrix(options: ReleaseOptions): Promise<void> {
+export async function runReleaseMatrix(options: ReleaseOptions, candidateInstallRootInput: string): Promise<void> {
   const root = await canonicalDirectory(options.root, 'prepared experiment root');
+  const candidateInstallRoot = await canonicalDirectory(
+    candidateInstallRootInput,
+    'verified candidate installation root',
+  );
   const [assignmentInput, manifestInput, registryInput] = await Promise.all([
     readJson(joinRoot(root, 'assignment.json')),
     readJson(joinRoot(root, 'manifest.json')),
@@ -169,7 +182,7 @@ export async function runReleaseMatrix(options: ReleaseOptions): Promise<void> {
   const invoke = (client: CodeMemoryLinkPreparedClientV1) =>
     capture(runnerCommand, releaseInvocationArguments({client, options: invocationOptions, root, runnerScript}), {
       cwd: dirname(runnerScript),
-      environment: minimalEnvironment(),
+      environment: codeMemoryLinkReleaseRunnerEnvironment(candidateInstallRoot),
       maxOutputBytes: 2 * 1_024 * 1_024,
       timeoutMilliseconds: options.timeoutMilliseconds + 5 * 60_000,
     });
@@ -191,7 +204,7 @@ export async function runReleaseMatrix(options: ReleaseOptions): Promise<void> {
       const recovery = await invoke(pendingClient);
       if (recovery.exitCode !== 0) {
         throw new Error(
-          `Pending commit recovery failed without rerunning or skipping the measured trial: ${recovery.stderr.slice(-2_048)}`,
+          `Pending commit recovery failed without rerunning or skipping the measured trial: ${boundedCodeMemoryLinkChildFailureDiagnostic(recovery)}`,
         );
       }
       const afterRecovery = await readReleaseState({
@@ -284,7 +297,7 @@ export async function runReleaseMatrix(options: ReleaseOptions): Promise<void> {
       const retry = afterFailure.requiredRetry;
       throw new Error(
         retry === null
-          ? `Trial runner failed without a canonical retry state: ${result.stderr.slice(-2_048)}`
+          ? `Trial runner failed without a canonical retry state: ${boundedCodeMemoryLinkChildFailureDiagnostic(result)}`
           : `Trial runner failed at run ${scheduled.runOrder}. Matrix stopped without retrying. Required acknowledgement: --retry-of ${retry.attemptId} --retry-reason ${retry.reason}.`,
       );
     }
@@ -1230,6 +1243,40 @@ async function capture(
 
 function minimalEnvironment(): Readonly<Record<string, string>> {
   return {HOME: '/nonexistent', LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', PATH: '/usr/bin:/bin', TMPDIR: '/tmp'};
+}
+
+export function codeMemoryLinkReleaseRunnerEnvironment(
+  candidateInstallRootInput: string,
+): Readonly<Record<string, string>> {
+  const candidateInstallRoot = normalizedAbsolute(candidateInstallRootInput, 'verified candidate installation root');
+  return {...minimalEnvironment(), THREADNOTE_INSTALL_ROOT: candidateInstallRoot};
+}
+
+export function boundedCodeMemoryLinkChildFailureDiagnostic(input: {
+  readonly stderr: string;
+  readonly stdout: string;
+}): string {
+  const streams = [
+    ...(input.stderr ? [{label: 'stderr', value: input.stderr}] : []),
+    ...(input.stdout ? [{label: 'stdout', value: input.stdout}] : []),
+  ];
+  if (streams.length === 0) return '(child produced no stdout or stderr)';
+  const headers = streams.map(stream => `${stream.label}:\n`);
+  const payloadBudget = MAXIMUM_CHILD_FAILURE_DIAGNOSTIC_CHARACTERS - headers.join('\n').length;
+  const fairShare = Math.floor(payloadBudget / streams.length);
+  const budgets = streams.map(stream => Math.min(stream.value.length, fairShare));
+  let remaining = payloadBudget - budgets.reduce((total, budget) => total + budget, 0);
+  for (let index = streams.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const available = streams[index]!.value.length - budgets[index]!;
+    const granted = Math.min(available, remaining);
+    budgets[index]! += granted;
+    remaining -= granted;
+  }
+  return streams
+    .map((stream, index) => {
+      return `${headers[index]}${stream.value.slice(-budgets[index]!)}`;
+    })
+    .join('\n');
 }
 
 function delay(milliseconds: number): Promise<void> {
