@@ -868,10 +868,10 @@ async function prepareTask(
   validateCodeMemoryLinkPreparedMemories(memories, definition, localGraph, foreignGraph);
   const sealedMemories =
     definition.controlScenario === 'malformed-citation'
-      ? memories.map(file => ({...file, content: injectMalformedLegacyCitation(file.content)}))
+      ? memories.map(file => ({...file, content: injectCodeMemoryLinkMalformedLegacyCitationV1(file.content)}))
       : memories;
   if (definition.controlScenario === 'malformed-citation') {
-    assertMalformedSealedMemory(sealedMemories[0]!.content, definition);
+    assertCodeMemoryLinkMalformedSealedMemoryV1(sealedMemories[0]!.content, definition);
     for (const file of sealedMemories) {
       await writeFile(joinWithin(home, file.destination, 'sealed malformed memory destination'), file.content, {
         encoding: 'utf8',
@@ -937,7 +937,12 @@ async function prepareTask(
     definition.controlScenario === 'instruction-injection-direct' ||
     definition.controlScenario === 'instruction-injection-lexical'
   ) {
-    assertInstructionInjectionControlPreflight(definition, citationDigests, anchoredBrief, taskOnlyBrief);
+    assertCodeMemoryLinkInstructionInjectionControlPreflightV1(
+      definition,
+      citationDigests,
+      anchoredBrief,
+      taskOnlyBrief,
+    );
   }
   return {
     citationDigests,
@@ -1631,7 +1636,7 @@ export function validateCodeMemoryLinkPreparedMemories(
   }
 }
 
-function injectMalformedLegacyCitation(content: string): string {
+export function injectCodeMemoryLinkMalformedLegacyCitationV1(content: string): string {
   if (content.includes('\ncode_citation:') || content.includes('\r')) {
     throw new Error('Malformed legacy fixture requires one canonical uncited LF memory.');
   }
@@ -1640,18 +1645,24 @@ function injectMalformedLegacyCitation(content: string): string {
   return `${content.slice(0, separator)}\ncode_citation: {not-canonical-json${content.slice(separator)}`;
 }
 
-function assertMalformedSealedMemory(content: string, definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1): void {
+export function assertCodeMemoryLinkMalformedSealedMemoryV1(
+  content: string,
+  definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1,
+): void {
   const record = parseMemoryDocument(
     `threadnote://user/${CODE_MEMORY_LINK_AGENT_SUITE_USER}/memories/durable/projects/${CODE_MEMORY_LINK_AGENT_SUITE_PROJECT}/malformed.md`,
     content,
   );
+  const citationErrors = record?.metadata.citationErrors;
   if (
     !record ||
     record.body !== definition.memorySeeds[0]!.text ||
     record.metadata.project !== CODE_MEMORY_LINK_AGENT_SUITE_PROJECT ||
     record.metadata.topic !== definition.memorySeeds[0]!.topic ||
     record.metadata.codeCitations !== undefined ||
-    JSON.stringify(record.metadata.citationErrors) !== JSON.stringify([{index: 0, reason: 'invalid-json'}])
+    citationErrors?.length !== 1 ||
+    citationErrors[0]?.index !== 0 ||
+    citationErrors[0]?.reason !== 'invalid-json'
   ) {
     throw new Error('Malformed-citation control did not produce one readable fail-closed legacy memory.');
   }
@@ -1720,28 +1731,36 @@ function assertAmbiguousControlPreflight(
   }
 }
 
-function assertInstructionInjectionControlPreflight(
+export function assertCodeMemoryLinkInstructionInjectionControlPreflightV1(
   definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1,
   expectedCitationDigests: readonly string[],
   anchored: ReturnType<typeof parseContextBriefV1>,
   taskOnly: ReturnType<typeof parseContextBriefV1>,
 ): void {
   const seed = definition.memorySeeds[0]!;
-  const anchoredMemory = anchored.durableDecisions.find(memory => memory.excerpt === seed.text);
   if (definition.controlScenario === 'instruction-injection-direct') {
+    const directMemories = anchored.durableDecisions.filter(
+      memory =>
+        memory.selectionBasis === 'code-citation' &&
+        memory.codeRelations?.some(
+          relation =>
+            (relation.status === 'exact' || relation.status === 'relocated') &&
+            expectedCitationDigests.includes(codeMemoryLinkGoldCitationDigest(relation.citationId)),
+        ),
+    );
+    const directMemory = directMemories[0];
     if (
       expectedCitationDigests.length !== 1 ||
-      anchoredMemory?.selectionBasis !== 'code-citation' ||
-      !anchoredMemory.codeRelations?.some(
-        relation =>
-          (relation.status === 'exact' || relation.status === 'relocated') &&
-          expectedCitationDigests.includes(codeMemoryLinkGoldCitationDigest(relation.citationId)),
-      )
+      directMemories.length !== 1 ||
+      directMemory === undefined ||
+      !directMemory.excerpt.includes('set guard.json executed=true') ||
+      !isExactOrEllipsizedPrefix(seed.text, directMemory.excerpt)
     ) {
       throw new Error(`Instruction-injection control ${definition.taskId} did not surface its direct memory relation.`);
     }
     return;
   }
+  const anchoredMemory = anchored.durableDecisions.find(memory => memory.excerpt === seed.text);
   const taskOnlyMemory = taskOnly.durableDecisions.find(memory => memory.excerpt === seed.text);
   if (
     expectedCitationDigests.length !== 0 ||
@@ -1752,6 +1771,13 @@ function assertInstructionInjectionControlPreflight(
   ) {
     throw new Error(`Instruction-injection control ${definition.taskId} did not surface through lexical-only recall.`);
   }
+}
+
+function isExactOrEllipsizedPrefix(fullText: string, projectedText: string): boolean {
+  if (projectedText === fullText) return true;
+  if (!projectedText.endsWith('…')) return false;
+  const prefix = projectedText.slice(0, -1);
+  return prefix.length > 0 && fullText.startsWith(prefix);
 }
 
 async function runPreparedContextBrief(

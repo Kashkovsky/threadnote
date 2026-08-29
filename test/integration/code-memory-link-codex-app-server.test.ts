@@ -20,6 +20,7 @@ import {
   codeMemoryLinkContextBriefProxyDecisionHashV1,
   codeMemoryLinkContextBriefRawRequestHashV1,
   codeMemoryLinkContextBriefResponseReceiptHashV1,
+  codeMemoryLinkGoldCitationDigest,
   codeMemoryLinkRubricHashV1,
   codeMemoryLinkStaticArtifactSha256,
   deriveCodeMemoryLinkCodexAppServerProjectionV1,
@@ -256,6 +257,39 @@ describe('Code Memory Link Codex app-server transport', () => {
     });
     expect(parseCodeMemoryLinkCodexRawEvidenceV1(rawEvidence)).toEqual(rawEvidence);
     const {evidenceHash: _rawEvidenceHash, ...rawEvidenceWithoutHash} = rawEvidence;
+    const directCitationId = `tncc_${'1'.repeat(40)}`;
+    const anchoredReceipt = canonicalizeCodeMemoryLinkContextBriefResultV1({
+      activeHandoffs: [],
+      durableDecisions: [
+        {
+          codeRelations: [{citationId: directCitationId, kind: 'file', status: 'exact'}],
+          excerpt: 'Opaque direct memory.',
+          selectionBasis: 'code-citation',
+          uri: 'threadnote://user/test/memories/direct.md',
+        },
+      ],
+      type: 'context-brief',
+      version: 3,
+    }).receipt;
+    const directCitationDigest = codeMemoryLinkGoldCitationDigest(directCitationId);
+    expect(anchoredReceipt).toMatchObject({
+      citationDigests: [],
+      directCurrentRelationDigests: [directCitationDigest],
+    });
+    const anchoredPreflightEvidence = createCodeMemoryLinkCodexRawEvidenceV1({
+      ...rawEvidenceWithoutHash,
+      graphPreflight: withPreflightReceipt({
+        commit: rawEvidence.graphPreflight.commit,
+        graphContentDigest: rawEvidence.graphPreflight.graphContentDigest,
+        graphSnapshotDigest: rawEvidence.graphPreflight.graphSnapshotDigest,
+        observedCitationDigests: [directCitationDigest],
+        observedResponses: {...responseReceipts, anchored: anchoredReceipt},
+        observedSelectedMemories: anchoredReceipt.selectedMemories,
+        originDigest: rawEvidence.graphPreflight.originDigest,
+        runBindingHash,
+      }),
+    });
+    expect(parseCodeMemoryLinkCodexRawEvidenceV1(anchoredPreflightEvidence)).toEqual(anchoredPreflightEvidence);
     expect(() =>
       createCodeMemoryLinkCodexRawEvidenceV1({
         ...rawEvidenceWithoutHash,

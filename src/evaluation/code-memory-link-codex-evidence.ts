@@ -515,7 +515,8 @@ function normalizeGraphPreflightWithoutHash(
     'observed selected-memory ids',
   );
   if (
-    JSON.stringify(observedCitationDigests) !== JSON.stringify(observedResponses.anchored.citationDigests) ||
+    JSON.stringify(observedCitationDigests) !==
+      JSON.stringify(observedResponses.anchored.directCurrentRelationDigests) ||
     JSON.stringify(observedSelectedMemories) !== JSON.stringify(observedResponses.anchored.selectedMemories)
   ) {
     invalid('graph preflight citation or memory roster differs from its anchored response projection');
