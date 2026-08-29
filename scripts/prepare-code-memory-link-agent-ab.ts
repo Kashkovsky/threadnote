@@ -264,7 +264,7 @@ const program = Effect.gen(function* () {
 export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: CandidateRuntime): Promise<void> {
   assertCandidate(options, candidate);
   validateSafeExecutablePath(options.safeExecutablePath);
-  const sourceRoot = await canonicalDirectory(fileURLToPath(new URL('../', import.meta.url)), 'source root');
+  const sourceRoot = await canonicalDirectory(codeMemoryLinkAgentPreparationSourceRoot(), 'source root');
   await assertCleanSourceCheckout(
     sourceRoot,
     options.candidateCommit,
@@ -390,6 +390,10 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
     await rm(workRoot, {force: true, maxRetries: 3, recursive: true});
     if (!promoted) await rm(stagingRoot, {force: true, maxRetries: 3, recursive: true});
   }
+}
+
+export function codeMemoryLinkAgentPreparationSourceRoot(moduleUrl = import.meta.url): string {
+  return resolve(fileURLToPath(new URL('../', moduleUrl)));
 }
 
 export function assembleCodeMemoryLinkSealedSuiteV1(input: {

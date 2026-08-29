@@ -1,5 +1,6 @@
 import {createHash} from '../helpers/node-crypto.js';
 import fc from 'fast-check';
+import {fileURLToPath} from 'node:url';
 import {describe, expect, it} from 'vitest';
 import {
   CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION,
@@ -23,11 +24,20 @@ import {
 import {
   assembleCalibrationPlanV1,
   assembleCodeMemoryLinkSealedSuiteV1,
+  codeMemoryLinkAgentPreparationSourceRoot,
   type CodeMemoryLinkPreparedTaskV1,
 } from '../../scripts/prepare-code-memory-link-agent-ab.js';
 import {parseCodeMemoryLinkCodexSuiteLayoutV1} from '../../scripts/code-memory-link-codex-suite.js';
 
 describe('Code Memory Link sealed preparation', () => {
+  it('normalizes the module-derived source root before canonical validation', () => {
+    const sourceRoot = codeMemoryLinkAgentPreparationSourceRoot();
+    const moduleDerivedRoot = fileURLToPath(new URL('../../', import.meta.url));
+
+    expect(sourceRoot).toBe(moduleDerivedRoot.replace(/[\\/]+$/u, ''));
+    expect(sourceRoot).not.toMatch(/[\\/]$/u);
+  });
+
   it('assembles one fully bound 28-task suite with task-private fixture mappings', () => {
     const prepared = releaseTasks();
     const first = assemble(prepared);
