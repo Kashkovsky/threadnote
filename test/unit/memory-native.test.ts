@@ -27,8 +27,8 @@ import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
 

@@ -1,0 +1,211 @@
+{
+  "id": "code-memory-link-bench-v1",
+  "queries": [
+    {
+      "budgetClass": "default",
+      "codeRefs": ["cgs_11111111111111111111111111111111"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "exact-symbol-node",
+      "judgments": [
+        {
+          "expectedStatus": "exact",
+          "label": "direct-current",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/exact-symbol-node-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "exact-symbol",
+      "task": "Recover the hidden contract attached to the exact symbol."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/exact-file.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "exact-file-path",
+      "judgments": [
+        {
+          "expectedStatus": "exact",
+          "label": "direct-current",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/exact-file-path-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "exact-file",
+      "task": "Recover the hidden contract attached to the exact file."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["cgs_22222222222222222222222222222222"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "relocated-symbol-locator",
+      "judgments": [
+        {
+          "expectedStatus": "relocated",
+          "label": "direct-current",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/relocated-symbol-locator-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "relocated-symbol",
+      "task": "Recover the contract after the cited symbol moved."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/changed.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "changed-at-same-path",
+      "judgments": [
+        {
+          "expectedStatus": "changed",
+          "label": "historical-warning",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/changed-at-same-path-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "changed",
+      "task": "Find relevant history without treating changed code as current."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/deleted.ts"],
+      "expectedCoverage": {"complete": false, "matchedMemories": 0, "requested": 1, "resolved": 0},
+      "id": "deleted-anchor-abstention",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "deleted",
+      "task": "Abstain when the only cited source was deleted."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/copies/ambiguous-a.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 0, "requested": 1, "resolved": 1},
+      "id": "ambiguous-relocation-warning",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "ambiguous-relocation",
+      "task": "Surface ambiguous history only with an explicit warning."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/collision.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 0, "requested": 1, "resolved": 1},
+      "id": "same-name-cross-repository",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "cross-repository-collision",
+      "task": "Do not leak an identical citation from another repository."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/archived.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 0, "requested": 1, "resolved": 1},
+      "id": "archived-memory-exclusion",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "archived",
+      "task": "Do not revive archived guidance through a code backlink."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/superseded.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 0, "requested": 1, "resolved": 1},
+      "id": "superseded-memory-exclusion",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "superseded",
+      "task": "Do not revive superseded guidance through a code backlink."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/conflict.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "direct-over-conflicting-topic",
+      "judgments": [
+        {
+          "expectedStatus": "exact",
+          "label": "direct-current",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/direct-over-conflicting-topic-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "conflicting-topic",
+      "task": "Prefer the cited decision over a topical decoy."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/malformed.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 0, "requested": 1, "resolved": 1},
+      "id": "malformed-citation-exclusion",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "malformed-citation",
+      "task": "Ignore malformed citation metadata."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/stale-graph.ts"],
+      "expectedCoverage": {"complete": false, "matchedMemories": 0, "requested": 1, "resolved": 0},
+      "id": "stale-graph-abstention",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "stale-graph",
+      "task": "Do not start indexing or claim backlinks from stale graph evidence."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/dirty-overlay.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "dirty-overlay-exact",
+      "judgments": [
+        {
+          "expectedStatus": "exact",
+          "label": "direct-current",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/dirty-overlay-exact-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "dirty-overlay",
+      "task": "Recover the memory attached to exact dirty-overlay code."
+    },
+    {
+      "budgetClass": "default",
+      "codeRefs": ["src/legacy.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 0, "requested": 1, "resolved": 1},
+      "id": "legacy-uncited-no-backlink",
+      "judgments": [],
+      "measureWarmIncrementalLatency": false,
+      "scenario": "legacy-uncited",
+      "task": "Distinguish an uncited legacy memory from an explicit backlink."
+    },
+    {
+      "budgetClass": "worst-case",
+      "codeRefs": ["src/high-noise.ts"],
+      "expectedCoverage": {"complete": true, "matchedMemories": 1, "requested": 1, "resolved": 1},
+      "id": "high-noise-warm-budget",
+      "judgments": [
+        {
+          "expectedStatus": "exact",
+          "label": "direct-current",
+          "uri": "threadnote://user/code-memory-bench/memories/durable/projects/threadnote/high-noise-warm-budget-gold.md"
+        }
+      ],
+      "measureWarmIncrementalLatency": true,
+      "scenario": "high-noise-budget",
+      "task": "Recover the exact linked memory under high lexical noise and bounded output."
+    }
+  ],
+  "thresholds": {
+    "codeCitationNoAnswerAccuracyMinimum": 1,
+    "coverageAccuracyMinimum": 1,
+    "defaultEstimatedTokensMaximum": 1250,
+    "directCodeCitationPrecisionAt3Minimum": 0.9,
+    "directFirstRateMinimum": 1,
+    "exactCleanRecallAt3Minimum": 1,
+    "falseCurrentRateMaximum": 0,
+    "k": 3,
+    "relocationInclusiveRecallAt3Minimum": 0.95,
+    "warmIncrementalP95MillisecondsMaximum": 250,
+    "worstCaseEstimatedTokensMaximum": 1500
+  },
+  "version": 1
+}

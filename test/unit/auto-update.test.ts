@@ -17,7 +17,7 @@ import {
   threadnoteUpdateCommandMode,
   type AutoUpdateState,
   type AutoUpdateWorkerResult,
-} from '../../src/auto_update.js';
+} from '../../src/release/auto_update.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

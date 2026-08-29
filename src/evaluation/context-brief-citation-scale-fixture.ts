@@ -14,7 +14,7 @@ import {codeGraphWorksetManifestDigest} from '../code_graph/workset_catalog/work
 import type {CodeGraphInventoryFile, CodeGraphSnapshot, CodeGraphStatus} from '../code_graph/types.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {runCommandEffect} from '../effect/command.js';
-import {createMemoryCodeCitation, formatMemoryCodeCitationLines} from '../memory_code_citation.js';
+import {createMemoryCodeCitation, formatMemoryCodeCitationLines} from '../memory/code_citation.js';
 import {loadRecallIndexData, recallIndexStatus} from '../recall/index.js';
 import type {ProjectManifest, ResolvedWorkset, RuntimeConfig} from '../types.js';
 import type {

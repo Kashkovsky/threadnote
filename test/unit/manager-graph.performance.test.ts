@@ -4,12 +4,12 @@ import {
   managerGraphClientRenderProxy,
   type GraphEdge,
   type GraphQueryVisualization,
-} from '../../src/manager_graph.js';
+} from '../../src/manager/graph.js';
 import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   managerGraphVisualizationLimits,
-} from '../../src/manager_graph_limits.js';
+} from '../../src/manager/graph_limits.js';
 
 // Istanbul instruments every branch in the layout loop. Keep the production
 // budget unchanged while allowing the measured coverage build its known tax.

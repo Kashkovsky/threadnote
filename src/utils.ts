@@ -11,7 +11,7 @@ import {
   isSharedMemoryUri,
   type MemoryRecord,
   type MemoryRelation,
-} from './memory_document.js';
+} from './memory/document.js';
 import {
   deduplicateLogicalRecallCandidates,
   rankRecallCandidates,

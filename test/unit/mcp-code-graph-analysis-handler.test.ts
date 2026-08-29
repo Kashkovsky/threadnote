@@ -16,7 +16,7 @@ import {
   type CodeGraphWatchOptions,
 } from '../../src/code_graph/watcher.js';
 import {EffectMcpServerAdapter, type EffectMcpServer} from '../../src/effect/ai/mcp.js';
-import {registerCodeGraphTool} from '../../src/mcp_server_code_graph.js';
+import {registerCodeGraphTool} from '../../src/mcp/server/code_graph.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {analysisSnapshot, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

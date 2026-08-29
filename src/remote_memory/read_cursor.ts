@@ -1,5 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
-import type {MemoryReadMode, MemoryReadPosition} from '../memory_read_projection.js';
+import type {MemoryReadMode, MemoryReadPosition} from '../memory/read_projection.js';
 import type {AuthorizedRemotePrincipal} from './authorization.js';
 
 export const REMOTE_MEMORY_READ_CURSOR_TTL_MILLISECONDS = 10 * 60_000;

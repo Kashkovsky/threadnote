@@ -10,7 +10,7 @@ import {CommandExecutor} from '../../src/effect/command.js';
 import {codeGraphWorksetCatalogLayout} from '../../src/code_graph/workset_catalog/layout.js';
 import {withCodeGraphMaintenanceIntent} from '../../src/code_graph/maintenance_gate.js';
 import {readSeedManifest} from '../../src/manifest.js';
-import {validateManagerProjectRoots} from '../../src/manager_project_roots.js';
+import {validateManagerProjectRoots} from '../../src/manager/project_roots.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {
   handleManagerWorksetRequest,
@@ -22,8 +22,8 @@ import {
   readManagerWorksetDefinition,
   readManagerManifestProject,
   type ManagerWorksetDefinitionMutation,
-} from '../../src/manager_worksets.js';
-import {managerWorksetRepositoryLabel, PrepareJobPanel} from '../../src/manager_worksets_view.js';
+} from '../../src/manager/worksets.js';
+import {managerWorksetRepositoryLabel, PrepareJobPanel} from '../../src/manager/worksets_view.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 import {startManagerTestServer} from '../helpers/manager-test-server.js';

@@ -3,9 +3,9 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {preparePersonalMemoryWrite, writeDurableMemory} from '../../src/mcp_server_memory.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory_document.js';
+import {preparePersonalMemoryWrite, writeDurableMemory} from '../../src/mcp/server/memory.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

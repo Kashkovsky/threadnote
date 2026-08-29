@@ -54,8 +54,8 @@ import {
   managerGraphClientRenderProxy,
   type GraphQueryVisualization,
   type GraphVisualization,
-} from '../src/manager_graph.js';
-import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager_graph_limits.js';
+} from '../src/manager/graph.js';
+import {MANAGER_GRAPH_MAX_EDGE_LIMIT, MANAGER_GRAPH_MAX_NODE_LIMIT} from '../src/manager/graph_limits.js';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,

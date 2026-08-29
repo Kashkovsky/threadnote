@@ -806,6 +806,18 @@ describe('direct Grafana dashboard provisioning', () => {
     }
   });
 
+  it('identifies an invalid or expired Grafana service-account token without exposing it', async () => {
+    await expect(
+      verifyLiveDashboard({
+        baseUrl: testGrafanaUrl,
+        fetcher: async () => new Response(null, {status: 401}),
+        namespace: testGrafanaNamespace,
+        resource: readDashboardArtifact(),
+        token: 'expired-private-token',
+      }),
+    ).rejects.toThrow('HTTP 401; the service-account token is invalid or expired.');
+  });
+
   it('verifies exact live state, private ACLs, and every bounded Tempo query using only reads and query POST', async () => {
     const resource = readDashboardArtifact();
     const requests: {method?: string; url: string}[] = [];

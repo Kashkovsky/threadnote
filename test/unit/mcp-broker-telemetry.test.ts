@@ -4,7 +4,7 @@ import {describe, expect} from 'vitest';
 import {emitMcpBrokerFailureEvent} from '../../src/effect/mcp_broker_process.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {anonymousTelemetryTestLayer} from '../../src/effect/telemetry.js';
-import type {McpBrokerFailureEvent} from '../../src/mcp_broker.js';
+import type {McpBrokerFailureEvent} from '../../src/mcp/broker.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 interface CapturedSpan {

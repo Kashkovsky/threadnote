@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import type {MemoryAuthority, MemoryTrust} from '../../src/memory_document.js';
+import type {MemoryAuthority, MemoryTrust} from '../../src/memory/document.js';
 import {
   deriveRecallEligibilityPolicy,
   normalizeRecallProjectNames,

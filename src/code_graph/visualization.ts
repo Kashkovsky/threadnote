@@ -37,7 +37,7 @@ import {
   managerGraphVisualizationLimits,
   type ManagerGraphVisualizationBudget,
   type ManagerGraphVisualizationLimits,
-} from '../manager_graph_limits.js';
+} from '../manager/graph_limits.js';
 
 export {managerGraphBuildCatalog, type ManagerGraphBuildCatalog} from './manager_status.js';
 

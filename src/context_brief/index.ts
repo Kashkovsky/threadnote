@@ -7,7 +7,13 @@ import {
 import type {RuntimeConfig} from '../types.js';
 import {validateContextBriefMemoryCitations} from './citation_validation.js';
 import {retrieveContextBriefGraphEvidence, unavailableContextBriefGraphEvidence} from './graph_evidence.js';
-import {retrieveContextBriefMemoryEvidence, unavailableContextBriefMemoryEvidence} from './memory_evidence.js';
+import {
+  mergeContextBriefMemoryEvidence,
+  retrieveContextBriefCodeLinkedMemoryEvidence,
+  retrieveContextBriefMemoryEvidence,
+  unavailableContextBriefCodeLinkedMemoryEvidence,
+  unavailableContextBriefMemoryEvidence,
+} from './memory_evidence.js';
 import {assembleContextBriefLogicalResult, planContextBrief} from './planner.js';
 import {projectContextBrief} from './projector.js';
 import type {
@@ -32,6 +38,9 @@ export interface ContextBriefCompilerDependencies<
   readonly memoryEvidence: (
     plan: ContextBriefPlanV1['memory'],
   ) => Effect.Effect<ContextBriefMemoryRetrievalV1, unknown, MemoryR>;
+  readonly codeLinkedMemoryEvidence?: (
+    plan: ContextBriefPlanV1['codeAnchors'],
+  ) => Effect.Effect<ContextBriefMemoryRetrievalV1, unknown, MemoryR>;
   readonly citationValidation?: (
     scope: ContextBriefPlanV1['scope'],
     candidates: ContextBriefMemoryRetrievalV1['candidates'],
@@ -53,6 +62,7 @@ export interface ContextBriefRuntimeCompilerSources<
     ContextBriefCompilerDependencies<never, never, CitationR>['citationValidation']
   >;
   readonly graphEvidence: ContextBriefCompilerDependencies<GraphR>['graphEvidence'];
+  readonly codeLinkedMemoryEvidence?: ContextBriefCompilerDependencies<never, MemoryR>['codeLinkedMemoryEvidence'];
   readonly memoryEvidence: ContextBriefCompilerDependencies<never, MemoryR>['memoryEvidence'];
   readonly projection: NonNullable<ContextBriefCompilerDependencies<never, never, never, ProjectR>['projection']>;
 }
@@ -93,6 +103,16 @@ export function instrumentContextBriefCompilerDependencies<
             Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
           ),
         ),
+    ...(sources.codeLinkedMemoryEvidence === undefined
+      ? {}
+      : {
+          codeLinkedMemoryEvidence: (codePlan: ContextBriefPlanV1['codeAnchors']) =>
+            sources.codeLinkedMemoryEvidence!(codePlan).pipe(
+              Effect.catch(() =>
+                Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(codePlan.codeRefs.length)),
+              ),
+            ),
+        }),
     memoryEvidence: memoryPlan =>
       reporter
         .memory(sources.memoryEvidence(memoryPlan))
@@ -117,9 +137,21 @@ export const compileContextBriefWith = Effect.fn('contextBrief.compileWith')(fun
 ) {
   const plan = planContextBrief(input);
   const observedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
-  const [graph, memory] = yield* Effect.all(
-    [dependencies.graphEvidence(plan.graph), dependencies.memoryEvidence(plan.memory)],
-    {concurrency: 2},
+  const codeLinkedMemory =
+    plan.codeAnchors.codeRefs.length === 0
+      ? Effect.succeed(undefined)
+      : dependencies.codeLinkedMemoryEvidence === undefined
+        ? Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(plan.codeAnchors.codeRefs.length))
+        : dependencies.codeLinkedMemoryEvidence(plan.codeAnchors);
+  const [graph, lexicalMemory, linkedMemory] = yield* Effect.all(
+    [dependencies.graphEvidence(plan.graph), dependencies.memoryEvidence(plan.memory), codeLinkedMemory],
+    {concurrency: 3},
+  );
+  const memory = mergeContextBriefMemoryEvidence(
+    lexicalMemory,
+    linkedMemory,
+    plan.memory.candidateLimit,
+    plan.codeAnchors.candidateLimit,
   );
   const citationValidations = dependencies.citationValidation
     ? yield* dependencies.citationValidation(plan.scope, memory.candidates, graph.citationValidationFence)
@@ -154,6 +186,7 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
         citationValidation: (scope, candidates, fence) =>
           validateContextBriefMemoryCitations(config, scope, candidates, fence),
         graphEvidence: graphPlan => retrieveContextBriefGraphEvidence(config, graphPlan),
+        codeLinkedMemoryEvidence: codePlan => retrieveContextBriefCodeLinkedMemoryEvidence(config, codePlan),
         memoryEvidence: memoryPlan => retrieveContextBriefMemoryEvidence(config, memoryPlan),
         projection: (logical, maximumEstimatedTokens) =>
           Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
@@ -162,6 +195,7 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
     ),
     {
       budgetTokens: request.outputBudgetTokens,
+      ...(request.codeAnchors.codeRefs.length === 0 ? {} : {codeRefs: request.codeAnchors.codeRefs}),
       mode: request.mode,
       scope: request.scope,
       task: request.task,

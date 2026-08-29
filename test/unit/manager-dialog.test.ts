@@ -15,7 +15,7 @@ import {
   type ManagerDialogField,
   useManagerDialogs,
   validateManagerDialogValues,
-} from '../../src/manager_dialog.js';
+} from '../../src/manager/dialog.js';
 
 const root = process.cwd();
 let reactRoot: Root | undefined;
@@ -199,7 +199,7 @@ describe('manager dialogs', () => {
 
   it('keeps native browser prompts out of every Manager surface', async () => {
     const sources = await Promise.all(
-      ['src/manager_ui.tsx', 'src/manager_graph.tsx'].map(file => readFile(join(root, file), 'utf8')),
+      ['src/manager/ui.tsx', 'src/manager/graph.tsx'].map(file => readFile(join(root, file), 'utf8')),
     );
 
     for (const source of sources) {

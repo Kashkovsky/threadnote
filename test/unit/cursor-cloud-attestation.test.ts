@@ -8,7 +8,7 @@ import {
   runCursorAttestationChallenge,
   validateCursorAttestationChallenge,
   type CursorAttestationExchangeClient,
-} from '../../src/cursor_cloud_attestation.js';
+} from '../../src/cursor/cloud_attestation.js';
 import {CommandExecutor, type CommandOptions} from '../../src/effect/command.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

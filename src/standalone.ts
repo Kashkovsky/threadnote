@@ -131,8 +131,8 @@ async function codeGraphDeepDiagnosticsWorkerProgram() {
   const [worker, system, processDiagnostics, processLease] = await Promise.all([
     import('./code_graph/deep_diagnostics.js'),
     import('./effect/system.js'),
-    import('./process_diagnostics.js'),
-    import('./standalone_process_lease.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
   ]);
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
@@ -154,8 +154,8 @@ async function codeGraphAutomaticCompactionWorkerProgram() {
   const [worker, system, processDiagnostics, processLease] = await Promise.all([
     import('./code_graph/automatic_compaction.js'),
     import('./effect/system.js'),
-    import('./process_diagnostics.js'),
-    import('./standalone_process_lease.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
   ]);
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
@@ -177,8 +177,8 @@ async function codeGraphImpactQueryWorkerProgram() {
   const [worker, runtime, processDiagnostics, processLease] = await Promise.all([
     import('./code_graph/isolated_impact_query.js'),
     import('./effect/runtime.js'),
-    import('./process_diagnostics.js'),
-    import('./standalone_process_lease.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
   ]);
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
@@ -211,8 +211,8 @@ async function localModelWorkerProgram(arguments_: readonly string[]) {
     import('./effect/ai/isolated-local-model-runtime.js'),
     import('./effect/ai/local-model-runtime.js'),
     import('./effect/system.js'),
-    import('./process_diagnostics.js'),
-    import('./standalone_process_lease.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
   ]);
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
@@ -235,8 +235,8 @@ async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
     import('./code_graph/parser_worker.js'),
     import('./code_graph/tree_sitter/runtime.js'),
     import('./effect/system.js'),
-    import('./process_diagnostics.js'),
-    import('./standalone_process_lease.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
   ]);
   const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
   return processHome.pipe(
@@ -261,8 +261,8 @@ async function codeGraphParserWorkerProgram(arguments_: readonly string[]) {
 async function applicationProgram(arguments_: readonly string[], isMcpServer: boolean, isMcpBroker: boolean) {
   const [runtime, processDiagnostics, processLease] = await Promise.all([
     import('./effect/runtime.js'),
-    import('./process_diagnostics.js'),
-    import('./standalone_process_lease.js'),
+    import('./process/diagnostics.js'),
+    import('./process/standalone_lease.js'),
   ]);
   if (isMcpBroker) {
     const {mcpBrokerEffect} = await import('./effect/mcp_broker_process.js');
@@ -331,7 +331,7 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
 
 function normalizedProcessHome(
   arguments_: readonly string[],
-  resolveHome: typeof import('./process_diagnostics.js').threadnoteHomeForProcess,
+  resolveHome: typeof import('./process/diagnostics.js').threadnoteHomeForProcess,
 ) {
   return resolveHome(arguments_, process.env).pipe(
     Effect.tap(home =>

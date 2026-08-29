@@ -6,6 +6,7 @@ import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {Console, Effect, FileSystem, Layer, Option, Path} from 'effect';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {SystemInfo} from '../src/effect/system.js';
+import {recallIndexDatabaseFilename} from '../src/recall/index.js';
 
 const ROOT_URL = new URL('..', import.meta.url);
 const COMMAND_TIMEOUT_MILLISECONDS = 300_000;
@@ -119,7 +120,7 @@ const smokeSelfContained = Effect.scoped(
       );
     }
 
-    const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', 'active-v9.sqlite');
+    const lexicalDatabase = path.join(threadnoteHome, 'indexes', 'lexical', recallIndexDatabaseFilename(false));
     const lexicalInfo = yield* fs.stat(lexicalDatabase);
     if (lexicalInfo.type !== 'File' || lexicalInfo.size <= 0) {
       return yield* Effect.fail(new ScriptError('Standalone recall did not create a populated Bun SQLite index.'));

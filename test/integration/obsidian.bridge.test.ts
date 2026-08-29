@@ -9,26 +9,26 @@ import * as yaml from 'js-yaml';
 import {afterEach, describe, expect, it} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
-import {runObsidianInboxScan} from '../../src/obsidian_inbox.js';
+import {runObsidianInboxScan} from '../../src/obsidian/inbox.js';
 import {
   runObsidianProjectionAdd,
   runObsidianProjectionPublish,
   runObsidianProjectionRemove,
   runObsidianProjectionSync,
-} from '../../src/obsidian_projection.js';
+} from '../../src/obsidian/projection.js';
 import {
   runObsidianSourceAdd,
   runObsidianSourceInventory,
   runObsidianSourceRemove,
   syncObsidianSourcesBeforeRecall,
-} from '../../src/obsidian_source.js';
+} from '../../src/obsidian/source.js';
 import {loadRecallIndexData} from '../../src/recall/index.js';
 import {
   createMemoryCodeCitation,
   formatMemoryCodeCitation,
   MEMORY_SCHEMA_VERSION,
-} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument} from '../../src/memory_document.js';
+} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';

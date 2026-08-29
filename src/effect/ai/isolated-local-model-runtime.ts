@@ -22,7 +22,7 @@ import {
 } from './local-model-runtime.js';
 import type {LlamaCppDiagnostics} from './llama-cpp-engine.js';
 import {SystemInfo, type SystemInfoShape} from '../system.js';
-import {withThreadnoteProcessActivity} from '../../process_diagnostics.js';
+import {withThreadnoteProcessActivity} from '../../process/diagnostics.js';
 import {LOCAL_MODEL_WORKER_ARGUMENT} from '../../worker_protocol.js';
 import {withAnonymousTelemetryPhase} from '../telemetry.js';
 import {attachAnonymousTelemetryDiagnostic} from '../../telemetry/diagnostic.js';

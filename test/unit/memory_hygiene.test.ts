@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import type {MemoryMetadata, MemoryRecord} from '../../src/memory_hygiene.js';
+import type {MemoryMetadata, MemoryRecord} from '../../src/memory/hygiene.js';
 import {
   buildCompactPlan,
   DEFAULT_HANDOFF_NEXT_STEP,
@@ -12,7 +12,7 @@ import {
   recallHygieneNudges,
   formatReferencedContextPointers,
   referencedUrisFromRecords,
-} from '../../src/memory_hygiene.js';
+} from '../../src/memory/hygiene.js';
 
 function record(
   overrides: Omit<Partial<MemoryRecord>, 'metadata'> & {

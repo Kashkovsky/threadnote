@@ -20,7 +20,7 @@ import {
   preservedStandaloneProcessIds,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
-} from '../src/standalone_process_lease.js';
+} from '../src/process/standalone_lease.js';
 import {scriptArguments} from './effect/script.js';
 import {
   DEVELOPMENT_INSTALL_RECEIPT_VERSION,

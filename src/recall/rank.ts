@@ -1,5 +1,5 @@
-import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory_document.js';
-import {stripGeneratedMemoryHygieneSources} from '../memory_hygiene_provenance.js';
+import type {MemoryAuthority, MemoryRelation, MemoryTrust} from '../memory/document.js';
+import {stripGeneratedMemoryHygieneSources} from '../memory/hygiene_provenance.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import type {MemoryKind, MemoryStatus} from '../types.js';
 import {hasExactCasedCodeIdentifierMatch} from './identifier.js';

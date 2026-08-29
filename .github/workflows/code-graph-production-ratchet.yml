@@ -24,7 +24,7 @@ on:
       - 'src/effect/time.ts'
       - 'src/evaluation/**'
       - 'src/models/**'
-      - 'src/process_diagnostics.ts'
+      - 'src/process/diagnostics.ts'
       - 'src/search/chunker.ts'
       - 'src/storage/layout.ts'
       - 'src/telemetry/session.ts'

@@ -5,7 +5,7 @@ import {
   renderObsidianConfiguration,
   upsertObsidianProjection,
   upsertObsidianSource,
-} from '../../src/obsidian_config.js';
+} from '../../src/obsidian/config.js';
 
 describe('Obsidian source configuration', () => {
   it('round-trips versioned sources and projections', () => {

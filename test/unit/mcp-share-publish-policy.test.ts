@@ -3,9 +3,9 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument} from '../../src/memory_document.js';
-import {runSharePublishTool} from '../../src/mcp_server_share.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
+import {runSharePublishTool} from '../../src/mcp/server/share.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

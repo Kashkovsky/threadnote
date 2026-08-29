@@ -5,7 +5,7 @@ import {InsufficientMemory} from '../../src/effect/ai/errors.js';
 import {HomeMigrationInsufficientSpace} from '../../src/migration/home.js';
 import {StorageLayoutMigrationConflict} from '../../src/migration/layout.js';
 import {ReportIssueCreateFailed} from '../../src/report_issue.js';
-import {CursorAttestationError} from '../../src/cursor_cloud_attestation.js';
+import {CursorAttestationError} from '../../src/cursor/cloud_attestation.js';
 import {
   anonymousTelemetryDiagnosticFromCodeGraphRefreshFailure,
   anonymousTelemetryDiagnosticFromError,

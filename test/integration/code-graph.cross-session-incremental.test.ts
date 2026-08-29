@@ -36,8 +36,8 @@ import {
   validateContextBriefFileCitation,
   validateContextBriefMemoryCitations,
 } from '../../src/context_brief/citation_validation.js';
-import {createMemoryCodeCitation} from '../../src/memory_code_citation.js';
-import {captureMemoryCodeCitations} from '../../src/memory_code_citation_capture.js';
+import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {captureMemoryCodeCitations} from '../../src/memory/code_citation_capture.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 

@@ -1,0 +1,25 @@
+{
+  "anchoredOnlyHiddenTasks": 7,
+  "calibrationTasks": 2,
+  "calibrationCorpusHash": "ee6e01357f58a424054946fb474a6c10a06b4c3df0c686d67f56ed8ef6a0731d",
+  "controlScenarios": [
+    "ambiguous",
+    "archived",
+    "cross-repository",
+    "deleted",
+    "harmful-lexical-decoy",
+    "instruction-injection-direct",
+    "instruction-injection-lexical",
+    "malformed-citation",
+    "no-backlink",
+    "stale-changed",
+    "superseded"
+  ],
+  "corpusHash": "a3139a4fcd7012aa26e8c5a9964f60c83f0c3f72535c805c59dc72e839aa83f1",
+  "hiddenTasks": 12,
+  "instructionInjectionControls": 2,
+  "lexicalHiddenTasks": 5,
+  "negativeControls": 16,
+  "releaseTasks": 28,
+  "version": 1
+}

@@ -63,25 +63,166 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    user-visible value rather than implementation history, include concrete commands when useful, and do not add a
    validation/checks section.
 2. Merge the release source and ensure ordinary CI is green.
-3. Dispatch `Platform benchmarks` on the exact clean release-candidate SHA with
-   `include_context_brief_citations_scale=true`. Before tagging, require its Context Brief citation artifact to report
+3. Dispatch `Platform benchmarks` on exact clean candidate **C** with
+   `include_context_brief_citations_scale=true` and `include_code_memory_link_scale=true`. Before tagging, require its Context Brief citation artifact to report
    `gate.passed=true`, the exact candidate commit, `dirty=false`, 100,000 indexed memory candidates, 25 samples, five
    warmups, and the `local-100k`, `workset-50`, and `workset-128` profiles. This gate is mandatory for a release that
    changes Context Brief, recall, citation, or graph-validation behavior; production-large evidence is not a substitute.
+   Also require `bun run eval:code-memory-link-bench` to pass on that SHA for changes to code-anchored retrieval. Treat
+   its 256-noise-memory latency result as the deterministic CI smoke only; do not relabel it as the 100,000-memory
+   inverse-selector scale gate.
+   The inverse-selector job must run after C on the same pinned `macos-15`/arm64/Bun class used by tag verification. It
+   produces a passed `release-scale` artifact with exact runner class `github-hosted-macos-15-ARM64`,
+   `candidateCommit=observedCommit=C`, `dirty=false`, the frozen 100,000-memory budget, and a built-target digest. Download the job artifact at its staged content-addressed path
+   `test/evaluation/retained/code-memory-link-scale/<artifact-sha256>.json`; review it, but do not add it in C or A.
+   Confirm the frozen dense-selector scenario indexes exactly 99,996 backlinks, returns the exact first eight
+   canonical URIs, and records exactly two bounded selector truncations per lookup within both pooled and per-scenario
+   latency budgets. Those truncations are required abstention evidence for the shadowed file-selector prefix, not a
+   claim that the unexamined prefix contains no other eligible link. Require zero truncations for the true no-answer
+   scenario.
+   For any release that changes Context Brief or memory retrieval, also retain a three-arm agent experiment artifact
+   whose gate status is `passed`, whose clean candidate/build identity matches that SHA, and whose preregistered
+   manifest and post-run evidence hashes are both present in the source-reviewed allowlists. It must cover at least two
+   reviewed agent clients, 12 hidden-constraint tasks, 16 negative controls, task-only memory versus no-memory, and
+   anchored v3 versus task-only v2. An empty allowlist or an `insufficient`/`failed` result blocks the release.
+   Because the post-run evidence hash can only be approved after execution, keep the tested candidate/build identity
+   immutable: the later approval or release commit may contain only reviewed evaluation-governance metadata (for
+   example, allowlist entries and retained evidence references), with no runtime or product-logic delta from the tested
+   build. If runtime or product logic changes, rerun the experiment against the new candidate.
+   Coordinate three signed, single-parent squash merges with no intervening main-branch commit: tested candidate **C**,
+   manifest approval **A**, then final governance **G**. Freeze main after C until the release tag is pushed. A must be
+   the immediate child of C and may add only the manifest hash to
+   `src/evaluation/code-memory-link-approvals.json`. G must be the immediate child of A and may only update that JSON,
+   add the exact hash-named bundle under `test/evaluation/retained/code-memory-link/`, add the exact content-addressed
+   scale artifact under `test/evaluation/retained/code-memory-link-scale/`, and add the version-bound final descriptor
+   under `.github/release-evidence/code-memory-link/vX.Y.Z.json`. Put documentation and all executable
+   release-control changes in C, not A or G. External receipts must name A. The executable verifier checks this exact
+   C→A→G ancestry, parses the allowlist deltas, proves the outcome hashes did not preexist G, requires the bundle and
+   descriptor and scale artifact to be newly added at G, and rejects dirty, merged, delayed, change-then-revert, executable
+   approval-loader changes, extra hashes, or any other post-candidate history.
+   The workflow also requires tagged G to be an ancestor of fetched `origin/main`. Signed-commit enforcement, required
+   review, and protection against updating or deleting `v*` tags are repository-ruleset prerequisites; the local
+   verifier does not claim to authenticate Git signatures or make a movable tag immutable by itself.
+   Capture each external trial with `bun run eval:code-memory-link-agent-trial`; its harness launches the reviewed client
+   with the canonical managed executable in the environment. It requires an explicit roster id, verifies the invoked
+   command, argument vector, implementation artifacts, and configuration against that client's reviewed descriptor,
+   and appends the outcome to the frozen-schedule receipt chain. The retained privacy-safe outcome projection is bound
+   to unique invocation/output digests plus matching pre/post source-commit and executable-SHA observations. These local
+   runs also require an explicit canonical `<trials>.attempts.jsonl` sidecar. The runner holds one heartbeat-backed
+   cross-process lock across read, external execution, postchecks, and append; it writes a hash-chained start before
+   execution and a categorical failure after any observed failure. A retry requires the exact prior attempt id and
+   recorded reason. Failed, interrupted, or retried attempts block the release and require a new preregistered manifest,
+   and the reviewed external-evidence hash binds the complete attempt journal as well as successful receipts.
+   The local self-seals and retained bundle establish local cryptographic consistency and reviewability, not
+   authentication against a hostile local author who can rewrite evidence, Git history, and approvals together.
+   Independent review of the exact allowlisted artifacts and protected clean governance history is the trust root.
+   Finally, retain exact-installed-candidate dogfood evidence from the reviewed manifest-approval checkout for task-only memory recall, file and symbol backlinks,
+   multi-anchor retrieval, no-backlink and stale-graph abstention, and bounded output. Its canonical evidence hash must
+   be present in the separate source-reviewed practical-dogfood allowlist. Generate it only with the isolated-home,
+   exact-installed runner from that same canonical clean checkout:
+
+   ```sh
+   bun run eval:code-memory-link-dogfood -- \
+     --approval-commit <approval-sha> \
+     --candidate-commit <candidate-sha> \
+     --repository <executing-checkout> \
+     --output <json>
+   ```
+
+   The runner rejects a `--repository` that differs from the checkout supplying its own bytes. Retain the independently
+   reviewed inputs with:
+
+   ```sh
+   bun run eval:code-memory-link-retain -- \
+     --attempts <trials.jsonl.attempts.jsonl> \
+     --candidate-commit <candidate-sha> \
+     --dogfood <json> \
+     --evidence <trials.jsonl.evidence.jsonl> \
+     --prepared-root <prepared-root> \
+     --trials <jsonl>
+   ```
+
+   This command rejects auth material and absolute paths and writes the
+   complete assignment, manifest, sealed suite/layout plus every referenced fixture/judge/task/rubric, scrubbed client
+   descriptors/config projections, ledgers, dogfood, scored result, and blob map to a hash-named checked-in directory.
+   Add that bundle hash with the reviewed outcome and dogfood hashes in G. In the same commit, add the canonical final
+   descriptor at `.github/release-evidence/code-memory-link/vX.Y.Z.json` (substitute exact lowercase hashes and the
+   build target recorded by the tested C runtime):
+
+   ```json
+   {
+     "candidate": {
+       "commit": "<40-character-candidate-C-sha>",
+       "dependencyInstallation": "bun install --frozen-lockfile",
+       "payloadBytes": 123456,
+       "payloadFileCount": 123,
+       "payloadManifestSha256": "<64-character-tested-C-payload-manifest-sha256>",
+       "releaseMetadataSha256": "<64-character-tested-C-release-metadata-sha256>",
+       "runtime": "<tested-C-runtime>",
+       "sourceLockfileSha256": "<64-character-C-lockfile-sha256>",
+       "sourcePackageManifestSha256": "<64-character-C-package-manifest-sha256>",
+       "target": "bun-darwin-arm64",
+       "testedCandidateExecutableSha256": "<64-character-tested-C-executable-sha256>",
+       "version": "X.Y.Z-local.g<40-character-candidate-C-sha>"
+     },
+     "releaseTag": "vX.Y.Z",
+     "retainedBundle": {
+       "path": "test/evaluation/retained/code-memory-link/<bundle-sha256>/bundle.json",
+       "sha256": "<bundle-sha256>"
+     },
+     "scaleArtifact": {
+       "path": "test/evaluation/retained/code-memory-link-scale/<scale-artifact-sha256>.json",
+       "sha256": "<scale-artifact-sha256>"
+     },
+     "type": "code-memory-link-release-governance",
+     "version": 1
+   }
+   ```
+
+   Copy the path-free candidate fields from the verified JSON result of the exact C development install; do not infer
+   or omit copied assets/native-runtime payload hashes. The filename, `releaseTag`, tracked `package.json` version,
+   development version, bundle directory hash/SHA, and scale filename/SHA must agree. The descriptor must use the exact canonical
+   field order/format shown and end with a newline. From exact G, run:
+
+   ```sh
+   bun run eval:code-memory-link-release -- \
+     --release-descriptor .github/release-evidence/code-memory-link/vX.Y.Z.json \
+     --release-tag vX.Y.Z
+   ```
+
+   Require `gate.status=passed`; this reads exact non-executable Git blobs from G, rejects arbitrary ephemeral evidence
+   paths, rederives the tracked scale artifact against the frozen budget, requires a passed release-scale gate with
+   exact clean C identity, and independently rebuilds the scale target to match its recorded digest. It also revalidates the complete managed C payload against its source commit, executable, copied payload
+   manifest, release metadata, dependency manifests, runtime, target, version, counts, and hashes. The tag
+   workflow repeats the check on the same `macos-15`/arm64 class with pinned Bun, an explicit `bun-darwin-arm64` target, and an isolated
+   install root: it resolves C only from the tracked descriptor, builds and installs exact C in a detached clean
+   worktree, then runs the full verifier from exact G before any release payload build or signing job. Treat a
+   cross-machine executable-hash mismatch as a release blocker to investigate; do not weaken the binding. A manual
+   workflow dispatch may rehearse signing but cannot publish and therefore does not claim this exact-tag evidence.
+   Investigate every observed Threadnote issue before tagging.
+
 4. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
    and, only on an admitted runner, one `code-graph-production-large-n1` observation automatically. Do not dispatch a
    duplicate hosted run for that tag; if the runner is not admitted, use a separately governed capable environment.
-5. Confirm immutable releases are enabled and the Apple signing secrets below are configured.
-6. Create and push the version tag matching both `package.json` and the release-notes filename, for example
-   `v4.0.1`.
+5. Confirm immutable releases are enabled, the Apple signing secrets below are configured, the protected-main ruleset
+   still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
+   workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag
+   protection is what closes the remaining check-to-publication movement window.
+6. While main is still frozen, verify that HEAD is exact G, create the version tag matching both `package.json` and the
+   release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. Do not merge or push another
+   main-branch commit between G and the tag. Keep main frozen until the tag push is visible; the publish workflow binds
+   its checkout, every platform build, and the reusable publisher to that tag-event Git object and rechecks that the
+   remote tag still peels to the verified G commit before creating the immutable release.
 7. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    four enabled archives are verified while its bounded production-large observation continues independently.
 
 The main-branch website build includes the prepared stable `package.json` version when its matching release note is
-checked in but its tag does not exist yet. Merge only a ready-to-tag stable version and push its tag immediately; until
-a later main deployment observes the tag, What's New uses the release-preparation commit date and its release link is
-intentionally future-facing.
+checked in but its tag does not exist yet. For a C→A→G release, this wording is intentionally future-facing only during
+the bounded, coordinated main freeze: merge only a ready-to-run C, merge A and G without intervening commits, and tag G
+immediately. Until a later main deployment observes the tag, What's New uses the release-preparation commit date and
+its release link is intentionally future-facing. If the governance or tag gate cannot finish promptly, stop the
+release window instead of continuing ordinary main development under unreleased stable-version wording.
 
 The release evidence record must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
 close implementation gates before merge, but only the tag-triggered artifact may claim exact release provenance. Keep

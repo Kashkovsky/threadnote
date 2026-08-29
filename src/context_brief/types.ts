@@ -1,13 +1,17 @@
 import type {CodeGraphProvenance, CodeGraphRelation, CodeGraphSpan} from '../code_graph/types.js';
 import type {AgentToolResponseMeasurement} from '../evaluation/agent-response.js';
-import type {MemoryCodeCitationV1} from '../memory_code_citation.js';
-import type {MemoryAuthority, MemoryTrust} from '../memory_document.js';
+import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import type {MemoryAuthority, MemoryTrust} from '../memory/document.js';
 
-export const CONTEXT_BRIEF_VERSION = 2 as const;
-export const CONTEXT_BRIEF_PROJECTOR_VERSION = 2 as const;
+export const CONTEXT_BRIEF_LEGACY_VERSION = 2 as const;
+export const CONTEXT_BRIEF_VERSION = 3 as const;
+export const CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION = 2 as const;
+export const CONTEXT_BRIEF_PROJECTOR_VERSION = 3 as const;
 export const CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION = 1 as const;
 export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS = 8 as const;
+export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS = 1 as const;
 export const CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES = 96 as const;
+export const CONTEXT_BRIEF_MAXIMUM_CODE_REFS = 8 as const;
 export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
 export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
@@ -15,6 +19,9 @@ export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impa
 export type ContextBriefMode = (typeof CONTEXT_BRIEF_MODES)[number];
 export type ContextBriefFreshness = 'fresh' | 'stale' | 'unknown';
 export type ContextBriefPreciseEvidenceStatus = 'exact' | 'relocated' | 'changed' | 'deleted' | 'unknown';
+export type ContextBriefResponseVersion = typeof CONTEXT_BRIEF_LEGACY_VERSION | typeof CONTEXT_BRIEF_VERSION;
+export type ContextBriefProjectorVersion =
+  typeof CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION | typeof CONTEXT_BRIEF_PROJECTOR_VERSION;
 
 export type ContextBriefCitationValidationReasonV2 =
   | 'ambiguous-relocation'
@@ -93,12 +100,19 @@ export type ContextBriefScopeV1 =
 
 export interface ContextBriefRequestV1 {
   readonly budgetTokens: number;
+  readonly codeRefs?: readonly string[];
   readonly mode: ContextBriefMode;
   readonly scope: ContextBriefScopeV1;
   readonly task: string;
 }
 
 export interface ContextBriefPlanV1 {
+  readonly codeAnchors: {
+    readonly candidateLimit: number;
+    readonly codeRefs: readonly string[];
+    readonly project?: string;
+    readonly scope: ContextBriefScopeV1;
+  };
   readonly graph: {
     readonly edgeLimit: number;
     readonly evidenceCards: number;
@@ -201,6 +215,10 @@ export interface ContextBriefMemoryCandidateV1 {
   readonly authority?: MemoryAuthority;
   /** Private compiler input; the public projection emits only compact validation receipts. */
   readonly codeCitations: readonly MemoryCodeCitationV1[];
+  /** Private compiler input proving why reverse citation lookup selected this candidate. */
+  readonly codeLinkMatches?: readonly ContextBriefCodeLinkMatchV3[];
+  /** @internal Preserves topical admission when a reverse selector later fails validation. */
+  readonly lexicallySelected?: true;
   readonly citationErrorCount: number;
   readonly excerpt: string;
   readonly kind: 'durable' | 'handoff';
@@ -214,7 +232,7 @@ export interface ContextBriefMemoryCandidateV1 {
 
 export interface ContextBriefMemoryEvidenceV1 extends Omit<
   ContextBriefMemoryCandidateV1,
-  'citationErrorCount' | 'codeCitations'
+  'citationErrorCount' | 'codeCitations' | 'codeLinkMatches' | 'lexicallySelected'
 > {
   readonly citationErrorCount?: number;
   readonly citationReceipts?: readonly ContextBriefCitationReceiptV2[];
@@ -222,6 +240,33 @@ export interface ContextBriefMemoryEvidenceV1 extends Omit<
   readonly freshness: ContextBriefFreshness;
   readonly freshnessBasis: 'code-citations' | 'source-commit';
   readonly preciseStatus?: ContextBriefPreciseEvidenceStatus;
+  readonly codeRelations?: readonly ContextBriefCodeRelationV3[];
+  readonly selectionBasis?: 'code-citation';
+}
+
+/** @internal Private reverse-index evidence; anchor identity is stripped before projection. */
+export interface ContextBriefCodeLinkMatchV3 {
+  readonly anchorNodeId?: string;
+  readonly anchorOrdinal: number;
+  readonly anchorPath: string;
+  readonly citationId: string;
+  readonly matchKind: 'file-content' | 'file-path' | 'symbol-locator' | 'symbol-node';
+}
+
+/** Bounded public explanation for code-anchored memory admission. */
+export interface ContextBriefCodeRelationV3 {
+  readonly anchorOrdinal: number;
+  readonly citationId: string;
+  readonly kind: 'file' | 'symbol';
+  readonly status: ContextBriefPreciseEvidenceStatus;
+}
+
+export interface ContextBriefCodeAnchorCoverageV3 {
+  /** Every requested anchor resolved against exact-current graph evidence; this is not an exhaustive-match claim. */
+  readonly complete: boolean;
+  readonly matchedMemories: number;
+  readonly requested: number;
+  readonly resolved: number;
 }
 
 export interface ContextBriefMemoryCitationValidationV2 {
@@ -232,6 +277,7 @@ export interface ContextBriefMemoryCitationValidationV2 {
 }
 
 export interface ContextBriefMemoryRetrievalV1 {
+  readonly codeAnchorCoverage?: ContextBriefCodeAnchorCoverageV3;
   readonly candidates: readonly ContextBriefMemoryCandidateV1[];
   readonly citationValidations?: readonly ContextBriefMemoryCitationValidationV2[];
   readonly consideredCandidates: number;
@@ -288,6 +334,7 @@ export interface ContextBriefLogicalResultV1 {
     readonly gaps: readonly string[];
     readonly graph: ContextBriefGraphCoverageV1;
     readonly memory: {
+      readonly codeAnchors?: ContextBriefCodeAnchorCoverageV3;
       readonly consideredCandidates: number;
       readonly durableCandidates: number;
       readonly fresh: number;
@@ -319,7 +366,7 @@ export interface ContextBriefLogicalResultV1 {
     readonly memory: ContextBriefMemoryRetrievalV1['trust'];
   };
   readonly type: 'context-brief';
-  readonly version: typeof CONTEXT_BRIEF_VERSION;
+  readonly version: ContextBriefResponseVersion;
 }
 
 export interface ContextBriefV1 {
@@ -351,7 +398,7 @@ export interface ContextBriefV1 {
   readonly mode: ContextBriefMode;
   readonly output: {
     readonly omittedItems: number;
-    readonly projectorVersion: typeof CONTEXT_BRIEF_PROJECTOR_VERSION;
+    readonly projectorVersion: ContextBriefProjectorVersion;
     readonly returnedItems: number;
     readonly truncated: boolean;
   };
@@ -362,7 +409,7 @@ export interface ContextBriefV1 {
   };
   readonly trust: ContextBriefLogicalResultV1['trust'];
   readonly type: 'context-brief';
-  readonly version: typeof CONTEXT_BRIEF_VERSION;
+  readonly version: ContextBriefResponseVersion;
 }
 
 export interface ProjectedContextBriefV1 {
@@ -372,13 +419,34 @@ export interface ProjectedContextBriefV1 {
   readonly text: string;
 }
 
-/** Public semantic aliases for the v2 response while v1 type names remain source-compatible. */
-export type ContextBriefV2 = ContextBriefV1;
-export type ContextBriefLogicalResultV2 = ContextBriefLogicalResultV1;
-export type ProjectedContextBriefV2 = ProjectedContextBriefV1;
+/** Public semantic aliases while the original type names remain source-compatible. */
+export type ContextBriefV2 = Omit<ContextBriefV1, 'output' | 'version'> & {
+  readonly output: Omit<ContextBriefV1['output'], 'projectorVersion'> & {
+    readonly projectorVersion: typeof CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION;
+  };
+  readonly version: typeof CONTEXT_BRIEF_LEGACY_VERSION;
+};
+export type ContextBriefV3 = Omit<ContextBriefV1, 'output' | 'version'> & {
+  readonly output: Omit<ContextBriefV1['output'], 'projectorVersion'> & {
+    readonly projectorVersion: typeof CONTEXT_BRIEF_PROJECTOR_VERSION;
+  };
+  readonly version: typeof CONTEXT_BRIEF_VERSION;
+};
+export type ContextBriefLogicalResultV2 = Omit<ContextBriefLogicalResultV1, 'version'> & {
+  readonly version: typeof CONTEXT_BRIEF_LEGACY_VERSION;
+};
+export type ContextBriefLogicalResultV3 = Omit<ContextBriefLogicalResultV1, 'version'> & {
+  readonly version: typeof CONTEXT_BRIEF_VERSION;
+};
+export type ProjectedContextBriefV2 = Omit<ProjectedContextBriefV1, 'structuredContent'> & {
+  readonly structuredContent: ContextBriefV2;
+};
+export type ProjectedContextBriefV3 = Omit<ProjectedContextBriefV1, 'structuredContent'> & {
+  readonly structuredContent: ContextBriefV3;
+};
 
 const UTF8 = new TextEncoder();
-const REQUEST_KEYS = new Set(['budgetTokens', 'mode', 'scope', 'task']);
+const REQUEST_KEYS = new Set(['budgetTokens', 'codeRefs', 'mode', 'scope', 'task']);
 const REPOSITORY_SCOPE_KEYS = new Set(['callerCwd', 'kind', 'project']);
 const WORKSET_SCOPE_KEYS = new Set(['kind', 'name', 'project']);
 
@@ -387,6 +455,7 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   const object = record(value, 'Context Brief request');
   exactKeys(object, REQUEST_KEYS, 'Context Brief request');
   const task = boundedText(object.task, 'task', 4_096);
+  const codeRefs = parseCodeRefs(object.codeRefs);
   const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
   const budgetTokens = object.budgetTokens === undefined ? CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS : object.budgetTokens;
   if (
@@ -397,7 +466,23 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
     throw invalid(`budgetTokens must be an integer from 1 to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}.`);
   }
   const scope = parseScope(object.scope);
-  return {budgetTokens: budgetTokens as number, mode, scope, task};
+  return {
+    budgetTokens: budgetTokens as number,
+    ...(codeRefs.length === 0 ? {} : {codeRefs}),
+    mode,
+    scope,
+    task,
+  };
+}
+
+function parseCodeRefs(value: unknown): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw invalid('codeRefs must be an array.');
+  if (value.length > CONTEXT_BRIEF_MAXIMUM_CODE_REFS) {
+    throw invalid(`codeRefs may contain at most ${CONTEXT_BRIEF_MAXIMUM_CODE_REFS} entries.`);
+  }
+  const refs = value.map((ref, index) => boundedText(ref, `codeRefs[${index}]`, 4_096, false));
+  return [...new Set(refs)];
 }
 
 function parseScope(value: unknown): ContextBriefScopeV1 {

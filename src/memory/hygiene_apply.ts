@@ -1,0 +1,186 @@
+import {Effect, FileSystem, Option} from 'effect';
+import {withMemoryUriLocks} from '../effect/memory_lock.js';
+import {ResourceStore, type ResourceStoreShape} from '../effect/resource-store.js';
+import type {CompactPlan, ForgetAction, KeepUpdateAction, MemoryRecord} from './hygiene.js';
+import {resourceStoreLocation} from './migrations.js';
+import type {RuntimeConfig} from '../types.js';
+
+export class MemoryHygieneApplyConflict extends Error {
+  readonly _tag = 'MemoryHygieneApplyConflict' as const;
+}
+
+interface ExactDuplicateApplyGroup {
+  readonly keepUpdate?: KeepUpdateAction;
+  readonly retired: readonly ForgetAction[];
+  readonly survivorExpectedContent: string;
+  readonly survivorUri: string;
+}
+
+export interface ExactDuplicateApplyResult {
+  readonly forgottenUris: readonly string[];
+  readonly updatedSurvivorUris: readonly string[];
+}
+
+/**
+ * Applies every destructive exact-duplicate group while jointly holding the
+ * survivor and retired-URI locks. This closes the gap that previously existed
+ * between updating a survivor and deleting its duplicate in separate loops.
+ */
+export const applyAtomicExactDuplicateActions = Effect.fn('memoryHygiene.applyAtomicExactDuplicateActions')(function* (
+  config: RuntimeConfig,
+  plan: CompactPlan,
+  records: readonly MemoryRecord[],
+) {
+  const recordContentByUri = new Map(records.map(record => [record.uri, record.content]));
+  const keepUpdateByUri = new Map(plan.keepUpdates.map(action => [action.uri, action]));
+  const groupsBySurvivor = new Map<
+    string,
+    {keepUpdate?: KeepUpdateAction; retired: ForgetAction[]; survivorExpectedContent: string}
+  >();
+
+  for (const action of plan.forgets) {
+    const survivorUris = [...new Set(action.sourceUris.filter(uri => uri !== action.uri))];
+    const survivorUri = survivorUris[0];
+    if (survivorUris.length !== 1 || !survivorUri) {
+      return yield* Effect.fail(
+        conflict(
+          `Exact-duplicate action for ${action.uri} does not identify one survivor. No duplicate was removed; re-run compact.`,
+        ),
+      );
+    }
+    const survivorExpectedContent = recordContentByUri.get(survivorUri);
+    if (survivorExpectedContent === undefined) {
+      return yield* Effect.fail(
+        conflict(
+          `Exact-duplicate survivor ${survivorUri} is no longer in the hygiene snapshot. No duplicate was removed; re-run compact.`,
+        ),
+      );
+    }
+    const existing = groupsBySurvivor.get(survivorUri);
+    if (existing && existing.survivorExpectedContent !== survivorExpectedContent) {
+      return yield* Effect.fail(
+        conflict(`Exact-duplicate survivor ${survivorUri} has conflicting snapshots. Re-run compact.`),
+      );
+    }
+    groupsBySurvivor.set(survivorUri, {
+      keepUpdate: keepUpdateByUri.get(survivorUri),
+      retired: [...(existing?.retired ?? []), action],
+      survivorExpectedContent,
+    });
+  }
+
+  const retiredUris = new Set(plan.forgets.map(action => action.uri));
+  for (const survivorUri of groupsBySurvivor.keys()) {
+    if (retiredUris.has(survivorUri)) {
+      return yield* Effect.fail(
+        conflict(`Memory ${survivorUri} is both an exact-duplicate survivor and retirement target. Re-run compact.`),
+      );
+    }
+  }
+
+  const groups: ExactDuplicateApplyGroup[] = [...groupsBySurvivor.entries()]
+    .map(([survivorUri, group]) => ({
+      ...group,
+      retired: [...group.retired].sort((left, right) => left.uri.localeCompare(right.uri)),
+      survivorUri,
+    }))
+    .sort((left, right) => left.survivorUri.localeCompare(right.survivorUri));
+  const fs = yield* FileSystem.FileSystem;
+  const store = yield* ResourceStore;
+  const location = resourceStoreLocation(config);
+  const forgottenUris: string[] = [];
+  const updatedSurvivorUris: string[] = [];
+
+  for (const group of groups) {
+    const lockedUris = [group.survivorUri, ...group.retired.map(action => action.uri)].sort();
+    yield* withMemoryUriLocks(
+      fs,
+      config.agentContextHome,
+      lockedUris,
+      Effect.gen(function* () {
+        yield* requireExpectedContent(
+          store,
+          location,
+          group.survivorUri,
+          group.survivorExpectedContent,
+          'survivor changed before the exact-duplicate apply',
+        );
+        for (const action of group.retired) {
+          yield* requireExpectedContent(
+            store,
+            location,
+            action.uri,
+            action.expectedContent,
+            'duplicate changed before the exact-duplicate apply',
+          );
+        }
+
+        const survivorPostContent = group.keepUpdate?.content ?? group.survivorExpectedContent;
+        if (group.keepUpdate) {
+          yield* store.write(location, group.survivorUri, group.keepUpdate.content, {mode: 'replace'});
+        }
+
+        // Revalidate both sides after the survivor write. A writer that
+        // mutated or removed the survivor between the former keep/forget
+        // phases must leave every unchanged duplicate in place.
+        yield* requireExpectedContent(
+          store,
+          location,
+          group.survivorUri,
+          survivorPostContent,
+          'survivor changed during its hygiene update',
+        );
+        for (const action of group.retired) {
+          yield* requireExpectedContent(
+            store,
+            location,
+            action.uri,
+            action.expectedContent,
+            'duplicate changed during its survivor update',
+          );
+        }
+
+        for (const action of group.retired) {
+          // Keep checking the survivor while all URI locks remain held. A
+          // duplicate is never retired after its preserved copy disappears.
+          yield* requireExpectedContent(
+            store,
+            location,
+            group.survivorUri,
+            survivorPostContent,
+            'survivor changed before duplicate retirement',
+          );
+          yield* store.remove(location, action.uri);
+          forgottenUris.push(action.uri);
+        }
+        if (group.keepUpdate) updatedSurvivorUris.push(group.survivorUri);
+      }),
+    );
+  }
+
+  return {forgottenUris, updatedSurvivorUris} satisfies ExactDuplicateApplyResult;
+});
+
+function requireExpectedContent(
+  store: ResourceStoreShape,
+  location: ReturnType<typeof resourceStoreLocation>,
+  uri: string,
+  expectedContent: string,
+  reason: string,
+) {
+  return Effect.gen(function* () {
+    const current = yield* store.read(location, uri).pipe(
+      Effect.map(Option.some),
+      Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none<string>())),
+    );
+    if (Option.isNone(current) || current.value !== expectedContent) {
+      return yield* Effect.fail(
+        conflict(`Memory ${uri} ${reason}. Its exact duplicate was preserved; re-run compact.`),
+      );
+    }
+  });
+}
+
+function conflict(message: string): MemoryHygieneApplyConflict {
+  return new MemoryHygieneApplyConflict(message);
+}

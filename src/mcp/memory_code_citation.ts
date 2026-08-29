@@ -1,7 +1,7 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
 import {Effect} from 'effect';
-import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory_code_citation_capture.js';
-import {mcpErrorResult} from '../mcp_server_common.js';
+import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
+import {mcpErrorResult} from './server/common.js';
 import type {RuntimeConfig} from '../types.js';
 
 export function captureMemoryCodeCitationsForMcp(

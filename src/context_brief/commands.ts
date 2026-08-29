@@ -7,6 +7,7 @@ import type {ContextBriefMode} from './types.js';
 
 export interface RunContextBriefOptionsV1 {
   readonly budgetTokens?: number;
+  readonly codeRefs?: readonly string[];
   readonly cwd?: string;
   readonly json?: boolean;
   readonly mode?: ContextBriefMode;
@@ -23,6 +24,7 @@ export const runContextBrief = Effect.fn('contextBrief.command.compile')(functio
   const cwd = options.cwd?.trim() || (yield* SystemInfo).currentDirectory();
   const projected = yield* compileContextBrief(config, {
     ...(options.budgetTokens === undefined ? {} : {budgetTokens: options.budgetTokens}),
+    codeRefs: options.codeRefs ?? [],
     ...(options.mode === undefined ? {} : {mode: options.mode}),
     scope: workset
       ? {kind: 'workset', name: workset, ...(options.project?.trim() ? {project: options.project.trim()} : {})}

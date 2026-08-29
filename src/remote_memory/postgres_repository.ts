@@ -1,12 +1,12 @@
 import type {JSONValue, Sql, TransactionSql} from 'postgres';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {MEMORY_SCHEMA_VERSION} from '../memory_code_citation.js';
+import {MEMORY_SCHEMA_VERSION} from '../memory/code_citation.js';
 import {
   assertMemoryDocumentSchemaWritable,
   formatMemoryDocument,
   parseMemoryDocument,
   type MemoryMetadata,
-} from '../memory_document.js';
+} from '../memory/document.js';
 import {formatRemoteMemoryUri, parseRemoteShareAddress} from '../memory_domain/address.js';
 import {inspectRemoteMemoryContent} from '../memory_domain/content.js';
 import type {RemoteReadInputV1, RemoteRecallInputV1, RemoteRememberInputV1} from '../memory_domain/contracts.js';

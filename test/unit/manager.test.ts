@@ -55,8 +55,8 @@ import {
   type RepositoryIdentity,
 } from '../../src/code_graph/types.js';
 import {runEffect} from '../helpers/effect-runtime.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 
 const MANAGER_GRAPH_SNAPSHOT_ID = `cgsn_${'1'.repeat(40)}`;

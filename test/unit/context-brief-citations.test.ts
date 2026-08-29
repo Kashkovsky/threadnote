@@ -14,7 +14,7 @@ import {
   type ContextBriefPreciseEvidenceStatus,
 } from '../../src/context_brief/index.js';
 import {createCodeGraphSourceSpanCanonicalizer} from '../../src/code_graph/citation_primitives.js';
-import {createMemoryCodeCitation} from '../../src/memory_code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
 import type {
   CodeGraphInventoryFile,
   CodeGraphSnapshot,

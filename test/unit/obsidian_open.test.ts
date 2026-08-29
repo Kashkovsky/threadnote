@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {obsidianOpenUri} from '../../src/obsidian_open.js';
+import {obsidianOpenUri} from '../../src/obsidian/open.js';
 
 describe('Obsidian navigation', () => {
   it('percent-encodes absolute note paths for the official URI contract', () => {

@@ -4,9 +4,9 @@ import React, {act} from 'react';
 import {createRoot, type Root} from 'react-dom/client';
 import FC from 'fast-check';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {ManagerDialogProvider} from '../../src/manager_dialog.js';
-import {orderManagerProcessesForPresentation, ProcessesPanel} from '../../src/manager_processes_view.js';
-import type {ManageableThreadnoteProcessDiagnostic} from '../../src/process_diagnostics.js';
+import {ManagerDialogProvider} from '../../src/manager/dialog.js';
+import {orderManagerProcessesForPresentation, ProcessesPanel} from '../../src/manager/processes_view.js';
+import type {ManageableThreadnoteProcessDiagnostic} from '../../src/process/diagnostics.js';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 

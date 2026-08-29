@@ -51,7 +51,7 @@ const ALLOWED_LEGACY_RUNTIME_SOURCES = new Set([
 ]);
 const ALLOWED_LEGACY_IDENTIFIER_SOURCES = new Set([
   'src/evaluation/recall-fixture.ts',
-  'src/memory_hygiene.ts',
+  'src/memory/hygiene.ts',
   'src/migration/home.ts',
   'src/migration/layout.ts',
   'src/storage/resource-id.ts',

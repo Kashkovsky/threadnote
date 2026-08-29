@@ -4,7 +4,7 @@ import {runCommandEffect} from '../src/effect/command.js';
 import {sha256FileHex, sha256Hex} from '../src/effect/digest.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {installationRoot} from '../src/installations.js';
-import {readStandaloneProcessLeaseVerification} from '../src/standalone_process_lease.js';
+import {readStandaloneProcessLeaseVerification} from '../src/process/standalone_lease.js';
 
 export const DEVELOPMENT_INSTALL_RECEIPT = 'development-install.json';
 export const DEVELOPMENT_INSTALL_RECEIPT_VERSION = 2 as const;
@@ -342,6 +342,40 @@ export const verifyManagedDevelopmentRuntimeForSource = Effect.fn('developmentRu
   }
   return revalidated;
 });
+
+/** Resolve the canonical active executable only after its managed payload and process identity pass verification. */
+export const resolveManagedDevelopmentExecutableForSource = Effect.fn('developmentRuntime.resolveExecutable')(
+  function* (expectedSourceCommit: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const system = yield* SystemInfo;
+    const before = yield* verifyManagedDevelopmentRuntimeForSource(expectedSourceCommit);
+    const installRoot = installationRoot(path, system);
+    const active = yield* readJsonOption(fs, path.join(installRoot, 'active-release.json')).pipe(
+      Effect.map(Option.flatMap(parseActiveReleasePointer)),
+    );
+    if (Option.isNone(active) || active.value.version !== before.version) {
+      return yield* Effect.fail(new ScriptError('The managed Threadnote active release changed before invocation.'));
+    }
+    const realInstallRoot = yield* fs.realPath(installRoot);
+    const realReleaseRoot = yield* fs.realPath(active.value.releaseRoot);
+    const expectedReleaseRoot = path.join(realInstallRoot, 'versions', before.version);
+    if (!canonicalPathEquals(path, system, realReleaseRoot, expectedReleaseRoot)) {
+      return yield* Effect.fail(new ScriptError('The managed Threadnote active executable root is not canonical.'));
+    }
+    const executable = yield* fs.realPath(
+      path.join(realReleaseRoot, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote'),
+    );
+    if ((yield* sha256FileHex(executable)) !== before.executableSha256) {
+      return yield* Effect.fail(new ScriptError('The managed Threadnote executable changed before invocation.'));
+    }
+    const after = yield* verifyManagedDevelopmentRuntimeForSource(expectedSourceCommit);
+    if (JSON.stringify(after) !== JSON.stringify(before)) {
+      return yield* Effect.fail(new ScriptError('The managed Threadnote active release changed during resolution.'));
+    }
+    return {evidence: after, executable};
+  },
+);
 
 export const verifyManagedDevelopmentRuntimeForSourceCheckout = Effect.fn('developmentRuntime.verifyForSourceCheckout')(
   function* (sourceRoot: string, expectedSourceCommit: string) {

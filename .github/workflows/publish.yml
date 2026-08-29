@@ -18,12 +18,17 @@ env:
 jobs:
   verify:
     name: Verify release source
-    runs-on: ubuntu-latest
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      CI: '1'
 
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -58,6 +63,88 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve exact Code Memory Link candidate C
+        if: github.event_name == 'push'
+        id: code_memory_link_release
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_tag="${{ github.ref_name }}"
+          head_commit="$(git rev-parse 'HEAD^{commit}')"
+          event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          tag_commit="$(git rev-parse "refs/tags/${release_tag}^{commit}")"
+          if [[ "$GITHUB_REF" != "refs/tags/${release_tag}" || "$head_commit" != "$event_commit" || "$head_commit" != "$tag_commit" ]]; then
+            echo "::error::Release verification must run from the exact pushed tag commit."
+            exit 1
+          fi
+          if ! git rev-parse --verify refs/remotes/origin/main >/dev/null || ! git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main; then
+            echo "::error::Exact release governance G must descend from protected origin/main."
+            exit 1
+          fi
+          descriptor=".github/release-evidence/code-memory-link/${release_tag}.json"
+          candidate_commit="$(
+            bun scripts/verify-code-memory-link-release.ts \
+              --release-descriptor "$descriptor" \
+              --release-tag "$release_tag" \
+              --print-candidate-commit
+          )"
+          if [[ ! "$candidate_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release descriptor did not resolve one exact candidate commit."
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$candidate_commit" "$head_commit"; then
+            echo "::error::Exact release governance G must descend from candidate C."
+            exit 1
+          fi
+          printf 'candidate_commit=%s\n' "$candidate_commit" >> "$GITHUB_OUTPUT"
+          printf 'descriptor=%s\n' "$descriptor" >> "$GITHUB_OUTPUT"
+
+      - name: Build and install exact Code Memory Link candidate C
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ steps.code_memory_link_release.outputs.candidate_commit }}
+          THREADNOTE_BUILD_TARGET: bun-darwin-arm64
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-evidence-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-evidence-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-evidence-install
+        run: |
+          set -euo pipefail
+          candidate_root="$RUNNER_TEMP/threadnote-code-memory-link-candidate"
+          git worktree add --detach "$candidate_root" "$CANDIDATE_COMMIT"
+          cd "$candidate_root"
+          bun install --frozen-lockfile
+          install_result_file="$RUNNER_TEMP/threadnote-code-memory-link-candidate-install.json"
+          bun run dev:install-global -- --json --terminate-superseded > "$install_result_file"
+          INSTALL_RESULT_FILE="$install_result_file" bun -e '
+            const result = await Bun.file(Bun.env.INSTALL_RESULT_FILE).json();
+            if (
+              result.sourceCommit !== Bun.env.CANDIDATE_COMMIT ||
+              result.target !== Bun.env.THREADNOTE_BUILD_TARGET ||
+              result.doctorVerified !== true ||
+              result.launchersVerified !== true ||
+              result.cleanupComplete !== true ||
+              result.remainingSupersededProcesses !== 0
+            ) {
+              throw new Error("Exact candidate installation did not finish with complete verified cleanup.");
+            }
+          '
+
+      - name: Verify exact final Code Memory Link governance G and retained 100k scale evidence
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          RELEASE_DESCRIPTOR: ${{ steps.code_memory_link_release.outputs.descriptor }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-evidence-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-evidence-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-evidence-install
+        run: |
+          set -euo pipefail
+          bun run eval:code-memory-link-release -- \
+            --release-descriptor "$RELEASE_DESCRIPTOR" \
+            --release-tag "$RELEASE_TAG"
+
       - name: Run release contract smokes
         run: bun run test:smoke:release
 
@@ -79,6 +166,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -138,6 +228,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -271,6 +364,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -319,6 +415,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -392,3 +491,4 @@ jobs:
     uses: ./.github/workflows/publish-release-assets.yml
     with:
       release_tag: ${{ github.ref_name }}
+      release_sha: ${{ github.sha }}

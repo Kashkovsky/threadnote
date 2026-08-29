@@ -75,7 +75,7 @@ function isQualityPath(path: string): boolean {
     path.startsWith('src/effect/ai/') ||
     path.startsWith('src/evaluation/') ||
     path.startsWith('src/models/') ||
-    path.startsWith('src/memory_code_citation') ||
+    path.startsWith('src/memory/code_citation') ||
     path.startsWith('src/recall/') ||
     path === 'src/effect/command.ts' ||
     path === 'src/effect/digest.ts' ||

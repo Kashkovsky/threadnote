@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {obsidianSourceRootUri, obsidianSourceUri, sourcePathMatches} from '../../src/obsidian_source.js';
+import {obsidianSourceRootUri, obsidianSourceUri, sourcePathMatches} from '../../src/obsidian/source.js';
 
 describe('Obsidian source mapping', () => {
   it('requires an include match and applies exclusions', () => {

@@ -1,4 +1,4 @@
-import type {MemoryAuthority, MemoryTrust} from '../memory_document.js';
+import type {MemoryAuthority, MemoryTrust} from '../memory/document.js';
 
 export type RecallAuthorityEligibility = 'any' | 'approved-authoritative';
 

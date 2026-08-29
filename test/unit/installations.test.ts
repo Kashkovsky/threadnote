@@ -19,7 +19,7 @@ import {
   readValidatedRelease,
   readStandaloneProcessLeaseVerification,
   terminateSupersededStandaloneProcesses,
-} from '../../src/standalone_process_lease.js';
+} from '../../src/process/standalone_lease.js';
 
 describe('standalone release lifecycle', () => {
   effectIt.effect.skipIf(process.platform === 'win32')(

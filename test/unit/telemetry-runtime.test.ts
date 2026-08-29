@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import {Cause, Deferred, Effect, Exit, Fiber, Tracer} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
-import {completeAutoUpdateWorkerExit} from '../../src/auto_update.js';
+import {completeAutoUpdateWorkerExit} from '../../src/release/auto_update.js';
 import {CodeGraphStoreError} from '../../src/code_graph/types.js';
 import {FileLockTimeout} from '../../src/effect/file_lock.js';
 import {HttpRequestFailed} from '../../src/effect/http.js';

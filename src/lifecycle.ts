@@ -5,7 +5,7 @@ import {
   USER_INSTRUCTIONS_END_MARKER,
   USER_INSTRUCTIONS_START_MARKER,
 } from './constants.js';
-import {cursorPluginDoctorChecks} from './cursor-plugin.js';
+import {cursorPluginDoctorChecks} from './cursor/plugin.js';
 import {startProgress} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
@@ -19,7 +19,7 @@ import {
   withStandaloneInstallationLock,
 } from './installations.js';
 import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
-import {legacyProcessDoctorCheck} from './process_diagnostics.js';
+import {legacyProcessDoctorCheck} from './process/diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {
   TELEMETRY_CONSENT_VERSION,

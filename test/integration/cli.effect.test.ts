@@ -233,6 +233,8 @@ describe('Effect CLI', () => {
     expect(topology.stdout).toContain('--node-limit, --limit integer');
     expect(contextBrief.stdout).toContain('--task string');
     expect(contextBrief.stdout).toContain('--budget-tokens integer');
+    expect(contextBrief.stdout).toContain('--code-ref string');
+    expect(contextBrief.stdout).toContain('repeat up to eight times');
     expect(contextBrief.stdout).toContain('--workset string');
     expect(contextBrief.stdout).toContain('choices: brief, locate, explain, trace, impact');
     expect(analyze.stdout).toContain('--view choice');
@@ -269,6 +271,16 @@ describe('Effect CLI', () => {
     expect(repair.stdout).toContain('--all');
     expect(repair.stdout).toContain('--deep');
     expect(repair.stdout).toContain('--dry-run');
+  });
+
+  it('rejects more than eight Context Brief code references during CLI parsing', async () => {
+    const args = ['context', 'brief', '--task', 'Find memories linked to these files.'];
+    for (let index = 0; index < 9; index += 1) args.push('--code-ref', `src/ref-${index}.ts`);
+
+    const error = await runCli(args).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+
+    expect(error).toMatchObject({code: 1});
+    expect(String(error.stderr)).toContain('--code-ref');
   });
 
   it('documents graph query paging scope and token bounds before execution', async () => {

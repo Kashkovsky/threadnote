@@ -19,7 +19,7 @@ import {
   threadnoteHomeForProcess,
   withThreadnoteProcessActivity,
   withThreadnoteProcessRegistration,
-} from '../../src/process_diagnostics.js';
+} from '../../src/process/diagnostics.js';
 
 let temporaryRoot: string | undefined;
 let installationTemporaryRoot: string | undefined;

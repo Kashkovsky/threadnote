@@ -69,6 +69,8 @@ const autoUpdateSchemaPredicate =
 const querySchemaPredicate =
   '(resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5)';
 const contextBriefSchemaPredicate = 'resource.threadnote.telemetry.schema_version = 5';
+const contextBriefOperationPredicate =
+  '(span.threadnote.operation = "context_brief" || span.threadnote.operation = "context.brief")';
 
 const tempoQueryLengthLimit = 1024;
 const inefficientGraphBuildPredicate = 'span.threadnote.graph.efficiency_class =~ "(small|high|critical).*full"';
@@ -226,7 +228,7 @@ describe('Threadnote Grafana dashboard', () => {
       }
       for (const query of queries) {
         const isGraphQueryTelemetry = query.includes('span.threadnote.graph.request_kind');
-        const isContextBriefTelemetry = query.includes('span.threadnote.operation = "context_brief"');
+        const isContextBriefTelemetry = query.includes(contextBriefOperationPredicate);
         expect(query.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
         expect(query.split(canaryExclusionPredicate)).toHaveLength(2);
         if (query.includes(inefficientGraphBuildPredicate)) {
@@ -380,6 +382,9 @@ describe('Threadnote Grafana dashboard', () => {
       }
       const contextBriefQueries = contextBriefPanels.flatMap(panel => panel.targets).map(target => target.query!);
       const contextBriefQueryText = contextBriefQueries.join('\n');
+      for (const query of contextBriefQueries) expect(query).toContain(contextBriefOperationPredicate);
+      expect(contextBriefQueryText).toContain('span.threadnote.operation = "context_brief"');
+      expect(contextBriefQueryText).toContain('span.threadnote.operation = "context.brief"');
       for (const attribute of [
         'span.threadnote.context_brief.scope',
         'span.threadnote.context_brief.citation_coverage',
@@ -436,8 +441,11 @@ describe('Threadnote Grafana dashboard', () => {
       expect(panels.find(panel => panel.id === 29)?.description).toContain('do not prove correctness');
       const contextBriefFailures = panels.find(panel => panel.id === 34);
       expect(contextBriefFailures?.type).toBe('timeseries');
+      expect(contextBriefFailures?.targets).toHaveLength(2);
       expect(contextBriefFailures?.targets[0]?.query).toContain('count_over_time()');
       expect(contextBriefFailures?.targets[0]?.query).not.toContain('with (most_recent=true)');
+      expect(contextBriefFailures?.targets[0]?.query).toContain('span.threadnote.context_brief.scope != nil');
+      expect(contextBriefFailures?.targets[1]?.query).toContain('span.threadnote.context_brief.scope = nil');
 
       for (const panel of panels.filter(candidate => candidate.type !== 'table')) {
         const metricQueries = panel.targets.map(target => target.query).join('\n');

@@ -1,7 +1,10 @@
 import {Effect} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readMemoryRecordsByUri} from '../memory.js';
-import {loadRecallIndexData} from '../recall/index.js';
+import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
+import type {MemoryRecord} from '../memory/document.js';
+import {uriSegment} from '../manifest.js';
+import {loadRecallCodeLinks, loadRecallIndexData} from '../recall/index.js';
 import type {RuntimeConfig} from '../types.js';
 import type {
   ContextBriefFreshness,
@@ -14,6 +17,7 @@ import type {
 
 const MEMORY_EXCERPT_BYTES = 240;
 const MEMORY_RETRIEVAL_MULTIPLIER = 4;
+const MEMORY_RECALL_EMPTY_GAP = 'memory-recall-no-active-durable-or-handoff';
 const THREADNOTE_MEMORY_URI = /^threadnote:\/\/user\/[^/]+\/memories\//u;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const CONTENT_HASH = /^[0-9a-f]{64}$/u;
@@ -91,6 +95,7 @@ export const retrieveContextBriefMemoryEvidence = Effect.fn('contextBrief.retrie
   plan: ContextBriefPlanV1['memory'],
 ) {
   const index = yield* loadRecallIndexData(config, {
+    allowedUriScopes: [contextBriefMemoryUriScope(config.user)],
     includeInactive: false,
     limit: Math.max(plan.candidateLimit, plan.candidateLimit * MEMORY_RETRIEVAL_MULTIPLIER),
     ...(plan.project === undefined ? {} : {project: plan.project}),
@@ -104,45 +109,189 @@ export const retrieveContextBriefMemoryEvidence = Effect.fn('contextBrief.retrie
         candidate.status === 'active',
     )
     .map(candidate => candidate.uri);
-  const records = yield* readMemoryRecordsByUri(config, rankedUris);
-  const recordsByUri = new Map(records.map(record => [record.uri, record]));
-  const candidates: ContextBriefMemoryCandidateV1[] = [];
-  const seen = new Set<string>();
-  for (const uri of rankedUris) {
-    if (seen.has(uri)) continue;
-    seen.add(uri);
-    const record = recordsByUri.get(uri);
-    if (
-      record === undefined ||
-      record.metadata.status !== 'active' ||
-      (record.metadata.kind !== 'durable' && record.metadata.kind !== 'handoff')
-    ) {
-      continue;
-    }
-    const sourceCommit = boundedSourceCommit(record.metadata.sourceCommit);
-    candidates.push({
-      ...(record.metadata.authority === undefined ? {} : {authority: record.metadata.authority}),
-      citationErrorCount: record.metadata.citationErrors?.length ?? 0,
-      codeCitations: record.metadata.codeCitations ?? [],
-      excerpt:
-        record.metadata.kind === 'handoff' ? handoffEvidenceExcerpt(record.body) : memoryEvidenceExcerpt(record.body),
-      kind: record.metadata.kind,
-      ...(record.metadata.project === undefined ? {} : {project: record.metadata.project}),
-      rank: candidates.length,
-      ...(sourceCommit === undefined ? {} : {sourceCommit}),
-      ...(record.metadata.topic === undefined ? {} : {topic: record.metadata.topic}),
-      ...(record.metadata.trust === undefined ? {} : {trust: record.metadata.trust}),
-      uri: record.uri,
-    });
-    if (candidates.length >= plan.candidateLimit) break;
-  }
+  const candidates = yield* readContextBriefMemoryCandidates(config, rankedUris, plan.candidateLimit);
   return {
     candidates,
     consideredCandidates: index.candidates.length,
-    gaps: candidates.length === 0 ? ['memory-recall-no-active-durable-or-handoff'] : [],
+    gaps: candidates.length === 0 ? [MEMORY_RECALL_EMPTY_GAP] : [],
     trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
   } satisfies ContextBriefMemoryRetrievalV1;
 });
+
+/** Resolve explicit local anchors against ready-current code and retrieve their private citation backlinks. */
+export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBrief.retrieveCodeLinkedMemoryEvidence')(
+  function* (config: RuntimeConfig, plan: ContextBriefPlanV1['codeAnchors']) {
+    const requested = plan.codeRefs.length;
+    if (requested === 0) {
+      return {
+        codeAnchorCoverage: {complete: true, matchedMemories: 0, requested: 0, resolved: 0},
+        candidates: [],
+        consideredCandidates: 0,
+        gaps: [],
+        trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+      } satisfies ContextBriefMemoryRetrievalV1;
+    }
+    if (plan.scope.kind !== 'repository') {
+      return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-scope-unsupported');
+    }
+    const callerCwd = plan.scope.callerCwd;
+    if (plan.codeRefs.some(ref => ref.startsWith('cgr_'))) {
+      return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-ref-unsupported');
+    }
+    const capturedBatch = yield* captureMemoryCodeCitations(config, {
+      callerCwd,
+      refs: plan.codeRefs,
+    }).pipe(
+      Effect.match({
+        onFailure: error => ({error}),
+        onSuccess: anchors => ({anchors}),
+      }),
+    );
+    if (
+      'error' in capturedBatch &&
+      capturedBatch.error instanceof MemoryCodeCitationCaptureError &&
+      capturedBatch.error.recovery !== undefined
+    ) {
+      return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
+    }
+    const resolvedAnchors =
+      'anchors' in capturedBatch && capturedBatch.anchors.length === requested
+        ? capturedBatch.anchors.map((anchor, anchorOrdinal) => ({anchor, anchorOrdinal}))
+        : (yield* Effect.forEach(
+            plan.codeRefs,
+            ref =>
+              captureMemoryCodeCitations(config, {
+                callerCwd,
+                refs: [ref],
+              }).pipe(Effect.option),
+            {concurrency: 4},
+          )).flatMap((option, anchorOrdinal) => {
+            const anchor = option._tag === 'Some' ? option.value[0] : undefined;
+            return anchor === undefined ? [] : [{anchor, anchorOrdinal}];
+          });
+    if (resolvedAnchors.length === 0) {
+      return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
+    }
+    let truncatedSelectorCount = 0;
+    const linked = yield* loadRecallCodeLinks(config, {
+      allowedUriScopes: [contextBriefMemoryUriScope(config.user)],
+      anchors: resolvedAnchors.map(resolved => resolved.anchor),
+      includeInactive: false,
+      limit: plan.candidateLimit,
+      onSearchTruncated: count => {
+        truncatedSelectorCount += count;
+      },
+      ...(plan.project === undefined ? {} : {project: plan.project}),
+    }).pipe(Effect.option);
+    if (linked._tag === 'None') {
+      return unavailableContextBriefCodeLinkedMemoryEvidence(
+        requested,
+        'code-anchor-recall-unavailable',
+        resolvedAnchors.length,
+      );
+    }
+    const matchesByUri = mapContextBriefCodeLinkMatches(
+      linked.value,
+      resolvedAnchors.map(resolved => ({
+        ...(resolved.anchor.target.kind === 'symbol' ? {anchorNodeId: resolved.anchor.target.nodeId} : {}),
+        anchorOrdinal: resolved.anchorOrdinal,
+        anchorPath: resolved.anchor.path,
+      })),
+    );
+    const rankedUris = [...matchesByUri.keys()];
+    const readCandidates = yield* readContextBriefMemoryCandidates(
+      config,
+      rankedUris,
+      plan.candidateLimit,
+      matchesByUri,
+    );
+    const candidates = readCandidates.filter(candidate => (candidate.codeLinkMatches?.length ?? 0) > 0);
+    const complete = resolvedAnchors.length === requested;
+    return {
+      codeAnchorCoverage: {complete, matchedMemories: candidates.length, requested, resolved: resolvedAnchors.length},
+      candidates,
+      consideredCandidates: linked.value.length,
+      gaps: contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
+      trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+    } satisfies ContextBriefMemoryRetrievalV1;
+  },
+);
+
+/** Explicitly distinguish bounded inverse-search abstention from evidence of no backlink. */
+export function contextBriefCodeLinkRecallGaps(
+  complete: boolean,
+  candidateCount: number,
+  truncatedSelectorCount: number,
+): readonly string[] {
+  return stableUnique([
+    ...(complete ? [] : ['code-anchors-unresolved']),
+    ...(truncatedSelectorCount > 0 ? ['code-anchor-recall-truncated'] : []),
+    ...(candidateCount === 0 ? ['code-anchor-recall-no-active-memory'] : []),
+  ]);
+}
+
+/** @internal Restore requested-ref ordinals after unresolved anchors are omitted from the reverse lookup. */
+export function mapContextBriefCodeLinkMatches(
+  matches: readonly {
+    readonly anchorOrdinal: number;
+    readonly citationId: string;
+    readonly matchKind: NonNullable<ContextBriefMemoryCandidateV1['codeLinkMatches']>[number]['matchKind'];
+    readonly uri: string;
+  }[],
+  resolvedAnchors: readonly {
+    readonly anchorNodeId?: string;
+    readonly anchorOrdinal: number;
+    readonly anchorPath: string;
+  }[],
+): ReadonlyMap<string, NonNullable<ContextBriefMemoryCandidateV1['codeLinkMatches']>> {
+  const matchesByUri = new Map<string, NonNullable<ContextBriefMemoryCandidateV1['codeLinkMatches']>>();
+  const seen = new Set<string>();
+  for (const match of matches) {
+    const anchor = resolvedAnchors[match.anchorOrdinal];
+    if (anchor === undefined) continue;
+    const identity = `${match.uri}\u0000${anchor.anchorOrdinal}\u0000${match.citationId}\u0000${match.matchKind}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    const uriMatches = matchesByUri.get(match.uri) ?? [];
+    matchesByUri.set(match.uri, [
+      ...uriMatches,
+      {
+        ...(anchor.anchorNodeId === undefined ? {} : {anchorNodeId: anchor.anchorNodeId}),
+        anchorOrdinal: anchor.anchorOrdinal,
+        anchorPath: anchor.anchorPath,
+        citationId: match.citationId,
+        matchKind: match.matchKind,
+      },
+    ]);
+  }
+  for (const [uri, uriMatches] of matchesByUri) {
+    matchesByUri.set(
+      uri,
+      [...uriMatches].sort(
+        (left, right) =>
+          left.anchorOrdinal - right.anchorOrdinal ||
+          contextBriefCodeLinkMatchPriority(left.matchKind) - contextBriefCodeLinkMatchPriority(right.matchKind) ||
+          compareText(left.citationId, right.citationId),
+      ),
+    );
+  }
+  return matchesByUri;
+}
+
+function contextBriefCodeLinkMatchPriority(
+  matchKind: NonNullable<ContextBriefMemoryCandidateV1['codeLinkMatches']>[number]['matchKind'],
+): number {
+  switch (matchKind) {
+    case 'symbol-node':
+      return 0;
+    case 'symbol-locator':
+      return 1;
+    case 'file-path':
+      return 2;
+    case 'file-content':
+      return 3;
+  }
+}
 
 export function unavailableContextBriefMemoryEvidence(
   gap = 'memory-recall-unavailable',
@@ -152,6 +301,125 @@ export function unavailableContextBriefMemoryEvidence(
     consideredCandidates: 0,
     gaps: [gap],
     trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+  };
+}
+
+export function unavailableContextBriefCodeLinkedMemoryEvidence(
+  requested: number,
+  gap = 'code-anchor-recall-unavailable',
+  resolved = 0,
+): ContextBriefMemoryRetrievalV1 {
+  return {
+    codeAnchorCoverage: {complete: false, matchedMemories: 0, requested, resolved},
+    candidates: [],
+    consideredCandidates: 0,
+    gaps: [gap],
+    trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+  };
+}
+
+/** Keep direct citation matches ahead of topical recall without mixing their ranking semantics. */
+export function mergeContextBriefMemoryEvidence(
+  lexical: ContextBriefMemoryRetrievalV1,
+  codeLinked: ContextBriefMemoryRetrievalV1 | undefined,
+  candidateLimit: number,
+  directCandidateLimit = candidateLimit,
+): ContextBriefMemoryRetrievalV1 {
+  if (codeLinked === undefined) return lexical;
+  const candidates: ContextBriefMemoryCandidateV1[] = [];
+  const seen = new Set<string>();
+  const lexicalUris = new Set(lexical.candidates.map(candidate => candidate.uri));
+  const boundedDirectCandidateLimit = Math.max(0, Math.min(candidateLimit, directCandidateLimit));
+  for (const candidate of codeLinked.candidates) {
+    if (candidates.length >= boundedDirectCandidateLimit) break;
+    if (seen.has(candidate.uri)) continue;
+    seen.add(candidate.uri);
+    candidates.push({
+      ...candidate,
+      ...(lexicalUris.has(candidate.uri) ? {lexicallySelected: true as const} : {}),
+      rank: candidates.length,
+    });
+    if (candidates.length >= candidateLimit) break;
+  }
+  for (const candidate of lexical.candidates) {
+    if (candidates.length >= candidateLimit) break;
+    if (seen.has(candidate.uri)) continue;
+    seen.add(candidate.uri);
+    candidates.push({...candidate, rank: candidates.length});
+    if (candidates.length >= candidateLimit) break;
+  }
+  const lexicalGaps =
+    candidates.length === 0 ? lexical.gaps : lexical.gaps.filter(gap => gap !== MEMORY_RECALL_EMPTY_GAP);
+  return {
+    ...(codeLinked.codeAnchorCoverage === undefined ? {} : {codeAnchorCoverage: codeLinked.codeAnchorCoverage}),
+    candidates,
+    consideredCandidates: lexical.consideredCandidates + codeLinked.consideredCandidates,
+    gaps: stableUnique([...lexicalGaps, ...codeLinked.gaps]),
+    trust: lexical.trust,
+  };
+}
+
+/** Restrict code backlinks to the current user's canonical memory namespace before SQL bounds apply. */
+export function contextBriefMemoryUriScope(user: string): string {
+  return `threadnote://user/${uriSegment(user)}/memories`;
+}
+
+const readContextBriefMemoryCandidates = Effect.fn('contextBrief.readMemoryCandidates')(function* (
+  config: RuntimeConfig,
+  rankedUris: readonly string[],
+  limit: number,
+  codeLinkMatchesByUri: ReadonlyMap<string, NonNullable<ContextBriefMemoryCandidateV1['codeLinkMatches']>> = new Map(),
+) {
+  const records = yield* readMemoryRecordsByUri(config, rankedUris);
+  const recordsByUri = new Map(records.map(record => [record.uri, record]));
+  const candidates: ContextBriefMemoryCandidateV1[] = [];
+  const seen = new Set<string>();
+  for (const uri of rankedUris) {
+    if (seen.has(uri)) continue;
+    seen.add(uri);
+    const record = recordsByUri.get(uri);
+    if (!contextBriefMemoryRecordIsEligible(record)) continue;
+    candidates.push(contextBriefMemoryCandidate(record, candidates.length, codeLinkMatchesByUri.get(uri)));
+    if (candidates.length >= limit) break;
+  }
+  return candidates;
+});
+
+function contextBriefMemoryRecordIsEligible(record: MemoryRecord | undefined): record is MemoryRecord {
+  return (
+    record !== undefined &&
+    record.metadata.status === 'active' &&
+    (record.metadata.kind === 'durable' || record.metadata.kind === 'handoff')
+  );
+}
+
+function contextBriefMemoryCandidate(
+  record: MemoryRecord,
+  rank: number,
+  codeLinkMatches: ContextBriefMemoryCandidateV1['codeLinkMatches'],
+): ContextBriefMemoryCandidateV1 {
+  if (record.metadata.kind !== 'durable' && record.metadata.kind !== 'handoff') {
+    throw new Error('Context Brief memory candidate must be durable or handoff.');
+  }
+  const sourceCommit = boundedSourceCommit(record.metadata.sourceCommit);
+  const citationIds = new Set((record.metadata.codeCitations ?? []).map(citation => citation.id));
+  const currentCodeLinkMatches = codeLinkMatches?.filter(match => citationIds.has(match.citationId));
+  return {
+    ...(record.metadata.authority === undefined ? {} : {authority: record.metadata.authority}),
+    citationErrorCount: record.metadata.citationErrors?.length ?? 0,
+    codeCitations: record.metadata.codeCitations ?? [],
+    ...(currentCodeLinkMatches === undefined || currentCodeLinkMatches.length === 0
+      ? {}
+      : {codeLinkMatches: currentCodeLinkMatches}),
+    excerpt:
+      record.metadata.kind === 'handoff' ? handoffEvidenceExcerpt(record.body) : memoryEvidenceExcerpt(record.body),
+    kind: record.metadata.kind,
+    ...(record.metadata.project === undefined ? {} : {project: record.metadata.project}),
+    rank,
+    ...(sourceCommit === undefined ? {} : {sourceCommit}),
+    ...(record.metadata.topic === undefined ? {} : {topic: record.metadata.topic}),
+    ...(record.metadata.trust === undefined ? {} : {trust: record.metadata.trust}),
+    uri: record.uri,
   };
 }
 
@@ -253,6 +521,14 @@ function utf8Prefix(value: string, maximumBytes: number): string {
     output += character;
   }
   return `${output}${suffix}`;
+}
+
+function stableUnique(values: readonly string[]): readonly string[] {
+  return [...new Set(values)].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function invalid(field: string): Error {

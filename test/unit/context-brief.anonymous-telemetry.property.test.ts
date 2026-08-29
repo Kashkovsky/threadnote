@@ -12,7 +12,7 @@ import {
 } from '../../src/context_brief/index.js';
 import {anonymousTelemetryTestLayer, withAnonymousTelemetry} from '../../src/effect/telemetry.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
-import type {MemoryCodeCitationV1} from '../../src/memory_code_citation.js';
+import type {MemoryCodeCitationV1} from '../../src/memory/code_citation.js';
 import {
   contextBriefCitationTelemetryFields,
   contextBriefTelemetryQuantityBucket,
@@ -436,6 +436,61 @@ describe('Context Brief anonymous telemetry', () => {
       expect(JSON.stringify(attributes)).not.toContain('/private/repository');
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
+
+  effectIt.effect.prop(
+    'never exports anchored task, code-ref, node, or memory tokens',
+    {
+      token: fc
+        .array(fc.constantFrom(...'0123456789abcdef'), {minLength: 16, maxLength: 16})
+        .map(characters => characters.join('')),
+    },
+    ({token}) => {
+      const capture = capturingTracer();
+      const reporter = makeContextBriefAnonymousTelemetryReporter('local');
+      const privatePath = `src/private-${token}.ts`;
+      const privateNode = `cgs_${token}${token}`;
+      const privateTask = `private-task-${token}`;
+      const privateMemory = `private-memory-${token}`;
+      const privateFailure = new TestError(`${privateMemory} at ${privatePath} via ${privateNode}`);
+
+      return Effect.gen(function* () {
+        const result = yield* withAnonymousTelemetry(
+          {component: 'cli', operation: 'context.brief'},
+          Effect.gen(function* () {
+            yield* reporter.annotate;
+            return yield* compileContextBriefWith(
+              instrumentContextBriefCompilerDependencies(
+                reporter,
+                {
+                  citationValidation: () => Effect.fail(privateFailure),
+                  codeLinkedMemoryEvidence: () => Effect.fail(privateFailure),
+                  graphEvidence: () => Effect.fail(privateFailure),
+                  memoryEvidence: () => Effect.fail(privateFailure),
+                  projection: (logical, maximumEstimatedTokens) =>
+                    Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+                },
+                1,
+              ),
+              {
+                budgetTokens: 1_250,
+                codeRefs: [privatePath, privateNode],
+                mode: 'brief',
+                scope: {callerCwd: '/workspace/threadnote', kind: 'repository', project: 'threadnote'},
+                task: privateTask,
+              },
+            );
+          }),
+        );
+
+        expect(result.structuredContent.version).toBe(3);
+        const serialized = JSON.stringify(capture.spans.map(spanAttributes));
+        for (const privateValue of [token, privatePath, privateNode, privateTask, privateMemory]) {
+          expect(serialized).not.toContain(privateValue);
+        }
+      }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+    },
+    {fastCheck: {numRuns: 25}},
+  );
 });
 
 function summary(): ContextBriefCitationTelemetrySummary {
