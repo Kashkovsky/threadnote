@@ -22,11 +22,17 @@ import {
   evaluateCodeMemoryLinkStaticArtifactsV1,
   type CodeMemoryLinkStaticArtifactInputV1,
 } from '../../src/evaluation/code-memory-link-agent-protocol.js';
-import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {codeGraphCommittedFileContentHash} from '../../src/code_graph/content_identity.js';
+import {
+  createMemoryCodeCitation,
+  MEMORY_CODE_CITATION_VERSION,
+  MEMORY_SCHEMA_VERSION,
+} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {
   assembleCalibrationPlanV1,
   assembleCodeMemoryLinkSealedSuiteV1,
+  assertPreparedGraphObjectFormat,
   codeMemoryLinkAgentPreparedMemoryDestinationMatches,
   codeMemoryLinkAgentPreparedMemoryDirectory,
   codeMemoryLinkAgentPreparationSourceRoot,
@@ -37,6 +43,15 @@ import {
 import {parseCodeMemoryLinkCodexSuiteLayoutV1} from '../../scripts/code-memory-link-codex-suite.js';
 
 describe('Code Memory Link sealed preparation', () => {
+  it('binds candidate graph object format to the repository observed through Git', () => {
+    expect(assertPreparedGraphObjectFormat('sha1', 'sha1')).toBe('sha1');
+    expect(() => assertPreparedGraphObjectFormat('sha256', 'sha1')).toThrow(
+      'Git object format differs from the repository',
+    );
+    expect(() => assertPreparedGraphObjectFormat('sha1', 'sha256')).toThrow('repository must use the SHA-1');
+    expect(() => assertPreparedGraphObjectFormat('md5', 'sha1')).toThrow('unsupported Git object format');
+  });
+
   it('normalizes the module-derived source root before canonical validation', () => {
     const sourceRoot = codeMemoryLinkAgentPreparationSourceRoot();
     const moduleDerivedRoot = fileURLToPath(new URL('../../', import.meta.url));
@@ -122,7 +137,9 @@ describe('Code Memory Link sealed preparation', () => {
     }));
     const graph: PreparedGraphIdentity = {
       commit: '1'.repeat(40),
+      extractorSet: '5'.repeat(64),
       graphContentId: `cgc_${'2'.repeat(40)}`,
+      objectFormat: 'sha1',
       origin: 'https://example.invalid/threadnote.git',
       repositoryId: '3'.repeat(64),
       snapshotId: `cgsn_${'4'.repeat(40)}`,
@@ -156,6 +173,132 @@ describe('Code Memory Link sealed preparation', () => {
         null,
       ),
     ).toThrow('differs from its exact contract');
+  });
+
+  it('validates exact prepared citations with committed Git-object content identities', () => {
+    const base = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks.find(
+      task => task.slug === 'control-superseded-mica',
+    )!;
+    const seed = base.memorySeeds[0]!;
+    const fixtureSource = base.initialFiles.find(file => file.path === seed.citationPath)!.content;
+    const prepared = (
+      sourceContent: string,
+      contentHash = codeGraphCommittedFileContentHash('sha1', new TextEncoder().encode(sourceContent)),
+      citationExtractorSet?: string,
+      identityVariant: 'local' | 'foreign' = 'local',
+    ) => {
+      const marker = identityVariant === 'local' ? '1' : '8';
+      const graph: PreparedGraphIdentity = {
+        commit: marker.repeat(40),
+        extractorSet: marker.repeat(64),
+        graphContentId: `cgc_${marker.repeat(40)}`,
+        objectFormat: 'sha1',
+        origin: 'https://example.invalid/threadnote.git',
+        repositoryId: marker.repeat(64),
+        snapshotId: `cgsn_${marker.repeat(40)}`,
+      };
+      const definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1 = {
+        ...base,
+        initialFiles: base.initialFiles.map(file =>
+          file.path === seed.citationPath ? {...file, content: sourceContent} : file,
+        ),
+      };
+      const citation = createMemoryCodeCitation({
+        extractorSet: citationExtractorSet ?? graph.extractorSet,
+        fileContentHash: {algorithm: 'sha256', value: contentHash},
+        path: seed.citationPath!,
+        repositoryId: graph.repositoryId,
+        repositoryIdentityKind: 'remote',
+        sourceCommit: graph.commit,
+        sourceDirty: false,
+        sourceGraphContentId: graph.graphContentId,
+        sourceSnapshotId: graph.snapshotId,
+        target: {kind: 'file'},
+        version: MEMORY_CODE_CITATION_VERSION,
+      });
+      const content = formatMemoryDocument(
+        'MEMORY',
+        {
+          codeCitations: [citation],
+          kind: 'durable',
+          project: 'code-memory-link-gate',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'code-memory-link-gate',
+          sourceCommit: graph.commit,
+          status: seed.status,
+          timestamp: '2000-01-01T00:00:00.000Z',
+          topic: seed.topic,
+        },
+        seed.text,
+      );
+      return {
+        definition,
+        graph,
+        memory: {
+          content,
+          destination: `${codeMemoryLinkAgentPreparedMemoryDirectory(seed.status)}/${seed.topic}.md`,
+        },
+      };
+    };
+
+    const current = prepared(fixtureSource);
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories([current.memory], current.definition, current.graph, null),
+    ).not.toThrow();
+
+    const rawByteHash = digest(fixtureSource);
+    const staleContract = prepared(fixtureSource, rawByteHash);
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories(
+        [staleContract.memory],
+        staleContract.definition,
+        staleContract.graph,
+        null,
+      ),
+    ).toThrow('citation differs from exact graph provenance');
+
+    const wrongExtractor = prepared(fixtureSource, undefined, '7'.repeat(64));
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories(
+        [wrongExtractor.memory],
+        wrongExtractor.definition,
+        wrongExtractor.graph,
+        null,
+      ),
+    ).toThrow('citation differs from exact graph provenance');
+
+    const local = prepared(fixtureSource);
+    const foreign = prepared(fixtureSource, undefined, undefined, 'foreign');
+    const foreignDefinition: CodeMemoryLinkAgentSuiteTaskDefinitionV1 = {
+      ...foreign.definition,
+      memorySeeds: foreign.definition.memorySeeds.map(candidate => ({...candidate, foreignRepository: true})),
+    };
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories([foreign.memory], foreignDefinition, local.graph, foreign.graph),
+    ).not.toThrow();
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories([local.memory], foreignDefinition, local.graph, foreign.graph),
+    ).toThrow('citation differs from exact graph provenance');
+
+    fc.assert(
+      fc.property(fc.string({maxLength: 256}), sourceContent => {
+        const current = prepared(sourceContent);
+        expect(() =>
+          validateCodeMemoryLinkPreparedMemories([current.memory], current.definition, current.graph, null),
+        ).not.toThrow();
+
+        const changed = {
+          ...current.definition,
+          initialFiles: current.definition.initialFiles.map(file =>
+            file.path === seed.citationPath ? {...file, content: `${sourceContent}!`} : file,
+          ),
+        };
+        expect(() => validateCodeMemoryLinkPreparedMemories([current.memory], changed, current.graph, null)).toThrow(
+          'citation differs from exact graph provenance',
+        );
+      }),
+      {numRuns: 30},
+    );
   });
 
   it('assembles one fully bound 28-task suite with task-private fixture mappings', () => {
