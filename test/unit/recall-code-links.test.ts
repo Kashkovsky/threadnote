@@ -554,7 +554,7 @@ describe('recall code links', () => {
   });
 
   effectIt.effect.prop(
-    'matches an independent citation-winner and round-robin reference model (property)',
+    'matches an independent bounded citation-winner and round-robin reference model (property)',
     {
       documents: fc.array(fc.uniqueArray(fc.integer({max: 2, min: 0}), {maxLength: 3, minLength: 1}), {
         maxLength: 10,
@@ -572,7 +572,7 @@ describe('recall code links', () => {
         const anchors = Array.from({length: 3}, (_, index) =>
           citation({path: `src/target-${index}.ts`, repositoryId, symbolSeed: String(index + 1)}),
         );
-        const modeled: RecallCodeLinkReferenceRow[] = [];
+        const modeled: Array<RecallCodeLinkReferenceRow & {readonly assignments: readonly number[]}> = [];
         for (const [documentIndex, assignments] of documents.entries()) {
           const topic = `document-${String(documentIndex).padStart(2, '0')}`;
           yield* writeMemory(
@@ -586,14 +586,22 @@ describe('recall code links', () => {
           );
           modeled.push({
             anchorOrdinal: assignments[0]!,
+            assignments,
             citationId: anchors[assignments[0]!]!.id,
             citationOrdinal: 0,
             matchKind: 'symbol-node',
             uri: `threadnote://user/${user}/memories/durable/projects/threadnote/${topic}.md`,
           });
         }
+        const scanLimit = limit * 4;
+        const boundedModeled = anchors.flatMap((_, anchorOrdinal) =>
+          modeled
+            .filter(row => row.assignments.includes(anchorOrdinal))
+            .slice(0, scanLimit)
+            .filter(row => row.anchorOrdinal === anchorOrdinal),
+        );
         const anchorRanks = new Map<number, number>();
-        const expected = [...modeled]
+        const expected = boundedModeled
           .sort((left, right) => left.anchorOrdinal - right.anchorOrdinal || compareReferenceText(left.uri, right.uri))
           .map(row => {
             const anchorRank = (anchorRanks.get(row.anchorOrdinal) ?? 0) + 1;
@@ -607,7 +615,7 @@ describe('recall code links', () => {
               compareReferenceText(left.uri, right.uri),
           )
           .slice(0, limit)
-          .map(({anchorRank: _anchorRank, ...row}) => row);
+          .map(({anchorRank: _anchorRank, assignments: _assignments, ...row}) => row);
         const actual = yield* loadRecallCodeLinks(
           {account: 'local', agentContextHome: home, user},
           {anchors, forceRefresh: true, includeInactive: false, limit, project: 'threadnote'},
