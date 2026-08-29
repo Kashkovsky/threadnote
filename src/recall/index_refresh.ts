@@ -70,6 +70,7 @@ const RECALL_REFRESH_INDEX_PAGE_SIZE = 8;
 const RECALL_REFRESH_GENERATION_PAGE_SIZE = 16;
 const RECALL_REFRESH_CODE_LINK_GENERATION_PAGE_SIZE = 256;
 const RECALL_REFRESH_SOURCE_PAGE_SIZE = 256;
+const RECALL_REFRESH_SOURCE_GC_INTERVAL = RECALL_REFRESH_SOURCE_PAGE_SIZE * 32;
 const MAX_INDEXED_FILE_BYTES = 512 * 1_024;
 const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml']);
 
@@ -141,7 +142,15 @@ export const scanRecallSources = Effect.fn('recall.scanSources')(function* (
             uri,
           });
           scannedSourceCount += 1;
-          if (pendingSources.length >= RECALL_REFRESH_SOURCE_PAGE_SIZE) yield* flushPendingSources();
+          if (pendingSources.length >= RECALL_REFRESH_SOURCE_PAGE_SIZE) {
+            yield* flushPendingSources();
+            // A 100k-source validation otherwise allocates faster than JSC's
+            // normal collection cadence and retains an avoidable RSS spike.
+            if (scannedSourceCount % RECALL_REFRESH_SOURCE_GC_INTERVAL === 0) {
+              Bun.gc(true);
+              yield* Effect.yieldNow;
+            }
+          }
         }),
     );
   }
