@@ -65,9 +65,37 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
 2. Merge the release source and ensure ordinary CI is green.
 3. Dispatch `Platform benchmarks` on exact clean candidate **C** with
    `include_context_brief_citations_scale=true` and `include_code_memory_link_scale=true`. Before tagging, require its Context Brief citation artifact to report
-   `gate.passed=true`, the exact candidate commit, `dirty=false`, 100,000 indexed memory candidates, 25 samples, five
-   warmups, and the `local-100k`, `workset-50`, and `workset-128` profiles. This gate is mandatory for a release that
-   changes Context Brief, recall, citation, or graph-validation behavior; production-large evidence is not a substitute.
+   v2 `evidenceClass=release-scale`, `gate.passed=true`, the exact candidate commit, `dirty=false`, 100,000 indexed
+   memory candidates, exactly 25 samples, exactly five warmups, and the `local-100k`, `workset-50`, and `workset-128`
+   profiles. A development-smoke artifact is deliberately release-failing regardless of its measurements. This gate is
+   mandatory for a release that changes Context Brief, recall, citation, or graph-validation behavior;
+   production-large evidence is not a substitute.
+   Require the deterministic fixture hash to match repeated construction of the same reviewed inputs. The artifact
+   separately retains the actual 50- and 128-member workset generation digests because their checkout/worktree-bound
+   routing identities are intentionally materialization-specific and must not make the semantic fixture hash unstable.
+   The untimed memory series runs before any production timing invocation so first-use caches cannot disappear into its
+   initial baseline. It resets instrumentation and performs full GC before each acknowledged begin barrier, then runs
+   and retains the production workload before its end barrier. After the last workload, another full GC precedes the
+   required stop-barrier sample. The observer exits before the latency series begins, so timing has no observer or
+   boundary-RSS instrumentation. The exact bundled target recomputes its own wrapper-supplied
+   SHA-256 and launches that same bundle as the observer; the observer and its descendants are excluded from the
+   recursive process tree. Each memory observation must have at least three successful samples, no failed samples, a
+   maximum 100 ms sample gap, a root-only baseline, and valid root/tree baseline, peak, and growth arithmetic. The
+   single-repository profile must sample a workload descendant at least once; each sustained multi-repository Workset
+   profile must do so in at least 80% of its observations. This avoids pretending that the roughly 45 ms macOS `ps`
+   cadence can reliably catch every short-lived local Git child while preserving a strong fan-out coverage gate.
+   Apply the fixed 64 MiB ceiling independently to the maximum sampled transient process-tree growth and retained root
+   growth across memory-pass baselines plus the post-final-GC sample. That final sample must contain only the benchmark
+   root. Boundary-sampled current-process RSS comes from the memory workload and remains
+   diagnostic only. The retained `memoryWorkload` must independently pass the same selection, citation, fan-out, lease,
+   and no-cold-work correctness checks. This is probabilistic sampled process-tree high-water evidence: it recursively
+   accounts for processes present at each sample, but it is not exhaustive accounting of every short-lived child or an
+   unsampled peak.
+   The absolute latency gate runs on the reviewed `macos-15`/ARM64/Apple-M1 class. Its artifact must bind the explicit
+   candidate argument to the observed clean checkout; require observed Git status, GitHub Actions,
+   `RUNNER_ENVIRONMENT=github-hosted`, `RUNNER_OS=macOS`, runner class `github-hosted-macos-15-ARM64`, arm64, an
+   Apple-M1-class CPU, `bun/1.3.14`, and `threadnote-4.6.0`. Do not substitute a pass from the heterogeneous Ubuntu x64
+   pool or normalize two failed absolute observations through a parent-relative comparison.
    Also require `bun run eval:code-memory-link-bench` to pass on that SHA for changes to code-anchored retrieval. Treat
    its 256-noise-memory latency result as the deterministic CI smoke only; do not relabel it as the 100,000-memory
    inverse-selector scale gate.

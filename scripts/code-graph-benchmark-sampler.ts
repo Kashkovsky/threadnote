@@ -372,7 +372,15 @@ const samplerMain = Effect.gen(function* () {
   const processSampleIntervalMilliseconds = system.platform === 'darwin' ? 250 : options.intervalMilliseconds;
   const openFileSampleIntervalMilliseconds =
     system.platform === 'darwin' ? DARWIN_OPEN_FILE_SAMPLE_INTERVAL_MILLISECONDS : options.intervalMilliseconds;
-  const initialProcessSample = yield* readProcessTreeSample(options.processId, clockTicksPerSecond);
+  const initialUnfilteredProcessSample = yield* readProcessTreeSample(options.processId, clockTicksPerSecond);
+  const samplerProcessTreeExclusions = benchmarkSamplerProcessTreeExclusions(
+    initialUnfilteredProcessSample,
+    system.processId,
+  );
+  const initialProcessSample =
+    samplerProcessTreeExclusions.length === 0
+      ? initialUnfilteredProcessSample
+      : yield* readProcessTreeSample(options.processId, clockTicksPerSecond, samplerProcessTreeExclusions);
   const processTelemetry = samplerProcessTelemetryContract(
     system.platform,
     initialProcessSample?.rootStartIdentity,
@@ -420,7 +428,7 @@ const samplerMain = Effect.gen(function* () {
           processSampleDue
             ? pendingInitialProcessSample !== undefined
               ? Effect.succeed(pendingInitialProcessSample)
-              : readProcessTreeSample(options.processId, clockTicksPerSecond)
+              : readProcessTreeSample(options.processId, clockTicksPerSecond, samplerProcessTreeExclusions)
             : Effect.succeed(undefined),
         ],
         {concurrency: 'unbounded'},
@@ -654,6 +662,8 @@ interface BenchmarkProcessCounters {
 export interface BenchmarkProcessTreeSample {
   readonly processIds: readonly number[];
   readonly processes: ReadonlyMap<string, BenchmarkProcessCounters>;
+  /** Current RSS of the observed root alone, excluding every descendant. */
+  readonly rootRssBytes: number;
   readonly rootStartIdentity: string;
   readonly rssBytes: number;
 }
@@ -664,12 +674,32 @@ export interface BenchmarkProcessTreeDelta {
   readonly ioWriteBytes: number;
 }
 
+/** Exclude sampler instrumentation only when it is actually inside the observed process tree. */
+export function benchmarkSamplerProcessTreeExclusions(
+  initialSample: BenchmarkProcessTreeSample | undefined,
+  samplerProcessId: number,
+): readonly number[] {
+  return initialSample?.processIds.includes(samplerProcessId) ? [samplerProcessId] : [];
+}
+
+/**
+ * Aggregate one root while removing complete instrumentation subtrees. Every
+ * excluded PID must be a unique strict descendant in this same snapshot;
+ * otherwise no sample is returned.
+ */
 export function aggregateProcessTree(
   entries: readonly BenchmarkProcessTreeEntry[],
   rootProcessId: number,
   expectedRootStartIdentity?: string,
-  excludedProcessId?: number,
+  excludedDescendantRootProcessIds: readonly number[] = [],
 ): BenchmarkProcessTreeSample | undefined {
+  if (
+    excludedDescendantRootProcessIds.some(processId => !Number.isSafeInteger(processId) || processId <= 0) ||
+    new Set(excludedDescendantRootProcessIds).size !== excludedDescendantRootProcessIds.length ||
+    excludedDescendantRootProcessIds.includes(rootProcessId)
+  ) {
+    return undefined;
+  }
   const byProcessId = new Map<number, BenchmarkProcessTreeEntry>();
   for (const entry of entries) {
     if (
@@ -700,6 +730,16 @@ export function aggregateProcessTree(
     siblings.push(entry.processId);
     children.set(entry.parentProcessId, siblings);
   }
+  const reachableProcessIds = new Set<number>();
+  const reachablePending = [rootProcessId];
+  while (reachablePending.length > 0) {
+    const processId = reachablePending.shift();
+    if (processId === undefined || reachableProcessIds.has(processId)) continue;
+    reachableProcessIds.add(processId);
+    reachablePending.push(...(children.get(processId) ?? []));
+  }
+  if (excludedDescendantRootProcessIds.some(processId => !reachableProcessIds.has(processId))) return undefined;
+  const excludedDescendantRoots = new Set(excludedDescendantRootProcessIds);
   const pending = [rootProcessId];
   const visited = new Set<number>();
   const processes = new Map<string, BenchmarkProcessCounters>();
@@ -707,7 +747,7 @@ export function aggregateProcessTree(
   while (pending.length > 0) {
     const processId = pending.shift();
     if (processId === undefined || visited.has(processId)) continue;
-    if (processId === excludedProcessId) continue;
+    if (excludedDescendantRoots.has(processId)) continue;
     visited.add(processId);
     const entry = byProcessId.get(processId);
     if (!entry) continue;
@@ -719,7 +759,13 @@ export function aggregateProcessTree(
     rssBytes = safeAdd(rssBytes, entry.rssBytes);
     pending.push(...(children.get(processId) ?? []));
   }
-  return {processIds: [...visited], processes, rootStartIdentity: root.startIdentity, rssBytes};
+  return {
+    processIds: [...visited],
+    processes,
+    rootRssBytes: root.rssBytes,
+    rootStartIdentity: root.startIdentity,
+    rssBytes,
+  };
 }
 
 export function processTreeDelta(
@@ -748,22 +794,25 @@ export function processTreeDelta(
   return {cpuMilliseconds, ioReadBytes, ioWriteBytes};
 }
 
-const readProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readProcessTreeSample')(function* (
+export const readProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readProcessTreeSample')(function* (
   processId: number,
   clockTicksPerSecond: number,
+  excludedDescendantRootProcessIds: readonly number[] = [],
 ) {
   const system = yield* SystemInfo;
   if (system.platform === 'linux') {
-    return yield* readLinuxProcessTreeSample(processId, clockTicksPerSecond, system.processId);
+    return yield* readLinuxProcessTreeSample(processId, clockTicksPerSecond, excludedDescendantRootProcessIds);
   }
-  if (system.platform === 'darwin') return yield* readDarwinProcessTreeSample(processId, system.processId);
+  if (system.platform === 'darwin') {
+    return yield* readDarwinProcessTreeSample(processId, excludedDescendantRootProcessIds);
+  }
   return undefined;
 });
 
 const readLinuxProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readLinuxProcessTreeSample')(function* (
   rootProcessId: number,
   clockTicksPerSecond: number,
-  excludedProcessId: number,
+  excludedDescendantRootProcessIds: readonly number[],
 ) {
   const pending: Array<{readonly expectedParent?: number; readonly processId: number}> = [{processId: rootProcessId}];
   const entries: BenchmarkProcessTreeEntry[] = [];
@@ -779,7 +828,7 @@ const readLinuxProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readLinu
     entries.push(observed.entry);
     pending.push(...observed.childProcessIds.map(processId => ({expectedParent: observed.entry.processId, processId})));
   }
-  return aggregateProcessTree(entries, rootProcessId, undefined, excludedProcessId);
+  return aggregateProcessTree(entries, rootProcessId, undefined, excludedDescendantRootProcessIds);
 });
 
 const readLinuxProcessEntry = Effect.fn('codeGraphBenchmarkSampler.readLinuxProcessEntry')(function* (
@@ -843,7 +892,7 @@ export function parseLinuxProcessIo(
 
 const readDarwinProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readDarwinProcessTreeSample')(function* (
   rootProcessId: number,
-  excludedProcessId: number,
+  excludedDescendantRootProcessIds: readonly number[],
 ) {
   return yield* Effect.try({
     try: () => {
@@ -857,7 +906,7 @@ const readDarwinProcessTreeSample = Effect.fn('codeGraphBenchmarkSampler.readDar
         parseDarwinProcessList(new TextDecoder().decode(result.stdout)),
         rootProcessId,
         undefined,
-        excludedProcessId,
+        excludedDescendantRootProcessIds,
       );
     },
     catch: scriptError,
@@ -1305,7 +1354,7 @@ export function samplerParentExited(
   );
 }
 
-const linuxClockTicksPerSecond = Effect.fn('codeGraphBenchmarkSampler.linuxClockTicksPerSecond')(function* () {
+export const linuxClockTicksPerSecond = Effect.fn('codeGraphBenchmarkSampler.linuxClockTicksPerSecond')(function* () {
   const system = yield* SystemInfo;
   if (system.platform !== 'linux') return 100;
   return yield* Effect.try({

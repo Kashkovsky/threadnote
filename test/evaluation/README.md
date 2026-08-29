@@ -355,7 +355,7 @@ continuity. It requires zero false-fresh results, zero false deletion from incom
 authoritative leakage, a complete legacy recall result, and responses within the 1,500-token ceiling. Its measured p95
 limits are bounded runtime-smoke ratchets for this small CI fixture. They are not evidence for the separate 100k-symbol,
 50-member, or 128-member scale profiles; governed scale claims require repeated built-artifact benchmark samples on the
-pinned runner.
+reviewed `macos-15`/ARM64/Apple-M1/Bun runner class.
 
 ### Memory-code citation scale gate
 
@@ -366,27 +366,62 @@ SQLite stores before timing. The measured path executes the production query/sto
 validation, Context Brief assembly, and projection. Workset routing uses real published catalog generations; no cold
 repository indexing runs.
 
+The fixture hash covers the stable reviewed budget, source/citation content, repository commits and repository IDs,
+graph content and snapshot IDs, selected memory records, and legacy-noise contract. It deliberately excludes the
+published workset generation digests because those include checkout/worktree IDs derived from each temporary
+materialization path. Both actual generation digests remain separate retained artifact fields, preserving exact run
+provenance without making like-for-like fixture identity nondeterministic.
+
 The profiles are local/96 citations, workset-50/16 cited repositories/64 citations, and workset-128/32 cited
 repositories/96 citations. Every warmup and measured sample selects a different set of canonical schema-v4 memories,
-so validation receipts are not process-cache hits. The artifact records 25-sample p95 latency after five warmups, added
-RSS, selected memories, all validation receipts, distinct graph database paths, production graph-store sessions,
-snapshot leases, effective-evidence batches, snapshot-status observations, active-view fence observations, maintenance
-requests, and cold graph builds. The
-session counter wraps calls that reach the real `CodeGraphStore.withSession` implementation against the prebuilt SQLite
-files; OS file-descriptor opens are not separately counted. The production query boundary owns that session across the
-snapshot selection, lease, evidence read, two-sided active-view fence, and release. Lease, evidence, snapshot-status,
-and active-view-fence operations remain separate counters so session reuse cannot hide fan-out or skipped work.
+so validation receipts are not process-cache hits. Release-scale evidence requires exactly 25 measured samples after
+exactly five warmups. The first-use memory series completes before timing begins, and the observer exits before the
+timing warmups and measured samples run. Timing therefore has no observer or boundary-RSS instrumentation; it records
+p95 latency, selected-memory counts, validation receipts, distinct graph database paths, production
+graph-store sessions, snapshot leases, effective-evidence batches, snapshot-status observations, active-view fence
+observations, maintenance requests, and cold graph builds. The session counter wraps calls that reach the real
+`CodeGraphStore.withSession` implementation against the prebuilt SQLite files; OS file-descriptor opens are not
+separately counted. The production query boundary owns that session across snapshot selection, lease, evidence read,
+two-sided active-view fence, and release. Lease, evidence, snapshot-status, and active-view-fence operations remain
+separate counters so session reuse cannot hide fan-out or skipped work.
+
+Memory uses a distinct untimed production-workload series before any production timing invocation. Before every begin barrier, the benchmark resets graph
+instrumentation and completes a full GC; only then does the external observer acknowledge the immediate baseline. The
+workload runs between acknowledged begin and end barriers. Its complete `memoryWorkload` result is retained and must
+independently pass the same selected-memory, receipt, token, store-session, graph-database, evidence-batch, status,
+active-view, lease, concurrency, maintenance, and no-cold-indexing checks as a timing observation. Boundary-sampled
+current-process RSS is collected only in this memory workload and remains a non-gating allocator diagnostic. After the
+last workload, the benchmark resets instrumentation, completes another full GC, and obtains a required root-only stop
+sample before the observer exits.
+
+The wrapper hashes the built target, and the running target recomputes that SHA-256 before launching the exact same
+bundle in its reserved observer mode. The observer recursively samples the benchmark root and its current descendants
+while excluding its own complete subtree. Every memory observation fails unless its begin baseline contains only the
+root, it has at least three successful samples and no failures, its longest successful-sample gap is at most 100 ms, and
+its root and process-tree peak-minus-immediate-baseline arithmetic is internally consistent. The single-repository
+profile must observe a workload descendant at least once, while each sustained multi-repository Workset profile must do
+so in at least 80% of its 25 memory observations. This distinction keeps the fan-out coverage gate strong without
+claiming that the roughly 45 ms macOS `ps` cadence reliably catches every short-lived local Git child. The fixed 64 MiB ceiling applies independently to
+the maximum sampled transient process-tree growth and to retained root growth, computed from every immediate begin
+baseline plus the post-final-GC stop sample relative to the first baseline.
+
+These measurements are sampled high-water evidence, not exhaustive process-lifetime accounting. A successful snapshot
+recursively accounts for the root and every descendant visible at that instant, excluding the observer subtree, but a
+short-lived child or RSS peak entirely between samples can remain unseen. The three-sample, 100 ms gap, local-capture,
+and Workset 80% descendant-coverage gates bound that risk; they do not justify a claim that every child process or
+absolute peak was observed.
 
 ```sh
 # Scheduled/manual release-quality distribution; ordinary pull-request CI does not run this job.
 bun run bench:context-brief-citations -- \
+  --candidate-commit <exact-40-character-sha> \
   --memory-candidates 100000 \
   --samples 25 \
   --warmups 5 \
   --fail-on-budget \
   --output artifacts/context-brief-citations-scale.json
 
-# Fast orchestration smoke. It records non-comparable evidence and does not pass the frozen scale gate.
+# Fast orchestration smoke. It records development-smoke evidence whose release gate always fails.
 bun run bench:context-brief-citations -- \
   --memory-candidates 200 \
   --profiles local-100k,workset-50,workset-128 \
@@ -397,6 +432,14 @@ bun run bench:context-brief-citations -- \
 The timing label is deliberately narrow: real prebuilt recall and graph SQLite plus the production Context Brief path.
 Git/graph fixture creation, ready-snapshot activation, recall-index construction, workset catalog publication, and cold
 graph indexing are setup evidence, not included in p95. Results must not be presented as cold-indexing performance.
+Release-quality execution also requires an explicit exact candidate commit and proves the checkout is clean, the
+observed commit matches, Git status was successfully observed, and execution is in GitHub Actions on a hosted
+`macos-15` runner with `RUNNER_ENVIRONMENT=github-hosted`, `RUNNER_OS=macOS`, runner class
+`github-hosted-macos-15-ARM64`, arm64 architecture, an Apple-M1-class CPU, `bun/1.3.14`, and `threadnote-4.6.0`. Release
+mode rejects any sample or warmup count other than 25/5. Without `--fail-on-budget`, the artifact is classified as
+`development-smoke` and receives an unconditional gate failure, so local evidence cannot be relabeled as release-scale
+evidence. The fixed-class absolute gate remains an agent-latency objective; a parent-relative same-runner comparison
+cannot replace it.
 
 ## Native code graph contract
 

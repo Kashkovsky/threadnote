@@ -241,13 +241,16 @@ jobs:
           retention-days: 30
 
   context-brief-citations-scale:
-    name: Context Brief citations 100k memories / 50 / 128 · pinned Linux class
+    name: Context Brief citations 100k memories / 50 / 128 · release macOS class
     if: github.event_name == 'schedule' || inputs.include_context_brief_citations_scale
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -257,9 +260,10 @@ jobs:
 
       - name: Build and gate warm-ready Context Brief citation scale evidence
         env:
-          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-ubuntu-24.04-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-macos-15-ARM64
         run: >-
           bun run bench:context-brief-citations --
+          --candidate-commit "${{ github.sha }}"
           --memory-candidates 100000
           --samples 25
           --warmups 5

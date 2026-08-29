@@ -51,6 +51,7 @@ export interface ContextBriefCitationScalePreparedProfile {
 
 export interface ContextBriefCitationScalePreparedFixture {
   readonly config: RuntimeConfig;
+  readonly fixtureHash: string;
   readonly indexedMemoryCandidates: number;
   readonly legacyV1MemoryCandidates: number;
   readonly profiles: ReadonlyMap<ContextBriefCitationScaleProfileId, ContextBriefCitationScalePreparedProfile>;
@@ -196,8 +197,18 @@ export const prepareContextBriefCitationScaleFixture = Effect.fn('evaluation.pre
         }),
       );
     }
+    const fixtureHash = contextBriefCitationScaleFixtureHash(
+      path,
+      home,
+      options,
+      preparedProfiles,
+      selectedRecords,
+      legacyV1MemoryCandidates,
+      status.documentCount,
+    );
     return {
       config,
+      fixtureHash,
       indexedMemoryCandidates: status.documentCount,
       legacyV1MemoryCandidates,
       profiles: preparedProfiles,
@@ -256,7 +267,10 @@ function prepareRepositories(
               '-m',
               'Prepare ready graph fixture',
             ],
-            {timeoutMs: 30_000},
+            {
+              env: {GIT_AUTHOR_DATE: FIXED_INSTANT, GIT_COMMITTER_DATE: FIXED_INSTANT},
+              timeoutMs: 30_000,
+            },
           );
           const identity = yield* resolveRepositoryIdentity(repositoryRoot);
           const snapshotId = `cgsn_${sha256HexSync(`scale-snapshot\0${name}`).slice(0, 40)}`;
@@ -412,18 +426,7 @@ function writeLegacyNoise(fs: FileSystem.FileSystem, path: Path.Path, home: stri
     PROJECT,
     'noise',
   );
-  const content = [
-    'MEMORY',
-    'kind: durable',
-    'status: active',
-    `project: ${PROJECT}`,
-    'topic: legacy-scale-noise',
-    'source_agent_client: benchmark',
-    `timestamp: ${FIXED_INSTANT}`,
-    'schema_version: 1',
-    '',
-    'Unrelated legacy memory fixture about ceramic glazing and coastal weather.',
-  ].join('\n');
+  const content = legacyNoiseContent();
   return Effect.gen(function* () {
     for (let offset = 0; offset < count; offset += 1_000) {
       const end = Math.min(count, offset + 1_000);
@@ -440,6 +443,67 @@ function writeLegacyNoise(fs: FileSystem.FileSystem, path: Path.Path, home: stri
       );
     }
   });
+}
+
+function legacyNoiseContent(): string {
+  return [
+    'MEMORY',
+    'kind: durable',
+    'status: active',
+    `project: ${PROJECT}`,
+    'topic: legacy-scale-noise',
+    'source_agent_client: benchmark',
+    `timestamp: ${FIXED_INSTANT}`,
+    'schema_version: 1',
+    '',
+    'Unrelated legacy memory fixture about ceramic glazing and coastal weather.',
+  ].join('\n');
+}
+
+function contextBriefCitationScaleFixtureHash(
+  path: Path.Path,
+  home: string,
+  options: ContextBriefCitationScaleFixtureOptions,
+  preparedProfiles: ReadonlyMap<ContextBriefCitationScaleProfileId, ContextBriefCitationScalePreparedProfile>,
+  selectedRecords: readonly {readonly content: string; readonly path: string}[],
+  legacyV1MemoryCandidates: number,
+  indexedMemoryCandidates: number,
+): string {
+  return sha256HexSync(
+    JSON.stringify({
+      budget: options.budget,
+      extractorSet: EXTRACTOR_SET,
+      fixedInstant: FIXED_INSTANT,
+      indexedMemoryCandidates,
+      legacyNoise: {
+        contentHash: sha256HexSync(legacyNoiseContent()),
+        count: legacyV1MemoryCandidates,
+        pathContract: 'noise/<thousand-shard>/<six-digit-ordinal>.md',
+      },
+      profiles: options.budget.profiles.map(profile => {
+        const prepared = preparedProfiles.get(profile.id)!;
+        return {
+          id: profile.id,
+          repositories: prepared.repositories.map((repository, ordinal) => ({
+            commit: repository.status.identity.headCommit,
+            graphContentId: repository.status.readySnapshot!.graphContentId,
+            name: repository.name,
+            repositoryId: repository.repositoryId,
+            snapshotId: repository.snapshotId,
+            sourcePathsHash: sha256HexSync(repositorySourcePaths(profile, ordinal, options.runCount).join('\0')),
+          })),
+        };
+      }),
+      requestedMemoryCandidates: options.memoryCandidates,
+      runCount: options.runCount,
+      selectedRecords: selectedRecords.map(record => ({
+        contentHash: sha256HexSync(record.content),
+        path: path.relative(home, record.path).split(path.sep).join('/'),
+      })),
+      selectedProfiles: options.profileIds,
+      version: 2,
+    }),
+  );
 }
 
 function runToken(profile: ContextBriefCitationScaleProfileId, ordinal: number): string {

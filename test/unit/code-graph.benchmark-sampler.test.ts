@@ -7,6 +7,7 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   aggregateProcessTree,
+  benchmarkSamplerProcessTreeExclusions,
   isOpenTemporaryFilePath,
   mergeTemporaryFileSnapshots,
   observeTemporaryOpenInspection,
@@ -524,9 +525,82 @@ describe('code graph benchmark sampler artifact', () => {
 
     const sample = aggregateProcessTree(entries, 10, 'root');
     expect(sample?.rssBytes).toBe(6_000);
+    expect(sample?.rootRssBytes).toBe(1_000);
     expect([...sample!.processes.keys()]).toEqual(['10:root', '11:child', '12:grandchild']);
     expect(aggregateProcessTree(entries, 10, 'reused-root')).toBeUndefined();
-    expect([...aggregateProcessTree(entries, 10, 'root', 11)!.processes.keys()]).toEqual(['10:root']);
+    expect([...aggregateProcessTree(entries, 10, 'root', [11])!.processes.keys()]).toEqual(['10:root']);
+  });
+
+  it('excludes a verified observer root and its complete subtree from process and RSS evidence', () => {
+    const sample = aggregateProcessTree(
+      [
+        processEntry(10, 1, 'root', 100, 1_000, 10, 20),
+        processEntry(11, 10, 'workload', 50, 2_000, 30, 40),
+        processEntry(12, 11, 'workload-child', 25, 3_000, 50, 60),
+        processEntry(20, 10, 'observer', 5_000, 4_000, 70, 80),
+        processEntry(21, 20, 'observer-child', 6_000, 5_000, 90, 100),
+        processEntry(30, 10, 'second-observer', 7_000, 6_000, 110, 120),
+      ],
+      10,
+      'root',
+      [20, 30],
+    );
+
+    expect(sample).toMatchObject({processIds: [10, 11, 12], rootRssBytes: 1_000, rssBytes: 6_000});
+    expect([...sample!.processes.keys()]).toEqual(['10:root', '11:workload', '12:workload-child']);
+  });
+
+  it('excludes sampler instrumentation only when it belongs to the observed tree', () => {
+    const sample = aggregateProcessTree(
+      [processEntry(10, 1, 'root', 100, 1_000, 10, 20), processEntry(11, 10, 'sampler', 50, 2_000, 30, 40)],
+      10,
+      'root',
+    );
+    expect(benchmarkSamplerProcessTreeExclusions(sample, 11)).toEqual([11]);
+    expect(benchmarkSamplerProcessTreeExclusions(sample, 99)).toEqual([]);
+    expect(benchmarkSamplerProcessTreeExclusions(undefined, 11)).toEqual([]);
+  });
+
+  it('fails closed when an exclusion is invalid, duplicated, the root, or not a descendant', () => {
+    const entries = [
+      processEntry(10, 1, 'root', 100, 1_000, 10, 20),
+      processEntry(11, 10, 'observer', 50, 2_000, 30, 40),
+      processEntry(99, 1, 'unrelated', 25, 3_000, 50, 60),
+    ];
+
+    for (const exclusions of [[0], [-1], [Number.MAX_SAFE_INTEGER + 1], [11, 11], [10], [99], [404]]) {
+      expect(aggregateProcessTree(entries, 10, 'root', exclusions)).toBeUndefined();
+    }
+  });
+
+  it('keeps workload accounting invariant under arbitrary excluded observer subtrees', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 1_000_000, min: 0}),
+        fc.integer({max: 1_000_000, min: 0}),
+        fc.integer({max: 1_000_000, min: 0}),
+        fc.integer({max: 1_000_000, min: 0}),
+        (rootRss, workloadRss, observerRss, observerChildRss) => {
+          const sample = aggregateProcessTree(
+            [
+              processEntry(10, 1, 'root', 100, rootRss, 10, 20),
+              processEntry(11, 10, 'workload', 50, workloadRss, 30, 40),
+              processEntry(20, 10, 'observer', 5_000, observerRss, 70, 80),
+              processEntry(21, 20, 'observer-child', 6_000, observerChildRss, 90, 100),
+            ],
+            10,
+            'root',
+            [20],
+          );
+
+          expect(sample?.processIds).toEqual([10, 11]);
+          expect(sample?.rootRssBytes).toBe(rootRss);
+          expect(sample?.rssBytes).toBe(rootRss + workloadRss);
+          expect([...sample!.processes.keys()]).toEqual(['10:root', '11:workload']);
+        },
+      ),
+      {numRuns: 200},
+    );
   });
 
   it('does not subtract disappeared descendants and counts a reused child PID as a new identity', () => {

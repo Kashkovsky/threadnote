@@ -4,7 +4,7 @@
   "corpusMemoryCandidates": 100000,
   "maximumCitationsPerBrief": 96,
   "maximumEstimatedTokens": 1500,
-  "maximumAddedRssBytes": 67108864,
+  "maximumObservedAddedProcessTreeRssBytes": 67108864,
   "profiles": [
     {
       "id": "local-100k",
