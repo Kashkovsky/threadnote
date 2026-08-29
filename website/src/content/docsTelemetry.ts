@@ -7,6 +7,7 @@ export const optionalAnonymousTelemetryCliCommand: CliCommandReference = {
     'threadnote telemetry status',
     'threadnote telemetry enable',
     'threadnote telemetry enable --apply',
+    'threadnote telemetry enable --auto-accept --apply',
     'threadnote telemetry disable --apply',
   ],
 };
@@ -24,6 +25,8 @@ export const optionalAnonymousTelemetryDocsArticle: DocsArticle = {
 threadnote telemetry enable
 # Review the preview, then opt in only if you agree:
 threadnote telemetry enable --apply
+# Or explicitly accept future data-contract updates too:
+threadnote telemetry enable --auto-accept --apply
 # Revoke persisted consent:
 threadnote telemetry disable --apply`,
     },
@@ -33,7 +36,7 @@ threadnote telemetry disable --apply`,
     },
     {
       type: 'paragraph',
-      text: 'Consent is versioned separately from the configuration format. If the allowlist gains a material category, earlier consent fails closed and telemetry remains off until the current preview is reviewed and explicitly applied again; Threadnote never migrates an older opt-in silently.',
+      text: 'Consent is versioned separately from the configuration format. By default, if the allowlist gains a material category, earlier consent fails closed and telemetry remains off until the current preview is reviewed and explicitly applied again. Users who apply consent with --auto-accept instead opt into future data-contract updates without another prompt, so telemetry stays enabled after those updates. A consent version from a newer Threadnote release still fails closed in an older release.',
     },
     {
       type: 'paragraph',
@@ -50,7 +53,7 @@ threadnote telemetry disable --apply`,
     },
     {
       type: 'note',
-      text: 'Run threadnote telemetry enable without --apply to review the exact current data and destination contract without writing configuration or making a request.',
+      text: 'Run threadnote telemetry enable without --apply to review the exact current data and destination contract without writing configuration or making a request. Add --auto-accept only if you also want to accept future telemetry scope changes automatically.',
     },
   ],
 };
