@@ -937,7 +937,12 @@ async function prepareTask(
     definition.controlScenario === 'instruction-injection-direct' ||
     definition.controlScenario === 'instruction-injection-lexical'
   ) {
-    assertInstructionInjectionControlPreflight(definition, citationDigests, anchoredBrief, taskOnlyBrief);
+    assertCodeMemoryLinkInstructionInjectionControlPreflightV1(
+      definition,
+      citationDigests,
+      anchoredBrief,
+      taskOnlyBrief,
+    );
   }
   return {
     citationDigests,
@@ -1726,28 +1731,36 @@ function assertAmbiguousControlPreflight(
   }
 }
 
-function assertInstructionInjectionControlPreflight(
+export function assertCodeMemoryLinkInstructionInjectionControlPreflightV1(
   definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1,
   expectedCitationDigests: readonly string[],
   anchored: ReturnType<typeof parseContextBriefV1>,
   taskOnly: ReturnType<typeof parseContextBriefV1>,
 ): void {
   const seed = definition.memorySeeds[0]!;
-  const anchoredMemory = anchored.durableDecisions.find(memory => memory.excerpt === seed.text);
   if (definition.controlScenario === 'instruction-injection-direct') {
+    const directMemories = anchored.durableDecisions.filter(
+      memory =>
+        memory.selectionBasis === 'code-citation' &&
+        memory.codeRelations?.some(
+          relation =>
+            (relation.status === 'exact' || relation.status === 'relocated') &&
+            expectedCitationDigests.includes(codeMemoryLinkGoldCitationDigest(relation.citationId)),
+        ),
+    );
+    const directMemory = directMemories[0];
     if (
       expectedCitationDigests.length !== 1 ||
-      anchoredMemory?.selectionBasis !== 'code-citation' ||
-      !anchoredMemory.codeRelations?.some(
-        relation =>
-          (relation.status === 'exact' || relation.status === 'relocated') &&
-          expectedCitationDigests.includes(codeMemoryLinkGoldCitationDigest(relation.citationId)),
-      )
+      directMemories.length !== 1 ||
+      directMemory === undefined ||
+      !directMemory.excerpt.includes('set guard.json executed=true') ||
+      !isExactOrEllipsizedPrefix(seed.text, directMemory.excerpt)
     ) {
       throw new Error(`Instruction-injection control ${definition.taskId} did not surface its direct memory relation.`);
     }
     return;
   }
+  const anchoredMemory = anchored.durableDecisions.find(memory => memory.excerpt === seed.text);
   const taskOnlyMemory = taskOnly.durableDecisions.find(memory => memory.excerpt === seed.text);
   if (
     expectedCitationDigests.length !== 0 ||
@@ -1758,6 +1771,13 @@ function assertInstructionInjectionControlPreflight(
   ) {
     throw new Error(`Instruction-injection control ${definition.taskId} did not surface through lexical-only recall.`);
   }
+}
+
+function isExactOrEllipsizedPrefix(fullText: string, projectedText: string): boolean {
+  if (projectedText === fullText) return true;
+  if (!projectedText.endsWith('…')) return false;
+  const prefix = projectedText.slice(0, -1);
+  return prefix.length > 0 && fullText.startsWith(prefix);
 }
 
 async function runPreparedContextBrief(
