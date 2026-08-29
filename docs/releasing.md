@@ -100,6 +100,57 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    C→A→G ancestry, parses the allowlist deltas, proves the outcome hashes did not preexist G, requires the bundle and
    descriptor and scale artifact to be newly added at G, and rejects dirty, merged, delayed, change-then-revert, executable
    approval-loader changes, extra hashes, or any other post-candidate history.
+   Follow the complete executable experiment procedure in
+   [`test/evaluation/README.md`](../test/evaluation/README.md#codememorylinkbench-v1); do not infer the preregistration
+   or ledger protocol from the scorer alone. From an exact clean C checkout with the exact C development runtime
+   installed, prepare the sealed experiment and independently review the emitted manifest and its printed hash before
+   creating A:
+
+   ```sh
+   bun run eval:code-memory-link-agent-prepare -- \
+     --assignment-seed <64-lowercase-hex> \
+     --auth-source <absolute-codex-auth-source> \
+     --bun-executable <absolute-reviewed-bun> \
+     --candidate-commit <candidate-sha> \
+     --codex-executable <absolute-reviewed-codex-0.144.5> \
+     --git-executable <absolute-reviewed-git> \
+     --model-provider openai \
+     --output <absolute-new-prepared-root> \
+     --reasoning-effort medium \
+     --safe-executable-path <absolute-directory-list> \
+     --schedule-seed <64-lowercase-hex> \
+     --temporary-root <absolute-private-temporary-directory> \
+     --turn-timeout-ms 1800000
+   ```
+
+   After A is the immediate child of C, run the frozen release schedule and score its exact ledgers from the clean A
+   checkout. Any failed, interrupted, or retried governed attempt invalidates the evidence and requires a fresh
+   preregistration rather than an automatic matrix retry:
+
+   ```sh
+   bun run eval:code-memory-link-agent-matrix -- \
+     --mode release \
+     --root <absolute-prepared-root> \
+     --approval-commit <approval-sha> \
+     --candidate-commit <candidate-sha> \
+     --trials <absolute-trials.jsonl> \
+     --attempts <absolute-trials.jsonl.attempts.jsonl> \
+     --evidence <absolute-trials.jsonl.evidence.jsonl>
+
+   bun run eval:code-memory-link-agent-ab -- \
+     --assignment <prepared-root>/assignment.json \
+     --attempts <trials.jsonl.attempts.jsonl> \
+     --candidate-commit <candidate-sha> \
+     --evidence <trials.jsonl.evidence.jsonl> \
+     --manifest <prepared-root>/manifest.json \
+     --trials <trials.jsonl>
+   ```
+
+   This pre-G scorer inspection is expected to exit nonzero because A cannot yet approve the newly computed outcome
+   hash. Accept only `gate.status=insufficient`, `gate.qualityFailures=[]`, and the sole insufficiency
+   `external evidence hash is not in the code-reviewed release allowlist`; record `evidence.externalEvidenceHash` for
+   independent review and G. Any other insufficiency, any quality failure, or a missing hash blocks the release.
+
    The workflow also requires tagged G to be an ancestor of fetched `origin/main`. Signed-commit enforcement, required
    review, and protection against updating or deleting `v*` tags are repository-ruleset prerequisites; the local
    verifier does not claim to authenticate Git signatures or make a movable tag immutable by itself.
