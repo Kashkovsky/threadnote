@@ -6,11 +6,16 @@ Threadnote telemetry is disabled by default. It starts only after an explicit ap
 threadnote telemetry status
 threadnote telemetry enable
 threadnote telemetry enable --apply
+# Or opt in once and stay enabled when later releases expand the data contract:
+threadnote telemetry enable --auto-accept --apply
 ```
 
 `enable` is a preview. It describes the endpoint, the exact data categories, and the session model without writing
 configuration or making a network request. `--apply` stores consent under
-`~/.threadnote/telemetry/config.json`. Disable follows the same preview/apply contract:
+`~/.threadnote/telemetry/config.json`. Adding `--auto-accept` explicitly opts into future telemetry data-contract
+updates without another consent prompt. Omit it to keep the default fail-closed renewal behavior. Reapplying consent
+without `--auto-accept` turns automatic acceptance back off while leaving telemetry enabled. Disable follows the same
+preview/apply contract:
 
 ```sh
 threadnote telemetry disable
@@ -26,7 +31,10 @@ surface requires consent version 5. A version 1, version 2, version 3, or versio
 producer: telemetry remains off until the user reviews the current preview and explicitly runs
 `threadnote telemetry enable --apply` again.
 Threadnote never migrates an earlier opt-in silently, even though the gateway continues to admit the frozen v1, v2,
-v3, and v4 wire contracts for older supported producers.
+v3, and v4 wire contracts for older supported producers. The exception is an opt-in that explicitly stored
+`autoAccept: true`: Threadnote treats that as advance acceptance of later data-contract versions, keeps telemetry
+enabled, and lets newly started processes use the current contract. A consent version created by a newer Threadnote
+release still fails closed when read by an older release.
 
 When an upgrade finds an exact enabled v4 consent, its post-update action prints the complete current preview before
 asking interactively whether to apply v5 consent. `--yes` never answers this privacy prompt, and non-interactive or

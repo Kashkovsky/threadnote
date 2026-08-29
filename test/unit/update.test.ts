@@ -1515,6 +1515,81 @@ describe('post-update validation', () => {
     }),
   );
 
+  effectIt.effect('keeps telemetry enabled when an earlier consent auto-accepts scope updates', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-post-update-auto-consent-'});
+        const fixtureRoot = path.join(temporaryRoot, 'tool');
+        const config = runtimeConfig(path.join(temporaryRoot, '.threadnote'));
+        yield* writePostUpdateFixture(fs, path, fixtureRoot, [
+          {
+            ...fixtureMigration('telemetry-consent-renewal', {
+              requiresExplicitTelemetryConsent: true,
+              requiresTelemetryConsentRenewal: true,
+            }),
+            commandArgs: ['telemetry', 'enable'],
+          },
+        ]);
+        yield* Effect.sync(() => {
+          vi.mocked(utils.toolRoot).mockImplementation(() => Effect.succeed(fixtureRoot));
+        });
+        const telemetryFile = yield* telemetryConfigurationPath(config);
+        yield* fs.makeDirectory(path.dirname(telemetryFile), {recursive: true});
+        yield* fs.writeFileString(
+          telemetryFile,
+          `${JSON.stringify({
+            autoAccept: true,
+            consentVersion: 4,
+            enabled: true,
+            endpoint: DEFAULT_TELEMETRY_ENDPOINT,
+            sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(7)),
+            version: 1,
+          })}\n`,
+        );
+
+        let commandAttempts = 0;
+        const commandExecutor = CommandExecutor.of({
+          execute: () =>
+            Effect.sync(() => {
+              commandAttempts += 1;
+              return {exitCode: 0, stderr: '', stdout: ''};
+            }),
+          executeStreaming: () =>
+            Effect.sync(() => {
+              commandAttempts += 1;
+              return {exitCode: 0, stderr: '', stdout: ''};
+            }),
+        });
+        const output = yield* captureConsole(
+          runPostUpdate(config, {fromVersion: '4.4.3', toVersion: '4.4.4', yes: true}).pipe(
+            Effect.provideService(CommandExecutor, commandExecutor),
+            Effect.provideService(
+              SystemInfo,
+              SystemInfo.of({
+                ...baseSystem,
+                homeDirectory: temporaryRoot,
+                stdinIsTTY: false,
+                stdoutIsTTY: false,
+              }),
+            ),
+          ),
+        );
+
+        expect(output.output).toBe('');
+        expect(commandAttempts).toBe(0);
+        expect(yield* readTelemetryConfiguration(config)).toMatchObject({
+          autoAccept: true,
+          consentVersion: 5,
+          enabled: true,
+        });
+        expect(JSON.parse(yield* fs.readFileString(telemetryFile))).toMatchObject({consentVersion: 4});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('does not announce an action when migration evidence disappears at the locked recheck', () =>
     Effect.gen(function* () {
       const result = yield* Effect.scoped(

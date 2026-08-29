@@ -325,11 +325,11 @@ const logs = Command.make('logs', {}, () => withRuntimeEffect(runProductionLogs)
 const telemetryStatus = Command.make('status', {}, () => withRuntimeEffect(config => runTelemetryStatus(config))).pipe(
   Command.withDescription('Show effective consent, endpoint, data categories, and environment opt-outs'),
 );
-
 const telemetryEnable = Command.make(
   'enable',
   {
     apply: boolean('apply', 'Persist explicit telemetry consent'),
+    autoAccept: boolean('auto-accept', 'Keep telemetry enabled through future data-contract updates'),
     endpoint: optionalString('endpoint', 'OTLP/HTTP traces endpoint; HTTPS required except for loopback'),
   },
   options => withRuntimeEffect(config => runTelemetryEnable(config, options)),

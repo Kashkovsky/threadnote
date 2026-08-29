@@ -244,7 +244,7 @@ export const telemetryDoctorCheck = Effect.fn('lifecycle.telemetryDoctorCheck')(
   return {
     detail:
       optOut === undefined
-        ? `enabled by explicit consent; endpoint ${loaded.success.endpoint}`
+        ? `enabled by explicit consent${loaded.success.autoAccept === true ? ' with automatic future scope acceptance' : ''}; endpoint ${loaded.success.endpoint}`
         : `persisted consent enabled but suppressed by ${optOut}`,
     name: 'anonymous telemetry',
     status: 'ok' as const,

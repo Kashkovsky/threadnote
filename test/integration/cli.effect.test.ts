@@ -36,6 +36,7 @@ describe('Effect CLI', () => {
     expect(telemetry.stdout).toContain('enable');
     expect(telemetry.stdout).toContain('disable');
     expect(enable.stdout).toContain('--apply');
+    expect(enable.stdout).toContain('--auto-accept');
     expect(enable.stdout).toContain('--endpoint string');
     expect(disable.stdout).toContain('--apply');
   });

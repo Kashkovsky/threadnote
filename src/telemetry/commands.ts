@@ -17,6 +17,7 @@ import {SystemInfo} from '../effect/system.js';
 
 export interface TelemetryEnableOptions {
   readonly apply?: boolean;
+  readonly autoAccept?: boolean;
   readonly endpoint?: string;
 }
 
@@ -72,6 +73,11 @@ export const runTelemetryStatus = Effect.fn('telemetry.command.status')(function
   } else {
     yield* Console.log('Anonymous telemetry: enabled.');
   }
+  yield* Console.log(
+    configuration.autoAccept === true
+      ? 'Future telemetry data-contract updates: accepted automatically.'
+      : 'Future telemetry data-contract updates: require explicit consent.',
+  );
   yield* Console.log(`Endpoint: ${configuration.endpoint}`);
   yield* Console.log(telemetryDestinationSummary(configuration.endpoint));
   yield* Console.log(`Data contract: ${TELEMETRY_DATA_SUMMARY}`);
@@ -100,12 +106,22 @@ export const runTelemetryEnable = Effect.fn('telemetry.command.enable')(function
   yield* Console.log(telemetryDestinationSummary(endpoint));
   yield* Console.log(`Data sent: ${TELEMETRY_DATA_SUMMARY}`);
   yield* Console.log(`Data excluded: ${TELEMETRY_EXCLUSION_SUMMARY}`);
+  yield* Console.log(
+    options.autoAccept === true
+      ? 'Future telemetry data-contract updates will be accepted automatically without another consent prompt.'
+      : 'Future telemetry data-contract updates will require explicit consent; use --auto-accept to opt into automatic acceptance.',
+  );
   if (options.apply !== true) {
     yield* Console.log('No changes made. Re-run with --apply to record this consent.');
     return;
   }
   const current = yield* Effect.result(readTelemetryConfiguration(config));
-  if (Result.isSuccess(current) && current.success?.enabled === true && current.success.endpoint === endpoint) {
+  if (
+    Result.isSuccess(current) &&
+    current.success?.enabled === true &&
+    current.success.endpoint === endpoint &&
+    (current.success.autoAccept === true) === (options.autoAccept === true)
+  ) {
     yield* Console.log('Telemetry consent is already enabled for this endpoint.');
     const system = yield* SystemInfo;
     const optOut = telemetryEnvironmentOptOut(system.environment());
@@ -114,11 +130,14 @@ export const runTelemetryEnable = Effect.fn('telemetry.command.enable')(function
     }
     return;
   }
-  const configuration = yield* createEnabledTelemetryConfiguration(endpoint);
+  const configuration = yield* createEnabledTelemetryConfiguration(endpoint, options.autoAccept === true);
   const file = yield* writeTelemetryConfiguration(config, configuration);
   const system = yield* SystemInfo;
   const optOut = telemetryEnvironmentOptOut(system.environment());
   yield* Console.log(`Telemetry consent enabled in ${file}.`);
+  if (configuration.autoAccept === true) {
+    yield* Console.log('Automatic acceptance of future telemetry data-contract updates is enabled.');
+  }
   yield* Console.log('Restart connected MCP clients that started before this consent change.');
   if (optOut !== undefined) {
     yield* Console.log(`Telemetry remains disabled while ${optOut} is set.`);
