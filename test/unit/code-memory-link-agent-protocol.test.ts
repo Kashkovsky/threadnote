@@ -314,7 +314,7 @@ describe('Code Memory Link real-agent protocol', () => {
     ).toThrow(/nonmonotone/u);
   });
 
-  it('recognizes v2 lexical gold receipts and cross-checks v3 direct relations', () => {
+  it('recognizes v2 lexical gold receipts and accepts compact v3 direct relations', () => {
     const rubric = hiddenRubric();
     const lexicalEvents = traceEvents([100, 200, 300, 400]);
     const lexicalBrief = contextBriefResult(lexicalEvents);
@@ -333,10 +333,103 @@ describe('Code Memory Link real-agent protocol', () => {
       tokens: 200,
     });
 
+    const compact = traceEvents([100, 200, 300, 400]);
+    expect(contextBriefResult(compact).durableDecisions).toEqual([
+      expect.not.objectContaining({citationReceipts: expect.anything()}),
+    ]);
+    expect(projectTrace(compact, rubric, passingStaticArtifacts()).firstUsefulMemoryUse).toEqual({
+      steps: 2,
+      tokens: 200,
+    });
+
+    const unrelated = traceEvents([100, 200, 300, 400]);
+    const unrelatedDirect = contextBriefResult(unrelated).durableDecisions as Array<Record<string, unknown>>;
+    unrelatedDirect[0]!.citationReceipts = [{citationId: `tncc_${'2'.repeat(40)}`, reason: 'exact', status: 'exact'}];
+    sealContextBriefResult(unrelated);
+    expect(projectTrace(unrelated, rubric, passingStaticArtifacts()).firstUsefulMemoryUse).toEqual({
+      steps: 2,
+      tokens: 200,
+    });
+
     const inconsistent = traceEvents([100, 200, 300, 400]);
     const direct = contextBriefResult(inconsistent).durableDecisions as Array<Record<string, unknown>>;
-    direct[0]!.citationReceipts = [{citationId: `tncc_${'2'.repeat(40)}`, reason: 'exact', status: 'exact'}];
+    direct[0]!.citationReceipts = [{citationId: GOLD_CITATION_ID, reason: 'changed', status: 'changed'}];
     expect(() => projectTrace(inconsistent, rubric, passingStaticArtifacts())).toThrow(/inconsistent/u);
+
+    const conflictingRelations = contextBriefStructuredContent();
+    const conflictingMemory = (conflictingRelations.durableDecisions as Array<Record<string, unknown>>)[0]!;
+    conflictingMemory.codeRelations = [
+      {anchorOrdinal: 0, citationId: GOLD_CITATION_ID, kind: 'file', status: 'exact'},
+      {anchorOrdinal: 1, citationId: GOLD_CITATION_ID, kind: 'file', status: 'changed'},
+    ];
+    expect(() => canonicalizeCodeMemoryLinkContextBriefResultV1(conflictingRelations)).toThrow(/inconsistent/u);
+  });
+
+  it('treats unrelated claims as non-interfering and rejects same-citation contradictions across the response', () => {
+    const currentStatus = fc.constantFrom('exact' as const, 'relocated' as const);
+    const receiptStatus = fc.constantFrom(
+      'exact' as const,
+      'relocated' as const,
+      'changed' as const,
+      'deleted' as const,
+      'unknown' as const,
+    );
+    fc.assert(
+      fc.property(
+        currentStatus,
+        fc.array(receiptStatus, {maxLength: 8}),
+        fc.array(receiptStatus, {maxLength: 8}),
+        fc.array(receiptStatus, {maxLength: 7}),
+        fc.array(receiptStatus, {maxLength: 8}),
+        (relationStatus, sameCitationStatuses, unrelatedStatuses, relationStatuses, handoffStatuses) => {
+          const structured = contextBriefStructuredContent();
+          const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0]!;
+          memory.codeRelations = [
+            {anchorOrdinal: 0, citationId: GOLD_CITATION_ID, kind: 'file', status: relationStatus},
+            ...relationStatuses.map((status, index) => ({
+              anchorOrdinal: index + 1,
+              citationId: GOLD_CITATION_ID,
+              kind: 'file',
+              status,
+            })),
+          ];
+          memory.citationReceipts = [
+            ...sameCitationStatuses.map(status => ({citationId: GOLD_CITATION_ID, reason: status, status})),
+            ...unrelatedStatuses.map((status, index) => ({
+              citationId: `tncc_${(index + 2).toString(16).padStart(40, '0')}`,
+              reason: status,
+              status,
+            })),
+          ];
+          if (handoffStatuses.length > 0) {
+            structured.activeHandoffs = [
+              {
+                codeRelations: handoffStatuses.map((status, anchorOrdinal) => ({
+                  anchorOrdinal,
+                  citationId: GOLD_CITATION_ID,
+                  kind: 'symbol',
+                  status,
+                })),
+                excerpt: 'A second memory making a claim about the same citation.',
+                selectionBasis: 'code-citation',
+                uri: 'threadnote://user/test/memories/cross-memory-claim.md',
+              },
+            ];
+          }
+
+          const canonicalize = () => canonicalizeCodeMemoryLinkContextBriefResultV1(structured);
+          const sameIdStatuses = [...sameCitationStatuses, ...relationStatuses, ...handoffStatuses];
+          if (sameIdStatuses.some(status => status !== relationStatus)) {
+            expect(canonicalize).toThrow(/inconsistent/u);
+          } else {
+            expect(canonicalize().receipt.directCurrentRelationDigests).toEqual([
+              codeMemoryLinkGoldCitationDigest(GOLD_CITATION_ID),
+            ]);
+          }
+        },
+      ),
+      {numRuns: 50},
+    );
   });
 
   it('retains non-gold current citations in negative controls without labeling them useful', () => {
@@ -858,8 +951,7 @@ function contextBriefStructuredContent(): Record<string, unknown> {
     activeHandoffs: [],
     durableDecisions: [
       {
-        citationReceipts: [{citationId: GOLD_CITATION_ID, reason: 'exact', status: 'exact'}],
-        codeRelations: [{citationId: GOLD_CITATION_ID, kind: 'file', status: 'exact'}],
+        codeRelations: [{anchorOrdinal: 0, citationId: GOLD_CITATION_ID, kind: 'file', status: 'exact'}],
         excerpt: 'Memory says the hidden constraint.',
         selectionBasis: 'code-citation',
         uri: 'threadnote://user/test/memories/hidden-constraint.md',

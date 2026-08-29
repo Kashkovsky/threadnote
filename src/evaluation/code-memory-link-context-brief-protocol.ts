@@ -49,6 +49,15 @@ export const CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1 = Object.freeze({
 
 export type CodeMemoryLinkContextBriefResponseClassV1 = 'anchored-v3' | 'empty-v1' | 'task-v2';
 
+const CODE_MEMORY_LINK_CONTEXT_BRIEF_CITATION_STATUSES = [
+  'exact',
+  'relocated',
+  'changed',
+  'deleted',
+  'unknown',
+] as const;
+type CodeMemoryLinkContextBriefCitationStatusV1 = (typeof CODE_MEMORY_LINK_CONTEXT_BRIEF_CITATION_STATUSES)[number];
+
 export interface CodeMemoryLinkSelectedMemoryReceiptV1 {
   readonly contentSha256: string;
   readonly memoryIdDigest: string;
@@ -135,6 +144,7 @@ export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: 
   const citationDigests: string[] = [];
   const directCurrentRelationDigests: string[] = [];
   const selectedMemories: CodeMemoryLinkSelectedMemoryReceiptV1[] = [];
+  const anchoredCitationStatuses = new Map<string, CodeMemoryLinkContextBriefCitationStatusV1>();
   if (responseClass !== 'empty-v1') {
     if (!Array.isArray(brief.durableDecisions) || !Array.isArray(brief.activeHandoffs)) {
       invalid('Context Brief result is missing its memory evidence arrays');
@@ -154,13 +164,25 @@ export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: 
       if (receipts !== undefined && (!Array.isArray(receipts) || receipts.length > 64)) {
         invalid('Context Brief memory citation receipts must be a bounded array');
       }
-      const currentReceipts = (receipts ?? []).flatMap((candidateReceipt, receiptIndex) => {
+      const receiptClaims = (receipts ?? []).map((candidateReceipt, receiptIndex) => {
         const receipt = record(candidateReceipt, `Context Brief citation receipt ${receiptIndex + 1}`);
-        if (receipt.status !== 'exact' && receipt.status !== 'relocated') return [];
-        return [
-          {citationId: boundedText(receipt.citationId, 'Context Brief citation id', 256), status: receipt.status},
-        ];
+        return {
+          citationId: boundedText(receipt.citationId, 'Context Brief citation id', 256),
+          status: literal(
+            receipt.status,
+            CODE_MEMORY_LINK_CONTEXT_BRIEF_CITATION_STATUSES,
+            'Context Brief citation status',
+          ),
+        };
       });
+      if (responseClass === 'anchored-v3') {
+        for (const receipt of receiptClaims) {
+          recordCodeMemoryLinkContextBriefCitationStatus(anchoredCitationStatuses, receipt.citationId, receipt.status);
+        }
+      }
+      const currentReceipts = receiptClaims.filter(
+        receipt => receipt.status === 'exact' || receipt.status === 'relocated',
+      );
       citationDigests.push(...currentReceipts.map(receipt => codeMemoryLinkGoldCitationDigest(receipt.citationId)));
       if (responseClass === 'task-v2' && memory.selectionBasis === 'code-citation') {
         invalid('task-only Context Brief v2 cannot contain code-selected memory');
@@ -176,12 +198,13 @@ export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: 
         for (const [relationIndex, candidateRelation] of memory.codeRelations.entries()) {
           const relation = record(candidateRelation, `Context Brief code relation ${relationIndex + 1}`);
           const citationId = boundedText(relation.citationId, 'Context Brief code relation citation id', 256);
-          if (relation.status !== 'exact' && relation.status !== 'relocated') continue;
-          if (
-            !currentReceipts.some(receipt => receipt.citationId === citationId && receipt.status === relation.status)
-          ) {
-            invalid('Context Brief v3 code relation is inconsistent with its citation receipts');
-          }
+          const status = literal(
+            relation.status,
+            CODE_MEMORY_LINK_CONTEXT_BRIEF_CITATION_STATUSES,
+            'Context Brief code relation status',
+          );
+          recordCodeMemoryLinkContextBriefCitationStatus(anchoredCitationStatuses, citationId, status);
+          if (status !== 'exact' && status !== 'relocated') continue;
           directCurrentRelationDigests.push(codeMemoryLinkGoldCitationDigest(citationId));
         }
       }
@@ -210,6 +233,18 @@ export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: 
     },
     structuredContent: brief,
   };
+}
+
+function recordCodeMemoryLinkContextBriefCitationStatus(
+  statuses: Map<string, CodeMemoryLinkContextBriefCitationStatusV1>,
+  citationId: string,
+  status: CodeMemoryLinkContextBriefCitationStatusV1,
+): void {
+  const previous = statuses.get(citationId);
+  if (previous !== undefined && previous !== status) {
+    invalid('Context Brief v3 contains inconsistent citation status claims');
+  }
+  statuses.set(citationId, status);
 }
 
 export function parseCodeMemoryLinkContextBriefResponseReceiptV1(
