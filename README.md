@@ -86,11 +86,11 @@ threadnote mcp-install codex --apply # or claude / cursor / copilot
 threadnote doctor
 ```
 
-Cursor instructions are distributed separately as the **Threadnote** Cursor Marketplace plugin. Threadnote never writes
-to Cursor's local-plugin directory; install the plugin from Cursor after it is listed, or ask a team administrator to
-add it to the team's marketplace. The MCP command above remains required because it writes the user- and
-platform-specific server configuration. See the [Cursor plugin guide](./docs/cursor-plugin.md) for installation,
-diagnostics, and publishing.
+Each applied `mcp-install` registers only the selected host and installs its MCP configuration, compact user-level
+bootstrap, and progressively loaded Threadnote skills. Cursor uses its supported user rule and skill directories; the
+Marketplace plugin remains an optional alternative instruction provider. Threadnote never writes to Cursor's
+local-plugin directory. See the [Cursor plugin guide](./docs/cursor-plugin.md) for the alternative provider and
+publishing workflow.
 
 To select the Threadnote 4 beta channel on macOS or Linux, pass `--beta`. This inclusive preview channel installs the
 newest immutable release across stable and prerelease builds, so a newer stable release wins when one is available:

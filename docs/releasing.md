@@ -13,9 +13,10 @@ Linux uses the immutable GitHub release as its publisher trust root; an offline 
 of the Threadnote 4 release model.
 
 Cursor Marketplace publication is a separate reviewed workflow with its own permissive-license boundary and plugin
-version. A standalone release bundles the plugin source only as a read-only doctor reference; install, update, repair,
-and uninstall never place it into Cursor. Follow [the Cursor plugin publishing guide](./cursor-plugin.md); a Threadnote
-version tag does not submit or re-index the plugin automatically.
+version. A standalone release bundles the plugin source for package validation and publishing; global doctor health
+does not require it, and install, update, repair, and uninstall never place it into Cursor. Follow the
+[Cursor plugin publishing guide](./cursor-plugin.md); a Threadnote version tag does not submit or re-index the plugin
+automatically.
 
 ## Build matrix
 

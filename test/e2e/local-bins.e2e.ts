@@ -761,14 +761,38 @@ describe('built self-contained distribution', () => {
     expect(output).toContain('Rebuilt recall indexes');
   });
 
-  it('reports lexical, embedding, vector, MCP, and instruction checks through doctor', async () => {
+  it('reports core health without warning about unregistered agent hosts', async () => {
     const output = await runCli(['doctor']);
     expect(output).toMatch(/OK\s+lexical recall index:/);
     expect(output).toMatch(new RegExp(`OK\\s+embedding model: ${coreEmbeddingModelId}`));
     expect(output).toMatch(/OK\s+vector recall index:/);
     expect(output).toMatch(/OK\s+native code graph:/);
-    expect(output).toMatch(/(?:OK|WARN)\s+.*MCP/i);
-    expect(output).toMatch(/OK\s+codex user instructions:/);
+    expect(output).not.toMatch(/(?:OK|WARN)\s+.*MCP/i);
+    expect(output).not.toMatch(/agent integration|user instructions|Threadnote skill/i);
+  });
+
+  it('installs and diagnoses only the selected Cursor MCP, bootstrap, and skills', async () => {
+    await mkdir(join(userHome, '.cursor'), {recursive: true});
+    const install = await runCli(['mcp-install', 'cursor', '--apply']);
+    expect(install).toContain('Registered cursor agent integration.');
+
+    const registry = JSON.parse(await readFile(join(home, 'integrations', 'agents.json'), 'utf8')) as {
+      readonly hosts?: Record<string, unknown>;
+    };
+    expect(Object.keys(registry.hosts ?? {})).toEqual(['cursor']);
+    await expect(readFile(join(userHome, '.cursor', 'rules', 'threadnote.mdc'), 'utf8')).resolves.toContain(
+      'Use the installed Threadnote skills',
+    );
+    await expect(
+      readFile(join(userHome, '.cursor', 'skills', 'threadnote-context', 'SKILL.md'), 'utf8'),
+    ).resolves.toContain('name: threadnote-context');
+    await expect(stat(join(userHome, '.codex', 'AGENTS.md'))).rejects.toThrow();
+
+    const doctor = await runCli(['doctor']);
+    expect(doctor).toMatch(/OK\s+cursor MCP:/);
+    expect(doctor).toMatch(/OK\s+cursor instructions:/);
+    expect(doctor).toMatch(/OK\s+cursor skill threadnote-context:/);
+    expect(doctor).not.toMatch(/codex MCP|claude MCP|copilot MCP/i);
   });
 
   it('redacts cross-platform path guidance while pruning generated and implicit hidden trees', async () => {

@@ -653,9 +653,24 @@ esac
       };
       expect(cursorConfig.mcpServers.other).toEqual({args: ['serve'], command: '/opt/example-mcp'});
       expect(cursorConfig.mcpServers.threadnote).toMatchObject({
-        args: [],
-        command: join(binRoot, 'threadnote-mcp-server'),
+        args: ['mcp-server'],
+        command: join(binRoot, 'threadnote'),
       });
+      const agentRegistry = JSON.parse(
+        await readFile(join(userHome, '.threadnote', 'integrations', 'agents.json'), 'utf8'),
+      ) as {
+        readonly hosts?: {readonly cursor?: {readonly mcp?: unknown; readonly status?: string}};
+      };
+      expect(agentRegistry.hosts?.cursor).toMatchObject({
+        mcp: {name: 'threadnote', repair: false},
+        status: 'current',
+      });
+      await expect(readFile(join(userHome, '.cursor', 'rules', 'threadnote.mdc'), 'utf8')).resolves.toContain(
+        'Use the installed Threadnote skills',
+      );
+      await expect(
+        readFile(join(userHome, '.cursor', 'skills', 'threadnote-memory', 'SKILL.md'), 'utf8'),
+      ).resolves.toContain('name: threadnote-memory');
       await expect(stat(promotionBackup)).rejects.toThrow();
       await expect(stat(promotionJournal)).rejects.toThrow();
       const transport = new StdioClientTransport({

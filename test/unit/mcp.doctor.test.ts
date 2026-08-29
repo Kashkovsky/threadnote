@@ -4,9 +4,50 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {installAgentIntegration} from '../../src/agent-integrations.js';
 import {mcpConfigurationChecks} from '../../src/mcp.js';
+import type {RuntimeConfig} from '../../src/types.js';
+
+function runtime(home: string): RuntimeConfig {
+  return {
+    account: 'local',
+    agentContextHome: home,
+    agentId: 'threadnote',
+    manifestPath: `${home}/seed-manifest.yaml`,
+    user: 'tester',
+  };
+}
 
 describe('MCP doctor checks', () => {
+  it.effect('does not warn for installed hosts that were never configured', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-unregistered-'});
+        const bin = path.join(root, 'bin');
+        const codex = path.join(bin, 'codex');
+        yield* fs.makeDirectory(bin, {recursive: true});
+        yield* fs.writeFileString(
+          codex,
+          '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "codex-cli 1"; exit 0; fi\nexit 1\n',
+        );
+        yield* fs.chmod(codex, 0o755);
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...system.environment(), PATH: bin}),
+          homeDirectory: path.join(root, 'user'),
+        });
+
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(root, '.threadnote'))).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        expect(checks).toEqual([]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('reports a configured Codex MCP broker', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -28,12 +69,61 @@ describe('MCP doctor checks', () => {
           homeDirectory: path.join(root, 'user'),
         });
 
-        const checks = yield* mcpConfigurationChecks().pipe(Effect.provideService(SystemInfo, testSystem));
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(root, '.threadnote'))).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
         expect(checks).toContainEqual({
           detail: 'threadnote broker configured',
           name: 'codex MCP',
           status: 'ok',
         });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('checks only the registered host and uses its custom MCP name', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const system = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-doctor-custom-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const calls = path.join(root, 'calls.txt');
+        const codex = path.join(bin, 'codex');
+        yield* fs.makeDirectory(bin, {recursive: true});
+        yield* fs.writeFileString(
+          codex,
+          [
+            '#!/bin/sh',
+            'if [ "$1" = "--version" ]; then echo "codex-cli 1"; exit 0; fi',
+            `printf '%s\\n' "$*" >> '${calls}'`,
+            'if [ "$1 $2 $3" = "mcp get team-memory" ]; then',
+            '  echo "command: /home/test/.local/bin/threadnote-mcp-server"',
+            '  exit 0',
+            'fi',
+            'exit 1',
+            '',
+          ].join('\n'),
+        );
+        yield* fs.chmod(codex, 0o755);
+        const testSystem = SystemInfo.of({
+          ...system,
+          environment: () => ({...system.environment(), PATH: bin}),
+          homeDirectory: user,
+        });
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        yield* installAgentIntegration(testRuntime, 'codex', {
+          dryRun: false,
+          name: 'team-memory',
+          toolset: 'full',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        const checks = yield* mcpConfigurationChecks(testRuntime).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        expect(checks).toEqual([{detail: 'team-memory broker configured', name: 'codex MCP', status: 'ok'}]);
+        expect(yield* fs.readFileString(calls)).toContain('mcp get team-memory');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -68,7 +158,9 @@ describe('MCP doctor checks', () => {
           platform: 'linux',
         });
 
-        const checks = yield* mcpConfigurationChecks().pipe(Effect.provideService(SystemInfo, testSystem));
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(root, '.threadnote'))).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
         for (const name of ['codex MCP', 'cursor MCP']) {
           expect(checks).toContainEqual({
             detail: expect.stringContaining('legacy direct server command'),
@@ -103,7 +195,9 @@ describe('MCP doctor checks', () => {
         );
         const testSystem = SystemInfo.of({...system, homeDirectory: user, platform: 'win32'});
 
-        const checks = yield* mcpConfigurationChecks().pipe(Effect.provideService(SystemInfo, testSystem));
+        const checks = yield* mcpConfigurationChecks(runtime(path.join(root, '.threadnote'))).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
         expect(checks).toContainEqual({
           detail: `threadnote broker configured in ${cursorConfig}`,
           name: 'cursor MCP',

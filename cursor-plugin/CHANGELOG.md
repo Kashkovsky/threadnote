@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Replace the dense always-applied rule with the compact Threadnote skill bootstrap.
+- Keep the Marketplace rule compatible with host-specific MCP and user-level skill installation.
+
 ## 1.0.2
 
 - Explain memory-to-code citation capture, exact-current graph requirements, and legacy-memory freshness.

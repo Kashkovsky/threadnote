@@ -26,12 +26,12 @@ export const defaultDocId = 'what-is-threadnote';
 export const cliCommands: CliCommandReference[] = [
   {
     command: 'install',
-    summary: 'Initialize the self-contained home, core embedding model, indexes, and user-level integrations.',
+    summary: 'Initialize the self-contained home, core embedding model, and indexes.',
     examples: ['threadnote install', 'threadnote install --with-hooks'],
   },
   {
     command: 'mcp-install',
-    summary: 'Preview or install the local stdio MCP configuration for Codex, Claude, Cursor, or Copilot.',
+    summary: 'Preview or install one host-specific MCP configuration, compact bootstrap, and Threadnote skill bundle.',
     examples: ['threadnote mcp-install codex --apply', 'threadnote mcp-install claude --toolset full --apply'],
   },
   {
@@ -447,7 +447,7 @@ threadnote doctor`,
           },
           {
             type: 'paragraph',
-            text: "The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, extracts and selects the core BGE Small embedding model bundled in the executable, builds recall indexes, and writes supported user-level instructions for Codex, Claude Code, and Copilot. Cursor instructions are installed separately through Cursor's Marketplace. Existing verified models and canonical data are preserved during updates.",
+            text: 'The bootstrap installer downloads an immutable GitHub release, verifies SHA-256, atomically promotes it, and invokes threadnote install. That lifecycle initializes ~/.threadnote, extracts and selects the core BGE Small embedding model bundled in the executable, and builds recall indexes without modifying any agent host. Existing verified models and canonical data are preserved during updates.',
           },
           {
             type: 'note',
@@ -486,7 +486,7 @@ threadnote doctor`,
           },
           {
             type: 'paragraph',
-            text: 'MCP runs as a local stdio child process. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its MCP configuration.',
+            text: 'MCP runs as a local stdio child process. Applying mcp-install also registers only the selected host and installs its compact user-level bootstrap plus Threadnote skills. There is no HTTP endpoint, host, token, port, or daemon to configure. Restart the agent after changing its integration.',
           },
           {
             type: 'paragraph',
@@ -514,12 +514,13 @@ threadnote doctor`,
         body: [
           {
             type: 'paragraph',
-            text: 'Install writes a bounded Threadnote instruction block into supported user-level agent instruction files for Codex, Claude Code, and Copilot. Cursor receives the same instruction block through its separate Marketplace plugin; Threadnote does not write a supposed user rule under ~/.cursor/rules. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
+            text: 'Core install does not modify any agent host. Each applied mcp-install writes a compact bootstrap and progressively loaded Threadnote skills only for the selected Codex, Claude Code, Cursor, or Copilot integration. Checked-in AGENTS.md, CLAUDE.md, and equivalent repository guidance remain authoritative and take precedence.',
           },
           {
             type: 'list',
             items: [
               'Recall historical context with project and absolute callerCwd at the start of non-trivial work.',
+              'Use context_brief codeRefs to round-trip from current code to citing memories and from memory citations back to verified current code.',
               'Use inspect_code_graph separately, before broad text search, for current source relationships.',
               'Use analyze_code_graph for repository-wide statistics, structural communities, hubs, and surprising links.',
               'Store normal durable feature knowledge and a concise handoff at meaningful closeout.',
@@ -537,14 +538,14 @@ threadnote install --with-hooks`,
           },
           {
             type: 'paragraph',
-            text: 'Managed SessionStart and PreCompact lifecycle hooks are currently available for Claude Code only. Codex and Copilot rely on their supported user-level instruction files; Cursor relies on the separately installed Marketplace plugin. Threadnote never injects a Cursor plugin under ~/.cursor/plugins/local. Hooks do not replace agent judgment or start a Threadnote daemon.',
+            text: 'Managed SessionStart and PreCompact lifecycle hooks are currently available for Claude Code only. Every supported host uses its native user-level instruction and skill surfaces. The optional Cursor Marketplace plugin can provide Cursor instructions instead. Threadnote never injects a Cursor plugin under ~/.cursor/plugins/local. Hooks do not replace agent judgment or start a Threadnote daemon.',
           },
         ],
       },
       {
         id: 'cursor-marketplace-plugin',
         title: 'Cursor Marketplace plugin',
-        summary: "Install and verify Threadnote's always-applied Cursor rule without local-plugin injection.",
+        summary: 'Use the optional Marketplace-managed Cursor rule without local-plugin injection.',
         keywords: [
           'Cursor plugin',
           'Cursor Marketplace',
@@ -556,7 +557,7 @@ threadnote install --with-hooks`,
         body: [
           {
             type: 'paragraph',
-            text: 'Cursor needs two independent pieces: the user-specific local MCP server configuration and the Threadnote Marketplace plugin containing the always-applied `.mdc` rule. The plugin intentionally has no `mcp.json`, so it cannot duplicate or replace the configuration owned by the Threadnote CLI.',
+            text: 'The normal Cursor setup is `threadnote mcp-install cursor --apply`, which installs the user-specific MCP entry, a compact user rule, and Threadnote skills. The Marketplace plugin is an optional alternative instruction provider for centrally managed environments. It intentionally has no `mcp.json`, so it cannot duplicate or replace the configuration owned by the Threadnote CLI.',
           },
           {
             type: 'heading',
@@ -570,9 +571,10 @@ threadnote install --with-hooks`,
           {
             type: 'list',
             items: [
-              "After the public listing is approved, find **Threadnote** in Cursor's Marketplace or run `/add-plugin threadnote` in a Cursor agent chat.",
+              'Reload Cursor after mcp-install; no Marketplace plugin is required.',
+              "Optionally find **Threadnote** in Cursor's Marketplace or run `/add-plugin threadnote` in a Cursor agent chat.",
               'On Teams or Enterprise, ask an administrator to allow the public plugin or add the Threadnote repository to a team marketplace. The administrator can make installation opt-in, default-on, or required.',
-              'Reload Cursor or open a new window, start a fresh agent chat, and confirm the Threadnote rule is active.',
+              'When the plugin is detected, Threadnote keeps it as the instruction provider, installs the user-level skills, and removes only a duplicate Threadnote-managed user-rule block.',
             ],
           },
           {
@@ -582,11 +584,11 @@ threadnote install --with-hooks`,
           },
           {
             type: 'note',
-            text: 'The plugin check appears only when Threadnote detects Cursor and is read-only. Install, update, repair, and uninstall never create, refresh, or remove either `~/.cursor/plugins/local` or Cursor-managed Marketplace state.',
+            text: 'The optional plugin is not a global doctor prerequisite. Install, update, repair, and uninstall never create, refresh, or remove either `~/.cursor/plugins/local` or Cursor-managed Marketplace state.',
           },
           {
             type: 'warning',
-            text: 'If doctor reports `~/.cursor/plugins/local/threadnote`, fully quit Cursor and move only that legacy local copy aside before installing through the Marketplace. The withdrawn local injection coincided with a managed Cursor installation losing access to every model; an administrator restriction is plausible but is not a proven root cause. Threadnote reports the condition and never deletes it automatically.',
+            text: 'If an older Threadnote doctor or a dedicated plugin-package check reports `~/.cursor/plugins/local/threadnote`, fully quit Cursor and move only that legacy local copy aside before installing through the Marketplace. The withdrawn local injection coincided with a managed Cursor installation losing access to every model; an administrator restriction is plausible but is not a proven root cause. Threadnote reports the condition and never deletes it automatically.',
           },
           {
             type: 'heading',
@@ -1711,11 +1713,11 @@ threadnote repair`,
           },
           {
             type: 'paragraph',
-            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, configured MCP clients, and agent instructions. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. When Cursor is installed, Doctor also performs a read-only check of the Marketplace plugin and rejects the legacy local injection path. Strict mode exits non-zero when a check fails.',
+            text: 'Doctor checks the self-contained home, canonical layout, core model, recall indexes, readable code-graph snapshots and pending maintenance, plus MCP, instructions, and skills for registered agent integrations only. Merely installing Codex, Claude Code, Cursor, or Copilot does not create a warning. A supported older graph that is still queryable is reported as migrating or maintenance-pending, not corrupt or incompatible. Strict mode exits non-zero when a check fails.',
           },
           {
             type: 'paragraph',
-            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, schedule additive code-graph migrations, clean state proven corrupt or abandoned, and repair hooks or MCP configuration. It preserves readable older graphs during migration and does not advise a destructive purge merely because a newer schema extension is pending. It does not install, update, remove, or repair Cursor plugins; Marketplace state remains Cursor-owned. It also does not modify repositories or delete canonical memories.',
+            text: 'Repair can reassert storage layout, provision the core embedding model, rebuild derived lexical/vector state, schedule additive code-graph migrations, clean state proven corrupt or abandoned, and repair registered hooks or agent integrations. During upgrade it infers registrations from existing Threadnote MCP entries, migrates their host bundles, and removes only orphaned Threadnote-managed legacy instructions. It preserves readable older graphs during migration, never manages Cursor Marketplace state, and does not modify repositories or delete canonical memories.',
           },
           {
             type: 'note',

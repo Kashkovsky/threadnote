@@ -201,8 +201,8 @@ describe('doctor report resilience', () => {
 
         expect(report.output).toContain('Running Threadnote doctor checks.');
         expect(report.output).toContain('FAIL storage layout:');
-        expect(report.output).toMatch(/WARN (?:MCP configuration|copilot MCP):/);
-        expect(report.output).toContain('WARN codex user instructions:');
+        expect(report.output).not.toMatch(/WARN (?:MCP configuration|codex MCP|claude MCP|cursor MCP|copilot MCP):/);
+        expect(report.output).not.toMatch(/WARN (?:codex|claude|cursor|copilot) agent integration:/);
         expect(report.output).toContain('FAIL embedding model:');
         expect(report.output).toContain('FAIL vector recall index:');
         expect(report.output).toContain('FAIL lexical recall index:');

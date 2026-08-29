@@ -144,8 +144,8 @@ export default function ProTipsPage() {
           <span className="eyebrow">Make it your default loop</span>
           <h2>Recall first. Check the evidence. Preserve what changed.</h2>
           <p>
-            Add the agent instructions once and every compatible agent gets the same memory, citation, and graph-search
-            contract.
+            Connect each agent you use and Threadnote installs the same memory, citation, and graph-search contract only
+            for that host.
           </p>
           <a className="button" href={docsArticleHref('connect-an-agent')}>
             Connect an agent
