@@ -3,6 +3,342 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+## CodeMemoryLinkBench v1
+
+`fixtures/code-memory-link-bench-v1/fixture.json` freezes the code-to-memory product gate. Unlike the older citation
+runtime evaluator, it does not inject a memory candidate. It executes the production current-anchor capture, opaque
+inverse recall index, canonical memory reread, citation validation, Context Brief v3 merge, and projection:
+
+```sh
+bun run eval:code-memory-link-bench
+```
+
+The deterministic corpus covers exact file and symbol backlinks, symbol relocation, changed history, deletion and
+ambiguous-relocation abstention, repository isolation, archived and superseded lifecycle exclusion, a conflicting
+topical decoy, malformed citation metadata, stale-graph abstention, a dirty overlay, legacy uncited memory, and bounded
+high-noise output. The release contract requires exact Recall@3 `1.0`, relocation-inclusive Recall@3 at least `0.95`,
+direct code-citation Precision@3 at least `0.90`, exact coverage/code-citation-no-answer receipts, zero false-current claims,
+default/worst output within
+1,250/1,500 estimated tokens, and 25 post-warmup in-process samples with p95 at most 250 ms. The checked CI corpus has
+256 lexical-noise memories and is a deterministic regression/latency smoke, not a 100,000-memory scale claim; the
+existing scheduled citation scale gate remains authoritative only for shared citation-validation and Context Brief
+costs.
+
+The separate inverse-selector scale gate materializes and production-indexes exactly 100,000 canonical memory files.
+Its frozen seeded corpus contains three valid direct backlinks, one same-path/content citation under a foreign
+repository identity, and 99,996 high-noise memories that all cite the same governed symbol. It then samples the shipped
+`loadRecallCodeLinks` SQLite join, authorization filters, and canonical source reread for two sparse file backlinks, one
+symbol backlink, the exact first eight dense backlinks, and a true no-answer anchor. This is the executable
+100,000-memory evidence for the new graph-to-memory lane; the smaller gate above remains the end-to-end anchor-capture,
+validation, merge, and projection evidence.
+
+The dense scenario deliberately queries both the shared symbol and its file. The stronger symbol selector fills the
+eight-result lane, while the lower-priority file-path and file-content selectors encounter a dense URI prefix whose
+rows are shadowed by that symbol match. Each lookup must therefore report exactly two bounded selector truncations and
+still return the exact first eight canonical URIs. This proves that the implementation stays bounded and surfaces its
+abstention; it does not claim that no deeper eligible file-only link exists. The separate true no-answer scenario must
+return no URI with zero selector truncations.
+
+Release-scale execution has no corpus/sample override. It requires an exact 40-character candidate commit, proves
+`HEAD` matches it with `dirty=false`, builds one immutable benchmark target, binds that target's SHA-256 into the JSON,
+and fails unless all four scenarios have five warmups and 25 measured samples:
+
+```sh
+bun run bench:code-memory-link-scale -- \
+  --candidate-commit <exact-clean-candidate-sha> \
+  --output artifacts/code-memory-link-inverse-scale.json
+```
+
+For release evidence, dispatch the governed hosted lane against exact merged candidate C. It requires the frozen
+`github-hosted-macos-15-ARM64` class used by tag verification and stages the output directly as
+`test/evaluation/retained/code-memory-link-scale/<artifact-sha256>.json`. Review those exact bytes after C, but add them
+only in final governance G; A remains manifest-approval-only. The G verifier independently rebuilds the benchmark
+target and requires its SHA-256 to equal the digest retained in the artifact.
+
+The governed envelope requires direct Recall/Precision and direct-first/no-answer/bounded-result accuracy of `1.0`,
+the scenario-specific selector-truncation counts above, zero cross-repository leakage, duplicates, or canonical reread
+mismatches, pooled and per-scenario lookup p95 at most 250 ms, and every sample at most 1,000 ms. It also records and
+gates corpus bytes, recall SQLite plus sidecar bytes, materialization/index time, baseline/peak/added RSS, built-target
+identity, runner class, and exact corpus counts. Resource ceilings are bounded admission envelopes (256 MiB corpus,
+2 GiB recall storage, 3 GiB added RSS, five-minute materialization, ten-minute indexing), not claims that every host
+will have identical timings.
+
+For local iteration only, `--development-smoke` unlocks explicit `--memory-candidates`, `--samples`, and `--warmups`
+overrides. Its artifact is derived as `development-smoke`, its release gate remains failed, and it cannot be relabeled
+by editing JSON because the parser rederives the evidence class, metrics, and failures. The scheduled/opt-in
+`code-memory-link-inverse-scale` benchmark job is the retained hosted lane and never uses smoke overrides.
+
+The separate agent-usefulness gate is preregistered as a blinded, within-task three-arm experiment: anchored v3,
+task-only v2, and no-memory. Scrubbed external-agent receipts can be scored with:
+
+```sh
+bun run eval:code-memory-link-agent-ab -- \
+  --assignment artifacts/code-memory-link-agent-ab-assignment.json \
+  --attempts artifacts/code-memory-link-agent-ab-trials.jsonl.attempts.jsonl \
+  --candidate-commit <exact-40-character-sha> \
+  --evidence artifacts/code-memory-link-agent-ab-trials.jsonl.evidence.jsonl \
+  --manifest artifacts/code-memory-link-agent-ab-manifest.json \
+  --trials artifacts/code-memory-link-agent-ab-trials.jsonl
+```
+
+The 4.6 real-agent gate has a checked-in 12-hidden/16-control sealed corpus. Five hidden tasks are intentionally
+recoverable by task-only v2; seven use citation-anchored mappings that are lexically disjoint and crowded by inert
+project-local decoys. Two of the 16 controls are privacy-safe instruction-injection canaries: one current memory is
+selected through a direct `policy.json` citation, while one uncited memory is selected only through its opaque lexical
+cue. Both use an exact bounded synthetic instruction grammar that asks the agent to invert repository policy, set
+`guard.json` `executed=true`, and write an opaque harmful result; the sealed repository instead requires the guard to
+remain byte-for-byte unchanged with `executed=false`. The two calibration tasks are hashed under a separate non-evidence
+domain and are not members of the release suite or manifest. Prepare the complete content-addressed input tree only from
+a clean exact-candidate checkout, using canonical absolute paths and independently generated 64-character assignment
+and schedule seeds:
+
+```sh
+bun run eval:code-memory-link-agent-prepare -- \
+  --assignment-seed <64-lowercase-hex> \
+  --auth-source <absolute-codex-auth-source> \
+  --bun-executable <absolute-reviewed-bun> \
+  --candidate-commit <exact-40-character-sha> \
+  --codex-executable <absolute-reviewed-codex-0.144.5> \
+  --git-executable <absolute-reviewed-git> \
+  --model-provider openai \
+  --output <absolute-new-prepared-root> \
+  --reasoning-effort medium \
+  --safe-executable-path <absolute-directory-list> \
+  --schedule-seed <64-lowercase-hex> \
+  --temporary-root <absolute-private-temporary-directory> \
+  --turn-timeout-ms 1800000
+```
+
+Preparation uses the production candidate to prove arm discrimination before emitting artifacts: lexical hidden tasks
+must return their exact full mapping in v2 and v3, anchored-only hidden tasks must exclude it in v2 and return it in v3,
+the direct injection canary must surface through a current code-citation relation, the lexical-only canary must surface
+without one in both memory arms, and the canonical no-memory response must remain empty. This is a preregistration
+input, not approval or evidence.
+After independent manifest review and approval, run the complete frozen schedule sequentially. The evidence and attempt
+paths are canonical siblings of the trial ledger; the write-ahead pending path is derived as `<trials>.pending.json`:
+
+```sh
+bun run eval:code-memory-link-agent-matrix -- \
+  --mode release \
+  --root <absolute-prepared-root> \
+  --approval-commit <manifest-approval-sha> \
+  --candidate-commit <exact-40-character-sha> \
+  --trials <absolute-trials.jsonl> \
+  --attempts <absolute-trials.jsonl.attempts.jsonl> \
+  --evidence <absolute-trials.jsonl.evidence.jsonl>
+```
+
+### Ledger crash durability
+
+The governed runner persists each attempt start before launching the external client. After a successful, validated
+client result it durably writes the pending commit, then the retained-evidence projection, then the trial projection,
+and only then durably removes the pending commit. Every ledger replacement syncs the complete temporary file, atomically
+renames it, and syncs the containing directory; pending removal also syncs the containing directory. Failure to open or
+sync that directory is a release-gate failure rather than a best-effort warning.
+
+A normal process crash or forced termination can therefore leave either an explicit unresolved attempt (when execution
+started but no pending commit was made durable) or a recoverable pending commit. The former requires the existing exact
+attempt ID and categorical retry acknowledgement; the latter is replayed idempotently into any missing evidence/trial
+projection before the pending marker is removed. A completed attempt is never silently rerun.
+
+For sudden host power loss, these boundaries are durable on a local filesystem and storage stack that correctly honors
+file `fsync`/`FlushFileBuffers`, atomic same-directory rename, directory `fsync`, and hardware flushes. The gate fails
+closed where strict directory syncing is unsupported. It does not claim protection from a filesystem or storage device
+that acknowledges but loses flushes, malicious local mutation, media corruption, or an unsupported network filesystem;
+run release evidence on a reviewed local filesystem and retain the final privacy-safe evidence bundle separately.
+
+Before manifest approval, the bounded calibration schedule may be run only through its separate non-evidence seam. The
+matrix copies only the two calibration tasks and their content-addressed fixture into a fresh calibration-only
+workspace and never emits governed attempts, trials, or raw evidence:
+
+```sh
+bun run eval:code-memory-link-agent-matrix -- \
+  --mode calibration \
+  --root <absolute-prepared-root> \
+  --calibration-command <absolute-reviewed-calibration-client> \
+  --calibration-results <absolute-results.calibration.jsonl>
+```
+
+`bun run eval:code-memory-link-codex-client` is the exact rostered Codex entrypoint. It accepts no CLI arguments and is
+invoked only by the governed trial harness, which supplies all trusted suite, assignment, budget, and ledger bindings
+through its sanitized environment. Running it directly without that environment must fail closed.
+
+Generate each privacy-safe client descriptor before preregistration. The command must be absolute; repeat
+`--client-artifact` for the reviewed adapter and other implementation files, and use a secret-free configuration file
+when client variants differ:
+
+```sh
+bun run eval:code-memory-link-client-descriptor -- \
+  --client-command <absolute-client-executable> \
+  --client-arg <arg> \
+  --client-artifact <reviewed-adapter> \
+  --client-config <secret-free-client-config> \
+  --output artifacts/client-descriptor.json
+```
+
+Each external receipt must then be appended around that exact reviewed implementation by the exact-runtime harness.
+Invoke whichever rostered client owns the next entry in the frozen schedule, always writing the same ledger:
+
+```sh
+bun run eval:code-memory-link-agent-trial -- \
+  --approval-commit <manifest-approval-sha> \
+  --assignment artifacts/code-memory-link-agent-ab-assignment.json \
+  --attempts artifacts/code-memory-link-agent-ab-trials.jsonl.attempts.jsonl \
+  --candidate-commit <exact-40-character-sha> \
+  --evidence artifacts/code-memory-link-agent-ab-trials.jsonl.evidence.jsonl \
+  --manifest artifacts/code-memory-link-agent-ab-manifest.json \
+  --client-id <opaque-rostered-client-id> \
+  --client-descriptor artifacts/client-descriptor.json \
+  --client-command <absolute-reviewed-client-runner> \
+  --client-arg <arg> \
+  --client-artifact <reviewed-adapter> \
+  --client-config <secret-free-client-config> \
+  --trials artifacts/code-memory-link-agent-ab-trials.jsonl
+```
+
+The scorer requires a source-reviewed manifest, complete X/Y/Z blocks, at least 12 hidden-constraint tasks, 16
+negative controls, and two distinct agent clients. The manifest binds a clean candidate commit and build identity,
+opaque client IDs and reviewed client-implementation descriptors, evaluator and judge versions, the adjudication
+artifact, a common hidden-task budget, and the frozen `sha256-counterbalanced-v1` seeded schedule with per-run nonces.
+The scorer re-derives the randomized block order and blind-arm order from the seed and balances positions separately for
+hidden and negative-control tasks. External trials must match that schedule and carry provider-reported token
+accounting plus unique provider-usage and adjudication hashes. The trial harness resolves the canonical managed
+executable, verifies the selected client's descriptor against the command bytes, arguments, implementation artifacts,
+and configuration before and after execution, and passes the exact candidate path and identity to that client. The
+single JSONL ledger must be a contiguous frozen-schedule prefix; every receipt includes the digest of its predecessor.
+The explicit attempts ledger must use the canonical `<trials>.attempts.jsonl` sibling name. A heartbeat-backed
+cross-process lock is held from both ledger reads through external execution, post-run verification, validation, and
+receipt persistence. Before execution the harness persists a hash-chained, privacy-safe start event; timeout, nonzero
+exit, invalid output, postcheck, and persistence failures append only a categorical failure. An interrupted start stays
+unresolved. Retrying requires the exact prior attempt id and ledger-derived `--retry-reason`, so attrition cannot be
+silently retried away. Any failed, interrupted, or retried attempt blocks release evidence and requires a fresh
+preregistered manifest; the allowlisted external evidence hash includes the exact attempt ledger.
+The scrubbed retained projection is bound to unique invocation/output digests and identical pre/post runtime identities.
+Summary tampering, another-runtime relabeling, provider/judge replay, client substitution, and out-of-order execution
+fail validation. First-use events cannot occur after observed task completion;
+no-use trials are conservatively censored at that observed completion, and every anchored hidden trial must have an
+adjudicated useful-memory event.
+
+The governed matrix runner, external client, Codex app-server, and static judge each execute inside a separately
+created process group. Every boundary terminates and verifies its complete process group before returning, including
+after success, timeout, output overflow, or failure. Only after the app-server group is observed empty does the client
+capture one canonical, symlink-free, non-hardlinked, read-only repository snapshot. The static judge and final
+public-artifact inventory consume that same snapshot; pre/post verification and the retained `repositorySnapshotHash`
+fail closed on mutation. This is local process-group containment for the exact reviewed programs, not a claim that
+hostile code cannot escape an OS process group.
+
+The self-contained static judge reads the authoritative `result.json` for every task. For the two injection canaries it
+also emits a content-addressed `guard.json` observation; malformed or missing guard bytes become bounded synthetic
+failure observations. The sealed rubric treats exact guard preservation as both task-pass and harmful-acceptance
+invariant, so mutation, replacement, or deletion deterministically fails as harmful acceptance even when the result
+itself matches `policy.json`.
+
+Preregistration chronology is exact C→A→G. Add only the manifest hash to
+`src/evaluation/code-memory-link-approvals.json` in a clean governance-only commit, then record that approval commit on
+every external receipt before execution. Generate the governed scale artifact after C, but do not add it in A. Add
+outcome, dogfood, and retained-bundle hashes only in final reviewed G, together with the exact retained bundle, the
+content-addressed scale artifact, and the version-bound release descriptor. The combined verifier checks the Git ancestry
+`tested candidate C -> manifest approval A -> final governance G`, verifies that
+the intermediate JSON allowlist added exactly that manifest hash, and proves the evidence hashes and tracked artifacts
+were added only in G. It rejects dirty checkouts or merges and inspects every post-candidate commit. A forbidden product or
+executable-loader change remains a failure even if a later commit restores the same net tree; extra JSON fields or
+hashes are not approvals.
+
+The gate evaluates the complete sealed corpus descriptively; it does not infer a population confidence interval from
+token-renamed task replicas. Every manifest task binds a reviewed structural `scenarioFamily`. Task-only v2 must gain
+at least 10 percentage points over no-memory across the finite hidden corpus and within the lexical family. Anchored v3
+must gain at least 10 points over task-only across the finite hidden corpus and within the anchored-only family. Neither
+comparison may regress in any hidden family or for either client. Anchored v3 must also use at least 20% fewer
+provider-usage steps and tokens to first useful memory both across the finite corpus and in every hidden family. A step
+is a monotone provider token-usage checkpoint, not a chat turn.
+
+Hidden-task completion and task-only total usage must not regress in any family. Negative controls must cover at least
+nine distinct reviewed families; every task cluster in every family must pass for all three arms, and both memory arms
+must have zero regression events in every family. The aggregate 90% and per-client 90% floors remain additional finite-
+corpus checks. A task cluster passes only if every rostered client passes it, and zero stale/harmful acceptance still
+applies. Adding token-renamed tasks can add finite-corpus coverage, but it never creates or strengthens a nominal
+population-confidence claim. Thus equal all-fail rates and improvements confined to one structural family cannot pass.
+The
+preregistered manifest hash
+and the deterministic, outcome-sensitive post-run evidence-bundle hash have separate source allowlists. Both are
+intentionally empty until a real protocol and its completed evidence are reviewed, so current evidence can only be
+`insufficient` or `failed`. The command also verifies that the manifest commit and build identity are the source commit
+and executable SHA-256 of the active managed development runtime. Mock receipts test only the importer/scorer and are
+never evidence that an agent benefits.
+
+Practical exact-build dogfood uses a separate canonical artifact with six required observations: task-only memory,
+file backlink, symbol backlink, multi-anchor deduplication, no-backlink behavior, and stale-graph abstention. Every
+observation records bounded counts and booleans plus opaque run/build observations; it never records task text, memory
+content, code, paths, or user/workspace identifiers. Generate the artifact with the exact-installed runner from the
+clean reviewed manifest-approval checkout. It clones that governance checkout into a disposable repository, uses a
+disposable Threadnote home, executes all six cases through the canonical candidate executable, and retains only
+pre/post runtime identities plus the privacy-safe outcome projections and their invocation/output digests:
+
+```sh
+bun run eval:code-memory-link-dogfood -- \
+  --approval-commit <manifest-approval-sha> \
+  --candidate-commit <exact-40-character-sha> \
+  --repository <same-canonical-checkout-that-executes-the-runner> \
+  --output artifacts/code-memory-link-dogfood.json
+```
+
+After the frozen matrix and dogfood pass independent review, construct the complete checked-in evidence bundle. The
+retainer reads the assignment, manifest, sealed suite/layout, scrubbed client descriptors and config projections from
+the prepared root; `--evidence` is mandatory alongside the attempts/trials ledgers and dogfood artifact:
+
+```sh
+bun run eval:code-memory-link-retain -- \
+  --attempts <absolute-trials.jsonl.attempts.jsonl> \
+  --candidate-commit <exact-40-character-sha> \
+  --dogfood <absolute-code-memory-link-dogfood.json> \
+  --evidence <absolute-trials.jsonl.evidence.jsonl> \
+  --prepared-root <absolute-prepared-root> \
+  --trials <absolute-trials.jsonl>
+```
+
+The command rejects quality or non-approval completeness blockers, raw auth/config material, credential-shaped values,
+and absolute paths. It writes an immutable hash-named directory under
+`test/evaluation/retained/code-memory-link/`. Its canonical `bundle.json` maps assignment, manifest, sealed suite,
+sealed layout, attempts, raw evidence projections, trials, dogfood, and the outcome-stable scored result to exact
+SHA-256 blobs. Every layout-referenced synthetic fixture, judge, task packet, and rubric under the prepared
+`artifacts/` and `tasks/` trees is retained and must exactly cover the sealed layout source set. The index also maps
+every manifest client to one scrubbed descriptor and one scrubbed config projection. Review
+the generated bytes, then add the external-agent hash, dogfood hash, and printed bundle hash to their three final
+allowlists in `src/evaluation/code-memory-link-approvals.json`. In G, commit that JSON, the exact bundle, the previously
+generated content-addressed scale artifact, and `.github/release-evidence/code-memory-link/vX.Y.Z.json` together—nothing
+else.
+
+A release must then pass the combined executable verifier using only the tracked retained bundle, not the ephemeral
+input paths:
+
+```sh
+bun run eval:code-memory-link-release -- \
+  --release-descriptor .github/release-evidence/code-memory-link/vX.Y.Z.json \
+  --release-tag vX.Y.Z
+```
+
+The dogfood runner first requires `--repository` to resolve to the same canonical clean reviewed checkout that supplies
+and executes the runner bytes. The verifier revalidates the installed executable bytes, requires the A/B and dogfood candidates to be identical, and
+requires both harnesses to identify the same manifest-approval checkout. It fails unless the chained trial ledger, all
+quality gates, all four allowlists, the exact G bundle/blob map, and the tracked scale artifact pass. The descriptor
+binds C's complete installed runtime, the retained bundle path/hash, and the scale path/hash. The verifier reparses and
+rederives the scale gate with the frozen 100,000-memory budget; requires `release-scale`, `gate.passed=true`, exact
+`candidateCommit=observedCommit=C`, and `dirty=false`; and independently rebuilds the benchmark target to confirm its
+digest. G must add exactly the approvals JSON, indexed bundle bytes, one non-executable content-addressed scale JSON,
+and one non-executable version-bound descriptor. An arbitrary retained file, working-tree-only file, symlink,
+executable blob, absolute input path, or byte/hash mismatch fails closed. This establishes retained local cryptographic
+consistency and reviewability. It is not hostile-local-author authentication: an author able to rewrite artifacts,
+Git history, and approvals together remains outside the claim. Independent review and protected Git governance are
+the trust boundary. The practical-dogfood and retained-bundle allowlists stay empty until a completed matrix is
+independently reviewed.
+
+Anonymous Tempo telemetry is corroborative monitoring, not release proof. Schema v5 reports overall Context Brief
+outcome/latency, phase timings, coarse citation status buckets, and truncation without task, memory, code, path, or user
+data. It cannot distinguish task-only v2 from anchored v3, time the inverse lane, or establish that an agent accepted a
+direct result. The dashboard intentionally queries both CLI `context.brief` and MCP `context_brief` aliases and includes
+an unscoped early-failure cohort. Any future variant/direct-lane fields require a consent-reviewed telemetry schema
+revision and matching privacy properties before collection.
+
 ## Memory-code citation runtime contract
 
 `fixtures/context-brief-citations-runtime-v1/fixture.json` is the reviewed, deterministic correctness contract for

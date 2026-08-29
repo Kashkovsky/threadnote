@@ -4,8 +4,8 @@ import {
   type McpBrokerChild,
   type McpBrokerDependencies,
   type McpBrokerFailureEvent,
-} from '../../src/mcp_broker.js';
-import type {StandaloneActiveRelease} from '../../src/standalone_process_lease.js';
+} from '../../src/mcp/broker.js';
+import type {StandaloneActiveRelease} from '../../src/process/standalone_lease.js';
 describe('MCP session broker', () => {
   it('reports a closed spawn failure without allowing the observer to alter recovery', async () => {
     const clientInput = new AsyncByteQueue();

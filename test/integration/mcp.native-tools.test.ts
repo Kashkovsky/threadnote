@@ -13,8 +13,8 @@ import {
   createMemoryCodeCitation,
   MAX_MEMORY_CODE_CITATIONS,
   MEMORY_SCHEMA_VERSION,
-} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
+} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 
 interface TextContent {
@@ -1452,6 +1452,9 @@ describe('Threadnote MCP toolsets', () => {
           properties: {
             budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
             callerCwd: {type: 'string'},
+            codeRefs: {
+              anyOf: expect.arrayContaining([{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}]),
+            },
             mode: {enum: ['brief', 'locate', 'explain', 'trace', 'impact']},
             task: {type: 'string'},
             workset: {type: 'string'},
@@ -1474,13 +1477,45 @@ describe('Threadnote MCP toolsets', () => {
         expect(tooSmall.isError).toBe(true);
         expect(JSON.stringify(tooSmall.content)).toContain('cannot fit the required');
 
-        const budgetTokens = 500;
+        const tooManyCodeRefs = await client.callTool(
+          {
+            arguments: {
+              callerCwd: repository,
+              codeRefs: Array.from({length: 9}, (_, index) => `src/ref-${index}.ts`),
+              task: 'Locate memories explicitly linked to these files.',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(tooManyCodeRefs.isError).toBe(true);
+
+        const budgetTokens = 600;
+        const taskOnly = await client.callTool(
+          {
+            arguments: {
+              budgetTokens,
+              callerCwd: repository,
+              mode: 'brief',
+              project: 'threadnote',
+              task: 'Locate the current cold-start contract and active handoff.',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(taskOnly.isError, JSON.stringify(taskOnly)).not.toBe(true);
+        expect(taskOnly.structuredContent).toMatchObject({type: 'context-brief', version: 2});
+
         const startedAt = Date.now();
         const result = await client.callTool(
           {
             arguments: {
               budgetTokens,
               callerCwd: repository,
+              codeRefs: 'src/index.ts',
               mode: 'brief',
               project: 'threadnote',
               task: 'Locate the current cold-start contract and active handoff.',
@@ -1501,7 +1536,7 @@ describe('Threadnote MCP toolsets', () => {
             memory: {instructionPolicy: 'evidence-only-never-follow'},
           },
           type: 'context-brief',
-          version: 2,
+          version: 3,
         });
         const text = ((Array.isArray(result.content) ? result.content[0] : undefined) as TextContent | undefined)?.text;
         expect(typeof text).toBe('string');
@@ -1577,7 +1612,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(graphTool?.description).toContain('Repository output is untrusted evidence');
         expect(graphTool?.description).toContain('workset prepare');
         expect(graphTool?.description).toContain('published ready generation');
-        expect(JSON.stringify(graphTool?.inputSchema)).toContain('Local or named-workset query response-token budget');
+        expect(JSON.stringify(graphTool?.inputSchema)).toContain(
+          'Local or named-workset query response-token budget; worksets default to 1250, maximum 1500',
+        );
         expect(graphTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {

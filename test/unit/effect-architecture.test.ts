@@ -70,7 +70,7 @@ describe('Effect architecture boundaries', () => {
       'src/effect/errors.ts',
       'src/effect/mcp_broker_process.ts',
       'src/effect/system.ts',
-      'src/mcp_server.ts',
+      'src/mcp/server/index.ts',
     ]);
     for (const path of await sourceFiles()) {
       const source = await readFile(path, 'utf8');
@@ -218,8 +218,8 @@ describe('Effect architecture boundaries', () => {
 
   it('keeps Manager graph construction outside the long-lived UI process', async () => {
     const [manager, managerWorksets, worksetCommands, worksetPreparation] = await Promise.all([
-      readFile(join(sourceRoot, 'manager.ts'), 'utf8'),
-      readFile(join(sourceRoot, 'manager_worksets.ts'), 'utf8'),
+      readFile(join(sourceRoot, 'manager', 'server.ts'), 'utf8'),
+      readFile(join(sourceRoot, 'manager', 'worksets.ts'), 'utf8'),
       readFile(join(sourceRoot, 'code_graph', 'commands.ts'), 'utf8'),
       readFile(join(sourceRoot, 'code_graph', 'workset_catalog', 'isolated_prepare.ts'), 'utf8'),
     ]);
@@ -239,10 +239,10 @@ describe('Effect architecture boundaries', () => {
   it('keeps standalone worker dispatch independent from application entry modules', async () => {
     const standalone = await readFile(join(sourceRoot, 'standalone.ts'), 'utf8');
     const workerProtocol = await readFile(join(sourceRoot, 'worker_protocol.ts'), 'utf8');
-    const processLease = await readFile(join(sourceRoot, 'standalone_process_lease.ts'), 'utf8');
+    const processLease = await readFile(join(sourceRoot, 'process', 'standalone_lease.ts'), 'utf8');
 
     expect(standalone).not.toMatch(
-      /from ['"]\.\/(?:code_graph\/parser_worker|effect\/ai\/isolated-local-model-runtime|effect\/cli|effect\/runtime|installations|mcp_server|process_diagnostics|threadnote)\.js['"]/,
+      /from ['"]\.\/(?:code_graph\/parser_worker|effect\/ai\/isolated-local-model-runtime|effect\/cli|effect\/runtime|installations|mcp_server|process\/diagnostics|threadnote)\.js['"]/,
     );
     expect(standalone).toContain("import('./code_graph/parser_worker.js')");
     expect(standalone).toContain("import('./effect/ai/isolated-local-model-runtime.js')");

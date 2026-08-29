@@ -29,6 +29,11 @@ const questions = [
       'Code citations are optional capture-time evidence for exact files or symbols. Context Brief checks selected citations against an already-ready current graph: exact or uniquely relocated evidence keeps the memory fresh, while relocation adds a stale-link warning so you can recapture the new locator. That warning is about the link, not the memory. Changed or deleted evidence makes the memory stale, and unavailable or ambiguous evidence stays unknown. Even an exact citation proves that the cited bytes survived—not that the memory prose is automatically correct.',
   },
   {
+    question: 'Can an agent start with code and find related memory?',
+    answer:
+      'Yes. Pass up to eight repository-scoped files or cgs_ symbols as Context Brief codeRefs, or repeat --code-ref in the CLI. Context Brief v3 retrieves active memories with explicit matching citations alongside normal task recall, validates their evidence against an already-ready graph, and reports bounded relation and coverage receipts. It does not guess semantic links, start cold indexing, or support Workset and cgr_ anchors in this first milestone.',
+  },
+  {
     question: 'Will my existing memories disappear after upgrading to 4.4?',
     answer:
       'No. v1 and other uncited memories stay recallable and can appear in Context Brief. They keep conservative commit-level freshness when Threadnote can resolve it and otherwise show unknown; Threadnote does not invent precise citations or require a migration just to keep recall working. Portable checkpoint operations touch only disposable graph storage, so they do not migrate or filter existing memory either.',

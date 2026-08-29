@@ -28,7 +28,7 @@ import {
   MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND,
   MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND,
   MemoryCodeCitationCaptureError,
-} from '../../src/memory_code_citation_capture.js';
+} from '../../src/memory/code_citation_capture.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

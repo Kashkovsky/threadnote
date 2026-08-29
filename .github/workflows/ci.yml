@@ -239,6 +239,9 @@ jobs:
       - name: Actual-runtime memory citation and Context Brief gate
         run: bun run eval:context-brief-citations:runtime
 
+      - name: Actual-runtime code-to-memory backlink gate
+        run: bun run eval:code-memory-link-bench
+
       - name: Recall-v2 category and safety gate
         run: >-
           bun run eval:recall:v2 --

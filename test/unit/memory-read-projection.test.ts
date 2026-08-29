@@ -10,7 +10,7 @@ import {
   selectMemoryMarkdownSection,
   type MemoryReadPosition,
   type MemoryReadResource,
-} from '../../src/memory_read_projection.js';
+} from '../../src/memory/read_projection.js';
 
 describe('bounded memory read projection', () => {
   it('concatenates every Unicode page back to the exact source within the requested budget', () => {

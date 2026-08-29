@@ -8,7 +8,7 @@ import {
   inferMemoryMetadata,
   parseMemoryDocument,
   type MemoryMetadata,
-} from '../../src/memory_document.js';
+} from '../../src/memory/document.js';
 import {
   assertMemorySchemaWritable,
   createMemoryCodeCitation,
@@ -17,7 +17,7 @@ import {
   MEMORY_SCHEMA_VERSION,
   UnsupportedMemorySchemaVersionError,
   type MemoryCodeCitationInputV1,
-} from '../../src/memory_code_citation.js';
+} from '../../src/memory/code_citation.js';
 
 describe('memory document contract', () => {
   it('preserves the legacy document format when versioned metadata is absent', () => {

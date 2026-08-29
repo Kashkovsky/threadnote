@@ -3,8 +3,8 @@ import {chmod, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {afterEach, beforeEach, describe, expect, it} from 'vitest';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument} from '../../src/memory_document.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
 import {
   clearAutoShareStateForTest,
   listShareConflicts,

@@ -2,7 +2,7 @@ import {Context, Effect, Layer, Schema} from 'effect';
 import {AiError, LanguageModel} from 'effect/unstable/ai';
 import type {MemoryKind} from '../../types.js';
 import type {RuntimeConfig} from '../../types.js';
-import type {MemoryMetadata} from '../../memory_document.js';
+import type {MemoryMetadata} from '../../memory/document.js';
 import {generateWithSelectedLocalModel} from '../../models/inference.js';
 import {redactSensitiveText, scrubberBlocker} from '../../scrubber.js';
 import {

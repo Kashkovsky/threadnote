@@ -23,7 +23,7 @@ import {
   projectMemoryReadPage,
   type MemoryReadPage,
   type MemoryReadPosition,
-} from '../memory_read_projection.js';
+} from '../memory/read_projection.js';
 import type {RemoteMemoryReadResult} from './postgres_repository.js';
 import {
   decodeRemoteMemoryReadCursor,

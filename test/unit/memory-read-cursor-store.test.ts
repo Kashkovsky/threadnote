@@ -9,13 +9,13 @@ import {
   PersistentMemoryReadCursorStoreError,
   putPersistentMemoryReadCursor,
   takePersistentMemoryReadCursor,
-} from '../../src/memory_read_cursor_store.js';
+} from '../../src/memory/read_cursor_store.js';
 import {
   MEMORY_READ_CURSOR_TTL_MILLISECONDS,
   memoryReadCursorToken,
   memoryReadSourceHashes,
   type MemoryReadCursorState,
-} from '../../src/memory_read_projection.js';
+} from '../../src/memory/read_projection.js';
 
 const CURSOR_DATABASE_RELATIVE_PATH = ['threadnote', 'mcp', 'read-context-cursors-v1.sqlite'] as const;
 

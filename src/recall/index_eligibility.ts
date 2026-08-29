@@ -1,4 +1,4 @@
-import type {MemoryAuthority, MemoryTrust} from '../memory_document.js';
+import type {MemoryAuthority, MemoryTrust} from '../memory/document.js';
 import {normalizeRecallProject, recallAuthorityIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
 import type {RecallSqlPredicate} from './index_scope.js';
 

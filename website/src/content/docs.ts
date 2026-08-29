@@ -267,8 +267,8 @@ export const mcpTools: McpToolReference[] = [
     name: 'context_brief',
     toolset: 'core',
     summary:
-      'Compile a token-bounded task brief from current graph evidence, durable decisions, active handoffs, and freshness signals.',
-    keyInputs: ['task', 'callerCwd', 'workset', 'project', 'mode', 'budgetTokens'],
+      'Compile a token-bounded task brief from current graph evidence, durable decisions, active handoffs, freshness signals, and optional explicit code-citation backlinks.',
+    keyInputs: ['task', 'callerCwd', 'codeRefs (max 8 file/cgs_)', 'workset', 'project', 'mode', 'budgetTokens'],
   },
   {
     name: 'analyze_code_graph',

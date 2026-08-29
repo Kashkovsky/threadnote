@@ -8,7 +8,7 @@ import {
   releaseForVersion,
   releasesBetween,
   type ReleaseNote,
-} from '../../src/release_notes.js';
+} from '../../src/release/notes.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
 const releases: readonly ReleaseNote[] = [

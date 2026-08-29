@@ -6,8 +6,8 @@ import {expect} from 'vitest';
 import {
   canonicalConfiguredProjectHasReadyGraph,
   foreignConfiguredProjectGraphState,
-} from '../../src/manager_graph_projects.js';
-import {managerProjectPathIsForeign} from '../../src/manager_project_roots.js';
+} from '../../src/manager/graph_projects.js';
+import {managerProjectPathIsForeign} from '../../src/manager/project_roots.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const pathSegment = fc

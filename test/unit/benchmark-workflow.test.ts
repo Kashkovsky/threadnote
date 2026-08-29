@@ -156,7 +156,7 @@ describe('platform benchmark workflow', () => {
         'src/effect/errors.ts',
         'src/effect/file_durability.ts',
         'src/effect/time.ts',
-        'src/process_diagnostics.ts',
+        'src/process/diagnostics.ts',
         'src/telemetry/session.ts',
         'src/utils.ts',
         'src/worker_protocol.ts',

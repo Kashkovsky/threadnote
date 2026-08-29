@@ -13,7 +13,7 @@ export type {
   SharedArtifactListResult,
   SharedArtifactSummary,
   SharedMemoryUriParts,
-} from './share_core.js';
+} from './share/core.js';
 export {
   clearAutoShareStateForTest,
   assertShareTeamWritable,
@@ -38,7 +38,7 @@ export {
   shareTeamAccess,
   stripPersonalProvenance,
   writeMemoryFile,
-} from './share_core.js';
+} from './share/core.js';
 export {
   runShareInit,
   runShareList,
@@ -49,8 +49,8 @@ export {
   runShareStatus,
   runShareUnpublish,
   shareUnpublishTargetDisposition,
-} from './share_admin.js';
-export {refreshSharedReposInBackground, runShareSync, syncSharedReposBeforeAgentRead} from './share_sync.js';
+} from './share/admin.js';
+export {refreshSharedReposInBackground, runShareSync, syncSharedReposBeforeAgentRead} from './share/sync.js';
 export {
   listShareConflicts,
   resolveShareConflict,
@@ -58,24 +58,24 @@ export {
   runShareConflicts,
   runShareConflictShow,
   showShareConflict,
-} from './share_conflicts.js';
+} from './share/conflicts.js';
 export {
   assertSharedWorktreeFileReady,
   listChangedFiles,
   mergeChanges,
   publishShareGitChange,
   writeSharedWorktreeFile,
-} from './share_git.js';
+} from './share/git.js';
 export {
   runSharePublish,
   runSharePublishArtifact,
   runSharePublishBundle,
   shareAgentArtifact,
   shareBundlePack,
-} from './share_artifact_publish.js';
+} from './share/artifact_publish.js';
 export {
   installSharedAgentArtifacts,
   listSharedAgentArtifacts,
   runShareInstallArtifacts,
-} from './share_artifact_install.js';
+} from './share/artifact_install.js';
 export {applyScrubber, scrubberBlocker} from './scrubber.js';

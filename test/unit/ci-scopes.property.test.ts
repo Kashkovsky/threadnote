@@ -94,7 +94,7 @@ describe('CI changed-path scope properties', () => {
       'release',
       'windows',
     ]);
-    expect(enabledScopes(['src/memory_code_citation_capture.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
+    expect(enabledScopes(['src/memory/code_citation_capture.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
     expect(enabledScopes(['.github/workflows/pages.yml'])).toEqual(['actions', 'site_check', 'site_build']);
     expect(enabledScopes(['README.md'])).toEqual(['site_check']);
     expect(enabledScopes(['test/ci/ci-scopes.ts'])).toEqual(ciScopeKeys);

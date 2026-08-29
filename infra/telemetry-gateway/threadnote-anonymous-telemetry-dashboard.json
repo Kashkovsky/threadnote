@@ -2129,7 +2129,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.context_brief.scope != nil && span.threadnote.outcome != nil } | count_over_time() by (span.threadnote.context_brief.scope, span.threadnote.outcome)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.context_brief.scope != nil && span.threadnote.outcome != nil } | count_over_time() by (span.threadnote.context_brief.scope, span.threadnote.outcome)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2163,7 +2163,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "instant",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.scope != nil && span.threadnote.duration_ms != nil } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.context_brief.scope)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.scope != nil && span.threadnote.duration_ms != nil } | quantile_over_time(span.threadnote.duration_ms, .5, .95, .99) by (span.threadnote.context_brief.scope)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2217,7 +2217,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "instant",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && span.threadnote.operation = \"context_brief\" && span.threadnote.phase = \"context.brief.citation-validation\" && span.threadnote.phase.outcome = \"success\" && span.threadnote.context_brief.scope != nil && span.threadnote.context_brief.citations_bucket != nil && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95, .99) by (span.threadnote.context_brief.scope, span.threadnote.context_brief.citations_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"checkpoint\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.phase = \"context.brief.citation-validation\" && span.threadnote.phase.outcome = \"success\" && span.threadnote.context_brief.scope != nil && span.threadnote.context_brief.citations_bucket != nil && span.threadnote.phase.elapsed_ms != nil } | quantile_over_time(span.threadnote.phase.elapsed_ms, .5, .95, .99) by (span.threadnote.context_brief.scope, span.threadnote.context_brief.citations_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2275,7 +2275,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.citation_coverage != nil && span.threadnote.context_brief.citation_result != nil } | count_over_time() by (span.threadnote.context_brief.citation_coverage, span.threadnote.context_brief.citation_result)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.citation_coverage != nil && span.threadnote.context_brief.citation_result != nil } | count_over_time() by (span.threadnote.context_brief.citation_coverage, span.threadnote.context_brief.citation_result)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2313,7 +2313,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.citation_unknown_reason != nil } | count_over_time() by (span.threadnote.context_brief.citation_unknown_reason)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.citation_unknown_reason != nil } | count_over_time() by (span.threadnote.context_brief.citation_unknown_reason)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2351,7 +2351,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.exact_citations_bucket != nil && span.threadnote.context_brief.relocated_citations_bucket != nil && span.threadnote.context_brief.stale_citations_bucket != nil && span.threadnote.context_brief.unknown_citations_bucket != nil } | count_over_time() by (span.threadnote.context_brief.exact_citations_bucket, span.threadnote.context_brief.relocated_citations_bucket, span.threadnote.context_brief.stale_citations_bucket, span.threadnote.context_brief.unknown_citations_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.exact_citations_bucket != nil && span.threadnote.context_brief.relocated_citations_bucket != nil && span.threadnote.context_brief.stale_citations_bucket != nil && span.threadnote.context_brief.unknown_citations_bucket != nil } | count_over_time() by (span.threadnote.context_brief.exact_citations_bucket, span.threadnote.context_brief.relocated_citations_bucket, span.threadnote.context_brief.stale_citations_bucket, span.threadnote.context_brief.unknown_citations_bucket)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2359,7 +2359,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.citations_bucket != nil && span.threadnote.context_brief.cited_memories_bucket != nil && span.threadnote.context_brief.repositories_validated_bucket != nil && span.threadnote.context_brief.cache_hits_bucket != nil } | count_over_time() by (span.threadnote.context_brief.citations_bucket, span.threadnote.context_brief.cited_memories_bucket, span.threadnote.context_brief.repositories_validated_bucket, span.threadnote.context_brief.cache_hits_bucket)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.citations_bucket != nil && span.threadnote.context_brief.cited_memories_bucket != nil && span.threadnote.context_brief.repositories_validated_bucket != nil && span.threadnote.context_brief.cache_hits_bucket != nil } | count_over_time() by (span.threadnote.context_brief.citations_bucket, span.threadnote.context_brief.cited_memories_bucket, span.threadnote.context_brief.repositories_validated_bucket, span.threadnote.context_brief.cache_hits_bucket)",
           "queryType": "traceql",
           "refId": "B",
           "tableType": "traces"
@@ -2397,7 +2397,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.scope != nil && span.threadnote.context_brief.output_truncated != nil } | count_over_time() by (span.threadnote.context_brief.scope, span.threadnote.context_brief.output_truncated)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome = \"success\" && span.threadnote.context_brief.scope != nil && span.threadnote.context_brief.output_truncated != nil } | count_over_time() by (span.threadnote.context_brief.scope, span.threadnote.context_brief.output_truncated)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2435,7 +2435,7 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.context_brief.scope != nil } | count_over_time() by (resource.service.version, span.threadnote.context_brief.scope)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.context_brief.scope != nil } | count_over_time() by (resource.service.version, span.threadnote.context_brief.scope)",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "traces"
@@ -2446,7 +2446,7 @@
     },
     {
       "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
-      "description": "Recent non-successful Context Brief completion counts by closed scope, outcome, and safe error type. Schema v5 only; no raw error text or identity is selected.",
+      "description": "Recent non-successful Context Brief completion counts by closed scope, plus a separate cohort for early failures before scope annotation. Includes CLI and MCP operation aliases. Schema v5 only; no raw error text or identity is selected.",
       "fieldConfig": {
         "defaults": {
           "color": {"mode": "palette-classic"},
@@ -2473,9 +2473,17 @@
         {
           "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
           "metricsQueryType": "range",
-          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && span.threadnote.operation = \"context_brief\" && span.threadnote.outcome != \"success\" && span.threadnote.outcome != \"interrupted\" && span.threadnote.context_brief.scope != nil } | count_over_time() by (span.threadnote.context_brief.scope, span.threadnote.outcome, span.error.type)",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome != \"success\" && span.threadnote.outcome != \"interrupted\" && span.threadnote.context_brief.scope != nil } | count_over_time() by (span.threadnote.context_brief.scope, span.threadnote.outcome, span.error.type)",
           "queryType": "traceql",
           "refId": "A",
+          "tableType": "traces"
+        },
+        {
+          "datasource": {"type": "tempo", "uid": "${DS_TEMPO}"},
+          "metricsQueryType": "range",
+          "query": "{ resource.service.name = \"threadnote\" && resource.service.version != \"0.0.0-canary\" && resource.threadnote.telemetry.schema_version = 5 && span:name = \"threadnote.anonymous-diagnostic\" && span.threadnote.event = \"completion\" && (span.threadnote.operation = \"context_brief\" || span.threadnote.operation = \"context.brief\") && span.threadnote.outcome != \"success\" && span.threadnote.outcome != \"interrupted\" && span.threadnote.context_brief.scope = nil } | count_over_time() by (span.threadnote.outcome, span.error.type)",
+          "queryType": "traceql",
+          "refId": "B",
           "tableType": "traces"
         }
       ],

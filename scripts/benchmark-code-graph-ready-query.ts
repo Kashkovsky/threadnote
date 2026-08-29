@@ -69,7 +69,7 @@ import {
   readyQueryHostEvidence,
   type ReadyQueryLinuxHostSample,
 } from '../src/evaluation/ready_query_host.js';
-import {codeGraphMcpResponse} from '../src/mcp_server_code_graph.js';
+import {codeGraphMcpResponse} from '../src/mcp/server/code_graph.js';
 import {
   publicGitHubRepositoryEvidence,
   revalidateExternalBenchmarkPreflightState,

@@ -7,6 +7,10 @@ on:
         description: Exact annotated tag whose verified platform artifacts should be published
         required: true
         type: string
+      release_sha:
+        description: Exact tag-event Git object whose verified source produced the platform artifacts
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -21,7 +25,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.release_sha }}
 
       - uses: actions/download-artifact@v8
         with:
@@ -32,10 +38,19 @@ jobs:
       - name: Create release only after every artifact is ready
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/threadnote-release-tag"
+          verified_commit="$(git rev-parse "${RELEASE_SHA}^{commit}")"
+          remote_tag_commit="$(git rev-parse 'refs/threadnote-release-tag^{commit}')"
+          checkout_commit="$(git rev-parse 'HEAD^{commit}')"
+          if [[ "$checkout_commit" != "$verified_commit" || "$remote_tag_commit" != "$verified_commit" ]]; then
+            echo "::error::Release tag moved away from the exact verified source commit."
+            exit 1
+          fi
           release_notes_file=".github/release-notes/${RELEASE_TAG}.md"
           release_notes="$(<"$release_notes_file")"
           release_flags=(--verify-tag --generate-notes)

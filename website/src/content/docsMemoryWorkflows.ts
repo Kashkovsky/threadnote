@@ -582,6 +582,7 @@ threadnote graph topology --workset checkout --json`,
           code: `# Current repository scope (uses the current working directory).
 threadnote context brief \\
   --task "Find where checkout retries are implemented and what constrains them" \\
+  --code-ref src/checkout/retries.ts \\
   --budget-tokens 1250 \\
   --json
 
@@ -597,16 +598,16 @@ threadnote context brief \\
           type: 'code',
           language: 'json',
           code: `{
-  "task": "Trace checkout retries across the API, client, and shared contracts",
+  "task": "Find where checkout retries are implemented and what constrains them",
   "callerCwd": "/workspace/checkout-api",
-  "workset": "checkout",
-  "mode": "trace",
+  "codeRefs": ["src/checkout/retries.ts"],
+  "mode": "brief",
   "budgetTokens": 1250
 }`,
         },
         {
           type: 'paragraph',
-          text: 'Pass the JSON payload to context_brief. The compiler uses a small typed request rather than exposing its internal plan. It combines ranked graph cards and contracts with relevant durable decisions, active handoffs, graph and memory coverage, fresh, stale, or unknown memory status, conflicts, gaps, and stable recommended follow-ups. Repository evidence and memory excerpts remain separate untrusted evidence classes.',
+          text: 'Pass the JSON payload to context_brief. Optional codeRefs accepts one string or an array of at most eight code references: repository-relative files or cgs_ symbols. These anchors retrieve memories with explicit matching citations; task text still supplies the ordinary bounded recall lane. The compiler uses a small typed request rather than exposing its internal plan. It combines ranked graph cards and contracts with relevant durable decisions, active handoffs, graph and memory coverage, fresh, stale, or unknown memory status, conflicts, gaps, and stable recommended follow-ups. Repository evidence and memory excerpts remain separate untrusted evidence classes.',
         },
         {
           type: 'paragraph',
@@ -614,7 +615,15 @@ threadnote context brief \\
         },
         {
           type: 'paragraph',
-          text: 'Context Brief v2 validates code citations only for the memories selected by bounded recall. Each returned durable decision or handoff keeps freshness beside its excerpt and may include preciseStatus plus bounded citationReceipts with exact, relocated, changed, deleted, or unknown status. A relocated receipt adds a stale-link issue while the memory remains fresh; changed or deleted evidence makes it stale; incomplete or ambiguous evidence stays unknown.',
+          text: 'A nonempty codeRefs request emits Context Brief v3 and validates code citations for memories selected by bounded task recall or explicit code-reference backlinks. Task-only requests retain the v2 output contract. Each returned durable decision or handoff keeps freshness beside its excerpt and may include preciseStatus plus bounded citationReceipts with exact, relocated, changed, deleted, or unknown status. A relocated receipt adds a stale-link issue while the memory remains fresh; changed or deleted evidence makes it stale; incomplete or ambiguous evidence stays unknown.',
+        },
+        {
+          type: 'paragraph',
+          text: 'The v3 projection reports requested, resolved, matchedMemories, and complete under coverage.memory.codeAnchors. A directly selected memory carries selectionBasis code-citation and may include bounded codeRelations with the anchor ordinal, citation ID, file-or-symbol kind, and validation status. Coverage means explicit citations in the authorized indexed corpus, not semantic completeness; raw selectors, repository IDs, paths, hashes, commits, and snapshots stay private.',
+        },
+        {
+          type: 'warning',
+          text: 'Inverse citation lookup also has a bounded selector scan. A code-anchor-recall-truncated gap means the scan may have omitted deeper eligible links; it is an explicit abstention, not evidence that no cited memory exists. A true no-memory result requires resolved anchors and no truncation gap. If code-anchor-recall-no-active-memory appears beside the truncation gap, no active match was found among the examined candidates, but the unexamined prefix remains unknown. codeAnchors.complete describes anchor resolution, so inspect gaps separately for recall completeness.',
         },
         {
           type: 'note',
@@ -630,7 +639,7 @@ threadnote context brief \\
         },
         {
           type: 'warning',
-          text: 'Context Brief v2 does not automatically run workset path, reverse impact, or topology. Its graph cards and contracts come from the bounded V2 query projection and retained card relationships, including an exact Protobuf bridge relationship when that query projected one; it does not traverse beyond those returned cards. Call inspect_code_graph path, impact, or topology separately when explicit bridge traversal is consequential to the task.',
+          text: 'Context Brief does not automatically run workset path, reverse impact, or topology. Its graph cards and contracts come from the bounded V2 query projection and retained card relationships, including an exact Protobuf bridge relationship when that query projected one; it does not traverse beyond those returned cards. Context Brief v3 code-reference backlinks use repository-local file or cgs_ anchors; requests combining codeRefs with a Workset scope and cgr_ anchors remain explicit unsupported gaps in this milestone. Call inspect_code_graph path, impact, or topology separately when explicit bridge traversal is consequential to the task.',
         },
         {
           type: 'note',
@@ -705,6 +714,10 @@ threadnote context brief \\
             [
               'Citation status is unknown',
               'Read the closed reason. Prepare a missing or stale workset explicitly, refresh a repository graph explicitly, narrow ambiguous evidence, or accept that unsupported and incomplete cases must abstain.',
+            ],
+            [
+              'Code-linked recall reports truncation',
+              'Treat code-anchor-recall-truncated as an abstention. Returned matches remain usable, but deeper eligible links may have been omitted; do not turn an empty examined window into a no-memory claim.',
             ],
             [
               'Budget is too small',

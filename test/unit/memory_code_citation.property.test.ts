@@ -10,7 +10,7 @@ import {
   parseMemoryCodeCitation,
   type MemoryCodeCitationInputV1,
   type MemoryCodeCitationTargetV1,
-} from '../../src/memory_code_citation.js';
+} from '../../src/memory/code_citation.js';
 
 const safeCharacter = fc.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'.split(''));
 const safeText = (minimumLength: number, maximumLength: number) =>

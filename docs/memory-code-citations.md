@@ -113,18 +113,30 @@ Precise current evidence supersedes commit-only freshness. A memory captured at 
 its cited bytes are still exact or uniquely relocated. Conversely, Threadnote refuses to infer `exact` or `deleted`
 from a missing, stale, deferred, failed, racing, incomplete, or ambiguous graph; those cases are `unknown`.
 
-## Context Brief v2
+## Context Brief v3
 
-Run the same small CLI or MCP request as before:
+Run a small repository-scoped code-anchored request:
 
 ```sh
 threadnote context brief \
   --task "Trace checkout retries and check the remembered contract" \
+  --code-ref src/checkout/retries.ts \
   --budget-tokens 1250 \
   --json
 ```
 
-For a prepared Workset:
+The equivalent MCP input is:
+
+```json
+{
+  "task": "Trace checkout retries and check the remembered contract",
+  "callerCwd": "/workspace/checkout-api",
+  "codeRefs": ["src/checkout/retries.ts"],
+  "budgetTokens": 1250
+}
+```
+
+For a prepared Workset, omit `codeRefs` in this milestone:
 
 ```sh
 threadnote workset prepare checkout
@@ -135,7 +147,27 @@ threadnote context brief \
   --json
 ```
 
-Context Brief retrieves bounded graph and memory evidence first, then validates citations only for the selected
+After an agent discovers code, repeat `--code-ref` up to eight times with repository-relative files or `cgs_` symbols.
+The MCP `codeRefs` input accepts one string or an array with the same eight-occurrence limit. Context Brief retrieves
+memories whose immutable citations explicitly link to those anchors alongside the ordinary task-text recall lane. It
+does not infer semantic links from nearby code; unsupported `cgr_` or Workset anchors remain explicit coverage gaps.
+Requests with nonempty `codeRefs` emit Context Brief v3; task-only requests retain the v2 output contract.
+The v3 projection summarizes direct-link coverage as `coverage.memory.codeAnchors` with `requested`, `resolved`,
+`matchedMemories`, and `complete`. A directly selected memory carries `selectionBasis: "code-citation"` and may expose
+bounded `codeRelations` entries with only the anchor ordinal, citation ID, file-or-symbol kind, and validation status.
+Coverage describes explicit citations in the authorized indexed corpus, not semantic completeness; raw selectors,
+repository IDs, paths, hashes, commits, and snapshots stay private.
+
+Inverse citation lookup has an independent bounded selector scan. When that scan cannot exhaust a selector prefix and
+the corresponding result lane remains unfilled, Context Brief adds `code-anchor-recall-truncated` to `gaps`. This is an
+abstention receipt: deeper eligible links may have been omitted, so it is not evidence that no cited memory exists. A
+true no-memory result requires resolved anchor coverage and no truncation gap. If
+`code-anchor-recall-no-active-memory` appears alongside `code-anchor-recall-truncated`, it means no active match was
+found in the examined candidates; the truncation still governs any conclusion about the unexamined prefix.
+`coverage.memory.codeAnchors.complete` describes anchor resolution, so always inspect `gaps` separately for recall
+completeness.
+
+Context Brief retrieves bounded graph and memory evidence first, then validates citations for the selected
 memories. Returned durable decisions and handoffs keep `freshness` beside the memory excerpt and may include
 `preciseStatus`, `citationReceipts`, and related entries in `stalenessAndConflicts`. Use JSON or MCP
 `structuredContent` to consume those fields; the plain CLI/MCP text remains a terse receipt.

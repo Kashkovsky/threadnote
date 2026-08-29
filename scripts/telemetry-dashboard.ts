@@ -2,7 +2,11 @@ class ScriptError extends Error {}
 
 class GrafanaHttpError extends ScriptError {
   constructor(readonly status: number) {
-    super(`Grafana API request failed with HTTP ${status}.`);
+    super(
+      status === 401
+        ? 'Grafana API request failed with HTTP 401; the service-account token is invalid or expired.'
+        : `Grafana API request failed with HTTP ${status}.`,
+    );
   }
 }
 

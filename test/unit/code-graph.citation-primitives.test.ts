@@ -29,7 +29,7 @@ import {
 import {mergeCodeGraphWorkspaces} from '../../src/code_graph/workspace.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {validateContextBriefFileCitation} from '../../src/context_brief/citation_validation.js';
-import {createMemoryCodeCitation} from '../../src/memory_code_citation.js';
+import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
 
 const baseSnapshotId = 'citation-base';
 const currentSnapshotId = 'citation-current';

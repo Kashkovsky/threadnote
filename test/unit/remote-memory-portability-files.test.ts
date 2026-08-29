@@ -4,7 +4,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {describe, expect} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {formatMemoryDocument} from '../../src/memory_document.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
 import {
   readGitBetaMemorySources,
   writeOperatorJsonExclusive,

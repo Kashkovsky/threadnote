@@ -16,7 +16,7 @@ import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
 import {CommandExecutor, runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {captureMemoryCodeCitations} from '../../src/memory_code_citation_capture.js';
+import {captureMemoryCodeCitations} from '../../src/memory/code_citation_capture.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {TestError} from '../helpers/test-error.js';
 

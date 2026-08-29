@@ -10,7 +10,7 @@ import {
   STANDALONE_RELEASE_VERSION_PATTERN as RELEASE_VERSION_PATTERN,
   withStandaloneProcessLease,
   type StandaloneActiveRelease as ActiveRelease,
-} from './standalone_process_lease.js';
+} from './process/standalone_lease.js';
 import {compareVersions} from './utils.js';
 
 class InstallationOperationError extends Error {

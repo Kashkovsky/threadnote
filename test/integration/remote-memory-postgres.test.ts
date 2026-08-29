@@ -1,8 +1,8 @@
 import type {Sql, TransactionSql} from 'postgres';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {formatRemoteMemoryUri} from '../../src/memory_domain/address.js';
 import type {RemoteRememberInputV1} from '../../src/memory_domain/contracts.js';
 import {formatRemoteMemoryLogicalKey, REMOTE_MEMORY_REVISION_VERSION} from '../../src/memory_domain/revisions.js';

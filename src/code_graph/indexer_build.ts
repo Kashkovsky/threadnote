@@ -2,7 +2,7 @@ import {Clock, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {withThreadnoteProcessActivity} from '../process_diagnostics.js';
+import {withThreadnoteProcessActivity} from '../process/diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
 import {readCodeGraphBuildStatuses} from './build_status.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';

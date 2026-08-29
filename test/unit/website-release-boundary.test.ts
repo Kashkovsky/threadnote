@@ -39,8 +39,8 @@ describe('website and standalone release boundary', () => {
       readFile(websitePath, 'utf8'),
       readFile(join(root, 'README.md'), 'utf8'),
       readFile(join(root, 'website', 'src', 'components', 'Brand.tsx'), 'utf8'),
-      readFile(join(root, 'src', 'manager.ts'), 'utf8'),
-      readFile(join(root, 'src', 'manager_ui.tsx'), 'utf8'),
+      readFile(join(root, 'src', 'manager', 'server.ts'), 'utf8'),
+      readFile(join(root, 'src', 'manager', 'ui.tsx'), 'utf8'),
       readFile(join(root, 'scripts', 'check-self-contained.ts'), 'utf8'),
     ]);
 

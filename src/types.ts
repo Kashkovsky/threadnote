@@ -1,4 +1,4 @@
-import type {McpToolset} from './mcp_toolset.js';
+import type {McpToolset} from './mcp/toolset.js';
 
 export type AgentClient = 'claude' | 'codex' | 'copilot' | 'cursor';
 export type ConsolidationAgent = AgentClient | 'effect-ai';

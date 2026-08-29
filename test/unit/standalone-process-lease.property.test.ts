@@ -5,7 +5,7 @@ import {
   explicitlyPreservedStandaloneProcessIds,
   preservedStandaloneProcessIds,
   type StandaloneProcessLease,
-} from '../../src/standalone_process_lease.js';
+} from '../../src/process/standalone_lease.js';
 
 describe('standalone process retirement properties', () => {
   it('preserves exactly the processes rooted beneath preserve-session leases', () => {

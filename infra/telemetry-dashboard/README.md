@@ -132,7 +132,11 @@ a maintenance window before setting the enable variable:
    and Grafana's built-in `folders:uid:sharedwithme` virtual folder.
    Store its token only as `THREADNOTE_TELEMETRY_GRAFANA_READ_TOKEN` in the
    existing `telemetry-dashboard-production` Environment. Keep that Environment
-   main-only and read-only (`deployment: false`).
+   main-only and read-only (`deployment: false`). Give the token an expiry that
+   exceeds the documented rotation interval, record that interval outside the
+   repository, and rotate it before expiry. An HTTP 401 from the scheduled live
+   verifier means the token is invalid or expired; do not broaden its role to
+   recover availability.
 5. Create a separate service account with basic role **None**. Grant only
    `dashboards:read` and `dashboards:write` on dashboard UID
    `threadnote-telemetry`, plus `folders:read` and
@@ -140,7 +144,8 @@ a maintenance window before setting the enable variable:
    `threadnote-telemetry-private`. It must have no dashboard create/delete,
    folder/ACL write, datasource query, wildcard, or admin permission. Store its
    token only as `THREADNOTE_TELEMETRY_GRAFANA_WRITE_TOKEN` in a new
-   `telemetry-dashboard-production-deploy` Environment.
+   `telemetry-dashboard-production-deploy` Environment. Apply the same explicit
+   expiry and pre-expiry rotation policy as the reader token.
    If the Grafana Cloud plan cannot express these exact custom RBAC scopes,
    leave direct mode and telemetry ingestion disabled. Do not substitute basic
    Editor/Admin access or a broader token; the runtime permission audit rejects

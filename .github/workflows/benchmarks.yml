@@ -13,6 +13,8 @@ on:
       - 'scripts/benchmark-code-graph-heavy-tail.ts'
       - 'scripts/benchmark-context-brief-citations.ts'
       - 'scripts/benchmark-context-brief-citations-target.ts'
+      - 'scripts/benchmark-code-memory-link-scale.ts'
+      - 'scripts/benchmark-code-memory-link-scale-target.ts'
       - 'scripts/generate-code-graph-heavy-tail-ratchet.ts'
       - 'scripts/generate-code-graph-production-ratchet.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
@@ -43,6 +45,7 @@ on:
       - 'test/evaluation/baselines/code-graph-v1/**'
       - 'test/evaluation/baselines/code-graph-workset-v1/**'
       - 'test/evaluation/baselines/context-brief-citations-v1/**'
+      - 'test/evaluation/baselines/code-memory-link-scale-v1/**'
       - 'test/evaluation/candidates/threadnote-4.0.0/**'
       - 'test/evaluation/fixtures/code-graph-v1/**'
       - 'test/evaluation/fixtures/code-graph-workset-v1/**'
@@ -70,6 +73,11 @@ on:
         default: false
       include_context_brief_citations_scale:
         description: Run the built Context Brief citation 100k/50/128 scale gate
+        required: false
+        type: boolean
+        default: false
+      include_code_memory_link_scale:
+        description: Run the governed 100,000-memory code-to-memory inverse-selector gate
         required: false
         type: boolean
         default: false
@@ -263,6 +271,55 @@ jobs:
         with:
           name: context-brief-citations-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: artifacts/context-brief-citations-scale-*.json
+          if-no-files-found: error
+          retention-days: 90
+
+  code-memory-link-inverse-scale:
+    name: Code-to-memory inverse selector · 100,000 memories · release macOS class
+    if: github.event_name == 'schedule' || inputs.include_code_memory_link_scale
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build and gate the production inverse-selector path at 100,000 memories
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-macos-15-ARM64
+        run: >-
+          bun run bench:code-memory-link-scale --
+          --candidate-commit "${{ github.sha }}"
+          --output artifacts/code-memory-link-inverse-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+
+      - name: Stage the exact content-addressed G artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$(find artifacts -maxdepth 1 -type f -name 'code-memory-link-inverse-scale-*.json' -print -quit)"
+          if [[ -z "$artifact" ]]; then
+            echo "::error::The governed inverse-selector scale artifact is missing."
+            exit 1
+          fi
+          artifact_hash="$(shasum -a 256 "$artifact" | awk '{print $1}')"
+          retained_root="artifacts/test/evaluation/retained/code-memory-link-scale"
+          mkdir -p "$retained_root"
+          mv "$artifact" "$retained_root/${artifact_hash}.json"
+          printf 'Retain at test/evaluation/retained/code-memory-link-scale/%s.json\n' "$artifact_hash"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: code-memory-link-inverse-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/test/evaluation/retained/code-memory-link-scale/*.json
           if-no-files-found: error
           retention-days: 90
 

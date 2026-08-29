@@ -6,7 +6,7 @@ import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {USER_INSTRUCTIONS_END_MARKER, USER_INSTRUCTIONS_START_MARKER} from '../../src/constants.js';
-import {cursorPluginDoctorChecks} from '../../src/cursor-plugin.js';
+import {cursorPluginDoctorChecks} from '../../src/cursor/plugin.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 

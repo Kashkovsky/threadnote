@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {memoryCodeCitationContentSharingBlocker} from '../../src/memory_code_citation_policy.js';
+import {memoryCodeCitationContentSharingBlocker} from '../../src/memory/code_citation_policy.js';
 
 describe('memory code-citation sharing policy', () => {
   it('fails closed on a citation header even when the containing memory cannot be parsed', () => {

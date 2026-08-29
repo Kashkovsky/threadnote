@@ -3,6 +3,9 @@ import {
   CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES,
   CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION,
   CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_LEGACY_VERSION,
+  CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
+  CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS,
   CONTEXT_BRIEF_VERSION,
   parseContextBriefRequestV1,
@@ -17,6 +20,7 @@ import {
   type ContextBriefMemoryEvidenceV1,
   type ContextBriefMemoryRetrievalV1,
   type ContextBriefPlanV1,
+  type ContextBriefPreciseEvidenceStatus,
   type ContextBriefRequestV1,
 } from './types.js';
 import {classifyMemoryFreshness, reconcileContextBriefMemoryFreshness} from './memory_evidence.js';
@@ -34,6 +38,12 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
         ? {edgeLimit: 48, evidenceCards: 8, nodeLimit: 20}
         : {edgeLimit: 32, evidenceCards: 8, nodeLimit: 16};
   return {
+    codeAnchors: {
+      candidateLimit: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
+      codeRefs: request.codeRefs ?? [],
+      ...(request.scope.project === undefined ? {} : {project: request.scope.project}),
+      scope: request.scope,
+    },
     graph: {
       ...modeShape,
       maximumEstimatedTokens: CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
@@ -59,27 +69,48 @@ export function assembleContextBriefLogicalResult(input: {
   readonly plan: ContextBriefPlanV1;
 }): ContextBriefLogicalResultV1 {
   const validations = new Map((input.memory.citationValidations ?? []).map(validation => [validation.uri, validation]));
-  const memories = input.memory.candidates.map(candidate => {
+  const memories = input.memory.candidates.flatMap(candidate => {
     const privateCitationReceipts = validationReceipts(
       candidate,
       validations.get(candidate.uri)?.receipts,
       input.observedAt,
     );
     const preciseStatus = aggregatePreciseStatus(privateCitationReceipts);
-    const citationReceipts = publicCitationReceipts(privateCitationReceipts);
+    const publicReceipts = publicCitationReceipts(privateCitationReceipts);
     const citationSummary = summarizeCitationReceipts(privateCitationReceipts);
+    const validatedCodeRelations = publicCodeRelations(candidate, privateCitationReceipts);
+    const codeRelations = validatedCodeRelations.slice(0, CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS);
+    const citationReceipts = compactCodeLinkedCitationReceipts(publicReceipts, validatedCodeRelations);
     const coarse = classifyMemoryFreshness(candidate.sourceCommit, input.graph.resolvedSnapshots);
-    const {citationErrorCount, codeCitations: _privateCodeCitations, ...publicCandidate} = candidate;
-    return {
-      ...publicCandidate,
-      ...(citationErrorCount === 0 ? {} : {citationErrorCount}),
-      ...(citationReceipts.length === 0 ? {} : {citationReceipts}),
-      ...(citationSummary === undefined ? {} : {citationSummary}),
-      freshness: preciseStatus === undefined ? coarse : reconcileContextBriefMemoryFreshness(coarse, preciseStatus),
-      freshnessBasis: preciseStatus === undefined ? ('source-commit' as const) : ('code-citations' as const),
-      ...(preciseStatus === undefined ? {} : {preciseStatus}),
-    };
+    const {
+      citationErrorCount,
+      codeCitations: _privateCodeCitations,
+      codeLinkMatches: _privateCodeLinkMatches,
+      lexicallySelected: _privateLexicallySelected,
+      ...fullPublicCandidate
+    } = candidate;
+    if (
+      candidate.codeLinkMatches !== undefined &&
+      candidate.codeLinkMatches.length > 0 &&
+      validatedCodeRelations.length === 0 &&
+      candidate.lexicallySelected !== true
+    ) {
+      return [];
+    }
+    return [
+      {
+        ...fullPublicCandidate,
+        ...(citationErrorCount === 0 ? {} : {citationErrorCount}),
+        ...(citationReceipts.length === 0 ? {} : {citationReceipts}),
+        ...(citationSummary === undefined ? {} : {citationSummary}),
+        ...(codeRelations.length === 0 ? {} : {codeRelations, selectionBasis: 'code-citation' as const}),
+        freshness: preciseStatus === undefined ? coarse : reconcileContextBriefMemoryFreshness(coarse, preciseStatus),
+        freshnessBasis: preciseStatus === undefined ? ('source-commit' as const) : ('code-citations' as const),
+        ...(preciseStatus === undefined ? {} : {preciseStatus}),
+      },
+    ];
   }) satisfies readonly ContextBriefMemoryEvidenceV1[];
+  const validatedCodeLinkedMemories = memories.filter(memory => memory.selectionBasis === 'code-citation').length;
   const durableDecisions = stableMemories(memories.filter(memory => memory.kind === 'durable'));
   const handoffs = stableMemories(memories.filter(memory => memory.kind === 'handoff'));
   const issues = contextIssues(memories);
@@ -91,6 +122,11 @@ export function assembleContextBriefLogicalResult(input: {
     ...(memories.some(memory => memory.freshness === 'unknown') ? ['memory-freshness-unknown'] : []),
     ...(memories.some(memory => (memory.citationErrorCount ?? 0) > 0) ? ['memory-code-citations-invalid'] : []),
     ...(memories.some(memory => memory.preciseStatus === 'relocated') ? ['memory-code-links-relocated'] : []),
+    ...(input.memory.codeAnchorCoverage !== undefined &&
+    input.memory.codeAnchorCoverage.matchedMemories > 0 &&
+    validatedCodeLinkedMemories === 0
+      ? ['code-anchor-selector-matches-unvalidated']
+      : []),
   ]).slice(0, 24);
   const freshness = scopeFreshness(input.graph);
   return {
@@ -98,6 +134,14 @@ export function assembleContextBriefLogicalResult(input: {
       gaps,
       graph: input.graph.coverage,
       memory: {
+        ...(input.memory.codeAnchorCoverage === undefined
+          ? {}
+          : {
+              codeAnchors: {
+                ...input.memory.codeAnchorCoverage,
+                matchedMemories: validatedCodeLinkedMemories,
+              },
+            }),
         consideredCandidates: input.memory.consideredCandidates,
         durableCandidates: durableDecisions.length,
         fresh: memories.filter(memory => memory.freshness === 'fresh').length,
@@ -126,7 +170,7 @@ export function assembleContextBriefLogicalResult(input: {
       memory: input.memory.trust,
     },
     type: 'context-brief',
-    version: CONTEXT_BRIEF_VERSION,
+    version: input.plan.codeAnchors.codeRefs.length === 0 ? CONTEXT_BRIEF_LEGACY_VERSION : CONTEXT_BRIEF_VERSION,
   };
 }
 
@@ -356,6 +400,103 @@ function publicCitationReceipts(
       status: receipt.status,
     };
   });
+}
+
+function publicCodeRelations(
+  candidate: ContextBriefMemoryRetrievalV1['candidates'][number],
+  receipts: readonly ContextBriefCitationValidationReceiptV2[],
+): readonly NonNullable<ContextBriefMemoryEvidenceV1['codeRelations']>[number][] {
+  if (candidate.codeLinkMatches === undefined || candidate.codeLinkMatches.length === 0) return [];
+  const receiptsById = new Map(receipts.map(receipt => [receipt.citationId, receipt]));
+  const seenAnchors = new Set<number>();
+  return candidate.codeLinkMatches
+    .flatMap(match => {
+      const receipt = receiptsById.get(match.citationId);
+      const status = codeLinkRelationStatus(match, receipt);
+      if (status === undefined) return [];
+      return [
+        {
+          anchorOrdinal: match.anchorOrdinal,
+          citationId: match.citationId,
+          kind: match.matchKind.startsWith('symbol-') ? ('symbol' as const) : ('file' as const),
+          strength: codeLinkMatchPriority(match.matchKind),
+          status,
+        },
+      ];
+    })
+    .sort(
+      (left, right) =>
+        codeRelationStatusPriority(left.status) - codeRelationStatusPriority(right.status) ||
+        left.strength - right.strength ||
+        left.anchorOrdinal - right.anchorOrdinal ||
+        compareText(left.citationId, right.citationId),
+    )
+    .flatMap(({strength: _strength, ...relation}) => {
+      if (seenAnchors.has(relation.anchorOrdinal)) return [];
+      seenAnchors.add(relation.anchorOrdinal);
+      return [relation];
+    });
+}
+
+function codeRelationStatusPriority(status: ContextBriefPreciseEvidenceStatus): number {
+  switch (status) {
+    case 'exact':
+      return 0;
+    case 'relocated':
+      return 1;
+    case 'changed':
+    case 'deleted':
+      return 2;
+    case 'unknown':
+      return 3;
+  }
+}
+
+function compactCodeLinkedCitationReceipts(
+  receipts: readonly ContextBriefCitationReceiptV2[],
+  relations: readonly NonNullable<ContextBriefMemoryEvidenceV1['codeRelations']>[number][],
+): readonly ContextBriefCitationReceiptV2[] {
+  if (relations.length === 0) return receipts;
+  return receipts
+    .filter(receipt => receipt.observedNodeId !== undefined || receipt.relocationHint !== undefined)
+    .slice(0, 1);
+}
+
+function codeLinkRelationStatus(
+  match: NonNullable<ContextBriefMemoryRetrievalV1['candidates'][number]['codeLinkMatches']>[number],
+  receipt: ContextBriefCitationValidationReceiptV2 | undefined,
+): ContextBriefPreciseEvidenceStatus | undefined {
+  switch (match.matchKind) {
+    case 'symbol-locator':
+      return match.anchorNodeId !== undefined && receipt?.observedNodeId === match.anchorNodeId
+        ? (receipt?.status ?? 'unknown')
+        : undefined;
+    case 'file-content':
+      return receipt?.observedPath === match.anchorPath ? (receipt?.status ?? 'unknown') : undefined;
+    case 'symbol-node': {
+      if (match.anchorNodeId === undefined) return undefined;
+      if (receipt?.observedNodeId === undefined) return 'unknown';
+      return receipt.observedNodeId === match.anchorNodeId ? receipt.status : undefined;
+    }
+    case 'file-path':
+      if (receipt?.observedPath === undefined) return 'unknown';
+      return receipt.observedPath === match.anchorPath ? receipt.status : undefined;
+  }
+}
+
+function codeLinkMatchPriority(
+  matchKind: NonNullable<ContextBriefMemoryRetrievalV1['candidates'][number]['codeLinkMatches']>[number]['matchKind'],
+): number {
+  switch (matchKind) {
+    case 'symbol-node':
+      return 0;
+    case 'symbol-locator':
+      return 1;
+    case 'file-path':
+      return 2;
+    case 'file-content':
+      return 3;
+  }
 }
 
 function summarizeCitationReceipts(

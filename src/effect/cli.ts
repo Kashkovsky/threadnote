@@ -42,8 +42,8 @@ import {
   runRemember,
 } from '../memory.js';
 import {runMcpInstall} from '../mcp.js';
-import {runObsidianInboxScan} from '../obsidian_inbox.js';
-import {runObsidianOpen} from '../obsidian_open.js';
+import {runObsidianInboxScan} from '../obsidian/inbox.js';
+import {runObsidianOpen} from '../obsidian/open.js';
 import {
   runObsidianProjectionAdd,
   runObsidianProjectionList,
@@ -51,7 +51,7 @@ import {
   runObsidianProjectionRemove,
   runObsidianProjectionStatus,
   runObsidianProjectionSync,
-} from '../obsidian_projection.js';
+} from '../obsidian/projection.js';
 import {
   runObsidianSourceAdd,
   runObsidianSourceInventory,
@@ -59,7 +59,7 @@ import {
   runObsidianSourceRemove,
   runObsidianSourceStatus,
   runObsidianSourceSync,
-} from '../obsidian_source.js';
+} from '../obsidian/source.js';
 import {getRuntimeConfig} from '../runtime.js';
 import {runInitManifest, runSeed, runSeedSkills, runWorksetList, runWorksetShow} from '../seeding.js';
 import {
@@ -83,7 +83,7 @@ import {
 import type {RuntimeConfig} from '../types.js';
 import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../update.js';
 import {errorMessage} from '../utils.js';
-import {runVersion} from '../version_command.js';
+import {runVersion} from '../release/version_command.js';
 import {runManage} from '../manager.js';
 import {applicationError} from './errors.js';
 import {runHomeMigration} from '../migration/home.js';
@@ -127,17 +127,17 @@ import {
   CODE_GRAPH_WORKSET_EVIDENCE_MAXIMUM_ESTIMATED_TOKENS,
   CODE_GRAPH_WORKSET_EVIDENCE_MINIMUM_ESTIMATED_TOKENS,
 } from '../code_graph/workset_evidence.js';
-import {runProcessDiagnostics} from '../process_diagnostics.js';
+import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
-import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../auto_update.js';
+import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
   cursorCloudRuntimeConfig,
   runCursorCloudBootstrap,
   runCursorCloudConfig,
   runCursorCloudVerify,
-} from '../cursor_cloud.js';
-import {runCursorAttestationCommand} from '../cursor_cloud_attestation.js';
+} from '../cursor/cloud.js';
+import {runCursorAttestationCommand} from '../cursor/cloud_attestation.js';
 import {
   makeCursorCloudAttestCommand,
   makeCursorCloudIdentityFlags,
@@ -217,12 +217,10 @@ const defaultChoice = <const Choices extends readonly string[], const Value exte
 ): Flag.Flag<Choices[number]> =>
   describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description).pipe(Flag.withDefault(value));
 
-const repeatedString = (name: string, description: string): Flag.Flag<ReadonlyArray<string>> =>
-  describeFlag(stringFlag(name), description).pipe(Flag.atMost(1000));
-
+const repeatedString = (name: string, description: string, maximum = 1000): Flag.Flag<ReadonlyArray<string>> =>
+  describeFlag(stringFlag(name), description).pipe(Flag.atMost(maximum));
 const argument = (name: string, description: string): Argument.Argument<string> =>
   Argument.string(name).pipe(Argument.withDescription(description));
-
 const optionalArgument = (name: string, description: string, fallback: string): Argument.Argument<string> =>
   argument(name, description).pipe(Argument.withDefault(fallback));
 
@@ -1474,6 +1472,7 @@ const contextBrief = Command.make(
         'Maximum estimated tokens for the combined structured and text response',
       ),
     ),
+    codeRefs: repeatedString('code-ref', 'File/cgs_ backlink; repeat up to eight times', 8),
     cwd: optionalString('cwd', 'Absolute repository path; defaults to the current directory'),
     json: boolean('json', 'Print the structured Context Brief projection'),
     mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),

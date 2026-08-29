@@ -17,7 +17,7 @@ import {EffectMcpServerAdapter, type EffectMcpServer} from '../../src/effect/ai/
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {SystemInfoShape} from '../../src/effect/system.js';
 import {anonymousTelemetryTestLayer} from '../../src/effect/telemetry.js';
-import {registerCodeGraphTool} from '../../src/mcp_server_code_graph.js';
+import {registerCodeGraphTool} from '../../src/mcp/server/code_graph.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {analysisSnapshot, pagedAnalysisStore} from '../helpers/code-graph-analysis.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';

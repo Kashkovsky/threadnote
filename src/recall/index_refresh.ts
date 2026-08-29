@@ -3,6 +3,7 @@ import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {forEachFileWithinBoundary} from '../effect/safe_scan.js';
 import {uriSegment} from '../manifest.js';
 import {canonicalResourceUri, parseResourceId} from '../storage/resource-id.js';
+import type {IndexedRecallCodeLink} from './code_links.js';
 import {normalizeRecallProject} from './eligibility.js';
 import {recallApprovedAuthoritative} from './index_eligibility.js';
 import type {RecallIndexPosting} from './index_lexical.js';
@@ -25,6 +26,7 @@ export interface CanonicalResourcePolicy {
 
 export interface IndexedRecallSource {
   readonly candidate: RecallCandidate;
+  readonly codeLinks: readonly IndexedRecallCodeLink[];
   readonly documentLength: number;
   readonly exactSearchText: string;
   readonly postings: ReadonlyMap<string, RecallIndexPosting>;
@@ -48,6 +50,13 @@ interface RecallRefreshIndexedGenerationRow {
   readonly uri: string;
 }
 
+interface RecallRefreshIndexedCodeLinkGenerationRow {
+  readonly citation_ordinal: number;
+  readonly selector_digest: string;
+  readonly selector_kind: string;
+  readonly uri: string;
+}
+
 interface RecallRefreshConfig {
   readonly account: string;
   readonly agentContextHome: string;
@@ -59,11 +68,13 @@ interface RecallRefreshConfig {
 // indexing limit. Source metadata is cheap enough to use a larger scan batch.
 const RECALL_REFRESH_INDEX_PAGE_SIZE = 8;
 const RECALL_REFRESH_GENERATION_PAGE_SIZE = 16;
+const RECALL_REFRESH_CODE_LINK_GENERATION_PAGE_SIZE = 256;
 const RECALL_REFRESH_SOURCE_PAGE_SIZE = 256;
 const MAX_INDEXED_FILE_BYTES = 512 * 1_024;
 const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml']);
 
 export const RECALL_REFRESH_AFFECTED_TERM_TABLE = 'recall_refresh_affected_terms';
+export const RECALL_REFRESH_INDEXED_CODE_LINK_TABLE = 'recall_refresh_indexed_code_links';
 export const RECALL_REFRESH_INDEXED_DOCUMENT_TABLE = 'recall_refresh_indexed_documents';
 export const RECALL_REFRESH_INDEXED_POSTING_TABLE = 'recall_refresh_indexed_postings';
 export const RECALL_REFRESH_REPLACED_DOCUMENT_TABLE = 'recall_refresh_replaced_documents';
@@ -221,6 +232,20 @@ export function insertIndexedRecallSources(sql: SqlClient.SqlClient, indexedSour
         indexed.exactSearchText,
       ]),
     );
+    const codeLinks = indexedSources.flatMap(indexed =>
+      indexed.codeLinks.map(
+        link => [indexed.source.uri, link.citationOrdinal, link.selectorKind, link.selectorDigest] as const,
+      ),
+    );
+    for (let index = 0; index < codeLinks.length; index += 400) {
+      const batch = codeLinks.slice(index, index + 400);
+      yield* sql.unsafe(
+        `INSERT INTO temp.${RECALL_REFRESH_INDEXED_CODE_LINK_TABLE} (
+          uri, citation_ordinal, selector_kind, selector_digest
+        ) VALUES ${batch.map(() => '(?, ?, ?, ?)').join(', ')}`,
+        batch.flat(),
+      );
+    }
     let postingBatch: Array<readonly [string, string, number, number]> = [];
     const flushPostings = () => {
       if (postingBatch.length === 0) return Effect.void;
@@ -249,6 +274,55 @@ export function hashRecallRefreshGeneration(sql: SqlClient.SqlClient, previousCo
     hash.update('{"changed":[');
     let first = true;
     let cursor: string | undefined;
+    let codeLinkCursor: RecallRefreshIndexedCodeLinkGenerationRow | undefined;
+    let codeLinkPage: readonly RecallRefreshIndexedCodeLinkGenerationRow[] = [];
+    let codeLinkPageOffset = 0;
+    let codeLinksExhausted = false;
+    const peekCodeLink = Effect.fn('recall.peekGenerationCodeLink')(function* () {
+      while (codeLinkPageOffset >= codeLinkPage.length && !codeLinksExhausted) {
+        const predicate =
+          codeLinkCursor === undefined
+            ? ''
+            : `WHERE
+                 uri COLLATE BINARY > ? COLLATE BINARY
+                 OR (uri = ? AND citation_ordinal > ?)
+                 OR (uri = ? AND citation_ordinal = ? AND selector_kind COLLATE BINARY > ? COLLATE BINARY)
+                 OR (
+                   uri = ?
+                   AND citation_ordinal = ?
+                   AND selector_kind = ?
+                   AND selector_digest COLLATE BINARY > ? COLLATE BINARY
+                 )`;
+        const parameters =
+          codeLinkCursor === undefined
+            ? [RECALL_REFRESH_CODE_LINK_GENERATION_PAGE_SIZE]
+            : [
+                codeLinkCursor.uri,
+                codeLinkCursor.uri,
+                codeLinkCursor.citation_ordinal,
+                codeLinkCursor.uri,
+                codeLinkCursor.citation_ordinal,
+                codeLinkCursor.selector_kind,
+                codeLinkCursor.uri,
+                codeLinkCursor.citation_ordinal,
+                codeLinkCursor.selector_kind,
+                codeLinkCursor.selector_digest,
+                RECALL_REFRESH_CODE_LINK_GENERATION_PAGE_SIZE,
+              ];
+        codeLinkPage = yield* sql.unsafe<RecallRefreshIndexedCodeLinkGenerationRow>(
+          `SELECT uri, citation_ordinal, selector_kind, selector_digest
+           FROM temp.${RECALL_REFRESH_INDEXED_CODE_LINK_TABLE}
+           ${predicate}
+           ORDER BY uri COLLATE BINARY, citation_ordinal, selector_kind COLLATE BINARY, selector_digest COLLATE BINARY
+           LIMIT ?`,
+          parameters,
+        );
+        codeLinkPageOffset = 0;
+        codeLinkCursor = codeLinkPage.at(-1);
+        codeLinksExhausted = codeLinkPage.length < RECALL_REFRESH_CODE_LINK_GENERATION_PAGE_SIZE;
+      }
+      return codeLinkPage[codeLinkPageOffset];
+    });
     while (true) {
       const predicate = cursor === undefined ? '' : 'WHERE uri COLLATE BINARY > ? COLLATE BINARY';
       const rows = yield* sql.unsafe<RecallRefreshIndexedGenerationRow>(
@@ -258,7 +332,21 @@ export function hashRecallRefreshGeneration(sql: SqlClient.SqlClient, previousCo
       );
       if (rows.length === 0) break;
       for (const row of rows) {
-        hash.update(`${first ? '' : ','}{"candidate":${row.candidate_json},"uri":${JSON.stringify(row.uri)}}`);
+        const codeLinks: IndexedRecallCodeLink[] = [];
+        while (true) {
+          const codeLink = yield* peekCodeLink();
+          if (codeLink === undefined || codeLink.uri > row.uri) break;
+          codeLinkPageOffset += 1;
+          if (codeLink.uri < row.uri) continue;
+          codeLinks.push({
+            citationOrdinal: codeLink.citation_ordinal,
+            selectorDigest: codeLink.selector_digest,
+            selectorKind: codeLink.selector_kind as IndexedRecallCodeLink['selectorKind'],
+          });
+        }
+        hash.update(
+          `${first ? '' : ','}{"candidate":${row.candidate_json},"codeLinks":${JSON.stringify(codeLinks)},"uri":${JSON.stringify(row.uri)}}`,
+        );
         first = false;
       }
       cursor = rows.at(-1)?.uri;
@@ -317,6 +405,7 @@ export function dropRecallSourceScan(sql: SqlClient.SqlClient) {
       RECALL_REFRESH_REPLACED_DOCUMENT_TABLE,
       RECALL_REFRESH_AFFECTED_TERM_TABLE,
       RECALL_REFRESH_INDEXED_POSTING_TABLE,
+      RECALL_REFRESH_INDEXED_CODE_LINK_TABLE,
       RECALL_REFRESH_INDEXED_DOCUMENT_TABLE,
       RECALL_REFRESH_SOURCE_TABLE,
     ]) {
@@ -341,6 +430,10 @@ function prepareRecallSourceScan(sql: SqlClient.SqlClient) {
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_INDEXED_POSTING_TABLE} (
       uri TEXT NOT NULL, term TEXT NOT NULL, field_weight REAL NOT NULL CHECK (field_weight >= 0),
       term_frequency INTEGER NOT NULL CHECK (term_frequency > 0), PRIMARY KEY (uri, term)) WITHOUT ROWID`);
+    yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_INDEXED_CODE_LINK_TABLE} (
+      uri TEXT NOT NULL, citation_ordinal INTEGER NOT NULL CHECK (citation_ordinal >= 0),
+      selector_kind TEXT NOT NULL, selector_digest TEXT NOT NULL CHECK (length(selector_digest) = 64),
+      PRIMARY KEY (uri, citation_ordinal, selector_kind, selector_digest)) WITHOUT ROWID`);
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_AFFECTED_TERM_TABLE} (
       term TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID`);
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_REPLACED_DOCUMENT_TABLE} (

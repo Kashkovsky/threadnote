@@ -1,7 +1,7 @@
 import {Cause, Effect, Queue} from 'effect';
 import {activeInstalledRelease} from '../installations.js';
-import {McpBrokerError, runMcpBroker, type McpBrokerChild, type McpBrokerFailureEvent} from '../mcp_broker.js';
-import type {StandaloneActiveRelease} from '../standalone_process_lease.js';
+import {McpBrokerError, runMcpBroker, type McpBrokerChild, type McpBrokerFailureEvent} from '../mcp/broker.js';
+import type {StandaloneActiveRelease} from '../process/standalone_lease.js';
 import {
   takePreparedAgentSessionEnvironment,
   withAgentSessionEnvironment,
@@ -10,7 +10,7 @@ import {
 } from '../telemetry/session.js';
 import {SystemInfo, type SystemInfoShape} from './system.js';
 import {emitAnonymousTelemetryEvent, withAnonymousTelemetry} from './telemetry.js';
-import {triggerAutoUpdateIfEnabled} from '../auto_update.js';
+import {triggerAutoUpdateIfEnabled} from '../release/auto_update.js';
 
 const AUTO_UPDATE_CHECK_INTERVAL_MILLISECONDS = 15 * 60 * 1_000;
 

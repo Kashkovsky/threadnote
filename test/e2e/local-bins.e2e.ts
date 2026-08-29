@@ -20,6 +20,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {afterAll, beforeAll, describe, expect, it} from 'vitest';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
+import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {vectorIndexDatabaseFilename} from '../../src/search/vector-index.js';
 
 const execute = promisify(execFile);
@@ -115,7 +116,7 @@ describe('built self-contained distribution', () => {
     );
     expect(installOutput).toContain('Activating vector recall index with 0 chunk(s).');
     expect(installedFiles).toContain('layout.json');
-    expect(installedFiles).toContain(join('indexes', 'lexical', 'active-v9.sqlite'));
+    expect(installedFiles).toContain(join('indexes', 'lexical', recallIndexDatabaseFilename(false)));
     expect(installedFiles).toContain(join('indexes', 'vectors', coreEmbeddingModelId, vectorIndexDatabaseFilename()));
     expect(installedFiles).not.toContain(join('cache', 'recall-index-v6.json'));
     expect(installedFiles.some(file => /\.py$|server\.pid|server\.lock|ov\.conf/i.test(file))).toBe(false);

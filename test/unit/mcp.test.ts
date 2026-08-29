@@ -10,7 +10,7 @@ import {captureConsole} from '../../src/effect/console.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
-import {mcpToolCapabilities, parseMcpToolset} from '../../src/mcp_toolset.js';
+import {mcpToolCapabilities, parseMcpToolset} from '../../src/mcp/toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 function runtime(): RuntimeConfig {

@@ -9,7 +9,7 @@ import {
   cursorCloudMemoryRoot,
   cursorCloudRemoteShareId,
   planCursorCloudBootstrap,
-} from '../../src/cursor_cloud.js';
+} from '../../src/cursor/cloud.js';
 import type {RuntimeConfig, ShareTeamConfig, ShareTeamsFile} from '../../src/types.js';
 
 const runtime: RuntimeConfig = {

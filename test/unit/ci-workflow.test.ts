@@ -180,6 +180,9 @@ describe('dependency-aware CI workflow', () => {
     expect(stepForRun(recallQuality, 'bun run eval:context-brief-citations:runtime').name).toBe(
       'Actual-runtime memory citation and Context Brief gate',
     );
+    expect(stepForRun(recallQuality, 'bun run eval:code-memory-link-bench').name).toBe(
+      'Actual-runtime code-to-memory backlink gate',
+    );
   });
 
   it('gates quality, Windows, bytecode, and self-contained release matrices independently', () => {

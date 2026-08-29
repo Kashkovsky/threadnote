@@ -1,7 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import {expect} from 'vitest';
-import {emptyManagerTree, readManagerTreeRoot} from '../../src/manager_tree.js';
+import {emptyManagerTree, readManagerTreeRoot} from '../../src/manager/tree.js';
 
 effectIt.effect('does not mistake a disappearing descendant for an absent Manager tree root', () =>
   Effect.gen(function* () {

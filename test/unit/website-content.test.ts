@@ -78,7 +78,7 @@ const toolKeys = {
     'memberLimit',
     'operation',
   ]),
-  context_brief: new Set(['budgetTokens', 'callerCwd', 'mode', 'project', 'task', 'workset']),
+  context_brief: new Set(['budgetTokens', 'callerCwd', 'codeRefs', 'mode', 'project', 'task', 'workset']),
   inspect_code_graph: new Set([
     'base',
     'callerCwd',
@@ -937,6 +937,8 @@ The body remains ordinary **Markdown**.
     expect(proTipsSource).toContain('same memory, citation, and graph-search');
     expect(faqSource).toContain('Will my existing memories disappear after upgrading to 4.4?');
     expect(faqSource).toContain('v1 and other uncited memories stay recallable');
+    expect(faqSource).toContain('Can an agent start with code and find related memory?');
+    expect(faqSource).toContain('up to eight repository-scoped files or cgs_ symbols');
     expect(faqSource).toContain('Do I need a Workset to use code citations or Context Brief?');
     expect(faqSource).toContain('That warning is about the link, not the memory');
     expect(faqSource).toContain('Citation writes never start indexing implicitly');
@@ -1091,7 +1093,13 @@ The body remains ordinary **Markdown**.
     expect(content).toContain('threadnote graph impact');
     expect(content).toContain('threadnote graph topology');
     expect(content).toContain('threadnote context brief');
+    expect(content).toContain('--code-ref src/checkout/retries.ts');
     expect(content).toContain('context_brief');
+    expect(content).toContain('codeRefs');
+    expect(content).toContain('Context Brief v3');
+    expect(content).toContain('at most eight code references');
+    expect(content).toContain('coverage.memory.codeAnchors');
+    expect(content).toContain('selectionBasis code-citation');
     expect(content).toContain('currently buffer the compact projection');
     expect(content).toContain('buffered delivered-first-evidence at or below one second');
     expect(content).toContain('At 128 repositories, the completion target is at or below five seconds');

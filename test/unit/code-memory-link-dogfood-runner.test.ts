@@ -1,0 +1,161 @@
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
+import {describe, expect, it} from 'vitest';
+import {
+  codeMemoryLinkDogfoodEnvironment,
+  projectCodeMemoryLinkDogfoodGraphStatusV1,
+  verifyDogfoodRunnerCheckout,
+} from '../../scripts/run-code-memory-link-dogfood.js';
+import {runCommandEffect} from '../../src/effect/command.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+
+describe('Code Memory Link dogfood runner checkout binding', () => {
+  effectIt.effect('seals candidate commands from ambient credentials and host configuration', () =>
+    Effect.gen(function* () {
+      const environment = codeMemoryLinkDogfoodEnvironment({
+        home: '/isolated/process-home',
+        temporaryDirectory: '/isolated/tmp',
+        threadnoteHome: '/isolated/threadnote-home',
+      });
+      const child = yield* runCommandEffect(
+        process.execPath,
+        ['-e', 'process.stdout.write(process.env.THREADNOTE_SECRET_SENTINEL ?? "absent")'],
+        {env: environment},
+      );
+
+      expect(child.stdout).toBe('absent');
+      expect(environment).toMatchObject({
+        HOME: '/isolated/process-home',
+        PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
+        THREADNOTE_HOME: '/isolated/threadnote-home',
+        TMPDIR: '/isolated/tmp',
+      });
+      expect(Object.keys(environment).sort()).toEqual([
+        'CI',
+        'HOME',
+        'LANG',
+        'LC_ALL',
+        'NO_COLOR',
+        'NO_UPDATE_NOTIFIER',
+        'PATH',
+        'THREADNOTE_ACCOUNT',
+        'THREADNOTE_AGENT_ID',
+        'THREADNOTE_HOME',
+        'THREADNOTE_NO_SPINNER',
+        'THREADNOTE_NO_UPDATE_CHECK',
+        'THREADNOTE_USER',
+        'TMPDIR',
+      ]);
+      expect(environment).not.toHaveProperty('THREADNOTE_SECRET_SENTINEL');
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it('projects an observed graph-status receipt and rejects a caller-supplied stale assertion', () => {
+    expect(
+      projectCodeMemoryLinkDogfoodGraphStatusV1({
+        readySnapshot: {commit: 'a'.repeat(40), dirty: false, id: `cgsn_${'b'.repeat(40)}`},
+        stale: true,
+        type: 'code-graph-status',
+        version: 2,
+      }),
+    ).toEqual({
+      readySnapshotCommit: 'a'.repeat(40),
+      readySnapshotDirty: false,
+      readySnapshotId: `cgsn_${'b'.repeat(40)}`,
+      stale: true,
+    });
+    expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/expected v2 status/);
+  });
+
+  effectIt.effect('accepts the exact clean checkout that supplied the reviewed runner', () =>
+    fixtureRepository('trusted').pipe(
+      Effect.flatMap(({approval, candidate, root}) =>
+        verifyDogfoodRunnerCheckout({
+          approvalCommit: approval,
+          candidateCommit: candidate,
+          executingSourceRoot: root,
+          requestedSourceRoot: root,
+        }).pipe(Effect.tap(result => Effect.sync(() => expect(result).toBe(root)))),
+      ),
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+    ),
+  );
+
+  effectIt.effect('rejects a foreign runner checkout targeting a clean reviewed repository', () =>
+    Effect.all([fixtureRepository('reviewed'), fixtureRepository('foreign')]).pipe(
+      Effect.flatMap(([reviewed, foreign]) =>
+        verifyDogfoodRunnerCheckout({
+          approvalCommit: reviewed.approval,
+          candidateCommit: reviewed.candidate,
+          executingSourceRoot: foreign.root,
+          requestedSourceRoot: reviewed.root,
+        }).pipe(
+          Effect.flip,
+          Effect.tap(failure =>
+            Effect.sync(() => {
+              expect(String(failure)).toContain('canonical checkout that supplied and is executing');
+            }),
+          ),
+        ),
+      ),
+      provideTestLayer(ApplicationLayer),
+      TestClock.withLive,
+    ),
+  );
+});
+
+const fixtureRepository = Effect.fn('codeMemoryLinkDogfoodRunnerTest.fixtureRepository')(function* (name: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const temporaryRoot = yield* fs.makeTempDirectoryScoped({prefix: `threadnote-code-memory-dogfood-${name}-`});
+  const root = yield* fs.realPath(temporaryRoot);
+  const approvalsPath = path.join(root, 'src/evaluation/code-memory-link-approvals.json');
+  const releasePath = path.join(root, 'docs/releasing.md');
+  yield* fs.makeDirectory(path.dirname(approvalsPath), {recursive: true});
+  yield* fs.makeDirectory(path.dirname(releasePath), {recursive: true});
+  yield* fs.writeFileString(
+    approvalsPath,
+    `${JSON.stringify({
+      agentAbEvidenceHashes: [],
+      agentAbManifestHashes: [],
+      dogfoodEvidenceHashes: [],
+      version: 1,
+    })}\n`,
+  );
+  yield* fs.writeFileString(releasePath, 'candidate\n');
+  yield* git(root, ['init', '--quiet']);
+  const candidate = yield* commit(root, 'candidate');
+  yield* fs.writeFileString(
+    approvalsPath,
+    `${JSON.stringify({
+      agentAbEvidenceHashes: [],
+      agentAbManifestHashes: [],
+      dogfoodEvidenceHashes: ['a'.repeat(64)],
+      version: 1,
+    })}\n`,
+  );
+  const approval = yield* commit(root, 'approval');
+  return {approval, candidate, root};
+});
+
+const commit = Effect.fn('codeMemoryLinkDogfoodRunnerTest.commit')(function* (root: string, message: string) {
+  yield* git(root, ['add', '.']);
+  yield* git(root, [
+    '-c',
+    'user.name=Threadnote Test',
+    '-c',
+    'user.email=test@threadnote.local',
+    'commit',
+    '--quiet',
+    '--message',
+    message,
+  ]);
+  return (yield* git(root, ['rev-parse', 'HEAD'])).stdout.trim();
+});
+
+function git(cwd: string, args: readonly string[]) {
+  return runCommandEffect('git', args, {cwd, maxOutputBytes: 64 * 1024, timeoutMs: 30_000});
+}

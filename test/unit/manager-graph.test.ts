@@ -49,8 +49,8 @@ import {
   type GraphAnalysis,
   type GraphRepositoryGroup,
   type GraphQueryVisualization,
-} from '../../src/manager_graph.js';
-import {GraphSummary} from '../../src/manager_graph_panels.js';
+} from '../../src/manager/graph.js';
+import {GraphSummary} from '../../src/manager/graph_panels.js';
 
 describe('manager graph focus', () => {
   it('carries the complete selected graph identity into administration actions', () => {

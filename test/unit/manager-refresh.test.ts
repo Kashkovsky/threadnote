@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {settleManagerRefreshTasks} from '../../src/manager_refresh.js';
+import {settleManagerRefreshTasks} from '../../src/manager/refresh.js';
 
 describe('Manager refresh isolation', () => {
   it('keeps successful refreshes when one endpoint fails', async () => {

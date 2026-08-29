@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {isBetaVersion, isPrereleaseVersion, selectUpdateChannel} from '../../src/update_channel.js';
+import {isBetaVersion, isPrereleaseVersion, selectUpdateChannel} from '../../src/release/channel.js';
 
 describe('update channel inference', () => {
   it('infers the inclusive preview channel for any valid release prerelease', () => {

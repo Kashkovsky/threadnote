@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "id": "code-memory-link-inverse-scale-v1",
+  "seed": "threadnote-code-memory-link-inverse-scale-v1-2026-08-29",
+  "corpusMemoryCount": 100000,
+  "denseBacklinkMemoryCount": 99996,
+  "directBacklinkMemoryCount": 3,
+  "isolationDecoyMemoryCount": 1,
+  "queryLimit": 8,
+  "minimumWarmups": 5,
+  "minimumSamples": 25,
+  "maximumLookupP95Milliseconds": 250,
+  "maximumLookupSampleMilliseconds": 1000,
+  "maximumMaterializationMilliseconds": 300000,
+  "maximumIndexBuildMilliseconds": 600000,
+  "maximumAddedPeakRssBytes": 3221225472,
+  "maximumCorpusBytes": 268435456,
+  "maximumRecallStorageBytes": 2147483648
+}

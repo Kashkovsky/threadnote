@@ -26,6 +26,14 @@ export function recallUriScopePredicate(
   alias: string,
   allowedUriScopes: readonly string[] | undefined,
 ): RecallSqlPredicate {
+  return recallUriColumnScopePredicate(`${alias}.uri`, allowedUriScopes);
+}
+
+/** Apply a canonical URI boundary to a denormalized URI column before a physical scan limit. */
+export function recallUriColumnScopePredicate(
+  column: string,
+  allowedUriScopes: readonly string[] | undefined,
+): RecallSqlPredicate {
   if (allowedUriScopes === undefined || allowedUriScopes.length === 0) {
     return {params: [], restricted: false, sql: '1 = 1'};
   }
@@ -35,7 +43,7 @@ export function recallUriScopePredicate(
   const clauses = scopes.map(scope => {
     const prefix = `${scope}/`;
     params.push(scope, prefix, `${scope}0`);
-    return `(${alias}.uri = ? OR (${alias}.uri >= ? AND ${alias}.uri < ?))`;
+    return `(${column} = ? OR (${column} >= ? AND ${column} < ?))`;
   });
   return {params, restricted: true, sql: `(${clauses.join(' OR ')})`};
 }
@@ -87,7 +95,7 @@ export function normalizeRecallWorkspaceScope(scope: string | undefined): string
   return segments.join('/').toLowerCase();
 }
 
-function normalizeRecallUriScopes(scopes: readonly string[]): readonly string[] {
+export function normalizeRecallUriScopes(scopes: readonly string[]): readonly string[] {
   return [...new Set(scopes.map(scope => stripRecallAnchor(scope).replace(/\/+$/, '').trim()).filter(Boolean))];
 }
 

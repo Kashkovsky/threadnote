@@ -14,8 +14,8 @@ import {
   type SessionCloseoutInput,
   validateSessionCloseoutInput,
   withCandidateReviewLock,
-} from '../../src/candidate_memory.js';
-import type {MemoryRecord} from '../../src/memory_document.js';
+} from '../../src/memory/candidate.js';
+import type {MemoryRecord} from '../../src/memory/document.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {join, mkdir, mkdtemp, readFile, rm, symlink, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect as run} from '../helpers/effect-runtime.js';

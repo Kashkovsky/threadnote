@@ -6,7 +6,7 @@ import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, describe, expect, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {checkForThreadnoteUpdate} from '../../src/update-check.js';
+import {checkForThreadnoteUpdate} from '../../src/release/check.js';
 
 const temporaryDirectories: string[] = [];
 

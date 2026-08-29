@@ -119,6 +119,8 @@ export interface VectorIndexStatus {
   readonly reusedChunkCount?: number;
 }
 
+export type VectorIndexGenerationReadiness = 'corrupt' | 'current' | 'missing' | 'stale';
+
 export class VectorIndexCorrupt extends Schema.TaggedError<VectorIndexCorrupt>()('VectorIndexCorrupt', {
   message: Schema.String,
   modelId: Schema.String,
@@ -253,8 +255,26 @@ export const vectorIndexMatchesGeneration = Effect.fn('vectorIndex.matchesGenera
   manifest: LocalModelManifest,
   corpusGeneration: string,
 ) {
-  const active = yield* readActiveVectorGeneration(home, manifest).pipe(Effect.catch(() => Effect.succeed(undefined)));
-  return active ? generationMatchesCorpus(active, manifest, corpusGeneration) : false;
+  return (yield* vectorIndexGenerationReadiness(home, manifest, corpusGeneration)) === 'current';
+});
+
+/**
+ * Read only the active generation metadata and retain the distinction between
+ * an absent/stale derived index and structural storage failure. Callers may
+ * safely schedule ordinary generation work for missing/stale state, but must
+ * keep corruption behind an explicit repair boundary.
+ */
+export const vectorIndexGenerationReadiness = Effect.fn('vectorIndex.generationReadiness')(function* (
+  home: string,
+  manifest: LocalModelManifest,
+  corpusGeneration: string,
+) {
+  const active = yield* readActiveVectorGeneration(home, manifest).pipe(Effect.result);
+  if (Result.isFailure(active)) return 'corrupt' as const;
+  if (!active.success) return 'missing' as const;
+  return generationMatchesCorpus(active.success, manifest, corpusGeneration)
+    ? ('current' as const)
+    : ('stale' as const);
 });
 
 const currentVectorIndexStatus = Effect.fn('vectorIndex.currentStatus')(function* <R = never>(

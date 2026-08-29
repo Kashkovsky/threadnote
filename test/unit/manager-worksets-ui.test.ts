@@ -5,9 +5,9 @@ import {createRoot, type Root} from 'react-dom/client';
 import {renderToStaticMarkup} from 'react-dom/server';
 import fc from 'fast-check';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {ManagerDialogProvider} from '../../src/manager_dialog.js';
-import type {ManagerWorksetPrepareJob} from '../../src/manager_worksets.js';
-import {managerWorksetJobElapsedMilliseconds, PrepareJobPanel, WorksetsPanel} from '../../src/manager_worksets_view.js';
+import {ManagerDialogProvider} from '../../src/manager/dialog.js';
+import type {ManagerWorksetPrepareJob} from '../../src/manager/worksets.js';
+import {managerWorksetJobElapsedMilliseconds, PrepareJobPanel, WorksetsPanel} from '../../src/manager/worksets_view.js';
 import {readFile} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 

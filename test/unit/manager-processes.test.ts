@@ -5,8 +5,8 @@ import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem} from 'effect';
 import {describe} from 'vitest';
 import {SystemInfo} from '../../src/effect/system.js';
-import {handleManagerProcessRequest} from '../../src/manager_processes.js';
-import {readThreadnoteProcessDiagnostics} from '../../src/process_diagnostics.js';
+import {handleManagerProcessRequest} from '../../src/manager/processes.js';
+import {readThreadnoteProcessDiagnostics} from '../../src/process/diagnostics.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 describe('Manager process API', () => {

@@ -14,10 +14,10 @@ import {runHandoff, runRecall} from './memory.js';
 import {applyScrubber} from './share.js';
 import {distillTrace} from './trace.js';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, RuntimeConfig} from './types.js';
-import {checkForThreadnoteUpdate} from './update-check.js';
+import {checkForThreadnoteUpdate} from './release/check.js';
 import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName} from './utils.js';
 import {getThreadnoteVersion} from './version.js';
-import {readAutoUpdateStatus, triggerAutoUpdateIfEnabled} from './auto_update.js';
+import {readAutoUpdateStatus, triggerAutoUpdateIfEnabled} from './release/auto_update.js';
 
 type HookEvent = 'PreCompact' | 'SessionStart';
 

@@ -1,6 +1,6 @@
 import {Cause, Clock, Console, Effect, Option, Result} from 'effect';
 import {MAX_RECALL_SELECTION_CANDIDATES, type RecallSelectionCandidate} from '../effect/ai/recall.js';
-import type {MemoryRecord} from '../memory_document.js';
+import type {MemoryRecord} from '../memory/document.js';
 import {
   buildRecallSections,
   memoryUriProjectSegment,
@@ -17,6 +17,7 @@ import {
   currentRecallCorpusGeneration,
   loadRecallIndexData,
   loadRecallIndexDataBatch,
+  recallIndexStatus,
   recallUriMatchesScopes,
 } from './index.js';
 import {recallWorkspaceScopeMatches} from './index_scope.js';
@@ -44,8 +45,14 @@ import {
   selectedSemanticScores,
   VectorCorpusGenerationChanged,
   VectorIndexCorrupt,
+  vectorIndexGenerationReadiness,
   vectorIndexMatchesGeneration,
 } from '../search/vector-index.js';
+import {
+  lexicalRefreshDisposition,
+  scheduleMcpRecallBackgroundRefresh,
+  type McpRecallBackgroundRefreshSchedule,
+} from './mcp_refresh.js';
 
 interface RecallRuntimeConfig {
   readonly account: string;
@@ -483,6 +490,16 @@ export interface McpRecallSemanticScoresResult {
   readonly status: 'available' | 'failed' | 'timed-out' | 'unavailable';
 }
 
+type McpReadOnlySemanticScoresAttempt =
+  | {
+      readonly corpusGeneration: string;
+      readonly scores: ReadonlyMap<string, number> | undefined;
+      readonly state: 'available';
+    }
+  | {readonly manifest: LocalModelManifest; readonly state: 'refreshable'}
+  | {readonly state: 'structurally-unavailable'}
+  | {readonly state: 'unavailable'};
+
 function emptyRecallSemanticScoresResult(warning: Option.Option<string> = Option.none()): RecallSemanticScoresResult {
   return {
     corpusGeneration: Option.none(),
@@ -535,7 +552,20 @@ export const loadMcpRecallSemanticScoresResult = Effect.fn('recall.loadMcpSemant
       status: 'failed',
     } satisfies McpRecallSemanticScoresResult;
   }
-  if (attempt.value === undefined || attempt.value.scores === undefined) {
+  if (attempt.value.state === 'refreshable') {
+    const schedule = yield* scheduleMcpRecallBackgroundRefresh(config, attempt.value.manifest);
+    return {
+      result: emptyRecallSemanticScoresResult(Option.some(semanticRecallRefreshingWarning(schedule))),
+      status: 'unavailable',
+    } satisfies McpRecallSemanticScoresResult;
+  }
+  if (attempt.value.state === 'structurally-unavailable') {
+    return {
+      result: emptyRecallSemanticScoresResult(Option.some(semanticRecallStructuralWarning())),
+      status: 'failed',
+    } satisfies McpRecallSemanticScoresResult;
+  }
+  if (attempt.value.state === 'unavailable' || attempt.value.scores === undefined) {
     return {result: emptyRecallSemanticScoresResult(), status: 'unavailable'} satisfies McpRecallSemanticScoresResult;
   }
   return {
@@ -557,26 +587,37 @@ const loadReadOnlySemanticScoresAttempt = Effect.fn('recall.loadReadOnlySemantic
 ) {
   const selection = yield* readModelSelection(config.agentContextHome);
   const modelId = selection.roles.embedding;
-  if (!modelId) return undefined;
+  if (!modelId) return {state: 'unavailable'} satisfies McpReadOnlySemanticScoresAttempt;
   const catalog = yield* LocalModelCatalog;
   const manifest = yield* catalog.get(modelId);
-  if (manifest.role !== 'embedding') return undefined;
+  if (manifest.role !== 'embedding') return {state: 'unavailable'} satisfies McpReadOnlySemanticScoresAttempt;
   const store = yield* LocalModelStore;
   const installed = yield* store.status(config.agentContextHome, manifest);
-  if (!installed.installed) return undefined;
-  const corpusGeneration = yield* currentRecallCorpusGeneration(config);
-  if (Option.isNone(corpusGeneration)) return undefined;
-  if (!(yield* vectorIndexMatchesGeneration(config.agentContextHome, manifest, corpusGeneration.value))) {
-    return undefined;
+  if (!installed.installed) return {state: 'unavailable'} satisfies McpReadOnlySemanticScoresAttempt;
+  const lexicalStatus = yield* recallIndexStatus(config, false);
+  const lexicalDisposition = lexicalRefreshDisposition(lexicalStatus);
+  if (lexicalDisposition === 'refreshable') {
+    return {manifest, state: 'refreshable'} satisfies McpReadOnlySemanticScoresAttempt;
+  }
+  if (lexicalDisposition === 'unsafe' || !lexicalStatus.generation) {
+    return {state: 'structurally-unavailable'} satisfies McpReadOnlySemanticScoresAttempt;
+  }
+  const corpusGeneration = lexicalStatus.generation;
+  const vectorReadiness = yield* vectorIndexGenerationReadiness(config.agentContextHome, manifest, corpusGeneration);
+  if (vectorReadiness === 'corrupt') {
+    return {state: 'structurally-unavailable'} satisfies McpReadOnlySemanticScoresAttempt;
+  }
+  if (vectorReadiness === 'missing' || vectorReadiness === 'stale') {
+    return {manifest, state: 'refreshable'} satisfies McpReadOnlySemanticScoresAttempt;
   }
   const scores = yield* selectedSemanticScores(config, query, {
-    corpusGeneration: corpusGeneration.value,
+    corpusGeneration,
     currentCorpusGeneration: () => currentRecallCorpusGeneration(config),
     allowedUriScopes,
     eligibility,
     limit,
   });
-  return {corpusGeneration: corpusGeneration.value, scores};
+  return {corpusGeneration, scores, state: 'available'} satisfies McpReadOnlySemanticScoresAttempt;
 });
 
 const semanticResultMatchesLexicalSnapshot = Effect.fn('recall.semanticResultMatchesLexicalSnapshot')(function* (
@@ -744,6 +785,24 @@ function semanticRecallTimeoutWarning(): string {
   return (
     `Local AI recall warning: semantic retrieval timed out after ${MCP_RECALL_SEMANTIC_RETRIEVAL_TIMEOUT_MILLISECONDS}ms; ` +
     'deterministic lexical recall continued. Run threadnote doctor --dry-run if this repeats.'
+  );
+}
+
+function semanticRecallRefreshingWarning(schedule: McpRecallBackgroundRefreshSchedule): string {
+  const activity =
+    schedule === 'scheduled'
+      ? 'A single background refresh was scheduled'
+      : 'A single background refresh is already running';
+  return (
+    `Local AI recall warning: semantic indexes are stale or missing. ${activity}; ` +
+    'lexical recall continued without waiting.'
+  );
+}
+
+function semanticRecallStructuralWarning(): string {
+  return (
+    'Local AI recall warning: semantic index storage failed read-only validation. Lexical recall continued; ' +
+    'no automatic repair ran. Run threadnote doctor --dry-run.'
   );
 }
 

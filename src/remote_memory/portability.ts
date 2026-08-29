@@ -1,8 +1,8 @@
 import {sha256HexSync} from '../crypto/sha256.js';
 import {formatRemoteMemoryUri, parseRemoteShareAddress} from '../memory_domain/address.js';
-import {canonicalMemoryDocumentContent, formatMemoryDocument, parseMemoryDocument} from '../memory_document.js';
+import {canonicalMemoryDocumentContent, formatMemoryDocument, parseMemoryDocument} from '../memory/document.js';
 import {inspectRemoteMemoryContent, parseRemoteCanonicalMemoryDocument} from '../memory_domain/content.js';
-import {memoryCodeCitationSharingBlocker} from '../memory_code_citation_policy.js';
+import {memoryCodeCitationSharingBlocker} from '../memory/code_citation_policy.js';
 import {parseResourceId, validatePortableSegment} from '../storage/resource-id.js';
 
 export const REMOTE_MEMORY_PORTABILITY_VERSION = 1 as const;

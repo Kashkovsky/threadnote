@@ -3,8 +3,8 @@ import fc from 'fast-check';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {HttpService} from '../../src/effect/http.js';
-import {fetchManagerLatestVersion, managerUpdateAvailable} from '../../src/manager_state.js';
-import {managerUpdateIndicator} from '../../src/manager_update_indicator.js';
+import {fetchManagerLatestVersion, managerUpdateAvailable} from '../../src/manager/state.js';
+import {managerUpdateIndicator} from '../../src/manager/update_indicator.js';
 
 describe('Manager runtime state', () => {
   it.each([

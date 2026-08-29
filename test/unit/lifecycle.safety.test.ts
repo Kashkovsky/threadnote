@@ -26,7 +26,7 @@ import {runDoctor, runRepair} from '../../src/lifecycle.js';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 import {LocalModelCatalog, type LocalModelManifest} from '../../src/models/catalog.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
-import {loadRecallIndexData} from '../../src/recall/index.js';
+import {loadRecallIndexData, recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {THREADNOTE_STORAGE_LAYOUT_VERSION} from '../../src/storage/layout.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {assertSafeThreadnoteHomeForErase} from '../../src/utils.js';
@@ -97,11 +97,12 @@ describe('read-only doctor', () => {
     const config = runtimeConfig(root);
     await writeLayoutReceipt(root);
     await runEffect(loadRecallIndexData(config, {includeInactive: false}));
-    const databasePath = join(root, 'indexes', 'lexical', 'active-v9.sqlite');
+    const databaseName = recallIndexDatabaseFilename(false);
+    const databasePath = join(root, 'indexes', 'lexical', databaseName);
     const sqliteArtifacts = new Set([
-      'indexes/lexical/active-v9.sqlite',
-      'indexes/lexical/active-v9.sqlite-shm',
-      'indexes/lexical/active-v9.sqlite-wal',
+      `indexes/lexical/${databaseName}`,
+      `indexes/lexical/${databaseName}-shm`,
+      `indexes/lexical/${databaseName}-wal`,
     ]);
     const logicalBefore = recallDatabaseLogicalSnapshot(databasePath);
     const before = await filesystemSnapshot(root, sqliteArtifacts);

@@ -3,10 +3,10 @@ import {Effect, FileSystem, Option, Path} from 'effect';
 import {describe} from 'vitest';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import type {ArchiveAction} from '../../src/memory_hygiene.js';
-import {archiveMemoryForCompact, resourceStoreLocation} from '../../src/mcp_server_memory.js';
-import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory_code_citation.js';
-import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory_document.js';
+import type {ArchiveAction} from '../../src/memory/hygiene.js';
+import {archiveMemoryForCompact, resourceStoreLocation} from '../../src/mcp/server/memory.js';
+import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

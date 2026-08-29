@@ -10,7 +10,7 @@ import {
   type GraphBuildStatus,
   type GraphNodeDetail,
   type GraphVisualization,
-} from '../../src/manager_graph.js';
+} from '../../src/manager/graph.js';
 import {
   managerGraphDetailWorkingSet,
   representativeManagerGraphEdges,
@@ -22,7 +22,7 @@ import {
   MANAGER_GRAPH_MAX_EDGE_LIMIT,
   MANAGER_GRAPH_MAX_NODE_LIMIT,
   managerGraphVisualizationLimits,
-} from '../../src/manager_graph_limits.js';
+} from '../../src/manager/graph_limits.js';
 
 describe('Manager graph properties', () => {
   it('keeps catalog revisions order-independent and sensitive to lifecycle changes', () => {

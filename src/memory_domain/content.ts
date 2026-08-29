@@ -6,11 +6,11 @@ import {
   formatMemoryDocument,
   parseMemoryDocument,
   type MemoryRecord,
-} from '../memory_document.js';
+} from '../memory/document.js';
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
-} from '../memory_code_citation_policy.js';
+} from '../memory/code_citation_policy.js';
 import {applyScrubber, type ScrubberPattern} from '../scrubber.js';
 
 export const REMOTE_MEMORY_CONTENT_CONTRACT_VERSION = 1 as const;
