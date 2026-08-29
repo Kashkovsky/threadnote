@@ -32,10 +32,12 @@ import {formatMemoryDocument} from '../../src/memory/document.js';
 import {
   assembleCalibrationPlanV1,
   assembleCodeMemoryLinkSealedSuiteV1,
+  assertCodeMemoryLinkMalformedSealedMemoryV1,
   assertPreparedGraphObjectFormat,
   codeMemoryLinkAgentPreparedMemoryDestinationMatches,
   codeMemoryLinkAgentPreparedMemoryDirectory,
   codeMemoryLinkAgentPreparationSourceRoot,
+  injectCodeMemoryLinkMalformedLegacyCitationV1,
   validateCodeMemoryLinkPreparedMemories,
   type PreparedGraphIdentity,
   type CodeMemoryLinkPreparedTaskV1,
@@ -173,6 +175,45 @@ describe('Code Memory Link sealed preparation', () => {
         null,
       ),
     ).toThrow('differs from its exact contract');
+  });
+
+  it('validates the malformed legacy control by semantic citation-error fields', () => {
+    const definition = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks.find(
+      task => task.controlScenario === 'malformed-citation',
+    )!;
+    const seed = definition.memorySeeds[0]!;
+    const canonical = formatMemoryDocument(
+      'MEMORY',
+      {
+        kind: 'durable',
+        project: 'code-memory-link-gate',
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        sourceAgentClient: 'code-memory-link-gate',
+        status: seed.status,
+        timestamp: '2000-01-01T00:00:00.000Z',
+        topic: seed.topic,
+      },
+      seed.text,
+    );
+    const withCitationValue = (value: string) => {
+      const separator = canonical.indexOf('\n\n');
+      return `${canonical.slice(0, separator)}\ncode_citation: ${value}${canonical.slice(separator)}`;
+    };
+    const malformed = injectCodeMemoryLinkMalformedLegacyCitationV1(canonical);
+
+    expect(() => assertCodeMemoryLinkMalformedSealedMemoryV1(malformed, definition)).not.toThrow();
+    expect(() => assertCodeMemoryLinkMalformedSealedMemoryV1(canonical, definition)).toThrow(
+      'did not produce one readable fail-closed legacy memory',
+    );
+    expect(() => assertCodeMemoryLinkMalformedSealedMemoryV1(withCitationValue('{}'), definition)).toThrow(
+      'did not produce one readable fail-closed legacy memory',
+    );
+    expect(() =>
+      assertCodeMemoryLinkMalformedSealedMemoryV1(
+        malformed.replace('\n\n', '\ncode_citation: {also-not-json\n\n'),
+        definition,
+      ),
+    ).toThrow('did not produce one readable fail-closed legacy memory');
   });
 
   it('validates exact prepared citations with committed Git-object content identities', () => {
