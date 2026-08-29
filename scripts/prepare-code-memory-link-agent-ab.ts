@@ -75,6 +75,7 @@ import {
   codeMemoryLinkAgentSuitePredicateId,
   codeMemoryLinkAgentSuiteRemoteUrl,
   createCodeMemoryLinkAgentSuiteCorpusV1,
+  type CodeMemoryLinkAgentSuiteMemorySeedV1,
   type CodeMemoryLinkAgentSuiteTaskDefinitionV1,
 } from '../src/evaluation/code-memory-link-agent-suite.js';
 import {
@@ -223,7 +224,7 @@ interface PreparedBinaryFile {
   readonly mode: number;
 }
 
-interface PreparedGraphIdentity {
+export interface PreparedGraphIdentity {
   readonly commit: string;
   readonly graphContentId: string;
   readonly origin: string;
@@ -394,6 +395,31 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
 
 export function codeMemoryLinkAgentPreparationSourceRoot(moduleUrl = import.meta.url): string {
   return resolve(fileURLToPath(new URL('../', moduleUrl)));
+}
+
+export function codeMemoryLinkAgentPreparedMemoryDirectory(
+  status: CodeMemoryLinkAgentSuiteMemorySeedV1['status'],
+): string {
+  let lifecycle: 'archived' | 'projects' | 'superseded';
+  switch (status) {
+    case 'active':
+      lifecycle = 'projects';
+      break;
+    case 'archived':
+      lifecycle = 'archived';
+      break;
+    case 'superseded':
+      lifecycle = 'superseded';
+      break;
+  }
+  return `data/${CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT}/user/${CODE_MEMORY_LINK_AGENT_SUITE_USER}/memories/durable/${lifecycle}/${CODE_MEMORY_LINK_AGENT_SUITE_PROJECT}`;
+}
+
+export function codeMemoryLinkAgentPreparedMemoryDestinationMatches(
+  destination: string,
+  status: CodeMemoryLinkAgentSuiteMemorySeedV1['status'],
+): boolean {
+  return posix.dirname(destination) === codeMemoryLinkAgentPreparedMemoryDirectory(status);
 }
 
 export function assembleCodeMemoryLinkSealedSuiteV1(input: {
@@ -827,7 +853,7 @@ async function prepareTask(
   if (memories.length !== definition.memorySeeds.length) {
     throw new Error(`Task ${definition.taskId} did not produce exactly one canonical memory per seed.`);
   }
-  validatePreparedMemories(memories, definition, localGraph, foreignGraph);
+  validateCodeMemoryLinkPreparedMemories(memories, definition, localGraph, foreignGraph);
   const sealedMemories =
     definition.controlScenario === 'malformed-citation'
       ? memories.map(file => ({...file, content: injectMalformedLegacyCitation(file.content)}))
@@ -1456,15 +1482,15 @@ function memoryCitationIds(content: string): readonly string[] {
   return ids;
 }
 
-function validatePreparedMemories(
+export function validateCodeMemoryLinkPreparedMemories(
   memories: readonly {readonly content: string; readonly destination: string}[],
   definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1,
   localGraph: PreparedGraphIdentity,
   foreignGraph: PreparedGraphIdentity | null,
 ): void {
-  const expectedPrefix = `data/${CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT}/user/${CODE_MEMORY_LINK_AGENT_SUITE_USER}/memories/durable/projects/${CODE_MEMORY_LINK_AGENT_SUITE_PROJECT}/`;
+  const identityRoot = `data/${CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT}/user/${CODE_MEMORY_LINK_AGENT_SUITE_USER}/memories/durable/`;
   const records = memories.map((memory, index) => {
-    if (!memory.destination.startsWith(expectedPrefix)) {
+    if (!memory.destination.startsWith(identityRoot)) {
       throw new Error(`Task ${definition.taskId} memory ${index} is outside the canonical managed identity path.`);
     }
     let record: MemoryRecord | undefined;
@@ -1477,6 +1503,11 @@ function validatePreparedMemories(
       throw new Error(`Task ${definition.taskId} memory ${index} is not a canonical managed memory.`, {cause});
     }
     if (!record) throw new Error(`Task ${definition.taskId} memory ${index} is not parseable.`);
+    const seed = definition.memorySeeds.find(candidate => candidate.topic === record.metadata.topic);
+    if (!seed) throw new Error(`Task ${definition.taskId} produced an unexpected memory topic.`);
+    if (!codeMemoryLinkAgentPreparedMemoryDestinationMatches(memory.destination, seed.status)) {
+      throw new Error(`Task ${definition.taskId} memory ${index} is outside its canonical lifecycle path.`);
+    }
     return record;
   });
   unique(

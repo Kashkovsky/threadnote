@@ -17,6 +17,7 @@ import {
 } from '../../src/evaluation/code-memory-link-client-descriptor.js';
 import {
   assembleCalibrationPlanV1,
+  codeMemoryLinkAgentPreparedMemoryDirectory,
   type CodeMemoryLinkPreparedClientV1,
   type CodeMemoryLinkPreparedTaskV1,
 } from '../../scripts/prepare-code-memory-link-agent-ab.js';
@@ -208,9 +209,9 @@ function preparedTask(
   return {
     citationDigests,
     definition,
-    homeFiles: definition.memorySeeds.map((_, index) => ({
+    homeFiles: definition.memorySeeds.map((seed, index) => ({
       content: `task=${definition.taskId}_${index}\n`,
-      destination: `data/local/user/code-memory-link/memories/durable/projects/code-memory-link-gate/${definition.taskId}-${index}.md`,
+      destination: `${codeMemoryLinkAgentPreparedMemoryDirectory(seed.status)}/${definition.taskId}-${index}.md`,
     })),
     preflightExpectedCitationDigests: citationDigests,
     preflightExpectedResponses: expectedResponses(),

@@ -13,6 +13,7 @@ import {
   codeMemoryLinkAgentSuiteGuardValueV1,
   codeMemoryLinkAgentSuiteOutputArtifactId,
   createCodeMemoryLinkAgentSuiteCorpusV1,
+  type CodeMemoryLinkAgentSuiteTaskDefinitionV1,
 } from '../../src/evaluation/code-memory-link-agent-suite.js';
 import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
@@ -21,10 +22,16 @@ import {
   evaluateCodeMemoryLinkStaticArtifactsV1,
   type CodeMemoryLinkStaticArtifactInputV1,
 } from '../../src/evaluation/code-memory-link-agent-protocol.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
+import {formatMemoryDocument} from '../../src/memory/document.js';
 import {
   assembleCalibrationPlanV1,
   assembleCodeMemoryLinkSealedSuiteV1,
+  codeMemoryLinkAgentPreparedMemoryDestinationMatches,
+  codeMemoryLinkAgentPreparedMemoryDirectory,
   codeMemoryLinkAgentPreparationSourceRoot,
+  validateCodeMemoryLinkPreparedMemories,
+  type PreparedGraphIdentity,
   type CodeMemoryLinkPreparedTaskV1,
 } from '../../scripts/prepare-code-memory-link-agent-ab.js';
 import {parseCodeMemoryLinkCodexSuiteLayoutV1} from '../../scripts/code-memory-link-codex-suite.js';
@@ -36,6 +43,119 @@ describe('Code Memory Link sealed preparation', () => {
 
     expect(sourceRoot).toBe(moduleDerivedRoot.replace(/[\\/]+$/u, ''));
     expect(sourceRoot).not.toMatch(/[\\/]$/u);
+  });
+
+  it('maps prepared memories to their exact canonical lifecycle directories', () => {
+    const statuses = ['active', 'archived', 'superseded'] as const;
+    const expectedLifecycle = {
+      active: 'projects',
+      archived: 'archived',
+      superseded: 'superseded',
+    } as const;
+
+    for (const expectedStatus of statuses) {
+      expect(codeMemoryLinkAgentPreparedMemoryDirectory(expectedStatus)).toBe(
+        `data/local/user/code-memory-link/memories/durable/${expectedLifecycle[expectedStatus]}/code-memory-link-gate`,
+      );
+      for (const actualStatus of statuses) {
+        const destination = `${codeMemoryLinkAgentPreparedMemoryDirectory(actualStatus)}/fixture.md`;
+        expect(codeMemoryLinkAgentPreparedMemoryDestinationMatches(destination, expectedStatus)).toBe(
+          actualStatus === expectedStatus,
+        );
+      }
+    }
+
+    fc.assert(
+      fc.property(fc.constantFrom(...statuses), fc.stringMatching(/^[a-z][a-z0-9-]{0,31}$/u), (status, filename) => {
+        const directory = codeMemoryLinkAgentPreparedMemoryDirectory(status);
+
+        expect(codeMemoryLinkAgentPreparedMemoryDestinationMatches(`${directory}/${filename}.md`, status)).toBe(true);
+        expect(codeMemoryLinkAgentPreparedMemoryDestinationMatches(`${directory}/nested/${filename}.md`, status)).toBe(
+          false,
+        );
+      }),
+      {numRuns: 30},
+    );
+
+    const activeDirectory = codeMemoryLinkAgentPreparedMemoryDirectory('active');
+    for (const invalid of [
+      `${activeDirectory}-evil/fixture.md`,
+      `${activeDirectory}/nested/fixture.md`,
+      `${activeDirectory}/../fixture.md`,
+      `${activeDirectory.replace('data/local/', 'data/foreign/')}/fixture.md`,
+      `${activeDirectory.replace('/user/code-memory-link/', '/user/other/')}/fixture.md`,
+      `${activeDirectory.replace('/durable/projects/', '/durable/expired/')}/fixture.md`,
+    ]) {
+      expect(codeMemoryLinkAgentPreparedMemoryDestinationMatches(invalid, 'active')).toBe(false);
+    }
+  });
+
+  it('validates lifecycle destinations by parsed topic rather than file order', () => {
+    const base = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0]!;
+    const memorySeeds = (['active', 'archived', 'superseded'] as const).map((status, index) => ({
+      citationPath: null,
+      foreignRepository: false,
+      malformedCitationProbe: false,
+      role: 'primary' as const,
+      status,
+      text: `lifecycle-${status}-body`,
+      topic: `lifecycle-${status}-${index}`,
+    }));
+    const definition: CodeMemoryLinkAgentSuiteTaskDefinitionV1 = {...base, memorySeeds};
+    const contentFor = (seed: (typeof memorySeeds)[number], status = seed.status) =>
+      formatMemoryDocument(
+        'MEMORY',
+        {
+          kind: 'durable',
+          project: 'code-memory-link-gate',
+          schemaVersion: MEMORY_SCHEMA_VERSION,
+          sourceAgentClient: 'code-memory-link-gate',
+          status,
+          timestamp: '2000-01-01T00:00:00.000Z',
+          topic: seed.topic,
+        },
+        seed.text,
+      );
+    const files = [memorySeeds[2]!, memorySeeds[0]!, memorySeeds[1]!].map(seed => ({
+      content: contentFor(seed),
+      destination: `${codeMemoryLinkAgentPreparedMemoryDirectory(seed.status)}/${seed.topic}.md`,
+    }));
+    const graph: PreparedGraphIdentity = {
+      commit: '1'.repeat(40),
+      graphContentId: `cgc_${'2'.repeat(40)}`,
+      origin: 'https://example.invalid/threadnote.git',
+      repositoryId: '3'.repeat(64),
+      snapshotId: `cgsn_${'4'.repeat(40)}`,
+    };
+
+    expect(() => validateCodeMemoryLinkPreparedMemories(files, definition, graph, null)).not.toThrow();
+
+    const activeFile = files.find(file => file.content.includes('topic: lifecycle-active-0'))!;
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories(
+        files.map(file =>
+          file === activeFile
+            ? {
+                ...file,
+                destination: `${codeMemoryLinkAgentPreparedMemoryDirectory('superseded')}/wrong-lifecycle.md`,
+              }
+            : file,
+        ),
+        definition,
+        graph,
+        null,
+      ),
+    ).toThrow('outside its canonical lifecycle path');
+
+    const archivedFile = files.find(file => file.content.includes('topic: lifecycle-archived-1'))!;
+    expect(() =>
+      validateCodeMemoryLinkPreparedMemories(
+        files.map(file => (file === archivedFile ? {...file, content: contentFor(memorySeeds[1]!, 'active')} : file)),
+        definition,
+        graph,
+        null,
+      ),
+    ).toThrow('differs from its exact contract');
   });
 
   it('assembles one fully bound 28-task suite with task-private fixture mappings', () => {
@@ -175,12 +295,12 @@ function preparedTask(
   return {
     citationDigests,
     definition,
-    homeFiles: definition.memorySeeds.map((_, index) => ({
+    homeFiles: definition.memorySeeds.map((seed, index) => ({
       content:
         definition.controlScenario === 'malformed-citation'
           ? `task=${definition.taskId}_${index}\ncode_citation: {not-canonical-json\n`
           : `task=${definition.taskId}_${index}\n`,
-      destination: `data/local/user/code-memory-link/memories/durable/projects/code-memory-link-gate/${definition.taskId}-${index}.md`,
+      destination: `${codeMemoryLinkAgentPreparedMemoryDirectory(seed.status)}/${definition.taskId}-${index}.md`,
     })),
     preflightExpectedCitationDigests:
       definition.taskKind === 'hidden-constraint' ||
