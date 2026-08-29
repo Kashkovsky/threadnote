@@ -373,7 +373,7 @@ export const resolveManagedDevelopmentExecutableForSource = Effect.fn('developme
     if (JSON.stringify(after) !== JSON.stringify(before)) {
       return yield* Effect.fail(new ScriptError('The managed Threadnote active release changed during resolution.'));
     }
-    return {evidence: after, executable};
+    return {evidence: after, executable, installRoot: realInstallRoot};
   },
 );
 

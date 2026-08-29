@@ -23,7 +23,9 @@ import {
 } from '../../scripts/prepare-code-memory-link-agent-ab.js';
 import {
   assertCodeMemoryLinkCalibrationPrefixV1,
+  boundedCodeMemoryLinkChildFailureDiagnostic,
   calibrationResultDigest,
+  codeMemoryLinkReleaseRunnerEnvironment,
   codeMemoryLinkReleaseLedgerPathsV1,
   createCalibrationResult,
   materializeCodeMemoryLinkCalibrationSandboxV1,
@@ -118,6 +120,64 @@ describe('Code Memory Link sequential matrix', () => {
     expect(evidenceIndex).toBeGreaterThan(0);
     expect(arguments_[evidenceIndex + 1]).toBe(evidence);
     expect(arguments_.filter(argument => argument === '--evidence')).toHaveLength(1);
+  });
+
+  it('projects arbitrary verified install roots into the exact trusted runner environment', () => {
+    fc.assert(
+      fc.property(fc.array(fc.stringMatching(/^[a-z][a-z0-9-]{0,12}$/u), {minLength: 1, maxLength: 5}), segments => {
+        const installRoot = `/private/${segments.join('/')}`;
+
+        expect(codeMemoryLinkReleaseRunnerEnvironment(installRoot)).toEqual({
+          HOME: '/nonexistent',
+          LANG: 'C.UTF-8',
+          LC_ALL: 'C.UTF-8',
+          PATH: '/usr/bin:/bin',
+          THREADNOTE_INSTALL_ROOT: installRoot,
+          TMPDIR: '/tmp',
+        });
+      }),
+      {numRuns: 60},
+    );
+    expect(() => codeMemoryLinkReleaseRunnerEnvironment('relative/threadnote')).toThrow(
+      'must be a normalized absolute path',
+    );
+  });
+
+  it('retains bounded stdout-only Effect failures and both child streams', () => {
+    const stdoutOnly = boundedCodeMemoryLinkChildFailureDiagnostic({
+      stderr: '',
+      stdout: 'The managed Threadnote active release pointer is missing or invalid.',
+    });
+    expect(stdoutOnly).toContain('stdout:');
+    expect(stdoutOnly).toContain('active release pointer is missing or invalid');
+    expect(boundedCodeMemoryLinkChildFailureDiagnostic({stderr: '', stdout: ''})).toBe(
+      '(child produced no stdout or stderr)',
+    );
+
+    fc.assert(
+      fc.property(fc.string({maxLength: 5_000}), fc.string({maxLength: 5_000}), (stderr, stdout) => {
+        const diagnostic = boundedCodeMemoryLinkChildFailureDiagnostic({stderr, stdout});
+        expect(diagnostic.length).toBeLessThanOrEqual(2_048);
+        if (stderr) expect(diagnostic).toContain('stderr:');
+        if (stdout) expect(diagnostic).toContain('stdout:');
+      }),
+      {numRuns: 60},
+    );
+
+    fc.assert(
+      fc.property(fc.string({maxLength: 5_000}), fc.string({maxLength: 5_000}), (stderr, stdout) => {
+        const stderrTail = 'stderr-tail-marker';
+        const stdoutTail = 'stdout-tail-marker';
+        const diagnostic = boundedCodeMemoryLinkChildFailureDiagnostic({
+          stderr: `${stderr}${stderrTail}`,
+          stdout: `${stdout}${stdoutTail}`,
+        });
+        expect(diagnostic).toContain(stderrTail);
+        expect(diagnostic).toContain(stdoutTail);
+        expect(diagnostic.length).toBeLessThanOrEqual(2_048);
+      }),
+      {numRuns: 60},
+    );
   });
 
   it('resolves the matrix trial runner through the same canonical file check used by release execution', async () => {
