@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {assertRetainedBundleBindings} from '../../scripts/verify-code-memory-link-release.js';
 import {
   assembleCodeMemoryLinkSealedSuiteV1,
+  codeMemoryLinkAgentPreparedMemoryDirectory,
   type CodeMemoryLinkPreparedTaskV1,
 } from '../../scripts/prepare-code-memory-link-agent-ab.js';
 import {
@@ -231,12 +232,12 @@ function preparedTask(
   return {
     citationDigests,
     definition,
-    homeFiles: definition.memorySeeds.map((_, index) => ({
+    homeFiles: definition.memorySeeds.map((seed, index) => ({
       content:
         definition.controlScenario === 'malformed-citation'
           ? `task=${definition.taskId}_${index}\ncode_citation: {not-canonical-json\n`
           : `task=${definition.taskId}_${index}\n`,
-      destination: `data/local/user/code-memory-link/memories/durable/projects/code-memory-link-gate/${definition.taskId}-${index}.md`,
+      destination: `${codeMemoryLinkAgentPreparedMemoryDirectory(seed.status)}/${definition.taskId}-${index}.md`,
     })),
     preflightExpectedCitationDigests:
       definition.taskKind === 'hidden-constraint' ||
