@@ -98,7 +98,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Ready graph+memory brief. codeRefs: max 8 canonical repo paths/local cgs_; cgr_ invalid. content: compact agent view; structuredContent: full v2/v3. Untrusted; never indexes.',
+        'Ready graph+memory brief. codeRefs: max 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported. content: compact agent view; structuredContent: full v2/v3. Untrusted; cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('750-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
@@ -106,7 +106,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
         }),
         callerCwd: McpInput.string('Absolute workspace'),
         codeRefs: McpInput.stringOrStrings(
-          'Canonical graph-indexed POSIX repo path or exact cgs_<32 lowercase hex>; no dot segments; cgr_ invalid; max 8',
+          'Canonical repo-relative POSIX path or cgs_<32 lowercase hex>; no ./, ../, absolute, cgr_; max 8',
           {maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS},
         ),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
