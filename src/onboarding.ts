@@ -1,7 +1,7 @@
 import {Effect} from 'effect';
 import {readSeedManifest} from './manifest.js';
 import type {McpToolset} from './mcp/toolset.js';
-import {readTeamsFile} from './share.js';
+import {readTeamsFile} from './share/index.js';
 
 // Minimal config shape the onboarding probes need, structurally satisfied by
 // both the CLI and the MCP-adapter RuntimeConfig variants.

@@ -11,10 +11,12 @@ import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../memory/code_citation_policy.js';
+import {discardDeferredCodeAnchorIntent, hasDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
+import {recordMemoryRelocation} from '../memory/relocation.js';
 
 import {ResourceStore} from '../effect/resource-store.js';
 
-import {applyScrubber} from '../scrubber.js';
+import {applyScrubber} from './scrubber.js';
 
 import type {
   ShareAgentArtifactAgent,
@@ -99,6 +101,12 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
   const preview = options.preview === true;
   if (isInSharedNamespace(config, sourceUri)) {
     throw new ShareOperationError(`Memory ${sourceUri} is already in the shared namespace.`);
+  }
+  const hasPendingCodeRefs = yield* hasDeferredCodeAnchorIntent(config, sourceUri);
+  if (hasPendingCodeRefs && options.allowUncitedPendingCodeRefs !== true) {
+    throw new ShareOperationError(
+      `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and run \`threadnote finalize-code-refs --uri ${sourceUri}\`, or explicitly pass --allow-uncited-pending-code-refs to publish without them and discard the private intent.`,
+    );
   }
   const ov = NATIVE_RESOURCE_BACKEND;
   const rawContent = yield* readMemoryContent(config, ov, sourceUri, dryRun);
@@ -195,8 +203,17 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
       if (sourceBeforeRemoval.trim() !== currentRawContent.trim()) {
         throw new ShareOperationError(`Memory ${sourceUri} changed during publication; personal source preserved.`);
       }
+      yield* recordMemoryRelocation(config, {
+        fromContent: sourceBeforeRemoval,
+        fromUri: sourceUri,
+        toContent: currentScrub.cleaned,
+        toUri: targetUri,
+      });
     }
     yield* removeMemoryUri(config, ov, sourceUri, dryRun);
+    if (!dryRun && hasPendingCodeRefs) {
+      yield* discardDeferredCodeAnchorIntent(config, sourceUri);
+    }
     return {gitMessages, redactions: currentScrub.redactions};
   });
   const published = yield* publish();

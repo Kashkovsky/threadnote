@@ -3,7 +3,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {shareAgentArtifact, shareBundlePack} from '../../src/share.js';
+import {shareAgentArtifact, shareBundlePack} from '../../src/share/index.js';
 import {
   installSharedAgentArtifacts as installSharedAgentArtifactsEffect,
   listSharedAgentArtifacts as listSharedAgentArtifactsEffect,

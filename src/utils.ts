@@ -23,13 +23,13 @@ import {
   type RecallSignals,
 } from './recall/rank.js';
 import {recallRankCandidateIsEligible, type RecallEligibilityPolicy} from './recall/eligibility.js';
-import {redactSensitiveText} from './scrubber.js';
+import {redactSensitiveText} from './share/scrubber.js';
 import {recallTokens} from './recall/tokenize.js';
 import {parseResourceId} from './storage/resource-id.js';
 import {isThreadnoteStorageLayoutReceipt} from './storage/layout.js';
 import type {CommandStatus, JsonObject} from './types.js';
-import {getThreadnoteVersion} from './version.js';
-import {compareVersions} from './version_compare.js';
+import {getThreadnoteVersion} from './release/runtime_version.js';
+import {compareVersions} from './release/version_compare.js';
 import {findWorkspaceComponentManifest} from './workspace_component.js';
 
 class UtilityOperationError extends Error {
@@ -37,7 +37,7 @@ class UtilityOperationError extends Error {
 }
 
 export {formatShellCommand, shellQuote, withoutGitEnvironment} from './effect/command.js';
-export {compareVersions} from './version_compare.js';
+export {compareVersions} from './release/version_compare.js';
 
 export function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);

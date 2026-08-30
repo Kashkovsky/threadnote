@@ -14,7 +14,11 @@ export function captureMemoryCodeCitationsForMcp(
   }
   return captureMemoryCodeCitations(config, input).pipe(
     Effect.match({
-      onFailure: error => ({error: memoryCodeCitationCaptureErrorResult(error, operation), ok: false as const}),
+      onFailure: error => ({
+        error: memoryCodeCitationCaptureErrorResult(error, operation),
+        failure: error,
+        ok: false as const,
+      }),
       onSuccess: citations => ({citations, ok: true as const}),
     }),
   );

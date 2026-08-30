@@ -2,6 +2,8 @@ import {Effect, FileSystem, Option} from 'effect';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {ResourceStore, type ResourceStoreShape} from '../effect/resource-store.js';
 import type {CompactPlan, ForgetAction, KeepUpdateAction, MemoryRecord} from './hygiene.js';
+import {discardDeferredCodeAnchorIntent} from './deferred_code_anchor.js';
+import {discardMemoryRelocation} from './relocation.js';
 import {resourceStoreLocation} from './migrations.js';
 import type {RuntimeConfig} from '../types.js';
 
@@ -118,6 +120,8 @@ export const applyAtomicExactDuplicateActions = Effect.fn('memoryHygiene.applyAt
         const survivorPostContent = group.keepUpdate?.content ?? group.survivorExpectedContent;
         if (group.keepUpdate) {
           yield* store.write(location, group.survivorUri, group.keepUpdate.content, {mode: 'replace'});
+          yield* discardDeferredCodeAnchorIntent(config, group.survivorUri);
+          yield* discardMemoryRelocation(config, group.survivorUri);
         }
 
         // Revalidate both sides after the survivor write. A writer that
@@ -151,6 +155,7 @@ export const applyAtomicExactDuplicateActions = Effect.fn('memoryHygiene.applyAt
             'survivor changed before duplicate retirement',
           );
           yield* store.remove(location, action.uri);
+          yield* discardDeferredCodeAnchorIntent(config, action.uri);
           forgottenUris.push(action.uri);
         }
         if (group.keepUpdate) updatedSurvivorUris.push(group.survivorUri);

@@ -3823,7 +3823,7 @@ describe('code graph full-build materialization store', () => {
     const fixture = await materializationFixture();
     const registration = {
       ...symbol('registration', 'recall_context', ['typescript:name:recall_context']),
-      path: 'src/mcp_server.ts',
+      path: 'src/mcp/server/index.ts',
     };
     const testLocal = {
       ...symbol('test-local', 'recall_context', ['typescript:name:recall_context']),
@@ -3851,7 +3851,7 @@ describe('code graph full-build materialization store', () => {
     );
 
     expect(search.map(node => node.path)).toEqual([
-      'src/mcp_server.ts',
+      'src/mcp/server/index.ts',
       'test/integration/mcp.native-tools.test.ts',
       'AGENTS.md',
     ]);
@@ -3863,7 +3863,7 @@ describe('code graph full-build materialization store', () => {
     const fixture = await materializationFixture();
     const registration = {
       ...symbol('registration', 'recall_context', ['typescript:name:recall_context']),
-      path: 'src/mcp_server.ts',
+      path: 'src/mcp/server/index.ts',
     };
     const testLocal = {
       ...symbol('test-local', 'recall_context', ['typescript:name:recall_context']),
@@ -3886,7 +3886,10 @@ describe('code graph full-build materialization store', () => {
       }),
     );
 
-    expect(search.map(node => node.path)).toEqual(['test/integration/mcp.native-tools.test.ts', 'src/mcp_server.ts']);
+    expect(search.map(node => node.path)).toEqual([
+      'test/integration/mcp.native-tools.test.ts',
+      'src/mcp/server/index.ts',
+    ]);
   });
 
   it('ranks a production side-effect owner ahead of lexical state and test matches', async () => {

@@ -4,7 +4,7 @@ import type {MemoryKind} from '../../types.js';
 import type {RuntimeConfig} from '../../types.js';
 import type {MemoryMetadata} from '../../memory/document.js';
 import {generateWithSelectedLocalModel} from '../../models/inference.js';
-import {redactSensitiveText, scrubberBlocker} from '../../scrubber.js';
+import {redactSensitiveText, scrubberBlocker} from '../../share/scrubber.js';
 import {
   effectAiLanguageModelLayer,
   ensureEffectAiReady,

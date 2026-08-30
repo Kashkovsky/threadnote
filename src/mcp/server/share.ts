@@ -13,7 +13,7 @@ import {
   resourceUriToWorktreeRelative,
   writeMemoryFile,
   writeSharedWorktreeFile,
-} from '../../share.js';
+} from '../../share/index.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {
   installSharedAgentArtifacts,
@@ -30,6 +30,8 @@ import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../../memory/code_citation_policy.js';
+import {hasDeferredCodeAnchorIntent} from '../../memory/deferred_code_anchor.js';
+import {recordMemoryRelocation} from '../../memory/relocation.js';
 import {type RuntimeConfig, argumentError, mcpErrorResult} from './common.js';
 import {
   readMemoryRecordsByUri,
@@ -178,8 +180,14 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
     if (isInSharedNamespace(config, sourceUri)) {
       return argumentError(`Memory ${sourceUri} is already in the shared namespace.`);
     }
+    const hasPendingCodeRefs = yield* hasDeferredCodeAnchorIntent(config, sourceUri);
+    if (hasPendingCodeRefs) {
+      return argumentError(
+        `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or replace the memory without codeRefs to discard the private intent before publication.`,
+      );
+    }
     const ov = 'threadnote-native';
-    const readResult = yield* runNativeReadTool(config, [sourceUri]);
+    const readResult = yield* runNativeReadTool(config, [sourceUri], {followRelocations: false});
     const sourceText = textFromCallToolResult(readResult);
     if (readResult.isError === true || !sourceText) {
       return {
@@ -238,7 +246,10 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
           config.agentContextHome,
           [sourceUri, targetUri],
           Effect.gen(function* () {
-            const currentReadResult = yield* runNativeReadTool(config, [sourceUri]);
+            if (yield* hasDeferredCodeAnchorIntent(config, sourceUri)) {
+              return {kind: 'pending_code_refs' as const};
+            }
+            const currentReadResult = yield* runNativeReadTool(config, [sourceUri], {followRelocations: false});
             const currentSourceText = textFromCallToolResult(currentReadResult);
             if (currentReadResult.isError === true || !currentSourceText) {
               return {kind: 'source_missing' as const};
@@ -287,7 +298,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
             const gitMessages = yield* publishShareGitChange(resolved.config.worktree, relativePath, commitMessage, {
               push: options.push,
             });
-            const sourceBeforeRemovalResult = yield* runNativeReadTool(config, [sourceUri]);
+            const sourceBeforeRemovalResult = yield* runNativeReadTool(config, [sourceUri], {followRelocations: false});
             const sourceBeforeRemovalText = textFromCallToolResult(sourceBeforeRemovalResult);
             if (
               sourceBeforeRemovalResult.isError === true ||
@@ -300,6 +311,12 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
                 redactions: currentScrub.redactions,
               };
             }
+            yield* recordMemoryRelocation(config, {
+              fromContent: sourceBeforeRemovalText,
+              fromUri: sourceUri,
+              toContent: currentScrub.cleaned,
+              toUri: targetUri,
+            });
             const removed = yield* removeResourceWithRetry(ov, config, sourceUri);
             return {
               gitMessages,
@@ -313,6 +330,11 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
     );
     if (publication.kind === 'source_missing') {
       return argumentError(`Could not resolve local memory content for ${sourceUri} before publishing.`);
+    }
+    if (publication.kind === 'pending_code_refs') {
+      return argumentError(
+        `Refusing to publish ${sourceUri}: code citations are still pending. Prepare the graph and call finalize_code_refs, or replace the memory without codeRefs to discard the private intent before publication.`,
+      );
     }
     if (publication.kind === 'citation_blocked') {
       return argumentError(

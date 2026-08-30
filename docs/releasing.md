@@ -196,10 +196,15 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    The local self-seals and retained bundle establish local cryptographic consistency and reviewability, not
    authentication against a hostile local author who can rewrite evidence, Git history, and approvals together.
    Independent review of the exact allowlisted artifacts and protected clean governance history is the trust root.
-   Finally, retain exact-installed-candidate dogfood evidence from the reviewed manifest-approval checkout for task-only memory recall, file and symbol backlinks,
-   multi-anchor retrieval, no-backlink and stale-graph abstention, and bounded output. Its canonical evidence hash must
-   be present in the separate source-reviewed practical-dogfood allowlist. Generate it only with the isolated-home,
-   exact-installed runner from that same canonical clean checkout:
+   Finally, retain exact-installed-candidate dogfood evidence from the reviewed manifest-approval checkout for
+   task-only memory recall, file and symbol backlinks, multi-anchor retrieval, no-backlink and stale-graph abstention,
+   and bounded output. The same artifact must attest the deferred-anchor lifecycle: a strict cited write rejects
+   atomically without starting indexing; the default private write returns task-recallable durable memory within
+   10 seconds while preserving the stale graph; its private intent is not exposed as a backlink after an explicit graph refresh; a
+   separate finalizer process adds exactly one citation; and the resulting exact backlink appears without changing the
+   memory body, identity, lifecycle, or creation/update timestamps. The private intent count must move from one to zero. Its canonical
+   evidence hash must be present in the separate source-reviewed practical-dogfood allowlist. Generate it only with the
+   isolated-home, exact-installed runner from that same canonical clean checkout:
 
    ```sh
    bun run eval:code-memory-link-dogfood -- \
@@ -209,8 +214,9 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
      --output <json>
    ```
 
-   The runner rejects a `--repository` that differs from the checkout supplying its own bytes. Retain the independently
-   reviewed inputs with:
+   The runner rejects a `--repository` that differs from the checkout supplying its own bytes. It writes a valid,
+   tamper-evident artifact before reporting a quality-gate failure so negative observations remain reviewable rather
+   than disappearing with a nonzero exit. Retain the independently reviewed inputs with:
 
    ```sh
    bun run eval:code-memory-link-retain -- \

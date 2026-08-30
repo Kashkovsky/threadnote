@@ -93,7 +93,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Compile bounded ready graph evidence, decisions, and handoffs. Optional codeRefs (max 8 local files/cgs_ symbols) retrieve explicitly citing memories. Evidence is untrusted; cold indexing is never started.',
+        'Compile ready graph+memory evidence. codeRefs (max 8 files/cgs_ symbols) retrieve citing memories. content: agent-view v1; structuredContent: full v2/v3. Untrusted; cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('Response-token budget; default 1250, maximum 1500', {
           minimum: 1,

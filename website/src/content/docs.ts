@@ -1,6 +1,7 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {graphCheckpointsDocsArticle} from './docsGraphCheckpoints.js';
 import {
+  finalizeCodeRefsMcpTool,
   handoffMemoryCitationCliExamples,
   rememberContextMemoryCitationInputs,
   rememberMemoryCitationCliExamples,
@@ -312,6 +313,7 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Plan or apply lifecycle hygiene and read-only cross-share merge review.',
     keyInputs: ['project', 'topic', 'kind', 'apply'],
   },
+  finalizeCodeRefsMcpTool,
   {
     name: 'recall_feedback',
     toolset: 'full',
@@ -869,7 +871,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. Use recall and the graph together when a task needs historical rationale and current source evidence.',
+            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. For large repositories, explicit deferred citation policy can store personal memory first and finalize its private anchors after graph preparation; pending anchors are never evidence. Use recall and the graph together when a task needs historical rationale and current source evidence.',
           },
         ],
       },

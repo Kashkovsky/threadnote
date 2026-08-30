@@ -82,6 +82,61 @@ describe('bounded memory read projection', () => {
     expect(page.structuredContent.estimatedTokens).toBeLessThan(page.structuredContent.budgetTokens);
   });
 
+  it('mirrors relocation guidance for content-only and structured-first clients within one budget', () => {
+    const requestedUri = 'threadnote://user/test/memories/durable/projects/threadnote/old.md';
+    const canonicalUri = 'threadnote://user/test/memories/shared/default/durable/projects/threadnote/current.md';
+    const page = projectMemoryReadPage(
+      [
+        {
+          canonicalUri,
+          requestedUri,
+          text: 'Complete canonical evidence.',
+          uri: canonicalUri,
+        },
+      ],
+      {
+        budgetTokens: 1_500,
+        continuationCursor: memoryReadCursorToken('relocated-page-cursor'),
+      },
+    );
+
+    expect(page.complete).toBe(true);
+    expect(page.content).toBe('Complete canonical evidence.');
+    expect(page.receipt).toContain(`requested ${requestedUri}`);
+    expect(page.receipt).toContain(`canonical ${canonicalUri}`);
+    expect(page.structuredContent).toMatchObject({canonicalUri, content: page.content, requestedUri});
+    expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(1_500);
+  });
+
+  it('keeps relocation identity and exact bytes stable across every bounded page', () => {
+    fc.assert(
+      fc.property(fc.string({maxLength: 1_000}), fc.integer({max: 1_500, min: 512}), (text, budgetTokens) => {
+        const requestedUri = 'threadnote://user/test/memories/durable/projects/threadnote/old.md';
+        const canonicalUri = 'threadnote://user/test/memories/shared/default/durable/projects/threadnote/new.md';
+        const resources = [{canonicalUri, requestedUri, text, uri: canonicalUri}];
+        const reconstructed: string[] = [];
+        let position: MemoryReadPosition | undefined;
+        for (let pageNumber = 0; pageNumber < 10_000; pageNumber += 1) {
+          const page = projectMemoryReadPage(resources, {
+            budgetTokens,
+            continuationCursor: memoryReadCursorToken('relocation-property-cursor'),
+            ...(position === undefined ? {} : {position}),
+          });
+          expect(page.structuredContent).toMatchObject({canonicalUri, requestedUri});
+          expect(page.receipt).toContain(requestedUri);
+          expect(page.receipt).toContain(canonicalUri);
+          expect(memoryReadPageEstimatedTokens(page)).toBeLessThanOrEqual(budgetTokens);
+          reconstructed.push(page.content);
+          if (page.complete) break;
+          position = page.nextPosition;
+          if (pageNumber === 9_999) throw new Error('Relocated memory pagination did not terminate.');
+        }
+        expect(reconstructed.join('')).toBe(text);
+      }),
+      {numRuns: 30},
+    );
+  });
+
   it('drops optional metadata before rejecting a leading four-byte Unicode scalar at minimum budget', () => {
     const page = projectMemoryReadPage(
       [{text: `🙂${'bounded evidence\n'.repeat(100)}`, uri: 'threadnote://test/minimum-budget.md'}],

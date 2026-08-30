@@ -242,12 +242,12 @@ describe('Effect architecture boundaries', () => {
     const processLease = await readFile(join(sourceRoot, 'process', 'standalone_lease.ts'), 'utf8');
 
     expect(standalone).not.toMatch(
-      /from ['"]\.\/(?:code_graph\/parser_worker|effect\/ai\/isolated-local-model-runtime|effect\/cli|effect\/runtime|installations|mcp_server|process\/diagnostics|threadnote)\.js['"]/,
+      /from ['"]\.\/(?:code_graph\/parser_worker|effect\/ai\/isolated-local-model-runtime|effect\/cli|effect\/runtime|installations|mcp\/server\/index|process\/diagnostics|threadnote)\.js['"]/,
     );
     expect(standalone).toContain("import('./code_graph/parser_worker.js')");
     expect(standalone).toContain("import('./effect/ai/isolated-local-model-runtime.js')");
     expect(standalone).toContain("import('./effect/runtime.js')");
-    expect(standalone).toContain("import('./mcp_server.js')");
+    expect(standalone).toContain("import('./mcp/server/index.js')");
     expect(workerProtocol).not.toMatch(/^import\s/m);
     expect(processLease).not.toContain("from './installations.js'");
     expect(processLease).not.toContain("from './utils.js'");

@@ -17,16 +17,16 @@ import {
   readManagedMemory,
   resourcesTree,
   runManage,
-} from '../../src/manager.js';
+} from '../../src/manager/index.js';
 import {
   managerProjectOptions,
   pruneSelectedMemoryUris,
   selectableMemoryUris,
   type TreeNode,
-} from '../../src/manager_ui.js';
+} from '../../src/manager/ui.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as lifecycle from '../../src/lifecycle.js';
-import * as memory from '../../src/memory.js';
+import * as memory from '../../src/memory/index.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
@@ -57,6 +57,7 @@ import {
 import {runEffect} from '../helpers/effect-runtime.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
+import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 
 const MANAGER_GRAPH_SNAPSHOT_ID = `cgsn_${'1'.repeat(40)}`;
@@ -70,8 +71,8 @@ vi.mock('../../src/lifecycle.js', async importOriginal => {
   };
 });
 
-vi.mock('../../src/memory.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/memory.js')>();
+vi.mock('../../src/memory/index.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/memory/index.js')>();
   return {
     ...actual,
     runArchive: vi.fn(() => Effect.void),
@@ -216,7 +217,7 @@ function managerCitedMemory(body: string, sourceDirty: boolean, repositoryIdenti
   const citation = createMemoryCodeCitation({
     extractorSet: 'native-code-graph-13',
     fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-    path: 'src/manager.ts',
+    path: 'src/manager/index.ts',
     repositoryId: 'b'.repeat(64),
     repositoryIdentityKind,
     sourceCommit: 'c'.repeat(40),
@@ -230,6 +231,7 @@ function managerCitedMemory(body: string, sourceDirty: boolean, repositoryIdenti
     {
       codeCitations: [citation],
       kind: 'durable',
+      memoryId: 'tn_manager_cited',
       project: 'threadnote',
       schemaVersion: MEMORY_SCHEMA_VERSION,
       sourceAgentClient: 'manager',
@@ -968,6 +970,10 @@ describe('manager http API', () => {
       expect(movedRecord?.body).toBe('Personal cited memory.');
       expect(movedRecord?.metadata.codeCitations).toEqual(originalRecord?.metadata.codeCitations);
       expect(movedRecord?.metadata.schemaVersion).toBe(MEMORY_SCHEMA_VERSION);
+      expect(await runEffect(readMemoryWithRelocations(config, sourceUri))).toMatchObject({
+        canonicalUri: targetUri,
+        requestedUri: sourceUri,
+      });
     } finally {
       await server.close();
     }
@@ -1034,10 +1040,99 @@ describe('manager http API', () => {
       expect(parseMemoryDocument(targetUri, moved)?.metadata.codeCitations).toEqual(
         parseMemoryDocument(fixture.uri, sourceContent)?.metadata.codeCitations,
       );
+      expect(await runEffect(readMemoryWithRelocations(fixture.config, fixture.uri))).toMatchObject({
+        canonicalUri: targetUri,
+        requestedUri: fixture.uri,
+      });
     } finally {
       await server.close();
     }
   });
+
+  effectIt.effect('preserves a shared source when its staged personal target changes before cleanup', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* Effect.promise(makeSharedManagerRuntime);
+          homes.push(fixture.config.agentContextHome);
+          const fs = yield* FileSystem.FileSystem;
+          const targetPath = join(
+            fixture.config.agentContextHome,
+            'data',
+            'local',
+            'user',
+            'denys',
+            'memories',
+            'durable',
+            'projects',
+            'threadnote',
+            'shared-to-personal-race.md',
+          );
+          const remote = join(fixture.config.agentContextHome, 'share', 'remote.git');
+          const server = yield* Effect.promise(() => startServer(fixture.config, 'secret'));
+          const repositoryLockAcquired = yield* Deferred.make<void>();
+          const releaseRepositoryLock = yield* Deferred.make<void>();
+          const repositoryLockOwner = yield* withSharedRepositoryLock(
+            fixture.config,
+            Deferred.succeed(repositoryLockAcquired, undefined).pipe(
+              Effect.andThen(Deferred.await(releaseRepositoryLock)),
+            ),
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(repositoryLockAcquired);
+
+          yield* Effect.gen(function* () {
+            const moveRequest = yield* Effect.promise(() =>
+              fetch(`${server.url}/api/memory/move`, {
+                body: JSON.stringify({
+                  confirm: true,
+                  kind: 'durable',
+                  project: 'threadnote',
+                  status: 'active',
+                  topic: 'shared-to-personal-race',
+                  uri: fixture.uri,
+                }),
+                headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+                method: 'POST',
+              }),
+            ).pipe(Effect.forkScoped);
+            let staged = false;
+            for (let attempt = 0; attempt < 200; attempt += 1) {
+              staged = yield* fs.exists(targetPath);
+              if (staged) break;
+              yield* Effect.sleep(10);
+            }
+            expect(staged).toBe(true);
+            const stagedContent = yield* fs.readFileString(targetPath);
+            const concurrentTarget = stagedContent.replace('Shared Manager original.', 'Concurrent target edit.');
+            yield* fs.writeFileString(targetPath, concurrentTarget);
+
+            yield* Deferred.succeed(releaseRepositoryLock, undefined);
+            const moveResponse = yield* Fiber.join(moveRequest);
+            const moveBody = yield* Effect.promise(() => moveResponse.text());
+            expect(moveResponse.status, moveBody).toBe(500);
+            expect(moveBody).toContain('changed before shared source removal');
+            expect(yield* fs.readFileString(fixture.canonicalPath)).toBe(fixture.content);
+            expect(yield* fs.readFileString(fixture.worktreePath)).toBe(fixture.content);
+            expect(yield* fs.readFileString(targetPath)).toBe(concurrentTarget);
+            const remoteSource = yield* Effect.sync(() =>
+              execFileSync('git', ['--git-dir', remote, 'show', 'HEAD:durable/projects/threadnote/shared-manager.md'], {
+                encoding: 'utf8',
+              }),
+            );
+            expect(remoteSource).toBe(fixture.content);
+          }).pipe(
+            Effect.ensuring(
+              Deferred.succeed(releaseRepositoryLock, undefined).pipe(
+                Effect.andThen(Fiber.await(repositoryLockOwner)),
+                Effect.andThen(Effect.promise(() => server.close())),
+                Effect.asVoid,
+              ),
+            ),
+          );
+        }),
+      ),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('preserves immutable code citations when Manager relocates shared memory within a team', async () => {
     const fixture = await makeSharedManagerRuntime();
@@ -1192,6 +1287,10 @@ describe('manager http API', () => {
       expect(existsSync(fixture.canonicalPath)).toBe(false);
       expect(await readFile(targetCanonicalPath, 'utf8')).toBe(targetContent);
       expect(await readFile(targetWorktreePath, 'utf8')).toBe(targetContent);
+      expect(await runEffect(readMemoryWithRelocations(fixture.config, fixture.uri))).toMatchObject({
+        canonicalUri: targetUri,
+        requestedUri: fixture.uri,
+      });
     } finally {
       await server.close();
     }
@@ -1248,6 +1347,91 @@ describe('manager http API', () => {
       expect(await response.json()).toMatchObject({error: expect.stringContaining(candidate.blocker)});
       expect(await readFile(sourcePath, 'utf8')).toBe(original);
       expect(existsSync(personalTargetPath)).toBe(false);
+      expect(existsSync(sharedTargetPath)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('blocks a changed-target Manager share while the original memory has pending code citations', async () => {
+    const fixture = await makeSharedManagerRuntime();
+    homes.push(fixture.config.agentContextHome);
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/pending-source.md';
+    const personalRoot = join(
+      fixture.config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    const sourcePath = join(personalRoot, 'pending-source.md');
+    const stagedPath = join(personalRoot, 'pending-target.md');
+    const sharedTargetPath = join(
+      fixture.config.agentContextHome,
+      'share',
+      'worktrees',
+      'default',
+      'durable',
+      'projects',
+      'threadnote',
+      'pending-target.md',
+    );
+    const original = formatMemoryDocument(
+      'MEMORY',
+      {
+        kind: 'durable',
+        memoryId: 'tn_manager_pending_source',
+        project: 'threadnote',
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        sourceAgentClient: 'test',
+        status: 'active',
+        timestamp: '2026-08-30T00:00:00.000Z',
+        topic: 'pending-source',
+        visibility: 'personal',
+      },
+      'Pending citations must remain private.',
+    );
+    await writeFile(sourcePath, original);
+    const pendingRoot = join(
+      fixture.config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'private',
+      'deferred-code-anchors',
+      'v1',
+    );
+    const pendingPath = join(pendingRoot, `${sha256HexSync(sourceUri)}.json`);
+    await mkdir(pendingRoot, {recursive: true, mode: 0o700});
+    await writeFile(pendingPath, '{}\n', {mode: 0o600});
+
+    const server = await startServer(fixture.config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/memory/move`, {
+        body: JSON.stringify({
+          confirm: true,
+          kind: 'durable',
+          project: 'threadnote',
+          status: 'active',
+          team: 'default',
+          topic: 'pending-target',
+          uri: sourceUri,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+
+      const responseBody = await response.text();
+      expect(response.status, responseBody).toBe(500);
+      expect(responseBody).toContain('code citations are still pending');
+      expect(await readFile(sourcePath, 'utf8')).toBe(original);
+      expect(existsSync(pendingPath)).toBe(true);
+      expect(existsSync(stagedPath)).toBe(false);
       expect(existsSync(sharedTargetPath)).toBe(false);
     } finally {
       await server.close();
@@ -1493,7 +1677,11 @@ describe('manager http API', () => {
         },
         {
           reason: 'possible macOS home path',
-          text: managerCitedMemory('Local evidence: /Users/alice/work/threadnote/src/manager.ts', false, 'remote'),
+          text: managerCitedMemory(
+            'Local evidence: /Users/alice/work/threadnote/src/manager/index.ts',
+            false,
+            'remote',
+          ),
         },
         {
           reason: 'metadata must match its canonical shared URI',

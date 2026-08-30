@@ -1,7 +1,8 @@
 import {Effect} from 'effect';
 import {McpSchema} from 'effect/unstable/ai';
+import {isMemoryRelocationUri, MemoryRelocationError, readMemoryWithRelocations} from '../../memory/relocation.js';
 import {parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js';
-import {ResourceStore, type ResourceStoreError} from '../resource-store.js';
+import {ResourceNotFound, ResourceStore} from '../resource-store.js';
 import {MCP_RESOURCE_ERROR_DATA, MCP_RESOURCE_NOT_FOUND_ERROR_DATA} from './mcp.js';
 
 export const MCP_RESOURCE_READ_MAX_BYTES = 4_500;
@@ -16,15 +17,7 @@ interface McpResourceConfig {
   readonly user: string;
 }
 
-export function readThreadnoteMcpResource(
-  config: McpResourceConfig,
-  uri: string,
-  scopeRoot?: string,
-): Effect.Effect<
-  typeof McpSchema.ReadResourceResult.Type,
-  McpSchema.InternalError | McpSchema.InvalidParams,
-  ResourceStore
-> {
+export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string, scopeRoot?: string) {
   return Effect.gen(function* () {
     const canonicalUri = yield* canonicalThreadnoteUri(uri);
     if (scopeRoot && !resourceIdIsWithin(canonicalUri, scopeRoot)) {
@@ -35,7 +28,30 @@ export function readThreadnoteMcpResource(
     }
     const store = yield* ResourceStore;
     const location = {account: config.account, home: config.agentContextHome, user: config.user};
-    const read = yield* store.readBounded(location, canonicalUri, MCP_RESOURCE_READ_MAX_BYTES);
+    const exact = yield* store.readBounded(location, canonicalUri, MCP_RESOURCE_READ_MAX_BYTES).pipe(
+      Effect.map(read => ({canonicalUri, read})),
+      Effect.catchTag('ResourceNotFound', () => Effect.succeed(undefined)),
+    );
+    const resolved =
+      exact ??
+      (isMemoryRelocationUri(config, canonicalUri)
+        ? yield* readMemoryWithRelocations(config, canonicalUri).pipe(
+            Effect.map(memory => ({
+              canonicalUri: memory.canonicalUri,
+              read: {content: memory.content, truncated: false},
+            })),
+          )
+        : yield* new ResourceNotFound({
+            message: `Resource does not exist: ${canonicalUri}`,
+            uri: canonicalUri,
+          }));
+    if (scopeRoot && !resourceIdIsWithin(resolved.canonicalUri, scopeRoot)) {
+      return yield* new McpSchema.InvalidParams({
+        data: MCP_RESOURCE_ERROR_DATA,
+        message: 'The relocated resource is outside the active Cursor Cloud memory scope.',
+      });
+    }
+    const read = resolved.read;
     if (read.truncated) {
       return yield* resourceTooLarge();
     }
@@ -43,7 +59,7 @@ export function readThreadnoteMcpResource(
       return yield* resourceTooLarge();
     }
     return {
-      contents: [{mimeType: MCP_RESOURCE_MIME_TYPE, text: read.content, uri: canonicalUri}],
+      contents: [{mimeType: MCP_RESOURCE_MIME_TYPE, text: read.content, uri: resolved.canonicalUri}],
     } satisfies typeof McpSchema.ReadResourceResult.Type;
   }).pipe(Effect.mapError(mcpResourceReadError));
 }
@@ -72,11 +88,21 @@ function resourceTooLarge(): McpSchema.InvalidParams {
   });
 }
 
-function mcpResourceReadError(
-  error: ResourceStoreError | McpSchema.InternalError | McpSchema.InvalidParams,
-): McpSchema.InternalError | McpSchema.InvalidParams {
+function mcpResourceReadError(error: unknown): McpSchema.InternalError | McpSchema.InvalidParams {
   if (error instanceof McpSchema.InvalidParams || error instanceof McpSchema.InternalError) {
     return error;
+  }
+  if (error instanceof MemoryRelocationError) {
+    return new McpSchema.InternalError({
+      data: MCP_RESOURCE_ERROR_DATA,
+      message: 'Threadnote memory relocation could not be verified safely.',
+    });
+  }
+  if (typeof error !== 'object' || error === null || !('_tag' in error)) {
+    return new McpSchema.InternalError({
+      data: MCP_RESOURCE_ERROR_DATA,
+      message: 'Threadnote resource could not be read safely.',
+    });
   }
   switch (error._tag) {
     case 'InvalidResourceId':

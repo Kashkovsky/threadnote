@@ -16,6 +16,7 @@ export const rememberContextMemoryCitationInputs = [
   'topic',
   'callerCwd',
   'codeRefs',
+  'citationPolicy',
   'replaceUri',
   'references',
   'sourceAgentClient',
@@ -32,3 +33,11 @@ export const reviewSessionMemoryCitationInputs = [
   'evidence',
   'codeRefs',
 ];
+
+export const finalizeCodeRefsMcpTool = {
+  name: 'finalize_code_refs',
+  toolset: 'full',
+  summary: 'Finalize explicitly deferred private memory citations from already-ready exact-current graphs.',
+  keyInputs: ['uri', 'limit'],
+} satisfies McpToolReference;
+import type {McpToolReference} from './docsTypes.js';

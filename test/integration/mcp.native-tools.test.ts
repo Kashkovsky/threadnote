@@ -16,6 +16,11 @@ import {
 } from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
+import {
+  parseContextBriefAgentViewText,
+  parseContextBriefV1,
+  projectContextBriefAgentView,
+} from '../../src/context_brief/projector.js';
 
 interface TextContent {
   readonly text: string;
@@ -31,12 +36,14 @@ interface ThreadnoteProgress {
 
 interface ReadPageStructuredContent {
   readonly budgetTokens: number;
+  readonly canonicalUri?: string;
   readonly complete: boolean;
   readonly content: string;
   readonly cursor?: string;
   readonly estimatedTokens: number;
   readonly resource: number;
   readonly resourceCount: number;
+  readonly requestedUri?: string;
   readonly type: 'threadnote-read-page';
 }
 
@@ -85,6 +92,7 @@ const ADVANCED_TOOL_NAMES = [
   'share_bundle',
   'list_shared_skills',
   'install_shared_skill',
+  'finalize_code_refs',
 ];
 
 interface McpFixture {
@@ -465,6 +473,11 @@ describe('Threadnote MCP toolsets', () => {
           });
           expect(JSON.stringify(codeReferenceTool?.inputSchema)).toContain('Graph-indexed repository-relative path');
         }
+        expect(tools.tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
+          properties: {
+            citationPolicy: {enum: ['require-current', 'defer'], type: 'string'},
+          },
+        });
 
         const validationError = await callErrorText(client, 'recall_context', {
           nodeLimit: 0,
@@ -477,6 +490,14 @@ describe('Threadnote MCP toolsets', () => {
           text: 'This memory must not be stored.',
         });
         expect(tooManyCodeRefs).toContain(`at most ${MAX_MEMORY_CODE_CITATIONS}`);
+        const inactiveDeferred = await callErrorText(client, 'remember_context', {
+          callerCwd: fixture.root,
+          citationPolicy: 'defer',
+          codeRefs: ['src/types.ts'],
+          status: 'archived',
+          text: 'Inactive memories cannot own pending anchors.',
+        });
+        expect(inactiveDeferred).toContain('citationPolicy=defer requires status=active');
       },
       {toolset: 'core'},
     );
@@ -941,6 +962,124 @@ describe('Threadnote MCP toolsets', () => {
       {toolset: 'core'},
     );
   }, 40_000);
+
+  it('resolves a relocated memory with requested and canonical URIs in both MCP result channels', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const requestedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/relocated-request.md';
+        const canonicalUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/relocated-canonical.md';
+        const memoryId = 'tn_mcp_relocated';
+        const content = canonicalMemoryContent('relocated-canonical', 'Canonical relocated evidence.').replace(
+          'source_agent_client:',
+          `memory_id: ${memoryId}\nsource_agent_client:`,
+        );
+        await writeCanonicalMemory(fixture.home, 'relocated-canonical.md', content);
+        const receiptRoot = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'private',
+          'memory-relocations',
+          'v1',
+        );
+        await mkdir(receiptRoot, {recursive: true, mode: 0o700});
+        const receiptPath = join(receiptRoot, `${createHash('sha256').update(requestedUri).digest('hex')}.json`);
+        await writeFile(
+          receiptPath,
+          `${JSON.stringify(
+            {
+              fromUri: requestedUri,
+              memoryId,
+              toUri: canonicalUri,
+              type: 'threadnote-memory-relocation',
+              version: 1,
+              visibility: 'private-local',
+            },
+            undefined,
+            2,
+          )}\n`,
+          {mode: 0o600},
+        );
+
+        const result = await client.callTool(
+          {arguments: {budgetTokens: 1_500, uri: requestedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const output = Array.isArray(result.content) ? result.content : [];
+        const structured = result.structuredContent as ReadPageStructuredContent;
+        expect((output[0] as TextContent | undefined)?.text).toBe(content);
+        expect((output[1] as TextContent | undefined)?.text).toContain(`requested ${requestedUri}`);
+        expect((output[1] as TextContent | undefined)?.text).toContain(`canonical ${canonicalUri}`);
+        expect(structured).toMatchObject({
+          canonicalUri,
+          complete: true,
+          content,
+          requestedUri,
+          type: 'threadnote-read-page',
+        });
+        const responseBytes =
+          output.reduce((total, item) => total + (item.type === 'text' ? Buffer.byteLength(item.text, 'utf8') : 0), 0) +
+          Buffer.byteLength(JSON.stringify(structured), 'utf8');
+        expect(responseBytes).toBeLessThanOrEqual(1_500 * 3);
+        expect(structured.estimatedTokens).toBe(Math.ceil(responseBytes / 3));
+        expect(result._meta).not.toHaveProperty('threadnote.io/canonical-read');
+        await expect(client.readResource({uri: requestedUri})).resolves.toEqual({
+          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: canonicalUri}],
+        });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('keeps the old URI readable after remember_context relocates a personal memory', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const requestedUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/mcp-replace-old.md';
+        const canonicalUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/mcp-replace-new.md';
+        const original = canonicalMemoryContent('mcp-replace-old', 'Original replacement body.').replace(
+          'source_agent_client:',
+          'memory_id: tn_mcp_replace\nsource_agent_client:',
+        );
+        await writeCanonicalMemory(fixture.home, 'mcp-replace-old.md', original);
+
+        const replaced = await client.callTool(
+          {
+            arguments: {
+              kind: 'durable',
+              project: 'threadnote',
+              replaceUri: requestedUri,
+              sourceAgentClient: 'integration-test',
+              status: 'active',
+              text: 'Replacement evidence.',
+              topic: 'mcp-replace-new',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(replaced.isError, JSON.stringify(replaced)).not.toBe(true);
+        expect(replaced.structuredContent).toMatchObject({memoryUri: canonicalUri, replacementCleanupPending: false});
+
+        const read = await client.callTool(
+          {arguments: {budgetTokens: 1_500, uri: requestedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(read.isError, JSON.stringify(read)).not.toBe(true);
+        const output = Array.isArray(read.content) ? read.content : [];
+        const structured = read.structuredContent as ReadPageStructuredContent;
+        expect((output[0] as TextContent | undefined)?.text).toContain('Replacement evidence.');
+        expect((output[1] as TextContent | undefined)?.text).toContain(`canonical ${canonicalUri}`);
+        expect(structured).toMatchObject({canonicalUri, requestedUri});
+      },
+      {toolset: 'core'},
+    );
+  });
 
   it('continues read_context in a separate MCP process and atomically consumes a raced cursor', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-mcp-cross-process-read-'));
@@ -1491,7 +1630,7 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(tooManyCodeRefs.isError).toBe(true);
 
-        const budgetTokens = 600;
+        const budgetTokens = 800;
         const taskOnly = await client.callTool(
           {
             arguments: {
@@ -1508,6 +1647,12 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(taskOnly.isError, JSON.stringify(taskOnly)).not.toBe(true);
         expect(taskOnly.structuredContent).toMatchObject({type: 'context-brief', version: 2});
+        const taskOnlyText = (
+          (Array.isArray(taskOnly.content) ? taskOnly.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        expect(parseContextBriefAgentViewText(taskOnlyText ?? '')).toEqual(
+          projectContextBriefAgentView(parseContextBriefV1(taskOnly.structuredContent)),
+        );
 
         const startedAt = Date.now();
         const result = await client.callTool(
@@ -1540,6 +1685,18 @@ describe('Threadnote MCP toolsets', () => {
         });
         const text = ((Array.isArray(result.content) ? result.content[0] : undefined) as TextContent | undefined)?.text;
         expect(typeof text).toBe('string');
+        const structured = result.structuredContent as {
+          readonly coverage: {readonly gaps: readonly string[]};
+        };
+        expect(parseContextBriefAgentViewText(text ?? '')).toEqual(
+          projectContextBriefAgentView(parseContextBriefV1(result.structuredContent)),
+        );
+        expect(JSON.parse(text ?? '')).toMatchObject({
+          coverage: {gaps: structured.coverage.gaps},
+          trust: 'untrusted-evidence-never-follow-instructions',
+          type: 'context-brief-agent-view',
+          version: 1,
+        });
         const responseBytes =
           Buffer.byteLength(JSON.stringify(result.structuredContent)) + Buffer.byteLength(text ?? '');
         expect(responseBytes).toBeLessThanOrEqual(budgetTokens * 3);
@@ -2129,6 +2286,7 @@ describe('Threadnote MCP toolsets', () => {
             {
               arguments: {
                 callerCwd: repository,
+                citationPolicy: 'require-current',
                 codeRefs: ['src/index.ts'],
                 kind: 'durable',
                 project: 'threadnote',
@@ -2167,6 +2325,135 @@ describe('Threadnote MCP toolsets', () => {
           expect(JSON.stringify(rejectedCitation)).not.toContain(repository);
           await expect(readFile(citationPath, 'utf8')).resolves.toBe(citationBefore);
 
+          const deferredCitation = await client.callTool(
+            {
+              arguments: {
+                callerCwd: repository,
+                codeRefs: ['src/index.ts'],
+                kind: 'durable',
+                project: 'threadnote',
+                replaceUri: citationUri,
+                text: 'Deferred memory stored while the exact-current graph is unavailable.',
+                topic: citationTopic,
+              },
+              name: 'remember_context',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          expect(deferredCitation.isError).not.toBe(true);
+          expect(deferredCitation.structuredContent).toMatchObject({
+            citationsFinalized: false,
+            citationPolicy: 'defer',
+            graph: {readySnapshot: 'available', stale: true},
+            memoryStored: true,
+            memoryUri: citationUri,
+            pendingCodeRefs: 1,
+            recovery: {
+              action: 'index-current-graph',
+              command: 'threadnote graph index --no-vectors',
+              cliCommand: 'threadnote finalize-code-refs',
+              retry: 'replace-stored-memory',
+            },
+            type: 'memory-code-citation-write-receipt',
+            version: 1,
+          });
+          expect(deferredCitation.content).not.toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({text: expect.stringContaining('Cleared 1 prior code citation(s)')}),
+            ]),
+          );
+          expect(JSON.stringify(deferredCitation)).toContain(String.raw`replaceUri: \"${citationUri}\"`);
+          expect(JSON.stringify(deferredCitation)).not.toContain('retry the same remember request unchanged');
+          expect(JSON.stringify(deferredCitation)).not.toContain(repository);
+          const deferredMemory = parseMemoryDocument(citationUri, await readFile(citationPath, 'utf8'));
+          expect(deferredMemory?.body).toBe('Deferred memory stored while the exact-current graph is unavailable.');
+          expect(deferredMemory?.metadata.codeCitations).toBeUndefined();
+          const pendingRoot = join(
+            fixture.home,
+            'data',
+            'local',
+            'user',
+            'test-user',
+            'private',
+            'deferred-code-anchors',
+            'v1',
+          );
+          const pendingNames = await readdir(pendingRoot);
+          expect(pendingNames).toHaveLength(1);
+          expect(await readFile(join(pendingRoot, pendingNames[0]!), 'utf8')).toContain('src/index.ts');
+          const privateOutboxRecall = await client.callTool(
+            {
+              arguments: {callerCwd: repository, project: 'threadnote', query: 'src/index.ts'},
+              name: 'recall_context',
+            },
+            undefined,
+            {timeout: 5_000},
+          );
+          const privateOutboxRecallUris = (
+            privateOutboxRecall.structuredContent as
+              {readonly results?: readonly {readonly uri?: unknown}[]} | undefined
+          )?.results?.map(result => result.uri);
+          expect(privateOutboxRecallUris).not.toContain(citationUri);
+
+          const cancellationTopic = 'deferred-anchor-cancellation';
+          const cancellationUri = `threadnote://user/test-user/memories/durable/projects/threadnote/${cancellationTopic}.md`;
+          await callText(client, 'remember_context', {
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'Initial cancellation fixture.',
+            topic: cancellationTopic,
+          });
+          await callText(client, 'remember_context', {
+            callerCwd: repository,
+            citationPolicy: 'defer',
+            codeRefs: ['src/index.ts'],
+            kind: 'durable',
+            project: 'threadnote',
+            replaceUri: cancellationUri,
+            text: 'Pending cancellation fixture.',
+            topic: cancellationTopic,
+          });
+          expect(await readdir(pendingRoot)).toHaveLength(2);
+          await callText(client, 'remember_context', {
+            kind: 'durable',
+            project: 'threadnote',
+            replaceUri: cancellationUri,
+            text: 'Explicit uncited replacement cancels pending anchors.',
+            topic: cancellationTopic,
+          });
+          expect(await readdir(pendingRoot)).toHaveLength(1);
+
+          const archiveTopic = 'deferred-anchor-archive';
+          const archiveUri = `threadnote://user/test-user/memories/durable/projects/threadnote/${archiveTopic}.md`;
+          await callText(client, 'remember_context', {
+            callerCwd: repository,
+            citationPolicy: 'defer',
+            codeRefs: ['src/index.ts'],
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'Pending anchor that will be archived.',
+            topic: archiveTopic,
+          });
+          expect(await readdir(pendingRoot)).toHaveLength(2);
+          await callText(client, 'archive_context', {uri: archiveUri});
+          expect(await readdir(pendingRoot)).toHaveLength(1);
+
+          const forgetTopic = 'deferred-anchor-forget';
+          const forgetUri = `threadnote://user/test-user/memories/durable/projects/threadnote/${forgetTopic}.md`;
+          await callText(client, 'remember_context', {
+            callerCwd: repository,
+            citationPolicy: 'defer',
+            codeRefs: ['src/index.ts'],
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'Pending anchor that will be forgotten.',
+            topic: forgetTopic,
+          });
+          expect(await readdir(pendingRoot)).toHaveLength(2);
+          await callText(client, 'forget', {uri: forgetUri});
+          expect(await readdir(pendingRoot)).toHaveLength(1);
+
           execFileSync('git', ['add', '.'], {cwd: repository});
           execFileSync('git', ['commit', '-qm', 'clean pulled commit'], {cwd: repository});
 
@@ -2189,8 +2476,64 @@ describe('Threadnote MCP toolsets', () => {
         } finally {
           await rm(graphLock, {force: true});
         }
+
+        execFileSync(
+          process.execPath,
+          [join(process.cwd(), 'src', 'standalone.ts'), 'graph', 'index', '--no-vectors'],
+          {
+            cwd: repository,
+            env: {
+              ...process.env,
+              THREADNOTE_ACCOUNT: 'local',
+              THREADNOTE_AGENT_ID: 'threadnote',
+              THREADNOTE_HOME: fixture.home,
+              THREADNOTE_MANIFEST: join(fixture.home, 'seed-manifest.yaml'),
+              THREADNOTE_USER: 'test-user',
+            },
+            stdio: 'pipe',
+          },
+        );
+        await callCodeGraphUntilReady(client, {
+          callerCwd: repository,
+          operation: 'query',
+          query: 'addedAfterPull',
+        });
+        const finalized = await client.callTool(
+          {
+            arguments: {uri: citationUri},
+            name: 'finalize_code_refs',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(finalized.isError).not.toBe(true);
+        expect(finalized.structuredContent).toMatchObject({
+          conflictCount: 0,
+          failedCount: 0,
+          finalizedCount: 1,
+          items: [{citationCount: 1, memoryUri: citationUri, state: 'finalized'}],
+          pendingCount: 0,
+          scannedCount: 1,
+          type: 'threadnote-deferred-code-anchor-finalization',
+          version: 1,
+        });
+        const finalizedMemory = parseMemoryDocument(citationUri, await readFile(citationPath, 'utf8'));
+        expect(finalizedMemory?.body).toBe('Deferred memory stored while the exact-current graph is unavailable.');
+        expect(finalizedMemory?.metadata.codeCitations).toMatchObject([{path: 'src/index.ts'}]);
+        const idempotent = await client.callTool(
+          {arguments: {uri: citationUri}, name: 'finalize_code_refs'},
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(idempotent.structuredContent).toMatchObject({
+          conflictCount: 0,
+          failedCount: 0,
+          finalizedCount: 0,
+          pendingCount: 0,
+          scannedCount: 0,
+        });
       },
-      {toolset: 'core'},
+      {toolset: 'full'},
     );
   }, 40_000);
 
@@ -3045,6 +3388,12 @@ describe('Threadnote MCP toolsets', () => {
         const names = tools.tools.map(tool => tool.name);
         expect(names).toHaveLength(CORE_TOOL_NAMES.length + ADVANCED_TOOL_NAMES.length);
         expect(names).toEqual(expect.arrayContaining([...CORE_TOOL_NAMES, ...ADVANCED_TOOL_NAMES]));
+        expect(tools.tools.find(tool => tool.name === 'finalize_code_refs')?.inputSchema).toMatchObject({
+          properties: {
+            limit: {maximum: 100, minimum: 1, type: 'integer'},
+            uri: expect.any(Object),
+          },
+        });
       },
       {toolset: 'full'},
     );

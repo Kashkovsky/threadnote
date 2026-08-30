@@ -48,7 +48,7 @@ import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
 import {LocalModelCatalog} from '../src/models/catalog.js';
 import {selectLocalModel} from '../src/models/selection.js';
 import {LocalModelStore} from '../src/models/store.js';
-import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '../src/mcp_server.js';
+import {codeGraphInspectionObservesWorktree, codeGraphMcpResponse} from '../src/mcp/server/index.js';
 import {
   createGraphQueryRequestGate,
   managerGraphClientRenderProxy,

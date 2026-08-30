@@ -4,7 +4,7 @@ import * as FC from 'effect/testing/FastCheck';
 import {expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {runMcpInstall} from '../../src/mcp.js';
+import {runMcpInstall} from '../../src/mcp/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

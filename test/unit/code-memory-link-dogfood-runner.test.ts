@@ -3,7 +3,9 @@ import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphStatusHasIndexingActivity,
   codeMemoryLinkDogfoodEnvironment,
+  projectDeferredAnchorFinalization,
   projectCodeMemoryLinkDogfoodGraphStatusV1,
   verifyDogfoodRunnerCheckout,
 } from '../../scripts/run-code-memory-link-dogfood.js';
@@ -67,6 +69,56 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
       stale: true,
     });
     expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/expected v2 status/);
+  });
+
+  it('derives indexing activity from the independent graph-status process receipt', () => {
+    const idle = {
+      build: null,
+      builds: [],
+      type: 'code-graph-status',
+      version: 2,
+      waiterCount: 0,
+      waiters: [],
+    };
+    expect(codeGraphStatusHasIndexingActivity(idle)).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, build: {state: 'running'}, builds: [{state: 'running'}]})).toBe(
+      true,
+    );
+    expect(() => codeGraphStatusHasIndexingActivity({build: null})).toThrow(/activity contract/);
+  });
+
+  it('projects finalization counts from matching per-item receipts', () => {
+    expect(
+      projectDeferredAnchorFinalization({
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 1,
+        items: [{citationCount: 2, memoryUri: 'redacted', state: 'finalized'}],
+        pendingCount: 0,
+        scannedCount: 1,
+        type: 'threadnote-deferred-code-anchor-finalization',
+        version: 1,
+      }),
+    ).toEqual({
+      citationCount: 2,
+      conflictCount: 0,
+      failedCount: 0,
+      finalizedCount: 1,
+      pendingCount: 0,
+      scannedCount: 1,
+    });
+    expect(() =>
+      projectDeferredAnchorFinalization({
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 0,
+        items: [{citationCount: 1, state: 'finalized'}],
+        pendingCount: 0,
+        scannedCount: 1,
+        type: 'threadnote-deferred-code-anchor-finalization',
+        version: 1,
+      }),
+    ).toThrow(/aggregate counts/);
   });
 
   effectIt.effect('accepts the exact clean checkout that supplied the reviewed runner', () =>

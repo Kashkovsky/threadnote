@@ -1,7 +1,7 @@
 import {Console, Effect} from 'effect';
 import {Command} from 'effect/unstable/cli';
 import {errorMessage} from './utils.js';
-import {getThreadnoteVersion} from './version.js';
+import {getThreadnoteVersion} from './release/runtime_version.js';
 import {ApplicationError} from './effect/errors.js';
 import {CliError, inspectCliInvocation, normalizeCliArguments, threadnoteCommand} from './effect/cli.js';
 import {initializeCliUi} from './cli_ui.js';

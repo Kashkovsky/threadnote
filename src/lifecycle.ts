@@ -28,9 +28,9 @@ import {
   removeMcpSnippets,
   resolveMcpClients,
   runMcpInstall,
-} from './mcp.js';
+} from './mcp/index.js';
 import {legacyProcessDoctorCheck} from './process/diagnostics.js';
-import {maybeRunPostUpdateAfterRepair} from './update.js';
+import {maybeRunPostUpdateAfterRepair} from './release/index.js';
 import {
   TELEMETRY_CONSENT_VERSION,
   readTelemetryConfiguration,
@@ -45,6 +45,7 @@ import {
   type RecallIndexStatus,
 } from './recall/index.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
+import {deferredCodeAnchorDoctorCheck} from './memory/deferred_code_anchor.js';
 import {migrateThreadnoteStorageLayout} from './migration/layout.js';
 import {applyLegacyInstallationCleanup, planLegacyInstallationCleanup} from './migration/legacy-installations.js';
 import {stopVerifiedLegacyLocalAi} from './migration/legacy-runtime.js';
@@ -196,6 +197,7 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
       codeGraphDoctorCheck(config.agentContextHome, options.onCodeGraphProgress, options.codeGraphCheck),
     ),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
+    yield* safeDoctorCheck('deferred code anchors', deferredCodeAnchorDoctorCheck(config)),
   );
   checks.push(
     ...(yield* safeDoctorChecks('agent integrations', agentIntegrationDoctorChecks(config, inferredMcpClients))),

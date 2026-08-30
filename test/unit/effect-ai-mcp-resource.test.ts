@@ -1,9 +1,11 @@
 import {expect, it} from '@effect/vitest';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import * as FC from 'effect/testing/FastCheck';
 import {Cause, Effect, Exit, Fiber} from 'effect';
 import {describe} from 'vitest';
 import {MCP_RESOURCE_READ_MAX_BYTES, readThreadnoteMcpResource} from '../../src/effect/ai/mcp_resource.js';
 import {ResourceStore, type ResourceStoreShape} from '../../src/effect/resource-store.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const config = {account: 'local', agentContextHome: '/unused', user: 'test-user'} as const;
 const uri = 'threadnote://resources/bounded-resource.txt';
@@ -21,7 +23,7 @@ describe('MCP protocol resource reads', () => {
       );
 
       expect(Exit.isFailure(exit)).toBe(true);
-    }),
+    }).pipe(provideTestLayer(BunServices.layer)),
   );
 
   it.effect('preserves cancellation while the authoritative resource read is pending', () =>
@@ -37,7 +39,7 @@ describe('MCP protocol resource reads', () => {
       const exit = yield* Fiber.await(fiber);
 
       expect(Exit.isFailure(exit) && Cause.hasInterrupts(exit.cause)).toBe(true);
-    }),
+    }).pipe(provideTestLayer(BunServices.layer)),
   );
 
   it.effect.prop(
@@ -66,6 +68,7 @@ describe('MCP protocol resource reads', () => {
           }),
         ),
         Effect.asVoid,
+        provideTestLayer(BunServices.layer),
       );
     },
     {fastCheck: {numRuns: 36}},

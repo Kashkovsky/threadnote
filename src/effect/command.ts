@@ -2,7 +2,7 @@ import {Console, Context, Effect, Layer, Schema, Sink, Stdio, Stream} from 'effe
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import {ChildProcessSpawner} from 'effect/unstable/process/ChildProcessSpawner';
 import {command as commandText, info, warning} from '../cli_ui.js';
-import {redactSensitiveText} from '../scrubber.js';
+import {redactSensitiveText} from '../share/scrubber.js';
 import {
   withCurrentAgentSessionEnvironment,
   withoutTelemetrySessionEnvironment,

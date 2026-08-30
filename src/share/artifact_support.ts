@@ -1,6 +1,6 @@
 import {Effect, FileSystem, Option, Path} from 'effect';
 
-import {credentialScrubberBlocker, SCRUBBER_PATTERNS} from '../scrubber.js';
+import {credentialScrubberBlocker, SCRUBBER_PATTERNS} from './scrubber.js';
 
 import type {BundleMemberFile, SharedArtifactFile} from './core.js';
 

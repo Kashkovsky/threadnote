@@ -13,6 +13,8 @@ const UTF8 = new TextEncoder();
 export type MemoryReadMode = 'content' | 'outline';
 
 export interface MemoryReadResource {
+  readonly canonicalUri?: string;
+  readonly requestedUri?: string;
   readonly text: string;
   readonly uri: string;
 }
@@ -33,6 +35,7 @@ export interface MemoryReadCursorState {
 export interface MemoryReadPageStructuredContent {
   readonly budgetTokens: number;
   readonly complete: boolean;
+  readonly canonicalUri?: string;
   /** Mirrors the text content block for MCP clients that surface only structured results. */
   readonly content: string;
   readonly contentBytes: number;
@@ -41,6 +44,7 @@ export interface MemoryReadPageStructuredContent {
   readonly mode: MemoryReadMode;
   readonly resource: number;
   readonly resourceCount: number;
+  readonly requestedUri?: string;
   readonly section?: string;
   readonly type: 'threadnote-read-page';
   readonly version: 1;
@@ -145,7 +149,18 @@ export function projectMemoryReadPage(
   const receipt =
     options.includeReceipt === false
       ? undefined
-      : `Continue with ${options.toolName ?? 'read_context'} cursor ${options.continuationCursor}.`;
+      : [
+          resource.requestedUri && resource.canonicalUri
+            ? `Relocated memory: requested ${resource.requestedUri}; canonical ${resource.canonicalUri}.`
+            : undefined,
+          `Continue with ${options.toolName ?? 'read_context'} cursor ${options.continuationCursor}.`,
+        ]
+          .filter((part): part is string => part !== undefined)
+          .join('\n');
+  const completionReceipt =
+    resource.requestedUri && resource.canonicalUri
+      ? `Relocated memory: requested ${resource.requestedUri}; canonical ${resource.canonicalUri}.`
+      : undefined;
   const responseOptionCandidates = [
     {section, warnings},
     {section, warnings: undefined},
@@ -158,6 +173,7 @@ export function projectMemoryReadPage(
     const envelope = finalizedStructuredContent(
       baseStructuredContent({
         budgetTokens,
+        canonicalUri: resource.canonicalUri,
         complete: false,
         content: minimumContent,
         contentBytes: utf8Bytes(minimumContent),
@@ -165,6 +181,7 @@ export function projectMemoryReadPage(
         mode,
         resourceCount: resources.length,
         resourceIndex: position.resourceIndex,
+        requestedUri: resource.requestedUri,
         section: candidate.section,
         warnings: candidate.warnings,
       }),
@@ -182,6 +199,7 @@ export function projectMemoryReadPage(
     finalizedStructuredContent(
       baseStructuredContent({
         budgetTokens,
+        canonicalUri: resource.canonicalUri,
         complete,
         content,
         contentBytes: utf8Bytes(content),
@@ -189,6 +207,7 @@ export function projectMemoryReadPage(
         mode,
         resourceCount: resources.length,
         resourceIndex: position.resourceIndex,
+        requestedUri: resource.requestedUri,
         section: responseOptions.section,
         warnings: responseOptions.warnings,
       }),
@@ -198,9 +217,15 @@ export function projectMemoryReadPage(
   const completeCandidate = resource.text.slice(position.characterOffset);
   const isLastResource = position.resourceIndex === resources.length - 1;
   if (isLastResource) {
-    const completed = structuredContentFor(completeCandidate, true, undefined, undefined);
-    if (responseBytes(completeCandidate, undefined, completed) <= maximumBytes) {
-      return {complete: true, content: completeCandidate, structuredContent: completed, uri: resource.uri};
+    const completed = structuredContentFor(completeCandidate, true, undefined, completionReceipt);
+    if (responseBytes(completeCandidate, completionReceipt, completed) <= maximumBytes) {
+      return {
+        complete: true,
+        content: completeCandidate,
+        ...(completionReceipt === undefined ? {} : {receipt: completionReceipt}),
+        structuredContent: completed,
+        uri: resource.uri,
+      };
     }
   }
 
@@ -372,6 +397,7 @@ function boundedWarnings(warnings: readonly string[] | undefined): string[] | un
 
 function baseStructuredContent(input: {
   readonly budgetTokens: number;
+  readonly canonicalUri?: string;
   readonly complete: boolean;
   readonly content: string;
   readonly contentBytes: number;
@@ -380,11 +406,13 @@ function baseStructuredContent(input: {
   readonly mode: MemoryReadMode;
   readonly resourceCount: number;
   readonly resourceIndex: number;
+  readonly requestedUri?: string;
   readonly section?: string;
   readonly warnings?: readonly string[];
 }): MemoryReadPageStructuredContent {
   return {
     budgetTokens: input.budgetTokens,
+    ...(input.canonicalUri === undefined ? {} : {canonicalUri: input.canonicalUri}),
     complete: input.complete,
     content: input.content,
     contentBytes: input.contentBytes,
@@ -393,6 +421,7 @@ function baseStructuredContent(input: {
     mode: input.mode,
     resource: input.resourceIndex + 1,
     resourceCount: input.resourceCount,
+    ...(input.requestedUri === undefined ? {} : {requestedUri: input.requestedUri}),
     ...(input.section === undefined ? {} : {section: input.section}),
     type: 'threadnote-read-page',
     version: 1,

@@ -28,15 +28,15 @@ import {
   type StandalonePromotionFaultInjection,
   withStandaloneInstallationLock,
 } from '../installations.js';
-import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from '../memory.js';
+import {hasLegacyLifecycleHandoffCandidates, hasProjectNameMigrationCandidates} from '../memory/index.js';
 import {isLegacyHomeMigrationPending, isThreadnoteHomeMigrationPending} from '../migration/home.js';
 import {whatsNewLinesForVersionRange} from './notes.js';
 import {sendSystemNotification} from '../system_notification.js';
 import {readTelemetryConsentRenewal} from '../telemetry/config.js';
 import type {JsonObject, PostUpdateOptions, RuntimeConfig, UpdateOptions} from '../types.js';
 import {selectUpdateChannel, type UpdateChannel} from './channel.js';
-import {isDevelopmentBuildVersion} from '../version_compare.js';
-import {isStandaloneThreadnoteBuild} from '../version.js';
+import {isDevelopmentBuildVersion} from './version_compare.js';
+import {isStandaloneThreadnoteBuild} from './runtime_version.js';
 import {
   compareVersions,
   ensureDirectory,

@@ -127,7 +127,7 @@ describe('memory document contract', () => {
   });
 
   it('round-trips canonical schema-v4 file and symbol citations without persisting validation state', () => {
-    const file = createMemoryCodeCitation(citationInput('src/memory.ts'));
+    const file = createMemoryCodeCitation(citationInput('src/memory/index.ts'));
     const symbol = createMemoryCodeCitation({
       ...citationInput('src/context_brief/memory_evidence.ts'),
       target: {

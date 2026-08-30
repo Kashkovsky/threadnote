@@ -10,7 +10,7 @@ import type {
   GraphViewPage,
 } from './graph.js';
 import type {ManagerGraphVisualizationLimits} from './graph_limits.js';
-import type {BulkItemResult, PanelName, ShareSummary, TreeNode} from '../manager_ui.js';
+import type {BulkItemResult, PanelName, ShareSummary, TreeNode} from './ui.js';
 
 const token = typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('token') ?? '');
 export const GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS = 10_000;

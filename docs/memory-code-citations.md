@@ -49,9 +49,10 @@ Pass that payload to `remember_context`. Supported references are:
 - a local `cgs_` graph handle, which normally creates a symbol citation;
 - a repository-qualified `cgr_` handle, which selects its bound repository and symbol.
 
-Callers supply locators, not hashes, status, snapshot data, or raw citation JSON. Threadnote resolves every reference
-against an exact-current ready graph and derives the citation internally. Capture is deduplicated and atomic: if one
-explicit reference is invalid, absent, ambiguous, non-current, or changes during capture, the memory is not written.
+Callers supply locators, not hashes, status, snapshot data, or raw citation JSON. Threadnote first tries to resolve every
+reference against an exact-current ready graph and derives citations internally. Capture is deduplicated and atomic.
+Invalid, absent, ambiguous, or racing references fail the write; a retryable graph-readiness failure follows the
+private store-now/anchor-later policy below.
 
 Path references are graph locators, not arbitrary tracked-file readers. A tracked file that is outside the graph
 inventory cannot be cited by path; choose a path or stable handle that is present in the exact-current graph.
@@ -63,12 +64,65 @@ threadnote graph status
 threadnote graph index --no-vectors
 ```
 
-When an MCP citation write reaches a missing, stale, or deferred graph admission state, it fails before changing memory
-and returns a `memory-code-citation-write-recovery` receipt in `structuredContent`. The receipt keeps paths and graph
-identities out of the response and reports `writeApplied: false` and `indexingStarted: false`. Caller-local references
-use the command above from `callerCwd`; a `cgr_` reference routed through a named Workset returns an explicit
-`threadnote workset prepare` action and the Workset name as a separate argument. Retry the same write only after the
-selected preparation reports current ready evidence.
+Private active writes with `codeRefs` default to store-now/anchor-later. Exact capture is still attempted first. Only
+a retryable missing, stale, deferred, or racing graph-admission failure stores the active memory without citations and
+stages the requested locators in the private outbox. This matches the common agent closeout path: memory storage does
+not wait for graph preparation.
+
+`--defer-code-refs` and MCP `citationPolicy: "defer"` remain accepted as explicit compatibility spellings:
+
+```sh
+threadnote remember \
+  --kind durable \
+  --project payments \
+  --topic retry-contract \
+  --code-ref src/payments/retry.ts \
+  --defer-code-refs \
+  --text "Retries preserve the original idempotency key."
+```
+
+```json
+{
+  "kind": "durable",
+  "project": "payments",
+  "topic": "retry-contract",
+  "callerCwd": "/workspace/payments",
+  "codeRefs": ["src/payments/retry.ts"],
+  "citationPolicy": "defer",
+  "text": "Retries preserve the original idempotency key."
+}
+```
+
+Threadnote still attempts exact capture first. Only a retryable missing/stale/deferred-graph failure activates the
+deferred path. The canonical active personal memory is stored immediately without citations, while the requested
+locators and the caller's explicit code-reference authorization enter a private 0600 local outbox outside recall and sharing. The MCP
+receipt reports `memoryStored: true`, `citationsFinalized: false`, a bounded pending count, and graph-preparation
+guidance; it never exposes the locators, checkout path, or repository identity.
+
+Use `--require-current-code-refs` or MCP `citationPolicy: "require-current"` when the memory must fail before writing
+unless every locator has exact-current evidence. That strict policy also remains the default for shared writes, because
+pending locators are private-only. A strict MCP failure returns a `memory-code-citation-write-recovery` receipt with
+`writeApplied: false` and `indexingStarted: false`; it never starts graph preparation itself.
+Inactive memories cannot own pending anchors, so they also use strict capture unless made active first.
+
+After explicit graph preparation, either call `remember_context` with the same content and the receipt's `memoryUri`
+as `replaceUri`, or finalize the private outbox directly:
+
+```sh
+threadnote graph index --no-vectors
+threadnote finalize-code-refs --uri threadnote://user/me/memories/durable/projects/payments/retry-contract.md
+```
+
+The full MCP toolset also exposes `finalize_code_refs`. Finalization never starts indexing. It recaptures only from an
+already-ready exact-current graph, verifies the original repository/worktree identity, and uses a memory-content
+compare-and-swap before adding citations. The body, memory identity, creation/update timestamps, and lifecycle remain
+unchanged; `source_observed_at` records the later citation-capture time.
+Until that succeeds, Context Brief may still find the memory through ordinary task recall, but it cannot return a
+code-to-memory backlink or describe the pending locator as citation evidence.
+
+Replacement without code references, archive, expiration, deletion, and an explicit uncited publish cancel the
+pending intent. A changed memory or repository identity becomes a bounded conflict rather than an overwrite. Deferred
+anchors are supported only for active personal memories; shared and remote writes remain strict.
 
 A newly written memory accepts at most eight citations. Each canonical citation line is limited to 8 KiB and total
 citation metadata to 64 KiB.
@@ -169,8 +223,12 @@ completeness.
 
 Context Brief retrieves bounded graph and memory evidence first, then validates citations for the selected
 memories. Returned durable decisions and handoffs keep `freshness` beside the memory excerpt and may include
-`preciseStatus`, `citationReceipts`, and related entries in `stalenessAndConflicts`. Use JSON or MCP
-`structuredContent` to consume those fields; the plain CLI/MCP text remains a terse receipt.
+`preciseStatus`, `citationReceipts`, and related entries in `stalenessAndConflicts`. MCP `structuredContent` and
+`threadnote context brief --json` retain the full v2/v3 audit projection. MCP text content and the plain CLI return
+parseable `context-brief-agent-view` v1 JSON: a compact, decision-equivalent view with selected graph identities,
+memory excerpts and authority/trust, citation actions, coverage gaps, issues, follow-ups, and continuation. This dual
+contract supports clients that expose only one MCP result channel; consumers must not assume both channels reach the
+model. The combined MCP text-plus-structured UTF-8 size is still charged to the requested response budget.
 
 Validation reads only already-ready exact-current repository snapshots. A Workset brief checks citations only in its
 configured member paths and does not fan out cold builds. Missing or stale members remain explicit unknown coverage;
@@ -226,6 +284,11 @@ memory is publishable only when all citations:
 Dirty-worktree, local-only, or malformed citations block publishing. Commit the cited source and recapture before
 sharing. The ordinary content scrubber, preview, confirmation, and active-durable-only rules still apply. See
 [Team sharing](share.md).
+
+A memory with a private pending anchor is also blocked from publication. Prepare and finalize it first. The CLI may
+instead pass `--allow-uncited-pending-code-refs` as an explicit decision to publish the currently uncited canonical
+memory and discard the private intent; MCP callers can make the same decision by replacing the memory without
+`codeRefs` before publication. Pending locators never cross the sharing boundary.
 
 ## Optional telemetry
 

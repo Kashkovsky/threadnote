@@ -3,7 +3,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {clearAutoShareStateForTest, publishShareGitChange} from '../../src/share.js';
+import {clearAutoShareStateForTest, publishShareGitChange} from '../../src/share/index.js';
 import {
   runShareRemove as runShareRemoveEffect,
   runShareRename as runShareRenameEffect,

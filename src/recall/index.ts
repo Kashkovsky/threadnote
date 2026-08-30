@@ -12,7 +12,7 @@ import {
   parseMemoryDocument,
   type MemoryRelation,
 } from '../memory/document.js';
-import {redactSensitiveText} from '../scrubber.js';
+import {redactSensitiveText} from '../share/scrubber.js';
 import type {ProjectManifest} from '../types.js';
 import {errorMessage, expandPath, globToRegExp} from '../utils.js';
 import {

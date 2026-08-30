@@ -11,7 +11,7 @@ import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../memory/code_citation_policy.js';
-import {applyScrubber, type ScrubberPattern} from '../scrubber.js';
+import {applyScrubber, type ScrubberPattern} from '../share/scrubber.js';
 
 export const REMOTE_MEMORY_CONTENT_CONTRACT_VERSION = 1 as const;
 

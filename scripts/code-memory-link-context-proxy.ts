@@ -9,6 +9,7 @@ import {spawn} from 'node:child_process';
 import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StdioServerTransport} from '@modelcontextprotocol/sdk/server/stdio.js';
 import * as z from 'zod/v4';
+import {AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN, measureAgentToolResponse} from '../src/evaluation/agent-response.js';
 import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
   canonicalizeCodeMemoryLinkContextBriefResultV1,
@@ -58,7 +59,7 @@ export interface CodeMemoryLinkContextBriefProxyRequestV1 {
 }
 
 export interface CodeMemoryLinkContextProxyCandidateResult {
-  readonly content?: readonly {readonly text: string; readonly type: 'text'}[];
+  readonly content: readonly {readonly text: string; readonly type: 'text'}[];
   readonly structuredContent: Record<string, unknown>;
   readonly text: string;
   readonly proxyReceipt?: CodeMemoryLinkContextBriefProxyReceiptV1;
@@ -130,9 +131,17 @@ export async function handleCodeMemoryLinkContextBriefRequest(
     decision.action === 'return-empty'
       ? canonicalEmptyContextBrief()
       : await runCandidate(packet, candidateRequest(decision.request));
-  const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(result.structuredContent);
+  const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(result.structuredContent, {
+    requireAgentView: decision.action === 'forward',
+  });
+  const text = canonical.content[0]?.text;
+  if (text === undefined) throw new Error('Canonical Context Brief must expose one model-facing text block.');
+  const measurement = measureAgentToolResponse({structuredContent: canonical.structuredContent, text});
+  if (measurement.totalBytes > budgetTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN) {
+    throw new Error(`Candidate Context Brief exceeded its ${budgetTokens}-token dual-channel response envelope.`);
+  }
   return {
-    ...result,
+    content: canonical.content,
     proxyReceipt: {
       armPacketHash: packet.armPacket.armPacketHash,
       proxyDecisionHash: codeMemoryLinkContextBriefProxyDecisionHashV1(decision),
@@ -141,6 +150,8 @@ export async function handleCodeMemoryLinkContextBriefRequest(
       runBindingHash: packet.runBindingHash,
       version: 1,
     },
+    structuredContent: canonical.structuredContent,
+    text,
   };
 }
 
@@ -184,7 +195,7 @@ export async function runCodeMemoryLinkContextBriefCandidate(
   } catch (cause) {
     throw new Error('Candidate Threadnote returned invalid Context Brief JSON.', {cause});
   }
-  const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structuredContent);
+  const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structuredContent, {requireAgentView: true});
   if (canonical.receipt.responseClass === 'empty-v1') {
     throw new Error('Forwarded candidate unexpectedly returned the reserved no-memory response.');
   }
@@ -240,7 +251,7 @@ export function canonicalEmptyContextBrief(): CodeMemoryLinkContextProxyCandidat
   return {
     content: canonical.content,
     structuredContent: canonical.structuredContent,
-    text: 'Context Brief: no relevant context available.',
+    text: canonical.content[0]!.text,
   };
 }
 
@@ -264,7 +275,7 @@ async function main(): Promise<void> {
     async request => {
       const result = await handleCodeMemoryLinkContextBriefRequest(packet, request);
       return {
-        content: [...(result.content ?? [{text: result.text, type: 'text' as const}])],
+        content: [...result.content],
         _meta: {codeMemoryLink: result.proxyReceipt},
         structuredContent: result.structuredContent,
       };

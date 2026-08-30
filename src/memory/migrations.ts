@@ -32,7 +32,7 @@ import {
   sha256,
   trimTrailingSlash,
 } from '../utils.js';
-import {writeMemoryFile} from '../share.js';
+import {writeMemoryFile} from '../share/index.js';
 
 interface LegacyMemoryCandidate {
   readonly comparableHash: string;

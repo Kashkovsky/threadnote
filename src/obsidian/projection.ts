@@ -20,7 +20,7 @@ import {
   upsertObsidianProjection,
   writeObsidianConfiguration,
 } from './config.js';
-import {applyScrubber} from '../scrubber.js';
+import {applyScrubber} from '../share/scrubber.js';
 import {parseResourceId, resourceIdWithoutAnchor} from '../storage/resource-id.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from '../types.js';
 import {expandPath, isDirectory, toPosixPath} from '../utils.js';

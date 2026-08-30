@@ -20,7 +20,7 @@ import {
   compactCodeGraphMcpResult,
   compactCodeGraphMcpTiming,
   selectCodeGraphReadySnapshotForInspection,
-} from '../../src/mcp_server.js';
+} from '../../src/mcp/server/index.js';
 import {analyzeCodeGraph} from '../../src/code_graph/analysis.js';
 import type {CodeGraphProgress, CodeGraphQueryResult} from '../../src/code_graph/types.js';
 import type {CodeGraphRefreshStatus} from '../../src/code_graph/watcher.js';

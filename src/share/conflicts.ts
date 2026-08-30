@@ -1,6 +1,6 @@
 import {Console, Effect, Result} from 'effect';
 
-import {applyScrubber} from '../scrubber.js';
+import {applyScrubber} from './scrubber.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,

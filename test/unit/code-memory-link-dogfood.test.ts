@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 import {
   CODE_MEMORY_LINK_DOGFOOD_CASE_IDS,
   codeMemoryLinkDogfoodArtifactHash,
+  createCodeMemoryLinkDeferredAnchorObservationV2,
   createCodeMemoryLinkDogfoodObservationV1,
   evaluateCodeMemoryLinkDogfood,
   parseCodeMemoryLinkDogfoodArtifactV1,
@@ -29,7 +30,7 @@ describe('Code Memory Link practical dogfood evidence', () => {
         qualityFailures: [],
         status: 'insufficient',
       },
-      version: 1,
+      version: 2,
     });
   });
 
@@ -65,12 +66,13 @@ describe('Code Memory Link practical dogfood evidence', () => {
     expect(() =>
       codeMemoryLinkDogfoodArtifactHash({
         candidate: artifact.candidate,
+        deferredAnchorLifecycle: artifact.deferredAnchorLifecycle,
         harnessCommit: artifact.harnessCommit,
         observations: artifact.observations.map((observation, index) =>
           index === 0 ? {...observation, responseBytes: observation.responseBytes + 1} : observation,
         ),
         runId: artifact.runId,
-        version: 1,
+        version: 2,
       }),
     ).toThrow(/output digest|summary digest/);
     expect(() =>
@@ -134,6 +136,63 @@ describe('Code Memory Link practical dogfood evidence', () => {
       ).gate.qualityFailures,
     ).toContain('stale-graph-abstention graph snapshot does not match the reviewed harness checkout');
   });
+
+  it('fails when store-now exposes a backlink or does not finalize after restart', () => {
+    const artifact = validArtifact();
+    const deferredAnchorLifecycle = createCodeMemoryLinkDeferredAnchorObservationV2({
+      candidate: CANDIDATE,
+      harnessCommit: HARNESS_COMMIT,
+      invocationNonce: artifact.deferredAnchorLifecycle.attestation.invocationNonce,
+      observation: {
+        ...deferredObservation(),
+        citationsFinalizedAfterPrepare: false,
+        directMatchesBeforeFinalize: 1,
+        finalizedBacklinkTargetsStoredMemory: false,
+        finalization: {...deferredObservation().finalization, finalizedCount: 0, pendingCount: 1},
+        pendingIntentCountAfterFinalize: 1,
+        pendingMemoryRecallableByTask: false,
+      },
+      postRuntime: RUNTIME,
+      preRuntime: RUNTIME,
+      runId: RUN_ID,
+    });
+    expect(
+      evaluateCodeMemoryLinkDogfood(withHash({...artifact, deferredAnchorLifecycle})).gate.qualityFailures,
+    ).toEqual(
+      expect.arrayContaining([
+        'deferred-anchor lifecycle did not finalize exactly one private pending intent',
+        'deferred-anchor lifecycle exposed a pending backlink or failed to expose its finalized backlink',
+      ]),
+    );
+  });
+
+  it('retains strict-write and deferred-write failures as quality evidence', () => {
+    const artifact = validArtifact();
+    const deferredAnchorLifecycle = createCodeMemoryLinkDeferredAnchorObservationV2({
+      candidate: CANDIDATE,
+      harnessCommit: HARNESS_COMMIT,
+      invocationNonce: artifact.deferredAnchorLifecycle.attestation.invocationNonce,
+      observation: {
+        ...deferredObservation(),
+        indexingStartedByWrite: true,
+        strictIndexingStartedByWrite: true,
+        strictMemoryStored: true,
+        strictWriteRejected: false,
+      },
+      postRuntime: RUNTIME,
+      preRuntime: RUNTIME,
+      runId: RUN_ID,
+    });
+
+    expect(
+      evaluateCodeMemoryLinkDogfood(withHash({...artifact, deferredAnchorLifecycle})).gate.qualityFailures,
+    ).toEqual(
+      expect.arrayContaining([
+        'strict cited write did not reject atomically while exact-current graph evidence was unavailable',
+        'strict or deferred memory write started graph indexing',
+      ]),
+    );
+  });
 });
 
 function validArtifact(): CodeMemoryLinkDogfoodArtifactV1 {
@@ -149,13 +208,64 @@ function validArtifact(): CodeMemoryLinkDogfoodArtifactV1 {
       runId: RUN_ID,
     });
   });
+  const deferredAnchorLifecycle = createCodeMemoryLinkDeferredAnchorObservationV2({
+    candidate: CANDIDATE,
+    harnessCommit: HARNESS_COMMIT,
+    invocationNonce: opaqueInvocation(CODE_MEMORY_LINK_DOGFOOD_CASE_IDS.length),
+    observation: deferredObservation(),
+    postRuntime: RUNTIME,
+    preRuntime: RUNTIME,
+    runId: RUN_ID,
+  });
   return withHash({
     candidate: CANDIDATE,
+    deferredAnchorLifecycle,
     harnessCommit: HARNESS_COMMIT,
     observations,
     runId: RUN_ID,
-    version: 1,
+    version: 2,
   });
+}
+
+function deferredObservation() {
+  return {
+    canonicalBodyPreserved: true,
+    canonicalIdentityPreserved: true,
+    canonicalLifecyclePreserved: true,
+    canonicalTimestampsPreserved: true,
+    citationsFinalizedAfterPrepare: true,
+    directMatchesAfterFinalize: 1,
+    directMatchesBeforeFinalize: 0,
+    deferredReceiptGuidanceObserved: true,
+    durableReceiptMilliseconds: 500,
+    falseCurrentCount: 0,
+    finalizedBacklinkTargetsStoredMemory: true,
+    finalization: {
+      citationCount: 1,
+      conflictCount: 0,
+      failedCount: 0,
+      finalizedCount: 1,
+      pendingCount: 0,
+      scannedCount: 1,
+    },
+    graphStatusAfterStore: {
+      readySnapshotCommit: HARNESS_COMMIT,
+      readySnapshotDirty: false,
+      readySnapshotId: `cgsn_${'f'.repeat(40)}`,
+      stale: true,
+    },
+    indexingStartedByWrite: false,
+    memoryStored: true,
+    pendingIntentCountAfterFinalize: 0,
+    pendingIntentCountAfterStore: 1,
+    pendingMemoryRecallableByTask: true,
+    restartBoundary: true,
+    strictIndexingStartedByWrite: false,
+    strictMemoryStored: false,
+    strictReceiptMilliseconds: 100,
+    strictRecoveryGuidanceObserved: true,
+    strictWriteRejected: true,
+  };
 }
 
 function observation(
@@ -231,6 +341,7 @@ function withHash(
 ): CodeMemoryLinkDogfoodArtifactV1 {
   const normalized = {
     candidate: artifact.candidate,
+    deferredAnchorLifecycle: artifact.deferredAnchorLifecycle,
     harnessCommit: artifact.harnessCommit,
     observations: artifact.observations,
     runId: artifact.runId,

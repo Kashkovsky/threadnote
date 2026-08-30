@@ -92,7 +92,7 @@ const build = Effect.gen(function* () {
   }
 
   yield* runBunBuild({
-    entrypoints: [path.join(root, 'src', 'manager_ui.tsx')],
+    entrypoints: [path.join(root, 'src', 'manager', 'ui.tsx')],
     format: 'iife',
     minify: true,
     naming: 'app.js',

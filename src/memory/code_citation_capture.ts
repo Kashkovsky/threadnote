@@ -60,6 +60,11 @@ export interface MemoryCodeCitationCaptureRecoveryV1 {
   readonly version: 1;
 }
 
+export interface ExpectedMemoryCodeCitationCallerIdentity {
+  readonly repositoryId: string;
+  readonly worktreeId: string;
+}
+
 export class MemoryCodeCitationCaptureError extends Error {
   override readonly name = 'MemoryCodeCitationCaptureError';
   readonly recovery?: MemoryCodeCitationCaptureRecoveryV1;
@@ -84,16 +89,31 @@ interface CaptureTarget {
  */
 export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture')(function* (
   config: RuntimeConfig,
-  input: {readonly callerCwd: string; readonly refs?: readonly string[]},
+  input: {
+    readonly callerCwd: string;
+    readonly expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity;
+    readonly refs?: readonly string[];
+  },
 ) {
   const refs = yield* Effect.try({
-    try: () => normalizeCodeRefs(input.refs ?? []),
+    try: () => normalizeMemoryCodeRefs(input.refs ?? []),
     catch: cause => captureError('code references', cause),
   });
   if (refs.length === 0) return [] as readonly MemoryCodeCitationV1[];
   const path = yield* Path.Path;
   if (!path.isAbsolute(input.callerCwd)) {
     return yield* Effect.fail(new MemoryCodeCitationCaptureError('Code citation callerCwd must be absolute.'));
+  }
+
+  const query = yield* CodeGraphQueryService;
+  if (input.expectedCallerIdentity) {
+    const callerBefore = yield* query
+      .status(config.agentContextHome, input.callerCwd, {
+        observeWorktree: true,
+        requestMaintenance: false,
+      })
+      .pipe(Effect.mapError(error => captureError('caller repository identity', error)));
+    yield* requireExpectedCallerIdentity(callerBefore, input.expectedCallerIdentity);
   }
 
   const invalidQualifiedRef = refs.find(ref => ref.startsWith('cgr_') && !QUALIFIED_SYMBOL_REF.test(ref));
@@ -118,9 +138,19 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   }
   const capturedGroups = yield* Effect.forEach(
     [...groups.entries()],
-    ([cwd, group]) => captureRepositoryGroup(config, cwd, group),
+    ([cwd, group]) =>
+      captureRepositoryGroup(config, cwd, group, cwd === input.callerCwd ? input.expectedCallerIdentity : undefined),
     {concurrency: 4},
   );
+  if (input.expectedCallerIdentity) {
+    const callerAfter = yield* query
+      .status(config.agentContextHome, input.callerCwd, {
+        observeWorktree: true,
+        requestMaintenance: false,
+      })
+      .pipe(Effect.mapError(error => captureError('caller repository identity', error)));
+    yield* requireExpectedCallerIdentity(callerAfter, input.expectedCallerIdentity);
+  }
   const ordered = capturedGroups.flat().sort((left, right) => left.index - right.index);
   const seen = new Set<string>();
   const citations: MemoryCodeCitationV1[] = [];
@@ -181,6 +211,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
   config: RuntimeConfig,
   cwd: string,
   targets: readonly CaptureTarget[],
+  expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity,
 ) {
   const query = yield* CodeGraphQueryService;
   const store = yield* CodeGraphStore;
@@ -191,6 +222,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
       requestMaintenance: false,
     })
     .pipe(Effect.mapError(error => captureError(cwd, error)));
+  if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(before, expectedCallerIdentity);
   const snapshot = yield* Effect.try({
     try: () => requireExactCurrentSnapshot(before, captureGroupPreparation(targets)),
     catch: cause => captureError(cwd, cause),
@@ -343,9 +375,21 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
           ),
         );
       }
+      if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(after, expectedCallerIdentity);
       return results;
     }),
   );
+});
+
+const requireExpectedCallerIdentity = Effect.fn('memoryCodeCitation.requireExpectedCallerIdentity')(function* (
+  status: CodeGraphStatus,
+  expected: ExpectedMemoryCodeCitationCallerIdentity,
+) {
+  if (status.identity.repositoryId !== expected.repositoryId || status.identity.worktreeId !== expected.worktreeId) {
+    return yield* Effect.fail(
+      new MemoryCodeCitationCaptureError('Code citation caller repository identity changed during capture.'),
+    );
+  }
 });
 
 function isFileRootSymbol(symbol: CodeGraphSymbol): boolean {
@@ -409,7 +453,7 @@ const captureSymbolCitation = Effect.fn('memoryCodeCitation.captureSymbol')(func
   };
 });
 
-function normalizeCodeRefs(refs: readonly string[]): readonly string[] {
+export function normalizeMemoryCodeRefs(refs: readonly string[]): readonly string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
   for (const raw of refs) {

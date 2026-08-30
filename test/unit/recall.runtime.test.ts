@@ -17,7 +17,7 @@ vi.mock('../../src/models/inference.js', () => ({
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
-import {runRecall} from '../../src/memory.js';
+import {runRecall} from '../../src/memory/index.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';

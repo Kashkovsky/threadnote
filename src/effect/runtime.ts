@@ -25,7 +25,7 @@ import {
   retainCurrentAgentSessionEnvironment,
   takeTelemetrySessionEnvironment,
 } from '../telemetry/session.js';
-import {getThreadnoteVersion} from '../version.js';
+import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {anonymousTelemetryLayer} from './telemetry.js';
 
 const systemLayer = SystemInfo.layer;

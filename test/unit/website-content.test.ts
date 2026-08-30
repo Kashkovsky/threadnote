@@ -112,6 +112,7 @@ const toolKeys = {
   ]),
   remember_context: new Set([
     'callerCwd',
+    'citationPolicy',
     'codeRefs',
     'kind',
     'project',

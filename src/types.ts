@@ -178,9 +178,13 @@ export interface McpInstallOptions {
 export interface RememberOptions {
   /** Graph-indexed repository-relative paths or stable code-graph refs captured as immutable code citations. */
   readonly codeRefs?: readonly string[];
+  /** Explicit compatibility alias for the default private store-now/anchor-later policy. */
+  readonly deferCodeRefs?: boolean;
   readonly dryRun?: boolean;
   readonly kind?: MemoryKind;
   readonly project?: string;
+  /** Fail before writing unless every code reference resolves against an exact-current graph. */
+  readonly requireCurrentCodeRefs?: boolean;
   readonly replace?: string;
   readonly sourceAgentClient?: string;
   readonly status?: MemoryStatus;
@@ -254,6 +258,8 @@ export interface HandoffOptions {
   readonly ci?: string;
   /** Graph-indexed repository-relative paths or stable code-graph refs captured as immutable code citations. */
   readonly codeRefs?: readonly string[];
+  /** Explicit compatibility alias for the default private store-now/anchor-later policy. */
+  readonly deferCodeRefs?: boolean;
   readonly dryRun?: boolean;
   readonly issue?: string;
   readonly nextStep?: string;
@@ -261,6 +267,8 @@ export interface HandoffOptions {
   readonly project?: string;
   readonly references?: readonly string[];
   readonly replace?: string;
+  /** Fail before writing unless every code reference resolves against an exact-current graph. */
+  readonly requireCurrentCodeRefs?: boolean;
   readonly sessionId?: string;
   readonly sourceAgentClient?: string;
   readonly task?: string;
@@ -367,12 +375,19 @@ export interface ShareConflictResolveOptions {
 }
 
 export interface SharePublishOptions {
+  /** Explicitly publish without pending code citations and discard the private pending intent. */
+  readonly allowUncitedPendingCodeRefs?: boolean;
   readonly dryRun?: boolean;
   readonly message?: string;
   readonly preview?: boolean;
   readonly push?: boolean;
   readonly redact?: boolean;
   readonly team?: string;
+}
+
+export interface FinalizeCodeRefsOptions {
+  readonly limit?: string;
+  readonly uris?: readonly string[];
 }
 
 export type ShareAgentArtifactAgent = 'claude' | 'codex';

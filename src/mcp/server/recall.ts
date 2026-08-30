@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Clock, Console, Crypto, Effect, FileSystem, Option, Result} from 'effect';
+import {Clock, Crypto, Effect, FileSystem, Option, Result} from 'effect';
 import {inferProjectFromQuery, inferWorksetFromQuery, requireWorkset} from '../../manifest.js';
 import type {ProjectManifest} from '../../types.js';
 import {
@@ -9,7 +9,7 @@ import {
   recallHygieneNudges,
   referencedUrisFromRecords,
 } from '../../memory/hygiene.js';
-import {isInSharedNamespace, applyScrubber} from '../../share.js';
+import {applyScrubber} from '../../share/index.js';
 import {
   errorMessage,
   enrichRecallQueryWithWorkspaceProjectContext,
@@ -39,7 +39,6 @@ import {
   shouldExpandRecall,
 } from '../../effect/ai/recall.js';
 import {resolveEffectAiConfiguration} from '../../effect/ai/consolidator.js';
-import {enrichMemoryMetadataWithConfiguredLocalAi} from '../../effect/ai/enrichment.js';
 import {sha256Hex} from '../../effect/digest.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {SystemInfo} from '../../effect/system.js';
@@ -53,10 +52,6 @@ import {
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
-import {
-  memoryCodeCitationSharingBlocker,
-  memoryCodeCitationSharingBlockerMessage,
-} from '../../memory/code_citation_policy.js';
 import {
   MEMORY_READ_DEFAULT_BUDGET_TOKENS,
   MEMORY_READ_MAXIMUM_BUDGET_TOKENS,
@@ -125,7 +120,6 @@ import {
   mcpErrorResult,
   normalizeOptionalMetadata,
   optionalResourceUri,
-  optionalResourceUriList,
   projectMemoryScopeUris,
   requiredResourceUri,
   requiredResourceUriList,
@@ -145,8 +139,17 @@ import {
   runNativeReadTool,
   textFromCallToolResult,
   writeDurableMemory,
-  writeCursorCloudSharedMemory,
 } from './memory.js';
+
+function stringList(value: string | readonly string[] | undefined): readonly string[] {
+  return typeof value === 'string' ? [value] : (value ?? []);
+}
+
+function commonCitationSourceCommit(citations: readonly {readonly sourceCommit: string}[]): string | undefined {
+  const commits = new Set(citations.map(citation => citation.sourceCommit));
+  return commits.size === 1 ? citations[0]?.sourceCommit : undefined;
+}
+
 export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'review_session_context',
@@ -1306,6 +1309,12 @@ export function registerReadTool(
         ].filter((part): part is string => part !== undefined);
         const resources = memoryReadResourcesFromNativeResult(result, requestedUris);
         if (!resources) return argumentError(`${name} could not project the canonical read response.`);
+        const relocatedOutsideScope = memoryScope
+          ? resources.find(resource => !resourceIdIsWithin(resource.uri, memoryScope.root))
+          : undefined;
+        if (relocatedOutsideScope) {
+          return argumentError(`${name} relocated uri must stay within ${memoryScope!.root}.`);
+        }
         if (continuation && !memoryReadSourcesMatch(resources, continuation.sourceHashes)) {
           return argumentError(`${name} source changed after the prior page; restart from the URI.`);
         }
@@ -1353,6 +1362,12 @@ export function registerReadTool(
               resourceCount: page.structuredContent.resourceCount,
               type: 'threadnote-read-page',
               uri: page.uri,
+              ...(page.structuredContent.requestedUri === undefined
+                ? {}
+                : {requestedUri: page.structuredContent.requestedUri}),
+              ...(page.structuredContent.canonicalUri === undefined
+                ? {}
+                : {canonicalUri: page.structuredContent.canonicalUri}),
               version: 1,
             },
           },
@@ -1371,13 +1386,68 @@ function memoryReadResourcesFromNativeResult(
   result: CallToolResult,
   uris: readonly string[],
 ): MemoryReadResource[] | undefined {
+  const canonicalRead = canonicalReadMetadata(result);
   const resources: MemoryReadResource[] = [];
   for (const [index, uri] of uris.entries()) {
-    const content = result.content[index];
+    const mapping = canonicalRead?.resources[index];
+    const content = result.content[mapping?.contentIndex ?? index];
     if (content?.type !== 'text') return undefined;
-    resources.push({text: content.text, uri});
+    const requestedUri = mapping?.requestedUri ?? uri;
+    const canonicalUri = mapping?.canonicalUri ?? uri;
+    resources.push({
+      ...(requestedUri === canonicalUri ? {} : {canonicalUri, requestedUri}),
+      text: content.text,
+      uri: canonicalUri,
+    });
   }
   return resources;
+}
+
+function canonicalReadMetadata(result: CallToolResult):
+  | {
+      readonly resources: readonly {
+        readonly canonicalUri: string;
+        readonly contentIndex: number;
+        readonly requestedUri: string;
+      }[];
+    }
+  | undefined {
+  const value = result._meta?.['threadnote.io/canonical-read'];
+  if (typeof value !== 'object' || value === null) return undefined;
+  const candidate = value as {
+    readonly resources?: unknown;
+    readonly type?: unknown;
+    readonly version?: unknown;
+  };
+  if (
+    candidate.type !== 'threadnote-canonical-read' ||
+    candidate.version !== 1 ||
+    !Array.isArray(candidate.resources)
+  ) {
+    return undefined;
+  }
+  const resources = candidate.resources.map(resource => {
+    if (typeof resource !== 'object' || resource === null) return undefined;
+    const entry = resource as {
+      readonly canonicalUri?: unknown;
+      readonly contentIndex?: unknown;
+      readonly requestedUri?: unknown;
+      readonly uri?: unknown;
+    };
+    const requestedUri =
+      typeof entry.requestedUri === 'string'
+        ? entry.requestedUri
+        : typeof entry.uri === 'string'
+          ? entry.uri
+          : undefined;
+    const canonicalUri = typeof entry.canonicalUri === 'string' ? entry.canonicalUri : requestedUri;
+    return Number.isSafeInteger(entry.contentIndex) && requestedUri && canonicalUri
+      ? {canonicalUri, contentIndex: entry.contentIndex as number, requestedUri}
+      : undefined;
+  });
+  return resources.every(resource => resource !== undefined)
+    ? {resources: resources as readonly {canonicalUri: string; contentIndex: number; requestedUri: string}[]}
+    : undefined;
 }
 
 export function registerListTool(
@@ -1433,192 +1503,6 @@ export function registerListTool(
 
 function cursorCloudMemoryScopeReceipt(scope: CursorCloudMemoryScope) {
   return {mode: scope.mode, root: scope.root, team: scope.team, type: 'threadnote-memory-scope', version: 1} as const;
-}
-
-export function registerStoreTool(
-  server: EffectMcpServerAdapter,
-  config: RuntimeConfig,
-  name: string,
-  description: string,
-  memoryScope?: CursorCloudMemoryScope,
-): void {
-  server.registerTool(
-    name,
-    {
-      annotations: {readOnlyHint: false, destructiveHint: true},
-      description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
-      inputSchema: {
-        callerCwd: McpInput.string('Absolute cwd for nested package/app scope'),
-        codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to capture as immutable code evidence; max ${MAX_MEMORY_CODE_CITATIONS}`,
-          {maximumItems: MAX_MEMORY_CODE_CITATIONS},
-        ),
-        kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),
-        project: McpInput.string('Project/repo namespace'),
-        references: McpInput.stringOrStrings('Prior read-only threadnote:// URI(s)'),
-        replaceUri: McpInput.string('threadnote:// memory URI to replace safely'),
-        text: McpInput.string('Memory text'),
-        sourceAgentClient: McpInput.string('Originating client'),
-        status: McpInput.literals(['active', 'archived', 'expired', 'superseded'], 'Memory status'),
-        topic: McpInput.string('Stable topic'),
-      },
-    },
-    ({callerCwd, codeRefs, kind, project, references, replaceUri, sourceAgentClient, status, text, topic}) => {
-      const checkedText = requiredText(text, name, 'text', {text: 'Durable engineering note...'});
-      if (!checkedText.ok) {
-        return checkedText.error;
-      }
-      const checkedReplaceUri = optionalResourceUri(replaceUri, name);
-      if (!checkedReplaceUri.ok) {
-        return checkedReplaceUri.error;
-      }
-      const checkedReferences = optionalResourceUriList(references, name);
-      if (!checkedReferences.ok) {
-        return checkedReferences.error;
-      }
-      const memoryKind = kind ?? 'durable';
-      if (memoryScope && memoryKind !== 'durable' && memoryKind !== 'handoff') {
-        return argumentError(
-          `${name} supports durable shared memories and transient local handoffs in the Cursor Cloud profile.`,
-        );
-      }
-      if (memoryScope) {
-        const outsideReference = checkedReferences.value?.find(
-          reference => !resourceIdIsWithin(reference, memoryScope.root),
-        );
-        if (outsideReference) {
-          return argumentError(`${name} references must stay within ${memoryScope.root}.`);
-        }
-        if (
-          memoryKind === 'durable' &&
-          checkedReplaceUri.value &&
-          !resourceIdIsWithin(checkedReplaceUri.value, memoryScope.root)
-        ) {
-          return argumentError(`${name} replaceUri must stay within ${memoryScope.root}.`);
-        }
-        const handoffRoot = `threadnote://user/${uriSegment(config.user)}/memories/handoffs`;
-        if (
-          memoryKind === 'handoff' &&
-          checkedReplaceUri.value &&
-          !resourceIdIsWithin(checkedReplaceUri.value, handoffRoot)
-        ) {
-          return argumentError(`${name} local handoff replaceUri must stay within ${handoffRoot}.`);
-        }
-      }
-      const metadata: MemoryMetadata = {
-        kind: memoryKind,
-        project: normalizeOptionalMetadata(project),
-        references: checkedReferences.value,
-        schemaVersion: MEMORY_SCHEMA_VERSION,
-        sourceAgentClient: sourceAgentClient ?? 'mcp',
-        status: status ?? 'active',
-        timestamp: new Date().toISOString(),
-        topic: normalizeOptionalMetadata(topic),
-      };
-      return Effect.gen(function* () {
-        const requestedCodeRefs = stringList(codeRefs);
-        if (requestedCodeRefs.length > 0 && !callerCwd) {
-          return argumentError(`${name} requires absolute callerCwd when codeRefs are provided.`);
-        }
-        const captured = yield* captureMemoryCodeCitationsForMcp(
-          config,
-          {callerCwd: callerCwd!, refs: requestedCodeRefs},
-          name,
-        );
-        if (!captured.ok) return captured.error;
-        const codeCitations = captured.citations;
-        const workspaceComponent = callerCwd
-          ? yield* resolveWorkspaceComponentContext({cwd: callerCwd, includeProcessCwd: false})
-          : undefined;
-        const [replaced] = checkedReplaceUri.value
-          ? yield* readMemoryRecordsByUri(config, [checkedReplaceUri.value])
-          : [];
-        const scopedMetadata = {
-          ...metadata,
-          ...(codeCitations.length === 0 ? {} : {codeCitations}),
-          ...(commonCitationSourceCommit(codeCitations) === undefined
-            ? {}
-            : {sourceCommit: commonCitationSourceCommit(codeCitations)}),
-          workspaceScope: replaced ? replaced.metadata.workspaceScope : workspaceComponent?.scope,
-        } satisfies MemoryMetadata;
-        if (memoryScope && memoryKind === 'durable') {
-          const citationBlocker = memoryCodeCitationSharingBlocker(scopedMetadata);
-          if (citationBlocker) {
-            return argumentError(
-              `Refusing shared memory write: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
-            );
-          }
-          const result = yield* writeCursorCloudSharedMemory(config, memoryScope, {
-            bodyText: checkedText.value,
-            metadata: scopedMetadata,
-            replaceUri: checkedReplaceUri.value,
-          });
-          return withClearedCodeCitationReceipt(result, replaced?.metadata.codeCitations?.length, codeCitations.length);
-        }
-        const enrichedMetadata =
-          memoryScope || (checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value))
-            ? scopedMetadata
-            : yield* enrichMemoryMetadataWithConfiguredLocalAi(config, scopedMetadata, checkedText.value).pipe(
-                Effect.catch(error =>
-                  Console.log(
-                    `Local AI memory enrichment skipped: ${error instanceof Error ? error.message : String(error)}`,
-                  ).pipe(Effect.as(scopedMetadata)),
-                ),
-              );
-        const result = yield* writeDurableMemory(config, {
-          bodyText: checkedText.value,
-          metadata: enrichedMetadata,
-          replaceUri: checkedReplaceUri.value,
-        });
-        const projectedResult =
-          memoryScope && memoryKind === 'handoff'
-            ? {
-                ...result,
-                _meta: {
-                  ...result._meta,
-                  'threadnote.io/persistence': {
-                    durability: 'cloud-workspace-local',
-                    note: 'This handoff may not survive a new Cursor Cloud session.',
-                    type: 'threadnote-cloud-persistence',
-                    version: 1,
-                  },
-                },
-              }
-            : result;
-        return withClearedCodeCitationReceipt(
-          projectedResult,
-          replaced?.metadata.codeCitations?.length,
-          codeCitations.length,
-        );
-      }).pipe(Effect.flatMap(withStaleVersionNotice));
-    },
-  );
-}
-
-function stringList(value: string | readonly string[] | undefined): readonly string[] {
-  return typeof value === 'string' ? [value] : (value ?? []);
-}
-
-function commonCitationSourceCommit(citations: readonly {readonly sourceCommit: string}[]): string | undefined {
-  const commits = new Set(citations.map(citation => citation.sourceCommit));
-  return commits.size === 1 ? citations[0]?.sourceCommit : undefined;
-}
-
-function withClearedCodeCitationReceipt(
-  result: CallToolResult,
-  previousCount: number | undefined,
-  currentCount: number,
-): CallToolResult {
-  if (!previousCount || currentCount > 0) return result;
-  const note = `Cleared ${previousCount} prior code citation(s); provide codeRefs to recapture them.`;
-  return {
-    ...result,
-    content: [...result.content, {type: 'text', text: note}],
-    structuredContent: {
-      ...(result.structuredContent ?? {}),
-      clearedCodeCitations: previousCount,
-    },
-  };
 }
 
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {

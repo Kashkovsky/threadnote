@@ -1,5 +1,5 @@
 import {describe, expect, it} from 'vitest';
-import {applyScrubber, scrubberBlocker, setMemoryVisibility, stripPersonalProvenance} from '../../src/share.js';
+import {applyScrubber, scrubberBlocker, setMemoryVisibility, stripPersonalProvenance} from '../../src/share/index.js';
 
 function fixture(...parts: readonly string[]): string {
   return parts.join('');

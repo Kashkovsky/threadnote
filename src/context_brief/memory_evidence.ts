@@ -1,6 +1,6 @@
 import {Effect} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
-import {readMemoryRecordsByUri} from '../memory.js';
+import {readMemoryRecordsByUri} from '../memory/index.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
 import type {MemoryRecord} from '../memory/document.js';
 import {uriSegment} from '../manifest.js';

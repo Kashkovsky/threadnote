@@ -1,0 +1,278 @@
+import {it as effectIt} from '@effect/vitest';
+import {Effect, Exit, FileSystem, Path} from 'effect';
+import fc from 'fast-check';
+import {describe, expect} from 'vitest';
+import {ResourceStore} from '../../src/effect/resource-store.js';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import {
+  MAX_MEMORY_RELOCATION_DEPTH,
+  MemoryRelocationError,
+  readMemoryWithRelocations,
+  recordMemoryRelocation,
+} from '../../src/memory/relocation.js';
+import {writeMemoryFile} from '../../src/share/core.js';
+import type {RuntimeConfig} from '../../src/types.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+
+describe('private memory relocation receipts', () => {
+  effectIt.effect('resolves a moved URI, lets live reuse win, and prevents stale receipt revival', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture('reuse');
+        const sourceUri = memoryUri(0);
+        const targetUri = memoryUri(1);
+        const moved = memoryContent('tn_relocated', 'Moved evidence.');
+        yield* fixture.store.write(fixture.location, sourceUri, moved, {mode: 'create'});
+        yield* fixture.store.write(fixture.location, targetUri, moved, {mode: 'create'});
+        yield* recordMemoryRelocation(fixture.config, {
+          fromContent: moved,
+          fromUri: sourceUri,
+          toContent: moved,
+          toUri: targetUri,
+        });
+        yield* fixture.store.remove(fixture.location, sourceUri);
+
+        expect(yield* readMemoryWithRelocations(fixture.config, sourceUri)).toMatchObject({
+          canonicalUri: targetUri,
+          content: moved,
+          memoryId: 'tn_relocated',
+          relocationDepth: 1,
+          requestedUri: sourceUri,
+        });
+
+        const reused = memoryContent('tn_reused', 'Independent live memory.');
+        yield* writeMemoryFile(fixture.config, 'threadnote-native', sourceUri, reused, 'create', false, {quiet: true});
+        expect(yield* readMemoryWithRelocations(fixture.config, sourceUri)).toMatchObject({
+          canonicalUri: sourceUri,
+          content: reused,
+          relocationDepth: 0,
+        });
+        yield* fixture.store.remove(fixture.location, sourceUri);
+        const missing = yield* readMemoryWithRelocations(fixture.config, sourceUri).pipe(Effect.exit);
+        expect(Exit.isFailure(missing)).toBe(true);
+        if (Exit.isFailure(missing)) expect(String(missing.cause)).toContain('ResourceNotFound');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('fails closed when either the move or later destination changes memory identity', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture('identity');
+        const sourceUri = memoryUri(0);
+        const targetUri = memoryUri(1);
+        const source = memoryContent('tn_source', 'Source evidence.');
+        const other = memoryContent('tn_other', 'Other evidence.');
+        yield* fixture.store.write(fixture.location, sourceUri, source, {mode: 'create'});
+        yield* fixture.store.write(fixture.location, targetUri, other, {mode: 'create'});
+
+        const mismatchedMove = yield* recordMemoryRelocation(fixture.config, {
+          fromContent: source,
+          fromUri: sourceUri,
+          toContent: other,
+          toUri: targetUri,
+        }).pipe(Effect.exit);
+        expect(Exit.isFailure(mismatchedMove)).toBe(true);
+        if (Exit.isFailure(mismatchedMove)) expect(String(mismatchedMove.cause)).toContain('memory_id');
+
+        yield* fixture.store.write(fixture.location, targetUri, source, {mode: 'upsert'});
+        yield* recordMemoryRelocation(fixture.config, {
+          fromContent: source,
+          fromUri: sourceUri,
+          toContent: source,
+          toUri: targetUri,
+        });
+        yield* fixture.store.remove(fixture.location, sourceUri);
+        yield* fixture.store.write(fixture.location, targetUri, other, {mode: 'upsert'});
+        const changedDestination = yield* readMemoryWithRelocations(fixture.config, sourceUri).pipe(Effect.exit);
+        expect(Exit.isFailure(changedDestination)).toBe(true);
+        if (Exit.isFailure(changedDestination)) {
+          expect(String(changedDestination.cause)).toContain('MemoryRelocationError');
+          expect(String(changedDestination.cause)).toContain('identity fence');
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect.prop(
+    'resolves every acyclic chain up to the production depth bound',
+    {depth: fc.integer({max: MAX_MEMORY_RELOCATION_DEPTH, min: 1})},
+    ({depth}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeFixture(`chain-${depth}`);
+          const content = memoryContent('tn_chain', `Chain depth ${depth}.`);
+          const uris = Array.from({length: depth + 1}, (_, index) => memoryUri(index));
+          for (const uri of uris) {
+            yield* fixture.store.write(fixture.location, uri, content, {mode: 'create'});
+          }
+          for (let index = 0; index < depth; index += 1) {
+            yield* recordMemoryRelocation(fixture.config, {
+              fromContent: content,
+              fromUri: uris[index]!,
+              toContent: content,
+              toUri: uris[index + 1]!,
+            });
+          }
+          for (const uri of uris.slice(0, -1)) yield* fixture.store.remove(fixture.location, uri);
+
+          expect(yield* readMemoryWithRelocations(fixture.config, uris[0]!)).toMatchObject({
+            canonicalUri: uris.at(-1),
+            content,
+            relocationDepth: depth,
+            requestedUri: uris[0],
+          });
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 16}},
+  );
+
+  effectIt.effect('rejects loops and chains beyond the fixed bound', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture('bounds');
+        const content = memoryContent('tn_bounds', 'Bounded chain.');
+        const uris = Array.from({length: MAX_MEMORY_RELOCATION_DEPTH + 2}, (_, index) => memoryUri(index));
+        for (const uri of uris) yield* fixture.store.write(fixture.location, uri, content, {mode: 'create'});
+        for (let index = 0; index < uris.length - 1; index += 1) {
+          yield* recordMemoryRelocation(fixture.config, {
+            fromContent: content,
+            fromUri: uris[index]!,
+            toContent: content,
+            toUri: uris[index + 1]!,
+          });
+        }
+        for (const uri of uris.slice(0, -1)) yield* fixture.store.remove(fixture.location, uri);
+        const tooDeep = yield* readMemoryWithRelocations(fixture.config, uris[0]!).pipe(Effect.exit);
+        expect(Exit.isFailure(tooDeep)).toBe(true);
+        if (Exit.isFailure(tooDeep)) expect(String(tooDeep.cause)).toContain('maximum depth');
+
+        const loopFixture = yield* makeFixture('loop');
+        const loopUris = [memoryUri(20), memoryUri(21)];
+        for (const uri of loopUris)
+          yield* loopFixture.store.write(loopFixture.location, uri, content, {mode: 'create'});
+        yield* recordMemoryRelocation(loopFixture.config, {
+          fromContent: content,
+          fromUri: loopUris[0]!,
+          toContent: content,
+          toUri: loopUris[1]!,
+        });
+        yield* recordMemoryRelocation(loopFixture.config, {
+          fromContent: content,
+          fromUri: loopUris[1]!,
+          toContent: content,
+          toUri: loopUris[0]!,
+        });
+        for (const uri of loopUris) yield* loopFixture.store.remove(loopFixture.location, uri);
+        const loop = yield* readMemoryWithRelocations(loopFixture.config, loopUris[0]!).pipe(Effect.exit);
+        expect(Exit.isFailure(loop)).toBe(true);
+        if (Exit.isFailure(loop)) {
+          expect(String(loop.cause)).toContain(MemoryRelocationError.name);
+          expect(String(loop.cause)).toContain('loop');
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uses the canonical user slug and isolates storage accounts that share a URI slug', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-relocation-identities-'});
+        const store = yield* ResourceStore;
+        const mixedUserConfig = runtimeConfig(home, 'team alpha', 'Test User');
+        const sluggedSource = 'threadnote://user/test-user/memories/durable/projects/threadnote/mixed-user.md';
+        const sluggedTarget = 'threadnote://user/test-user/memories/durable/projects/threadnote/mixed-user-moved.md';
+        const content = memoryContent('tn_mixed_user', 'Mixed user evidence.');
+        const mixedLocation = {account: mixedUserConfig.account, home, user: mixedUserConfig.user};
+        yield* store.write(mixedLocation, sluggedSource, content, {mode: 'create'});
+        yield* store.write(mixedLocation, sluggedTarget, content, {mode: 'create'});
+        yield* recordMemoryRelocation(mixedUserConfig, {
+          fromContent: content,
+          fromUri: sluggedSource,
+          toContent: content,
+          toUri: sluggedTarget,
+        });
+        yield* store.remove(mixedLocation, sluggedSource);
+        expect(yield* readMemoryWithRelocations(mixedUserConfig, sluggedSource)).toMatchObject({
+          canonicalUri: sluggedTarget,
+          content,
+        });
+
+        const lowerAccountConfig = runtimeConfig(home, 'team-alpha', 'Test User');
+        yield* recordMemoryRelocation(lowerAccountConfig, {
+          fromContent: content,
+          fromUri: sluggedSource,
+          toContent: content,
+          toUri: 'threadnote://user/test-user/memories/durable/projects/threadnote/lower-account.md',
+        });
+        expect(yield* fs.exists(path.join(home, 'data', 'team alpha', 'user', 'test-user', 'private'))).toBe(true);
+        expect(yield* fs.exists(path.join(home, 'data', 'team-alpha', 'user', 'test-user', 'private'))).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('rejects a receipt that would exceed the reader byte bound before recording the move', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture('oversized');
+        const longPath = Array.from({length: 72}, (_, index) => `${index}-${'x'.repeat(220)}`).join('/');
+        const sourceUri = `threadnote://user/tester/memories/${longPath}/source.md`;
+        const targetUri = `threadnote://user/tester/memories/${longPath}/target.md`;
+        const content = memoryContent('tn_oversized_receipt', 'Oversized receipt evidence.');
+
+        const recorded = yield* recordMemoryRelocation(fixture.config, {
+          fromContent: content,
+          fromUri: sourceUri,
+          toContent: content,
+          toUri: targetUri,
+        }).pipe(Effect.exit);
+
+        expect(Exit.isFailure(recorded)).toBe(true);
+        if (Exit.isFailure(recorded)) expect(String(recorded.cause)).toContain('exceeds its size limit');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+});
+
+const memoryUri = (index: number) =>
+  `threadnote://user/tester/memories/durable/projects/threadnote/relocation-${index}.md`;
+
+function memoryContent(memoryId: string, body: string): string {
+  const metadata: MemoryMetadata = {
+    kind: 'durable',
+    memoryId,
+    project: 'threadnote',
+    sourceAgentClient: 'test',
+    status: 'active',
+    timestamp: '2026-08-30T00:00:00.000Z',
+    topic: 'relocation',
+    visibility: 'personal',
+  };
+  return formatMemoryDocument('MEMORY', metadata, body);
+}
+
+const makeFixture = Effect.fn('test.memoryRelocationFixture')(function* (name: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const home = yield* fs.makeTempDirectoryScoped({prefix: `threadnote-memory-relocation-${name}-`});
+  const config = runtimeConfig(home, 'local', 'tester', path);
+  const store = yield* ResourceStore;
+  return {
+    config,
+    location: {account: config.account, home, user: config.user},
+    store,
+  } as const;
+});
+
+function runtimeConfig(home: string, account: string, user: string, path?: Path.Path): RuntimeConfig {
+  return {
+    account,
+    agentContextHome: home,
+    agentId: 'threadnote',
+    manifestPath: path ? path.join(home, 'seed-manifest.yaml') : `${home}/seed-manifest.yaml`,
+    user,
+  };
+}

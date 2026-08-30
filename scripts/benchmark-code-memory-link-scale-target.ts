@@ -11,7 +11,7 @@ import {
   parseCodeMemoryLinkScaleBudgetV1,
 } from '../src/evaluation/code-memory-link-scale-contract.js';
 import {runCodeMemoryLinkScaleWorkload} from '../src/evaluation/code-memory-link-scale.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 

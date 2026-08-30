@@ -52,8 +52,8 @@ import {
   registerReadTool,
   registerRecallFeedbackTool,
   registerSearchTool,
-  registerStoreTool,
 } from './recall.js';
+import {registerFinalizeCodeRefsTool, registerStoreTool} from './store.js';
 import {
   registerCompactTool,
   runNativeAddResourceTool,
@@ -299,6 +299,7 @@ function registerTools(
   }
   if (toolset === 'full') {
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
+    registerFinalizeCodeRefsTool(server, config);
   }
 
   if (capabilities.memoryReview) registerCandidateMemoryTools(server, config);
@@ -388,7 +389,7 @@ function registerTools(
       {
         annotations: {readOnlyHint: false, destructiveHint: true},
         description:
-          'Publish a personal durable memory to the team shared repo. Scans for sensitive data, optionally redacts soft leaks, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
+          'Publish a personal durable memory to the team repo after sensitive-data scanning; removes the source after push. Confirm with the user; never publish handoffs or preferences. Preview is read-only.',
         inputSchema: {
           message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
           preview: McpInput.boolean(
@@ -411,7 +412,13 @@ function registerTools(
         if (!checkedUri.ok) {
           return checkedUri.error;
         }
-        return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+        return runSharePublishTool(config, checkedUri.value, {
+          message,
+          preview,
+          push,
+          redact,
+          team,
+        });
       },
     );
 

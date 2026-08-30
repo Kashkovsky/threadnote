@@ -13,7 +13,7 @@ import {installCommandShim} from '../../src/command-shim.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {repairRegisteredMcpClients, runUninstall} from '../../src/lifecycle.js';
-import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
+import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp/index.js';
 import {mcpToolCapabilities, parseMcpToolset} from '../../src/mcp/toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
 

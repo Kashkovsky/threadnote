@@ -134,6 +134,51 @@ describe('memory code citation capture and validation', () => {
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );
 
+  effectIt.effect('rejects a caller checkout swap at the post-capture identity fence', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-identity-fence-'});
+      yield* fs.makeDirectory(path.join(root, 'src'), {recursive: true});
+      yield* fs.writeFileString(path.join(root, 'src', 'value.ts'), SOURCE);
+      let statusCalls = 0;
+      function statusFor() {
+        statusCalls += 1;
+        const expectedStatus = fixture.status;
+        if (statusCalls !== 3) return expectedStatus;
+        const repositoryId = 'b'.repeat(64);
+        return {
+          ...expectedStatus,
+          identity: {
+            ...expectedStatus.identity,
+            repositoryId,
+            worktreeId: 'swapped-worktree',
+          },
+          readySnapshot: {
+            ...expectedStatus.readySnapshot!,
+            repositoryId,
+            worktreeId: 'swapped-worktree',
+          },
+        };
+      }
+      const fixture = citationFixture(root, {statusFor});
+
+      const failure = yield* captureMemoryCodeCitations(CONFIG, {
+        callerCwd: root,
+        expectedCallerIdentity: {
+          repositoryId: REPOSITORY_ID,
+          worktreeId: fixture.status.identity.worktreeId,
+        },
+        refs: ['src/value.ts'],
+      }).pipe(provideTestLayer(fixture.layer), Effect.flip);
+
+      expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
+      expect(String(failure)).toContain('Repository graph or worktree changed while code citations were captured');
+      expect(fixture.evidenceCalls()).toBe(1);
+      expect(statusCalls).toBe(3);
+    }).pipe(provideTestLayer(StandaloneBrokerLayer)),
+  );
+
   effectIt.effect('routes qualified-reference recovery through its published Workset before unchanged retry', () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

@@ -1,4 +1,5 @@
 import {sha256HexSync} from '../crypto/sha256.js';
+import {parseContextBriefV1, renderContextBriefText} from '../context_brief/projector.js';
 import {
   boundedText,
   compareStrings,
@@ -37,14 +38,21 @@ export interface CodeMemoryLinkContextBriefProxyReceiptV1 {
   readonly version: 1;
 }
 
+const CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_STRUCTURED_V1 = Object.freeze({
+  evidenceCount: 0,
+  state: 'empty',
+  type: 'code-memory-link-context-brief-proxy',
+  version: 1 as const,
+});
+
 export const CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1 = Object.freeze({
-  content: Object.freeze([]) as readonly never[],
-  structuredContent: Object.freeze({
-    evidenceCount: 0,
-    state: 'empty',
-    type: 'code-memory-link-context-brief-proxy',
-    version: 1 as const,
-  }),
+  content: Object.freeze([
+    Object.freeze({
+      text: JSON.stringify(CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_STRUCTURED_V1),
+      type: 'text' as const,
+    }),
+  ]),
+  structuredContent: CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_STRUCTURED_V1,
 });
 
 export type CodeMemoryLinkContextBriefResponseClassV1 = 'anchored-v3' | 'empty-v1' | 'task-v2';
@@ -85,6 +93,11 @@ export interface CodeMemoryLinkCodexContextBriefCallProjectionV1 {
   readonly succeeded: boolean;
 }
 
+export interface CanonicalizeCodeMemoryLinkContextBriefOptionsV1 {
+  /** Production proxy paths reject incomplete projections instead of falling back to legacy synthetic-fixture text. */
+  readonly requireAgentView?: boolean;
+}
+
 export function codeMemoryLinkContextBriefRawRequestHashV1(value: unknown): string {
   return protocolDigest('context-brief-raw-request', normalizeJsonValue(value, 'Context Brief raw request'));
 }
@@ -118,7 +131,10 @@ export function codeMemoryLinkGoldCitationDigest(citationId: string): string {
 }
 
 /** Canonicalize and summarize exactly what the MCP client shows to the model. */
-export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: unknown): {
+export function canonicalizeCodeMemoryLinkContextBriefResultV1(
+  structuredInput: unknown,
+  options: CanonicalizeCodeMemoryLinkContextBriefOptionsV1 = {},
+): {
   readonly content: readonly {readonly text: string; readonly type: 'text'}[];
   readonly receipt: CodeMemoryLinkContextBriefResponseReceiptV1;
   readonly structuredContent: Readonly<Record<string, CanonicalJsonValue>>;
@@ -137,10 +153,7 @@ export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: 
     }
     responseClass = brief.version === 2 ? 'task-v2' : 'anchored-v3';
   }
-  const content =
-    responseClass === 'empty-v1'
-      ? []
-      : ([{text: `Context Brief JSON:\n${JSON.stringify(brief)}`, type: 'text' as const}] as const);
+  const content = contextBriefModelVisibleContent(brief, responseClass, options);
   const citationDigests: string[] = [];
   const directCurrentRelationDigests: string[] = [];
   const selectedMemories: CodeMemoryLinkSelectedMemoryReceiptV1[] = [];
@@ -233,6 +246,27 @@ export function canonicalizeCodeMemoryLinkContextBriefResultV1(structuredInput: 
     },
     structuredContent: brief,
   };
+}
+
+function contextBriefModelVisibleContent(
+  brief: Record<string, CanonicalJsonValue>,
+  responseClass: CodeMemoryLinkContextBriefResponseClassV1,
+  options: CanonicalizeCodeMemoryLinkContextBriefOptionsV1,
+): readonly {readonly text: string; readonly type: 'text'}[] {
+  if (responseClass === 'empty-v1') {
+    return [{text: JSON.stringify(brief), type: 'text'}];
+  }
+  try {
+    const text = renderContextBriefText(parseContextBriefV1(brief));
+    return [{text, type: 'text'}];
+  } catch (cause) {
+    if (options.requireAgentView) {
+      throw new Error('Candidate Context Brief cannot produce the required model-facing agent view.', {cause});
+    }
+    // Historical protocol/unit fixtures predate the full public projection.
+    // They remain hash-stable without weakening the production proxy boundary.
+    return [{text: `Context Brief JSON:\n${JSON.stringify(brief)}`, type: 'text'}];
+  }
 }
 
 function recordCodeMemoryLinkContextBriefCitationStatus(

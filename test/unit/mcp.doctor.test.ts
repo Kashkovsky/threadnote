@@ -5,7 +5,7 @@ import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {installAgentIntegration} from '../../src/agent-integrations.js';
-import {mcpConfigurationChecks} from '../../src/mcp.js';
+import {mcpConfigurationChecks} from '../../src/mcp/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
 function runtime(home: string): RuntimeConfig {

@@ -116,6 +116,7 @@ export function assembleContextBriefLogicalResult(input: {
   const issues = contextIssues(memories);
   const gaps = stableUnique([
     ...input.graph.gaps,
+    ...contextBriefGraphWarningGaps(input.graph.warnings),
     ...input.memory.gaps,
     ...(input.graph.cards.length === 0 ? ['no-graph-evidence'] : []),
     ...(memories.length === 0 ? ['no-relevant-active-memory'] : []),
@@ -172,6 +173,30 @@ export function assembleContextBriefLogicalResult(input: {
     type: 'context-brief',
     version: input.plan.codeAnchors.codeRefs.length === 0 ? CONTEXT_BRIEF_LEGACY_VERSION : CONTEXT_BRIEF_VERSION,
   };
+}
+
+/**
+ * Graph warnings may contain repository-derived text, so Context Brief exposes
+ * bounded stable coverage codes instead of copying warning prose into either
+ * agent channel. Every warning produces a generic signal; known partiality
+ * classes add a more actionable code without claiming more than the source.
+ */
+export function contextBriefGraphWarningGaps(warnings: readonly string[]): readonly string[] {
+  if (warnings.length === 0) return [];
+  const normalized = warnings.map(warning => warning.normalize('NFKC').toLowerCase());
+  return stableUnique([
+    'graph-query-warning',
+    ...(normalized.some(warning => /bridge|cross[- ]repository/u.test(warning))
+      ? ['graph-bridge-evidence-incomplete']
+      : []),
+    ...(normalized.some(warning => /partial|limit|budget|elapsed|timed out|unavailable|withheld/u.test(warning))
+      ? ['graph-evidence-partial']
+      : []),
+    ...(normalized.some(warning => /not found|did not resolve|unresolved/u.test(warning))
+      ? ['graph-selector-unresolved']
+      : []),
+    ...(normalized.some(warning => /semantic|vector/u.test(warning)) ? ['graph-semantic-evidence-incomplete'] : []),
+  ]);
 }
 
 function stableMemories(memories: readonly ContextBriefMemoryEvidenceV1[]): readonly ContextBriefMemoryEvidenceV1[] {

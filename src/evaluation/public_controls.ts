@@ -1,4 +1,4 @@
-import {credentialScrubberBlocker} from '../scrubber.js';
+import {credentialScrubberBlocker} from '../share/scrubber.js';
 
 const SAFE_PUBLIC_CONTROL_QUERY = /^[A-Za-z0-9_./:@+-]{1,512}$/;
 

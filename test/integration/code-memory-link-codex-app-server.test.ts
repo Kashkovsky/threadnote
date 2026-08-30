@@ -183,6 +183,16 @@ describe('Code Memory Link Codex app-server transport', () => {
       response: CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.structuredContent,
       runBindingHash,
     });
+    const sealedToolResult = (
+      releaseEvents.find(candidate => {
+        const params = candidate.params as {item?: {type?: unknown}} | undefined;
+        return candidate.method === 'item/completed' && params?.item?.type === 'mcpToolCall';
+      })?.params as {item?: {result?: {content?: readonly {text?: unknown; type?: unknown}[]}}} | undefined
+    )?.item?.result;
+    expect(sealedToolResult?.content).toHaveLength(1);
+    expect(JSON.parse(String(sealedToolResult?.content?.[0]?.text))).toEqual(
+      CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.structuredContent,
+    );
     const evidence = normalizeCodeMemoryLinkCodexAppServerEvidenceV1({
       approvalReceipts: trace.approvals,
       events: releaseEvents,

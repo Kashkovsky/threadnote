@@ -34,8 +34,8 @@ vi.mock('../../src/utils.js', async importOriginal => {
   };
 });
 
-vi.mock('../../src/version.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/version.js')>();
+vi.mock('../../src/release/runtime_version.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/release/runtime_version.js')>();
   return {
     ...actual,
     isStandaloneThreadnoteBuild: vi.fn(() => false),
@@ -58,9 +58,9 @@ import {
   runUpdate,
   shouldPreferActiveInstalledVersion,
   verifyOfficialPlatformSignature,
-} from '../../src/update.js';
+} from '../../src/release/index.js';
 import * as utils from '../../src/utils.js';
-import * as version from '../../src/version.js';
+import * as version from '../../src/release/runtime_version.js';
 
 const OFFICIAL_RELEASE_SOURCE = 'https://api.github.com/repos/Kashkovsky/threadnote/releases?per_page=100';
 const RELEASE_VERSION = '4.0.0';

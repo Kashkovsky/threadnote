@@ -1,4 +1,4 @@
-import {Console, Effect, Option, Schema} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
@@ -29,6 +29,7 @@ import {
   runEnrichMemories,
   runExportPack,
   runForget,
+  runFinalizeCodeRefs,
   runHandoff,
   runImportPack,
   runList,
@@ -40,8 +41,8 @@ import {
   runRead,
   runRecall,
   runRemember,
-} from '../memory.js';
-import {runMcpInstall} from '../mcp.js';
+} from '../memory/index.js';
+import {runMcpInstall} from '../mcp/index.js';
 import {runObsidianInboxScan} from '../obsidian/inbox.js';
 import {runObsidianOpen} from '../obsidian/open.js';
 import {
@@ -81,10 +82,10 @@ import {
   runShareUnpublish,
 } from './share.js';
 import type {RuntimeConfig} from '../types.js';
-import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../update.js';
+import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../release/index.js';
 import {errorMessage} from '../utils.js';
 import {runVersion} from '../release/version_command.js';
-import {runManage} from '../manager.js';
+import {runManage} from '../manager/index.js';
 import {applicationError} from './errors.js';
 import {runHomeMigration} from '../migration/home.js';
 import {
@@ -144,85 +145,28 @@ import {
   makeCursorCloudModeFlag,
 } from './cursor_cloud_cli.js';
 import {
-  decodeCliStringFlagValue,
   makeCliInvocationInspector,
   normalizeCliArguments,
-  registerCliBooleanFlag,
-  registerCliValueFlag,
   type CliInvocationInspection,
   type ProductionLogMode,
 } from './cli_invocation.js';
-
-const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
-  flag.pipe(Flag.withDescription(description));
-
-const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'): Flag.Flag<A> => {
-  registerCliValueFlag(`--${name}`, kind);
-  return flag;
-};
-
-const stringFlag = (name: string): Flag.Flag<string> =>
-  valueFlag(name, Flag.string(name), 'string').pipe(Flag.map(decodeCliStringFlagValue));
-
-const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.integer(name), 'other');
-
-const withValueAlias = <A>(flag: Flag.Flag<A>, alias: string, kind: 'other' | 'string'): Flag.Flag<A> => {
-  registerCliValueFlag(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
-  return flag.pipe(Flag.withAlias(alias));
-};
-
-const optional = <A>(flag: Flag.Flag<A>): Flag.Flag<A | undefined> =>
-  flag.pipe(Flag.optional, Flag.map(Option.getOrUndefined));
-
-const optionalString = (name: string, description: string): Flag.Flag<string | undefined> =>
-  optional(describeFlag(stringFlag(name), description));
-
-const requiredString = (name: string, description: string): Flag.Flag<string> =>
-  describeFlag(stringFlag(name), description);
-
-const defaultString = (name: string, description: string, value: string): Flag.Flag<string> =>
-  describeFlag(stringFlag(name), description).pipe(Flag.withDefault(value));
-
-const boolean = (name: string, description: string): Flag.Flag<boolean> => {
-  registerCliBooleanFlag(`--${name}`);
-  return describeFlag(Flag.boolean(name), description).pipe(Flag.withDefault(false));
-};
-
-const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
-  registerCliBooleanFlag(`--no-${name}`);
-  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(
-    Flag.withDefault(false),
-    Flag.map(value => !value),
-  );
-};
-
-const optionalChoice = <const Choices extends readonly string[]>(
-  name: string,
-  choices: Choices,
-  description: string,
-): Flag.Flag<Choices[number] | undefined> =>
-  optional(describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description));
-
-const requiredChoice = <const Choices extends readonly string[]>(
-  name: string,
-  choices: Choices,
-  description: string,
-): Flag.Flag<Choices[number]> => describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description);
-
-const defaultChoice = <const Choices extends readonly string[], const Value extends Choices[number]>(
-  name: string,
-  choices: Choices,
-  description: string,
-  value: Value,
-): Flag.Flag<Choices[number]> =>
-  describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description).pipe(Flag.withDefault(value));
-
-const repeatedString = (name: string, description: string, maximum = 1000): Flag.Flag<ReadonlyArray<string>> =>
-  describeFlag(stringFlag(name), description).pipe(Flag.atMost(maximum));
-const argument = (name: string, description: string): Argument.Argument<string> =>
-  Argument.string(name).pipe(Argument.withDescription(description));
-const optionalArgument = (name: string, description: string, fallback: string): Argument.Argument<string> =>
-  argument(name, description).pipe(Argument.withDefault(fallback));
+import {
+  argument,
+  boolean,
+  defaultChoice,
+  defaultString,
+  describeFlag,
+  integerFlag,
+  negatedBoolean,
+  optional,
+  optionalArgument,
+  optionalChoice,
+  optionalString,
+  repeatedString,
+  requiredChoice,
+  requiredString,
+  withValueAlias,
+} from './cli_flags.js';
 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
@@ -1308,6 +1252,10 @@ const remember = Command.make(
       'code-ref',
       'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
     ),
+    deferCodeRefs: boolean(
+      'defer-code-refs',
+      'Explicitly use the default private store-now/anchor-later citation policy',
+    ),
     dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
     kind: defaultChoice(
       'kind',
@@ -1316,6 +1264,10 @@ const remember = Command.make(
       'durable',
     ),
     project: optionalString('project', 'Project/repo/topic namespace for lifecycle-aware storage'),
+    requireCurrentCodeRefs: boolean(
+      'require-current-code-refs',
+      'Fail before writing unless every code reference has exact-current graph evidence',
+    ),
     replace: withValueAlias(
       optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
       'replace-uri',
@@ -1535,6 +1487,10 @@ const handoff = Command.make(
       'code-ref',
       'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
     ),
+    deferCodeRefs: boolean(
+      'defer-code-refs',
+      'Explicitly use the default private store-now/anchor-later citation policy',
+    ),
     dryRun: boolean('dry-run', 'Print handoff without storing'),
     issue: optionalString('issue', 'Related issue reference'),
     nextStep: optionalString('next-step', 'Suggested next step'),
@@ -1545,6 +1501,10 @@ const handoff = Command.make(
       optionalString('replace', 'Supersede an existing memory after storing the handoff'),
       'replace-uri',
       'string',
+    ),
+    requireCurrentCodeRefs: boolean(
+      'require-current-code-refs',
+      'Fail before writing unless every code reference has exact-current graph evidence',
     ),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     task: optionalString('task', 'Current task summary'),
@@ -1575,6 +1535,15 @@ const forget = Command.make(
   },
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
 ).pipe(Command.withDescription('Remove a threadnote:// URI from local Threadnote context'));
+
+const finalizeCodeRefs = Command.make(
+  'finalize-code-refs',
+  {
+    limit: optionalString('limit', 'Maximum pending memories to inspect; defaults to 25, maximum 100'),
+    uris: repeatedString('uri', 'Pending personal memory URI to finalize; repeat for multiple'),
+  },
+  options => withRuntimeEffect(config => runFinalizeCodeRefs(config, options)),
+).pipe(Command.withDescription('Finalize private pending memory code citations from exact-current ready graphs'));
 
 const cursorCloudIdentityFlags = makeCursorCloudIdentityFlags(defaultString);
 const cursorCloudMode = makeCursorCloudModeFlag(defaultChoice);
@@ -1741,7 +1710,14 @@ const publishFlags = {
 
 const sharePublish = Command.make(
   'publish',
-  {...publishFlags, uri: argument('resource-uri', 'Personal threadnote:// memory URI')},
+  {
+    ...publishFlags,
+    allowUncitedPendingCodeRefs: boolean(
+      'allow-uncited-pending-code-refs',
+      'Publish without pending code citations and discard the private pending intent',
+    ),
+    uri: argument('resource-uri', 'Personal threadnote:// memory URI'),
+  },
   ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
 ).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
 
@@ -1946,6 +1922,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('pre-compact-hook', preCompactHook),
   registerTopLevelCommand('session-start-hook', sessionStartHook),
   registerTopLevelCommand('remember', remember),
+  registerTopLevelCommand('finalize-code-refs', finalizeCodeRefs),
   registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('migrate-memories', migrateMemories),
   registerTopLevelCommand('migrate-lifecycle', migrateLifecycle, {

@@ -1,10 +1,12 @@
 import {existsSync} from '../helpers/node-fs.js';
+import {createHash} from '../helpers/node-crypto.js';
 import {mkdtemp, mkdir, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {Effect} from 'effect';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
 import {runSharePublish as runSharePublishEffect} from '../../src/effect/share.js';
+import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -45,7 +47,10 @@ async function makeRuntime(): Promise<ShareRuntime> {
     'bar.md',
   );
   await mkdir(join(sourcePath, '..'), {recursive: true});
-  await writeFile(sourcePath, 'MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\n\nBody\n');
+  await writeFile(
+    sourcePath,
+    'MEMORY\nkind: durable\nstatus: active\nproject: foo\ntopic: bar\nmemory_id: tn_share_publish\n\nBody\n',
+  );
   await writeFile(
     join(home, 'share', 'teams.json'),
     `${JSON.stringify(
@@ -157,6 +162,50 @@ describe('runSharePublish transaction ordering', () => {
     expect(existsSync(targetPath)).toBe(true);
     expect(existsSync(worktreeTargetPath)).toBe(true);
     expect(await readFile(targetPath, 'utf8')).toContain('visibility: shared');
+    expect(await runEffect(readMemoryWithRelocations(config, sourceUri))).toMatchObject({
+      canonicalUri: 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md',
+      requestedUri: sourceUri,
+    });
+  });
+
+  it('requires an explicit uncited choice before publishing a pending-anchor memory', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
+    const sourcePath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'memories',
+      'durable',
+      'projects',
+      'foo',
+      'bar.md',
+    );
+    const pendingPath = join(
+      config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'test-user',
+      'private',
+      'deferred-code-anchors',
+      'v1',
+      `${createHash('sha256').update(sourceUri).digest('hex')}.json`,
+    );
+    await mkdir(join(pendingPath, '..'), {recursive: true, mode: 0o700});
+    await writeFile(pendingPath, '{}\n', {mode: 0o600});
+    mockPublishCommands(sourcePath, ok('pushed'), []);
+
+    await expect(runSharePublish(config, sourceUri, {})).rejects.toThrow(/code citations are still pending/);
+    expect(existsSync(sourcePath)).toBe(true);
+    expect(existsSync(pendingPath)).toBe(true);
+
+    await runSharePublish(config, sourceUri, {allowUncitedPendingCodeRefs: true});
+    expect(existsSync(sourcePath)).toBe(false);
+    expect(existsSync(pendingPath)).toBe(false);
   });
 
   it('resumes an equivalent canonical target left by an interrupted publish', async () => {

@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {expect, it} from '@effect/vitest';
-import {Context, Deferred, Effect, Fiber, FileSystem, Layer, Option, Path, Scope} from 'effect';
+import {Context, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Option, Path, Scope} from 'effect';
 import {describe} from 'vitest';
 import {TestClock} from 'effect/testing';
 import {isolatedLocalModelRuntimeLayer} from '../../src/effect/ai/isolated-local-model-runtime.js';
@@ -9,10 +9,12 @@ import {LocalModelRuntime} from '../../src/effect/ai/local-model-runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
+import {sha256Hex} from '../../src/effect/digest.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   runArchive,
   runCompact,
+  runEnrichMemories,
   runExportPack,
   runForget,
   runImportPack,
@@ -20,7 +22,7 @@ import {
   runRead,
   runRecall,
   runRemember,
-} from '../../src/memory.js';
+} from '../../src/memory/index.js';
 import {BUILTIN_MODEL_MANIFESTS} from '../../src/models/builtin.js';
 import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
@@ -29,6 +31,7 @@ import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
+import {readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
 
@@ -188,6 +191,49 @@ describe('native memory workflow', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('leaves pending-anchor memory revisions out of enrichment plans', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-enrichment-pending-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/pending-enrichment.md';
+        yield* runRemember(config, {
+          kind: 'durable',
+          project: 'threadnote',
+          sourceAgentClient: 'test',
+          text: 'Pending anchors must survive optional keyword enrichment.',
+          topic: 'pending-enrichment',
+        });
+        const pendingRoot = path.join(
+          home,
+          'data',
+          'local',
+          'user',
+          'tester',
+          'private',
+          'deferred-code-anchors',
+          'v1',
+        );
+        yield* fs.makeDirectory(pendingRoot, {recursive: true, mode: 0o700});
+        yield* fs.writeFileString(path.join(pendingRoot, `${yield* sha256Hex(uri)}-tnca_test.json`), '{}\n', {
+          mode: 0o600,
+        });
+
+        const preview = yield* captureConsole(runEnrichMemories(config, {apply: false, force: true}));
+        expect(preview.output).toContain('Memory enrichment: 0 would be processed');
+        expect(preview.output).toContain('1 pending-anchor memory file(s) skipped');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('refuses replacement when raw schema headers are unsafe or duplicated', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -297,7 +343,7 @@ describe('native memory workflow', () => {
         const citation = createMemoryCodeCitation({
           extractorSet: 'native-code-graph-13',
           fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-          path: 'src/memory.ts',
+          path: 'src/memory/index.ts',
           repositoryId: 'b'.repeat(64),
           repositoryIdentityKind: 'remote',
           sourceCommit: 'c'.repeat(40),
@@ -490,6 +536,22 @@ describe('native memory workflow', () => {
             ].join('\n');
             yield* store.write(location, candidate.stable, content, {mode: 'create'});
             yield* store.write(location, candidate.copy, content, {mode: 'create'});
+            const pendingRoot = path.join(
+              home,
+              'data',
+              candidate.config.account,
+              'user',
+              'tester',
+              'private',
+              'deferred-code-anchors',
+              'v1',
+            );
+            yield* fs.makeDirectory(pendingRoot, {recursive: true, mode: 0o700});
+            for (const uri of [candidate.stable, candidate.copy]) {
+              yield* fs.writeFileString(path.join(pendingRoot, `${yield* sha256Hex(uri)}-tnca_test.json`), '{}\n', {
+                mode: 0o600,
+              });
+            }
           }
 
           let sharedScratchWrites = 0;
@@ -518,6 +580,17 @@ describe('native memory workflow', () => {
             expect(kept).toContain(`- ${candidate.stable}`);
             expect(kept).toContain(`- ${candidate.copy}`);
             expect(Option.isNone(yield* Effect.option(store.stat(location, candidate.copy)))).toBe(true);
+            const pendingRoot = path.join(
+              home,
+              'data',
+              candidate.config.account,
+              'user',
+              'tester',
+              'private',
+              'deferred-code-anchors',
+              'v1',
+            );
+            expect((yield* fs.readDirectory(pendingRoot)).filter(name => name.endsWith('.json'))).toEqual([]);
           }
         }),
       ),
@@ -809,12 +882,45 @@ describe('native memory workflow', () => {
         });
 
         yield* runExportPack(sourceConfig, {path: packPath});
+        const importedUri = 'threadnote://user/target-user/memories/durable/projects/threadnote/pack-root.md';
+        const staleTargetUri =
+          'threadnote://user/target-user/memories/durable/projects/threadnote/pack-root-stale-target.md';
+        const store = yield* ResourceStore;
+        const sourceContent = yield* store.read(
+          {account: sourceConfig.account, home: sourceHome, user: sourceConfig.user},
+          'threadnote://user/source-user/memories/durable/projects/threadnote/pack-root.md',
+        );
+        const targetLocation = {account: targetConfig.account, home: targetHome, user: targetConfig.user};
+        yield* store.write(targetLocation, staleTargetUri, sourceContent, {mode: 'create'});
+        yield* recordMemoryRelocation(targetConfig, {
+          fromContent: sourceContent,
+          fromUri: importedUri,
+          toContent: sourceContent,
+          toUri: staleTargetUri,
+        });
+        const pendingRoot = path.join(
+          targetHome,
+          'data',
+          'local',
+          'user',
+          'target-user',
+          'private',
+          'deferred-code-anchors',
+          'v1',
+        );
+        yield* fs.makeDirectory(pendingRoot, {recursive: true, mode: 0o700});
+        yield* fs.writeFileString(path.join(pendingRoot, `${yield* sha256Hex(importedUri)}-tnca_test.json`), '{}\n', {
+          mode: 0o600,
+        });
         yield* runImportPack(targetConfig, {path: packPath});
 
-        const importedUri = 'threadnote://user/target-user/memories/durable/projects/threadnote/pack-root.md';
         expect((yield* captureConsole(runRead(targetConfig, importedUri, {}))).output).toContain(
           'Pack round-trip preserves',
         );
+        expect((yield* fs.readDirectory(pendingRoot)).filter(name => name.endsWith('.json'))).toEqual([]);
+        yield* store.remove(targetLocation, importedUri);
+        const staleRevival = yield* readMemoryWithRelocations(targetConfig, importedUri).pipe(Effect.exit);
+        expect(Exit.isFailure(staleRevival)).toBe(true);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

@@ -13,7 +13,7 @@ import {
   type CodeGraphWorksetEvaluationMetrics,
   type CodeGraphWorksetEvaluationObservationV1,
 } from '../src/evaluation/code-graph-workset.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 import {
   buildCodeGraphWorksetEvaluationFixture,

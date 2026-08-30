@@ -58,6 +58,8 @@ export const memoryWorkflowsDocsSection: DocsSection = {
         'stale memory',
         'stale link warning',
         'citation freshness',
+        'deferred code citations',
+        'citationPolicy',
         'legacy memory compatibility',
       ],
       body: [
@@ -90,7 +92,36 @@ export const memoryWorkflowsDocsSection: DocsSection = {
         },
         {
           type: 'paragraph',
-          text: 'Capture resolves every explicit reference against an already-published exact-current graph, records repository and snapshot provenance, and derives file or source-fragment hashes inside Threadnote. It is atomic: an invalid, missing, ambiguous, racing, or non-current reference fails the write instead of storing a partly cited memory. Capture never starts indexing, so prepare or refresh the graph explicitly before retrying.',
+          text: 'Capture first resolves every explicit reference against an already-published exact-current graph, records repository and snapshot provenance, and derives file or source-fragment hashes inside Threadnote. It is atomic: an invalid, missing, ambiguous, or racing reference fails the write instead of storing a partly cited memory. Capture never starts indexing. A retryable graph-readiness failure follows the private store-now/anchor-later policy below.',
+        },
+        {
+          type: 'heading',
+          text: 'Store now, anchor later',
+        },
+        {
+          type: 'paragraph',
+          text: 'Private active writes with codeRefs default to store-now/anchor-later because graph preparation is rarely complete at agent closeout. Threadnote still tries exact capture first. Only a retryable graph-readiness failure stores the active personal memory uncited and stages the requested locators in a private local outbox. Inactive and shared memories remain strict because they cannot own private pending anchors. citationPolicy defer and --defer-code-refs remain accepted as explicit compatibility spellings.',
+        },
+        {
+          type: 'code',
+          language: 'json',
+          code: `{
+  "kind": "durable",
+  "project": "payments",
+  "topic": "retry-contract",
+  "callerCwd": "/workspace/payments",
+  "codeRefs": ["src/payments/retry.ts"],
+  "citationPolicy": "defer",
+  "text": "Retries preserve the original idempotency key."
+}`,
+        },
+        {
+          type: 'paragraph',
+          text: 'The receipt distinguishes memoryStored from citationsFinalized and returns the stable memory URI plus graph-preparation guidance. Use citationPolicy require-current or --require-current-code-refs when the write must fail unless evidence is exact-current; shared writes remain strict by default because pending locators are private-only. After preparing the graph, use finalize_code_refs in the full MCP toolset, run threadnote finalize-code-refs, or replace the stored memory with the same content, codeRefs, and receipt URI. Finalization never starts indexing and never exposes pending locators as citations or code-to-memory backlinks.',
+        },
+        {
+          type: 'warning',
+          text: 'Pending anchors are private recovery intent, not evidence. Sharing is blocked until finalization. The CLI can explicitly publish the currently uncited memory and discard the intent; MCP callers first replace it without codeRefs when that is the user’s deliberate choice.',
         },
         {
           type: 'heading',
@@ -635,7 +666,7 @@ threadnote context brief \\
         },
         {
           type: 'paragraph',
-          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. The combined text-plus-structured UTF-8 estimate still defaults to 1,250 tokens and accepts at most 1,500. A legal but tiny budget fails when mandatory scope, trust, and coverage metadata cannot fit. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
+          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. MCP structuredContent and CLI --json retain the full v2/v3 audit projection; MCP content and the plain CLI emit parseable context-brief-agent-view v1 JSON with the decision-relevant evidence, authority/trust, citation actions, gaps, issues, follow-ups, and continuation. This supports clients that expose only one MCP result channel. The combined text-plus-structured UTF-8 estimate still defaults to 1,250 tokens and accepts at most 1,500. A legal but tiny budget fails when mandatory scope, trust, and coverage metadata cannot fit. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
         },
         {
           type: 'warning',
@@ -643,7 +674,7 @@ threadnote context brief \\
         },
         {
           type: 'note',
-          text: 'CLI text output is intentionally a one-line receipt; use --json to consume the evidence arrays, citation receipts, staleness warnings, and follow-ups. MCP returns the terse receipt in content and the complete bounded projection in structuredContent.',
+          text: 'Treat either MCP result channel as potentially the only model-visible one. Parse content as context-brief-agent-view v1 for agent decisions; use structuredContent or CLI --json when the full audit receipt is required. The two views are deterministically derived from the same selected evidence and share one combined response budget.',
         },
         {
           type: 'heading',

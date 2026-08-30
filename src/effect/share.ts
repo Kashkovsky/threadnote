@@ -34,7 +34,7 @@ import {
   SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS,
   sharedUriFor,
   syncSharedReposBeforeAgentRead as syncSharedReposBeforeAgentReadEffect,
-} from '../share.js';
+} from '../share/index.js';
 import type {
   ShareConflictOptions,
   ShareConflictResolveOptions,
