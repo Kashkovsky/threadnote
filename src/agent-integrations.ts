@@ -127,7 +127,9 @@ export const migrateLegacyAgentIntegrationsInTransaction = Effect.fn('agentInteg
       yield* removeOrphanedLegacyInstructions(selected, false);
       for (const agent of selected) yield* installAgentIntegrationInTransaction(config, agent, unknownMcp, false);
     }
-    if (dryRun) {
+    if (selected.length === 0) {
+      yield* Console.log('No legacy agent integrations found.');
+    } else if (dryRun) {
       yield* Console.log(`Would migrate ${selected.length} legacy agent integration(s).`);
     } else {
       yield* Console.log(`Migrated ${selected.length} legacy agent integration(s).`);
