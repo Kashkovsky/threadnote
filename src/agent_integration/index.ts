@@ -12,18 +12,18 @@ import {
   withAgentIntegrationHost,
   withAgentIntegrationLock,
   writeAgentIntegrationRegistry,
-} from './agent-integration-registry.js';
+} from './registry.js';
 import {
   LEGACY_CURSOR_INSTRUCTION_PATHS,
   USER_INSTRUCTIONS_END_MARKER,
   USER_INSTRUCTIONS_START_MARKER,
-} from './constants.js';
-import {isCursorMarketplacePluginInstalled} from './cursor/plugin.js';
-import {sha256Hex} from './effect/digest.js';
-import type {McpToolset} from './mcp/toolset.js';
-import type {AgentClient, ClaudeMcpScope, DoctorCheck, RuntimeConfig} from './types.js';
-import {expandPath, getInvocationCwd, readFileIfExists, toolRoot} from './utils.js';
-import {getThreadnoteVersion} from './version.js';
+} from '../constants.js';
+import {isCursorMarketplacePluginInstalled} from '../cursor/plugin.js';
+import {sha256Hex} from '../effect/digest.js';
+import type {McpToolset} from '../mcp/toolset.js';
+import {getThreadnoteVersion} from '../release/runtime_version.js';
+import type {AgentClient, ClaudeMcpScope, DoctorCheck, RuntimeConfig} from '../types.js';
+import {expandPath, getInvocationCwd, readFileIfExists, toolRoot} from '../utils.js';
 
 const AGENT_SKILLS = ['threadnote-context', 'threadnote-code-graph', 'threadnote-memory'] as const;
 

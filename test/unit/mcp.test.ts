@@ -8,7 +8,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
-import {readAgentIntegrationRegistry} from '../../src/agent-integrations.js';
+import {readAgentIntegrationRegistry} from '../../src/agent_integration/index.js';
 import {installCommandShim} from '../../src/command-shim.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';

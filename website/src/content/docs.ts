@@ -1,11 +1,12 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {graphCheckpointsDocsArticle} from './docsGraphCheckpoints.js';
 import {
+  contextBriefMcpTool,
   finalizeCodeRefsMcpTool,
   handoffMemoryCitationCliExamples,
-  rememberContextMemoryCitationInputs,
+  rememberContextMcpTool,
   rememberMemoryCitationCliExamples,
-  reviewSessionMemoryCitationInputs,
+  reviewSessionContextMcpTool,
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
@@ -240,12 +241,7 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Browse a canonical threadnote:// directory without loading unrelated records.',
     keyInputs: ['uri', 'recursive', 'all', 'nodeLimit'],
   },
-  {
-    name: 'remember_context',
-    toolset: 'core',
-    summary: 'Store or replace normal durable knowledge, handoffs, incidents, or preferences.',
-    keyInputs: rememberContextMemoryCitationInputs,
-  },
+  rememberContextMcpTool,
   {
     name: 'inspect_code_graph',
     toolset: 'core',
@@ -264,13 +260,7 @@ export const mcpTools: McpToolReference[] = [
       'edgeLimit',
     ],
   },
-  {
-    name: 'context_brief',
-    toolset: 'core',
-    summary:
-      'Compile a token-bounded task brief from current graph evidence, durable decisions, active handoffs, freshness signals, and optional explicit code-citation backlinks.',
-    keyInputs: ['task', 'callerCwd', 'codeRefs (max 8 file/cgs_)', 'workset', 'project', 'mode', 'budgetTokens'],
-  },
+  contextBriefMcpTool,
   {
     name: 'analyze_code_graph',
     toolset: 'core',
@@ -282,12 +272,7 @@ export const mcpTools: McpToolReference[] = [
       'communityId and memberLimit for community drill-down',
     ],
   },
-  {
-    name: 'review_session_context',
-    toolset: 'core',
-    summary: 'Create up to three additional review candidates; this never silently creates active memory.',
-    keyInputs: reviewSessionMemoryCitationInputs,
-  },
+  reviewSessionContextMcpTool,
   {
     name: 'apply_memory_candidates',
     toolset: 'core',

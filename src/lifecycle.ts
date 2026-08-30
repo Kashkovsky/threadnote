@@ -7,8 +7,8 @@ import {
   repairableAgentClients,
   removeAgentIntegrationsInTransaction,
   repairAgentIntegrations,
-} from './agent-integrations.js';
-import {type AgentIntegrationRegistry, withAgentIntegrationLock} from './agent-integration-registry.js';
+} from './agent_integration/index.js';
+import {type AgentIntegrationRegistry, withAgentIntegrationLock} from './agent_integration/registry.js';
 import {startProgress} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';

@@ -67,6 +67,12 @@ describe('agent instructions', () => {
       '`kind: handoff`',
       '`replaceUri`',
       'ready exact-current graph',
+      '`citationPolicy: "require-current"`',
+      '`finalize_code_refs`',
+      'private pending anchor',
+      'Shared and inactive writes remain strict',
+      'identity-fenced relocation receipt',
+      '`canonicalUri`',
       'Never store secrets, credentials, customer data, or raw production logs',
       'never publish handoffs or preferences',
     ]) {

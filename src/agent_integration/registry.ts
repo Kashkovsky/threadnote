@@ -1,9 +1,9 @@
 import {Effect, FileSystem, Path} from 'effect';
-import {withExclusiveFileLock} from './effect/file_lock.js';
-import {SystemInfo} from './effect/system.js';
-import {parseMcpToolset, type McpToolset} from './mcp/toolset.js';
-import type {AgentClient, ClaudeMcpScope, RuntimeConfig} from './types.js';
-import {ensureDirectory, errorMessage, readFileIfExists} from './utils.js';
+import {withExclusiveFileLock} from '../effect/file_lock.js';
+import {SystemInfo} from '../effect/system.js';
+import {parseMcpToolset, type McpToolset} from '../mcp/toolset.js';
+import type {AgentClient, ClaudeMcpScope, RuntimeConfig} from '../types.js';
+import {ensureDirectory, errorMessage, readFileIfExists} from '../utils.js';
 
 export const AGENT_INTEGRATION_REGISTRY_VERSION = 1;
 export const AGENT_INTEGRATION_ARTIFACT_VERSION = 1;

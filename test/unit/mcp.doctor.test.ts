@@ -4,7 +4,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {installAgentIntegration} from '../../src/agent-integrations.js';
+import {installAgentIntegration} from '../../src/agent_integration/index.js';
 import {mcpConfigurationChecks} from '../../src/mcp/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
