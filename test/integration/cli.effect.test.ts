@@ -207,6 +207,10 @@ describe('Effect CLI', () => {
       await runCli(['graph', 'index', '--cwd', repository, '--no-vectors', '--json'], environment);
 
       expect((await runCli(['read', memoryUri!], environment)).stdout).toContain('code_citation:');
+      const diagnosis = await runCli(['doctor', '--dry-run'], environment).catch(
+        cause => cause as NodeJS.ErrnoException & {stdout?: string},
+      );
+      expect(String(diagnosis.stdout)).toContain('OK   lexical recall index:');
     } finally {
       await rm(root, {force: true, recursive: true});
     }

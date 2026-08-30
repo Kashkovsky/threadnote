@@ -1100,6 +1100,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     (input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined);
   const fallbackAssessment =
     incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.fallbackAssessment : undefined;
+  const fallbackBoundary =
+    incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.fallbackBoundary : undefined;
   let fallbackReason: CodeGraphOverlayFallbackReason | undefined =
     incrementalAssessment?.mode === 'fallback'
       ? incrementalAssessment.reason
@@ -1255,6 +1257,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       ...replayMetrics,
       ...(changedFactBytesCompleted === undefined ? {} : {changedFactBytesCompleted}),
       ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
+      ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
       ...(fallbackReason === undefined ? {} : {fallbackReason}),
       factsBytesCompleted,
       ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
@@ -1961,6 +1964,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         : {}),
       ...(fallbackReason ? {fallbackReason} : {}),
       ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
+      ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
       ...(incrementalAssessment?.resolutionPublicationAssessment
         ? {
             resolutionLookupKeyForm: incrementalAssessment.resolutionPublicationAssessment.lookupKeyForm,

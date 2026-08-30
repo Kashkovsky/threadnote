@@ -267,6 +267,8 @@ export interface CodeGraphMaterializationMetrics {
   readonly fallbackReason?: CodeGraphOverlayFallbackReason;
   /** Closed, path-free evidence for the assessment that selected the fallback. */
   readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+  /** Closed, path-free evidence for the resource boundary that selected the fallback. */
+  readonly fallbackBoundary?: CodeGraphOverlayFallbackBoundary;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
   readonly factsBytesCompleted?: number;
   readonly factsBytesTotal?: number;
@@ -513,6 +515,7 @@ export interface CodeGraphIndexSummary {
   readonly materialization?: {
     readonly closureProjects?: number;
     readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+    readonly fallbackBoundary?: CodeGraphOverlayFallbackBoundary;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
     readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
@@ -554,6 +557,17 @@ export type CodeGraphProjectFileSetFallbackDetail =
   | 'project-not-stable'
   | 'resolution-domain-unowned';
 
+export type CodeGraphProjectClosureFallbackMetric =
+  | 'affected-files'
+  | 'cached-fact-bytes'
+  | 'candidate-lookup-keys'
+  | 'candidate-reexport-key-bytes'
+  | 'candidate-reexports'
+  | 'candidate-scan-fact-bytes'
+  | 'candidate-scan-files'
+  | 'candidate-selected-files'
+  | 'source-bytes';
+
 export interface CodeGraphOverlayFallbackAssessment {
   /** Current files whose identity differs from the reusable base, including additions. */
   readonly changedFiles: number;
@@ -562,6 +576,36 @@ export interface CodeGraphOverlayFallbackAssessment {
   readonly detail: CodeGraphProjectFileSetFallbackDetail;
   readonly stage: 'file-set-seed-assessment';
 }
+
+/** Additive path-free evidence, kept separate from the stable fallback-assessment wire contract. */
+interface CodeGraphOverlayFallbackBoundaryBase {
+  readonly changedFiles: number;
+  readonly limit: number;
+  /** Counter value at the exact point the closed limit was exceeded; not an estimated final total. */
+  readonly observedAtDecision: number;
+}
+
+export type CodeGraphOverlayFallbackBoundary = CodeGraphOverlayFallbackBoundaryBase &
+  (
+    | {
+        readonly metric: 'affected-files' | 'cached-fact-bytes' | 'source-bytes';
+        readonly stage: 'project-closure-selection';
+      }
+    | {
+        readonly metric:
+          | 'candidate-lookup-keys'
+          | 'candidate-reexport-key-bytes'
+          | 'candidate-reexports'
+          | 'candidate-scan-fact-bytes'
+          | 'candidate-scan-files'
+          | 'candidate-selected-files';
+        readonly stage: 'resolution-candidate-scan';
+      }
+    | {
+        readonly metric: 'cached-fact-bytes' | 'candidate-selected-files' | 'source-bytes';
+        readonly stage: 'resolution-candidate-rewrite';
+      }
+  );
 
 export interface CodeGraphQueryNode extends CodeGraphSymbol {
   readonly score: number;

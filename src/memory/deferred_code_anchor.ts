@@ -172,6 +172,7 @@ export interface DeferredCodeAnchorRouteFinalizationReceiptV1 {
 
 export interface DeferredCodeAnchorRouteFinalizationOptions {
   readonly limit?: number;
+  /** @internal Runs before one selected intent is attempted. */ readonly onAttemptedUri?: (uri: string) => void;
   /** @internal Total foreground budget for discovery, locking, and finalization. */
   readonly passTimeoutMilliseconds?: number;
   /** @internal A bounded caller hint used only to promote one matching intent. */
@@ -569,6 +570,8 @@ export const finalizeDeferredCodeAnchorsForRoute = Effect.fn('memoryCodeAnchor.f
             limit,
           ) as readonly StoredDeferredCodeAnchorIntent[];
           for (const entry of selected) {
+            if (options.onAttemptedUri)
+              safelyNotifyDeferredCodeAnchorUri(options.onAttemptedUri, entry.intent.memoryUri);
             const finalized = yield* finalizeDeferredCodeAnchor(config, entry).pipe(Effect.result);
             const item = Result.isSuccess(finalized)
               ? finalized.success
@@ -582,7 +585,7 @@ export const finalizeDeferredCodeAnchorsForRoute = Effect.fn('memoryCodeAnchor.f
             if (item.state === 'pending' || item.state === 'failed') {
               yield* rotateDeferredCodeAnchorRouteMarker(entry);
             } else if (item.state === 'finalized' && options.onFinalizedUri !== undefined) {
-              safelyNotifyFinalizedUri(options.onFinalizedUri, entry.intent.memoryUri);
+              safelyNotifyDeferredCodeAnchorUri(options.onFinalizedUri, entry.intent.memoryUri);
             }
           }
           if (matching.length > selected.length) {
@@ -1955,12 +1958,12 @@ function safelyNormalizePreferredCodeRefs(refs: readonly string[]): readonly str
   }
 }
 
-function safelyNotifyFinalizedUri(notify: (uri: string) => void, uri: string): void {
+function safelyNotifyDeferredCodeAnchorUri(notify: (uri: string) => void, uri: string): void {
   try {
     notify(uri);
   } catch {
-    // Recall invalidation is a best-effort post-CAS notification. The memory
-    // and its verified citations are already durable at this point.
+    // Notifications are scheduling hints only. A caller callback must never
+    // change finalization, cleanup, or route-rotation authority.
   }
 }
 

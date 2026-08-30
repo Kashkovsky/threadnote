@@ -722,6 +722,80 @@ describe('project-closure incremental indexing', () => {
     {timeout: 120_000},
   );
 
+  it.effect(
+    'selects transitive reexports and their consumer instead of rebuilding an oversized root project',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(createLargeRootProjectRepository),
+        root =>
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            const store = yield* CodeGraphStore;
+            const path = yield* Path.Path;
+            const incrementalHome = join(root, '.threadnote-incremental');
+            const fullHome = join(root, '.threadnote-full');
+            const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+
+            yield* Effect.sync(() => {
+              writeFile(
+                root,
+                'src/core.ts',
+                'export const stable = 1;\nexport function discovered() { return stable; }\n',
+              );
+            });
+            const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const full = yield* indexer.index({
+              cwd: root,
+              incrementalOverlay: false,
+              threadnoteHome: fullHome,
+            });
+            const incrementalLayout = codeGraphLayout(
+              path,
+              incrementalHome,
+              incremental.identity.checkoutId,
+              incremental.identity.worktreeId,
+            );
+            const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+            const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+            const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+            expect(base.materialization?.totalFiles).toBeGreaterThan(128);
+            expect(incremental.materialization).toMatchObject({
+              mode: 'incremental-overlay',
+              resolutionClosure: 'project',
+              stagedFiles: 4,
+            });
+            expect(incremental.incrementalWork).toMatchObject({
+              baseFactsLoaded: 4,
+              changedFiles: 4,
+            });
+            expect(incremental.incrementalWork?.attributionContextFiles).toBe(
+              (base.materialization?.totalFiles ?? 0) * 2,
+            );
+            expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+            const discovered = incrementalGraph.symbols.find(symbol => symbol.name === 'discovered');
+            expect(discovered).toBeDefined();
+            expect(
+              incrementalGraph.edges.some(
+                edge => edge.sourceName === 'consume' && edge.relation === 'calls' && edge.targetId === discovered?.id,
+              ),
+            ).toBe(true);
+            expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
+              'src/barrel-a.ts',
+              'src/barrel-b.ts',
+              'src/consumer.ts',
+              'src/core.ts',
+            ]);
+            expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+              foreignKeyViolations: 0,
+              integrity: 'ok',
+            });
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
+  );
+
   it.effect.prop(
     'matches forced-full graph, query, catalog, health, counts, and delta paths across randomized project chains',
     {
@@ -849,6 +923,30 @@ function createProjectClosureRepository(
   if (options.orphanProjectBoundary) {
     write(root, 'unmodeled/tsconfig.json', {references: [{path: '../not-indexed'}]});
     writeFile(root, 'unmodeled/index.ts', 'export const unmodeled = true;\n');
+  }
+  git(root, ['init', '-q']);
+  git(root, ['config', 'user.name', 'Threadnote Test']);
+  git(root, ['config', 'user.email', 'test@threadnote.local']);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'fixture']);
+  return root;
+}
+
+function createLargeRootProjectRepository(): string {
+  const root = mkdtempSync(join(tmpdir(), 'threadnote-large-root-closure-'));
+  writeFile(root, '.gitignore', '/.threadnote-*/\n');
+  write(root, 'package.json', {name: '@fixture/large-root', private: true, type: 'module'});
+  write(root, 'tsconfig.json', {include: ['src/**/*.ts']});
+  writeFile(root, 'src/core.ts', 'export const stable = 1;\n');
+  writeFile(root, 'src/barrel-a.ts', 'export {discovered} from "./core.js";\n');
+  writeFile(root, 'src/barrel-b.ts', 'export {discovered} from "./barrel-a.js";\n');
+  writeFile(
+    root,
+    'src/consumer.ts',
+    'import {discovered} from "./barrel-b.js";\nexport function consume() { return discovered(); }\n',
+  );
+  for (let index = 0; index < 139; index += 1) {
+    writeFile(root, `src/filler-${String(index).padStart(3, '0')}.ts`, `export const filler${index} = ${index};\n`);
   }
   git(root, ['init', '-q']);
   git(root, ['config', 'user.name', 'Threadnote Test']);

@@ -179,7 +179,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     }
     const resolvedOrdinals = resolvedAnchors.map(anchor => anchor.anchorOrdinal);
     const identity = yield* resolveRepositoryIdentity(callerCwd).pipe(Effect.option);
-    const finalizedUris: string[] = [];
+    const attemptedUris: string[] = [];
     if (identity._tag === 'Some') {
       yield* withCodeAnchorFinalizationAnonymousTelemetry(
         'context-brief',
@@ -193,8 +193,8 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
           },
           {
             limit: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-            onFinalizedUri: uri => {
-              finalizedUris.push(uri);
+            onAttemptedUri: uri => {
+              attemptedUris.push(uri);
             },
             preferredCodeRefs: plan.codeRefs,
             waitTimeoutMilliseconds: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS,
@@ -206,9 +206,9 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       );
     }
     const forceRecallRefresh =
-      finalizedUris.length === 0
+      attemptedUris.length === 0
         ? false
-        : yield* expireRecallIndexValidation(config.agentContextHome, false, finalizedUris).pipe(
+        : yield* expireRecallIndexValidation(config.agentContextHome, false, attemptedUris).pipe(
             Effect.as(false),
             Effect.catchCause(() => Effect.succeed(true)),
           );

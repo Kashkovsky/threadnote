@@ -44,20 +44,23 @@ import {
   type CodeGraphReusableBaseReceipt,
   type CodeGraphReusableBaseReceiptInput,
   type CodeGraphReusableCleanBase,
-  type CodeGraphReusableReexport,
-  type CodeGraphReusableReexportSeed,
   type CodeGraphStoreShape,
 } from './store.js';
 import {
-  type CodeGraphEdge,
+  assessResolutionCandidateIncrementalClosure,
+  enrichPersistedTypeScriptReexports,
+  reusableReexportSeeds,
+} from './indexer_resolution_candidate_closure.js';
+import {
   type CodeGraphFileFacts,
   type CodeGraphInventoryFile,
   type CodeGraphOverlayFallbackReason,
-  type CodeGraphReference,
   type CodeGraphSnapshot,
 } from './types.js';
 import {createWorkspaceAttributor} from './workspace.js';
 import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
+
+export {resolvePersistedReexportTerminals} from './indexer_resolution_candidate_closure.js';
 
 export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')(function* (
   input: {
@@ -307,6 +310,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       } satisfies IncrementalOverlayPreassessment;
     }
     const closure = yield* assessProjectIncrementalClosureCompatibility({
+      baseFiles: input.inventory.committedFiles,
       baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.committedFiles),
       baseWorkspace: committedWorkspace,
       changedBaseFacts: committedFacts,
@@ -450,6 +454,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     );
     if (reexportResolutionSurfaceChanged || resolutionSurfaceChanged) {
       const closure = yield* assessProjectIncrementalClosureCompatibility({
+        baseFiles: input.candidate.files,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
         baseWorkspace: workspace,
         changedBaseFacts: baseFacts,
@@ -489,6 +494,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
 const assessProjectIncrementalClosureCompatibility = Effect.fn(
   'codeGraph.assessProjectIncrementalClosureCompatibility',
 )(function* (input: {
+  readonly baseFiles: readonly CodeGraphInventoryFile[];
   readonly baseFileSetFingerprint: string;
   readonly baseWorkspace: CodeGraphWorkspace;
   readonly changedBaseFacts: readonly CodeGraphFileFacts[];
@@ -512,7 +518,7 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
   const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
     compareCodeUnits,
   );
-  return yield* assessPlannedProjectIncrementalClosure({
+  const planned = yield* assessPlannedProjectIncrementalClosure({
     baseFileSetFingerprint: input.baseFileSetFingerprint,
     committedWorkspace: input.baseWorkspace,
     currentChangedFiles: input.currentChangedFiles,
@@ -521,6 +527,28 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
     languagePacks: input.languagePacks,
     layout: input.layout,
     seedProjectIds,
+    store: input.store,
+  });
+  if (
+    planned.mode !== 'fallback' ||
+    planned.reason !== 'project-closure-unbounded' ||
+    (seeds.candidateLookupKeys?.length ?? 0) === 0 ||
+    input.workspaceSeedProjectIds.length > 0
+  ) {
+    return planned;
+  }
+  return yield* assessResolutionCandidateIncrementalClosure({
+    baseFileSetFingerprint: input.baseFileSetFingerprint,
+    baseFiles: input.baseFiles,
+    committedWorkspace: input.baseWorkspace,
+    currentChangedFiles: input.currentChangedFiles,
+    currentFiles: input.currentFiles,
+    currentWorkspace: input.currentWorkspace,
+    initialLookupKeys: seeds.candidateLookupKeys!,
+    candidateReexports: seeds.candidateReexports ?? [],
+    languagePacks: input.languagePacks,
+    layout: input.layout,
+    projectCount: seedProjectIds.length,
     store: input.store,
   });
 });
@@ -711,227 +739,6 @@ function projectClosureSourceBudgetFits(files: readonly CodeGraphInventoryFile[]
     sourceBytes += file.size;
   }
   return true;
-}
-
-function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly CodeGraphReusableReexportSeed[] {
-  const seeds = facts.flatMap(file =>
-    (file.references ?? []).flatMap(reference =>
-      reference.resolutionDomain === 'typescript' && isPersistedReexportEnrichableRelation(reference.relation)
-        ? reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupKey))
-        : [],
-    ),
-  );
-  return uniqueByKey(seeds, seed => `${seed.path}\0${seed.name}`);
-}
-
-function enrichPersistedTypeScriptReexports(
-  facts: readonly CodeGraphFileFacts[],
-  reexports: readonly CodeGraphReusableReexport[],
-): readonly CodeGraphFileFacts[] | undefined {
-  if (reexports.length === 0) return facts;
-  const provenance = new Map<string, CodeGraphReusableReexport[]>();
-  for (const reexport of reexports) {
-    const key = `${reexport.sourcePath}\0${reexport.localName}`;
-    const values = provenance.get(key) ?? [];
-    values.push(reexport);
-    provenance.set(key, values);
-  }
-  const terminalResolver = createPersistedReexportTerminalResolver(provenance);
-  const enriched = facts.map(file => {
-    if (!file.references) return file;
-    return {
-      ...file,
-      references: file.references.map(reference =>
-        enrichPersistedTypeScriptReference(reference, provenance, terminalResolver),
-      ),
-    };
-  });
-  return terminalResolver.exhausted() ? undefined : enriched;
-}
-
-function enrichPersistedTypeScriptReference(
-  reference: CodeGraphReference,
-  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-  terminalResolver: PersistedReexportTerminalResolver,
-): CodeGraphReference {
-  if (reference.resolutionDomain !== 'typescript' || !isPersistedReexportEnrichableRelation(reference.relation)) {
-    return reference;
-  }
-  const parsedTargets = reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupTarget));
-  if (!parsedTargets.some(target => provenance.has(`${target.path}\0${target.name}`))) return reference;
-  return {
-    ...reference,
-    lookupTiers: reference.lookupTiers
-      .map(tier =>
-        uniqueStrings(
-          tier.flatMap(key => {
-            const parsed = parseTypeScriptPathNameLookupTarget(key);
-            if (parsed.length === 0) return [key];
-            return parsed.flatMap(target =>
-              (terminalResolver.resolve(target) ?? []).map(
-                terminal =>
-                  `${target.lookupPrefix}path:${encodeURIComponent(terminal.path)}:name:${encodeURIComponent(terminal.name)}${target.lookupSuffix}`,
-              ),
-            );
-          }),
-        ),
-      )
-      .filter(tier => tier.length > 0),
-  };
-}
-
-function isPersistedReexportEnrichableRelation(relation: CodeGraphEdge['relation']): boolean {
-  return ['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(relation);
-}
-
-const PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS = 40_000;
-const PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS = 10_000;
-
-type PersistedReexportTerminalTraversal =
-  | {
-      readonly mode: 'complete';
-      readonly operations: number;
-      readonly targets: readonly CodeGraphReusableReexportSeed[];
-    }
-  | {
-      readonly mode: 'fallback';
-      readonly reason: 'reexport-closure-unbounded';
-    };
-
-interface PersistedReexportTerminalResolver {
-  readonly exhausted: () => boolean;
-  readonly resolve: (target: CodeGraphReusableReexportSeed) => readonly CodeGraphReusableReexportSeed[] | undefined;
-}
-
-function createPersistedReexportTerminalResolver(
-  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-): PersistedReexportTerminalResolver {
-  const cache = new Map<string, readonly CodeGraphReusableReexportSeed[]>();
-  let operationsRemaining = PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS;
-  let traversalExhausted = false;
-  return {
-    exhausted: () => traversalExhausted,
-    resolve: target => {
-      const key = reusableReexportSeedKey(target);
-      const cached = cache.get(key);
-      if (cached) return cached;
-      if (traversalExhausted) return undefined;
-      const traversal = resolvePersistedReexportTerminals(target, provenance, {
-        maxOperations: operationsRemaining,
-        maxTerminals: PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS,
-      });
-      if (traversal.mode === 'fallback') {
-        traversalExhausted = true;
-        return undefined;
-      }
-      operationsRemaining -= traversal.operations;
-      cache.set(key, traversal.targets);
-      return traversal.targets;
-    },
-  };
-}
-
-export function resolvePersistedReexportTerminals(
-  target: CodeGraphReusableReexportSeed,
-  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-  options: {readonly maxOperations?: number; readonly maxTerminals?: number} = {},
-): PersistedReexportTerminalTraversal {
-  const maxOperations = options.maxOperations ?? PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS;
-  const maxTerminals = options.maxTerminals ?? PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS;
-  if (
-    !Number.isSafeInteger(maxOperations) ||
-    maxOperations < 0 ||
-    !Number.isSafeInteger(maxTerminals) ||
-    maxTerminals < 0
-  ) {
-    return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-  }
-  const discovered = new Set([reusableReexportSeedKey(target)]);
-  const pending = [target];
-  const terminals = new Map<string, CodeGraphReusableReexportSeed>();
-  let operations = 0;
-  const consumeOperation = (): boolean => {
-    if (operations >= maxOperations) return false;
-    operations += 1;
-    return true;
-  };
-  while (pending.length > 0) {
-    if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-    const current = pending.pop()!;
-    const next = [...(provenance.get(reusableReexportSeedKey(current)) ?? [])].sort((left, right) =>
-      compareCodeUnits(reusableReexportKey(left), reusableReexportKey(right)),
-    );
-    if (next.length === 0) {
-      terminals.set(reusableReexportSeedKey(current), current);
-      if (terminals.size > maxTerminals) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-      continue;
-    }
-    for (let index = next.length - 1; index >= 0; index -= 1) {
-      if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-      const reexport = next[index]!;
-      const candidate = {name: reexport.importedName, path: reexport.targetPath};
-      const key = reusableReexportSeedKey(candidate);
-      if (discovered.has(key)) continue;
-      discovered.add(key);
-      pending.push(candidate);
-    }
-  }
-  if (terminals.size === 0) terminals.set(reusableReexportSeedKey(target), target);
-  return {
-    mode: 'complete',
-    operations,
-    targets: [...terminals.values()].sort((left, right) =>
-      compareCodeUnits(reusableReexportSeedKey(left), reusableReexportSeedKey(right)),
-    ),
-  };
-}
-
-function reusableReexportSeedKey(value: CodeGraphReusableReexportSeed): string {
-  return `${value.path}\0${value.name}`;
-}
-
-function reusableReexportKey(value: CodeGraphReusableReexport): string {
-  return `${value.sourcePath}\0${value.localName}\0${value.targetPath}\0${value.importedName}`;
-}
-
-function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
-  return parseTypeScriptPathNameLookupTarget(value).map(({name, path}) => ({name, path}));
-}
-
-interface TypeScriptPathNameLookupTarget extends CodeGraphReusableReexportSeed {
-  readonly lookupPrefix: string;
-  readonly lookupSuffix: string;
-}
-
-function parseTypeScriptPathNameLookupTarget(value: string): readonly TypeScriptPathNameLookupTarget[] {
-  const match =
-    /^typescript:((?:[^:]+:)?)path:([^:]+):name:([^:]+)(:(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
-  if (!match) return [];
-  try {
-    return [
-      {
-        lookupPrefix: `typescript:${match[1]!}`,
-        lookupSuffix: match[4] ?? '',
-        name: decodeURIComponent(match[3]!),
-        path: decodeURIComponent(match[2]!),
-      },
-    ];
-  } catch {
-    return [];
-  }
-}
-
-function uniqueByKey<A>(values: readonly A[], keyOf: (value: A) => string): readonly A[] {
-  const output = new Map<string, A>();
-  for (const value of values) {
-    const key = keyOf(value);
-    if (!output.has(key)) output.set(key, value);
-  }
-  return [...output.values()];
-}
-
-function uniqueStrings(values: readonly string[]): readonly string[] {
-  return [...new Set(values)];
 }
 
 export function reusableBaseFileSetFingerprint(files: readonly CodeGraphInventoryFile[]): string {

@@ -84,6 +84,7 @@ export type IncrementalOverlayAssessment =
     }
   | {
       readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+      readonly fallbackBoundary?: import('./types.js').CodeGraphOverlayFallbackBoundary;
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
@@ -105,6 +106,7 @@ export type IncrementalOverlayPreassessment =
     }
   | {
       readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+      readonly fallbackBoundary?: import('./types.js').CodeGraphOverlayFallbackBoundary;
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;

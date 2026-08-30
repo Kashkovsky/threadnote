@@ -1,10 +1,14 @@
 import {Effect, FileSystem, Path} from 'effect';
-import type {LocalModelManifest} from '../models/catalog.js';
+import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
+import {readModelSelection} from '../models/selection.js';
+import {LocalModelStore} from '../models/store.js';
 import {ensureVectorIndex, vectorIndexGenerationReadiness, vectorIndexStatus} from '../search/vector-index.js';
 import {
   currentRecallCorpusGeneration,
+  expireRecallIndexValidation,
   loadRecallIndexData,
   recallIndexStatus,
+  type RecallIndexData,
   type RecallIndexStatus,
 } from './index.js';
 
@@ -18,6 +22,7 @@ interface McpRecallRefreshConfig {
 export type McpRecallBackgroundRefreshSchedule = 'coalesced' | 'scheduled';
 
 const activeRefreshes = new Map<string, object>();
+const TRUSTED_MUTATION_VECTOR_REFRESH_TIMEOUT_MILLISECONDS = 1_000;
 
 class McpRecallBackgroundRefreshBlocked extends Error {
   override readonly name = 'McpRecallBackgroundRefreshBlocked';
@@ -68,11 +73,63 @@ const refreshMcpRecallDerivedIndexes = Effect.fn('recall.refreshMcpDerivedIndexe
   config: McpRecallRefreshConfig,
   manifest: LocalModelManifest,
 ) {
+  const index = yield* refreshRecallLexicalIndex(config);
+  yield* refreshRecallVectorIndex(config, manifest, index);
+});
+
+/**
+ * Restore derived-index readiness after a trusted product mutation. Lexical
+ * readiness is synchronous and independently invalidated. An already-built
+ * selected vector index gets one bounded best-effort refresh; this hook never
+ * constructs a previously absent vector index or adds an unbounded graph tail.
+ */
+export const refreshRecallDerivedIndexesFromSelection = Effect.fn('recall.refreshDerivedIndexesFromSelection')(
+  function* (config: McpRecallRefreshConfig, invalidatedUris: readonly string[]) {
+    const uris = [...new Set(invalidatedUris)];
+    const forceRefresh =
+      uris.length === 0
+        ? false
+        : yield* expireRecallIndexValidation(config.agentContextHome, false, uris).pipe(
+            Effect.as(false),
+            Effect.catchCause(() => Effect.succeed(true)),
+          );
+    const index = yield* refreshRecallLexicalIndex(config, forceRefresh);
+    yield* Effect.gen(function* () {
+      const selection = yield* readModelSelection(config.agentContextHome);
+      const modelId = selection.roles.embedding;
+      if (modelId === undefined) return;
+      const catalog = yield* LocalModelCatalog;
+      const manifest = yield* catalog.get(modelId);
+      if (manifest.role !== 'embedding') return;
+      const store = yield* LocalModelStore;
+      const installed = yield* store.status(config.agentContextHome, manifest);
+      if (!installed.installed) return;
+      const vectorStatus = yield* vectorIndexStatus(config.agentContextHome, manifest);
+      if (!vectorStatus.ready && vectorStatus.reason === 'not built') return;
+      yield* refreshRecallVectorIndex(config, manifest, index).pipe(
+        Effect.timeoutOption(TRUSTED_MUTATION_VECTOR_REFRESH_TIMEOUT_MILLISECONDS),
+        Effect.asVoid,
+      );
+    }).pipe(Effect.catchCause(() => Effect.void));
+  },
+);
+
+const refreshRecallLexicalIndex = Effect.fn('recall.refreshDerivedLexicalIndex')(function* (
+  config: McpRecallRefreshConfig,
+  forceRefresh = false,
+) {
   const lexicalStatus = yield* recallIndexStatus(config, false);
   if (lexicalRefreshDisposition(lexicalStatus) === 'unsafe') {
     return yield* Effect.fail(new McpRecallBackgroundRefreshBlocked());
   }
-  const index = yield* loadRecallIndexData(config, {includeInactive: false});
+  return yield* loadRecallIndexData(config, {forceRefresh, includeInactive: false});
+});
+
+const refreshRecallVectorIndex = Effect.fn('recall.refreshDerivedVectorIndex')(function* (
+  config: McpRecallRefreshConfig,
+  manifest: LocalModelManifest,
+  index: RecallIndexData,
+) {
   const vectorStatus = yield* vectorIndexStatus(config.agentContextHome, manifest);
   if (!vectorStatus.ready && vectorStatus.reason !== 'not built') {
     return yield* Effect.fail(new McpRecallBackgroundRefreshBlocked());

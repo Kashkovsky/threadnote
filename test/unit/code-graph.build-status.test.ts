@@ -64,6 +64,82 @@ describe('code graph cross-process build status', () => {
     ).toBeUndefined();
   });
 
+  effectIt.effect('round-trips additive project-closure boundary evidence without changing legacy assessment', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectory({prefix: 'threadnote-graph-fallback-boundary-'});
+      homes.push(home);
+      const identity = fixtureIdentity(home);
+      const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+      const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+      yield* reporter.progress({
+        completed: 0,
+        metrics: {
+          batchesCompleted: 0,
+          batchesTotal: 1,
+          fallbackBoundary: {
+            changedFiles: 3,
+            limit: 128,
+            metric: 'affected-files',
+            observedAtDecision: 1_404,
+            stage: 'project-closure-selection',
+          },
+          fallbackReason: 'project-closure-unbounded',
+          mode: 'full',
+          sourceBytesCompleted: 0,
+          sourceBytesTotal: 1,
+        },
+        phase: 'materializing',
+        reused: 0,
+        total: 1,
+        unit: 'files',
+      });
+
+      expect((yield* readCodeGraphBuildStatuses(layout))[0]).toMatchObject({
+        materialization: {
+          metrics: {
+            fallbackBoundary: {
+              changedFiles: 3,
+              limit: 128,
+              metric: 'affected-files',
+              observedAtDecision: 1_404,
+              stage: 'project-closure-selection',
+            },
+            fallbackReason: 'project-closure-unbounded',
+          },
+        },
+      });
+
+      const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+      const statusFile = (yield* fs.readDirectory(directory)).find(name => name.endsWith('.json'))!;
+      const statusPath = path.join(directory, statusFile);
+      const status = JSON.parse(yield* fs.readFileString(statusPath)) as {
+        materialization: {metrics: {fallbackBoundary: Record<string, unknown>}};
+      };
+      for (const [stage, metric] of [
+        ['project-closure-selection', 'candidate-reexports'],
+        ['resolution-candidate-scan', 'affected-files'],
+        ['resolution-candidate-rewrite', 'candidate-lookup-keys'],
+      ] as const) {
+        yield* fs.writeFileString(
+          statusPath,
+          `${JSON.stringify({
+            ...status,
+            materialization: {
+              ...status.materialization,
+              metrics: {
+                ...status.materialization.metrics,
+                fallbackBoundary: {...status.materialization.metrics.fallbackBoundary, metric, stage},
+              },
+            },
+          })}\n`,
+        );
+        expect(yield* readCodeGraphBuildStatuses(layout)).toEqual([]);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('publishes a reporter ETA only after stable phase-local throughput', () =>
     Effect.gen(function* () {
       const confidenceFor = (delays: readonly number[]) =>

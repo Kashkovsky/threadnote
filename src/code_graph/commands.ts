@@ -25,6 +25,8 @@ import type {
   CodeGraphProgress,
   CodeGraphQueryOptions,
   CodeGraphStatus,
+  CodeGraphOverlayFallbackBoundary,
+  CodeGraphOverlayFallbackAssessment,
   RepositoryIdentityExpectation,
 } from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
@@ -423,6 +425,8 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
         metrics.fallbackReason === undefined
           ? undefined
           : `incremental fallback: ${metrics.fallbackReason.replaceAll('-', ' ')}`,
+        renderFallbackAssessment(metrics.fallbackAssessment),
+        renderFallbackBoundary(metrics.fallbackBoundary),
         `${metrics.batchesCompleted}/${metrics.batchesTotal} batches committed`,
         `${formatBytes(metrics.sourceBytesCompleted)}/${formatBytes(metrics.sourceBytesTotal)} source`,
         metrics.cachedFactBytesCompleted === undefined
@@ -1806,6 +1810,8 @@ function materializationProgressMessage(
     progress.metrics?.fallbackReason === undefined
       ? undefined
       : `incremental fallback: ${progress.metrics.fallbackReason.replaceAll('-', ' ')}`,
+    renderFallbackAssessment(progress.metrics?.fallbackAssessment),
+    renderFallbackBoundary(progress.metrics?.fallbackBoundary),
   ]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
@@ -1827,6 +1833,20 @@ function materializationProgressMessage(
       : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
   ].filter((value): value is string => value !== undefined);
   return `${summary} · ${details.join(' · ')}${diskWarning ? ` · ${diskWarning}` : ''}`;
+}
+
+function renderFallbackAssessment(assessment: CodeGraphOverlayFallbackAssessment | undefined): string | undefined {
+  if (assessment === undefined) return undefined;
+  return `assessment: ${assessment.detail.replaceAll('-', ' ')} (${assessment.changedFiles.toLocaleString()} changed)`;
+}
+
+function renderFallbackBoundary(boundary: CodeGraphOverlayFallbackBoundary | undefined): string | undefined {
+  if (boundary === undefined) return undefined;
+  return (
+    `boundary: ${boundary.metric.replaceAll('-', ' ')} ` +
+    `${boundary.observedAtDecision.toLocaleString()} > ${boundary.limit.toLocaleString()} ` +
+    `(${boundary.changedFiles.toLocaleString()} changed)`
+  );
 }
 
 function materializationDiskWarning(

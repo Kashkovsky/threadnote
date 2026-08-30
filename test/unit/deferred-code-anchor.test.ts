@@ -723,6 +723,7 @@ describe('deferred code-anchor outbox', () => {
                 )
               : store.read(location, uri),
         });
+        const attemptedUris: string[] = [];
         const fiber = yield* finalizeDeferredCodeAnchorsForRoute(
           fixture.config,
           {
@@ -731,7 +732,13 @@ describe('deferred code-anchor outbox', () => {
             repositoryId: intent.repositoryId,
             worktreeId: intent.worktreeId,
           },
-          {limit: 1, passTimeoutMilliseconds: 100},
+          {
+            limit: 1,
+            onAttemptedUri: uri => {
+              attemptedUris.push(uri);
+            },
+            passTimeoutMilliseconds: 100,
+          },
         ).pipe(Effect.provideService(ResourceStore, blockedStore), Effect.forkScoped);
         yield* Deferred.await(entered);
         yield* TestClock.adjust('100 millis');
@@ -741,6 +748,7 @@ describe('deferred code-anchor outbox', () => {
           scannedCount: 0,
           state: 'contended',
         });
+        expect(attemptedUris).toEqual([MEMORY_URI]);
         expect(yield* fixtureIntentPaths(fixture)).toHaveLength(1);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
