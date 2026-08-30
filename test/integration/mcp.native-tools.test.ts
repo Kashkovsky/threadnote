@@ -1596,6 +1596,9 @@ describe('Threadnote MCP toolsets', () => {
         expect(contextTool?.description).toContain('canonical graph-indexed repository-relative paths');
         expect(contextTool?.description).toContain('cgr_ is unsupported');
         expect(JSON.stringify(contextTool?.inputSchema)).toContain('no ./');
+        expect(JSON.stringify(contextTool?.inputSchema)).toContain('1-4096 UTF-8 bytes');
+        expect(JSON.stringify(contextTool?.inputSchema)).toContain('Project; max 256 UTF-8 bytes');
+        expect(JSON.stringify(contextTool?.inputSchema)).toContain('workset; max 256 UTF-8 bytes');
         expect(contextTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {

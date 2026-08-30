@@ -266,7 +266,9 @@ export function registerFinalizeCodeRefsTool(server: EffectMcpServerAdapter, con
           ...receipt.items.map(
             item =>
               `- ${item.memoryUri ?? 'invalid intent'}: ${item.state}` +
+              (item.code ? ` [${item.code}]` : '') +
               (item.reason ? ` (${item.reason})` : '') +
+              (item.recoveryAction ? ` · next: ${item.recoveryAction}` : '') +
               (item.citationCount === undefined ? '' : ` · ${item.citationCount} citation(s)`),
           ),
         ].join('\n');

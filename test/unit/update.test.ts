@@ -1180,7 +1180,7 @@ describe('standalone updater', () => {
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(String(result.failure)).toMatch(/Code graph asset checksum validation failed for grammars\/java\.wasm/);
+      expect(String(result.failure)).toMatch(/Code graph asset checksum validation failed for grammars\/[\w-]+\.wasm/);
       expect(result.releaseExists).toBe(false);
     }),
   );
@@ -2220,7 +2220,11 @@ function writeReleaseArchive(
         ),
       );
       if (options.tamperCodeGraphAsset) {
-        assets['assets/code-graph/grammars/java.wasm'] = new TextEncoder().encode('tampered grammar');
+        const firstGrammar = Object.entries(manifest.grammars).sort(([left], [right]) =>
+          left.localeCompare(right),
+        )[0]?.[1];
+        if (firstGrammar === undefined) throw new TestError('Code graph fixture manifest has no grammars.');
+        assets[`assets/code-graph/${firstGrammar.path}`] = new TextEncoder().encode('tampered grammar');
       }
       return Bun.Archive.write(
         archivePath,

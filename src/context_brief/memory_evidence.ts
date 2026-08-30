@@ -176,6 +176,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     if (resolvedAnchors.length === 0) {
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
     }
+    const resolvedOrdinals = resolvedAnchors.map(anchor => anchor.anchorOrdinal);
     const identity = yield* resolveRepositoryIdentity(callerCwd).pipe(Effect.option);
     const finalizedUris: string[] = [];
     if (identity._tag === 'Some') {
@@ -223,7 +224,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       return unavailableContextBriefCodeLinkedMemoryEvidence(
         requested,
         'code-anchor-recall-unavailable',
-        resolvedAnchors.length,
+        resolvedOrdinals,
       );
     }
     const matchesByUri = mapContextBriefCodeLinkMatches(
@@ -243,8 +244,15 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     );
     const candidates = readCandidates.filter(candidate => (candidate.codeLinkMatches?.length ?? 0) > 0);
     const complete = resolvedAnchors.length === requested;
+    const unresolvedOrdinals = unresolvedContextBriefCodeAnchorOrdinals(requested, resolvedOrdinals);
     return {
-      codeAnchorCoverage: {complete, matchedMemories: candidates.length, requested, resolved: resolvedAnchors.length},
+      codeAnchorCoverage: {
+        complete,
+        matchedMemories: candidates.length,
+        requested,
+        resolved: resolvedAnchors.length,
+        ...(unresolvedOrdinals.length === 0 ? {} : {unresolvedOrdinals}),
+      },
       candidates,
       consideredCandidates: linked.value.length,
       gaps: contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
@@ -343,15 +351,33 @@ export function unavailableContextBriefMemoryEvidence(
 export function unavailableContextBriefCodeLinkedMemoryEvidence(
   requested: number,
   gap = 'code-anchor-recall-unavailable',
-  resolved = 0,
+  resolvedOrdinals: readonly number[] = [],
 ): ContextBriefMemoryRetrievalV1 {
+  const unresolvedOrdinals = unresolvedContextBriefCodeAnchorOrdinals(requested, resolvedOrdinals);
   return {
-    codeAnchorCoverage: {complete: false, matchedMemories: 0, requested, resolved},
+    codeAnchorCoverage: {
+      complete: unresolvedOrdinals.length === 0,
+      matchedMemories: 0,
+      requested,
+      resolved: requested - unresolvedOrdinals.length,
+      ...(unresolvedOrdinals.length === 0 ? {} : {unresolvedOrdinals}),
+    },
     candidates: [],
     consideredCandidates: 0,
     gaps: [gap],
     trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
   };
+}
+
+/** Return a deterministic, privacy-safe complement of resolved request positions. */
+export function unresolvedContextBriefCodeAnchorOrdinals(
+  requested: number,
+  resolvedOrdinals: readonly number[],
+): readonly number[] {
+  const resolved = new Set(
+    resolvedOrdinals.filter(ordinal => Number.isSafeInteger(ordinal) && ordinal >= 0 && ordinal < requested),
+  );
+  return Array.from({length: requested}, (_, ordinal) => ordinal).filter(ordinal => !resolved.has(ordinal));
 }
 
 /** Keep direct citation matches ahead of topical recall without mixing their ranking semantics. */

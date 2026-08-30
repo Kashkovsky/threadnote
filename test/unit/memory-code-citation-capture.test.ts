@@ -130,6 +130,7 @@ describe('memory code citation capture and validation', () => {
       );
       expect(failure.message).not.toContain(root);
       expect(failure.recovery).toBeUndefined();
+      expect(failure.failureCode).toBe('code-reference-unresolved');
       expect(fixture.leases()).toEqual({acquired: 1, released: 1});
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );

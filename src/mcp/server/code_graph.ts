@@ -98,21 +98,20 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Ready graph+memory brief. codeRefs: max 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported. content: compact agent view; structuredContent: full v2/v3. Untrusted; cold indexing is never started.',
+        'Graph+memory brief. 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported. Compact/full channels; cold indexing is never started.',
       inputSchema: {
         budgetTokens: McpInput.integer('800-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
           maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
         }),
-        callerCwd: McpInput.string('Absolute workspace'),
-        codeRefs: McpInput.stringOrStrings(
-          'Canonical repo-relative POSIX path or cgs_<32 lowercase hex>; no ./, ../, absolute, cgr_; max 8',
-          {maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS},
-        ),
+        callerCwd: McpInput.string('Absolute workspace; max 4096 UTF-8 bytes'),
+        codeRefs: McpInput.stringOrStrings('Canonical graph path/cgs_<32 hex>; no ./, ../, absolute, cgr_; max 8', {
+          maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
+        }),
         mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
-        project: McpInput.string('Project'),
-        task: McpInput.string('Task/question'),
-        workset: McpInput.string('Prepared workset scope; otherwise uses callerCwd'),
+        project: McpInput.string('Project; max 256 UTF-8 bytes'),
+        task: McpInput.string('Task/question; 1-4096 UTF-8 bytes; no controls'),
+        workset: McpInput.string('Prepared workset; max 256 UTF-8 bytes; else callerCwd'),
       },
     },
     ({budgetTokens, callerCwd, codeRefs, mode, project, task, workset}) => {

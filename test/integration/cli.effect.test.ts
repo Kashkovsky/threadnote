@@ -44,12 +44,15 @@ describe('Effect CLI', () => {
   it('describes citation paths as exact-current graph locators', async () => {
     const remember = await runCli(['remember', '--help']);
     const handoff = await runCli(['handoff', '--help']);
+    const contextBrief = await runCli(['context', 'brief', '--help']);
 
     expect(remember.stdout).toContain('Graph-indexed repository-relative path');
     expect(remember.stdout).toContain('--require-current-code-refs');
     expect(remember.stdout).toContain('default private store-now/anchor-later');
     expect(handoff.stdout).toContain('Graph-indexed repository-relative path');
     expect(handoff.stdout).toContain('--require-current-code-refs');
+    expect(contextBrief.stdout).toContain('1-4096 UTF-8 bytes');
+    expect(contextBrief.stdout).toContain('at most 256 UTF-8 bytes');
   });
 
   it('rejects deferred citation policy without a requested code reference', async () => {
@@ -162,6 +165,48 @@ describe('Effect CLI', () => {
           ),
         ),
       ).rejects.toMatchObject({code: 'ENOENT'});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('autoheals a deferred citation on the first cold graph publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-first-cold-anchor-'));
+    const home = join(root, 'home');
+    const repository = join(root, 'repository');
+    const environment = {THREADNOTE_HOME: home};
+    try {
+      await mkdir(join(repository, 'src'), {recursive: true});
+      await writeFile(join(repository, 'package.json'), '{"name":"first-cold-anchor"}\n');
+      await writeFile(join(repository, 'src', 'value.ts'), 'export const value = 1;\n');
+      await execFilePromise('git', ['init', '--quiet'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+      await execFilePromise('git', ['add', '.'], {cwd: repository});
+      await execFilePromise('git', ['commit', '--quiet', '--message', 'fixture'], {cwd: repository});
+
+      const remembered = await runCli(
+        [
+          'remember',
+          '--code-ref',
+          'src/value.ts',
+          '--project',
+          'threadnote',
+          '--topic',
+          'first-cold-anchor',
+          '--text',
+          'The first cold publication must finalize this citation.',
+        ],
+        environment,
+        repository,
+      );
+      const memoryUri = /Stored memory: (threadnote:\/\/\S+)/u.exec(remembered.stdout)?.[1];
+      expect(memoryUri).toBeDefined();
+      expect((await runCli(['read', memoryUri!], environment)).stdout).not.toContain('code_citation:');
+
+      await runCli(['graph', 'index', '--cwd', repository, '--no-vectors', '--json'], environment);
+
+      expect((await runCli(['read', memoryUri!], environment)).stdout).toContain('code_citation:');
     } finally {
       await rm(root, {force: true, recursive: true});
     }
@@ -1477,9 +1522,9 @@ describe('Effect CLI', () => {
   });
 });
 
-function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
-  return execFilePromise(process.execPath, ['src/standalone.ts', ...args], {
-    cwd: process.cwd(),
+function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}, cwd = process.cwd()) {
+  return execFilePromise(process.execPath, [join(process.cwd(), 'src', 'standalone.ts'), ...args], {
+    cwd,
     env: {...process.env, ...environment, NO_COLOR: '1'},
   });
 }

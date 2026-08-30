@@ -3,6 +3,9 @@ import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
+import {CodeGraphStore} from '../../src/code_graph/store.js';
+import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
+import type {CodeGraphStatus} from '../../src/code_graph/types.js';
 import {runCommandEffect} from '../../src/effect/command.js';
 import {sha256Hex} from '../../src/effect/digest.js';
 import {ResourceIoFailed, ResourceStore} from '../../src/effect/resource-store.js';
@@ -31,6 +34,7 @@ import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
 const MEMORY_URI = 'threadnote://user/tester/memories/durable/projects/threadnote/deferred.md';
+const TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS = 5_000;
 
 describe('deferred code-anchor outbox', () => {
   effectIt.effect('serializes descendant stores behind parent intent cleanup', () =>
@@ -414,7 +418,11 @@ describe('deferred code-anchor outbox', () => {
         const digest = yield* sha256Hex(MEMORY_URI);
         yield* fixture.fs.rename(intentPath!, fixture.path.join(fixture.outbox, `${digest}.json`));
         expect(
-          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {kind: 'workset', name: 'platform'}),
+          yield* finalizeDeferredCodeAnchorsForRoute(
+            fixture.config,
+            {kind: 'workset', name: 'platform'},
+            {passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS},
+          ),
         ).toMatchObject({
           conflictCount: 1,
           matchedCount: 1,
@@ -435,12 +443,11 @@ describe('deferred code-anchor outbox', () => {
           memoryUri: repositoryUri,
           request: deferredWorksetRequest(fixture.repository, ['src/repository.ts'], 'platform'),
         });
-        expect(yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, repositoryRoute)).toMatchObject({
-          conflictCount: 1,
-          matchedCount: 1,
-          scannedCount: 1,
-          state: 'completed',
-        });
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, repositoryRoute, {
+            passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS,
+          }),
+        ).toMatchObject({conflictCount: 1, matchedCount: 1, scannedCount: 1, state: 'completed'});
 
         const qualifiedUri = 'threadnote://user/tester/memories/durable/projects/threadnote/deferred-qualified.md';
         const qualifiedMetadata = {
@@ -455,7 +462,11 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, [`cgr_${'a'.repeat(40)}`]),
         });
         expect(
-          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {kind: 'workset', name: 'another-workset'}),
+          yield* finalizeDeferredCodeAnchorsForRoute(
+            fixture.config,
+            {kind: 'workset', name: 'another-workset'},
+            {passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS},
+          ),
         ).toMatchObject({conflictCount: 1, matchedCount: 1, scannedCount: 1, state: 'completed'});
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
@@ -510,6 +521,7 @@ describe('deferred code-anchor outbox', () => {
         const run = (preferredCodeRefs: readonly string[] = []) =>
           finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {
             limit: 1,
+            passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS,
             preferredCodeRefs,
           }).pipe(Effect.provideService(ResourceStore, instrumentedStore));
 
@@ -588,6 +600,7 @@ describe('deferred code-anchor outbox', () => {
         expect(
           yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {
             limit: 1,
+            passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS,
             preferredCodeRefs: preferred.codeRefs,
           }).pipe(
             Effect.provideService(FileSystem.FileSystem, observedFileSystem),
@@ -635,10 +648,9 @@ describe('deferred code-anchor outbox', () => {
               Effect.andThen(store.read(location, uri)),
             ),
         });
-        const owner = yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route).pipe(
-          Effect.provideService(ResourceStore, blockingStore),
-          Effect.forkScoped,
-        );
+        const owner = yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {
+          passTimeoutMilliseconds: TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS,
+        }).pipe(Effect.provideService(ResourceStore, blockingStore), Effect.forkScoped);
         yield* Deferred.await(entered);
 
         expect(yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route)).toMatchObject({
@@ -1015,6 +1027,91 @@ describe('deferred code-anchor outbox', () => {
         });
         expect(JSON.stringify(receipt)).not.toContain(privateLocator);
         expect(JSON.stringify(receipt)).not.toContain(fixture.repository);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('classifies exact-graph locator misses with privacy-safe correction guidance', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const privateLocator = '.github/workflows/private-release.yml';
+        const content = memoryContent(fixture.metadata, 'Pending correction revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, [privateLocator]),
+        });
+        const store = yield* ResourceStore;
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+
+        const originalQuery = yield* CodeGraphQueryService;
+        const observed = yield* originalQuery.status(fixture.config.agentContextHome, fixture.repository, {
+          observeWorktree: true,
+          requestMaintenance: false,
+        });
+        const exactStatus: CodeGraphStatus = {
+          ...observed,
+          freshness: 'current',
+          readySnapshot: {
+            commit: observed.identity.headCommit,
+            completedAt: '2026-08-30T00:00:00.000Z',
+            dirty: false,
+            edgeCount: 0,
+            extractorSet: 'fixture-extractor-set',
+            fileCount: 0,
+            graphContentId: `cgc_${'a'.repeat(40)}`,
+            id: `cgsn_${'b'.repeat(40)}`,
+            repositoryId: observed.identity.repositoryId,
+            state: 'ready',
+            symbolCount: 0,
+            worktreeId: observed.identity.worktreeId,
+          },
+          stale: false,
+        };
+        const exactQuery = CodeGraphQueryService.of({
+          ...originalQuery,
+          status: () => Effect.succeed(exactStatus),
+        } as Parameters<typeof CodeGraphQueryService.of>[0]);
+        const emptyGraphStore = CodeGraphStore.of({
+          acquireSnapshotLease: () => Effect.succeed('fixture-lease'),
+          effectiveSnapshotCitationEvidence: (
+            _databasePath: string,
+            _snapshotId: string,
+            request: {readonly paths?: readonly string[]},
+          ) =>
+            Effect.succeed({
+              fileInventoryCoverage: 'complete',
+              filesByContentHashes: [],
+              filesByPaths: (request.paths ?? []).map(path => ({path})),
+              symbolsByIds: [],
+              symbolsBySemanticLocators: [],
+            }),
+          releaseSnapshotLease: () => Effect.void,
+        } as unknown as CodeGraphStoreShape);
+
+        const receipt = yield* finalizeDeferredCodeAnchors(fixture.config).pipe(
+          Effect.provideService(CodeGraphQueryService, exactQuery),
+          Effect.provideService(CodeGraphStore, emptyGraphStore),
+        );
+
+        expect(receipt).toMatchObject({
+          failedCount: 1,
+          items: [
+            {
+              code: 'code-reference-unresolved',
+              memoryUri: MEMORY_URI,
+              recoveryAction: 'replace-memory-code-refs',
+              retryable: false,
+              state: 'failed',
+            },
+          ],
+        });
+        expect(receipt.items[0]?.reason).toContain('corrected graph-indexed codeRefs');
+        expect(JSON.stringify(receipt)).not.toContain(privateLocator);
+        expect(JSON.stringify(receipt)).not.toContain(fixture.repository);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(true);
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );

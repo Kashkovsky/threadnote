@@ -378,14 +378,17 @@ function validateAgentViewCoverage(value: unknown): void {
     if (!isRecord(value.codeAnchors)) throw invalid('coverage.codeAnchors must be an object');
     assertAgentViewKeys(
       value.codeAnchors,
-      ['complete', 'matchedMemories', 'requested', 'resolved'],
+      ['complete', 'matchedMemories', 'requested', 'resolved', 'unresolvedOrdinals'],
       'coverage.codeAnchors',
     );
     if (
       typeof value.codeAnchors.complete !== 'boolean' ||
       !nonNegativeInteger(value.codeAnchors.matchedMemories) ||
       !nonNegativeInteger(value.codeAnchors.requested) ||
-      !nonNegativeInteger(value.codeAnchors.resolved)
+      !nonNegativeInteger(value.codeAnchors.resolved) ||
+      (value.codeAnchors.unresolvedOrdinals !== undefined &&
+        (!Array.isArray(value.codeAnchors.unresolvedOrdinals) ||
+          !value.codeAnchors.unresolvedOrdinals.every(nonNegativeInteger)))
     ) {
       throw invalid('coverage.codeAnchors is invalid');
     }

@@ -11,11 +11,11 @@ import type {DoctorCheck, RuntimeConfig} from '../types.js';
 import {
   captureMemoryCodeCitations,
   type MemoryCodeCitationCaptureRecoveryV1,
-  MemoryCodeCitationCaptureError,
   normalizeMemoryCodeRefs,
 } from './code_citation_capture.js';
 import {MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from './code_citation.js';
 import {discardMemoryRelocation} from './relocation.js';
+import {deferredCodeAnchorCaptureFailureItem} from './deferred_code_anchor_failure.js';
 import {
   DeferredCodeAnchorError,
   DEFERRED_CODE_ANCHOR_ITEM_ROOT_NAME,
@@ -128,6 +128,8 @@ export interface DeferredCodeAnchorFinalizeItemV1 {
   readonly code?: string;
   readonly memoryUri?: string;
   readonly reason?: string;
+  readonly recoveryAction?: 'prepare-current-graph' | 'replace-memory-code-refs';
+  readonly retryable?: boolean;
   readonly state: 'conflict' | 'failed' | 'finalized' | 'pending';
 }
 
@@ -704,14 +706,8 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
     refs: entry.intent.codeRefs,
   }).pipe(Effect.result);
   if (Result.isFailure(captured)) {
-    if (captured.failure instanceof MemoryCodeCitationCaptureError && captured.failure.recovery) {
-      return {
-        code: captured.failure.recovery.code,
-        memoryUri: entry.intent.memoryUri,
-        reason: 'exact-current-graph-unavailable',
-        state: 'pending',
-      } satisfies DeferredCodeAnchorFinalizeItemV1;
-    }
+    const classified = deferredCodeAnchorCaptureFailureItem(captured.failure, entry.intent.memoryUri);
+    if (classified !== undefined) return classified;
     return {
       code: 'citation-capture-failed',
       memoryUri: entry.intent.memoryUri,

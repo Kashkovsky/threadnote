@@ -25,6 +25,10 @@ code-linked Context Brief. If an intent remains pending, call `finalize_code_ref
 round trip: future agents can move from memory back to verified current code and from graph evidence to the memories
 that cite it. Prefer a few consequential anchors over broad file lists.
 
+Finalization receipts distinguish retryable graph readiness from a locator absent in an exact-current graph. For
+`code-reference-unresolved` with `recoveryAction: replace-memory-code-refs`, replace the same memory using corrected
+graph-indexed refs; the private locator is intentionally not echoed and its pending intent remains until correction.
+
 When a memory moves during replacement, publication, or unpublication, old `threadnote://` pointers may resolve through
 a private identity-fenced relocation receipt. Follow the `canonicalUri` returned by `read_context`; a relocation is
 pointer continuity, not evidence that the memory's claims are still current.

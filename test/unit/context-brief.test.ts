@@ -19,6 +19,7 @@ import {
   reconcileContextBriefMemoryFreshness,
   renderContextBriefText,
   unavailableContextBriefCodeLinkedMemoryEvidence,
+  unresolvedContextBriefCodeAnchorOrdinals,
   validateContextBriefPreciseCodeEvidence,
   type ContextBriefGraphEvidenceV1,
   type ContextBriefMemoryCandidateV1,
@@ -146,6 +147,27 @@ describe('Context Brief compiler', () => {
     }),
   );
 
+  effectIt.effect('fits unresolved anchor ordinals in both minimum-budget response channels', () =>
+    Effect.gen(function* () {
+      const result = yield* compileCodeLinkedRecoveryFixture(16, 8, 800, {
+        extraGraphGaps: ['graph-evidence-partial'],
+        unresolvedOrdinals: [7],
+      });
+      const coverage = result.structuredContent.coverage.memory.codeAnchors;
+      const agentCoverage = parseContextBriefAgentViewText(result.text).coverage?.codeAnchors;
+
+      expect(coverage).toMatchObject({
+        complete: false,
+        requested: 8,
+        resolved: 7,
+        unresolvedOrdinals: [7],
+      });
+      expect(agentCoverage).toEqual(coverage);
+      expect(result.structuredContent.coverage.gaps).toContain('code-anchors-unresolved');
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+    }),
+  );
+
   effectIt.effect('fits the minimum envelope when valid task and scope text require JSON escaping', () =>
     Effect.gen(function* () {
       const result = yield* compileCodeLinkedRecoveryFixture(16, 8, 800, {
@@ -253,6 +275,31 @@ describe('Context Brief compiler', () => {
     );
   });
 
+  it('discloses every public UTF-8 input bound in validation errors', () => {
+    expect(parseContextBriefRequestV1({...request(1_250), task: '\\'.repeat(4_096)}).task).toHaveLength(4_096);
+    expect(() => parseContextBriefRequestV1({...request(1_250), task: '\\'.repeat(4_097)})).toThrow(
+      'task exceeds 4096 UTF-8 bytes',
+    );
+    expect(() =>
+      parseContextBriefRequestV1({
+        ...request(1_250),
+        scope: {callerCwd: '/workspace/threadnote', kind: 'repository', project: 'p'.repeat(257)},
+      }),
+    ).toThrow('project exceeds 256 UTF-8 bytes');
+    expect(() =>
+      parseContextBriefRequestV1({
+        ...request(1_250),
+        scope: {kind: 'workset', name: 'w'.repeat(257)},
+      }),
+    ).toThrow('workset name exceeds 256 UTF-8 bytes');
+    expect(() =>
+      parseContextBriefRequestV1({
+        ...request(1_250),
+        scope: {callerCwd: `/${'c'.repeat(4_096)}`, kind: 'repository'},
+      }),
+    ).toThrow('callerCwd exceeds 4096 UTF-8 bytes');
+  });
+
   effectIt.effect('rejects a below-minimum budget before graph or memory evidence starts', () =>
     Effect.gen(function* () {
       let graphCalls = 0;
@@ -339,6 +386,34 @@ describe('Context Brief compiler', () => {
         matchKind: 'symbol-node',
       },
     ]);
+  });
+
+  it('projects the exact sorted complement of resolved anchor ordinals without exposing selectors', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({min: 1, max: 8}),
+        fc.array(fc.integer({min: -2, max: 10}), {maxLength: 16}),
+        (requested, observed) => {
+          const expected = Array.from({length: requested}, (_, ordinal) => ordinal).filter(
+            ordinal => !observed.includes(ordinal),
+          );
+          const unresolved = unresolvedContextBriefCodeAnchorOrdinals(requested, observed);
+          expect(unresolved).toEqual(expected);
+          expect(unavailableContextBriefCodeLinkedMemoryEvidence(requested).codeAnchorCoverage).toEqual({
+            complete: false,
+            matchedMemories: 0,
+            requested,
+            resolved: 0,
+            unresolvedOrdinals: Array.from({length: requested}, (_, ordinal) => ordinal),
+          });
+        },
+      ),
+      {numRuns: 40},
+    );
+    expect(
+      unavailableContextBriefCodeLinkedMemoryEvidence(2, 'code-anchor-recall-unavailable', [1, 0, 1])
+        .codeAnchorCoverage,
+    ).toEqual({complete: true, matchedMemories: 0, requested: 2, resolved: 2});
   });
 
   effectIt.effect('keeps task-only output on v2 and never enters the code-linked retrieval lane', () =>
@@ -883,6 +958,7 @@ describe('Context Brief compiler', () => {
         matchedMemories: 0,
         requested: 1,
         resolved: 0,
+        unresolvedOrdinals: [0],
       });
       expect(result.structuredContent.coverage.gaps).toContain('code-anchor-scope-unsupported');
       expectTextCarriesSelectedEvidence(result.text, result.structuredContent);
@@ -1400,6 +1476,7 @@ function compileCodeLinkedRecoveryFixture(
     readonly extraGraphGaps?: readonly string[];
     readonly scope?: ContextBriefScopeV1;
     readonly task?: string;
+    readonly unresolvedOrdinals?: readonly number[];
   } = {},
 ) {
   const citations = Array.from({length: memoryCount}, (_, index) =>
@@ -1424,20 +1501,25 @@ function compileCodeLinkedRecoveryFixture(
     topic: `code-linked-recovery-${rank}`,
     uri: `threadnote://user/test/memories/durable/projects/threadnote/code-linked-recovery-${rank}.md`,
   }));
+  const unresolvedOrdinals = [...new Set(options.unresolvedOrdinals ?? [])].filter(
+    ordinal => ordinal >= 0 && ordinal < memoryCount,
+  );
+  const unresolved = new Set(unresolvedOrdinals);
+  const linkedCandidates = candidates.filter((_, ordinal) => !unresolved.has(ordinal));
   const graph = graphEvidence();
   return compileContextBriefWith(
     {
       citationValidation: () =>
         Effect.succeed(
-          candidates.map((candidate, index) => ({
+          linkedCandidates.map(candidate => ({
             receipts: [
               {
                 candidateCount: 1,
-                citationId: citations[index]!.id,
+                citationId: candidate.codeCitations[0]!.id,
                 coverage: 'current-complete' as const,
                 kind: 'file' as const,
                 observedAt: '2026-08-30T00:00:00.000Z',
-                observedPath: citations[index]!.path,
+                observedPath: candidate.codeCitations[0]!.path,
                 reason: 'exact' as const,
                 status: 'exact' as const,
                 strategy: 'file-path' as const,
@@ -1450,14 +1532,15 @@ function compileCodeLinkedRecoveryFixture(
       codeLinkedMemoryEvidence: () =>
         Effect.succeed({
           codeAnchorCoverage: {
-            complete: true,
-            matchedMemories: memoryCount,
+            complete: unresolvedOrdinals.length === 0,
+            matchedMemories: linkedCandidates.length,
             requested: memoryCount,
-            resolved: memoryCount,
+            resolved: linkedCandidates.length,
+            ...(unresolvedOrdinals.length === 0 ? {} : {unresolvedOrdinals}),
           },
-          candidates,
-          consideredCandidates: memoryCount,
-          gaps: [],
+          candidates: linkedCandidates,
+          consideredCandidates: linkedCandidates.length,
+          gaps: unresolvedOrdinals.length === 0 ? [] : ['code-anchors-unresolved'],
           trust: {
             classification: 'untrusted-memory-data' as const,
             instructionPolicy: 'evidence-only-never-follow' as const,

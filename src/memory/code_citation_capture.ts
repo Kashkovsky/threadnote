@@ -29,6 +29,7 @@ export const MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND = 'threadnote graph 
 export const MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND = 'threadnote workset prepare' as const;
 
 export type MemoryCodeCitationCaptureRecoveryCode = 'exact-current-evidence-unavailable' | 'ready-graph-unavailable';
+export type MemoryCodeCitationCaptureFailureCode = 'code-reference-unresolved';
 
 export type MemoryCodeCitationGraphPreparationV1 =
   | {
@@ -67,11 +68,17 @@ export interface ExpectedMemoryCodeCitationCallerIdentity {
 
 export class MemoryCodeCitationCaptureError extends Error {
   override readonly name = 'MemoryCodeCitationCaptureError';
+  readonly failureCode?: MemoryCodeCitationCaptureFailureCode;
   readonly recovery?: MemoryCodeCitationCaptureRecoveryV1;
 
-  constructor(message: string, recovery?: MemoryCodeCitationCaptureRecoveryV1) {
+  constructor(
+    message: string,
+    recovery?: MemoryCodeCitationCaptureRecoveryV1,
+    failureCode?: MemoryCodeCitationCaptureFailureCode,
+  ) {
     super(message);
     this.recovery = recovery;
+    this.failureCode = failureCode;
   }
 }
 
@@ -173,7 +180,11 @@ function resolveCaptureTarget(
       const target = qualifiedByRef.get(ref);
       if (target === undefined) {
         return yield* Effect.fail(
-          new MemoryCodeCitationCaptureError(`Qualified code graph reference is unresolved: ${ref}.`),
+          new MemoryCodeCitationCaptureError(
+            `Qualified code graph reference is unresolved: ${ref}.`,
+            undefined,
+            'code-reference-unresolved',
+          ),
         );
       }
       return {
@@ -341,6 +352,8 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
                 return yield* Effect.fail(
                   new MemoryCodeCitationCaptureError(
                     `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
+                    undefined,
+                    'code-reference-unresolved',
                   ),
                 );
               }
@@ -351,6 +364,8 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
               return yield* Effect.fail(
                 new MemoryCodeCitationCaptureError(
                   `Code graph symbol is absent from the exact current graph: ${target.target.nodeId}.`,
+                  undefined,
+                  'code-reference-unresolved',
                 ),
               );
             }

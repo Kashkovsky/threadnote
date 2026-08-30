@@ -269,6 +269,8 @@ export interface ContextBriefCodeAnchorCoverageV3 {
   readonly matchedMemories: number;
   readonly requested: number;
   readonly resolved: number;
+  /** Zero-based positions in the deduplicated request; raw private selectors are never projected. */
+  readonly unresolvedOrdinals?: readonly number[];
 }
 
 export interface ContextBriefMemoryCitationValidationV2 {
@@ -649,9 +651,11 @@ function exactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>,
 function boundedText(value: unknown, label: string, maximumBytes: number, normalize = true): string {
   if (typeof value !== 'string') throw invalid(`${label} must be a string.`);
   const text = normalize ? value.normalize('NFKC').replace(/\s+/gu, ' ').trim() : value.trim();
-  if (!text || UTF8.encode(text).byteLength > maximumBytes || hasUnsupportedControlCharacter(text)) {
-    throw invalid(`${label} must be non-empty, bounded UTF-8 text without control characters.`);
+  if (!text) throw invalid(`${label} must be non-empty.`);
+  if (UTF8.encode(text).byteLength > maximumBytes) {
+    throw invalid(`${label} exceeds ${maximumBytes} UTF-8 bytes.`);
   }
+  if (hasUnsupportedControlCharacter(text)) throw invalid(`${label} contains unsupported control characters.`);
   return text;
 }
 

@@ -126,6 +126,12 @@ and lifecycle remain unchanged; `source_observed_at` records the later citation-
 succeeds, Context Brief may still find the memory through ordinary task recall, but it cannot return a code-to-memory
 backlink or describe the pending locator as citation evidence.
 
+Finalization distinguishes retryable graph readiness from a locator that is absent from an exact-current graph. A
+readiness result carries `recoveryAction: "prepare-current-graph"` and `retryable: true`. An absent path or symbol
+carries privacy-safe `code: "code-reference-unresolved"`, `recoveryAction: "replace-memory-code-refs"`, and
+`retryable: false`; replace the same memory with corrected graph-indexed `codeRefs`. The receipt never echoes the
+private locator or checkout path, and the original pending intent remains available for that correction.
+
 Replacement without code references, archive, expiration, deletion, and an explicit uncited publish cancel the
 pending intent. A changed memory or repository identity becomes a bounded conflict rather than an overwrite. Deferred
 anchors are supported only for active personal memories; shared and remote writes remain strict.
@@ -215,8 +221,12 @@ argument errors before graph or memory retrieval starts. Context Brief retrieves
 explicitly link to those anchors alongside the ordinary task-text recall lane. It does not infer semantic links from
 nearby code. Combining otherwise valid `codeRefs` with a Workset scope remains an explicit unsupported coverage gap.
 Requests with nonempty `codeRefs` emit Context Brief v3; task-only requests retain the v2 output contract.
+The public task is limited to 4,096 UTF-8 bytes, repository `callerCwd` to 4,096 bytes, and project and Workset names
+to 256 bytes each; MCP schema descriptions, CLI help, and validation failures expose the same exact bounds.
 The v3 projection summarizes direct-link coverage as `coverage.memory.codeAnchors` with `requested`, `resolved`,
-`matchedMemories`, and `complete`. A directly selected memory carries `selectionBasis: "code-citation"` and may expose
+`matchedMemories`, and `complete`. When resolution is partial, `unresolvedOrdinals` identifies every failed zero-based
+position in the deduplicated request without echoing its private selector; correct or remove those positions and
+rerun. A directly selected memory carries `selectionBasis: "code-citation"` and may expose
 bounded `codeRelations` entries with only the anchor ordinal, citation ID, file-or-symbol kind, and validation status.
 Coverage describes explicit citations in the authorized indexed corpus, not semantic completeness; raw selectors,
 repository IDs, paths, hashes, commits, and snapshots stay private.
