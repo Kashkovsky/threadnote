@@ -9,6 +9,7 @@ import {discardInvalidCachedFacts} from './store_cache_repair.js';
 import {stageActivationFiles, activationMode, type CodeGraphWriterGate} from './store_build_core.js';
 import {
   selectReusableBaseReceipt,
+  selectReusableFoldForwardBase,
   selectReusableCleanBaseForCommit,
   selectReusableCleanBaseForCommitPaths,
   selectExistingSnapshotFilePaths,
@@ -135,6 +136,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'readySnapshotForCommit'
   | 'latestReadySnapshotForRepository'
   | 'reusableBaseReceipt'
+  | 'reusableFoldForwardBase'
   | 'snapshotPackProvenance'
   | 'reusableCleanBase'
   | 'reusableCleanBaseForCommit'
@@ -294,7 +296,7 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
               const preparation = preparePersistedIncrementalActivation(baseSnapshotId, files, facts, options);
               return yield* persistentCapacityProtector
                 ? persistentCapacityProtector(
-                    temporaryIncrementalActivationCapacity(files, facts, options?.deletedPaths),
+                    temporaryIncrementalActivationCapacity(files, facts, options?.deletedPaths, options?.foldForward),
                     preparation,
                   )
                 : preparation;
@@ -688,6 +690,15 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable code graph base receipt', cause)),
+      ),
+    reusableFoldForwardBase: (databasePath, snapshotId) =>
+      fs.exists(databasePath).pipe(
+        Effect.flatMap(exists =>
+          exists
+            ? useReadOnlyDatabase(databasePath, selectReusableFoldForwardBase(snapshotId))
+            : Effect.succeed(undefined),
+        ),
+        Effect.mapError(cause => storeError('load reusable code graph fold-forward base', cause)),
       ),
     snapshotPackProvenance: (databasePath, snapshotId) =>
       fs.exists(databasePath).pipe(

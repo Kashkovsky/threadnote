@@ -13,6 +13,7 @@ import {
 } from './warning.js';
 
 export const RECALL_MCP_RESPONSE_DEFAULT_ESTIMATED_TOKENS = 1_500 as const;
+export const RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS = 700 as const;
 export const RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 
 const NEXT_ACTION_URI_LIMIT = 3;
@@ -107,11 +108,11 @@ export function projectRecallMcpResponse(
   const budgetTokens = options.budgetTokens ?? RECALL_MCP_RESPONSE_DEFAULT_ESTIMATED_TOKENS;
   if (
     !Number.isSafeInteger(budgetTokens) ||
-    budgetTokens < 1 ||
+    budgetTokens < RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS ||
     budgetTokens > RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS
   ) {
     throw new Error(
-      `Recall response budget must be an integer from 1 to ${RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS}.`,
+      `Recall response budget must be an integer from ${RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} to ${RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS}.`,
     );
   }
   const maximumBytes = budgetTokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;

@@ -198,6 +198,22 @@ export interface CodeGraphReusableCleanBase {
   readonly snapshot: CodeGraphSnapshot;
 }
 
+export const CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION = 1;
+
+/**
+ * A clean one-level delta admitted only as a logical comparison point. Its
+ * root remains the sole physical base for every later incremental snapshot.
+ */
+export interface CodeGraphReusableFoldForwardBase {
+  readonly logicalFiles: readonly CodeGraphInventoryFile[];
+  readonly logicalSnapshot: CodeGraphSnapshot;
+  readonly priorDeltaPaths: readonly string[];
+  readonly priorStagedPayloadBytes: number;
+  readonly priorStagedRows: number;
+  readonly rootReceipt: CodeGraphReusableBaseReceipt;
+  readonly rootSnapshot: CodeGraphSnapshot;
+}
+
 /**
  * Bounded persisted-base projection for dirty admission. Unlike
  * `CodeGraphReusableCleanBase`, `files` contains only the exact requested

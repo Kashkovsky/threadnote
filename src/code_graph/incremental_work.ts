@@ -6,6 +6,32 @@ export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES = 128;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES = 16 * 1_048_576;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES = 8 * 1_048_576;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS = 250_000;
+/** Persisted rows may be carried without decoding, but remain independently bounded. */
+export const CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES = 256;
+export const CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES = 16 * 1_048_576;
+export const CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS = CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS;
+
+export interface CodeGraphIncrementalFoldForwardPathPlan {
+  readonly carriedPaths: readonly string[];
+  readonly cumulativePaths: readonly string[];
+}
+
+/** Pure bounded set plan shared by admission and truthful materialization reporting. */
+export function planCodeGraphIncrementalFoldForwardPaths(
+  priorPaths: readonly string[],
+  freshPaths: readonly string[],
+): CodeGraphIncrementalFoldForwardPathPlan | undefined {
+  const prior = new Set(priorPaths);
+  const fresh = new Set(freshPaths);
+  if (prior.size !== priorPaths.length || fresh.size !== freshPaths.length) return undefined;
+  const cumulative = new Set(prior);
+  for (const path of fresh) cumulative.add(path);
+  if (cumulative.size > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES) return undefined;
+  return {
+    carriedPaths: [...prior].filter(path => !fresh.has(path)).sort(),
+    cumulativePaths: [...cumulative].sort(),
+  };
+}
 
 export interface CodeGraphIncrementalWork {
   /** Persisted attribution context decoded for this delta. */

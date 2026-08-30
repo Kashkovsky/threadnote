@@ -10,7 +10,13 @@ import {
   PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
   selectProjectIncrementalClosure,
 } from './incremental_closure.js';
-import {codeGraphIncrementalWorkFitsBudget, measureCodeGraphIncrementalWork} from './incremental_work.js';
+import {
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES,
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS,
+  codeGraphIncrementalWorkFitsBudget,
+  measureCodeGraphIncrementalWork,
+  planCodeGraphIncrementalFoldForwardPaths,
+} from './incremental_work.js';
 import {
   cachedFactsMetadata,
   extractorSetIdentity,
@@ -181,6 +187,21 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
   });
   if (!codeGraphIncrementalWorkFitsBudget(work)) {
     return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
+  }
+  if (input.committedBase.foldForward) {
+    const foldForwardPathPlan = planCodeGraphIncrementalFoldForwardPaths(
+      input.committedBase.foldForward.priorDeltaPaths,
+      [...preassessment.files.map(file => file.path), ...(preassessment.deletedPaths ?? [])],
+    );
+    if (
+      !foldForwardPathPlan ||
+      input.committedBase.foldForward.priorStagedRows + work.plannedRows >
+        CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS ||
+      input.committedBase.foldForward.priorStagedPayloadBytes + work.factBytes >
+        CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES
+    ) {
+      return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
+    }
   }
   return {
     closureProjects: preassessment.closureProjects,

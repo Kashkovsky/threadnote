@@ -318,11 +318,14 @@ memory and discard the private intent; MCP callers can make the same decision by
 
 ## Optional telemetry
 
-Anonymous telemetry remains disabled by default and requires explicit consent for schema v5. A successful Context
-Brief may report only closed local/workset scope, phase timings, validation coverage/result classes, a closed unknown
-reason, output truncation, and power-of-two count buckets. It never exports memory text or identity, citation IDs,
-tasks, paths, symbols, repository or Workset identity, commits, snapshots, hashes, exact private counts, or raw errors.
-Failed and interrupted briefs do not emit result-derived citation classifications.
+Anonymous telemetry remains disabled by default and requires explicit consent for schema v6. A successful Context
+Brief may report only closed local/workset scope, task-only-v2/code-anchored-v3 contract, phase timings including the
+code-linked-memory lane, returned lane, bounded code-anchor coverage/gap/recovery classes, citation validation
+coverage/result classes, a closed unknown reason, output truncation, and power-of-two count buckets. Deferred citation
+finalization may report only its closed trigger/result and power-of-two latency/work buckets. It never exports memory
+text or identity, citation IDs, tasks, paths, symbols, selectors, repository or Workset identity, commits, snapshots,
+hashes, exact private counts, or raw errors. Failed and interrupted briefs or finalization passes do not emit
+result-derived classifications.
 
 Telemetry can diagnose latency, coverage, abstention, and warning trends; it cannot prove citation correctness or the
 absence of stale memory. See [Optional anonymous telemetry](telemetry.md).

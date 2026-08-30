@@ -513,11 +513,15 @@ export interface CodeGraphIndexSummary {
   readonly identity: RepositoryIdentity;
   readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
+    /** Prior logical-delta files copied from persisted rows without fact decoding. */
+    readonly carriedFiles?: number;
     readonly closureProjects?: number;
     readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
     readonly fallbackBoundary?: CodeGraphOverlayFallbackBoundary;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
     readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
+    /** Files freshly decoded/attributed for this build; `stagedFiles` remains the physical delta size. */
+    readonly freshStagedFiles?: number;
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
     readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
     readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;

@@ -10,7 +10,8 @@ export const CODE_GRAPH_CORE_SCHEMA_VERSION = 3 as const;
 
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION = {
   citationAliasPredecessor: 2,
-  current: 3,
+  foldForwardPredecessor: 3,
+  current: 4,
 } as const;
 export const CODE_GRAPH_SCHEMA_INITIALIZATION_CITATION_PREDECESSOR_CONTRACT_REVISION =
   CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION.citationAliasPredecessor;

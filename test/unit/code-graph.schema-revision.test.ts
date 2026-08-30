@@ -54,7 +54,8 @@ describe('code graph schema revision entity', () => {
     expect(CODE_GRAPH_CORE_SCHEMA_VERSION).toBe(3);
     expect(CODE_GRAPH_SCHEMA_INITIALIZATION_RECEIPT_REVISION).toEqual({
       citationAliasPredecessor: 2,
-      current: 3,
+      foldForwardPredecessor: 3,
+      current: 4,
     });
     expect(CODE_GRAPH_PROTOCOL_VERSIONS).toEqual({
       checkpointArtifact: 1,

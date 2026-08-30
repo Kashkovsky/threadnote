@@ -742,6 +742,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                   incrementalAssessment.facts,
                                   {
                                     deletedPaths: incrementalAssessment.deletedPaths,
+                                    ...(committedBase.foldForward
+                                      ? {
+                                          foldForward: {
+                                            snapshotId: committedBase.foldForward.logicalSnapshotId,
+                                            stagedPayloadBytes: committedBase.foldForward.priorStagedPayloadBytes,
+                                            stagedRows: committedBase.foldForward.priorStagedRows,
+                                          },
+                                        }
+                                      : {}),
                                     resolutionClosure: incrementalAssessment.resolutionClosure,
                                   },
                                   incrementalCapacityProtector,

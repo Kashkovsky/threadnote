@@ -42,6 +42,8 @@ import {
   type CodeGraphStagingProgress,
 } from '../../src/code_graph/store.js';
 import {prepareActivationTables} from '../../src/code_graph/store_staging_core.js';
+import {type CodeGraphWriterGate} from '../../src/code_graph/store_build_core.js';
+import {pruneRetiredSnapshotRows} from '../../src/code_graph/store_retirement.js';
 import {
   CodeGraphStoreError,
   CodeGraphStoreNoSpaceError,
@@ -4555,6 +4557,123 @@ describe('code graph full-build materialization store', () => {
       expect(retiredTermsAfter).toEqual([]);
       expect(currentTermsAfter.length).toBeGreaterThan(0);
       expect(foreignKeyViolations).toEqual([]);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('pages a large fold-forward proof before deleting its retired snapshot', () =>
+    Effect.gen(function* () {
+      const fixture = yield* Effect.promise(materializationFixture);
+      const retiredSymbol = symbol('fold-retired-symbol', 'foldRetiredSymbol', ['typescript:name:foldRetiredSymbol']);
+      const currentSymbol = symbol('fold-current-symbol', 'foldCurrentSymbol', ['typescript:name:foldCurrentSymbol']);
+      const retiredSnapshot = {...readySnapshot(fixture.identity, 1, 0), dirty: true, id: testSnapshotId(105)};
+      const currentSnapshot = {...readySnapshot(fixture.identity, 1, 0), id: testSnapshotId(106)};
+      const lookupRowCount = 20_001;
+      const store = yield* CodeGraphStore;
+
+      yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [retiredSymbol], []);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, retiredSnapshot);
+          yield* store.promote(fixture.databasePath, fixture.identity, retiredSnapshot.id);
+          yield* store.prepareActivation(fixture.databasePath, [fixture.file]);
+          yield* store.stageActivationFacts(fixture.databasePath, [currentSymbol], []);
+          yield* store.activateStaged(fixture.databasePath, fixture.identity, currentSnapshot);
+          yield* store.promote(fixture.databasePath, fixture.identity, currentSnapshot.id);
+        }),
+      );
+
+      yield* Effect.sync(() => {
+        const database = new Database(fixture.databasePath, {strict: true});
+        database.exec('BEGIN IMMEDIATE');
+        try {
+          database
+            .query(
+              `INSERT INTO snapshot_fold_forward_receipts (
+                 snapshot_id, root_snapshot_id, format_version, delta_path_count,
+                 staged_row_count, staged_payload_bytes, lookup_count, reexport_count, created_at
+               ) VALUES (?, ?, 1, 1, ?, 1, ?, 0, ?)`,
+            )
+            .run(retiredSnapshot.id, currentSnapshot.id, lookupRowCount + 1, lookupRowCount, new Date().toISOString());
+          database
+            .query('INSERT INTO snapshot_fold_forward_paths (snapshot_id, path) VALUES (?, ?)')
+            .run(retiredSnapshot.id, fixture.file.path);
+          database.exec(`
+            WITH digits(value) AS (
+              VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+            ), sequence(value) AS (
+              SELECT ones.value
+                + 10 * tens.value
+                + 100 * hundreds.value
+                + 1000 * thousands.value
+                + 10000 * ten_thousands.value
+              FROM digits AS ones
+              CROSS JOIN digits AS tens
+              CROSS JOIN digits AS hundreds
+              CROSS JOIN digits AS thousands
+              CROSS JOIN digits AS ten_thousands
+            )
+            INSERT INTO snapshot_fold_forward_symbol_lookup (
+              snapshot_id, lookup_key, symbol_id, resolution_domain,
+              exported, provenance, evidence_edge_id, evidence_path
+            )
+            SELECT
+              '${retiredSnapshot.id}',
+              'typescript:name:fold-' || printf('%05d', value),
+              'fold-symbol-' || printf('%05d', value),
+              'typescript', 1, 'symbol', NULL, '${fixture.file.path}'
+            FROM sequence
+            WHERE value < ${lookupRowCount}
+          `);
+          database.exec('COMMIT');
+        } catch (cause) {
+          database.exec('ROLLBACK');
+          throw cause;
+        } finally {
+          database.close(false);
+        }
+      });
+
+      const lookupDeletesPerTransaction: number[] = [];
+      yield* store.withSession(
+        fixture.databasePath,
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const lookupCount = () =>
+            sql.unsafe<{readonly count: number}>(
+              'SELECT COUNT(*) AS count FROM snapshot_fold_forward_symbol_lookup WHERE snapshot_id = ?',
+              [retiredSnapshot.id],
+            );
+          const writerGate: CodeGraphWriterGate = effect =>
+            Effect.gen(function* () {
+              const before = Number((yield* lookupCount())[0]?.count ?? -1);
+              const result = yield* effect;
+              const after = Number((yield* lookupCount())[0]?.count ?? -1);
+              const deleted = before - after;
+              if (deleted > 0) lookupDeletesPerTransaction.push(deleted);
+              return result;
+            });
+          yield* pruneRetiredSnapshotRows(writerGate, retiredSnapshot.id);
+        }),
+        {writerGateHeld: true},
+      );
+
+      expect(lookupDeletesPerTransaction.length).toBeGreaterThan(1);
+      expect(lookupDeletesPerTransaction.reduce((total, deleted) => total + deleted, 0)).toBe(lookupRowCount);
+      expect(lookupDeletesPerTransaction.every(deleted => deleted <= 20_000)).toBe(true);
+      const after = new Database(fixture.databasePath, {readonly: true, strict: true});
+      try {
+        expect(after.query('SELECT state FROM snapshots WHERE id = ?').get(retiredSnapshot.id)).toBeNull();
+        expect(
+          after
+            .query('SELECT COUNT(*) AS count FROM snapshot_fold_forward_receipts WHERE snapshot_id = ?')
+            .get(retiredSnapshot.id),
+        ).toEqual({count: 0});
+        expect(after.query('PRAGMA foreign_key_check').all()).toEqual([]);
+      } finally {
+        after.close(false);
+      }
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 

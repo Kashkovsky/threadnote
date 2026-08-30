@@ -50,6 +50,7 @@ import type {
   CodeGraphReusableBaseReceiptInput,
   CodeGraphReusableCleanBase,
   CodeGraphReusableCleanBaseSlice,
+  CodeGraphReusableFoldForwardBase,
   CodeGraphReusableReexport,
   CodeGraphReusableReexportSeed,
   CodeGraphSecondaryIndexRestorationProgressCallback,
@@ -310,6 +311,11 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphFileFacts[],
     options?: {
       readonly deletedPaths?: readonly string[];
+      readonly foldForward?: {
+        readonly snapshotId: string;
+        readonly stagedPayloadBytes: number;
+        readonly stagedRows: number;
+      };
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
     },
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
@@ -522,6 +528,11 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     options?: {readonly allowDirtyRoot?: boolean},
   ) => Effect.Effect<CodeGraphReusableBaseReceipt | undefined, CodeGraphStoreError>;
+  /** Exact clean layered snapshot admitted only as a logical fold-forward comparator. */
+  readonly reusableFoldForwardBase?: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<CodeGraphReusableFoldForwardBase | undefined, CodeGraphStoreError>;
   readonly snapshotPackProvenance: (
     databasePath: string,
     snapshotId: string,

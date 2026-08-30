@@ -169,8 +169,8 @@ surprising cross-community links. Analysis also supports stable community drill-
 audits, and suggested follow-up questions. MCP impact accepts either an explicit symbol/path query or a Git `base` ref.
 A task can combine the tools without a graph build adding latency or surprise I/O to ordinary recall.
 
-MCP recall returns a compact unread-pointer queue within a 1,500-token response budget. Use `budgetTokens` to request a
-smaller ranked prefix and `explain: true` only when full ranking reasons, signals, and warnings are needed. The
+MCP recall returns a compact unread-pointer queue within a 700–1,500-token response budget. Use `budgetTokens` to
+request a smaller ranked prefix and `explain: true` only when full ranking reasons, signals, and warnings are needed. The
 `threshold` input filters topical `relevanceScore` before lifecycle/trust scoring; its default is
 `THREADNOTE_RECALL_THRESHOLD` when configured, otherwise `0.3`.
 

@@ -448,7 +448,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(recall?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
-            budgetTokens: {maximum: 1_500, minimum: 1, type: 'integer'},
+            budgetTokens: {maximum: 1_500, minimum: 700, type: 'integer'},
             callerCwd: {type: 'string'},
             explain: {type: 'boolean'},
             nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
@@ -563,16 +563,13 @@ describe('Threadnote MCP toolsets', () => {
           .results;
         expect(explainedResults[0]).toMatchObject({reasons: expect.any(Array), signals: expect.any(Object)});
 
-        const tooSmall = await client.callTool(
-          {
-            arguments: {budgetTokens: 1, project: 'threadnote', query: 'qz-structured-7788', threshold: 0},
-            name: 'recall_context',
-          },
-          undefined,
-          {timeout: 5000},
-        );
-        expect(tooSmall.isError).toBe(true);
-        expect(JSON.stringify(tooSmall.content)).toContain('cannot fit the required');
+        const tooSmall = await callErrorText(client, 'recall_context', {
+          budgetTokens: 699,
+          project: 'threadnote',
+          query: 'qz-structured-7788',
+          threshold: 0,
+        });
+        expect(tooSmall).toContain('greater than or equal to 700');
       },
       {toolset: 'core'},
     );

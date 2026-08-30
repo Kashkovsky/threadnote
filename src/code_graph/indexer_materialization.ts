@@ -1570,6 +1570,11 @@ export function applyIncrementalMaterialization(input: {
   readonly baseSnapshotId: string;
   readonly databasePath: string;
   readonly fs: FileSystem.FileSystem;
+  readonly foldForward?: {
+    readonly logicalSnapshotId: string;
+    readonly priorStagedPayloadBytes: number;
+    readonly priorStagedRows: number;
+  };
   readonly persistentCapacityProtector: CodeGraphDirectPersistentCapacityProtector;
   readonly prepared: boolean;
   readonly storage?: MaterializationStorageTelemetry;
@@ -1588,6 +1593,15 @@ export function applyIncrementalMaterialization(input: {
           input.assessment.facts,
           {
             deletedPaths: input.assessment.deletedPaths,
+            ...(input.foldForward
+              ? {
+                  foldForward: {
+                    snapshotId: input.foldForward.logicalSnapshotId,
+                    stagedPayloadBytes: input.foldForward.priorStagedPayloadBytes,
+                    stagedRows: input.foldForward.priorStagedRows,
+                  },
+                }
+              : {}),
             resolutionClosure: input.assessment.resolutionClosure,
           },
           input.persistentCapacityProtector,

@@ -1577,7 +1577,7 @@ worksets:
               ],
               ['Names', '1–256 UTF-8 bytes, normalized, unique case-insensitively, and free of control characters'],
               ['Descriptions, tasks, query text, and graph selectors', 'At most 4,096 UTF-8 bytes'],
-              ['Response budget', '1–1,500 estimated tokens'],
+              ['Response budget', 'Workset query: 1–1,500; Context Brief: 800–1,500 estimated tokens'],
               ['Prepare concurrency', 'Manager uses 2; the authenticated API accepts 1–8'],
               [
                 'Branch labels',

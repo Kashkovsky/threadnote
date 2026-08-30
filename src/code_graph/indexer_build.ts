@@ -60,6 +60,14 @@ import {
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
 import {verifyCommittedIndexInput} from './indexer_input_verification.js';
 import {
+  acquireFoldForwardBaseLeases,
+  foldForwardCommittedBase,
+  foldForwardLogicalCandidate,
+  foldForwardMaterializationCounts,
+  foldForwardPreparationOptions,
+  persistedBaseCommittedBase,
+} from './indexer_fold_forward.js';
+import {
   CachedCodeGraphFactUnavailableDuringIndex,
   CodeGraphIndexOperationError,
   codeGraphInventoryFileChanged,
@@ -795,9 +803,6 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
           input.inventory.overlayFingerprint,
         )
       : undefined;
-  // Prefer the exact committed snapshot path below when it is itself a root
-  // reusable base. A clean incremental snapshot is already layered, so another
-  // overlay must instead reuse its root and include the cumulative changed set.
   const committedExtractorSet = extractorSetIdentity(input.inventory.committedFiles, input.languagePacks);
   const exactCommittedSnapshotId = snapshotIdentity(
     input.identity,
@@ -809,9 +814,12 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     input.layout.databasePath,
     exactCommittedSnapshotId,
   );
-  if (!retainedOverlayCandidate && exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined) {
+  if (!retainedOverlayCandidate && exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined)
     return Option.none();
-  }
+  const foldForwardBase =
+    !retainedOverlayCandidate && exactCommittedSnapshot?.baseSnapshotId && input.store.reusableFoldForwardBase
+      ? yield* input.store.reusableFoldForwardBase(input.layout.databasePath, exactCommittedSnapshot.id)
+      : undefined;
   const committedFileSetFingerprint = reusableBaseFileSetFingerprint(input.inventory.committedFiles);
   const committedGraphContentId = graphContentIdentity(committedExtractorSet, input.inventory.committedFiles);
   const commitReady = yield* input.store.readySnapshotForCommit(
@@ -825,6 +833,7 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     : undefined;
   let candidate: CodeGraphReusableCleanBase | undefined =
     retainedOverlayCandidate ??
+    (foldForwardBase ? foldForwardLogicalCandidate(foldForwardBase) : undefined) ??
     (commitReady &&
     commitReceipt &&
     commitReady.graphContentId === committedGraphContentId &&
@@ -849,13 +858,15 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     );
   }
   if (!candidate) return Option.none();
-  const lease = yield* input.store
-    .acquireSnapshotLease(input.layout.databasePath, candidate.snapshot.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
-    .pipe(Effect.option);
-  if (Option.isNone(lease)) return Option.none();
-  const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
-    input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+  const physicalSnapshot = foldForwardBase?.rootSnapshot ?? candidate.snapshot;
+  const leaseTokens = yield* acquireFoldForwardBaseLeases(
+    input.store,
+    input.layout.databasePath,
+    physicalSnapshot.id,
+    CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
+    foldForwardBase?.logicalSnapshot.id,
   );
+  if (Option.isNone(leaseTokens)) return Option.none();
   const packDelta =
     candidate.snapshot.extractorSet === input.extractorSet
       ? ({changedPackIds: [], mode: 'compatible'} as const)
@@ -893,18 +904,12 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
   if (boundedAssessment.mode === 'fallback') return Option.none();
   const preassessment = boundedAssessment;
   return Option.some({
-    committedBase: {
-      diagnostics: [
-        `Dirty snapshot reused compatible persisted base ${candidate.snapshot.id} without first building commit ${input.identity.headCommit}.`,
-      ],
-      leaseToken: Option.some(leaseToken),
-      snapshot: candidate.snapshot,
-      stagingReusable: false,
-    },
+    committedBase: foldForwardBase
+      ? foldForwardCommittedBase(foldForwardBase, leaseTokens.value)
+      : persistedBaseCommittedBase(candidate, physicalSnapshot, leaseTokens.value.physical, input.identity.headCommit),
     preassessment,
   });
 });
-
 export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly capacityProtection: DirectPersistentCapacityProtection;
@@ -1128,6 +1133,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       baseSnapshotId: input.committedBase!.snapshot.id,
       databasePath: input.layout.databasePath,
       fs: input.fs,
+      ...foldForwardPreparationOptions(input.committedBase?.foldForward),
       persistentCapacityProtector: protectDirectPersistentWrite,
       prepared: input.incrementalPrepared === true,
       storage: incrementalStorageTelemetry,
@@ -1860,6 +1866,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
       yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
     }
+    for (const token of input.committedBase?.additionalLeaseTokens ?? []) {
+      yield* input.store.releaseSnapshotLease(input.layout.databasePath, token);
+    }
     yield* input.onProgress?.({
       phase: 'activating',
       snapshotId: activated.id,
@@ -1913,6 +1922,14 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           ),
         )
     : ({embedded: 0, ready: true, reused: 0} satisfies CodeGraphEmbeddingStatus);
+  const foldForwardMaterialization =
+    incrementalApplied && incrementalAssessment?.mode === 'eligible' && input.committedBase?.foldForward
+      ? foldForwardMaterializationCounts(
+          input.committedBase.foldForward.priorDeltaPaths,
+          incrementalAssessment.files,
+          incrementalAssessment.deletedPaths,
+        )
+      : undefined;
   if (input.activatePointer) {
     yield* input.fs.remove(input.layout.staleMarkerPath, {force: true}).pipe(Effect.catch(() => Effect.void));
   }
@@ -1952,6 +1969,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       ? {incrementalWork: incrementalAssessment.work}
       : {}),
     materialization: {
+      ...(foldForwardMaterialization ?? {}),
       ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
         ? {
             ...(incrementalAssessment.closureProjects === undefined
@@ -1972,7 +1990,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           }
         : {}),
       mode: incrementalApplied ? (input.inventory.dirty ? 'incremental-overlay' : 'incremental-clean') : 'full',
-      stagedFiles: materializedFiles,
+      stagedFiles: foldForwardMaterialization?.stagedFiles ?? materializedFiles,
       totalFiles,
     },
     reusedFiles,

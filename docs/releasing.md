@@ -112,8 +112,10 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    For any release that changes Context Brief or memory retrieval, also retain a three-arm agent experiment artifact
    whose gate status is `passed`, whose clean candidate/build identity matches that SHA, and whose preregistered
    manifest and post-run evidence hashes are both present in the source-reviewed allowlists. It must cover at least two
-   reviewed agent clients, 12 hidden-constraint tasks, 16 negative controls, task-only memory versus no-memory, and
-   anchored v3 versus task-only v2. An empty allowlist or an `insufficient`/`failed` result blocks the release.
+   reviewed client roster entries, 12 hidden-constraint tasks, 16 negative controls, task-only memory versus no-memory,
+   and anchored v3 versus task-only v2. Two model configurations routed through one client implementation satisfy the
+   roster gate but do not support a scientific claim of replication across independent client implementations. An
+   empty allowlist or an `insufficient`/`failed` result blocks the release.
    Because the post-run evidence hash can only be approved after execution, keep the tested candidate/build identity
    immutable: the later approval or release commit may contain only reviewed evaluation-governance metadata (for
    example, allowlist entries and retained evidence references), with no runtime or product-logic delta from the tested

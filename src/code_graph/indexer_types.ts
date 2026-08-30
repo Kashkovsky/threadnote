@@ -61,7 +61,14 @@ export function codeGraphIndexEnsuresVectors(options: {readonly ensureVectors?: 
 }
 
 export interface CommittedBaseResult {
+  readonly additionalLeaseTokens?: readonly string[];
   readonly diagnostics: readonly string[];
+  readonly foldForward?: {
+    readonly logicalSnapshotId: string;
+    readonly priorDeltaPaths: readonly string[];
+    readonly priorStagedPayloadBytes: number;
+    readonly priorStagedRows: number;
+  };
   readonly leaseToken: Option.Option<string>;
   readonly snapshot: CodeGraphSnapshot;
   readonly stagingReusable: boolean;

@@ -90,7 +90,11 @@ import {resourceIdIsWithin} from '../../storage/resource-id.js';
 import {loadRecallExactMatches} from '../../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
-import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS} from '../../recall/mcp_response.js';
+import {
+  projectRecallMcpResponse,
+  RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
+  RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
+} from '../../recall/mcp_response.js';
 import {
   lexicalIndexUnavailableWarning,
   mergeRecallOperationalWarnings,
@@ -687,8 +691,8 @@ export function registerSearchTool(
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        budgetTokens: McpInput.integer('Response budget; default/max 1500 tokens', {
-          minimum: 1,
+        budgetTokens: McpInput.integer('Response budget; 700-1500 tokens, default 1500', {
+          minimum: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
           maximum: RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
         }),
         query: McpInput.string('Search query'),

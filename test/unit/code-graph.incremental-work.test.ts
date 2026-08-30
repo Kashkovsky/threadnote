@@ -1,16 +1,41 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES,
   codeGraphIncrementalWorkFitsBudget,
   measureCodeGraphIncrementalWork,
+  planCodeGraphIncrementalFoldForwardPaths,
 } from '../../src/code_graph/incremental_work.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 describe('incremental rewrite work', () => {
+  it('plans carried and cumulative paths as a deterministic bounded set union', () => {
+    const paths = fc
+      .uniqueArray(fc.integer({max: 400, min: 0}), {maxLength: 80})
+      .map(values => values.map(value => `src/file-${value}.ts`));
+    fc.assert(
+      fc.property(paths, paths, (prior, fresh) => {
+        const plan = planCodeGraphIncrementalFoldForwardPaths(prior, fresh);
+        const expectedCumulative = [...new Set([...prior, ...fresh])].sort();
+        expect(plan?.cumulativePaths).toEqual(expectedCumulative);
+        expect(plan?.carriedPaths).toEqual(prior.filter(path => !fresh.includes(path)).sort());
+        expect(plan?.carriedPaths.every(path => !fresh.includes(path))).toBe(true);
+        expect(planCodeGraphIncrementalFoldForwardPaths(prior, fresh)).toEqual(plan);
+      }),
+      {numRuns: 250},
+    );
+    expect(
+      planCodeGraphIncrementalFoldForwardPaths(
+        Array.from({length: CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES}, (_, index) => `src/p-${index}.ts`),
+        ['src/overflow.ts'],
+      ),
+    ).toBeUndefined();
+  });
+
   it('measures final fact bytes and every row presented to incremental staging', () => {
     const file: CodeGraphInventoryFile = {
       blobId: 'a'.repeat(40),

@@ -9,10 +9,12 @@ import {relocateStructuredSchemaFacts} from './languages/schemas/extractor.js';
 import {
   CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION,
   type CodeGraphEdgeCursor,
   type CodeGraphReusableBaseReceipt,
   type CodeGraphReusableCleanBase,
   type CodeGraphReusableCleanBaseSlice,
+  type CodeGraphReusableFoldForwardBase,
   type CodeGraphReusableReexport,
   type CodeGraphReusableReexportSeed,
   type LoadedCodeGraphFacts,
@@ -611,6 +613,176 @@ const selectReusableBaseReceipt = Effect.fn('codeGraph.selectReusableBaseReceipt
     snapshotId: row.snapshot_id,
     workspaceFingerprint: row.workspace_fingerprint,
   } satisfies CodeGraphReusableBaseReceipt;
+});
+
+const selectReusableFoldForwardBase = Effect.fn('codeGraph.selectReusableFoldForwardBase')(function* (
+  snapshotId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  const candidates = yield* sql<SnapshotRow & {readonly root_snapshot_id: string}>`
+    SELECT logical.*, proof.root_snapshot_id
+    FROM snapshots AS logical
+    JOIN snapshot_fold_forward_receipts AS proof ON proof.snapshot_id = logical.id
+    JOIN snapshot_reuse_receipts AS logical_receipt ON logical_receipt.snapshot_id = logical.id
+    JOIN snapshots AS root ON root.id = proof.root_snapshot_id
+    JOIN snapshot_reuse_receipts AS root_receipt ON root_receipt.snapshot_id = root.id
+    WHERE logical.id = ${snapshotId}
+      AND logical.state = 'ready'
+      AND logical.dirty = 0
+      AND logical.base_snapshot_id = proof.root_snapshot_id
+      AND proof.format_version = ${CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION}
+      AND root.state = 'ready'
+      AND root.dirty = 0
+      AND root.base_snapshot_id IS NULL
+      AND logical.extractor_set = root.extractor_set
+      AND logical_receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
+      AND logical_receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
+      AND logical_receipt.extractor_set = logical.extractor_set
+      AND logical_receipt.workspace_fingerprint = root_receipt.workspace_fingerprint
+      AND logical_receipt.file_set_fingerprint = root_receipt.file_set_fingerprint
+      AND logical_receipt.inventory_receipt_json IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM lexical_storage_formats AS lexical
+        WHERE lexical.snapshot_id = logical.id
+          AND lexical.format_version = ${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}
+      )
+    LIMIT 1
+  `;
+  const logicalRow = candidates[0];
+  if (!logicalRow) return undefined;
+  const rootSnapshotId = logicalRow.root_snapshot_id;
+  const rootRows = yield* sql<SnapshotRow>`
+    SELECT * FROM snapshots WHERE id = ${rootSnapshotId} AND state = 'ready' LIMIT 1
+  `;
+  const rootRow = rootRows[0];
+  if (!rootRow) return undefined;
+  const rootReceipt = yield* selectReusableBaseReceipt(rootSnapshotId);
+  if (!rootReceipt) return undefined;
+  const proofRows = yield* sql<{
+    readonly delta_path_count: number;
+    readonly lookup_count: number;
+    readonly reexport_count: number;
+    readonly staged_payload_bytes: number;
+    readonly staged_row_count: number;
+  }>`
+    SELECT delta_path_count, staged_row_count, staged_payload_bytes, lookup_count, reexport_count
+    FROM snapshot_fold_forward_receipts
+    WHERE snapshot_id = ${snapshotId} AND root_snapshot_id = ${rootSnapshotId}
+    LIMIT 1
+  `;
+  const proof = proofRows[0];
+  if (!proof) return undefined;
+  const counts = [
+    Number(proof.delta_path_count),
+    Number(proof.staged_row_count),
+    Number(proof.staged_payload_bytes),
+    Number(proof.lookup_count),
+    Number(proof.reexport_count),
+  ];
+  if (counts.some(count => !Number.isSafeInteger(count) || count < 0) || counts[0] === 0 || counts[1] === 0) {
+    return undefined;
+  }
+  const priorPaths = yield* sql<{readonly path: string}>`
+    SELECT path FROM snapshot_fold_forward_paths
+    WHERE snapshot_id = ${snapshotId}
+    ORDER BY path
+  `;
+  if (priorPaths.length !== counts[0]) return undefined;
+  const integrity = yield* sql<{
+    readonly invalid_lookup_paths: number;
+    readonly lookup_count: number;
+    readonly reexport_count: number;
+    readonly reexport_mismatch: number;
+  }>`
+    SELECT
+      (SELECT COUNT(*) FROM snapshot_fold_forward_symbol_lookup AS lookup
+       WHERE lookup.snapshot_id = ${snapshotId}
+         AND NOT EXISTS (
+           SELECT 1 FROM snapshot_fold_forward_paths AS path
+           WHERE path.snapshot_id = lookup.snapshot_id AND path.path = lookup.evidence_path
+         )) AS invalid_lookup_paths,
+      (SELECT COUNT(*) FROM snapshot_fold_forward_symbol_lookup
+       WHERE snapshot_id = ${snapshotId}) AS lookup_count,
+      (SELECT COUNT(*) FROM snapshot_reexport_provenance
+       WHERE snapshot_id = ${snapshotId}) AS reexport_count,
+      (EXISTS (
+        SELECT source_path, local_name, target_path, imported_name
+        FROM snapshot_reexport_provenance
+        WHERE snapshot_id = ${snapshotId}
+        EXCEPT
+        SELECT root.source_path, root.local_name, root.target_path, root.imported_name
+        FROM snapshot_fold_forward_paths AS path
+        JOIN snapshot_reexport_provenance AS root
+          ON root.snapshot_id = ${rootSnapshotId} AND root.source_path = path.path
+        WHERE path.snapshot_id = ${snapshotId}
+      ) OR EXISTS (
+        SELECT root.source_path, root.local_name, root.target_path, root.imported_name
+        FROM snapshot_fold_forward_paths AS path
+        JOIN snapshot_reexport_provenance AS root
+          ON root.snapshot_id = ${rootSnapshotId} AND root.source_path = path.path
+        WHERE path.snapshot_id = ${snapshotId}
+        EXCEPT
+        SELECT source_path, local_name, target_path, imported_name
+        FROM snapshot_reexport_provenance
+        WHERE snapshot_id = ${snapshotId}
+      )) AS reexport_mismatch
+  `;
+  const checked = integrity[0];
+  if (
+    !checked ||
+    Number(checked.invalid_lookup_paths) !== 0 ||
+    Number(checked.lookup_count) !== counts[3] ||
+    Number(checked.reexport_count) !== counts[4] ||
+    Number(checked.reexport_mismatch) !== 0
+  ) {
+    return undefined;
+  }
+  const logicalFiles = yield* sql<{
+    readonly content_hash: string;
+    readonly language: string;
+    readonly mode: string;
+    readonly path: string;
+    readonly size: number;
+    readonly source: string;
+  }>`
+    SELECT root.content_hash, root.language, root.mode, root.path, root.size, root.source
+    FROM snapshot_files AS root
+    WHERE root.snapshot_id = ${rootSnapshotId}
+      AND NOT EXISTS (
+        SELECT 1 FROM snapshot_files AS current
+        WHERE current.snapshot_id = ${snapshotId} AND current.path = root.path
+      )
+    UNION ALL
+    SELECT current.content_hash, current.language, current.mode, current.path, current.size, current.source
+    FROM snapshot_files AS current
+    WHERE current.snapshot_id = ${snapshotId}
+    ORDER BY path
+  `;
+  if (
+    logicalFiles.length !== Number(logicalRow.file_count) ||
+    logicalFiles.length !== Number(rootRow.file_count) ||
+    logicalFiles.some(file => file.source !== 'commit')
+  ) {
+    return undefined;
+  }
+  return {
+    logicalFiles: logicalFiles.map(file => ({
+      blobId: `snapshot:${file.content_hash}`,
+      contentHash: file.content_hash,
+      language: file.language,
+      mode: file.mode,
+      path: file.path,
+      size: Number(file.size),
+      source: 'commit' as const,
+    })),
+    logicalSnapshot: snapshotFromRow(logicalRow),
+    priorDeltaPaths: priorPaths.map(row => row.path),
+    priorStagedPayloadBytes: counts[2]!,
+    priorStagedRows: counts[1]!,
+    rootReceipt,
+    rootSnapshot: snapshotFromRow(rootRow),
+  } satisfies CodeGraphReusableFoldForwardBase;
 });
 
 const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(function* (
@@ -1385,6 +1557,7 @@ function compareEdgeRowsByPriority(left: EdgeRow, right: EdgeRow): number {
 
 export {
   selectReusableBaseReceipt,
+  selectReusableFoldForwardBase,
   selectReusableCleanBaseForCommit,
   selectReusableCleanBaseForCommitPaths,
   selectExistingSnapshotFilePaths,

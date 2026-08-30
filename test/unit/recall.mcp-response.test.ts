@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
-import {projectRecallMcpResponse} from '../../src/recall/mcp_response.js';
+import {projectRecallMcpResponse, RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} from '../../src/recall/mcp_response.js';
 import {lexicalIndexUnavailableWarning} from '../../src/recall/warning.js';
 import type {RecallHit} from '../../src/utils.js';
 
@@ -45,6 +45,46 @@ function logical(results: readonly RecallHit[], notices: readonly string[] = [])
 }
 
 describe('recall MCP response projection', () => {
+  it('rejects budgets that cannot fit the required dual-channel envelope', () => {
+    expect(() =>
+      projectRecallMcpResponse(logical([]), {
+        budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS - 1,
+      }),
+    ).toThrow(
+      `Recall response budget must be an integer from ${RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS} to 1500.`,
+    );
+  });
+
+  it('fits bounded notices, scope, and degraded-index guidance at the advertised minimum', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z0-9 -]{1,240}$/), {maxLength: 8, selector: value => value}),
+        fc.stringMatching(/^[a-z0-9-]{1,128}$/),
+        (notices, team) => {
+          const projected = projectRecallMcpResponse(
+            {
+              ...logical([], notices),
+              memoryScope: {
+                mode: 'cloud',
+                root: `threadnote://shared/${team}/memories`,
+                team,
+                type: 'threadnote-memory-scope',
+                version: 1,
+              },
+              warnings: [lexicalIndexUnavailableWarning()],
+            },
+            {budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS},
+          );
+
+          expect(projected.measurement.totalBytes).toBeLessThanOrEqual(
+            RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS * 3,
+          );
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
   it('keeps degraded lexical state typed and visible when no pointer is available', () => {
     const warning = lexicalIndexUnavailableWarning();
     const projected = projectRecallMcpResponse({...logical([]), warnings: [warning, warning]});
@@ -147,7 +187,7 @@ describe('recall MCP response projection', () => {
     fc.assert(
       fc.property(
         fc.uniqueArray(fc.stringMatching(/^[a-z0-9-]{1,32}$/), {maxLength: 30, selector: value => value}),
-        fc.integer({min: 300, max: 1_500}),
+        fc.integer({min: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS, max: 1_500}),
         (segments, budgetTokens) => {
           const results = segments.map((segment, index) =>
             hit(index, {

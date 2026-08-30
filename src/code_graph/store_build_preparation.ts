@@ -1,10 +1,16 @@
 import {Clock, Effect} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
+  codeGraphUtf8ByteLength,
   saturatingCapacityAdd,
   saturatingCapacityMultiply,
   type CodeGraphDirectPersistentCapacityBoundary,
 } from './disk_capacity.js';
+import {
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES,
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES,
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS,
+} from './incremental_work.js';
 import {isCodeGraphReferenceWithinCandidateBudget} from './fact_budget.js';
 import {compareCodeUnits} from './ordering.js';
 import {type CodeGraphDirectPersistentCapacityProtector, type CodeGraphStagingBatch} from './store_models.js';
@@ -54,6 +60,7 @@ import {
 } from './store_staging_core.js';
 import {promotionRemovedSnapshotId, stagePersistedFullFacts} from './store_resolution_core.js';
 import {selectReusableBaseReceipt} from './store_queries.js';
+import {CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION} from './store_models.js';
 import {deferCodeGraphQueryIndexesForColdBuild} from './store_cold_index_deferral.js';
 
 /** @internal Exposed for deterministic SQLite snapshot-contract tests. */
@@ -516,6 +523,11 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
   facts: readonly CodeGraphFileFacts[],
   options: {
     readonly deletedPaths?: readonly string[];
+    readonly foldForward?: {
+      readonly snapshotId: string;
+      readonly stagedPayloadBytes: number;
+      readonly stagedRows: number;
+    };
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
   } = {},
 ) {
@@ -545,7 +557,26 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
   if (!(yield* selectReusableBaseReceipt(baseSnapshotId, true))) return false;
 
   yield* prepareActivationTables(sql);
-  const incrementalPaths = [...paths, ...deletedPaths].sort();
+  const freshPaths = [...paths, ...deletedPaths];
+  const freshPayloadBytes = options.foldForward
+    ? yield* Effect.try({
+        catch: () => undefined,
+        try: () => codeGraphUtf8ByteLength(JSON.stringify([files, facts, deletedPaths])),
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+    : 0;
+  if (freshPayloadBytes === undefined) return false;
+  const foldForwardPaths = options.foldForward
+    ? yield* stageFoldForwardCarry(sql, baseSnapshotId, options.foldForward, freshPaths, freshPayloadBytes)
+    : undefined;
+  if (options.foldForward && foldForwardPaths === undefined) {
+    yield* prepareActivationTables(sql);
+    return false;
+  }
+  const incrementalPaths = [...new Set([...(foldForwardPaths ?? []), ...freshPaths])].sort(compareCodeUnits);
+  if (incrementalPaths.length > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES) {
+    yield* prepareActivationTables(sql);
+    return false;
+  }
   for (const batch of chunk(incrementalPaths, ACTIVATION_FILE_BATCH_ROWS)) {
     yield* sql.unsafe(
       `INSERT INTO activation_incremental_paths (path)
@@ -569,6 +600,28 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
     sql,
     facts.flatMap(file => file.monikers ?? []),
   );
+  const stagedRowCounts = yield* sql<{readonly count: number}>`
+    SELECT
+      (SELECT COUNT(*) FROM activation_incremental_paths)
+      + (SELECT COUNT(*) FROM activation_files)
+      + (SELECT COUNT(*) FROM activation_symbols)
+      + (SELECT COUNT(*) FROM activation_symbol_lookup)
+      + (SELECT COUNT(*) FROM activation_symbol_terms)
+      + (SELECT COUNT(*) FROM activation_edges)
+      + (SELECT COUNT(*) FROM activation_references)
+      + (SELECT COUNT(*) FROM activation_reference_candidates)
+      + (SELECT COUNT(*) FROM activation_reexport_provenance)
+      + (SELECT COUNT(*) FROM activation_monikers) AS count
+  `;
+  const stagedRows = Number(stagedRowCounts[0]?.count ?? Number.NaN);
+  if (
+    !Number.isSafeInteger(stagedRows) ||
+    stagedRows <= 0 ||
+    stagedRows > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS
+  ) {
+    yield* prepareActivationTables(sql);
+    return false;
+  }
   const safe =
     resolutionClosure === 'changed'
       ? yield* persistedIncrementalSurfaceMatches(sql, baseSnapshotId)
@@ -587,6 +640,228 @@ const preparePersistedIncrementalActivation = Effect.fn('codeGraph.preparePersis
       ('resolution_closure', ${resolutionClosure})
   `;
   return true;
+});
+
+const stageFoldForwardCarry = Effect.fn('codeGraph.stageFoldForwardCarry')(function* (
+  sql: SqlClient.SqlClient,
+  rootSnapshotId: string,
+  expected: {readonly snapshotId: string; readonly stagedPayloadBytes: number; readonly stagedRows: number},
+  freshPaths: readonly string[],
+  freshPayloadBytes: number,
+) {
+  if (
+    !Number.isSafeInteger(expected.stagedPayloadBytes) ||
+    expected.stagedPayloadBytes < 0 ||
+    !Number.isSafeInteger(expected.stagedRows) ||
+    expected.stagedRows <= 0
+  ) {
+    return undefined;
+  }
+  const receipts = yield* sql<{
+    readonly delta_path_count: number;
+    readonly lookup_count: number;
+    readonly reexport_count: number;
+    readonly staged_payload_bytes: number;
+    readonly staged_row_count: number;
+  }>`
+    SELECT proof.delta_path_count, proof.staged_row_count, proof.staged_payload_bytes,
+      proof.lookup_count, proof.reexport_count
+    FROM snapshot_fold_forward_receipts AS proof
+    JOIN snapshots AS logical ON logical.id = proof.snapshot_id
+    JOIN snapshots AS root ON root.id = proof.root_snapshot_id
+    JOIN snapshot_reuse_receipts AS logical_receipt ON logical_receipt.snapshot_id = logical.id
+    JOIN snapshot_reuse_receipts AS root_receipt ON root_receipt.snapshot_id = root.id
+    WHERE proof.snapshot_id = ${expected.snapshotId}
+      AND proof.root_snapshot_id = ${rootSnapshotId}
+      AND proof.format_version = ${CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION}
+      AND logical.state = 'ready' AND logical.dirty = 0
+      AND logical.base_snapshot_id = root.id
+      AND root.state = 'ready' AND root.dirty = 0 AND root.base_snapshot_id IS NULL
+      AND logical.extractor_set = root.extractor_set
+      AND logical_receipt.workspace_fingerprint = root_receipt.workspace_fingerprint
+      AND logical_receipt.file_set_fingerprint = root_receipt.file_set_fingerprint
+    LIMIT 1
+  `;
+  const receipt = receipts[0];
+  if (
+    !receipt ||
+    Number(receipt.staged_row_count) !== expected.stagedRows ||
+    Number(receipt.staged_payload_bytes) !== expected.stagedPayloadBytes ||
+    expected.stagedRows > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS ||
+    expected.stagedPayloadBytes > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES
+  ) {
+    return undefined;
+  }
+  const priorPathRows = yield* sql<{readonly path: string}>`
+    SELECT path FROM snapshot_fold_forward_paths
+    WHERE snapshot_id = ${expected.snapshotId}
+    ORDER BY path
+  `;
+  const priorPaths = priorPathRows.map(row => row.path);
+  if (
+    priorPaths.length !== Number(receipt.delta_path_count) ||
+    priorPaths.length === 0 ||
+    priorPaths.length > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES
+  ) {
+    return undefined;
+  }
+  const integrity = yield* sql<{
+    readonly lookup_count: number;
+    readonly reexport_count: number;
+    readonly reexport_mismatch: number;
+    readonly staged_rows: number;
+  }>`
+    SELECT
+      (SELECT COUNT(*) FROM snapshot_fold_forward_symbol_lookup
+       WHERE snapshot_id = ${expected.snapshotId}) AS lookup_count,
+      (SELECT COUNT(*) FROM snapshot_reexport_provenance
+       WHERE snapshot_id = ${expected.snapshotId}) AS reexport_count,
+      (EXISTS (
+        SELECT source_path, local_name, target_path, imported_name
+        FROM snapshot_reexport_provenance
+        WHERE snapshot_id = ${expected.snapshotId}
+        EXCEPT
+        SELECT root.source_path, root.local_name, root.target_path, root.imported_name
+        FROM snapshot_fold_forward_paths AS path
+        JOIN snapshot_reexport_provenance AS root
+          ON root.snapshot_id = ${rootSnapshotId} AND root.source_path = path.path
+        WHERE path.snapshot_id = ${expected.snapshotId}
+      ) OR EXISTS (
+        SELECT root.source_path, root.local_name, root.target_path, root.imported_name
+        FROM snapshot_fold_forward_paths AS path
+        JOIN snapshot_reexport_provenance AS root
+          ON root.snapshot_id = ${rootSnapshotId} AND root.source_path = path.path
+        WHERE path.snapshot_id = ${expected.snapshotId}
+        EXCEPT
+        SELECT source_path, local_name, target_path, imported_name
+        FROM snapshot_reexport_provenance
+        WHERE snapshot_id = ${expected.snapshotId}
+      )) AS reexport_mismatch,
+      (SELECT COUNT(*) FROM snapshot_fold_forward_paths WHERE snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*) FROM snapshot_files WHERE snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*) FROM snapshot_fold_forward_symbol_lookup WHERE snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*)
+           FROM lexical_compact_snapshots AS compact
+           JOIN lexical_compact_postings AS posting ON posting.snapshot_key = compact.snapshot_key
+           WHERE compact.snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*) FROM edges WHERE snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*) FROM snapshot_reexport_provenance WHERE snapshot_id = ${expected.snapshotId})
+        + (SELECT COUNT(*) FROM code_graph_monikers
+           WHERE snapshot_id = ${expected.snapshotId} AND scheme <> 'package'
+             AND evidence_path IN (
+               SELECT path FROM snapshot_fold_forward_paths WHERE snapshot_id = ${expected.snapshotId}
+             )) AS staged_rows
+  `;
+  const checked = integrity[0];
+  if (
+    !checked ||
+    Number(checked.lookup_count) !== Number(receipt.lookup_count) ||
+    Number(checked.reexport_count) !== Number(receipt.reexport_count) ||
+    Number(checked.reexport_mismatch) !== 0 ||
+    Number(checked.staged_rows) !== expected.stagedRows
+  ) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(freshPayloadBytes) || freshPayloadBytes < 0) return undefined;
+  if (expected.stagedPayloadBytes + freshPayloadBytes > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES) {
+    return undefined;
+  }
+  const fresh = new Set(freshPaths);
+  const carryPaths = priorPaths.filter(path => !fresh.has(path));
+  yield* sql.unsafe(`
+    CREATE TEMP TABLE IF NOT EXISTS activation_fold_carry_paths (
+      path TEXT PRIMARY KEY
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe('DELETE FROM activation_fold_carry_paths');
+  for (const batch of chunk(carryPaths, ACTIVATION_FILE_BATCH_ROWS)) {
+    yield* sql.unsafe(
+      `INSERT INTO activation_fold_carry_paths (path) VALUES ${batch.map(() => '(?)').join(', ')}`,
+      batch,
+    );
+  }
+  yield* sql.unsafe(
+    `INSERT INTO activation_files (path, content_hash, raw_content_hash, language, mode, size, source)
+     SELECT file.path, file.content_hash, file.raw_content_hash, file.language, file.mode, file.size, file.source
+     FROM snapshot_files AS file
+     JOIN activation_fold_carry_paths AS carry ON carry.path = file.path
+     WHERE file.snapshot_id = ?`,
+    [expected.snapshotId],
+  );
+  yield* sql.unsafe(
+    `INSERT INTO activation_symbols (
+       id, content_hash, kind, name, qualified_name, path, language, arity, lookup_keys_json,
+       resolution_domain, resolution_scope_id, package_name, exported, signature, documentation, span_json
+     )
+     SELECT symbol.id, symbol.content_hash, symbol.kind, symbol.name, symbol.qualified_name,
+       symbol.path, symbol.language, symbol.arity, symbol.lookup_keys_json, symbol.resolution_domain,
+       symbol.resolution_scope_id, symbol.package_name, symbol.exported, symbol.signature,
+       symbol.documentation, symbol.span_json
+     FROM symbols AS symbol
+     JOIN activation_fold_carry_paths AS carry ON carry.path = symbol.path
+     WHERE symbol.snapshot_id = ?`,
+    [expected.snapshotId],
+  );
+  yield* sql.unsafe(
+    `INSERT INTO activation_symbol_lookup (
+       lookup_key, symbol_id, resolution_domain, exported, provenance, evidence_edge_id, evidence_path
+     )
+     SELECT lookup.lookup_key, lookup.symbol_id, lookup.resolution_domain, lookup.exported,
+       lookup.provenance, lookup.evidence_edge_id, lookup.evidence_path
+     FROM snapshot_fold_forward_symbol_lookup AS lookup
+     JOIN activation_fold_carry_paths AS carry ON carry.path = lookup.evidence_path
+     WHERE lookup.snapshot_id = ?`,
+    [expected.snapshotId],
+  );
+  yield* sql.unsafe(
+    `INSERT INTO activation_symbol_terms (term, symbol_id, weight)
+     SELECT term.term, symbol.symbol_id, posting.weight
+     FROM lexical_compact_snapshots AS compact
+     JOIN lexical_compact_postings AS posting ON posting.snapshot_key = compact.snapshot_key
+     JOIN lexical_compact_terms AS term
+       ON term.snapshot_key = compact.snapshot_key AND term.term_key = posting.term_key
+     JOIN lexical_compact_symbols AS symbol
+       ON symbol.snapshot_key = compact.snapshot_key AND symbol.symbol_key = posting.symbol_key
+     JOIN activation_symbols AS current ON current.id = symbol.symbol_id
+     WHERE compact.snapshot_id = ?`,
+    [expected.snapshotId],
+  );
+  yield* sql.unsafe(
+    `INSERT INTO activation_edges (
+       id, source_id, source_name, relation, target_id, target_name, provenance,
+       confidence, evidence_path, evidence_span_json
+     )
+     SELECT edge.id, edge.source_id, edge.source_name, edge.relation, edge.target_id,
+       edge.target_name, edge.provenance, edge.confidence, edge.evidence_path, edge.evidence_span_json
+     FROM edges AS edge
+     JOIN activation_fold_carry_paths AS carry ON carry.path = edge.evidence_path
+     WHERE edge.snapshot_id = ?`,
+    [expected.snapshotId],
+  );
+  yield* sql.unsafe(
+    `INSERT INTO activation_reexport_provenance (source_path, local_name, target_path, imported_name)
+     SELECT provenance.source_path, provenance.local_name, provenance.target_path, provenance.imported_name
+     FROM snapshot_reexport_provenance AS provenance
+     JOIN activation_fold_carry_paths AS carry ON carry.path = provenance.source_path
+     WHERE provenance.snapshot_id = ?`,
+    [expected.snapshotId],
+  );
+  yield* sql.unsafe(
+    `INSERT INTO activation_monikers (
+       id, version, scheme, role, kind, resolution_domain, identity, package_name, package_version,
+       import_path, qualified_name, component_id, symbol_id, dependency_kind, evidence_path, evidence_span_json
+     )
+     SELECT moniker.id, moniker.version, moniker.scheme, moniker.role, moniker.kind,
+       moniker.resolution_domain, moniker.identity, moniker.package_name, moniker.package_version,
+       moniker.import_path, moniker.qualified_name, moniker.component_id, moniker.symbol_id,
+       moniker.dependency_kind, moniker.evidence_path, moniker.evidence_span_json
+     FROM code_graph_monikers AS moniker
+     JOIN activation_fold_carry_paths AS carry ON carry.path = moniker.evidence_path
+     WHERE moniker.snapshot_id = ? AND moniker.scheme <> 'package'`,
+    [expected.snapshotId],
+  );
+  return priorPaths;
 });
 
 const replaceStagedModifiedFiles = Effect.fn('codeGraph.replaceStagedModifiedFiles')(function* (
