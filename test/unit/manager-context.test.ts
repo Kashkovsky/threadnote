@@ -16,13 +16,13 @@ import {
   chunkUtf8,
   handleManagerContextRequest,
   managerContextBriefInput,
-  projectManagerRecallPage,
   readManagerContextPage,
   runManagerRecall,
   type ManagerContextReadResponse,
   type ManagerRecallResponse,
   type ManagerRecallResult,
 } from '../../src/manager/context.js';
+import {projectManagerRecallPage} from '../../src/manager/context_paging.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 

@@ -20,7 +20,6 @@ import type {ApplicationServices} from '../effect/runtime.js';
 import type {RuntimeConfig} from '../types.js';
 import type {RecallHit} from '../utils.js';
 
-export const MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT = 8 as const;
 export const MANAGER_CONTEXT_RECALL_RESULT_MAXIMUM = 48 as const;
 export const MANAGER_CONTEXT_READ_PAGE_BYTES = 12_000 as const;
 const MANAGER_CONTEXT_TEXT_MAXIMUM_BYTES = 4_096;
@@ -73,14 +72,6 @@ export interface ManagerRecallResult {
   readonly requestedUri: string;
   readonly snippet: string;
   readonly warnings: readonly string[];
-}
-
-export interface ManagerRecallPageProjection {
-  readonly hasNext: boolean;
-  readonly hasPrevious: boolean;
-  readonly index: number;
-  readonly pageCount: number;
-  readonly results: readonly ManagerRecallResult[];
 }
 
 export interface ManagerRecallResponse {
@@ -361,25 +352,6 @@ export function chunkUtf8(content: string, maximumBytes: number): readonly strin
   }
   if (page || pages.length === 0) pages.push(page);
   return pages;
-}
-
-export function projectManagerRecallPage(
-  results: readonly ManagerRecallResult[],
-  requestedPage: number,
-  pageSize: number = MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT,
-): ManagerRecallPageProjection {
-  if (!Number.isSafeInteger(requestedPage) || requestedPage < 0) throw new Error('requestedPage must be non-negative.');
-  if (!Number.isSafeInteger(pageSize) || pageSize < 1) throw new Error('pageSize must be a positive integer.');
-  const pageCount = Math.max(1, Math.ceil(results.length / pageSize));
-  const index = Math.min(requestedPage, pageCount - 1);
-  const start = index * pageSize;
-  return {
-    hasNext: index + 1 < pageCount,
-    hasPrevious: index > 0,
-    index,
-    pageCount,
-    results: results.slice(start, start + pageSize),
-  };
 }
 
 function managerRecallInput(body: Record<string, unknown>) {

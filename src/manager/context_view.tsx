@@ -12,8 +12,8 @@ import type {
   ContextBriefV1,
   ProjectedContextBriefV1,
 } from '../context_brief/types.js';
-import {projectManagerRecallPage} from './context.js';
 import type {ManagerContextReadResponse, ManagerRecallResponse, ManagerRecallResult} from './context.js';
+import {MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT, projectManagerRecallPage} from './context_paging.js';
 import {api, errorMessage} from './ui_support.js';
 
 type ContextWorkspaceView = 'brief' | 'recall';
@@ -609,7 +609,7 @@ function RecallResults(props: {
   readonly response: ManagerRecallResponse;
 }): React.ReactElement {
   const response = props.response;
-  const page = projectManagerRecallPage(response.results, props.page);
+  const page = projectManagerRecallPage(response.results, props.page, MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT);
   return (
     <div className="context-recall-results" aria-label="Ranked recall results">
       <header>

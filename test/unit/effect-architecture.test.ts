@@ -236,6 +236,15 @@ describe('Effect architecture boundaries', () => {
     expect(worksetCommands).toContain('isolateBuilds,');
   });
 
+  it('keeps Manager Context browser paging outside the server runtime graph', async () => {
+    const contextView = await readFile(join(sourceRoot, 'manager', 'context_view.tsx'), 'utf8');
+    const paging = await readFile(join(sourceRoot, 'manager', 'context_paging.ts'), 'utf8');
+    const browserRuntimeSource = contextView.replace(/import\s+type\s+[^;]+\s+from\s+['"]\.\/context\.js['"];\n?/u, '');
+
+    expect(importedModuleSpecifiers('context_view.tsx', browserRuntimeSource)).not.toContain('./context.js');
+    expect(importedModuleSpecifiers('context_paging.ts', paging)).toEqual([]);
+  });
+
   it('keeps standalone worker dispatch independent from application entry modules', async () => {
     const standalone = await readFile(join(sourceRoot, 'standalone.ts'), 'utf8');
     const workerProtocol = await readFile(join(sourceRoot, 'worker_protocol.ts'), 'utf8');
