@@ -1,6 +1,6 @@
 import {Data, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
-import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
+import {ResourceStore} from '../effect/resource-store.js';
 import {fileSystemModeIsPrivate, runtimePlatform} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {threadnoteStorageLayout} from '../storage/layout.js';
@@ -14,6 +14,11 @@ const MAX_MEMORY_RELOCATION_RECEIPT_BYTES = 16 * 1024;
 
 export class MemoryRelocationError extends Data.TaggedError('MemoryRelocationError')<{
   readonly message: string;
+}> {}
+
+export class MemoryPointerNotFound extends Data.TaggedError('MemoryPointerNotFound')<{
+  readonly message: string;
+  readonly uri: string;
 }> {}
 
 export interface MemoryRelocationReceiptV1 {
@@ -120,10 +125,12 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
   for (let depth = 1; depth <= MAX_MEMORY_RELOCATION_DEPTH; depth += 1) {
     const receipt = yield* readMemoryRelocationReceipt(config, currentUri);
     if (receipt === undefined) {
-      return yield* new ResourceNotFound({
-        message: `Resource does not exist: ${requestedUri}`,
-        uri: requestedUri,
-      });
+      return depth === 1
+        ? yield* new MemoryPointerNotFound({
+            message: `Memory resource does not exist: ${requestedUri}`,
+            uri: requestedUri,
+          })
+        : yield* Effect.fail(relocationError('Memory relocation chain is incomplete.'));
     }
     if (receipt.fromUri !== currentUri) {
       return yield* Effect.fail(relocationError('Memory relocation receipt source does not match its lookup URI.'));

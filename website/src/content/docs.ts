@@ -767,7 +767,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. One-way references can link prior context without copying its full body into the new record. For cited memory, provide codeRefs or --code-ref again to recapture evidence for the edited prose; omitting them deliberately clears the old citations and reports how many were removed.',
+            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. Replacement and publication record an identity-fenced relocation so an old pointer resolves to its canonical URI. A pointer moved by an older version may predate that receipt; read_context then returns a machine-usable recall-canonical-uri recovery instead of guessing across namespaces: recall globally by stable topic and read the canonical URI returned. The recovery omits a project filter because an older path slug may differ from the canonical memory’s human-readable project name. One-way references can link prior context without copying its full body into the new record. For cited memory, provide codeRefs or --code-ref again to recapture evidence for the edited prose; omitting them deliberately clears the old citations and reports how many were removed.',
           },
         ],
       },

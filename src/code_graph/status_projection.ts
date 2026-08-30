@@ -6,6 +6,9 @@ import type {CodeGraphStatus} from './types.js';
 export const CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT = 4;
 export const CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT = 1;
 export const CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT = 32;
+export const CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT = 4;
+export const CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT = 1;
+export const CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT = 64;
 
 export interface CodeGraphStatusBoundedListReceiptV3 {
   readonly limit: number;
@@ -20,6 +23,10 @@ export interface CodeGraphStatusProjectionReceiptV3 {
   readonly waiters: CodeGraphStatusBoundedListReceiptV3;
 }
 
+export interface CodeGraphStatusProjectionReceiptV4 extends CodeGraphStatusProjectionReceiptV3 {
+  readonly languagePacks: CodeGraphStatusBoundedListReceiptV3;
+}
+
 export interface CodeGraphStatusActivityProjectionV3 {
   readonly build: ObservedCodeGraphBuildStatus | null;
   readonly builds: readonly ObservedCodeGraphBuildStatus[];
@@ -30,7 +37,7 @@ export interface CodeGraphStatusActivityProjectionV3 {
   readonly waiters: readonly ObservedCodeGraphBuildStatus[];
 }
 
-export type CodeGraphStatusJsonDetailsV3 = Pick<
+export type CodeGraphStatusJsonDetailsV4 = Pick<
   CodeGraphStatus,
   'databasePath' | 'identity' | 'languagePacks' | 'stale'
 > & {
@@ -40,7 +47,8 @@ export type CodeGraphStatusJsonDetailsV3 = Pick<
 };
 
 export type CodeGraphStatusOptionsResolution =
-  {readonly buildLimit: number; readonly error?: undefined} | {readonly buildLimit?: undefined; readonly error: string};
+  | {readonly buildLimit: number; readonly error?: undefined; readonly languagePackLimit: number}
+  | {readonly buildLimit?: undefined; readonly error: string; readonly languagePackLimit?: undefined};
 
 export function codeGraphStatusBuildLimit(value: number | undefined): number | undefined {
   const candidate = value ?? CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT;
@@ -51,19 +59,38 @@ export function codeGraphStatusBuildLimit(value: number | undefined): number | u
     : undefined;
 }
 
+export function codeGraphStatusLanguagePackLimit(value: number | undefined): number | undefined {
+  const candidate = value ?? CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT;
+  return Number.isSafeInteger(candidate) &&
+    candidate >= CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT &&
+    candidate <= CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT
+    ? candidate
+    : undefined;
+}
+
 export function resolveCodeGraphStatusOptions(options: {
   readonly buildLimit?: number;
   readonly json?: boolean;
+  readonly languagePackLimit?: number;
 }): CodeGraphStatusOptionsResolution {
   if (!options.json && options.buildLimit !== undefined) {
     return {error: 'Use --build-limit only with --json.'};
   }
+  if (!options.json && options.languagePackLimit !== undefined) {
+    return {error: 'Use --language-pack-limit only with --json.'};
+  }
   const buildLimit = codeGraphStatusBuildLimit(options.buildLimit);
-  return buildLimit === undefined
+  if (buildLimit === undefined) {
+    return {
+      error: `Use --build-limit with an integer between ${CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT} and ${CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT}.`,
+    };
+  }
+  const languagePackLimit = codeGraphStatusLanguagePackLimit(options.languagePackLimit);
+  return languagePackLimit === undefined
     ? {
-        error: `Use --build-limit with an integer between ${CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT} and ${CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT}.`,
+        error: `Use --language-pack-limit with an integer between ${CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT} and ${CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT}.`,
       }
-    : {buildLimit};
+    : {buildLimit, languagePackLimit};
 }
 
 /**
@@ -99,18 +126,36 @@ export function projectCodeGraphStatusActivityV3(
   };
 }
 
-export function serializeCodeGraphStatusV3(
+export function serializeCodeGraphStatusV4(
   selection: CodeGraphBuildStatusSelection,
   currentWorktreeId: string,
   buildLimit: number,
-  details: CodeGraphStatusJsonDetailsV3,
+  languagePackLimit: number,
+  details: CodeGraphStatusJsonDetailsV4,
 ): string {
+  const activity = projectCodeGraphStatusActivityV3(selection, currentWorktreeId, buildLimit);
+  const languagePacks = projectCodeGraphStatusLanguagePacksV4(details.languagePacks, languagePackLimit);
   return JSON.stringify({
-    ...projectCodeGraphStatusActivityV3(selection, currentWorktreeId, buildLimit),
+    ...activity,
     ...details,
+    languagePacks: languagePacks.items,
+    projection: {
+      ...activity.projection,
+      languagePacks: languagePacks.receipt,
+    } satisfies CodeGraphStatusProjectionReceiptV4,
     type: 'code-graph-status',
-    version: 3,
+    version: 4,
   });
+}
+
+export function projectCodeGraphStatusLanguagePacksV4(
+  languagePacks: CodeGraphStatus['languagePacks'],
+  limit: number,
+): {readonly items: CodeGraphStatus['languagePacks']; readonly receipt: CodeGraphStatusBoundedListReceiptV3} {
+  const boundedLimit = codeGraphStatusLanguagePackLimit(limit);
+  if (boundedLimit === undefined) throw new RangeError('Invalid code graph status language-pack limit.');
+  const items = languagePacks.slice(0, boundedLimit);
+  return {items, receipt: listReceipt(languagePacks.length, items.length, boundedLimit)};
 }
 
 function boundedPrefixPreserving<T>(items: readonly T[], required: T | null, limit: number): readonly T[] {

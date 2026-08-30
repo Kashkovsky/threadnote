@@ -16,6 +16,7 @@ import {
   mcpProgressNotificationForCurrentRequest,
   mcpProgressHeartbeatMilliseconds,
   mcpRequestIdKey,
+  mcpResourceNotFoundRecoveryErrorData,
   mcpStdioSerialization,
   MCP_PROGRESS_HEARTBEAT_MILLISECONDS,
   MCP_PROGRESS_MESSAGE_MAX_BYTES,
@@ -30,6 +31,7 @@ import {
   type McpProgressNotificationPayload,
   withMcpProgressHeartbeat,
 } from '../../src/effect/ai/mcp.js';
+import {memoryReadRecoveryForRequestedUri} from '../../src/mcp/memory_read_recovery.js';
 import {
   attachAnonymousTelemetryReportedOutcome,
   readAnonymousTelemetryDiagnostic,
@@ -56,6 +58,32 @@ const repairedInitializeResponse = {
     serverInfo: {name: 'threadnote', version: '4.0.0'},
   },
 };
+
+function encodedResourceNotFoundCause(recovery: unknown, id: number): string {
+  return JSON.stringify({
+    error: {
+      _tag: 'Cause',
+      code: 0,
+      data: [
+        {
+          _tag: 'Fail',
+          error: {
+            _tag: 'InvalidParams',
+            code: -32602,
+            data: {
+              'threadnote.io/memory-read-recovery': recovery,
+              'threadnote.io/resource-read-error': 2,
+            },
+            message: 'Threadnote resource was not found.',
+          },
+        },
+      ],
+      message: 'encoded Effect cause',
+    },
+    id,
+    jsonrpc: '2.0',
+  });
+}
 
 describe('Effect MCP initialization instructions', () => {
   it('parses the string initialize response once and passes later large frames through unchanged', () => {
@@ -134,6 +162,31 @@ describe('Effect MCP initialization instructions', () => {
       id: 3,
       jsonrpc: '2.0',
     });
+    const recovery = memoryReadRecoveryForRequestedUri(
+      'threadnote://user/test-user/memories/durable/projects/threadnote/moved-contract.md',
+    );
+    expect(recovery).toBeDefined();
+    if (recovery === undefined) throw new TestError('Expected canonical memory recovery.');
+    const resourceNotFoundWithRecovery = JSON.stringify({
+      error: {
+        _tag: 'Cause',
+        code: 0,
+        data: [
+          {
+            _tag: 'Fail',
+            error: {
+              _tag: 'InvalidParams',
+              code: -32602,
+              data: mcpResourceNotFoundRecoveryErrorData(recovery),
+              message: 'Threadnote resource was not found.',
+            },
+          },
+        ],
+        message: 'encoded Effect cause',
+      },
+      id: 4,
+      jsonrpc: '2.0',
+    });
 
     expect(JSON.parse(transform(invalidParams) as string)).toEqual({
       error: {code: -32602, message: 'Expected a canonical threadnote:// URI.'},
@@ -145,6 +198,56 @@ describe('Effect MCP initialization instructions', () => {
       id: 3,
       jsonrpc: '2.0',
     });
+    expect(JSON.parse(transform(resourceNotFoundWithRecovery) as string)).toEqual({
+      error: {code: -32002, data: recovery, message: 'Threadnote resource was not found.'},
+      id: 4,
+      jsonrpc: '2.0',
+    });
+  });
+
+  it('does not unwrap exact branded envelopes carrying arbitrary invalid recovery candidates', () => {
+    const transform = makeInitializeInstructionsTransform('Use Threadnote context.');
+    transform(initializeResponse);
+    fc.assert(
+      fc.property(fc.jsonValue(), fc.integer({max: 10_000, min: 1}), (generated, id) => {
+        const candidate =
+          typeof generated === 'object' && generated !== null && !Array.isArray(generated)
+            ? {...generated, unexpected: 'reject-candidate'}
+            : generated;
+        const frame = encodedResourceNotFoundCause(candidate, id);
+        expect(transform(frame)).toBe(frame);
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('rejects nested extras and semantically inconsistent recovery actions', () => {
+    const transform = makeInitializeInstructionsTransform('Use Threadnote context.');
+    transform(initializeResponse);
+    const recovery = memoryReadRecoveryForRequestedUri(
+      'threadnote://user/test-user/memories/durable/projects/threadnote/moved-contract.md',
+    );
+    if (recovery === undefined) throw new TestError('Expected canonical memory recovery.');
+    const invalidCandidates = [
+      {...recovery, unexpected: true},
+      {...recovery, nextAction: {...recovery.nextAction, unexpected: true}},
+      {
+        ...recovery,
+        nextAction: {...recovery.nextAction, arguments: {...recovery.nextAction.arguments, unexpected: true}},
+      },
+      {...recovery, summary: 'ARBITRARY_BOUNDED_TEXT'},
+      {
+        ...recovery,
+        requestedUri: 'threadnote://user/test-user/memories/durable/projects/threadnote/another-contract.md',
+      },
+      {...recovery, nextAction: {...recovery.nextAction, arguments: {query: 'misleading-action'}}},
+      {...recovery, requestedUri: 'threadnote://user/foreign-user/not-even-a-memory'},
+    ];
+
+    for (const [index, candidate] of invalidCandidates.entries()) {
+      const frame = encodedResourceNotFoundCause(candidate, index + 1);
+      expect(transform(frame)).toBe(frame);
+    }
   });
 
   it('leaves unrelated results and Cause-shaped errors byte-for-byte unchanged', () => {

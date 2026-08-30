@@ -388,9 +388,25 @@ describe('Threadnote MCP toolsets', () => {
           code: -32602,
           message: expect.stringContaining('canonical threadnote:// URI'),
         });
-        await expect(client.readResource({uri: missingUri})).rejects.toMatchObject({
+        const missingError = await client.readResource({uri: missingUri}).then(
+          () => undefined,
+          error => error as Error & {readonly code?: number; readonly data?: unknown},
+        );
+        expect(missingError).toMatchObject({
           code: -32002,
           message: expect.stringContaining('Threadnote resource was not found.'),
+        });
+        expect(missingError?.data).toMatchObject({
+          code: 'memory-resource-not-found',
+          nextAction: {
+            arguments: {query: 'missing-protocol-resource'},
+            tool: 'recall_context',
+          },
+          recoveryAction: 'recall-canonical-uri',
+          requestedUri: missingUri,
+          retryable: false,
+          type: 'threadnote-memory-read-recovery',
+          version: 1,
         });
         const crossUserError = await client.readResource({uri: crossUserUri}).then(
           () => undefined,
@@ -1034,6 +1050,81 @@ describe('Threadnote MCP toolsets', () => {
         await expect(client.readResource({uri: requestedUri})).resolves.toEqual({
           contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: canonicalUri}],
         });
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('gives content- and structured-first clients recovery for a legacy moved pointer without a receipt', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const requestedUri =
+          'threadnote://user/test-user/memories/durable/projects/my-product/legacy-published-pointer.md';
+        const canonicalUri =
+          'threadnote://user/test-user/memories/shared/default/durable/projects/my-product/legacy-published-pointer.md';
+        const content = canonicalMemoryContent(
+          'Legacy Published Pointer',
+          'Legacy published pointer recovery anchor qz-legacy-published-7788.',
+        ).replace('project: threadnote', 'project: My Product');
+        const sharedPath = join(
+          fixture.home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'shared',
+          'default',
+          'durable',
+          'projects',
+          'my-product',
+          'legacy-published-pointer.md',
+        );
+        await mkdir(join(sharedPath, '..'), {recursive: true});
+        await writeFile(sharedPath, content, 'utf8');
+        const result = await client.callTool(
+          {arguments: {budgetTokens: 800, uri: requestedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+
+        expect(result.isError).toBe(true);
+        const output = Array.isArray(result.content) ? result.content : [];
+        const recovery = {
+          code: 'memory-resource-not-found',
+          nextAction: {
+            arguments: {query: 'legacy-published-pointer'},
+            tool: 'recall_context',
+          },
+          recoveryAction: 'recall-canonical-uri',
+          requestedUri,
+          retryable: false,
+          summary:
+            'The memory may have moved or been published before relocation receipts were available. Recall by its stable topic, then read the canonical URI returned.',
+          type: 'threadnote-memory-read-recovery',
+          version: 1,
+        };
+        expect(JSON.parse((output[0] as TextContent | undefined)?.text ?? '')).toEqual(recovery);
+        expect(result.structuredContent).toEqual(recovery);
+
+        const recalled = await client.callTool(
+          {arguments: recovery.nextAction.arguments, name: recovery.nextAction.tool},
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(recalled.isError).not.toBe(true);
+        const recalledUris = (
+          recalled.structuredContent as {readonly results?: readonly {readonly uri?: unknown}[]}
+        ).results?.map(entry => entry.uri);
+        expect(recalledUris).toContain(canonicalUri);
+
+        const canonical = await client.callTool(
+          {arguments: {budgetTokens: 800, uri: canonicalUri}, name: 'read_context'},
+          undefined,
+          {timeout: 5_000},
+        );
+        expect(canonical.isError).not.toBe(true);
+        expect((canonical.structuredContent as ReadPageStructuredContent).content).toBe(content);
       },
       {toolset: 'core'},
     );

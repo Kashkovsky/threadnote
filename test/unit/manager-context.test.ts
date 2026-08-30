@@ -11,7 +11,7 @@ import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import {runRemember} from '../../src/memory/index.js';
-import {readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
+import {MemoryPointerNotFound, readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {
   chunkUtf8,
   handleManagerContextRequest,
@@ -172,6 +172,17 @@ describe('Manager context API adapter', () => {
         method: 'GET',
         url: new URL('http://manager.test/api/context/read'),
       });
+      const missingUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/missing.md';
+      const missingContext = yield* handleManagerContextRequest({
+        body: Effect.succeed({uri: missingUri}),
+        config: runtime,
+        method: 'POST',
+        readContext: () =>
+          Effect.fail(
+            new MemoryPointerNotFound({message: `Memory resource does not exist: ${missingUri}`, uri: missingUri}),
+          ),
+        url: new URL('http://manager.test/api/context/read'),
+      });
 
       expect(invalidJson).toEqual({
         body: {code: 'invalid-json', error: 'Provide a JSON object request body.', retryAfterMilliseconds: 0},
@@ -187,6 +198,10 @@ describe('Manager context API adapter', () => {
       });
       expect(JSON.stringify(failedOperation)).not.toContain('private filesystem');
       expect(wrongMethod).toEqual({body: {error: 'Not found'}, status: 404});
+      expect(missingContext).toEqual({
+        body: {code: 'context-not-found', error: 'The requested context does not exist.'},
+        status: 404,
+      });
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 

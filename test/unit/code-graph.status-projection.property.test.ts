@@ -1,11 +1,17 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import type {ObservedCodeGraphBuildStatus} from '../../src/code_graph/build_status.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
 import {
   CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT,
+  CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT,
   CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT,
+  CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
   codeGraphStatusBuildLimit,
+  codeGraphStatusLanguagePackLimit,
   projectCodeGraphStatusActivityV3,
+  projectCodeGraphStatusLanguagePacksV4,
 } from '../../src/code_graph/status_projection.js';
 
 describe('code graph status JSON projection', () => {
@@ -94,6 +100,64 @@ describe('code graph status JSON projection', () => {
     );
     for (const invalid of [0, CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT + 1, 1.5, Number.NaN]) {
       expect(codeGraphStatusBuildLimit(invalid)).toBeUndefined();
+    }
+  });
+
+  it('keeps the default rich language-pack projection compact and discoverable', () => {
+    const languagePacks = codeGraphLanguagePackStatuses(BUILTIN_LANGUAGE_PACK_REGISTRY);
+    const result = projectCodeGraphStatusLanguagePacksV4(languagePacks, CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT);
+
+    expect(JSON.stringify(languagePacks).length).toBeGreaterThan(10_000);
+    expect(JSON.stringify(result).length).toBeLessThan(2_000);
+    expect(result.items).toHaveLength(CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT);
+    expect(result.receipt).toEqual({
+      limit: CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT,
+      omitted: languagePacks.length - CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT,
+      returned: CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT,
+      total: languagePacks.length,
+    });
+  });
+
+  it('bounds language packs deterministically without mutating the complete catalog', () => {
+    const builtins = codeGraphLanguagePackStatuses(BUILTIN_LANGUAGE_PACK_REGISTRY);
+    fc.assert(
+      fc.property(
+        fc.integer({max: 128, min: 0}),
+        fc.integer({max: CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT, min: 1}),
+        (packCount, limit) => {
+          const languagePacks = Array.from({length: packCount}, (_, index) => ({
+            ...builtins[index % builtins.length]!,
+            id: `pack-${index.toString().padStart(3, '0')}`,
+          }));
+          const originalIds = languagePacks.map(pack => pack.id);
+
+          const first = projectCodeGraphStatusLanguagePacksV4(languagePacks, limit);
+          const second = projectCodeGraphStatusLanguagePacksV4(languagePacks, limit);
+
+          expect(second).toEqual(first);
+          expect(languagePacks.map(pack => pack.id)).toEqual(originalIds);
+          expect(first.items).toEqual(languagePacks.slice(0, limit));
+          expect(first.items.length).toBeLessThanOrEqual(limit);
+          expect(first.receipt).toEqual({
+            limit,
+            omitted: packCount - first.items.length,
+            returned: first.items.length,
+            total: packCount,
+          });
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('admits only the documented safe language-pack-limit range', () => {
+    expect(codeGraphStatusLanguagePackLimit(undefined)).toBe(CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT);
+    expect(codeGraphStatusLanguagePackLimit(1)).toBe(1);
+    expect(codeGraphStatusLanguagePackLimit(CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT)).toBe(
+      CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
+    );
+    for (const invalid of [0, CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT + 1, 1.5, Number.NaN]) {
+      expect(codeGraphStatusLanguagePackLimit(invalid)).toBeUndefined();
     }
   });
 });

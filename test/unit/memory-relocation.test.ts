@@ -8,6 +8,7 @@ import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/docume
 import {
   MAX_MEMORY_RELOCATION_DEPTH,
   MemoryRelocationError,
+  MemoryPointerNotFound,
   readMemoryWithRelocations,
   recordMemoryRelocation,
 } from '../../src/memory/relocation.js';
@@ -51,7 +52,36 @@ describe('private memory relocation receipts', () => {
         yield* fixture.store.remove(fixture.location, sourceUri);
         const missing = yield* readMemoryWithRelocations(fixture.config, sourceUri).pipe(Effect.exit);
         expect(Exit.isFailure(missing)).toBe(true);
-        if (Exit.isFailure(missing)) expect(String(missing.cause)).toContain('ResourceNotFound');
+        if (Exit.isFailure(missing)) expect(String(missing.cause)).toContain(MemoryPointerNotFound.name);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('distinguishes a first-hop miss from an incomplete verified relocation chain', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture('incomplete-chain');
+        const sourceUri = memoryUri(0);
+        const targetUri = memoryUri(1);
+        const content = memoryContent('tn_incomplete_chain', 'Incomplete chain evidence.');
+        yield* fixture.store.write(fixture.location, sourceUri, content, {mode: 'create'});
+        yield* fixture.store.write(fixture.location, targetUri, content, {mode: 'create'});
+        yield* recordMemoryRelocation(fixture.config, {
+          fromContent: content,
+          fromUri: sourceUri,
+          toContent: content,
+          toUri: targetUri,
+        });
+        yield* fixture.store.remove(fixture.location, sourceUri);
+        yield* fixture.store.remove(fixture.location, targetUri);
+
+        const result = yield* readMemoryWithRelocations(fixture.config, sourceUri).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          expect(String(result.cause)).toContain(MemoryRelocationError.name);
+          expect(String(result.cause)).toContain('chain is incomplete');
+          expect(String(result.cause)).not.toContain(MemoryPointerNotFound.name);
+        }
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );

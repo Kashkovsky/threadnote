@@ -19,6 +19,8 @@ import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -34,6 +36,7 @@ import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph cross-process build status', () => {
   const homes: string[] = [];
+  const languagePackTotal = codeGraphLanguagePackStatuses(BUILTIN_LANGUAGE_PACK_REGISTRY).length;
 
   afterEach(async () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
@@ -1016,14 +1019,15 @@ describe('code graph cross-process build status', () => {
       obsoleteStores: {bytes: 15, fileCount: 1, unsafeEntryCount: 0},
       projection: {
         builds: {limit: 4, omitted: 0, returned: 1, total: 1},
+        languagePacks: {limit: 4, omitted: languagePackTotal - 4, returned: 4, total: languagePackTotal},
         queuedWorktreeIds: {limit: 4, omitted: 0, returned: 0, total: 0},
         waiters: {limit: 4, omitted: 0, returned: 0, total: 0},
       },
       type: 'code-graph-status',
-      version: 3,
+      version: 4,
     });
     const idleStatus = JSON.parse(result.idleOutput) as Record<string, unknown>;
-    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 3});
+    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 4});
     expect(Object.keys(idleStatus).sort()).toEqual(Object.keys(status).sort());
     expect(result.human).toContain('Current activity: writing graph facts');
     expect(result.human).toContain('full materialization');
@@ -1135,7 +1139,9 @@ describe('code graph cross-process build status', () => {
           );
           yield* reporter.completeSnapshot(fixtureSnapshot(candidate));
         }
-        const json = yield* captureConsole(runCodeGraphStatus(config, {buildLimit: 2, cwd: repository, json: true}));
+        const json = yield* captureConsole(
+          runCodeGraphStatus(config, {buildLimit: 2, cwd: repository, json: true, languagePackLimit: 2}),
+        );
         const human = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}));
         const humanLimitError = yield* runCodeGraphStatus(config, {buildLimit: 2, cwd: repository}).pipe(
           Effect.match({
@@ -1143,7 +1149,22 @@ describe('code graph cross-process build status', () => {
             onSuccess: () => undefined,
           }),
         );
-        return {human: human.output, humanLimitError, json: json.output.trim(), worktreeId: identity.worktreeId};
+        const humanLanguagePackLimitError = yield* runCodeGraphStatus(config, {
+          cwd: repository,
+          languagePackLimit: 2,
+        }).pipe(
+          Effect.match({
+            onFailure: error => (error instanceof Error ? error.message : String(error)),
+            onSuccess: () => undefined,
+          }),
+        );
+        return {
+          human: human.output,
+          humanLanguagePackLimitError,
+          humanLimitError,
+          json: json.output.trim(),
+          worktreeId: identity.worktreeId,
+        };
       }),
     );
     const status = JSON.parse(result.json) as {
@@ -1156,17 +1177,32 @@ describe('code graph cross-process build status', () => {
           readonly returned: number;
           readonly total: number;
         };
+        readonly languagePacks: {
+          readonly limit: number;
+          readonly omitted: number;
+          readonly returned: number;
+          readonly total: number;
+        };
       };
+      readonly languagePacks: readonly unknown[];
       readonly version: number;
     };
 
-    expect(status.version).toBe(3);
+    expect(status.version).toBe(4);
     expect(status.build?.identity.worktreeId).toBe(result.worktreeId);
     expect(status.builds).toHaveLength(2);
     expect(status.builds.map(build => build.identity.worktreeId)).toContain(result.worktreeId);
     expect(status.projection.builds).toEqual({limit: 2, omitted: 11, returned: 2, total: 13});
+    expect(status.languagePacks).toHaveLength(2);
+    expect(status.projection.languagePacks).toEqual({
+      limit: 2,
+      omitted: languagePackTotal - status.languagePacks.length,
+      returned: status.languagePacks.length,
+      total: languagePackTotal,
+    });
     expect(result.human).toContain('Build: completed');
     expect(result.humanLimitError).toBe('Use --build-limit only with --json.');
+    expect(result.humanLanguagePackLimitError).toBe('Use --language-pack-limit only with --json.');
   });
 });
 

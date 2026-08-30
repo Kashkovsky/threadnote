@@ -261,11 +261,12 @@ threadnote doctor --dry-run
 threadnote graph index --full
 ```
 
-`threadnote graph status --json` emits the bounded version 3 machine projection. By default it returns at most four
-rich build records, four waiter records, and four queued worktree IDs while always retaining the exact current-worktree
-build when one exists. Each list has exact `total`, `returned`, and `omitted` counts under `projection`. Use
-`--build-limit <1..32>` with `--json` when an operator needs a larger bounded sample; human status and Manager continue
-to use the complete local activity catalog.
+`threadnote graph status --json` emits the bounded version 4 machine projection. By default it returns at most four
+rich build records, four waiter records, four queued worktree IDs, and four rich language-pack records while always
+retaining the exact current-worktree build when one exists. Each list has exact `total`, `returned`, and `omitted`
+counts under `projection`. Use `--build-limit <1..32>` or `--language-pack-limit <1..64>` with `--json` when an operator
+needs a larger bounded sample; the current complete built-in pack catalog fits under the explicit maximum. Human
+status continues to show the complete pack catalog, while Manager retains the complete local activity catalog.
 
 `threadnote graph inventory` is a non-mutating, aggregate-only admission preview. It reports exact file and byte totals
 for eligible and skipped inputs, grouped by language, file role, language-pack classifier, and decision reason. The

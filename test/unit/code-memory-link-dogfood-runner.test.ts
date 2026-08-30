@@ -78,6 +78,14 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
         version: 3,
       }),
     ).toMatchObject({stale: true});
+    expect(
+      projectCodeMemoryLinkDogfoodGraphStatusV1({
+        readySnapshot: {commit: 'a'.repeat(40), dirty: false, id: `cgsn_${'b'.repeat(40)}`},
+        stale: true,
+        type: 'code-graph-status',
+        version: 4,
+      }),
+    ).toMatchObject({stale: true});
     expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/supported status/);
   });
 
@@ -92,6 +100,7 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
     };
     expect(codeGraphStatusHasIndexingActivity(idle)).toBe(false);
     expect(codeGraphStatusHasIndexingActivity({...idle, version: 3})).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, version: 4})).toBe(false);
     expect(codeGraphStatusHasIndexingActivity({...idle, build: {state: 'running'}, builds: [{state: 'running'}]})).toBe(
       true,
     );

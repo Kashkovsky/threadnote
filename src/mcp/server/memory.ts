@@ -73,6 +73,7 @@ import {
   requiredText,
   uriSegment,
 } from './common.js';
+import {memoryReadErrorResult} from './memory_read_recovery.js';
 export function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',
@@ -1231,7 +1232,7 @@ export function runNativeReadTool(
       },
       content,
     } as CallToolResult;
-  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
+  }).pipe(Effect.catch(error => Effect.succeed(memoryReadErrorResult(config, error))));
 }
 
 export function textFromCallToolResult(result: CallToolResult): string {

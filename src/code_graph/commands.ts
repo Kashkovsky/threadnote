@@ -72,7 +72,7 @@ import {
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
 import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
-import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV3} from './status_projection.js';
+import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV4} from './status_projection.js';
 import {
   codeGraphEtaBasisLabel as etaBasisLabel,
   formatCodeGraphStatusDuration as formatStatusDuration,
@@ -299,7 +299,7 @@ interface CodeGraphExportTemporaryIdentity {
 
 export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly buildLimit?: number; readonly json?: boolean},
+  options: CwdOption & {readonly buildLimit?: number; readonly json?: boolean; readonly languagePackLimit?: number},
 ) {
   const statusOptions = resolveCodeGraphStatusOptions(options);
   if (statusOptions.error !== undefined) {
@@ -321,15 +321,21 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
   if (options.json) {
     yield* writeFinalCliOutput(
-      serializeCodeGraphStatusV3(selection, identity.worktreeId, statusOptions.buildLimit, {
-        databasePath: layout.databasePath,
-        identity,
-        languagePacks: ready.languagePacks,
-        obsoleteStores,
-        readySnapshot: ready.readySnapshot ?? null,
-        stale: ready.stale,
-        storage,
-      }),
+      serializeCodeGraphStatusV4(
+        selection,
+        identity.worktreeId,
+        statusOptions.buildLimit,
+        statusOptions.languagePackLimit,
+        {
+          databasePath: layout.databasePath,
+          identity,
+          languagePacks: ready.languagePacks,
+          obsoleteStores,
+          readySnapshot: ready.readySnapshot ?? null,
+          stale: ready.stale,
+          storage,
+        },
+      ),
     );
     return;
   }

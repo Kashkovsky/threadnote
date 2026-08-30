@@ -1,9 +1,19 @@
 import {Effect} from 'effect';
 import {McpSchema} from 'effect/unstable/ai';
-import {isMemoryRelocationUri, MemoryRelocationError, readMemoryWithRelocations} from '../../memory/relocation.js';
+import {
+  isMemoryRelocationUri,
+  MemoryRelocationError,
+  MemoryPointerNotFound,
+  readMemoryWithRelocations,
+} from '../../memory/relocation.js';
+import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../mcp/memory_read_recovery.js';
 import {parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js';
 import {ResourceNotFound, ResourceStore} from '../resource-store.js';
-import {MCP_RESOURCE_ERROR_DATA, MCP_RESOURCE_NOT_FOUND_ERROR_DATA} from './mcp.js';
+import {
+  mcpResourceNotFoundRecoveryErrorData,
+  MCP_RESOURCE_ERROR_DATA,
+  MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
+} from './mcp.js';
 
 export const MCP_RESOURCE_READ_MAX_BYTES = 4_500;
 export const MCP_RESOURCE_MIME_TYPE = 'text/plain; charset=utf-8';
@@ -61,7 +71,7 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
     return {
       contents: [{mimeType: MCP_RESOURCE_MIME_TYPE, text: read.content, uri: resolved.canonicalUri}],
     } satisfies typeof McpSchema.ReadResourceResult.Type;
-  }).pipe(Effect.mapError(mcpResourceReadError));
+  }).pipe(Effect.mapError(error => mcpResourceReadError(config, error)));
 }
 
 function canonicalThreadnoteUri(uri: string): Effect.Effect<string, McpSchema.InvalidParams> {
@@ -88,7 +98,10 @@ function resourceTooLarge(): McpSchema.InvalidParams {
   });
 }
 
-function mcpResourceReadError(error: unknown): McpSchema.InternalError | McpSchema.InvalidParams {
+function mcpResourceReadError(
+  config: McpResourceConfig,
+  error: unknown,
+): McpSchema.InternalError | McpSchema.InvalidParams {
   if (error instanceof McpSchema.InvalidParams || error instanceof McpSchema.InternalError) {
     return error;
   }
@@ -96,6 +109,22 @@ function mcpResourceReadError(error: unknown): McpSchema.InternalError | McpSche
     return new McpSchema.InternalError({
       data: MCP_RESOURCE_ERROR_DATA,
       message: 'Threadnote memory relocation could not be verified safely.',
+    });
+  }
+  if (error instanceof MemoryPointerNotFound) {
+    const recovery = memoryReadRecoveryForError(config, error);
+    return new McpSchema.InvalidParams({
+      data: recovery === undefined ? MCP_RESOURCE_NOT_FOUND_ERROR_DATA : mcpResourceNotFoundRecoveryErrorData(recovery),
+      message:
+        recovery === undefined
+          ? 'Threadnote resource was not found.'
+          : `Threadnote resource was not found. Recovery: ${memoryReadRecoveryText(recovery)}`,
+    });
+  }
+  if (error instanceof ResourceNotFound) {
+    return new McpSchema.InvalidParams({
+      data: MCP_RESOURCE_NOT_FOUND_ERROR_DATA,
+      message: 'Threadnote resource was not found.',
     });
   }
   if (typeof error !== 'object' || error === null || !('_tag' in error)) {

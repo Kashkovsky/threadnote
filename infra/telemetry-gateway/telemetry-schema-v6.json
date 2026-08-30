@@ -370,6 +370,8 @@
       "McpServerOperationError",
       "McpToolError",
       "MemoryOperationError",
+      "MemoryPointerNotFound",
+      "MemoryRelocationError",
       "ModelChecksumMismatch",
       "ModelCommandError",
       "ModelDownloadFailed",

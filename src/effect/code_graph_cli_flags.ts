@@ -2,8 +2,11 @@ import {Schema} from 'effect';
 import {Flag} from 'effect/unstable/cli';
 import {
   CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT,
+  CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT,
   CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT,
+  CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
   CODE_GRAPH_STATUS_MINIMUM_BUILD_LIMIT,
+  CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT,
 } from '../code_graph/status_projection.js';
 import {
   boolean,
@@ -76,8 +79,25 @@ export const codeGraphStatusBuildLimitFlag = optional(
   ),
 );
 
+export const codeGraphStatusLanguagePackLimitFlag = optional(
+  describeFlag(
+    integerFlag('language-pack-limit').pipe(
+      Flag.withSchema(
+        Schema.Int.check(
+          Schema.isBetween({
+            minimum: CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT,
+            maximum: CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
+          }),
+        ),
+      ),
+    ),
+    `Maximum rich language-pack records in JSON; defaults to ${CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT}`,
+  ),
+);
+
 export const codeGraphStatusFlags = {
   buildLimit: codeGraphStatusBuildLimitFlag,
   cwd: codeGraphCliBounds.cwd,
   json: codeGraphCliBounds.json,
+  languagePackLimit: codeGraphStatusLanguagePackLimitFlag,
 } as const;

@@ -14,7 +14,7 @@ import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
 import {uriSegment} from '../manifest.js';
 import {parseMemoryDocument, type MemoryMetadata, type MemoryRecord} from '../memory/document.js';
 import {runRecall} from '../memory/index.js';
-import {readMemoryWithRelocations} from '../memory/relocation.js';
+import {MemoryPointerNotFound, readMemoryWithRelocations} from '../memory/relocation.js';
 import {parseResourceId, resourceIdIsManagedMemoryNamespace} from '../storage/resource-id.js';
 import type {ApplicationServices} from '../effect/runtime.js';
 import type {RuntimeConfig} from '../types.js';
@@ -488,7 +488,7 @@ function managerContextErrorResponse(error: unknown): ManagerContextApiResponse 
   if (error instanceof ManagerContextApiError) {
     return response(error.status, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
   }
-  if (error instanceof ResourceNotFound) {
+  if (error instanceof ResourceNotFound || error instanceof MemoryPointerNotFound) {
     return response(404, {code: 'context-not-found', error: 'The requested context does not exist.'});
   }
   return response(500, {
