@@ -3,6 +3,7 @@ import {CodeGraphQueryService} from '../code_graph/query.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {sha256Hex} from '../effect/digest.js';
 import {ResourceStore} from '../effect/resource-store.js';
+import {fileSystemModeIsPrivate, runtimePlatform} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {DoctorCheck, RuntimeConfig} from '../types.js';
@@ -542,7 +543,7 @@ const writeDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.writeIntent')(
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
     return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor intent must not be a symbolic link.'));
   }
-  yield* fs.chmod(target, 0o600);
+  if (runtimePlatform !== 'win32') yield* fs.chmod(target, 0o600);
 });
 
 const listDeferredCodeAnchorIntents = Effect.fn('memoryCodeAnchor.listIntents')(function* (
@@ -626,7 +627,7 @@ const writeDeferredCodeAnchorScanCursor = Effect.fn('memoryCodeAnchor.writeScanC
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
     return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor scan cursor must not be a symbolic link.'));
   }
-  yield* fs.chmod(target, 0o600);
+  if (runtimePlatform !== 'win32') yield* fs.chmod(target, 0o600);
 });
 
 function isDeferredCodeAnchorCursorValue(value: string): boolean {
@@ -651,7 +652,7 @@ const readPrivateDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.readPriv
     Option.isNone(before) ||
     before.value.type !== 'File' ||
     Number(before.value.size) > MAX_DEFERRED_CODE_ANCHOR_INTENT_BYTES ||
-    (before.value.mode & 0o077) !== 0
+    !fileSystemModeIsPrivate(runtimePlatform, before.value.mode)
   ) {
     return undefined;
   }
@@ -970,9 +971,9 @@ const ensurePrivateDeferredCodeAnchorRoot = Effect.fn('memoryCodeAnchor.ensurePr
   if (Option.isSome(yield* fs.readLink(root).pipe(Effect.option))) {
     return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must not be a symbolic link.'));
   }
-  yield* fs.chmod(root, 0o700);
+  if (runtimePlatform !== 'win32') yield* fs.chmod(root, 0o700);
   const after = yield* fs.stat(root);
-  if (after.type !== 'Directory' || (after.mode & 0o077) !== 0) {
+  if (after.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, after.mode)) {
     return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.'));
   }
   return root;
@@ -988,7 +989,7 @@ const existingPrivateDeferredCodeAnchorRoot = Effect.fn('memoryCodeAnchor.existi
   }
   const info = yield* fs.stat(root).pipe(Effect.option);
   if (Option.isNone(info)) return undefined;
-  if (info.value.type !== 'Directory' || (info.value.mode & 0o077) !== 0) {
+  if (info.value.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, info.value.mode)) {
     return yield* Effect.fail(deferredCodeAnchorError('Deferred code-anchor outbox must be a private directory.'));
   }
   return root;

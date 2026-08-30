@@ -25,6 +25,7 @@ import {
 } from '../../src/effect/linux_cgroup.js';
 import {
   availableDiskBytesFromStatfs,
+  fileSystemModeIsPrivate,
   legacyAvailableDiskBytes,
   parseCanonicalProcessStartIdentityOutput,
   parsePosixAvailableDiskBytes,
@@ -47,6 +48,19 @@ import {
 } from '../../src/effect/system.js';
 
 describe('SystemInfo structural path adapter', () => {
+  effectIt.effect.prop(
+    'enforces group and other privacy bits only on platforms with POSIX modes',
+    {
+      mode: FC.integer({max: 0o777, min: 0}),
+      platform: FC.constantFrom('darwin' as const, 'linux' as const, 'win32' as const),
+    },
+    ({mode, platform}) =>
+      Effect.sync(() => {
+        expect(fileSystemModeIsPrivate(platform, mode)).toBe(platform === 'win32' || (mode & 0o077) === 0);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('streams every UTF-8 directory name across native read buffers', async () => {
     const root = mkdtempSync(join(tmpdir(), 'threadnote-runtime-directory-stream-'));
     const expected = Array.from({length: 97}, (_unused, index) => `entry-${String(index).padStart(3, '0')}-λ`);

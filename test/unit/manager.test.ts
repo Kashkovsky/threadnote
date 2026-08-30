@@ -18,6 +18,7 @@ import {
   resourcesTree,
   runManage,
 } from '../../src/manager/index.js';
+import {removeManagerSharedMemorySource, storeManagerPersonalMemoryMove} from '../../src/manager/memory_move.js';
 import {
   managerProjectOptions,
   pruneSelectedMemoryUris,
@@ -1056,6 +1057,7 @@ describe('manager http API', () => {
           const fixture = yield* Effect.promise(makeSharedManagerRuntime);
           homes.push(fixture.config.agentContextHome);
           const fs = yield* FileSystem.FileSystem;
+          const targetUri = 'threadnote://user/denys/memories/durable/projects/threadnote/shared-to-personal-race.md';
           const targetPath = join(
             fixture.config.agentContextHome,
             'data',
@@ -1069,66 +1071,39 @@ describe('manager http API', () => {
             'shared-to-personal-race.md',
           );
           const remote = join(fixture.config.agentContextHome, 'share', 'remote.git');
-          const server = yield* Effect.promise(() => startServer(fixture.config, 'secret'));
-          const repositoryLockAcquired = yield* Deferred.make<void>();
-          const releaseRepositoryLock = yield* Deferred.make<void>();
-          const repositoryLockOwner = yield* withSharedRepositoryLock(
+          const storedUri = yield* storeManagerPersonalMemoryMove(
             fixture.config,
-            Deferred.succeed(repositoryLockAcquired, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseRepositoryLock)),
-            ),
-          ).pipe(Effect.forkScoped);
-          yield* Deferred.await(repositoryLockAcquired);
-
-          yield* Effect.gen(function* () {
-            const moveRequest = yield* Effect.promise(() =>
-              fetch(`${server.url}/api/memory/move`, {
-                body: JSON.stringify({
-                  confirm: true,
-                  kind: 'durable',
-                  project: 'threadnote',
-                  status: 'active',
-                  topic: 'shared-to-personal-race',
-                  uri: fixture.uri,
-                }),
-                headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
-                method: 'POST',
-              }),
-            ).pipe(Effect.forkScoped);
-            let staged = false;
-            for (let attempt = 0; attempt < 200; attempt += 1) {
-              staged = yield* fs.exists(targetPath);
-              if (staged) break;
-              yield* Effect.sleep(10);
-            }
-            expect(staged).toBe(true);
-            const stagedContent = yield* fs.readFileString(targetPath);
-            const concurrentTarget = stagedContent.replace('Shared Manager original.', 'Concurrent target edit.');
-            yield* fs.writeFileString(targetPath, concurrentTarget);
-
-            yield* Deferred.succeed(releaseRepositoryLock, undefined);
-            const moveResponse = yield* Fiber.join(moveRequest);
-            const moveBody = yield* Effect.promise(() => moveResponse.text());
-            expect(moveResponse.status, moveBody).toBe(500);
-            expect(moveBody).toContain('changed before shared source removal');
-            expect(yield* fs.readFileString(fixture.canonicalPath)).toBe(fixture.content);
-            expect(yield* fs.readFileString(fixture.worktreePath)).toBe(fixture.content);
-            expect(yield* fs.readFileString(targetPath)).toBe(concurrentTarget);
-            const remoteSource = yield* Effect.sync(() =>
-              execFileSync('git', ['--git-dir', remote, 'show', 'HEAD:durable/projects/threadnote/shared-manager.md'], {
-                encoding: 'utf8',
-              }),
-            );
-            expect(remoteSource).toBe(fixture.content);
-          }).pipe(
-            Effect.ensuring(
-              Deferred.succeed(releaseRepositoryLock, undefined).pipe(
-                Effect.andThen(Fiber.await(repositoryLockOwner)),
-                Effect.andThen(Effect.promise(() => server.close())),
-                Effect.asVoid,
-              ),
-            ),
+            fixture.uri,
+            fixture.content,
+            {
+              kind: 'durable',
+              project: 'threadnote',
+              sourceAgentClient: 'manager',
+              status: 'active',
+              topic: 'shared-to-personal-race',
+            },
+            false,
           );
+          expect(storedUri).toBe(targetUri);
+          const staged = yield* readManagedMemory(fixture.config, targetUri);
+          const concurrentTarget = staged.content.replace('Shared Manager original.', 'Concurrent target edit.');
+          yield* fs.writeFileString(targetPath, concurrentTarget);
+
+          const failure = yield* withSharedRepositoryLock(
+            fixture.config,
+            removeManagerSharedMemorySource(fixture.config, fixture.uri, fixture.content, targetUri, staged.content),
+          ).pipe(Effect.flip);
+
+          expect(String(failure)).toContain('changed before shared source removal');
+          expect(yield* fs.readFileString(fixture.canonicalPath)).toBe(fixture.content);
+          expect(yield* fs.readFileString(fixture.worktreePath)).toBe(fixture.content);
+          expect(yield* fs.readFileString(targetPath)).toBe(concurrentTarget);
+          const remoteSource = yield* Effect.sync(() =>
+            execFileSync('git', ['--git-dir', remote, 'show', 'HEAD:durable/projects/threadnote/shared-manager.md'], {
+              encoding: 'utf8',
+            }),
+          );
+          expect(remoteSource).toBe(fixture.content);
         }),
       ),
     ).pipe(provideTestLayer(ApplicationLayer)),

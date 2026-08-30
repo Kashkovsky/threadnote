@@ -53,7 +53,7 @@ export function registerStoreTool(
         ),
         citationPolicy: McpInput.literals(
           ['require-current', 'defer'],
-          'Private codeRefs default to defer; require-current fails before writing',
+          'Private codeRefs default to defer; require-current fails pre-write',
         ),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),
         project: McpInput.string('Project/repo namespace'),

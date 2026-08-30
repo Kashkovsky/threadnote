@@ -1,6 +1,7 @@
 import {Data, Effect, FileSystem, Option, Path} from 'effect';
 import {sha256Hex} from '../effect/digest.js';
 import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
+import {fileSystemModeIsPrivate, runtimePlatform} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {threadnoteStorageLayout} from '../storage/layout.js';
 import {parseResourceId} from '../storage/resource-id.js';
@@ -192,7 +193,7 @@ const writeMemoryRelocationReceipt = Effect.fn('memoryRelocation.writeReceipt')(
   if (Option.isSome(yield* fs.readLink(target).pipe(Effect.option))) {
     return yield* Effect.fail(relocationError('Memory relocation receipt must not be a symbolic link.'));
   }
-  yield* fs.chmod(target, 0o600);
+  if (runtimePlatform !== 'win32') yield* fs.chmod(target, 0o600);
   const persisted = yield* readMemoryRelocationReceiptFile(target);
   if (persisted === undefined || !sameReceipt(persisted, receipt)) {
     return yield* Effect.fail(relocationError('Memory relocation receipt failed post-write verification.'));
@@ -224,7 +225,7 @@ const readMemoryRelocationReceiptFile = Effect.fn('memoryRelocation.readReceiptF
   }
   if (!(yield* fs.exists(target))) return undefined;
   const info = yield* fs.stat(target);
-  if (info.type !== 'File' || (info.mode & 0o077) !== 0) {
+  if (info.type !== 'File' || !fileSystemModeIsPrivate(runtimePlatform, info.mode)) {
     return yield* Effect.fail(relocationError('Memory relocation receipt must be a private regular file.'));
   }
   const content = yield* fs.readFileString(target);
@@ -317,9 +318,9 @@ const ensurePrivateMemoryRelocationRoot = Effect.fn('memoryRelocation.ensurePriv
     return yield* Effect.fail(relocationError('Memory relocation store must be a private directory.'));
   }
   yield* fs.makeDirectory(root, {recursive: true, mode: 0o700});
-  yield* fs.chmod(root, 0o700);
+  if (runtimePlatform !== 'win32') yield* fs.chmod(root, 0o700);
   const after = yield* fs.stat(root);
-  if (after.type !== 'Directory' || (after.mode & 0o077) !== 0) {
+  if (after.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, after.mode)) {
     return yield* Effect.fail(relocationError('Memory relocation store must be a private directory.'));
   }
   return root;
@@ -335,7 +336,7 @@ const existingPrivateMemoryRelocationRoot = Effect.fn('memoryRelocation.existing
   }
   const info = yield* fs.stat(root).pipe(Effect.option);
   if (Option.isNone(info)) return undefined;
-  if (info.value.type !== 'Directory' || (info.value.mode & 0o077) !== 0) {
+  if (info.value.type !== 'Directory' || !fileSystemModeIsPrivate(runtimePlatform, info.value.mode)) {
     return yield* Effect.fail(relocationError('Memory relocation store must be a private directory.'));
   }
   return root;
