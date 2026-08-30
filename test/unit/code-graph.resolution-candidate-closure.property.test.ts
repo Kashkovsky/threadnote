@@ -1,6 +1,7 @@
 import {describe, expect, it as effectIt} from '@effect/vitest';
 import {Effect} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
 import type {ProjectResolutionLookupKey} from '../../src/code_graph/incremental_closure.js';
 import {
   assessResolutionCandidateReexportSafety,
@@ -12,6 +13,7 @@ import {
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES,
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS,
   PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES,
+  PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES,
   planProjectResolutionCandidateScan,
   resolutionCandidateLookupKeyClosure,
   scanProjectResolutionCandidateClosure,
@@ -353,25 +355,31 @@ describe('resolution-candidate closure', () => {
   });
 
   effectIt('keeps a production-sized cached-fact surface within the default bounded scan', () => {
-    const files = [inventory('a.ts', 1), inventory('b.ts', 1)];
+    const files = Array.from({length: 48}, (_, index) => inventory(`file-${index}.ts`, 1));
     const productionSurfaceBytes = 192 * 1_048_576;
+    const bytesPerFile = productionSurfaceBytes / files.length;
     const plan = planProjectResolutionCandidateScan({
-      bytesByPath: new Map([
-        [files[0]!.path, productionSurfaceBytes / 2],
-        [files[1]!.path, productionSurfaceBytes / 2],
-      ]),
+      bytesByPath: new Map(files.map(file => [file.path, bytesPerFile])),
       files,
     });
 
     expect(PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES).toBe(256 * 1_048_576);
-    expect(plan).toMatchObject({factBytes: productionSurfaceBytes, files: 2, mode: 'eligible'});
+    expect(PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES).toBe(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
+    expect(plan).toMatchObject({factBytes: productionSurfaceBytes, files: 48, mode: 'eligible'});
+    if (plan.mode === 'eligible') {
+      expect(plan.pages).toHaveLength(24);
+      expect(plan.pages.every(page => page.factBytes <= PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES)).toBe(
+        true,
+      );
+    }
+    const overflowFiles = [inventory('overflow-a.ts', 1), inventory('overflow-b.ts', 1)];
     expect(
       planProjectResolutionCandidateScan({
         bytesByPath: new Map([
-          [files[0]!.path, PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES],
-          [files[1]!.path, 1],
+          [overflowFiles[0]!.path, PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES],
+          [overflowFiles[1]!.path, 1],
         ]),
-        files,
+        files: overflowFiles,
       }),
     ).toEqual({
       detail: 'candidate-scan-fact-bytes',

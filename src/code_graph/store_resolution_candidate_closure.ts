@@ -1,4 +1,5 @@
 import {Effect} from 'effect';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact_budget.js';
 import type {ProjectResolutionLookupKey} from './incremental_closure.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphReference} from './types.js';
@@ -13,7 +14,8 @@ export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FILES = 5_000;
  */
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES = 256 * 1_048_576;
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FILES = 32;
-export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES = 1_048_576;
+/** Matches the independent per-file cached-fact ceiling while keeping every decoded page bounded. */
+export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_LOOKUP_KEYS = 4_096;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS = 10_000;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES = 8 * 1_048_576;
