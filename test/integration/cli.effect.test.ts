@@ -399,7 +399,7 @@ describe('Effect CLI', () => {
     expect(topology.stdout).toContain('--node-limit, --limit integer');
     expect(contextBrief.stdout).toContain('--task string');
     expect(contextBrief.stdout).toContain('--budget-tokens integer');
-    expect(contextBrief.stdout).toContain('(750-1500)');
+    expect(contextBrief.stdout).toContain('(800-1500)');
     expect(contextBrief.stdout).toContain('--code-ref string');
     expect(contextBrief.stdout).toContain('Canonical graph-indexed repository-relative path (no ./ or ..)');
     expect(contextBrief.stdout).toContain('cgr_ unsupported');
@@ -456,11 +456,11 @@ describe('Effect CLI', () => {
     const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-context-contract-'));
     try {
       const budgetError = await runCli(
-        ['context', 'brief', '--budget-tokens', '749', '--task', 'Find the current contract.'],
+        ['context', 'brief', '--budget-tokens', '799', '--task', 'Find the current contract.'],
         {THREADNOTE_HOME: home},
       ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
       expect(budgetError).toMatchObject({code: 1});
-      expect(String(budgetError.stderr)).toContain('750');
+      expect(String(budgetError.stderr)).toContain('800');
 
       for (const [codeRef, expectedMessage] of [
         ['./src/index.ts', 'canonical'],

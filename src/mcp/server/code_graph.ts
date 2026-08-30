@@ -100,7 +100,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
       description:
         'Ready graph+memory brief. codeRefs: max 8 canonical graph-indexed repository-relative paths/local cgs_; cgr_ is unsupported. content: compact agent view; structuredContent: full v2/v3. Untrusted; cold indexing is never started.',
       inputSchema: {
-        budgetTokens: McpInput.integer('750-1500; default 1250', {
+        budgetTokens: McpInput.integer('800-1500; default 1250', {
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
           maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
         }),

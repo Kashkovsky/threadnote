@@ -12,7 +12,7 @@ handoffs. Use `mode: locate` to find implementation surfaces, `trace` for relati
 effects, and `explain` when a concise rationale is needed. When starting from current code, pass up to eight canonical
 graph-indexed POSIX repository-relative paths or exact lowercase `cgs_<32 hex>` IDs in `codeRefs` so the brief can
 retrieve memories that explicitly cite those anchors. `cgr_` IDs are graph-inspection handles and are not valid
-Context Brief anchors. The accepted response budget is 750–1,500 estimated tokens.
+Context Brief anchors. The accepted response budget is 800–1,500 estimated tokens.
 
 Call `recall_context` with the stable project and absolute `callerCwd` when you need a memory-focused search or more
 control over ranking. In monorepos, use the nested package or app cwd. Omit `project` for global recall or use a named

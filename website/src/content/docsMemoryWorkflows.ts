@@ -666,7 +666,7 @@ threadnote context brief \\
         },
         {
           type: 'paragraph',
-          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. MCP structuredContent and CLI --json retain the full v2/v3 audit projection; MCP content and the plain CLI emit parseable context-brief-agent-view v1 JSON with the decision-relevant evidence, authority/trust, citation actions, gaps, issues, follow-ups, and continuation. This supports clients that expose only one MCP result channel. The combined text-plus-structured UTF-8 estimate defaults to 1,250 tokens and accepts 750 through 1,500. Values below 750 fail before graph or memory retrieval starts. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor and retains the same exact inspect-node follow-up in both MCP channels. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
+          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. MCP structuredContent and CLI --json retain the full v2/v3 audit projection; MCP content and the plain CLI emit parseable context-brief-agent-view v1 JSON with the decision-relevant evidence, authority/trust, citation actions, gaps, issues, follow-ups, and continuation. This supports clients that expose only one MCP result channel. The combined text-plus-structured UTF-8 estimate defaults to 1,250 tokens and accepts 800 through 1,500. Values below 800 fail before graph or memory retrieval starts. Its output receipt reports returned and omitted items. Coverage gaps use the same deterministic projection: the first remains visible and coverage.omissions.coverageGaps counts the rest. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor and retains the same exact inspect-node follow-up in both MCP channels. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
         },
         {
           type: 'warning',
@@ -752,7 +752,7 @@ threadnote context brief \\
             ],
             [
               'Budget is too small',
-              'Choose --budget-tokens or budgetTokens from 750 through 1,500. Lower values are rejected before evidence retrieval so Threadnote never spends graph or memory work on a response envelope it cannot guarantee.',
+              'Choose --budget-tokens or budgetTokens from 800 through 1,500. Lower values are rejected before evidence retrieval so Threadnote never spends graph or memory work on a response envelope it cannot guarantee.',
             ],
             [
               'Cursor is expired, unknown, or incompatible',

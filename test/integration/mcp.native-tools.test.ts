@@ -1599,7 +1599,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(contextTool?.inputSchema).toMatchObject({
           additionalProperties: false,
           properties: {
-            budgetTokens: {maximum: 1_500, minimum: 750, type: 'integer'},
+            budgetTokens: {maximum: 1_500, minimum: 800, type: 'integer'},
             callerCwd: {type: 'string'},
             codeRefs: {
               anyOf: expect.arrayContaining([{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}]),
@@ -1624,7 +1624,7 @@ describe('Threadnote MCP toolsets', () => {
           {timeout: 10_000},
         );
         expect(tooSmall.isError).toBe(true);
-        expect(JSON.stringify(tooSmall.content)).toContain('750');
+        expect(JSON.stringify(tooSmall.content)).toContain('800');
 
         const tooManyCodeRefs = await client.callTool(
           {
@@ -1661,7 +1661,7 @@ describe('Threadnote MCP toolsets', () => {
           expect(JSON.stringify(malformed.content)).toContain(expectedMessage);
         }
 
-        const budgetTokens = 750;
+        const budgetTokens = 800;
         const taskOnly = await client.callTool(
           {
             arguments: {

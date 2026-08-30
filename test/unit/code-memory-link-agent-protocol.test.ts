@@ -1007,6 +1007,7 @@ function contextBriefStructuredContent(): Record<string, unknown> {
       },
       omissions: {
         activeHandoffs: 0,
+        coverageGaps: 0,
         durableDecisions: 0,
         graphCards: 0,
         graphContracts: 0,

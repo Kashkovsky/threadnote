@@ -193,7 +193,7 @@ describe('Manager context API adapter', () => {
   effectIt.effect('maps core Context Brief budget and code-ref validation to actionable HTTP 400 responses', () =>
     Effect.gen(function* () {
       const invalidBudget = yield* handleManagerContextRequest({
-        body: Effect.succeed({budgetTokens: 749, callerCwd: '/private/project', task: 'compile'}),
+        body: Effect.succeed({budgetTokens: 799, callerCwd: '/private/project', task: 'compile'}),
         config: runtime,
         method: 'POST',
         url: new URL('http://manager.test/api/context/brief'),
@@ -206,7 +206,7 @@ describe('Manager context API adapter', () => {
       });
 
       expect(invalidBudget).toMatchObject({
-        body: {code: 'invalid-request', error: expect.stringContaining('750 to 1500')},
+        body: {code: 'invalid-request', error: expect.stringContaining('800 to 1500')},
         status: 400,
       });
       expect(invalidRef).toMatchObject({

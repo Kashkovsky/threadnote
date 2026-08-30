@@ -14,7 +14,7 @@ export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS = 1 as const;
 export const CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES = 96 as const;
 export const CONTEXT_BRIEF_MAXIMUM_CODE_REFS = 8 as const;
 export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
-export const CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS = 750 as const;
+export const CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS = 800 as const;
 export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
 
@@ -375,6 +375,7 @@ export interface ContextBriefV1 {
   readonly coverage: ContextBriefLogicalResultV1['coverage'] & {
     readonly omissions: {
       readonly durableDecisions: number;
+      readonly coverageGaps: number;
       readonly recommendedFollowUps: number;
       readonly graphCards: number;
       readonly graphContracts: number;
@@ -404,7 +405,10 @@ export interface ContextBriefV1 {
     readonly returnedItems: number;
     readonly truncated: boolean;
   };
-  readonly scope: ContextBriefLogicalResultV1['scope'];
+  readonly scope: Omit<ContextBriefLogicalResultV1['scope'], 'name'> & {
+    readonly name: string;
+    readonly nameTruncated?: true;
+  };
   readonly task: {
     readonly summary: string;
     readonly truncated: boolean;

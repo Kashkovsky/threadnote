@@ -24,7 +24,8 @@ import {
   type ProjectedContextBriefV1,
 } from './types.js';
 
-type ProjectionLane = 'durable-decision' | 'follow-up' | 'graph-card' | 'graph-contract' | 'handoff' | 'issue';
+type ProjectionLane =
+  'coverage-gap' | 'durable-decision' | 'follow-up' | 'graph-card' | 'graph-contract' | 'handoff' | 'issue';
 
 interface ProjectionItem {
   readonly id: string;
@@ -138,9 +139,10 @@ export const CONTEXT_BRIEF_AGENT_VIEW_SCOPE_FIELD_POLICY = {
   freshness: 'agent-view',
   kind: 'audit-only',
   name: 'audit-only',
+  nameTruncated: 'audit-only',
   readyRepositories: 'agent-view',
   requestedRepositories: 'agent-view',
-} as const satisfies Readonly<Record<keyof ContextBriefLogicalResultV1['scope'], AgentViewFieldDisposition>>;
+} as const satisfies Readonly<Record<keyof ContextBriefV1['scope'], AgentViewFieldDisposition>>;
 
 export const CONTEXT_BRIEF_AGENT_VIEW_OUTPUT_FIELD_POLICY = {
   omittedItems: 'represented',
@@ -163,10 +165,13 @@ export function projectContextBrief(
 ): ProjectedContextBriefV1 {
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
   const items = projectionItems(logical);
-  const requiredRecovery = requiredGraphRecoveryItem(logical, items);
-  const optionalItems = requiredRecovery === undefined ? items : items.filter(item => item !== requiredRecovery);
+  const requiredItems = [requiredCoverageGapItem(logical, items), requiredGraphRecoveryItem(logical, items)].filter(
+    (item): item is ProjectionItem => item !== undefined,
+  );
+  const requiredKeys = new Set(requiredItems.map(projectionItemKey));
+  const optionalItems = items.filter(item => !requiredKeys.has(projectionItemKey(item)));
   const selectItems = (count: number): readonly ProjectionItem[] => [
-    ...(requiredRecovery === undefined ? [] : [requiredRecovery]),
+    ...requiredItems,
     ...optionalItems.slice(0, count),
   ];
   let selectedCount: number | undefined;
@@ -670,8 +675,11 @@ function renderProjection(logical: ContextBriefLogicalResultV1, selected: readon
   );
   const stalenessAndConflicts = selectById(logical.stalenessAndConflicts, selectedByLane.get('issue'));
   const recommendedFollowUps = selectById(logical.recommendedFollowUps, selectedByLane.get('follow-up'));
+  const selectedGapIds = selectedByLane.get('coverage-gap');
+  const gaps = logical.coverage.gaps.filter(gap => selectedGapIds?.has(coverageGapProjectionId(gap)) === true);
   const omissions = {
     activeHandoffs: logical.activeHandoffs.length - activeHandoffs.length,
+    coverageGaps: logical.coverage.gaps.length - gaps.length,
     durableDecisions: logical.durableDecisions.length - durableDecisions.length,
     graphCards: logical.graph.cards.length - cards.length,
     graphContracts: logical.graph.contracts.length - contracts.length,
@@ -682,7 +690,7 @@ function renderProjection(logical: ContextBriefLogicalResultV1, selected: readon
   const task = compactTask(logical.task);
   return {
     activeHandoffs,
-    coverage: {...logical.coverage, omissions},
+    coverage: {...logical.coverage, gaps, omissions},
     durableDecisions,
     graph: {
       cards,
@@ -718,7 +726,7 @@ function renderProjection(logical: ContextBriefLogicalResultV1, selected: readon
       truncated: omittedItems > 0,
     },
     recommendedFollowUps,
-    scope: logical.scope,
+    scope: compactScope(logical.scope),
     stalenessAndConflicts,
     task,
     trust: logical.trust,
@@ -735,6 +743,12 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
     memory => memory.citationSummary !== undefined,
   );
   return [
+    ...logical.coverage.gaps.map((gap, rank) => ({
+      id: coverageGapProjectionId(gap),
+      lane: 'coverage-gap' as const,
+      laneRank: rank,
+      priority: 3,
+    })),
     ...logical.graph.cards.map(card => ({
       id: card.id,
       lane: 'graph-card' as const,
@@ -796,6 +810,17 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
   );
 }
 
+/** Keep one explicit limitation whenever the logical result contains coverage gaps. */
+function requiredCoverageGapItem(
+  logical: ContextBriefLogicalResultV1,
+  items: readonly ProjectionItem[],
+): ProjectionItem | undefined {
+  const gap = logical.coverage.gaps[0];
+  if (gap === undefined) return undefined;
+  const id = coverageGapProjectionId(gap);
+  return items.find(item => item.lane === 'coverage-gap' && item.id === id);
+}
+
 /**
  * A projected graph page that drops cards cannot expose its upstream cursor: doing so would skip
  * the omitted part of the current page. Reserve the planner's first exact card selector instead,
@@ -816,19 +841,29 @@ function requiredGraphRecoveryItem(
 
 function lanePriority(lane: ProjectionLane): number {
   switch (lane) {
-    case 'handoff':
+    case 'coverage-gap':
       return 0;
-    case 'durable-decision':
+    case 'handoff':
       return 1;
-    case 'graph-card':
+    case 'durable-decision':
       return 2;
-    case 'graph-contract':
+    case 'graph-card':
       return 3;
-    case 'issue':
+    case 'graph-contract':
       return 4;
-    case 'follow-up':
+    case 'issue':
       return 5;
+    case 'follow-up':
+      return 6;
   }
+}
+
+function coverageGapProjectionId(gap: string): string {
+  return `gap:${gap}`;
+}
+
+function projectionItemKey(item: ProjectionItem): string {
+  return `${item.lane}\u0000${item.id}`;
 }
 
 function selectById<T extends {readonly id: string; readonly rank: number}>(
@@ -859,15 +894,25 @@ function selectById<T extends {readonly id?: string; readonly rank: number; read
 }
 
 function compactTask(task: string): ContextBriefV1['task'] {
-  const maximumBytes = 240;
-  const encoded = new TextEncoder();
-  if (encoded.encode(task).byteLength <= maximumBytes) return {summary: task, truncated: false};
-  let summary = '';
-  for (const character of task) {
-    if (encoded.encode(`${summary}${character}…`).byteLength > maximumBytes) break;
-    summary += character;
+  const summary = jsonStringPrefix(task, 162);
+  return {summary, truncated: summary !== task};
+}
+
+function compactScope(scope: ContextBriefLogicalResultV1['scope']): ContextBriefV1['scope'] {
+  const name = jsonStringPrefix(scope.name, 66);
+  return {...scope, name, ...(name === scope.name ? {} : {nameTruncated: true as const})};
+}
+
+/** Bound the serialized JSON string, including quotes and escape expansion. */
+function jsonStringPrefix(value: string, maximumBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(JSON.stringify(value)).byteLength <= maximumBytes) return value;
+  let prefix = '';
+  for (const character of value) {
+    if (encoder.encode(JSON.stringify(`${prefix}${character}…`)).byteLength > maximumBytes) break;
+    prefix += character;
   }
-  return {summary: `${summary}…`, truncated: true};
+  return `${prefix}…`;
 }
 
 function compactProjectedCodeLinkedMemory(

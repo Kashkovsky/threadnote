@@ -340,6 +340,7 @@ function projectedBrief(graphRef = GRAPH_REF): ProjectedContextBriefV1 {
         },
         omissions: {
           activeHandoffs: 0,
+          coverageGaps: 0,
           durableDecisions: 0,
           graphCards: 1,
           graphContracts: 0,

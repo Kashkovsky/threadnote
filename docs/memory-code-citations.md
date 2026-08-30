@@ -221,10 +221,12 @@ bounded `codeRelations` entries with only the anchor ordinal, citation ID, file-
 Coverage describes explicit citations in the authorized indexed corpus, not semantic completeness; raw selectors,
 repository IDs, paths, hashes, commits, and snapshots stay private.
 
-The combined MCP text-plus-structured response and CLI projection accept `budgetTokens` or `--budget-tokens` from 750
-through 1,500, defaulting to 1,250. Values below 750 are rejected before any evidence dependency runs. When graph
+The combined MCP text-plus-structured response and CLI projection accept `budgetTokens` or `--budget-tokens` from 800
+through 1,500, defaulting to 1,250. Values below 800 are rejected before any evidence dependency runs. When graph
 cards are omitted and continuation becomes `rerun-required`, both MCP result channels retain the same exact
 `inspect-node` follow-up so an agent always has a bounded narrowing action instead of an unusable truncation notice.
+Coverage gaps participate in the deterministic projection too: the first gap remains visible and
+`coverage.omissions.coverageGaps` reports how many additional gap codes did not fit.
 
 Inverse citation lookup has an independent bounded selector scan. When that scan cannot exhaust a selector prefix and
 the corresponding result lane remains unfilled, Context Brief adds `code-anchor-recall-truncated` to `gaps`. This is an

@@ -1100,8 +1100,9 @@ The body remains ordinary **Markdown**.
     expect(content).toContain('codeRefs');
     expect(content).toContain('Context Brief v3');
     expect(content).toContain('at most eight exact local anchors');
-    expect(content).toContain('accepts 750 through 1,500');
+    expect(content).toContain('accepts 800 through 1,500');
     expect(content).toContain('retains the same exact inspect-node follow-up in both MCP channels');
+    expect(content).toContain('coverage.omissions.coverageGaps counts the rest');
     expect(content).toContain('coverage.memory.codeAnchors');
     expect(content).toContain('selectionBasis code-citation');
     expect(content).toContain('currently buffer the compact projection');

@@ -247,6 +247,7 @@ function candidateResult(policy: 'anchored' | 'task-only', taskSummary = 'Respec
         },
         omissions: {
           activeHandoffs: 0,
+          coverageGaps: 0,
           durableDecisions: 0,
           graphCards: 0,
           graphContracts: 0,

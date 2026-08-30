@@ -55,7 +55,7 @@ export const contextBriefMcpTool = {
     'workset',
     'project',
     'mode',
-    'budgetTokens (750-1500)',
+    'budgetTokens (800-1500)',
   ],
 } satisfies McpToolReference;
 
