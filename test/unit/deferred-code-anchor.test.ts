@@ -37,7 +37,7 @@ const MEMORY_URI = 'threadnote://user/tester/memories/durable/projects/threadnot
 const TEST_ROUTE_PASS_TIMEOUT_MILLISECONDS = 5_000;
 
 describe('deferred code-anchor outbox', () => {
-  effectIt.effect('serializes descendant stores behind parent intent cleanup', () =>
+  effectIt.effect('serializes canonical user aliases behind parent intent cleanup', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* makeFixture();
@@ -65,7 +65,7 @@ describe('deferred code-anchor outbox', () => {
           Effect.andThen(
             withDeferredCodeAnchorMutationLocks(
               fixture.fs,
-              fixture.config,
+              {...fixture.config, user: 'TESTER'},
               [childUri],
               Effect.sync(() => {
                 events.push('descendant-store');
@@ -82,6 +82,36 @@ describe('deferred code-anchor outbox', () => {
         yield* Fiber.join(owner);
         yield* Fiber.join(contender);
         expect(events).toEqual(['parent-remove', 'parent-intent-cleanup', 'descendant-store']);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('uses the same raw account and canonical user identity as personal memory storage', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const config = {...fixture.config, account: 'Team A', user: 'TESTER'};
+        yield* stageDeferredCodeAnchorIntent(config, {
+          memoryContent: memoryContent(fixture.metadata, 'Account identity alignment.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/account-identity.ts']),
+        });
+
+        const expected = fixture.path.join(
+          fixture.config.agentContextHome,
+          'data',
+          'Team A',
+          'user',
+          'tester',
+          'private',
+          'deferred-code-anchors',
+          'v1',
+        );
+        expect(yield* fixture.fs.exists(expected)).toBe(true);
+        expect(yield* fixture.fs.exists(fixture.path.join(fixture.config.agentContextHome, 'data', 'team-a'))).toBe(
+          false,
+        );
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );

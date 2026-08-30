@@ -70,11 +70,15 @@ Alice + Codex ──publish curated memory──▶ team Git repo
   file-count, fact-byte, and amplification buckets. MCP graph inspections can add only closed request/scope,
   snapshot-selection/freshness, phase/stage, and published file/symbol/edge-count buckets. Failed graph-build lifecycle
   observations add only bounded outcome/type and interrupted ones only outcome/duration; neither adds graph
-  classifications or buckets. Successful Context Briefs can add only closed local/workset scope, four phase timings,
-  citation coverage/result/unknown-reason classes, output truncation, and power-of-two citation/status/repository/cache
-  buckets; non-successful completions never add result-derived fields. Telemetry never includes prompts, payloads,
-  task/query/mode, paths, memory/citation/node/repository/workset/commit/snapshot/hash identity, exact private counts,
-  error messages, stacks, or a persistent installation ID.
+  classifications or buckets. Successful Context Briefs can add only closed scope, task-only/code-anchored contract,
+  brief/locate/explain/trace/impact mode, five phase timings, returned lane, anchor coverage/gap/recovery classes,
+  power-of-two anchor-work buckets, citation coverage/result/unknown-reason classes, output truncation, and coarse
+  citation/status/repository/cache buckets. Deferred code-anchor finalization checkpoints add only a closed
+  trigger/result and coarse work/latency buckets; non-successful operations never add result-derived fields. Telemetry
+  never includes prompts, payloads, task/query text, code-ref selectors, paths,
+  memory/citation/node/repository/workset/commit/snapshot/hash identity, exact private counts, error messages, stacks, or
+  a persistent installation ID. The current schema-v6 surface requires consent version 6 unless the user previously
+  chose automatic acceptance of future data-contract updates.
 
 ## Quickstart
 

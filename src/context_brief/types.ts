@@ -116,9 +116,11 @@ export interface ContextBriefPlanV1 {
     readonly scope: ContextBriefScopeV1;
   };
   readonly graph: {
+    readonly codeRefs: readonly string[];
     readonly edgeLimit: number;
     readonly evidenceCards: number;
     readonly maximumEstimatedTokens: number;
+    readonly mode: ContextBriefMode;
     readonly nodeLimit: number;
     readonly query: string;
     readonly scope: ContextBriefScopeV1;

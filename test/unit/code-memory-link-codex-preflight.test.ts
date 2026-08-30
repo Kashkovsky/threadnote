@@ -16,6 +16,12 @@ describe('Code Memory Link Codex graph preflight', () => {
       graphContentId: `cgc_${'4'.repeat(64)}`,
       snapshotId: `cgsnap_${'3'.repeat(64)}`,
     });
+    expect(
+      assertCodeMemoryLinkGraphStatusPreflight({...status(), version: 3}, {commit, origin, repositoryRoot}),
+    ).toEqual({
+      graphContentId: `cgc_${'4'.repeat(64)}`,
+      snapshotId: `cgsnap_${'3'.repeat(64)}`,
+    });
   });
 
   it.each([

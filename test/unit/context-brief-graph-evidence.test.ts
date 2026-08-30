@@ -1,0 +1,371 @@
+import {it as effectIt} from '@effect/vitest';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {Effect, Layer} from 'effect';
+import fc from 'fast-check';
+import {describe, expect, it} from 'vitest';
+import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../../src/code_graph/query.js';
+import type {
+  CodeGraphEdge,
+  CodeGraphQueryNode,
+  CodeGraphQueryResult,
+  CodeGraphStatus,
+} from '../../src/code_graph/types.js';
+import {
+  contextBriefAnchoredRepositoryGraphResultMatches,
+  contextBriefAnchoredRepositoryGraphRequests,
+  fromRepositoryQuery,
+  mergeContextBriefAnchoredRepositoryGraphResults,
+  planContextBrief,
+  retrieveContextBriefGraphEvidence,
+} from '../../src/context_brief/index.js';
+import type {RuntimeConfig} from '../../src/types.js';
+import {SystemInfo} from '../../src/effect/system.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
+
+const REPOSITORY_ID = 'a'.repeat(64);
+const COMMIT = 'b'.repeat(40);
+const SNAPSHOT_ID = `cgsn_${'c'.repeat(40)}`;
+const PATH_ANCHOR = 'packages/platform/node/src/NodeHttpClient.ts';
+const SYMBOL_ANCHOR = `cgs_${'d'.repeat(32)}`;
+const MIGRATION_PATH = 'migration/annotations/effect__platform-node__NodeHttpClient.yaml';
+
+describe('Context Brief exact-anchor graph evidence', () => {
+  effectIt.effect('traces mixed path and cgs anchors in both directions without task-semantic displacement', () =>
+    Effect.gen(function* () {
+      const calls: CodeGraphInspectOptions[] = [];
+      const plan = planContextBrief({
+        budgetTokens: 1_500,
+        codeRefs: [PATH_ANCHOR, SYMBOL_ANCHOR],
+        mode: 'trace',
+        scope: {callerCwd: '/workspace/effect', kind: 'repository', project: 'effect'},
+        task: 'Find NodeHttpClient Undici migration annotations and options.',
+      });
+      const pathModuleId = `cgs_${'f'.repeat(32)}`;
+      const query = queryService(calls, options => {
+        if (options.operation === 'impact') {
+          return queryResult({
+            edges: [],
+            nodes: [
+              sourceNode(`cgs_${'e'.repeat(32)}`, 'UndiciRequestOptions', MIGRATION_PATH, 'property', 'yaml'),
+              sourceNode(pathModuleId, PATH_ANCHOR, PATH_ANCHOR, 'module'),
+            ],
+            operation: 'impact',
+          });
+        }
+        return options.nodeId === SYMBOL_ANCHOR
+          ? queryResult({
+              edges: [],
+              nodes: [sourceNode(SYMBOL_ANCHOR, 'makeUndici', 'packages/platform/node/src/Undici.ts', 'function')],
+              operation: 'neighbors',
+            })
+          : queryResult({
+              edges: [
+                graphEdge('metadata-contains', 'contains', MIGRATION_PATH),
+                graphEdge('source-import', 'imports', 'packages/platform/node/src/NodeClusterSocket.ts'),
+              ],
+              nodes: [
+                sourceNode(`cgs_${'e'.repeat(32)}`, 'UndiciRequestOptions', MIGRATION_PATH, 'property', 'yaml'),
+                sourceNode(pathModuleId, PATH_ANCHOR, PATH_ANCHOR, 'module'),
+              ],
+              operation: 'neighbors',
+            });
+      });
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(calls).toHaveLength(3);
+      expect(calls.find(call => call.operation === 'impact')).toMatchObject({
+        depth: 0,
+        direction: 'incoming',
+        operation: 'impact',
+        query: PATH_ANCHOR,
+        refresh: false,
+        requestMaintenance: false,
+        seedQueries: [PATH_ANCHOR],
+        seedQueryCount: 1,
+      });
+      expect(calls.find(call => call.nodeId === pathModuleId)).toMatchObject({
+        depth: 1,
+        direction: 'both',
+        operation: 'neighbors',
+      });
+      expect(calls.find(call => call.nodeId === SYMBOL_ANCHOR)).toMatchObject({
+        depth: 1,
+        direction: 'both',
+        nodeId: SYMBOL_ANCHOR,
+        operation: 'neighbors',
+      });
+      expect(calls.map(call => call.query)).not.toContain(plan.task);
+      expect([PATH_ANCHOR, 'packages/platform/node/src/Undici.ts']).toContain(evidence.cards[0]?.symbol.path);
+      expect(evidence.cards[0]?.symbol.kind).not.toBe('property');
+      expect(evidence.contracts[0]).toMatchObject({relation: 'imports'});
+      expect(evidence.cards[0]?.symbol.path).not.toBe(MIGRATION_PATH);
+    }),
+  );
+
+  effectIt.effect('uses exact incoming one-hop traversal for every mixed impact anchor', () =>
+    Effect.gen(function* () {
+      const calls: CodeGraphInspectOptions[] = [];
+      const plan = planContextBrief({
+        budgetTokens: 1_500,
+        codeRefs: [PATH_ANCHOR, SYMBOL_ANCHOR],
+        mode: 'impact',
+        scope: {callerCwd: '/workspace/effect', kind: 'repository', project: 'effect'},
+        task: 'Assess downstream HTTP client impact.',
+      });
+      const query = queryService(calls, options =>
+        queryResult({
+          edges: [graphEdge(`import-${String(options.query)}`, 'imports', 'packages/platform/node/src/index.ts')],
+          nodes: [
+            sourceNode(
+              options.query === PATH_ANCHOR ? `cgs_${'1'.repeat(32)}` : `cgs_${'2'.repeat(32)}`,
+              'packages/platform/node/src/index.ts',
+              'packages/platform/node/src/index.ts',
+              'module',
+            ),
+            sourceNode(
+              options.query === PATH_ANCHOR ? `cgs_${'3'.repeat(32)}` : SYMBOL_ANCHOR,
+              String(options.query),
+              options.query === PATH_ANCHOR ? PATH_ANCHOR : 'packages/platform/node/src/Undici.ts',
+              options.query === PATH_ANCHOR ? 'module' : 'function',
+            ),
+          ],
+          operation: 'impact',
+        }),
+      );
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(calls).toHaveLength(2);
+      expect(calls.map(call => call.query)).toEqual([PATH_ANCHOR, SYMBOL_ANCHOR]);
+      expect(calls[0]).toMatchObject({
+        depth: 1,
+        direction: 'incoming',
+        operation: 'impact',
+        seedQueries: [PATH_ANCHOR],
+        seedQueryCount: 1,
+      });
+      expect(calls[1]).toMatchObject({depth: 1, direction: 'incoming', operation: 'impact'});
+      expect(calls[1]).not.toHaveProperty('seedQueries');
+      expect(evidence.cards[0]?.symbol.path).toBe('packages/platform/node/src/index.ts');
+      expect(evidence.contracts[0]?.relation).toBe('imports');
+    }),
+  );
+
+  effectIt.effect('rejects an unrelated result when an exact path trace cannot resolve its seed', () =>
+    Effect.gen(function* () {
+      const missing = 'packages/platform/node/src/MissingHttpClient.ts';
+      const calls: CodeGraphInspectOptions[] = [];
+      const plan = planContextBrief({
+        budgetTokens: 1_500,
+        codeRefs: [missing],
+        mode: 'trace',
+        scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+        task: 'Trace an absent source path.',
+      });
+      const query = queryService(calls, () =>
+        queryResult({
+          edges: [graphEdge('unrelated-metadata', 'contains', MIGRATION_PATH)],
+          nodes: [sourceNode(`cgs_${'8'.repeat(32)}`, 'UnrelatedMigration', MIGRATION_PATH, 'property', 'yaml')],
+          operation: 'impact',
+        }),
+      );
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({seedQueries: [missing], seedQueryCount: 1});
+      expect(evidence.cards).toEqual([]);
+      expect(evidence.contracts).toEqual([]);
+      expect(evidence.gaps).toEqual(['graph-query-unavailable']);
+    }),
+  );
+
+  it('protects exact source modules and direct source relations from arbitrary metadata order', () => {
+    fc.assert(
+      fc.property(fc.array(fc.nat({max: 1_000}), {maxLength: 40}), values => {
+        const plan = planContextBrief({
+          budgetTokens: 1_500,
+          codeRefs: [PATH_ANCHOR],
+          mode: 'trace',
+          scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+          task: 'Trace the selected source.',
+        });
+        const metadataNodes = values.map((value, index) =>
+          sourceNode(
+            `cgs_${(index + 10).toString(16).padStart(32, '0')}`,
+            `migration-${value}`,
+            `${MIGRATION_PATH}#property-${index}`,
+            'property',
+            'yaml',
+          ),
+        );
+        const metadataEdges = values.map((value, index) =>
+          graphEdge(`metadata-${index}-${value}`, 'contains', MIGRATION_PATH),
+        );
+        const result = queryResult({
+          edges: [...metadataEdges, graphEdge('source-reexport', 'reexports', 'packages/platform/node/src/index.ts')],
+          nodes: [...metadataNodes, sourceNode(`cgs_${'9'.repeat(32)}`, PATH_ANCHOR, PATH_ANCHOR, 'module')],
+          operation: 'query',
+        });
+        const projected = fromRepositoryQuery(mergeContextBriefAnchoredRepositoryGraphResults(plan.graph, [result]));
+
+        expect(projected.cards[0]?.symbol).toMatchObject({kind: 'module', path: PATH_ANCHOR});
+        expect(projected.contracts[0]?.relation).toBe('reexports');
+      }),
+      {numRuns: 50},
+    );
+  });
+
+  it('routes every canonical impact path through exact path seeds while cgs stays a stable selector', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789_-'), {minLength: 1, maxLength: 40}),
+        characters => {
+          const path = `src/${characters.join('')}.ts`;
+          const plan = planContextBrief({
+            budgetTokens: 1_500,
+            codeRefs: [path, SYMBOL_ANCHOR],
+            mode: 'impact',
+            scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+            task: 'Assess exact downstream impact.',
+          });
+          const requests = contextBriefAnchoredRepositoryGraphRequests(plan.graph);
+
+          expect(requests[0]).toMatchObject({
+            operation: 'impact',
+            query: path,
+            seedQueries: [path],
+            seedQueryCount: 1,
+          });
+          expect(requests[1]).toMatchObject({operation: 'impact', query: SYMBOL_ANCHOR});
+          expect(requests[1]).not.toHaveProperty('seedQueries');
+          expect(
+            contextBriefAnchoredRepositoryGraphResultMatches(
+              {...requests[0]!, seedQueries: undefined, seedQueryCount: undefined},
+              queryResult({
+                edges: [],
+                nodes: [sourceNode(`cgs_${'4'.repeat(32)}`, 'UnrelatedMigration', MIGRATION_PATH, 'property')],
+                operation: 'impact',
+              }),
+            ),
+          ).toBe(false);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+});
+
+function queryService(
+  calls: CodeGraphInspectOptions[],
+  inspect: (options: CodeGraphInspectOptions) => CodeGraphQueryResult,
+) {
+  return CodeGraphQueryService.of({
+    attachSharedReadySnapshot: () => Effect.die('Unexpected shared snapshot attachment.'),
+    inspect: options =>
+      Effect.sync(() => {
+        calls.push(options);
+        return inspect(options);
+      }),
+    purge: () => Effect.die('Unexpected graph purge.'),
+    status: () => Effect.succeed(STATUS),
+    statusForIdentity: () => Effect.die('Unexpected identity status.'),
+    statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
+  });
+}
+
+function queryResult(input: {
+  readonly edges: readonly CodeGraphEdge[];
+  readonly nodes: readonly CodeGraphQueryNode[];
+  readonly operation: CodeGraphQueryResult['operation'];
+}): CodeGraphQueryResult {
+  return {
+    edges: input.edges,
+    freshness: 'current',
+    nodes: input.nodes,
+    operation: input.operation,
+    repository: {displayName: 'Effect-TS/effect', repositoryId: REPOSITORY_ID},
+    snapshot: {commit: COMMIT, dirty: false, id: SNAPSHOT_ID, worktreeId: 'effect-worktree'},
+    trust: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
+    version: 1,
+    warnings: [],
+  };
+}
+
+function sourceNode(id: string, name: string, path: string, kind: string, language = 'typescript'): CodeGraphQueryNode {
+  return {
+    contentHash: '0'.repeat(64),
+    exported: true,
+    id,
+    kind,
+    language,
+    name,
+    path,
+    qualifiedName: name,
+    score: 1,
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
+}
+
+function graphEdge(id: string, relation: CodeGraphEdge['relation'], evidencePath: string): CodeGraphEdge {
+  return {
+    confidence: 1,
+    evidencePath,
+    evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+    id,
+    provenance: 'resolved',
+    relation,
+    sourceId: `cgs_${'6'.repeat(32)}`,
+    sourceName: 'source',
+    targetId: `cgs_${'7'.repeat(32)}`,
+    targetName: 'target',
+  };
+}
+
+const STATUS: CodeGraphStatus = {
+  databasePath: '/threadnote/graph.sqlite',
+  freshness: 'current',
+  identity: {
+    caseMode: 'sensitive',
+    checkoutId: 'effect-checkout',
+    displayName: 'Effect-TS/effect',
+    gitCommonDirectory: '/workspace/effect/.git',
+    headCommit: COMMIT,
+    objectFormat: 'sha1',
+    repoRoot: '/workspace/effect',
+    repositoryId: REPOSITORY_ID,
+    worktreeId: 'effect-worktree',
+  },
+  languagePacks: [],
+  readySnapshot: {
+    commit: COMMIT,
+    dirty: false,
+    edgeCount: 4,
+    extractorSet: 'test-extractor',
+    fileCount: 4,
+    id: SNAPSHOT_ID,
+    repositoryId: REPOSITORY_ID,
+    state: 'ready',
+    symbolCount: 4,
+    worktreeId: 'effect-worktree',
+  },
+  stale: false,
+};
+
+const CONFIG: RuntimeConfig = {
+  account: 'local',
+  agentContextHome: '/threadnote',
+  agentId: 'test-agent',
+  manifestPath: '/threadnote/manifest.yaml',
+  user: 'tester',
+};

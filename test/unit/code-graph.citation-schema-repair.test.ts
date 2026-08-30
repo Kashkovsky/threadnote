@@ -16,6 +16,7 @@ import {
   CODE_GRAPH_SQLITE_SCHEMA_VERSION_MINIMUM,
   nextCodeGraphSqliteSchemaVersion,
 } from '../../src/code_graph/store_schema_receipt.js';
+import {PERSISTENT_EXTENSION_TABLES} from '../../src/code_graph/store_schema_contracts.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import {
   CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
@@ -340,6 +341,123 @@ describe('code graph snapshot-file citation schema repair', () => {
         });
       }
     }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('explicitly extends a genuine revision-16 checkpoint predecessor without retiring its view', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-repair-revision-16-checkpoint-'});
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const snapshot = legacyReadySnapshot(identity, '1');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => downgradeToRevision16CheckpointPredecessor(databasePath));
+
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 1,
+        integrity: 'migration-pending',
+        persistentExtensionSchemaRevision: 16,
+        readySnapshots: 1,
+        snapshotFileCitationBaseIndexes: 'current',
+        snapshotFileCitationSchema: 'current',
+      });
+      expect(checkpointTableNames(databasePath)).toEqual([]);
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({deferredDatabases: 0, discarded: 0, migratedDatabases: 1});
+      expect(checkpointTableNames(databasePath)).toEqual([]);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 1,
+        integrity: 'migration-pending',
+        readySnapshots: 1,
+      });
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(checkpointTableNames(databasePath)).toEqual(
+        PERSISTENT_EXTENSION_TABLES.filter(table => table.group === 'checkpoint')
+          .map(table => table.name)
+          .sort(),
+      );
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 1,
+        integrity: 'ok',
+        persistentExtensionSchemaRevision: CODE_GRAPH_PERSISTENT_EXTENSION_SCHEMA_REVISION,
+        readySnapshots: 1,
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('defers a revision-16 predecessor with an incompatible checkpoint table without mutation', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({
+        prefix: 'threadnote-graph-repair-revision-16-checkpoint-drift-',
+      });
+      const identity = legacyRepositoryIdentity(home, 'a');
+      const snapshot = legacyReadySnapshot(identity, '1');
+      const databasePath = path.join(
+        home,
+        'indexes',
+        'code-graph',
+        'repositories',
+        identity.checkoutId,
+        `graph-v${CODE_GRAPH_SCHEMA_VERSION}.sqlite`,
+      );
+      const store = yield* CodeGraphStore;
+      yield* store.activate(databasePath, identity, snapshot, [], [], []);
+      yield* store.promote(databasePath, identity, snapshot.id);
+      yield* Effect.sync(() => {
+        downgradeToRevision16CheckpointPredecessor(databasePath);
+        const database = new Database(databasePath, {strict: true});
+        try {
+          database.exec('CREATE TABLE checkpoint_import_builds (unexpected TEXT)');
+        } finally {
+          database.close(false);
+        }
+      });
+      const fingerprint = checkpointTableSchemaFingerprint(databasePath);
+
+      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(preview).toMatchObject({deferredDatabases: 1, discarded: 0, migratedDatabases: 0});
+      expect(checkpointTableSchemaFingerprint(databasePath)).toBe(fingerprint);
+
+      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
+        migrateSchema: true,
+        mode: 'quick',
+        targetCheckoutId: identity.checkoutId,
+      });
+      expect(applied).toEqual(preview);
+      expect(checkpointTableSchemaFingerprint(databasePath)).toBe(fingerprint);
+      expect(yield* store.diagnose(databasePath)).toMatchObject({
+        activeSnapshots: 1,
+        persistentExtensionSchemaRevision: 16,
+        readySnapshots: 1,
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('defers a drifted revision-15 schema without claiming lease or spool authority', () =>
@@ -1075,6 +1193,67 @@ function downgradeToRevision15FileAliases(databasePath: string): void {
          WHERE singleton = 1`,
       )
       .run(schemaVersion?.schema_version ?? -1);
+  } finally {
+    database.close(false);
+  }
+}
+
+function downgradeToRevision16CheckpointPredecessor(databasePath: string): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    database.run('PRAGMA foreign_keys = OFF');
+    database.run('BEGIN IMMEDIATE');
+    try {
+      for (const table of [...PERSISTENT_EXTENSION_TABLES].reverse()) {
+        if (table.group === 'checkpoint') database.exec(`DROP TABLE IF EXISTS "${table.name}"`);
+      }
+      database.exec(`
+        UPDATE schema_metadata
+        SET value = '16'
+        WHERE key = 'persistent_extension_schema_revision'
+      `);
+      database.run('COMMIT');
+    } catch (error) {
+      if (database.inTransaction) database.run('ROLLBACK');
+      throw error;
+    } finally {
+      database.run('PRAGMA foreign_keys = ON');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function checkpointTableNames(databasePath: string): string[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query<{readonly name: string}, []>(
+        `SELECT name
+         FROM sqlite_master
+         WHERE type = 'table' AND name LIKE 'checkpoint_import_%'
+         ORDER BY name`,
+      )
+      .all()
+      .map(row => row.name);
+  } finally {
+    database.close(false);
+  }
+}
+
+function checkpointTableSchemaFingerprint(databasePath: string): string {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return JSON.stringify(
+      database
+        .query(
+          `SELECT type, name, tbl_name, sql
+           FROM sqlite_master
+           WHERE name LIKE 'checkpoint_import_%'
+           ORDER BY type, name`,
+        )
+        .all(),
+    );
   } finally {
     database.close(false);
   }

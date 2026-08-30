@@ -7,6 +7,7 @@ import {finalizeDeferredCodeAnchorsForRoute} from '../memory/deferred_code_ancho
 import type {MemoryRecord} from '../memory/document.js';
 import {uriSegment} from '../manifest.js';
 import {expireRecallIndexValidation, loadRecallCodeLinks, loadRecallIndexData} from '../recall/index.js';
+import {withCodeAnchorFinalizationAnonymousTelemetry} from '../telemetry/code_anchor_finalization.js';
 import type {RuntimeConfig} from '../types.js';
 import type {
   ContextBriefFreshness,
@@ -180,22 +181,25 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     const identity = yield* resolveRepositoryIdentity(callerCwd).pipe(Effect.option);
     const finalizedUris: string[] = [];
     if (identity._tag === 'Some') {
-      yield* finalizeDeferredCodeAnchorsForRoute(
-        config,
-        {
-          callerCwd,
-          kind: 'repository',
-          repositoryId: identity.value.repositoryId,
-          worktreeId: identity.value.worktreeId,
-        },
-        {
-          limit: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-          onFinalizedUri: uri => {
-            finalizedUris.push(uri);
+      yield* withCodeAnchorFinalizationAnonymousTelemetry(
+        'context-brief',
+        finalizeDeferredCodeAnchorsForRoute(
+          config,
+          {
+            callerCwd,
+            kind: 'repository',
+            repositoryId: identity.value.repositoryId,
+            worktreeId: identity.value.worktreeId,
           },
-          preferredCodeRefs: plan.codeRefs,
-          waitTimeoutMilliseconds: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS,
-        },
+          {
+            limit: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+            onFinalizedUri: uri => {
+              finalizedUris.push(uri);
+            },
+            preferredCodeRefs: plan.codeRefs,
+            waitTimeoutMilliseconds: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS,
+          },
+        ),
       ).pipe(
         Effect.catchCause(() => Effect.void),
         Effect.asVoid,

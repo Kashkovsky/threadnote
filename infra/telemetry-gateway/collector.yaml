@@ -37,7 +37,7 @@ processors:
           - not IsString(resource.attributes["session.id"])
           - not IsMatch(resource.attributes["session.id"], "^tns_[0-9a-f]{32}$$")
           - resource.attributes["threadnote.session.scope"] != "broker" and resource.attributes["threadnote.session.scope"] != "invocation" and resource.attributes["threadnote.session.scope"] != "provider-session"
-          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3 and resource.attributes["threadnote.telemetry.schema_version"] != 4 and resource.attributes["threadnote.telemetry.schema_version"] != 5
+          - resource.attributes["threadnote.telemetry.schema_version"] != 1 and resource.attributes["threadnote.telemetry.schema_version"] != 2 and resource.attributes["threadnote.telemetry.schema_version"] != 3 and resource.attributes["threadnote.telemetry.schema_version"] != 4 and resource.attributes["threadnote.telemetry.schema_version"] != 5 and resource.attributes["threadnote.telemetry.schema_version"] != 6
       - context: scope
         conditions:
           - scope.name != "threadnote"
@@ -73,19 +73,38 @@ processors:
           - >-
             keep_keys(span.attributes, [
               "error.type",
-              "threadnote.auto_update.repair_required",
-              "threadnote.auto_update.result",
-              "threadnote.component",
-              "threadnote.context_brief.cache_hits_bucket",
-              "threadnote.context_brief.citation_coverage",
+               "threadnote.auto_update.repair_required",
+               "threadnote.auto_update.result",
+               "threadnote.code_anchor_finalization.conflict_bucket",
+               "threadnote.code_anchor_finalization.failed_bucket",
+               "threadnote.code_anchor_finalization.finalized_bucket",
+               "threadnote.code_anchor_finalization.latency_ms_bucket",
+               "threadnote.code_anchor_finalization.matched_bucket",
+               "threadnote.code_anchor_finalization.pending_bucket",
+               "threadnote.code_anchor_finalization.result",
+               "threadnote.code_anchor_finalization.scanned_bucket",
+               "threadnote.code_anchor_finalization.trigger",
+               "threadnote.component",
+               "threadnote.context_brief.cache_hits_bucket",
+               "threadnote.context_brief.code_anchor_coverage",
+               "threadnote.context_brief.code_anchor_gap",
+               "threadnote.context_brief.code_anchors_matched_memories_bucket",
+               "threadnote.context_brief.code_anchors_requested_bucket",
+               "threadnote.context_brief.code_anchors_resolved_bucket",
+               "threadnote.context_brief.citation_coverage",
               "threadnote.context_brief.citation_result",
               "threadnote.context_brief.citation_unknown_reason",
               "threadnote.context_brief.citations_bucket",
-              "threadnote.context_brief.cited_memories_bucket",
-              "threadnote.context_brief.exact_citations_bucket",
-              "threadnote.context_brief.output_truncated",
-              "threadnote.context_brief.relocated_citations_bucket",
-              "threadnote.context_brief.repositories_validated_bucket",
+               "threadnote.context_brief.cited_memories_bucket",
+               "threadnote.context_brief.contract",
+               "threadnote.context_brief.exact_citations_bucket",
+               "threadnote.context_brief.gap_class",
+               "threadnote.context_brief.mode",
+               "threadnote.context_brief.output_truncated",
+               "threadnote.context_brief.relocated_citations_bucket",
+               "threadnote.context_brief.recovery_present",
+               "threadnote.context_brief.repositories_validated_bucket",
+               "threadnote.context_brief.returned_lane",
               "threadnote.context_brief.scope",
               "threadnote.context_brief.stale_citations_bucket",
               "threadnote.context_brief.unknown_citations_bucket",

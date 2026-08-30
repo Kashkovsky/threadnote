@@ -36,11 +36,14 @@ describe('telemetry commands', () => {
         expect(preview.output).toContain('active/promoted/borrowed selection');
         expect(preview.output).toContain('file/symbol/edge-count buckets');
         expect(preview.output).toContain('Successful Context Brief diagnostics additionally include');
-        expect(preview.output).toContain('citation-validation/projection phases');
+        expect(preview.output).toContain('code-linked-memory/citation-validation/projection phases');
+        expect(preview.output).toContain('task-only-v2/code-anchored-v3 contract');
+        expect(preview.output).toContain('returned graph/memory lane and bounded gap classes');
+        expect(preview.output).toContain('Deferred code-anchor finalization checkpoints additionally include');
         expect(preview.output).toContain('none/complete/partial/unavailable validation coverage');
         expect(preview.output).toContain('none/exact-only/relocated/stale/unknown/mixed citation result');
         expect(preview.output).toContain('power-of-two buckets for cited memories');
-        expect(preview.output).toContain('Non-successful Context Brief completions never include');
+        expect(preview.output).toContain('Non-successful Context Brief and finalization checkpoints never include');
         expect(preview.output).toContain('Never arguments');
         expect(preview.output).toContain('MCP payloads/results');
         expect(preview.output).toContain('Grafana Cloud EU');
@@ -96,17 +99,17 @@ describe('telemetry commands', () => {
         expect((yield* readTelemetryConfiguration(config))?.enabled).toBe(true);
         yield* runTelemetryDisable(config, {apply: true});
         const disabled = yield* readTelemetryConfiguration(config);
-        expect(disabled).toEqual({consentVersion: 5, enabled: false, version: 1});
+        expect(disabled).toEqual({consentVersion: 6, enabled: false, version: 1});
         expect(yield* fs.readFileString(yield* telemetryConfigurationPath(config))).not.toContain('sessionSalt');
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('requires an explicit apply before replacing consent from version 4', () =>
+  effectIt.effect('requires an explicit apply before replacing consent from version 5', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-consent-v5-'});
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-telemetry-consent-v6-'});
         const config = runtimeConfig(home);
         yield* runTelemetryEnable(config, {apply: true});
         const file = yield* telemetryConfigurationPath(config);
@@ -114,24 +117,24 @@ describe('telemetry commands', () => {
         const previousEndpoint = 'https://collector.example/v1/traces';
         yield* fs.writeFileString(
           file,
-          `${JSON.stringify({...previous, consentVersion: 4, endpoint: previousEndpoint}, undefined, 2)}\n`,
+          `${JSON.stringify({...previous, consentVersion: 5, endpoint: previousEndpoint}, undefined, 2)}\n`,
         );
 
         const status = yield* captureConsole(runTelemetryStatus(config));
-        expect(status.output).toContain('does not cover the current version 5 data contract');
+        expect(status.output).toContain('does not cover the current version 6 data contract');
         expect(status.output).toContain('threadnote telemetry enable --apply');
         expect(status.output).toContain(`Endpoint: ${previousEndpoint}`);
 
         const preview = yield* captureConsole(runTelemetryEnable(config, {}));
-        expect(preview.output).toContain('Existing consent version 4 remains fail-closed');
+        expect(preview.output).toContain('Existing consent version 5 remains fail-closed');
         expect(preview.output).toContain(`Endpoint: ${previousEndpoint}`);
         expect(preview.output).toContain('No changes made. Re-run with --apply');
-        expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({consentVersion: 4, enabled: true});
+        expect(JSON.parse(yield* fs.readFileString(file))).toMatchObject({consentVersion: 5, enabled: true});
 
         yield* runTelemetryEnable(config, {apply: true, autoAccept: true});
         expect(yield* readTelemetryConfiguration(config)).toMatchObject({
           autoAccept: true,
-          consentVersion: 5,
+          consentVersion: 6,
           enabled: true,
           endpoint: previousEndpoint,
         });

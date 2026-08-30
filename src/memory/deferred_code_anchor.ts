@@ -6,7 +6,7 @@ import {sha256Hex} from '../effect/digest.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import {fileSystemModeIsPrivate, runtimePlatform, runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
-import {parseResourceId} from '../storage/resource-id.js';
+import {parseResourceId, validatePortableSegment} from '../storage/resource-id.js';
 import type {DoctorCheck, RuntimeConfig} from '../types.js';
 import {
   captureMemoryCodeCitations,
@@ -88,7 +88,7 @@ export function withDeferredCodeAnchorMutationLocks<A, E, R>(
   uris: readonly (string | undefined)[],
   effect: Effect.Effect<A, E, R>,
 ) {
-  const scopeKey = `threadnote-internal://deferred-code-anchor-mutations/${encodeURIComponent(config.account)}/${encodeURIComponent(config.user)}`;
+  const scopeKey = `threadnote-internal://deferred-code-anchor-mutations/${encodeURIComponent(config.account)}/${encodeURIComponent(uriSegment(config.user))}`;
   return withMemoryUriLocks(fs, config.agentContextHome, [scopeKey, ...uris], effect);
 }
 
@@ -1831,10 +1831,11 @@ const deferredCodeAnchorRoot = Effect.fn('memoryCodeAnchor.root')(function* (
   config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>,
 ) {
   const path = yield* Path.Path;
+  const account = validatePortableSegment(config.account, config.account);
   return path.join(
     config.agentContextHome,
     'data',
-    uriSegment(config.account),
+    account,
     'user',
     uriSegment(config.user),
     'private',
@@ -1937,7 +1938,7 @@ const deferredCodeAnchorRouteDigest = Effect.fn('memoryCodeAnchor.routeDigest')(
     [
       'threadnote-deferred-code-anchor-route-v1',
       config.account,
-      config.user,
+      uriSegment(config.user),
       route.kind,
       ...(route.kind === 'repository' ? [route.repositoryId, route.worktreeId] : [route.name]),
     ].join('\n'),

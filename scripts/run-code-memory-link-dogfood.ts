@@ -434,7 +434,7 @@ export function codeGraphStatusHasIndexingActivity(value: unknown): boolean {
   const status = plainRecord(value, 'Code graph status');
   if (
     status.type !== 'code-graph-status' ||
-    status.version !== 2 ||
+    (status.version !== 2 && status.version !== 3) ||
     !Array.isArray(status.builds) ||
     !Array.isArray(status.waiters) ||
     !Number.isSafeInteger(status.waiterCount) ||
@@ -529,8 +529,12 @@ function sameMemoryLifecycle(before: MemoryRecord, after: MemoryRecord): boolean
 
 export function projectCodeMemoryLinkDogfoodGraphStatusV1(value: unknown): CodeMemoryLinkDogfoodGraphStatusV1 {
   const status = plainRecord(value, 'Code graph status');
-  if (status.type !== 'code-graph-status' || status.version !== 2 || typeof status.stale !== 'boolean') {
-    throw new ScriptError('Dogfood graph status did not use the expected v2 status contract.');
+  if (
+    status.type !== 'code-graph-status' ||
+    (status.version !== 2 && status.version !== 3) ||
+    typeof status.stale !== 'boolean'
+  ) {
+    throw new ScriptError('Dogfood graph status did not use a supported status contract.');
   }
   const snapshot = plainRecord(status.readySnapshot, 'Code graph ready snapshot');
   if (

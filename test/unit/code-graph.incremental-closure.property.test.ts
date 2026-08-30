@@ -279,6 +279,34 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
+  it.prop(
+    'classifies an unowned resolver domain deterministically without exposing changed paths',
+    {
+      pathCount: FC.integer({max: 16, min: 1}),
+      reverse: FC.boolean(),
+    },
+    ({pathCount, reverse}) => {
+      const runtime = project('runtime');
+      const paths = Array.from({length: pathCount}, (_, index) => `docs/private-${index}.md`);
+      const orderedPaths = reverse ? [...paths].reverse() : paths;
+      const result = assessProjectFileSetClosureSeeds({
+        baseProjects: [runtime],
+        currentChangedPaths: orderedPaths,
+        currentProjects: [runtime],
+        currentResolutionDomainByPath: new Map(paths.map(path => [path, 'documentation'])),
+        deletedPaths: [],
+      });
+
+      expect(result).toEqual({
+        fallbackDetail: 'resolution-domain-unowned',
+        mode: 'fallback',
+        reason: 'project-closure-incomplete',
+      });
+      expect(JSON.stringify(result)).not.toContain('private-');
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('fails closed when a file-set change lacks stable declared ownership in both workspace models', () => {
     const declared = project('a');
     const input = {
@@ -289,6 +317,7 @@ describe('project incremental closure', () => {
     };
 
     expect(assessProjectFileSetClosureSeeds({...input, currentChangedPaths: ['unowned.ts']})).toEqual({
+      fallbackDetail: 'path-unowned',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
@@ -297,16 +326,19 @@ describe('project incremental closure', () => {
         ...input,
         currentProjects: [{...declared, provenance: 'inferred'}],
       }),
-    ).toEqual({mode: 'fallback', reason: 'project-closure-incomplete'});
+    ).toEqual({fallbackDetail: 'project-model-incomplete', mode: 'fallback', reason: 'project-closure-incomplete'});
     expect(assessProjectFileSetClosureSeeds({...input, currentProjects: []})).toEqual({
+      fallbackDetail: 'path-unowned',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
     expect(assessProjectFileSetClosureSeeds({...input, baseProjects: []})).toEqual({
+      fallbackDetail: 'project-not-stable',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
     expect(assessProjectFileSetClosureSeeds({...input, currentProjects: [declared, declared]})).toEqual({
+      fallbackDetail: 'duplicate-project-identity',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });

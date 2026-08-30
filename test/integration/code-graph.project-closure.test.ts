@@ -650,6 +650,49 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  it.effect('reports the clean-base delta that caused an unowned-domain file-set fallback', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const home = join(root, '.threadnote-file-set-fallback-detail');
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Fixture\n');
+            git(root, ['add', 'README.md']);
+            git(root, ['commit', '-qm', 'add documentation']);
+          });
+          yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Updated fixture\n');
+            writeFile(root, 'packages/core/added.ts', 'export function added() { return "added"; }\n');
+          });
+          yield* indexer.index({cwd: root, threadnoteHome: home});
+          yield* Effect.sync(() => {
+            git(root, ['add', 'README.md', 'packages/core/added.ts']);
+            git(root, ['commit', '-qm', 'mixed file-set transition']);
+          });
+          const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          expect(indexed.materialization).toMatchObject({
+            fallbackAssessment: {
+              addedFiles: 1,
+              changedFiles: 2,
+              deletedFiles: 0,
+              detail: 'resolution-domain-unowned',
+              stage: 'file-set-seed-assessment',
+            },
+            fallbackReason: 'project-closure-incomplete',
+            mode: 'full',
+          });
+          expect(indexed.reusedFiles).toBe(indexed.materialization?.totalFiles);
+          expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect(
     'reports an exact typed fallback when outside-closure base provenance exceeds 10,000 rows',
     () =>

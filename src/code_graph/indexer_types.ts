@@ -12,6 +12,7 @@ import type {
   CodeGraphFileFacts,
   CodeGraphIndexSummary,
   CodeGraphInventoryFile,
+  CodeGraphOverlayFallbackAssessment,
   CodeGraphOverlayFallbackReason,
   CodeGraphSnapshot,
   RepositoryIdentityExpectation,
@@ -82,6 +83,7 @@ export type IncrementalOverlayAssessment =
       readonly work: CodeGraphIncrementalWork;
     }
   | {
+      readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
@@ -102,6 +104,7 @@ export type IncrementalOverlayPreassessment =
       readonly extractorTransition?: true;
     }
   | {
+      readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
@@ -112,10 +115,7 @@ export type ReusableCleanSnapshotAttempt =
       readonly mode: 'complete';
       readonly summary: CodeGraphIndexSummary;
     }
-  | {
-      readonly mode: 'fallback';
-      readonly reason: CodeGraphOverlayFallbackReason;
-    };
+  | Extract<IncrementalOverlayAssessment, {readonly mode: 'fallback'}>;
 
 export interface CodeGraphCommitLease {
   readonly leaseToken: string;

@@ -1,7 +1,12 @@
 import type {CodeGraphWorkspaceProject} from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
 import {isPublishedCodeGraphResolutionSymbol} from './resolution_surface.js';
-import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
+import type {
+  CodeGraphFileFacts,
+  CodeGraphInventoryFile,
+  CodeGraphProjectFileSetFallbackDetail,
+  CodeGraphSymbol,
+} from './types.js';
 
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_FILES = 128;
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES = 16 * 1_048_576;
@@ -58,6 +63,7 @@ export type ProjectClosureSeedAssessment =
       readonly seedProjectIds: readonly string[];
     }
   | {
+      readonly fallbackDetail?: CodeGraphProjectFileSetFallbackDetail;
       readonly mode: 'fallback';
       readonly reason: 'dynamic-aliases' | 'project-closure-incomplete' | 'resolution-surface-changed';
     };
@@ -80,7 +86,7 @@ export function assessProjectFileSetClosureSeeds(input: {
   const baseProjectsById = uniqueProjectsById(input.baseProjects);
   const currentProjectsById = uniqueProjectsById(input.currentProjects);
   if (baseProjectsById === undefined || currentProjectsById === undefined) {
-    return incompleteSeeds();
+    return incompleteSeeds('duplicate-project-identity');
   }
   const seeds = new Set<string>();
   let ownershipChecks = 0;
@@ -89,7 +95,7 @@ export function assessProjectFileSetClosureSeeds(input: {
     projects: readonly CodeGraphWorkspaceProject[],
     projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
     resolutionDomainByPath: ReadonlyMap<string, string> | undefined,
-  ): boolean => {
+  ): CodeGraphProjectFileSetFallbackDetail | undefined => {
     const indexesByDomain = projectPathIndexesByDomain(projects);
     for (const path of uniqueSorted(paths)) {
       let owned = false;
@@ -99,6 +105,7 @@ export function assessProjectFileSetClosureSeeds(input: {
       // ambiguity in another domain cannot affect these facts.
       const resolutionDomain = resolutionDomainByPath?.get(path);
       const domainIndexes = resolutionDomain === undefined ? undefined : indexesByDomain.get(resolutionDomain);
+      if (resolutionDomain !== undefined && domainIndexes === undefined) return 'resolution-domain-unowned';
       const indexesForPath =
         resolutionDomain === undefined
           ? indexesByDomain
@@ -108,13 +115,12 @@ export function assessProjectFileSetClosureSeeds(input: {
       for (const [domain, indexes] of indexesForPath) {
         ownershipChecks += 1;
         const owner = nearestProject(indexes, path);
-        if (owner.mode !== 'unique') return false;
+        if (owner.mode !== 'unique') return 'path-owner-ambiguous';
         if (owner.projectId === undefined) continue;
         const project = projectsById.get(owner.projectId);
         const currentProject = currentProjectsById.get(owner.projectId);
+        if (!project || !currentProject) return 'project-not-stable';
         if (
-          !project ||
-          !currentProject ||
           project.resolutionDomain !== domain ||
           currentProject.resolutionDomain !== domain ||
           project.provenance !== 'declared' ||
@@ -124,29 +130,32 @@ export function assessProjectFileSetClosureSeeds(input: {
           project.diagnostics.length > 0 ||
           currentProject.diagnostics.length > 0
         ) {
-          return false;
+          return 'project-model-incomplete';
         }
         seeds.add(owner.projectId);
         owned = true;
       }
-      if (!owned) return false;
+      if (!owned) return 'path-unowned';
     }
-    return true;
+    return undefined;
   };
-  if (
-    !collect(
-      input.currentChangedPaths,
-      input.currentProjects,
-      currentProjectsById,
-      input.currentResolutionDomainByPath,
-    ) ||
-    !collect(input.deletedPaths, input.baseProjects, baseProjectsById, input.deletedResolutionDomainByPath) ||
-    seeds.size === 0
-  ) {
-    return incompleteSeeds();
-  }
+  const currentFailure = collect(
+    input.currentChangedPaths,
+    input.currentProjects,
+    currentProjectsById,
+    input.currentResolutionDomainByPath,
+  );
+  if (currentFailure !== undefined) return incompleteSeeds(currentFailure);
+  const deletedFailure = collect(
+    input.deletedPaths,
+    input.baseProjects,
+    baseProjectsById,
+    input.deletedResolutionDomainByPath,
+  );
+  if (deletedFailure !== undefined) return incompleteSeeds(deletedFailure);
+  if (seeds.size === 0) return incompleteSeeds('no-project-seeds');
   if ([...seeds].some(id => !baseProjectsById.has(id) || !currentProjectsById.has(id))) {
-    return incompleteSeeds();
+    return incompleteSeeds('project-not-stable');
   }
   const baseResolutionDomains = new Set([...seeds].map(id => baseProjectsById.get(id)!.resolutionDomain));
   const currentResolutionDomains = new Set([...seeds].map(id => currentProjectsById.get(id)!.resolutionDomain));
@@ -154,7 +163,7 @@ export function assessProjectFileSetClosureSeeds(input: {
     !hasCompleteDeclaredDependencyModel(input.baseProjects, baseProjectsById, baseResolutionDomains) ||
     !hasCompleteDeclaredDependencyModel(input.currentProjects, currentProjectsById, currentResolutionDomains)
   ) {
-    return incompleteSeeds();
+    return incompleteSeeds('dependency-model-incomplete');
   }
   return {
     mode: 'eligible',
@@ -612,6 +621,12 @@ function unboundedPlan(): Extract<ProjectIncrementalClosurePlan, {readonly mode:
   return {mode: 'fallback', reason: 'project-closure-unbounded'};
 }
 
-function incompleteSeeds(): Extract<ProjectClosureSeedAssessment, {readonly mode: 'fallback'}> {
-  return {mode: 'fallback', reason: 'project-closure-incomplete'};
+function incompleteSeeds(
+  fallbackDetail?: CodeGraphProjectFileSetFallbackDetail,
+): Extract<ProjectClosureSeedAssessment, {readonly mode: 'fallback'}> {
+  return {
+    ...(fallbackDetail === undefined ? {} : {fallbackDetail}),
+    mode: 'fallback',
+    reason: 'project-closure-incomplete',
+  };
 }

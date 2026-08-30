@@ -1,6 +1,7 @@
 import {Effect} from 'effect';
 import type {RepositoryIdentity} from '../code_graph/types.js';
 import type {RuntimeConfig} from '../types.js';
+import {withCodeAnchorFinalizationAnonymousTelemetry} from '../telemetry/code_anchor_finalization.js';
 import {finalizeDeferredCodeAnchorsForRoute} from './deferred_code_anchor.js';
 
 const AUTOMATIC_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT = 8;
@@ -16,18 +17,21 @@ export const healAnchorsAfterGraphIndex = Effect.fn('memoryCodeAnchor.healAfterG
   callerCwd: string,
   identity: Pick<RepositoryIdentity, 'repositoryId' | 'worktreeId'>,
 ) {
-  yield* finalizeDeferredCodeAnchorsForRoute(
-    config,
-    {
-      callerCwd,
-      kind: 'repository',
-      repositoryId: identity.repositoryId,
-      worktreeId: identity.worktreeId,
-    },
-    {
-      limit: AUTOMATIC_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-      passTimeoutMilliseconds: AUTOMATIC_DEFERRED_CODE_ANCHOR_PASS_TIMEOUT_MILLISECONDS,
-    },
+  yield* withCodeAnchorFinalizationAnonymousTelemetry(
+    'graph-index',
+    finalizeDeferredCodeAnchorsForRoute(
+      config,
+      {
+        callerCwd,
+        kind: 'repository',
+        repositoryId: identity.repositoryId,
+        worktreeId: identity.worktreeId,
+      },
+      {
+        limit: AUTOMATIC_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+        passTimeoutMilliseconds: AUTOMATIC_DEFERRED_CODE_ANCHOR_PASS_TIMEOUT_MILLISECONDS,
+      },
+    ),
   ).pipe(
     Effect.catchCause(() => Effect.void),
     Effect.asVoid,
@@ -39,13 +43,16 @@ export const healAnchorsAfterWorksetPrepare = Effect.fn('memoryCodeAnchor.healAf
   config: RuntimeConfig,
   name: string,
 ) {
-  yield* finalizeDeferredCodeAnchorsForRoute(
-    config,
-    {kind: 'workset', name},
-    {
-      limit: AUTOMATIC_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-      passTimeoutMilliseconds: AUTOMATIC_DEFERRED_CODE_ANCHOR_PASS_TIMEOUT_MILLISECONDS,
-    },
+  yield* withCodeAnchorFinalizationAnonymousTelemetry(
+    'workset-prepare',
+    finalizeDeferredCodeAnchorsForRoute(
+      config,
+      {kind: 'workset', name},
+      {
+        limit: AUTOMATIC_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+        passTimeoutMilliseconds: AUTOMATIC_DEFERRED_CODE_ANCHOR_PASS_TIMEOUT_MILLISECONDS,
+      },
+    ),
   ).pipe(
     Effect.catchCause(() => Effect.void),
     Effect.asVoid,

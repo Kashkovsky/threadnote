@@ -72,6 +72,7 @@ export interface CodeMemoryLinkBenchCoverageV1 {
   readonly matchedMemories: number;
   readonly requested: number;
   readonly resolved: number;
+  readonly unresolvedOrdinals?: readonly number[];
 }
 
 export interface CodeMemoryLinkBenchJudgmentV1 {
@@ -559,16 +560,34 @@ function parseRankedMemory(value: unknown): CodeMemoryLinkBenchRankedMemoryV1 {
 
 function parseCoverage(value: unknown): CodeMemoryLinkBenchCoverageV1 {
   const coverage = record(value, 'coverage');
-  exactKeys(coverage, ['complete', 'matchedMemories', 'requested', 'resolved']);
+  exactKeys(
+    coverage,
+    ['complete', 'matchedMemories', 'requested', 'resolved', 'unresolvedOrdinals'],
+    ['complete', 'matchedMemories', 'requested', 'resolved'],
+  );
+  const unresolvedOrdinals =
+    coverage.unresolvedOrdinals === undefined
+      ? undefined
+      : nonNegativeIntegerArray(coverage.unresolvedOrdinals, 'coverage unresolved ordinals');
   const parsed = {
     complete: boolean(coverage.complete, 'coverage complete'),
     matchedMemories: nonNegativeInteger(coverage.matchedMemories, 'coverage matched memories'),
     requested: nonNegativeInteger(coverage.requested, 'coverage requested'),
     resolved: nonNegativeInteger(coverage.resolved, 'coverage resolved'),
+    ...(unresolvedOrdinals === undefined ? {} : {unresolvedOrdinals}),
   };
   if (parsed.resolved > parsed.requested) invalid('coverage resolved cannot exceed requested');
   if (parsed.complete !== (parsed.resolved === parsed.requested))
     invalid('coverage completeness must match resolution');
+  if (
+    unresolvedOrdinals !== undefined &&
+    (unresolvedOrdinals.some(
+      (ordinal, index) => ordinal >= parsed.requested || ordinal <= (unresolvedOrdinals[index - 1] ?? -1),
+    ) ||
+      parsed.resolved + unresolvedOrdinals.length !== parsed.requested)
+  ) {
+    invalid('coverage unresolved ordinals must be the ordered unresolved complement');
+  }
   return parsed;
 }
 
@@ -711,6 +730,11 @@ function nonEmptyString(value: unknown, label: string): string {
 function nonNegativeInteger(value: unknown, label: string): number {
   if (!Number.isSafeInteger(value) || (value as number) < 0) invalid(`${label} must be a non-negative integer`);
   return value as number;
+}
+
+function nonNegativeIntegerArray(value: unknown, label: string): number[] {
+  if (!Array.isArray(value)) invalid(`${label} must be an array`);
+  return value.map(item => nonNegativeInteger(item, label));
 }
 
 function nonNegativeFinite(value: unknown, label: string): number {

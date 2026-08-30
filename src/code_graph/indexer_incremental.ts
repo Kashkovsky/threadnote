@@ -232,6 +232,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
     }
     if (deletedPaths.length > 0 || modifiedFiles.some(file => !committedByPath.has(file.path))) {
       return yield* assessProjectFileSetIncrementalClosureCompatibility({
+        addedFiles: modifiedFiles.filter(file => !committedByPath.has(file.path)).length,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.committedFiles),
         baseWorkspace: committedWorkspace,
         currentChangedFiles: modifiedFiles,
@@ -366,6 +367,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
         return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayPreassessment;
       }
       return yield* assessProjectFileSetIncrementalClosureCompatibility({
+        addedFiles: modifiedFiles.filter(file => !baseByPath.has(file.path)).length,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
         baseWorkspace: workspace,
         currentChangedFiles: modifiedFiles,
@@ -526,6 +528,7 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
 const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
   'codeGraph.assessProjectFileSetIncrementalClosureCompatibility',
 )(function* (input: {
+  readonly addedFiles: number;
   readonly baseFileSetFingerprint: string;
   readonly baseWorkspace: CodeGraphWorkspace;
   readonly currentChangedFiles: readonly CodeGraphInventoryFile[];
@@ -548,7 +551,23 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     deletedPaths: input.deletedFiles.map(file => file.path),
     deletedResolutionDomainByPath: projectClosureResolutionDomainByPath(input.deletedFiles, input.languagePacks),
   });
-  if (seeds.mode === 'fallback') return seeds satisfies IncrementalOverlayPreassessment;
+  if (seeds.mode === 'fallback') {
+    return {
+      ...(seeds.fallbackDetail === undefined
+        ? {}
+        : {
+            fallbackAssessment: {
+              addedFiles: input.addedFiles,
+              changedFiles: input.currentChangedFiles.length,
+              deletedFiles: input.deletedFiles.length,
+              detail: seeds.fallbackDetail,
+              stage: 'file-set-seed-assessment' as const,
+            },
+          }),
+      mode: 'fallback',
+      reason: seeds.reason,
+    } satisfies IncrementalOverlayPreassessment;
+  }
   const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
     compareCodeUnits,
   );

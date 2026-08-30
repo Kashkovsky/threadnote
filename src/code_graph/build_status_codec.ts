@@ -406,6 +406,9 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   ) {
     return undefined;
   }
+  const fallbackAssessment = parseOverlayFallbackAssessment(value.fallbackAssessment);
+  if (value.fallbackAssessment !== undefined && fallbackAssessment === undefined) return undefined;
+  if (fallbackAssessment !== undefined && value.fallbackReason !== 'project-closure-incomplete') return undefined;
   if (value.mode !== undefined && !['full', 'incremental-clean', 'incremental-overlay'].includes(String(value.mode))) {
     return undefined;
   }
@@ -510,6 +513,7 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.fallbackReason === undefined
       ? {}
       : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
+    ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
     ...(value.resolutionLookupKeyForm === undefined
       ? {}
       : {
@@ -572,6 +576,38 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.transactionMilliseconds === undefined
       ? {}
       : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
+  };
+}
+
+function parseOverlayFallbackAssessment(
+  value: unknown,
+): CodeGraphMaterializationMetrics['fallbackAssessment'] | undefined {
+  if (
+    !isRecord(value) ||
+    value.stage !== 'file-set-seed-assessment' ||
+    ![
+      'dependency-model-incomplete',
+      'duplicate-project-identity',
+      'no-project-seeds',
+      'path-owner-ambiguous',
+      'path-unowned',
+      'project-model-incomplete',
+      'project-not-stable',
+      'resolution-domain-unowned',
+    ].includes(String(value.detail)) ||
+    !isNonNegativeSafeInteger(value.changedFiles) ||
+    !isNonNegativeSafeInteger(value.addedFiles) ||
+    !isNonNegativeSafeInteger(value.deletedFiles) ||
+    Number(value.addedFiles) > Number(value.changedFiles)
+  ) {
+    return undefined;
+  }
+  return {
+    addedFiles: Number(value.addedFiles),
+    changedFiles: Number(value.changedFiles),
+    deletedFiles: Number(value.deletedFiles),
+    detail: value.detail as NonNullable<CodeGraphMaterializationMetrics['fallbackAssessment']>['detail'],
+    stage: 'file-set-seed-assessment',
   };
 }
 

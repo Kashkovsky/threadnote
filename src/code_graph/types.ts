@@ -265,6 +265,8 @@ export interface CodeGraphMaterializationMetrics {
   readonly exactGenerationShardFilesCompleted?: number;
   /** Exact bounded reason a repository-wide rewrite was selected, when known. */
   readonly fallbackReason?: CodeGraphOverlayFallbackReason;
+  /** Closed, path-free evidence for the assessment that selected the fallback. */
+  readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
   readonly factsBytesCompleted?: number;
   readonly factsBytesTotal?: number;
@@ -510,6 +512,7 @@ export interface CodeGraphIndexSummary {
   readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
     readonly closureProjects?: number;
+    readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
     readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
@@ -540,6 +543,25 @@ export type CodeGraphOverlayFallbackReason =
   | 'staging-identity-mismatch'
   | 'staging-unavailable'
   | 'workspace-changed';
+
+export type CodeGraphProjectFileSetFallbackDetail =
+  | 'dependency-model-incomplete'
+  | 'duplicate-project-identity'
+  | 'no-project-seeds'
+  | 'path-owner-ambiguous'
+  | 'path-unowned'
+  | 'project-model-incomplete'
+  | 'project-not-stable'
+  | 'resolution-domain-unowned';
+
+export interface CodeGraphOverlayFallbackAssessment {
+  /** Current files whose identity differs from the reusable base, including additions. */
+  readonly changedFiles: number;
+  readonly addedFiles: number;
+  readonly deletedFiles: number;
+  readonly detail: CodeGraphProjectFileSetFallbackDetail;
+  readonly stage: 'file-set-seed-assessment';
+}
 
 export interface CodeGraphQueryNode extends CodeGraphSymbol {
   readonly score: number;

@@ -7,6 +7,7 @@ import {
   codeMemoryLinkBenchFixtureHash,
   evaluateCodeMemoryLinkBench,
   parseCodeMemoryLinkBenchFixtureV1,
+  parseCodeMemoryLinkBenchObservationBundleV1,
   serializeCodeMemoryLinkBenchFixtureIdentity,
   type CodeMemoryLinkBenchCoverageV1,
   type CodeMemoryLinkBenchFixtureV1,
@@ -41,6 +42,41 @@ describe('CodeMemoryLinkBench contract', () => {
       worstCaseEstimatedTokensMaximum: 1_400,
     });
     expect(result.metrics.warmIncrementalMilliseconds).toMatchObject({p95: 200, samples: 25});
+  });
+
+  it('accepts the bounded unresolved-anchor recovery field without changing frozen coverage truth', () => {
+    const queryId = FIXTURE.queries.find(query => query.scenario === 'stale-graph')!.id;
+    const candidate = {
+      ...OBSERVATIONS,
+      observations: OBSERVATIONS.observations.map(observation =>
+        observation.queryId === queryId
+          ? {...observation, coverage: {...observation.coverage, unresolvedOrdinals: [0]}}
+          : observation,
+      ),
+    };
+
+    const parsed = parseCodeMemoryLinkBenchObservationBundleV1(candidate, FIXTURE);
+    expect(parsed.observations.find(observation => observation.queryId === queryId)?.coverage).toEqual({
+      ...INCOMPLETE_COVERAGE,
+      unresolvedOrdinals: [0],
+    });
+    expect(evaluateCodeMemoryLinkBench(FIXTURE, candidate).gate).toEqual({failures: [], passed: true});
+  });
+
+  it('rejects unresolved-anchor ordinals outside the requested coverage', () => {
+    const queryId = FIXTURE.queries.find(query => query.scenario === 'stale-graph')!.id;
+    const candidate = {
+      ...OBSERVATIONS,
+      observations: OBSERVATIONS.observations.map(observation =>
+        observation.queryId === queryId
+          ? {...observation, coverage: {...observation.coverage, unresolvedOrdinals: [1]}}
+          : observation,
+      ),
+    };
+
+    expect(() => parseCodeMemoryLinkBenchObservationBundleV1(candidate, FIXTURE)).toThrow(
+      'unresolved ordinals must be the ordered unresolved complement',
+    );
   });
 
   it.each([

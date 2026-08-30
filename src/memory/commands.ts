@@ -17,6 +17,7 @@ import {withSharedRepositoryLock} from '../effect/share_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {ResourceStore, type ResourceStoreMutation} from '../effect/resource-store.js';
 import {withAnonymousTelemetryPhase} from '../effect/telemetry.js';
+import {withCodeAnchorFinalizationAnonymousTelemetry} from '../telemetry/code_anchor_finalization.js';
 import {syncObsidianSourcesBeforeRecall} from '../obsidian/source.js';
 import {
   canonicalResourceUri,
@@ -1242,7 +1243,10 @@ export const runFinalizeCodeRefs = Effect.fn('runFinalizeCodeRefs')(function* (
   const limit = options.limit
     ? parsePositiveInteger(options.limit, 'deferred code-anchor finalization limit')
     : undefined;
-  const receipt = yield* finalizeDeferredCodeAnchors(config, {limit, uris: options.uris});
+  const receipt = yield* withCodeAnchorFinalizationAnonymousTelemetry(
+    'explicit',
+    finalizeDeferredCodeAnchors(config, {limit, uris: options.uris}),
+  );
   yield* writeFinalCliOutput(JSON.stringify(receipt, undefined, 2));
 });
 

@@ -171,6 +171,11 @@ import {
   requiredString,
   withValueAlias,
 } from './cli_flags.js';
+import {
+  codeGraphCliBounds as graphBounds,
+  codeGraphFreshnessFlag as graphFreshness,
+  codeGraphStatusFlags,
+} from './code_graph_cli_flags.js';
 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
@@ -591,58 +596,8 @@ const indexCommand = Command.make('index').pipe(
   Command.withSubcommands([indexRebuild, indexStatus, indexVerify, indexPurge]),
 );
 
-const graphBounds = {
-  cwd: optionalString('cwd', 'Repository or worktree directory; defaults to the current directory'),
-  depth: optional(
-    describeFlag(
-      integerFlag('depth').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 8})))),
-      'Maximum relationship traversal depth',
-    ),
-  ),
-  edgeLimit: optional(
-    describeFlag(
-      integerFlag('edge-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 500})))),
-      'Maximum returned relationships',
-    ),
-  ),
-  includeHeuristic: boolean('include-heuristic', 'Include lower-confidence heuristic relationships'),
-  includeModelAssociations: boolean('include-model-associations', 'Include model-derived semantic associations'),
-  json: boolean('json', 'Emit versioned machine-readable JSON'),
-  nodeLimit: withValueAlias(
-    optional(
-      describeFlag(
-        integerFlag('node-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 200})))),
-        'Maximum returned nodes',
-      ),
-    ),
-    'limit',
-    'other',
-  ),
-  readTimeoutMilliseconds: optional(
-    describeFlag(
-      integerFlag('read-timeout-ms').pipe(
-        Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 600_000}))),
-      ),
-      'Foreground read/refresh budget in milliseconds; defaults to 25000',
-    ),
-  ),
-} as const;
-
-const graphFreshness = (value: 'current' | 'ready') =>
-  defaultChoice(
-    'freshness',
-    ['ready', 'current', 'allow-stale'],
-    'Ready uses an existing snapshot, current performs a bounded refresh, and allow-stale never starts indexing',
-    value,
-  );
-
-const graphStatus = Command.make(
-  'status',
-  {
-    cwd: graphBounds.cwd,
-    json: graphBounds.json,
-  },
-  options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
+const graphStatus = Command.make('status', codeGraphStatusFlags, options =>
+  withRuntimeEffect(config => runCodeGraphStatus(config, options)),
 ).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
 
 const graphInventory = Command.make(

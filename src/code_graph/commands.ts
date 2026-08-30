@@ -68,12 +68,15 @@ import {
   type CodeGraphCliReadPlan,
 } from './cli_freshness.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
-import {
-  readCodeGraphBuildStatuses,
-  selectCodeGraphBuildStatuses,
-  type ObservedCodeGraphBuildStatus,
-} from './build_status.js';
+import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
+import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV3} from './status_projection.js';
+import {
+  codeGraphEtaBasisLabel as etaBasisLabel,
+  formatCodeGraphStatusDuration as formatStatusDuration,
+  renderCodeGraphBuildCounters as renderBuildCounters,
+  renderCodeGraphReadySnapshotStatus as renderReadySnapshotStatus,
+} from './status_render.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
 import {previewCodeGraphInventory, type CodeGraphInventoryPreview} from './inventory.js';
 import {
@@ -294,8 +297,12 @@ interface CodeGraphExportTemporaryIdentity {
 
 export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly json?: boolean},
+  options: CwdOption & {readonly buildLimit?: number; readonly json?: boolean},
 ) {
+  const statusOptions = resolveCodeGraphStatusOptions(options);
+  if (statusOptions.error !== undefined) {
+    return yield* Effect.fail(new CodeGraphCommandError(statusOptions.error));
+  }
   const cwd = yield* commandCwd(options.cwd);
   const path = yield* Path.Path;
   const query = yield* CodeGraphQueryService;
@@ -312,21 +319,14 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
   if (options.json) {
     yield* writeFinalCliOutput(
-      JSON.stringify({
-        build: current ?? null,
-        builds: buildStatuses,
+      serializeCodeGraphStatusV3(selection, identity.worktreeId, statusOptions.buildLimit, {
         databasePath: layout.databasePath,
         identity,
         languagePacks: ready.languagePacks,
         obsoleteStores,
-        queuedWorktreeIds,
         readySnapshot: ready.readySnapshot ?? null,
         stale: ready.stale,
         storage,
-        type: 'code-graph-status',
-        version: 2,
-        waiterCount: selection.waiters.length,
-        waiters: selection.waiters,
       }),
     );
     return;
@@ -638,24 +638,6 @@ function renderCodeGraphInventoryPreview(preview: CodeGraphInventoryPreview): st
   return `${lines.join('\n')}\n`;
 }
 
-function renderReadySnapshotStatus(status: {
-  readonly readySnapshot?: {
-    readonly edgeCount: number;
-    readonly fileCount: number;
-    readonly id: string;
-    readonly symbolCount: number;
-  };
-  readonly stale: boolean;
-}): Effect.Effect<void> {
-  return status.readySnapshot
-    ? Console.log(
-        `Current-worktree ready snapshot: ${status.readySnapshot.id} · ${status.readySnapshot.fileCount} files · ` +
-          `${status.readySnapshot.symbolCount} symbols · ${status.readySnapshot.edgeCount} edges · ` +
-          `${status.stale ? 'stale' : 'current'}`,
-      )
-    : Console.log('Current-worktree ready snapshot: none');
-}
-
 function renderObsoleteStoreStatus(inventory: ObsoleteCodeGraphStoreInventory): Effect.Effect<void> {
   if (inventory.fileCount === 0 && inventory.unsafeEntryCount === 0) return Effect.void;
   const versions = inventory.checkouts.flatMap(checkout => checkout.versions);
@@ -733,35 +715,6 @@ function formatBytes(bytes: number): string {
 
 function formatPercent(ratio: number): string {
   return `${(Math.max(0, Math.min(1, ratio)) * 100).toFixed(1)}%`;
-}
-
-function renderBuildCounters(status: ObservedCodeGraphBuildStatus): string | undefined {
-  const counters = status.counters;
-  const measured =
-    counters.completed === undefined || counters.total === undefined
-      ? undefined
-      : `${counters.completed}/${counters.total} ${counters.unit ?? 'items'}`;
-  const details = [
-    counters.accepted === undefined ? undefined : `${counters.accepted} accepted`,
-    counters.reused === undefined ? undefined : `${counters.reused} reused`,
-    counters.resolved === undefined ? undefined : `${counters.resolved} references linked`,
-    counters.skipped === undefined ? undefined : `${counters.skipped} skipped`,
-    counters.excluded === undefined ? undefined : `${counters.excluded} excluded`,
-    counters.pagesCompleted === undefined ? undefined : `${counters.pagesCompleted} cleanup pages`,
-    counters.rowsDeleted === undefined ? undefined : `${counters.rowsDeleted} rows reclaimed`,
-    counters.symbols === undefined ? undefined : `${counters.symbols} symbols`,
-    counters.edges === undefined ? undefined : `${counters.edges} edges`,
-  ].filter((value): value is string => value !== undefined);
-  return [measured, ...details].filter((value): value is string => value !== undefined).join(' · ') || undefined;
-}
-
-function formatStatusDuration(milliseconds: number): string {
-  if (!Number.isFinite(milliseconds)) return 'unknown';
-  const seconds = Math.max(0, Math.ceil(milliseconds / 1_000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.ceil(minutes / 60)}h`;
 }
 
 export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* (
@@ -1973,23 +1926,6 @@ function renderMaterializationRows(
       : `${rows.deduplicatedReferences.toLocaleString()} repeated resolution records collapsed`,
   ].filter((value): value is string => value !== undefined);
   return values.length > 0 ? values.join(', ') : undefined;
-}
-
-function etaBasisLabel(
-  basis: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
-): string {
-  switch (basis) {
-    case 'cached-fact-bytes':
-      return 'cached-fact bytes';
-    case 'final-fact-bytes':
-      return 'final attributed fact bytes';
-    case 'source-bytes':
-      return 'source bytes';
-    case 'extraction-work':
-      return 'class-weighted extraction work';
-    case 'files':
-      return 'files';
-  }
 }
 
 function formatMilliseconds(milliseconds: number): string {

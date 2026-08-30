@@ -823,7 +823,14 @@ describe('code graph cross-process build status', () => {
           metrics: {
             batchesCompleted: 3,
             batchesTotal: 10,
-            fallbackReason: 'file-set-changed',
+            fallbackAssessment: {
+              addedFiles: 1,
+              changedFiles: 2,
+              deletedFiles: 0,
+              detail: 'resolution-domain-unowned',
+              stage: 'file-set-seed-assessment',
+            },
+            fallbackReason: 'project-closure-incomplete',
             mode: 'full',
             rows: {edges: 90, symbols: 60},
             sourceBytesCompleted: 12_000,
@@ -888,19 +895,36 @@ describe('code graph cross-process build status', () => {
     expect(status).toMatchObject({
       build: {
         counters: {completed: 3, reused: 2, total: 10},
-        materialization: {metrics: {fallbackReason: 'file-set-changed', mode: 'full'}},
+        materialization: {
+          metrics: {
+            fallbackAssessment: {
+              addedFiles: 1,
+              changedFiles: 2,
+              deletedFiles: 0,
+              detail: 'resolution-domain-unowned',
+              stage: 'file-set-seed-assessment',
+            },
+            fallbackReason: 'project-closure-incomplete',
+            mode: 'full',
+          },
+        },
         state: 'running',
       },
       obsoleteStores: {bytes: 15, fileCount: 1, unsafeEntryCount: 0},
+      projection: {
+        builds: {limit: 4, omitted: 0, returned: 1, total: 1},
+        queuedWorktreeIds: {limit: 4, omitted: 0, returned: 0, total: 0},
+        waiters: {limit: 4, omitted: 0, returned: 0, total: 0},
+      },
       type: 'code-graph-status',
-      version: 2,
+      version: 3,
     });
     const idleStatus = JSON.parse(result.idleOutput) as Record<string, unknown>;
-    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 2});
+    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 3});
     expect(Object.keys(idleStatus).sort()).toEqual(Object.keys(status).sort());
     expect(result.human).toContain('Current activity: writing graph facts');
     expect(result.human).toContain('full materialization');
-    expect(result.human).toContain('incremental fallback: file set changed');
+    expect(result.human).toContain('incremental fallback: project closure incomplete');
     expect(result.human).toContain('23.4 KiB current TEMP database');
     expect(result.human).toContain('31.3 KiB TEMP database high-water');
     expect(result.human).toContain('46.9 KiB allocated durable pages');
@@ -972,6 +996,74 @@ describe('code graph cross-process build status', () => {
     expect(status.readySnapshot?.id).toMatch(/^cgsn_/);
     expect(status.stale).toBe(false);
     expect(output.human).toContain('Ready snapshot: cgsn_');
+  });
+
+  it('bounds graph status JSON and pins the exact current worktree build', async () => {
+    const home = await mkdtemp('threadnote-graph-status-bounded-');
+    homes.push(home);
+    const repository = join(home, 'repository');
+    await mkdir(repository, {recursive: true});
+    await writeFile(join(repository, 'source.ts'), 'export const bounded = true;\n');
+    runGit(repository, ['init', '--quiet']);
+    runGit(repository, ['config', 'user.email', 'test@example.invalid']);
+    runGit(repository, ['config', 'user.name', 'Threadnote Test']);
+    runGit(repository, ['add', 'source.ts']);
+    runGit(repository, ['commit', '--quiet', '-m', 'fixture']);
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'manifest.yaml'),
+      user: 'tester',
+    };
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = yield* resolveRepositoryIdentity(repository);
+        const identities = [identity];
+        for (let index = 1; index <= 12; index += 1) {
+          identities.push({...identity, worktreeId: index.toString(16).repeat(64)});
+        }
+        for (const candidate of identities) {
+          const reporter = yield* makeCodeGraphBuildReporter(
+            candidate,
+            codeGraphLayout(path, home, candidate.checkoutId, candidate.worktreeId),
+          );
+          yield* reporter.completeSnapshot(fixtureSnapshot(candidate));
+        }
+        const json = yield* captureConsole(runCodeGraphStatus(config, {buildLimit: 2, cwd: repository, json: true}));
+        const human = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}));
+        const humanLimitError = yield* runCodeGraphStatus(config, {buildLimit: 2, cwd: repository}).pipe(
+          Effect.match({
+            onFailure: error => (error instanceof Error ? error.message : String(error)),
+            onSuccess: () => undefined,
+          }),
+        );
+        return {human: human.output, humanLimitError, json: json.output.trim(), worktreeId: identity.worktreeId};
+      }),
+    );
+    const status = JSON.parse(result.json) as {
+      readonly build: {readonly identity: {readonly worktreeId: string}} | null;
+      readonly builds: readonly {readonly identity: {readonly worktreeId: string}}[];
+      readonly projection: {
+        readonly builds: {
+          readonly limit: number;
+          readonly omitted: number;
+          readonly returned: number;
+          readonly total: number;
+        };
+      };
+      readonly version: number;
+    };
+
+    expect(status.version).toBe(3);
+    expect(status.build?.identity.worktreeId).toBe(result.worktreeId);
+    expect(status.builds).toHaveLength(2);
+    expect(status.builds.map(build => build.identity.worktreeId)).toContain(result.worktreeId);
+    expect(status.projection.builds).toEqual({limit: 2, omitted: 11, returned: 2, total: 13});
+    expect(result.human).toContain('Build: completed');
+    expect(result.humanLimitError).toBe('Use --build-limit only with --json.');
   });
 });
 

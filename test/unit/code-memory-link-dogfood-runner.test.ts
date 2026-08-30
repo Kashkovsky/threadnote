@@ -70,7 +70,15 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
       readySnapshotId: `cgsn_${'b'.repeat(40)}`,
       stale: true,
     });
-    expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/expected v2 status/);
+    expect(
+      projectCodeMemoryLinkDogfoodGraphStatusV1({
+        readySnapshot: {commit: 'a'.repeat(40), dirty: false, id: `cgsn_${'b'.repeat(40)}`},
+        stale: true,
+        type: 'code-graph-status',
+        version: 3,
+      }),
+    ).toMatchObject({stale: true});
+    expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/supported status/);
   });
 
   it('derives indexing activity from the independent graph-status process receipt', () => {
@@ -83,6 +91,7 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
       waiters: [],
     };
     expect(codeGraphStatusHasIndexingActivity(idle)).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, version: 3})).toBe(false);
     expect(codeGraphStatusHasIndexingActivity({...idle, build: {state: 'running'}, builds: [{state: 'running'}]})).toBe(
       true,
     );

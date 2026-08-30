@@ -2,10 +2,13 @@ import {Effect, Result} from 'effect';
 import {
   recordAnonymousTelemetryFields,
   withAnonymousTelemetryCheckpoint,
+  type AnonymousTelemetryContextBriefContract,
   type AnonymousTelemetryContextBriefCitationCoverage,
   type AnonymousTelemetryContextBriefCitationResult,
   type AnonymousTelemetryContextBriefCitationUnknownReason,
   type AnonymousTelemetryContextBriefScope,
+  type AnonymousTelemetryContextBriefMode,
+  type AnonymousTelemetryContextBriefReturnedLane,
   type AnonymousTelemetryFields,
   type AnonymousTelemetryQuantityBucket,
 } from '../effect/telemetry.js';
@@ -23,6 +26,21 @@ export interface ContextBriefCitationTelemetrySummary {
   readonly unknownReason?: AnonymousTelemetryContextBriefCitationUnknownReason;
 }
 
+export interface ContextBriefCodeAnchorTelemetrySummary {
+  readonly complete: boolean;
+  /** Private compiler gap codes; classified to a closed enum and never exported. */
+  readonly gaps: readonly string[];
+  readonly matchedMemories: number;
+  readonly recoveryPresent: boolean;
+  readonly requested: number;
+  readonly resolved: number;
+}
+
+export interface ContextBriefRequestTelemetry {
+  readonly contract: AnonymousTelemetryContextBriefContract;
+  readonly mode: AnonymousTelemetryContextBriefMode;
+}
+
 export interface ContextBriefAnonymousTelemetryReporter {
   /** Records only the local/workset classification on the invocation recorder. */
   readonly annotate: Effect.Effect<void>;
@@ -31,10 +49,14 @@ export interface ContextBriefAnonymousTelemetryReporter {
     summarize: ContextBriefCitationTelemetrySummary | ((value: A) => ContextBriefCitationTelemetrySummary),
   ) => Effect.Effect<A, E, R>;
   readonly graph: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  readonly codeLinkedMemory: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   readonly memory: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   readonly projection: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
     outputTruncated: boolean | ((value: A) => boolean),
+    codeAnchors?: ContextBriefCodeAnchorTelemetrySummary | ((value: A) => ContextBriefCodeAnchorTelemetrySummary),
+    returnedLane?:
+      AnonymousTelemetryContextBriefReturnedLane | ((value: A) => AnonymousTelemetryContextBriefReturnedLane),
   ) => Effect.Effect<A, E, R>;
 }
 
@@ -106,6 +128,52 @@ export function contextBriefTelemetryQuantityBucket(value: number): AnonymousTel
   return value === 0 ? '0' : `2^${Math.floor(Math.log2(value))}`;
 }
 
+/** Project the v3 anchor round trip without admitting selectors, ordinals, or memory identities. */
+export function contextBriefCodeAnchorTelemetryFields(
+  summary: ContextBriefCodeAnchorTelemetrySummary,
+  outputTruncated = false,
+): AnonymousTelemetryFields | undefined {
+  if (
+    typeof summary.complete !== 'boolean' ||
+    typeof summary.recoveryPresent !== 'boolean' ||
+    !Array.isArray(summary.gaps) ||
+    !summary.gaps.every(gap => typeof gap === 'string') ||
+    ![summary.requested, summary.resolved, summary.matchedMemories].every(isPrivateCount) ||
+    summary.requested === 0 ||
+    summary.resolved > summary.requested ||
+    summary.complete !== (summary.resolved === summary.requested)
+  ) {
+    return undefined;
+  }
+  const resolutionUnavailable = summary.gaps.some(gap =>
+    ['code-anchor-ref-unsupported', 'code-anchor-resolution-unavailable', 'code-anchor-scope-unsupported'].includes(
+      gap,
+    ),
+  );
+  const unavailable =
+    resolutionUnavailable ||
+    summary.gaps.some(gap =>
+      ['code-anchor-recall-unavailable', 'code-anchor-selector-matches-unvalidated'].includes(gap),
+    );
+  const unresolved = !summary.complete && !resolutionUnavailable;
+  const truncated = outputTruncated || summary.gaps.includes('code-anchor-recall-truncated');
+  const gapClasses = [
+    ...(unavailable ? (['unavailable'] as const) : []),
+    ...(unresolved ? (['unresolved'] as const) : []),
+    ...(truncated ? (['truncated'] as const) : []),
+  ];
+  const gapClass = gapClasses.length === 0 ? 'none' : gapClasses.length === 1 ? gapClasses[0]! : 'mixed';
+  return {
+    contextBriefCodeAnchorCoverage: resolutionUnavailable ? 'unavailable' : summary.complete ? 'complete' : 'partial',
+    contextBriefCodeAnchorGap: gapClass !== 'none',
+    contextBriefGapClass: gapClass,
+    contextBriefCodeAnchorsMatchedMemoriesBucket: contextBriefTelemetryQuantityBucket(summary.matchedMemories),
+    contextBriefCodeAnchorsRequestedBucket: contextBriefTelemetryQuantityBucket(summary.requested),
+    contextBriefCodeAnchorsResolvedBucket: contextBriefTelemetryQuantityBucket(summary.resolved),
+    contextBriefRecoveryPresent: summary.recoveryPresent,
+  };
+}
+
 /**
  * Independent reporter foundation. Context Brief wiring owns only the phase
  * boundaries and a selector for its successful result; this module owns the
@@ -114,13 +182,21 @@ export function contextBriefTelemetryQuantityBucket(value: number): AnonymousTel
  */
 export function makeContextBriefAnonymousTelemetryReporter(
   scope: AnonymousTelemetryContextBriefScope,
+  request: ContextBriefRequestTelemetry = {contract: 'task-only-v2', mode: 'brief'},
 ): ContextBriefAnonymousTelemetryReporter {
   let retainedCitationFields: AnonymousTelemetryFields | undefined;
-  const checkpoint = <A, E, R>(phase: 'context.brief.graph' | 'context.brief.memory', effect: Effect.Effect<A, E, R>) =>
-    withAnonymousTelemetryCheckpoint({fields: {contextBriefScope: scope, phase}, retainFields: false}, effect);
+  const requestFields = {
+    contextBriefContract: request.contract,
+    contextBriefMode: request.mode,
+    contextBriefScope: scope,
+  } as const;
+  const checkpoint = <A, E, R>(
+    phase: 'context.brief.code-linked-memory' | 'context.brief.graph' | 'context.brief.memory',
+    effect: Effect.Effect<A, E, R>,
+  ) => withAnonymousTelemetryCheckpoint({fields: {...requestFields, phase}, retainFields: false}, effect);
 
   return {
-    annotate: recordAnonymousTelemetryFields({contextBriefScope: scope}),
+    annotate: recordAnonymousTelemetryFields(requestFields),
     citationValidation: (effect, summarize) => {
       const measured = Effect.sync(() => {
         retainedCitationFields = undefined;
@@ -138,7 +214,7 @@ export function makeContextBriefAnonymousTelemetryReporter(
       );
       return withAnonymousTelemetryCheckpoint(
         {
-          fields: {contextBriefScope: scope, phase: 'context.brief.citation-validation'},
+          fields: {...requestFields, phase: 'context.brief.citation-validation'},
           retainFields: false,
           successFields: measuredValue => measuredValue.fields ?? {},
           successOutcome: measuredValue => (measuredValue.fields === undefined ? 'unavailable' : 'success'),
@@ -153,9 +229,10 @@ export function makeContextBriefAnonymousTelemetryReporter(
         Effect.map(measuredValue => measuredValue.value),
       );
     },
+    codeLinkedMemory: effect => checkpoint('context.brief.code-linked-memory', effect),
     graph: effect => checkpoint('context.brief.graph', effect),
     memory: effect => checkpoint('context.brief.memory', effect),
-    projection: (effect, outputTruncated) => {
+    projection: (effect, outputTruncated, codeAnchors, returnedLane) => {
       const measured = effect.pipe(
         Effect.map(value => {
           const projection = Result.try(() =>
@@ -163,16 +240,42 @@ export function makeContextBriefAnonymousTelemetryReporter(
           );
           const truncated =
             Result.isSuccess(projection) && typeof projection.success === 'boolean' ? projection.success : undefined;
-          return {truncated, value} as const;
+          const anchorProjection =
+            codeAnchors === undefined || truncated === undefined
+              ? Result.succeed(undefined)
+              : Result.try(() =>
+                  contextBriefCodeAnchorTelemetryFields(
+                    typeof codeAnchors === 'function' ? codeAnchors(value) : codeAnchors,
+                    truncated,
+                  ),
+                );
+          const anchorFields = Result.isSuccess(anchorProjection) ? anchorProjection.success : undefined;
+          const laneProjection =
+            returnedLane === undefined
+              ? Result.succeed(undefined)
+              : Result.try(() => (typeof returnedLane === 'function' ? returnedLane(value) : returnedLane));
+          const lane = Result.isSuccess(laneProjection) ? laneProjection.success : undefined;
+          return {anchorFields, lane, truncated, value} as const;
         }),
       );
       return withAnonymousTelemetryCheckpoint(
         {
-          fields: {contextBriefScope: scope, phase: 'context.brief.projection'},
+          fields: {...requestFields, phase: 'context.brief.projection'},
           retainFields: false,
           successFields: measuredValue =>
-            measuredValue.truncated === undefined ? {} : {contextBriefOutputTruncated: measuredValue.truncated},
-          successOutcome: measuredValue => (measuredValue.truncated === undefined ? 'unavailable' : 'success'),
+            measuredValue.truncated === undefined
+              ? {}
+              : {
+                  ...measuredValue.anchorFields,
+                  contextBriefOutputTruncated: measuredValue.truncated,
+                  ...(measuredValue.lane === undefined ? {} : {contextBriefReturnedLane: measuredValue.lane}),
+                },
+          successOutcome: measuredValue =>
+            measuredValue.truncated === undefined ||
+            (codeAnchors !== undefined && measuredValue.anchorFields === undefined) ||
+            (returnedLane !== undefined && measuredValue.lane === undefined)
+              ? 'unavailable'
+              : 'success',
         },
         measured,
       ).pipe(
@@ -181,8 +284,10 @@ export function makeContextBriefAnonymousTelemetryReporter(
             ? Effect.void
             : recordAnonymousTelemetryFields({
                 ...retainedCitationFields,
+                ...measuredValue.anchorFields,
                 contextBriefOutputTruncated: measuredValue.truncated,
-                contextBriefScope: scope,
+                ...(measuredValue.lane === undefined ? {} : {contextBriefReturnedLane: measuredValue.lane}),
+                ...requestFields,
                 phase: 'context.brief.projection',
               }),
         ),

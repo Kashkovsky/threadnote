@@ -4,7 +4,6 @@ import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process/diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
-import {readCodeGraphBuildStatuses} from './build_status.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from './embedding.js';
@@ -184,31 +183,6 @@ export function withSharedCleanRequestGate<A, E, R>(input: {
     input.effect,
   );
 }
-
-export const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnapshot')(function* (
-  store: CodeGraphStoreShape,
-  layout: CodeGraphLayout,
-  identity: RepositoryIdentity,
-  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
-  requestKey: string,
-  requireDirectFull: boolean,
-) {
-  const statuses = yield* readCodeGraphBuildStatuses(layout);
-  const completed = statuses.find(
-    status => status.state === 'completed' && status.request?.key === requestKey && status.result?.snapshotId,
-  );
-  if (!completed?.result?.snapshotId) return undefined;
-  const ready = yield* store.currentLexicalReadySnapshotById(layout.databasePath, completed.result.snapshotId);
-  if (
-    !ready ||
-    ready.commit !== identity.headCommit ||
-    ready.dirty !== overlay.dirty ||
-    (overlay.dirty && requireDirectFull && (ready.baseSnapshotId !== undefined || !ready.id.endsWith('-direct')))
-  ) {
-    return undefined;
-  }
-  return ready;
-});
 
 export const prepareReadyAnalysisSummary = Effect.fn('codeGraph.prepareReadyAnalysisSummary')(function* (input: {
   readonly databasePath: string;
@@ -459,7 +433,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         const reused = yield* attemptReusableCleanSnapshot(input, workspace);
         if (Option.isSome(reused)) {
           if (reused.value.mode === 'complete') return reused.value.summary;
-          cleanFallbackAssessment = {mode: 'fallback', reason: reused.value.reason};
+          cleanFallbackAssessment = reused.value;
         }
       }
       const resumed = input.force
@@ -1124,6 +1098,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   const incrementalAssessment =
     input.incrementalAssessment ??
     (input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined);
+  const fallbackAssessment =
+    incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.fallbackAssessment : undefined;
   let fallbackReason: CodeGraphOverlayFallbackReason | undefined =
     incrementalAssessment?.mode === 'fallback'
       ? incrementalAssessment.reason
@@ -1278,6 +1254,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       cachedFactBytesTotal,
       ...replayMetrics,
       ...(changedFactBytesCompleted === undefined ? {} : {changedFactBytesCompleted}),
+      ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
       ...(fallbackReason === undefined ? {} : {fallbackReason}),
       factsBytesCompleted,
       ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
@@ -1983,6 +1960,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           }
         : {}),
       ...(fallbackReason ? {fallbackReason} : {}),
+      ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
       ...(incrementalAssessment?.resolutionPublicationAssessment
         ? {
             resolutionLookupKeyForm: incrementalAssessment.resolutionPublicationAssessment.lookupKeyForm,

@@ -5,8 +5,8 @@ import type {RuntimeConfig} from '../types.js';
 import {isJsonObject} from '../utils.js';
 
 export const TELEMETRY_CONFIGURATION_VERSION = 1 as const;
-export const TELEMETRY_CONSENT_VERSION = 5 as const;
-export const TELEMETRY_RENEWABLE_CONSENT_VERSION = 4 as const;
+export const TELEMETRY_CONSENT_VERSION = 6 as const;
+export const TELEMETRY_RENEWABLE_CONSENT_VERSION = 5 as const;
 export const DEFAULT_TELEMETRY_ENDPOINT = 'https://telemetry.threadnote.io/v1/traces';
 
 export interface DisabledTelemetryConfiguration {
@@ -79,7 +79,7 @@ export const readTelemetryConfiguration = Effect.fn('telemetry.readConfiguration
 });
 
 /**
- * Recognizes only the exact enabled v4 shape so update/status UX can explain
+ * Recognizes only the exact enabled v5 shape so update/status UX can explain
  * why telemetry stopped. Malformed, disabled, older, newer, and current
  * configurations are not renewal candidates and continue to fail closed.
  */

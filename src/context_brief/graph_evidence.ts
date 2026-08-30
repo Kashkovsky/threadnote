@@ -1,7 +1,7 @@
 import {Effect} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../code_graph/query.js';
-import type {CodeGraphEdge, CodeGraphQueryResult} from '../code_graph/types.js';
+import type {CodeGraphEdge, CodeGraphQueryResult, CodeGraphStatus} from '../code_graph/types.js';
 import {queryCodeGraphWorksetV2, type QueryCodeGraphWorksetV2OptionsV1} from '../code_graph/workset_query_v2.js';
 import type {CodeGraphWorksetEvidenceProjectionV2} from '../code_graph/workset_evidence.js';
 import type {RuntimeConfig} from '../types.js';
@@ -12,6 +12,13 @@ import type {
   ContextBriefPlanV1,
   ContextBriefSnapshotV1,
 } from './types.js';
+import {
+  contextBriefAnchoredRepositoryGraphResultMatches,
+  contextBriefAnchoredRepositoryGraphRequests,
+  contextBriefResolvedPathTraceRequest,
+  contextBriefResolvedPathTraceSeed,
+  mergeContextBriefAnchoredRepositoryGraphResults,
+} from './graph_anchor_evidence.js';
 
 const TRUST = {
   classification: 'untrusted-repository-data',
@@ -50,15 +57,104 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   plan: ContextBriefPlanV1['graph'],
 ) {
   if (plan.scope.kind !== 'repository') throw new Error('Context Brief repository graph plan has the wrong scope.');
+  const callerCwd = plan.scope.callerCwd;
   const query = yield* CodeGraphQueryService;
-  const status = yield* query.status(config.agentContextHome, plan.scope.callerCwd, {requestMaintenance: false});
-  if (status.readySnapshot === undefined) {
+  const status = yield* query.status(config.agentContextHome, callerCwd, {requestMaintenance: false});
+  const readySnapshot = status.readySnapshot;
+  if (readySnapshot === undefined) {
     return unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {
       missing: 1,
     });
   }
+  const anchoredRequests = contextBriefAnchoredRepositoryGraphRequests(plan);
+  if (anchoredRequests.length > 0) {
+    const outcomes = yield* Effect.forEach(
+      anchoredRequests,
+      request =>
+        Effect.gen(function* () {
+          const primary = yield* query
+            .inspect({
+              cwd: callerCwd,
+              depth: request.depth,
+              direction: request.direction,
+              edgeLimit: request.edgeLimit,
+              nodeLimit: request.nodeLimit,
+              operation: request.operation,
+              ...(request.nodeId === undefined ? {} : {nodeId: request.nodeId}),
+              ...(request.query === undefined ? {} : {query: request.query}),
+              ...(request.seedQueries === undefined ? {} : {seedQueries: request.seedQueries}),
+              ...(request.seedQueryCount === undefined ? {} : {seedQueryCount: request.seedQueryCount}),
+              refresh: false,
+              requestMaintenance: false,
+              statusObservation: observationFromCodeGraphStatus(status),
+              strictFreshness: false,
+              threadnoteHome: config.agentContextHome,
+            })
+            .pipe(Effect.option);
+          if (primary._tag === 'None' || !matchesReadyGraph(primary.value, request, status, readySnapshot.id)) {
+            return {complete: false as const, result: undefined};
+          }
+          if (request.phase === 'evidence') return {complete: true as const, result: primary.value};
+          const path = request.query;
+          if (path === undefined) return {complete: false as const, result: undefined};
+          const seed = contextBriefResolvedPathTraceSeed(primary.value, path);
+          if (seed === undefined) return {complete: false as const, result: undefined};
+          const evidenceRequest = contextBriefResolvedPathTraceRequest(plan, seed.id);
+          const evidence = yield* query
+            .inspect({
+              cwd: callerCwd,
+              depth: evidenceRequest.depth,
+              direction: evidenceRequest.direction,
+              edgeLimit: evidenceRequest.edgeLimit,
+              nodeId: evidenceRequest.nodeId,
+              nodeLimit: evidenceRequest.nodeLimit,
+              operation: evidenceRequest.operation,
+              refresh: false,
+              requestMaintenance: false,
+              statusObservation: observationFromCodeGraphStatus(status),
+              strictFreshness: false,
+              threadnoteHome: config.agentContextHome,
+            })
+            .pipe(Effect.option);
+          if (
+            evidence._tag === 'Some' &&
+            matchesReadyGraph(evidence.value, evidenceRequest, status, readySnapshot.id)
+          ) {
+            return {complete: true as const, result: evidence.value};
+          }
+          return {
+            complete: false as const,
+            result: {
+              ...primary.value,
+              edges: [],
+              nodes: [seed],
+              warnings: [
+                ...primary.value.warnings,
+                'Exact anchored relationship traversal was unavailable; results are partial.',
+              ],
+            },
+          };
+        }),
+      {concurrency: 4},
+    );
+    const exact = outcomes.flatMap(outcome => (outcome.result === undefined ? [] : [outcome.result]));
+    if (exact.length === 0) {
+      return unavailableContextBriefGraphEvidence('graph-query-unavailable', 1, {failed: 1});
+    }
+    const complete = outcomes.filter(outcome => outcome.complete).length;
+    const evidence = fromRepositoryQuery(
+      mergeContextBriefAnchoredRepositoryGraphResults(plan, exact, anchoredRequests.length - complete),
+    );
+    return complete === anchoredRequests.length
+      ? evidence
+      : {
+          ...evidence,
+          coverage: {...evidence.coverage, complete: false},
+          gaps: [...evidence.gaps, 'graph-coverage-incomplete'],
+        };
+  }
   const result = yield* query.inspect({
-    cwd: plan.scope.callerCwd,
+    cwd: callerCwd,
     edgeLimit: plan.edgeLimit,
     nodeLimit: plan.nodeLimit,
     operation: 'query',
@@ -71,6 +167,19 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   });
   return fromRepositoryQuery(result);
 });
+
+function matchesReadyGraph(
+  result: CodeGraphQueryResult,
+  request: Parameters<typeof contextBriefAnchoredRepositoryGraphResultMatches>[0],
+  status: CodeGraphStatus,
+  snapshotId: string,
+): boolean {
+  return (
+    result.repository.repositoryId === status.identity.repositoryId &&
+    result.snapshot.id === snapshotId &&
+    contextBriefAnchoredRepositoryGraphResultMatches(request, result)
+  );
+}
 
 export function fromWorksetProjection(result: CodeGraphWorksetEvidenceProjectionV2): ContextBriefGraphEvidenceV1 {
   const cards = result.cards.map((card, rank): ContextBriefGraphCardV1 => ({

@@ -46,7 +46,9 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
     },
     graph: {
       ...modeShape,
+      codeRefs: request.codeRefs ?? [],
       maximumEstimatedTokens: CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
+      mode: request.mode,
       query: request.task,
       scope: request.scope,
     },

@@ -15,6 +15,7 @@ import type {SystemInfoShape} from '../../src/effect/system.js';
 import type {MemoryCodeCitationV1} from '../../src/memory/code_citation.js';
 import {
   contextBriefCitationTelemetryFields,
+  contextBriefCodeAnchorTelemetryFields,
   contextBriefTelemetryQuantityBucket,
   makeContextBriefAnonymousTelemetryReporter,
   type ContextBriefCitationTelemetrySummary,
@@ -45,6 +46,99 @@ describe('Context Brief anonymous telemetry', () => {
     expect(contextBriefTelemetryQuantityBucket(-1)).toBeUndefined();
     expect(contextBriefTelemetryQuantityBucket(1.5)).toBeUndefined();
     expect(contextBriefTelemetryQuantityBucket(Number.POSITIVE_INFINITY)).toBeUndefined();
+  });
+
+  it('derives closed anchor gap classes and never projects private selectors', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({max: 8, min: 1}),
+        fc.integer({max: 8, min: 0}),
+        fc.integer({max: 128, min: 0}),
+        fc.boolean(),
+        fc.boolean(),
+        fc.string({minLength: 1}),
+        (requested, rawResolved, matchedMemories, truncated, recoveryPresent, privateSelector) => {
+          const resolved = Math.min(requested, rawResolved);
+          const privateSentinel = `private-selector:${privateSelector}:private-selector`;
+          const gaps = [
+            ...(resolved === requested
+              ? []
+              : resolved === 0
+                ? ['code-anchor-resolution-unavailable']
+                : ['code-anchors-unresolved']),
+            privateSentinel,
+          ];
+          const fields = contextBriefCodeAnchorTelemetryFields(
+            {
+              complete: resolved === requested,
+              gaps,
+              matchedMemories,
+              recoveryPresent,
+              requested,
+              resolved,
+              privateSelector: privateSentinel,
+            } as never,
+            truncated,
+          );
+          expect(fields).toMatchObject({
+            contextBriefCodeAnchorCoverage:
+              resolved === requested ? 'complete' : resolved === 0 ? 'unavailable' : 'partial',
+            contextBriefCodeAnchorGap: resolved !== requested || truncated,
+            contextBriefCodeAnchorsMatchedMemoriesBucket: contextBriefTelemetryQuantityBucket(matchedMemories),
+            contextBriefCodeAnchorsRequestedBucket: contextBriefTelemetryQuantityBucket(requested),
+            contextBriefCodeAnchorsResolvedBucket: contextBriefTelemetryQuantityBucket(resolved),
+            contextBriefGapClass:
+              resolved !== requested && truncated
+                ? 'mixed'
+                : truncated
+                  ? 'truncated'
+                  : resolved === 0
+                    ? 'unavailable'
+                    : resolved === requested
+                      ? 'none'
+                      : 'unresolved',
+            contextBriefRecoveryPresent: recoveryPresent,
+          });
+          expect(JSON.stringify(fields)).not.toContain(privateSentinel);
+        },
+      ),
+      {numRuns: 100},
+    );
+    expect(
+      contextBriefCodeAnchorTelemetryFields({
+        complete: true,
+        gaps: [],
+        matchedMemories: 1,
+        recoveryPresent: false,
+        requested: 2,
+        resolved: 1,
+      }),
+    ).toBeUndefined();
+
+    expect(
+      contextBriefCodeAnchorTelemetryFields({
+        complete: true,
+        gaps: ['code-anchor-recall-unavailable'],
+        matchedMemories: 0,
+        recoveryPresent: true,
+        requested: 2,
+        resolved: 2,
+      }),
+    ).toMatchObject({
+      contextBriefCodeAnchorCoverage: 'complete',
+      contextBriefCodeAnchorGap: true,
+      contextBriefGapClass: 'unavailable',
+    });
+    expect(
+      contextBriefCodeAnchorTelemetryFields({
+        complete: false,
+        gaps: ['code-anchors-unresolved', 'code-anchor-recall-unavailable'],
+        matchedMemories: 0,
+        recoveryPresent: true,
+        requested: 2,
+        resolved: 1,
+      }),
+    ).toMatchObject({contextBriefCodeAnchorCoverage: 'partial', contextBriefGapClass: 'mixed'});
   });
 
   it('derives the closed result from status counts and projects no private values or exact counts', () => {
@@ -296,6 +390,61 @@ describe('Context Brief anonymous telemetry', () => {
         'threadnote.event': 'completion',
         'threadnote.outcome': 'success',
         'threadnote.phase': 'context.brief.projection',
+      });
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('emits the anchored contract, code-linked phase, and projection quality surface', () => {
+    const capture = capturingTracer();
+    const reporter = makeContextBriefAnonymousTelemetryReporter('local', {
+      contract: 'code-anchored-v3',
+      mode: 'impact',
+    });
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'context_brief'},
+        Effect.gen(function* () {
+          yield* reporter.annotate;
+          yield* reporter.codeLinkedMemory(Effect.void);
+          yield* reporter.citationValidation(Effect.succeed('validated'), summary());
+          return yield* reporter.projection(
+            Effect.succeed('brief'),
+            true,
+            {
+              complete: false,
+              gaps: ['code-anchors-unresolved'],
+              matchedMemories: 8,
+              recoveryPresent: true,
+              requested: 4,
+              resolved: 3,
+            },
+            'memory',
+          );
+        }),
+      );
+
+      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+        'threadnote.context_brief.contract': 'code-anchored-v3',
+        'threadnote.context_brief.mode': 'impact',
+        'threadnote.phase': 'context.brief.code-linked-memory',
+      });
+      const projection = spanAttributes(capture.spans[2]!);
+      expect(projection).toMatchObject({
+        'threadnote.context_brief.code_anchor_coverage': 'partial',
+        'threadnote.context_brief.code_anchor_gap': true,
+        'threadnote.context_brief.code_anchors_matched_memories_bucket': '2^3',
+        'threadnote.context_brief.code_anchors_requested_bucket': '2^2',
+        'threadnote.context_brief.code_anchors_resolved_bucket': '2^1',
+        'threadnote.context_brief.gap_class': 'mixed',
+        'threadnote.context_brief.recovery_present': true,
+        'threadnote.context_brief.returned_lane': 'memory',
+      });
+      expect(spanAttributes(capture.spans[3]!)).toMatchObject({
+        'threadnote.context_brief.contract': 'code-anchored-v3',
+        'threadnote.context_brief.mode': 'impact',
+        'threadnote.context_brief.returned_lane': 'memory',
+        'threadnote.event': 'completion',
       });
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });

@@ -56,7 +56,7 @@ describe('telemetry configuration', () => {
         version: 1,
       },
       {consentVersion: 3, enabled: false, version: 1},
-      {consentVersion: 6, enabled: false, version: 1},
+      {consentVersion: 7, enabled: false, version: 1},
       {consentVersion: 5, enabled: false, version: 2},
     ]) {
       expect(() => parseTelemetryConfiguration(JSON.stringify(malformed))).toThrow(TelemetryConfigurationError);
@@ -120,14 +120,14 @@ describe('telemetry configuration', () => {
           }),
         );
         expect(renewal).toEqual(
-          consentVersion === 4 &&
+          consentVersion === 5 &&
             enabled &&
             autoAccept !== true &&
             !extraField &&
             validEndpoint &&
             validSalt &&
             version === 1
-            ? {consentVersion: 4, endpoint: DEFAULT_TELEMETRY_ENDPOINT}
+            ? {consentVersion: 5, endpoint: DEFAULT_TELEMETRY_ENDPOINT}
             : undefined,
         );
       }),
@@ -153,10 +153,10 @@ describe('telemetry configuration', () => {
               version: 1,
             }),
           );
-        if (consentVersion === 5 || (consentVersion < 5 && autoAccept)) {
+        if (consentVersion === 6 || (consentVersion < 6 && autoAccept)) {
           expect(parse()).toEqual({
             ...(autoAccept ? {autoAccept: true} : {}),
-            consentVersion: 5,
+            consentVersion: 6,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
             sessionSalt: FIXED_SESSION_SALT,
@@ -235,7 +235,7 @@ describe('telemetry configuration', () => {
         yield* fs.writeFileString(
           file,
           `${JSON.stringify({
-            consentVersion: 4,
+            consentVersion: 5,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
             sessionSalt: FIXED_SESSION_SALT,
@@ -247,7 +247,7 @@ describe('telemetry configuration', () => {
         expect(yield* resolveTelemetryConfiguration(config)).toBeUndefined();
         expect(yield* Effect.exit(readTelemetryConfiguration(config))).toMatchObject({_tag: 'Failure'});
         expect(yield* readTelemetryConsentRenewal(config)).toEqual({
-          consentVersion: 4,
+          consentVersion: 5,
           endpoint: DEFAULT_TELEMETRY_ENDPOINT,
         });
 
@@ -255,7 +255,7 @@ describe('telemetry configuration', () => {
           file,
           `${JSON.stringify({
             autoAccept: true,
-            consentVersion: 4,
+            consentVersion: 5,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
             sessionSalt: FIXED_SESSION_SALT,
@@ -265,7 +265,7 @@ describe('telemetry configuration', () => {
         );
         expect(yield* resolveTelemetryConfiguration(config)).toEqual({
           autoAccept: true,
-          consentVersion: 5,
+          consentVersion: 6,
           enabled: true,
           endpoint: DEFAULT_TELEMETRY_ENDPOINT,
           sessionSalt: FIXED_SESSION_SALT,

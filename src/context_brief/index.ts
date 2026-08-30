@@ -107,9 +107,11 @@ export function instrumentContextBriefCompilerDependencies<
       ? {}
       : {
           codeLinkedMemoryEvidence: (codePlan: ContextBriefPlanV1['codeAnchors']) =>
-            sources.codeLinkedMemoryEvidence!(codePlan).pipe(
-              Effect.catch(() =>
-                Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(codePlan.codeRefs.length)),
+            reporter.codeLinkedMemory(
+              sources.codeLinkedMemoryEvidence!(codePlan).pipe(
+                Effect.catch(() =>
+                  Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(codePlan.codeRefs.length)),
+                ),
               ),
             ),
         }),
@@ -121,6 +123,26 @@ export function instrumentContextBriefCompilerDependencies<
       reporter.projection(
         sources.projection(logical, maximumEstimatedTokens),
         projected => projected.structuredContent.output.truncated,
+        logical.coverage.memory.codeAnchors === undefined
+          ? undefined
+          : projected => ({
+              ...logical.coverage.memory.codeAnchors!,
+              gaps: logical.coverage.gaps,
+              recoveryPresent: projected.structuredContent.recommendedFollowUps.length > 0,
+            }),
+        projected => {
+          const graphReturned =
+            projected.structuredContent.graph.cards.length + projected.structuredContent.graph.contracts.length > 0;
+          const memoryReturned =
+            projected.structuredContent.durableDecisions.length + projected.structuredContent.activeHandoffs.length > 0;
+          return graphReturned && memoryReturned
+            ? 'mixed'
+            : graphReturned
+              ? 'graph'
+              : memoryReturned
+                ? 'memory'
+                : 'none';
+        },
       ),
   };
 }
@@ -177,7 +199,10 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
 ) {
   const request = planContextBrief(input);
   const requestedRepositories = request.scope.kind === 'repository' ? 1 : 0;
-  const reporter = makeContextBriefAnonymousTelemetryReporter(request.scope.kind === 'workset' ? 'workset' : 'local');
+  const reporter = makeContextBriefAnonymousTelemetryReporter(request.scope.kind === 'workset' ? 'workset' : 'local', {
+    contract: request.codeAnchors.codeRefs.length === 0 ? 'task-only-v2' : 'code-anchored-v3',
+    mode: request.mode,
+  });
   yield* reporter.annotate;
   return yield* compileContextBriefWith(
     instrumentContextBriefCompilerDependencies(
@@ -341,6 +366,7 @@ function telemetryUnknownReason(
 }
 
 export * from './graph_evidence.js';
+export * from './graph_anchor_evidence.js';
 export * from './citation_validation.js';
 export * from './memory_evidence.js';
 export * from './planner.js';

@@ -19,6 +19,7 @@ import {
 import type {CursorCloudMemoryScope} from '../../cursor/cloud.js';
 import {resourceIdIsWithin} from '../../storage/resource-id.js';
 import {resolveWorkspaceComponentContext} from '../../utils.js';
+import {withCodeAnchorFinalizationAnonymousTelemetry} from '../../telemetry/code_anchor_finalization.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
 import {
   type RuntimeConfig,
@@ -257,10 +258,13 @@ export function registerFinalizeCodeRefsTool(server: EffectMcpServerAdapter, con
       Effect.gen(function* () {
         const checkedUris = optionalResourceUriList(uri, 'finalize_code_refs');
         if (!checkedUris.ok) return checkedUris.error;
-        const receipt = yield* finalizeDeferredCodeAnchors(config, {
-          limit: limit ?? DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
-          uris: checkedUris.value,
-        });
+        const receipt = yield* withCodeAnchorFinalizationAnonymousTelemetry(
+          'explicit',
+          finalizeDeferredCodeAnchors(config, {
+            limit: limit ?? DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+            uris: checkedUris.value,
+          }),
+        );
         const summary = [
           `Deferred code anchors: ${receipt.finalizedCount} finalized, ${receipt.pendingCount} pending, ${receipt.conflictCount} conflict, ${receipt.failedCount} failed.`,
           ...receipt.items.map(
