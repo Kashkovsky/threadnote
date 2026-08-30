@@ -11,7 +11,9 @@ import {
 import type {CodeGraphReusableReexport} from '../../src/code_graph/store.js';
 import {
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES,
+  PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS,
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS,
+  PROJECT_RESOLUTION_CANDIDATE_PROJECTION_STORAGE_MAX_BYTES,
   PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES,
   PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES,
   planProjectResolutionCandidateScan,
@@ -23,7 +25,12 @@ import {
   type ProjectResolutionReexportKeys,
 } from '../../src/code_graph/store_resolution_candidate_closure.js';
 import {CODE_GRAPH_RESOLUTION_PASS_MAXIMUM} from '../../src/code_graph/store_resolution.js';
-import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphReference} from '../../src/code_graph/types.js';
+import type {
+  CodeGraphFileFacts,
+  CodeGraphInventoryFile,
+  CodeGraphReference,
+  CodeGraphSymbol,
+} from '../../src/code_graph/types.js';
 
 describe('resolution-candidate closure', () => {
   effectIt.prop(
@@ -107,6 +114,66 @@ describe('resolution-candidate closure', () => {
         expect(canonicalClosure(left)).toEqual(canonicalClosure(right));
       }),
     {fastCheck: {numRuns: 80}},
+  );
+
+  effectIt.effect('loads each page once and joins earlier evidence to aliases discovered later', () =>
+    Effect.gen(function* () {
+      const alias = 'alias';
+      const files = [inventory('a-consumer.ts', 1), inventory('b-symbol.ts', 1), inventory('z-barrel.ts', 1)];
+      const factsByPath = new Map<string, CodeGraphFileFacts>([
+        ['a-consumer.ts', facts('a-consumer.ts', [reference('a-consumer.ts', [[alias]])])],
+        ['b-symbol.ts', facts('b-symbol.ts', [], [symbol('b-symbol.ts', alias)])],
+        ['z-barrel.ts', facts('z-barrel.ts', [reexportReference('z-barrel.ts', alias, 'seed')])],
+      ]);
+      const plan = eligiblePlan(files, 1);
+      let pageLoads = 0;
+      const closure = yield* scanProjectResolutionCandidateClosure({
+        initialLookupKeys: [lookup('typescript', 'seed')],
+        loadPage: page => {
+          pageLoads += 1;
+          return Effect.succeed(loadedPage(page, factsByPath));
+        },
+        maximumSelectedFiles: 3,
+        plan,
+      });
+
+      expect(pageLoads).toBe(plan.pages.length);
+      expect(closure.mode).toBe('eligible');
+      if (closure.mode === 'eligible') {
+        expect(closure.paths).toEqual(['a-consumer.ts', 'z-barrel.ts']);
+        expect([...closure.directAliasSymbolConflictIdentities]).toEqual(['typescript\0alias']);
+      }
+    }),
+  );
+
+  effectIt.effect('turns projection fingerprint collisions into a conservative superset', () =>
+    Effect.gen(function* () {
+      const files = [
+        inventory('a-unrelated.ts', 1),
+        inventory('b-target.ts', 1),
+        inventory('c-symbol.ts', 1),
+        inventory('z-barrel.ts', 1),
+      ];
+      const factsByPath = new Map<string, CodeGraphFileFacts>([
+        ['a-unrelated.ts', facts('a-unrelated.ts', [reference('a-unrelated.ts', [['other']])])],
+        ['b-target.ts', facts('b-target.ts', [reference('b-target.ts', [['seed']])])],
+        ['c-symbol.ts', facts('c-symbol.ts', [], [symbol('c-symbol.ts', 'direct')])],
+        ['z-barrel.ts', facts('z-barrel.ts', [reexportReference('z-barrel.ts', 'alias', 'seed')])],
+      ]);
+      const closure = yield* scanProjectResolutionCandidateClosure({
+        initialLookupKeys: [lookup('typescript', 'seed')],
+        loadPage: page => Effect.succeed(loadedPage(page, factsByPath)),
+        maximumSelectedFiles: files.length,
+        plan: eligiblePlan(files, 1),
+        projectionFingerprint: () => 0n,
+      });
+
+      expect(closure.mode).toBe('eligible');
+      if (closure.mode === 'eligible') {
+        expect(closure.paths).toEqual(['a-unrelated.ts', 'b-target.ts', 'z-barrel.ts']);
+        expect([...closure.directAliasSymbolConflictIdentities]).toEqual(['typescript\0alias']);
+      }
+    }),
   );
 
   effectIt.prop(
@@ -286,6 +353,142 @@ describe('resolution-candidate closure', () => {
     {fastCheck: {numRuns: 120}},
   );
 
+  effectIt.effect.prop(
+    'matches an independent two-pass oracle across domains, symbols, and added reexports',
+    {
+      additionalRows: FC.array(
+        FC.record({
+          alias: FC.integer({max: 15, min: 0}),
+          candidate: FC.integer({max: 15, min: 0}),
+          domain: FC.constantFrom('jvm', 'typescript'),
+        }),
+        {maxLength: 8},
+      ),
+      rows: FC.array(
+        FC.record({
+          alias: FC.integer({max: 15, min: 0}),
+          candidate: FC.integer({max: 15, min: 0}),
+          domain: FC.constantFrom('jvm', 'typescript'),
+          keys: FC.uniqueArray(FC.integer({max: 15, min: 0}), {maxLength: 6}),
+          reexport: FC.boolean(),
+          symbolKeys: FC.uniqueArray(FC.integer({max: 15, min: 0}), {maxLength: 4}),
+        }),
+        {maxLength: 24},
+      ),
+      seed: FC.integer({max: 15, min: 0}),
+      seedDomain: FC.constantFrom('jvm', 'typescript'),
+    },
+    ({additionalRows, rows, seed, seedDomain}) =>
+      Effect.gen(function* () {
+        const files = rows.map((_, index) => inventory(`src/file-${index}.ts`, 1));
+        const baseReexports = rows.flatMap((row, index) =>
+          row.reexport
+            ? [
+                reexportKeys(
+                  `src/file-${index}.ts`,
+                  lookup(row.domain, `k${row.alias}`),
+                  lookup(row.domain, `k${row.candidate}`),
+                ),
+              ]
+            : [],
+        );
+        const additionalReexports = additionalRows.map((row, index) =>
+          reexportKeys(
+            `candidate-${index}.ts`,
+            lookup(row.domain, `k${row.alias}`),
+            lookup(row.domain, `k${row.candidate}`),
+          ),
+        );
+        const allReexports = [...additionalReexports, ...baseReexports];
+        const referencesByPath = new Map(
+          rows.map((row, index) => {
+            const path = `src/file-${index}.ts`;
+            const midpoint = Math.ceil(row.keys.length / 2);
+            const ordinary =
+              row.keys.length === 0
+                ? []
+                : [
+                    reference(
+                      path,
+                      [
+                        row.keys.slice(0, midpoint).map(key => `k${key}`),
+                        row.keys.slice(midpoint).map(key => `k${key}`),
+                      ],
+                      row.domain,
+                    ),
+                  ];
+            const reexport = row.reexport
+              ? [reexportReference(path, `k${row.alias}`, `k${row.candidate}`, row.domain)]
+              : [];
+            return [path, [...ordinary, ...reexport]] as const;
+          }),
+        );
+        const symbolsByPath = new Map(
+          rows.map((row, index) => {
+            const path = `src/file-${index}.ts`;
+            return [path, row.symbolKeys.map(key => symbol(path, `k${key}`, row.domain))] as const;
+          }),
+        );
+        const factsByPath = new Map(
+          files.map(file => [
+            file.path,
+            facts(file.path, referencesByPath.get(file.path) ?? [], symbolsByPath.get(file.path) ?? []),
+          ]),
+        );
+        const exactClosure = independentLookupClosure([lookup(seedDomain, `k${seed}`)], allReexports);
+        const expectedPaths = files
+          .filter(file =>
+            (referencesByPath.get(file.path) ?? []).some(candidate =>
+              candidate.lookupTiers.some(tier =>
+                tier.some(key => exactClosure.has(lookupIdentity(lookup(candidate.resolutionDomain, key)))),
+              ),
+            ),
+          )
+          .map(file => file.path)
+          .sort();
+        const allAliasIdentities = new Set(allReexports.flatMap(value => value.aliases.map(lookupIdentity)));
+        const symbolIdentities = new Set(
+          rows.flatMap(row => row.symbolKeys.map(key => lookupIdentity(lookup(row.domain, `k${key}`)))),
+        );
+        const expectedConflicts = [...allAliasIdentities].filter(identity => symbolIdentities.has(identity)).sort();
+        const expectedAffectedAliases = [...allAliasIdentities].filter(identity => exactClosure.has(identity)).sort();
+        const actual = yield* scanProjectResolutionCandidateClosure({
+          additionalReexports,
+          initialLookupKeys: [lookup(seedDomain, `k${seed}`)],
+          loadPage: page => Effect.succeed(loadedPage(page, factsByPath)),
+          maximumSelectedFiles: files.length,
+          plan: eligiblePlan([...files].reverse(), Math.max(1, (rows.length % 7) + 1)),
+        });
+
+        expect(actual.mode).toBe('eligible');
+        if (actual.mode === 'eligible') {
+          expect(actual.paths).toEqual(expectedPaths);
+          expect([...actual.affectedAliasLookupIdentities].sort()).toEqual(expectedAffectedAliases);
+          expect([...actual.directAliasSymbolConflictIdentities].sort()).toEqual(expectedConflicts);
+          expect(canonicalProjectReexports(actual.reexports)).toEqual(canonicalProjectReexports(baseReexports));
+        }
+
+        const conservative = yield* scanProjectResolutionCandidateClosure({
+          additionalReexports,
+          initialLookupKeys: [lookup(seedDomain, `k${seed}`)],
+          loadPage: page => Effect.succeed(loadedPage(page, factsByPath)),
+          maximumSelectedFiles: files.length,
+          plan: eligiblePlan([...files].reverse(), Math.max(1, ((rows.length + 3) % 7) + 1)),
+          projectionFingerprint: partitionProjectionFingerprint,
+        });
+        expect(conservative.mode).toBe('eligible');
+        if (conservative.mode === 'eligible') {
+          const conservativePaths = new Set(conservative.paths);
+          const conservativeConflicts = new Set(conservative.directAliasSymbolConflictIdentities);
+          expect(expectedPaths.every(path => conservativePaths.has(path))).toBe(true);
+          expect(expectedConflicts.every(identity => conservativeConflicts.has(identity))).toBe(true);
+          expect([...conservative.affectedAliasLookupIdentities].sort()).toEqual(expectedAffectedAliases);
+          expect(canonicalProjectReexports(conservative.reexports)).toEqual(canonicalProjectReexports(baseReexports));
+        }
+      }),
+    {fastCheck: {numRuns: 120}},
+  );
+
   effectIt.effect('retains earlier-empty, same-tier ambiguity, and later-tier negative dependencies', () =>
     Effect.gen(function* () {
       const files = [
@@ -390,6 +593,87 @@ describe('resolution-candidate closure', () => {
     });
   });
 
+  effectIt.effect('accepts exact one-pass projection limits and fails before dedupe can hide excess work', () =>
+    Effect.gen(function* () {
+      const duplicateIdentity = 'typescript\0seed';
+      const duplicateBytes = Buffer.byteLength(duplicateIdentity, 'utf8');
+      const oneFile = [inventory('a.ts', 1)];
+      const duplicateFacts = new Map([['a.ts', facts('a.ts', [reference('a.ts', [['seed', 'seed']])])]]);
+      const scanWith = (options: {
+        readonly factsByPath?: ReadonlyMap<string, CodeGraphFileFacts>;
+        readonly files?: readonly CodeGraphInventoryFile[];
+        readonly maximumProjectionAssociations?: number;
+        readonly maximumProjectionAssociationsPerFile?: number;
+        readonly maximumProjectionObservations?: number;
+        readonly maximumProjectionObservedKeyBytes?: number;
+      }) => {
+        const {factsByPath = duplicateFacts, files = oneFile, ...limits} = options;
+        return scanProjectResolutionCandidateClosure({
+          initialLookupKeys: [lookup('typescript', 'seed')],
+          loadPage: page => Effect.succeed(loadedPage(page, factsByPath)),
+          maximumSelectedFiles: files.length,
+          plan: eligiblePlan(files, 1),
+          ...limits,
+        });
+      };
+
+      expect(yield* scanWith({maximumProjectionObservations: 1})).toEqual({
+        detail: 'candidate-projection-observations',
+        limit: 1,
+        mode: 'fallback',
+        observed: 2,
+        reason: 'project-closure-unbounded',
+      });
+      expect(yield* scanWith({maximumProjectionObservedKeyBytes: duplicateBytes})).toEqual({
+        detail: 'candidate-projection-observed-key-bytes',
+        limit: duplicateBytes,
+        mode: 'fallback',
+        observed: duplicateBytes * 2,
+        reason: 'project-closure-unbounded',
+      });
+      expect(
+        yield* scanWith({
+          maximumProjectionAssociations: 1,
+          maximumProjectionAssociationsPerFile: 1,
+          maximumProjectionObservations: 2,
+          maximumProjectionObservedKeyBytes: duplicateBytes * 2,
+        }),
+      ).toMatchObject({mode: 'eligible', paths: ['a.ts']});
+      const distinctFacts = new Map([['a.ts', facts('a.ts', [reference('a.ts', [['seed', 'other']])])]]);
+      const twoFiles = [inventory('a.ts', 1), inventory('b.ts', 1)];
+      const sharedFacts = new Map(
+        twoFiles.map(file => [file.path, facts(file.path, [reference(file.path, [['seed']])])]),
+      );
+      expect(yield* scanWith({files: twoFiles, factsByPath: sharedFacts, maximumProjectionAssociations: 1})).toEqual({
+        detail: 'candidate-projection-associations',
+        limit: 1,
+        mode: 'fallback',
+        observed: 2,
+        reason: 'project-closure-unbounded',
+      });
+      expect(yield* scanWith({factsByPath: distinctFacts, maximumProjectionAssociationsPerFile: 1})).toEqual({
+        detail: 'candidate-projection-file-associations',
+        limit: 1,
+        mode: 'fallback',
+        observed: 2,
+        reason: 'project-closure-unbounded',
+      });
+      expect(
+        yield* scanWith({
+          factsByPath: distinctFacts,
+          maximumProjectionAssociations: 2,
+          maximumProjectionAssociationsPerFile: 2,
+          maximumProjectionObservations: 2,
+        }),
+      ).toMatchObject({mode: 'eligible', paths: ['a.ts']});
+    }),
+  );
+
+  effectIt('ratchets the full projection record payload below 20 MiB', () => {
+    expect(PROJECT_RESOLUTION_CANDIDATE_PROJECTION_STORAGE_MAX_BYTES).toBe(20_316_160);
+    expect(PROJECT_RESOLUTION_CANDIDATE_PROJECTION_STORAGE_MAX_BYTES).toBeLessThan(20 * 1_048_576);
+  });
+
   effectIt.effect('fails closed on incomplete pages and reports exact selected/reexport overflows', () =>
     Effect.gen(function* () {
       const files = [inventory('a.ts', 1), inventory('b.ts', 1)];
@@ -431,6 +715,54 @@ describe('resolution-candidate closure', () => {
         limit: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS,
         mode: 'fallback',
         observed: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS + 1,
+        reason: 'project-closure-unbounded',
+      });
+
+      const repeatedLookup = lookup('typescript', 'seed');
+      const exactLookupKeyLimit = yield* scanProjectResolutionCandidateClosure({
+        additionalReexports: [
+          {
+            aliases: Array.from(
+              {length: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS / 2},
+              () => repeatedLookup,
+            ),
+            candidates: Array.from(
+              {length: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS / 2},
+              () => repeatedLookup,
+            ),
+            sourcePath: 'broad-barrel.ts',
+          },
+        ],
+        initialLookupKeys: [repeatedLookup],
+        loadPage: () => Effect.die('empty plan must not load a page'),
+        maximumSelectedFiles: 0,
+        plan: emptyPlan,
+      });
+      expect(exactLookupKeyLimit.mode).toBe('eligible');
+      const lookupKeyOverflow = yield* scanProjectResolutionCandidateClosure({
+        additionalReexports: [
+          {
+            aliases: Array.from(
+              {length: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS / 2 + 1},
+              () => repeatedLookup,
+            ),
+            candidates: Array.from(
+              {length: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS / 2},
+              () => repeatedLookup,
+            ),
+            sourcePath: 'broad-barrel.ts',
+          },
+        ],
+        initialLookupKeys: [repeatedLookup],
+        loadPage: () => Effect.die('empty plan must not load a page'),
+        maximumSelectedFiles: 0,
+        plan: emptyPlan,
+      });
+      expect(lookupKeyOverflow).toEqual({
+        detail: 'candidate-reexport-lookup-keys',
+        limit: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS,
+        mode: 'fallback',
+        observed: PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS + 1,
         reason: 'project-closure-unbounded',
       });
 
@@ -629,8 +961,28 @@ function inventory(path: string, size: number): CodeGraphInventoryFile {
   };
 }
 
-function facts(path: string, references: readonly CodeGraphReference[] = []): CodeGraphFileFacts {
-  return {diagnostics: [], edges: [], path, references, symbols: []};
+function facts(
+  path: string,
+  references: readonly CodeGraphReference[] = [],
+  symbols: readonly CodeGraphSymbol[] = [],
+): CodeGraphFileFacts {
+  return {diagnostics: [], edges: [], path, references, symbols};
+}
+
+function symbol(path: string, lookupKey: string, resolutionDomain = 'typescript'): CodeGraphSymbol {
+  return {
+    contentHash: path,
+    exported: true,
+    id: `symbol-${path}`,
+    kind: 'constant',
+    language: resolutionDomain === 'jvm' ? 'java' : 'typescript',
+    lookupKeys: [lookupKey],
+    name: lookupKey,
+    path,
+    qualifiedName: lookupKey,
+    resolutionDomain,
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
 }
 
 function reference(
@@ -651,9 +1003,14 @@ function reference(
   };
 }
 
-function reexportReference(path: string, alias: string, candidate: string): CodeGraphReference {
+function reexportReference(
+  path: string,
+  alias: string,
+  candidate: string,
+  resolutionDomain = 'typescript',
+): CodeGraphReference {
   return {
-    ...reference(path, [[candidate]]),
+    ...reference(path, [[candidate]], resolutionDomain),
     aliasLookupKeys: [alias],
     relation: 'reexports',
   };
@@ -665,6 +1022,14 @@ function lookup(resolutionDomain: string, key: string): ProjectResolutionLookupK
 
 function lookupIdentity(value: ProjectResolutionLookupKey): string {
   return `${value.resolutionDomain}\0${value.key}`;
+}
+
+function partitionProjectionFingerprint(identity: string): bigint {
+  let fingerprint = 0;
+  for (let index = 0; index < identity.length; index += 1) {
+    fingerprint = (fingerprint * 31 + identity.charCodeAt(index)) & 3;
+  }
+  return BigInt(fingerprint);
 }
 
 function parseLookupIdentity(identity: string): ProjectResolutionLookupKey {
@@ -759,6 +1124,18 @@ function canonicalClosure(closure: ProjectResolutionCandidateClosure): unknown {
 function canonicalReexports(reexports: readonly CodeGraphReusableReexport[]): readonly string[] {
   return reexports
     .map(value => [value.sourcePath, value.localName, value.targetPath, value.importedName].join('\0'))
+    .sort();
+}
+
+function canonicalProjectReexports(reexports: readonly ProjectResolutionReexportKeys[]): readonly string[] {
+  return reexports
+    .map(value =>
+      [
+        value.sourcePath,
+        value.aliases.map(lookupIdentity).sort().join(','),
+        value.candidates.map(lookupIdentity).sort().join(','),
+      ].join('\0'),
+    )
     .sort();
 }
 

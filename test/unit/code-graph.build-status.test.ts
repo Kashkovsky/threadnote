@@ -117,6 +117,33 @@ describe('code graph cross-process build status', () => {
       const status = JSON.parse(yield* fs.readFileString(statusPath)) as {
         materialization: {metrics: {fallbackBoundary: Record<string, unknown>}};
       };
+      yield* fs.writeFileString(
+        statusPath,
+        `${JSON.stringify({
+          ...status,
+          materialization: {
+            ...status.materialization,
+            metrics: {
+              ...status.materialization.metrics,
+              fallbackBoundary: {
+                ...status.materialization.metrics.fallbackBoundary,
+                metric: 'candidate-projection-observations',
+                stage: 'resolution-candidate-scan',
+              },
+            },
+          },
+        })}\n`,
+      );
+      expect((yield* readCodeGraphBuildStatuses(layout))[0]).toMatchObject({
+        materialization: {
+          metrics: {
+            fallbackBoundary: {
+              metric: 'candidate-projection-observations',
+              stage: 'resolution-candidate-scan',
+            },
+          },
+        },
+      });
       for (const [stage, metric] of [
         ['project-closure-selection', 'candidate-reexports'],
         ['resolution-candidate-scan', 'affected-files'],

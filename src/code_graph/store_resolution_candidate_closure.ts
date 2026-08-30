@@ -4,25 +4,51 @@ import type {ProjectResolutionLookupKey} from './incremental_closure.js';
 import {compareCodeUnits} from './ordering.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphReference} from './types.js';
 
-/** Two complete scan passes must stay within the 10,000-file incremental attribution-work ceiling. */
+/** One complete scan must stay within the ordinary 5,000-file attribution-work ceiling. */
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FILES = 5_000;
 /**
- * Pages keep resident memory near 1 MiB; this bound limits aggregate decoded
- * work across each scan pass. Real repositories can produce roughly 8x as
- * many cached-fact bytes as source bytes, so 256 MiB keeps ordinary exported
- * TypeScript edits incremental without making the scan unbounded.
+ * Pages remain independently bounded; this limit caps aggregate decoded work.
+ * Real repositories can produce roughly 8x as many cached-fact bytes as
+ * source bytes, so 256 MiB keeps ordinary exported TypeScript edits
+ * incremental without making the scan unbounded.
  */
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES = 256 * 1_048_576;
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FILES = 32;
 /** Matches the independent per-file cached-fact ceiling while keeping every decoded page bounded. */
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_LOOKUP_KEYS = 4_096;
+export const PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_ASSOCIATIONS = 1_000_000;
+export const PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_ASSOCIATIONS_PER_FILE = 32_768;
+export const PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVATIONS = 2_000_000;
+export const PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVED_KEY_BYTES = 256 * 1_048_576;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS = 10_000;
+export const PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS = 100_000;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES = 8 * 1_048_576;
+const PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK = 65_536;
+const PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORD_BYTES =
+  BigUint64Array.BYTES_PER_ELEMENT + Uint16Array.BYTES_PER_ELEMENT;
+/**
+ * Deterministic typed-array payload ceiling for the one-pass projection. The
+ * projection grows in chunks and never retains lookup strings or per-identity
+ * objects. Transient hash sets are separately bounded by the per-file
+ * association and reexport-key limits.
+ */
+export const PROJECT_RESOLUTION_CANDIDATE_PROJECTION_STORAGE_MAX_BYTES =
+  Math.ceil(
+    PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVATIONS /
+      PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK,
+  ) *
+  PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK *
+  PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORD_BYTES;
 
 export type ProjectResolutionCandidateScanFallbackDetail =
   | 'candidate-lookup-keys'
+  | 'candidate-projection-associations'
+  | 'candidate-projection-file-associations'
+  | 'candidate-projection-observations'
+  | 'candidate-projection-observed-key-bytes'
   | 'candidate-reexport-key-bytes'
+  | 'candidate-reexport-lookup-keys'
   | 'candidate-reexports'
   | 'candidate-scan-fact-bytes'
   | 'candidate-scan-files'
@@ -145,15 +171,24 @@ export function planProjectResolutionCandidateScan(input: {
 
 /**
  * Find the complete bounded set of cached base references whose resolver
- * candidates can be affected by changed published lookup keys. The first
- * streaming pass retains only static reexport key mappings; the second retains
- * only matching reference-evidence paths. Each page must already be
- * attributed to immediate repository/workspace lookup keys. Repository facts
- * are never retained between pages.
+ * candidates can be affected by changed published lookup keys. One streaming
+ * pass retains static reexport mappings and a bounded fingerprint projection
+ * from lookup identities to evidence paths. Fingerprint collisions can only
+ * add candidate paths or direct-symbol conflicts, so the result stays a safe
+ * superset. The reexport fixed point is computed after the pass, then resolved
+ * against that projection without decoding the repository a second time. Each
+ * page must already be attributed to immediate repository/workspace lookup
+ * keys; full facts are never retained between pages.
  */
 export const scanProjectResolutionCandidateClosure = Effect.fn('codeGraph.scanProjectResolutionCandidateClosure')(
   function* <E>(input: {
     readonly maximumSelectedFiles: number;
+    readonly maximumProjectionAssociations?: number;
+    readonly maximumProjectionAssociationsPerFile?: number;
+    readonly maximumProjectionObservations?: number;
+    readonly maximumProjectionObservedKeyBytes?: number;
+    /** Test seam for proving conservative collision behavior. */
+    readonly projectionFingerprint?: (identity: string) => bigint;
     readonly plan: Extract<ProjectResolutionCandidateScanPlan, {readonly mode: 'eligible'}>;
     readonly initialLookupKeys: readonly ProjectResolutionLookupKey[];
     readonly additionalReexports?: readonly ProjectResolutionReexportKeys[];
@@ -161,9 +196,26 @@ export const scanProjectResolutionCandidateClosure = Effect.fn('codeGraph.scanPr
       files: readonly CodeGraphInventoryFile[],
     ) => Effect.Effect<ProjectResolutionCandidateFactPage, E>;
   }) {
+    const maximumProjectionAssociations =
+      input.maximumProjectionAssociations ?? PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_ASSOCIATIONS;
+    const maximumProjectionAssociationsPerFile =
+      input.maximumProjectionAssociationsPerFile ?? PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_ASSOCIATIONS_PER_FILE;
+    const maximumProjectionObservations =
+      input.maximumProjectionObservations ?? PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVATIONS;
+    const maximumProjectionObservedKeyBytes =
+      input.maximumProjectionObservedKeyBytes ?? PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVED_KEY_BYTES;
     if (
       input.initialLookupKeys.some(value => !validResolutionLookupKey(value)) ||
-      !isNonNegativeSafeInteger(input.maximumSelectedFiles)
+      !isNonNegativeSafeInteger(input.maximumSelectedFiles) ||
+      !isNonNegativeSafeInteger(maximumProjectionAssociations) ||
+      !isNonNegativeSafeInteger(maximumProjectionAssociationsPerFile) ||
+      !isNonNegativeSafeInteger(maximumProjectionObservations) ||
+      !isNonNegativeSafeInteger(maximumProjectionObservedKeyBytes) ||
+      maximumProjectionAssociations > PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_ASSOCIATIONS ||
+      maximumProjectionAssociationsPerFile > PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_ASSOCIATIONS_PER_FILE ||
+      maximumProjectionObservations > PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVATIONS ||
+      maximumProjectionObservedKeyBytes > PROJECT_RESOLUTION_CANDIDATE_MAX_PROJECTION_OBSERVED_KEY_BYTES ||
+      input.plan.files >= PROJECTION_SYMBOL_RECORD
     ) {
       return {mode: 'fallback', reason: 'cache-incomplete'} as const;
     }
@@ -173,64 +225,91 @@ export const scanProjectResolutionCandidateClosure = Effect.fn('codeGraph.scanPr
     }
     const reexports: ProjectResolutionReexportKeys[] = [];
     const baseReexports: ProjectResolutionReexportKeys[] = [];
+    const projection = createResolutionCandidateProjection({
+      fingerprint: input.projectionFingerprint ?? resolutionCandidateIdentityFingerprint,
+      files: input.plan.files,
+      maximumAssociations: maximumProjectionAssociations,
+      maximumAssociationsPerFile: maximumProjectionAssociationsPerFile,
+      maximumObservations: maximumProjectionObservations,
+      maximumObservedKeyBytes: maximumProjectionObservedKeyBytes,
+    });
+    const scannedPaths: string[] = [];
     let reexportKeyBytes = 0;
+    let reexportLookupKeys = 0;
     for (const reexport of input.additionalReexports ?? []) {
-      const retained = retainReexport(reexport, reexports.length, reexportKeyBytes);
+      const retained = retainReexport(reexport, reexports.length, reexportLookupKeys, reexportKeyBytes);
       if (retained.mode === 'fallback') return retained;
       reexports.push(retained.reexport);
       reexportKeyBytes = retained.totalKeyBytes;
+      reexportLookupKeys = retained.totalLookupKeys;
     }
     for (const page of input.plan.pages) {
       const loaded = yield* input.loadPage(page.files);
       if (!completePage(page, loaded)) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
       for (const file of page.files) {
+        const fileOrdinal = scannedPaths.length;
+        scannedPaths.push(file.path);
         const facts = loaded.facts.get(file.path)!;
         if (!validFactLookupKeys(facts)) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
+        for (const symbol of facts.symbols) {
+          for (const key of symbol.lookupKeys ?? []) {
+            const retained = projection.retainSymbol(
+              resolutionLookupKeyIdentity(lookupKeyDomain(key, symbol.resolutionDomain), key),
+            );
+            if (retained !== undefined) return retained;
+          }
+        }
         for (const reference of facts.references ?? []) {
+          for (const tier of reference.lookupTiers) {
+            for (const key of tier) {
+              const retained = projection.retainReference(
+                resolutionLookupKeyIdentity(reference.resolutionDomain, key),
+                fileOrdinal,
+              );
+              if (retained !== undefined) return retained;
+            }
+          }
           if (!isReexport(reference)) continue;
           const aliases = symbolResolutionLookupKeys(reference.resolutionDomain, reference.aliasLookupKeys ?? []);
           const candidates = resolutionLookupKeys(reference.resolutionDomain, reference.lookupTiers.flat());
           const retained = retainReexport(
             {aliases, candidates, sourcePath: reference.evidencePath},
             reexports.length,
+            reexportLookupKeys,
             reexportKeyBytes,
           );
           if (retained.mode === 'fallback') return retained;
           reexports.push(retained.reexport);
           baseReexports.push(retained.reexport);
           reexportKeyBytes = retained.totalKeyBytes;
+          reexportLookupKeys = retained.totalLookupKeys;
         }
       }
     }
+    if (scannedPaths.length !== input.plan.files) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
     const lookupKeys = resolutionCandidateLookupKeyClosure(initialLookupKeys, reexports);
     if (lookupKeys.mode === 'fallback') return lookupKeys;
 
+    const resolvedProjection = projection.resolve(lookupKeys.identities, reexports);
+    if (resolvedProjection.mode === 'fallback') return resolvedProjection;
     const selectedPaths = new Set<string>();
-    const allAliasIdentities = new Set(
-      reexports.flatMap(reexport =>
-        reexport.aliases.map(alias => resolutionLookupKeyIdentity(alias.resolutionDomain, alias.key)),
-      ),
-    );
     const directAliasSymbolConflictIdentities = new Set<string>();
-    for (const page of input.plan.pages) {
-      const loaded = yield* input.loadPage(page.files);
-      if (!completePage(page, loaded)) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
-      for (const file of page.files) {
-        const facts = loaded.facts.get(file.path)!;
-        if (!validFactLookupKeys(facts)) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
-        for (const symbol of facts.symbols) {
-          for (const key of symbol.lookupKeys ?? []) {
-            const identity = resolutionLookupKeyIdentity(lookupKeyDomain(key, symbol.resolutionDomain), key);
-            if (allAliasIdentities.has(identity)) directAliasSymbolConflictIdentities.add(identity);
-          }
+    for (const reexport of reexports) {
+      for (const alias of reexport.aliases) {
+        const identity = resolutionLookupKeyIdentity(alias.resolutionDomain, alias.key);
+        const fingerprint = projection.fingerprint(identity);
+        if (fingerprint === undefined) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
+        if (resolvedProjection.symbolConflictFingerprints.has(fingerprint)) {
+          directAliasSymbolConflictIdentities.add(identity);
         }
-        if (!facts.references?.some(reference => referenceMatches(reference, lookupKeys.identities))) {
-          continue;
-        }
-        selectedPaths.add(file.path);
-        if (selectedPaths.size > input.maximumSelectedFiles) {
-          return unbounded('candidate-selected-files', selectedPaths.size, input.maximumSelectedFiles);
-        }
+      }
+    }
+    for (const ordinal of resolvedProjection.referenceOrdinals) {
+      const path = scannedPaths[ordinal];
+      if (path === undefined) return {mode: 'fallback', reason: 'cache-incomplete'} as const;
+      selectedPaths.add(path);
+      if (selectedPaths.size > input.maximumSelectedFiles) {
+        return unbounded('candidate-selected-files', selectedPaths.size, input.maximumSelectedFiles);
       }
     }
     return {
@@ -338,9 +417,15 @@ export function resolutionCandidateLookupKeyClosure(
 function retainReexport(
   reexport: ProjectResolutionReexportKeys,
   retainedCount: number,
+  retainedLookupKeys: number,
   retainedKeyBytes: number,
 ):
-  | {readonly mode: 'eligible'; readonly reexport: ProjectResolutionReexportKeys; readonly totalKeyBytes: number}
+  | {
+      readonly mode: 'eligible';
+      readonly reexport: ProjectResolutionReexportKeys;
+      readonly totalKeyBytes: number;
+      readonly totalLookupKeys: number;
+    }
   | Extract<ProjectResolutionCandidateClosure, {readonly mode: 'fallback'}> {
   const resolutionDomain = reexport.aliases[0]?.resolutionDomain;
   if (
@@ -359,6 +444,14 @@ function retainReexport(
   const retainedBytes = utf8Bytes(
     [...reexport.aliases, ...reexport.candidates].flatMap(value => [value.resolutionDomain, value.key]),
   );
+  const lookupKeys = reexport.aliases.length + reexport.candidates.length;
+  if (retainedLookupKeys > PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS - lookupKeys) {
+    return unbounded(
+      'candidate-reexport-lookup-keys',
+      saturatingSafeIntegerAdd(retainedLookupKeys, lookupKeys),
+      PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_LOOKUP_KEYS,
+    );
+  }
   if (retainedKeyBytes > PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES - retainedBytes) {
     return unbounded(
       'candidate-reexport-key-bytes',
@@ -366,7 +459,159 @@ function retainReexport(
       PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES,
     );
   }
-  return {mode: 'eligible', reexport, totalKeyBytes: retainedKeyBytes + retainedBytes};
+  return {
+    mode: 'eligible',
+    reexport,
+    totalKeyBytes: retainedKeyBytes + retainedBytes,
+    totalLookupKeys: retainedLookupKeys + lookupKeys,
+  };
+}
+
+function createResolutionCandidateProjection(input: {
+  readonly files: number;
+  readonly fingerprint: (identity: string) => bigint;
+  readonly maximumAssociations: number;
+  readonly maximumAssociationsPerFile: number;
+  readonly maximumObservations: number;
+  readonly maximumObservedKeyBytes: number;
+}) {
+  const recordHashes: BigUint64Array[] = [];
+  const recordKinds: Uint16Array[] = [];
+  let records = 0;
+  let associations = 0;
+  let observations = 0;
+  let observedKeyBytes = 0;
+  let referenceFileOrdinal = -1;
+  const referenceFingerprintsForFile = new Set<bigint>();
+
+  const observe = (
+    identity: string,
+  ):
+    | {readonly fingerprint: bigint; readonly mode: 'eligible'}
+    | Extract<ProjectResolutionCandidateClosure, {readonly mode: 'fallback'}> => {
+    if (observations >= input.maximumObservations) {
+      return unbounded('candidate-projection-observations', observations + 1, input.maximumObservations);
+    }
+    const bytes = Buffer.byteLength(identity, 'utf8');
+    if (observedKeyBytes > input.maximumObservedKeyBytes - bytes) {
+      return unbounded(
+        'candidate-projection-observed-key-bytes',
+        saturatingSafeIntegerAdd(observedKeyBytes, bytes),
+        input.maximumObservedKeyBytes,
+      );
+    }
+    const fingerprint = validProjectionFingerprint(input.fingerprint(identity));
+    if (fingerprint === undefined) return {mode: 'fallback', reason: 'cache-incomplete'};
+    observations += 1;
+    observedKeyBytes += bytes;
+    return {fingerprint, mode: 'eligible'};
+  };
+
+  const append = (fingerprint: bigint, kind: number): void => {
+    const chunkIndex = Math.floor(records / PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK);
+    const offset = records % PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK;
+    if (recordHashes[chunkIndex] === undefined) {
+      recordHashes.push(new BigUint64Array(PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK));
+      recordKinds.push(new Uint16Array(PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK));
+    }
+    recordHashes[chunkIndex]![offset] = fingerprint;
+    recordKinds[chunkIndex]![offset] = kind;
+    records += 1;
+  };
+
+  return {
+    fingerprint: (identity: string): bigint | undefined => validProjectionFingerprint(input.fingerprint(identity)),
+    retainReference: (
+      identity: string,
+      fileOrdinal: number,
+    ): Extract<ProjectResolutionCandidateClosure, {readonly mode: 'fallback'}> | undefined => {
+      const observation = observe(identity);
+      if (observation.mode === 'fallback') return observation;
+      if (!Number.isSafeInteger(fileOrdinal) || fileOrdinal < referenceFileOrdinal || fileOrdinal >= input.files) {
+        return {mode: 'fallback', reason: 'cache-incomplete'};
+      }
+      if (fileOrdinal !== referenceFileOrdinal) {
+        referenceFileOrdinal = fileOrdinal;
+        referenceFingerprintsForFile.clear();
+      }
+      if (referenceFingerprintsForFile.has(observation.fingerprint)) return undefined;
+      if (associations >= input.maximumAssociations) {
+        return unbounded('candidate-projection-associations', associations + 1, input.maximumAssociations);
+      }
+      if (referenceFingerprintsForFile.size >= input.maximumAssociationsPerFile) {
+        return unbounded(
+          'candidate-projection-file-associations',
+          referenceFingerprintsForFile.size + 1,
+          input.maximumAssociationsPerFile,
+        );
+      }
+      referenceFingerprintsForFile.add(observation.fingerprint);
+      append(observation.fingerprint, fileOrdinal);
+      associations += 1;
+      return undefined;
+    },
+    retainSymbol: (
+      identity: string,
+    ): Extract<ProjectResolutionCandidateClosure, {readonly mode: 'fallback'}> | undefined => {
+      const observation = observe(identity);
+      if (observation.mode === 'fallback') return observation;
+      append(observation.fingerprint, PROJECTION_SYMBOL_RECORD);
+      return undefined;
+    },
+    resolve: (
+      affectedIdentities: ReadonlySet<string>,
+      reexports: readonly ProjectResolutionReexportKeys[],
+    ):
+      | {
+          readonly mode: 'eligible';
+          readonly referenceOrdinals: ReadonlySet<number>;
+          readonly symbolConflictFingerprints: ReadonlySet<bigint>;
+        }
+      | Extract<ProjectResolutionCandidateClosure, {readonly mode: 'fallback'}> => {
+      const affectedFingerprints = new Set<bigint>();
+      for (const identity of affectedIdentities) {
+        const fingerprint = validProjectionFingerprint(input.fingerprint(identity));
+        if (fingerprint === undefined) return {mode: 'fallback', reason: 'cache-incomplete'};
+        affectedFingerprints.add(fingerprint);
+      }
+      const aliasFingerprints = new Set<bigint>();
+      for (const reexport of reexports) {
+        for (const alias of reexport.aliases) {
+          const fingerprint = validProjectionFingerprint(
+            input.fingerprint(resolutionLookupKeyIdentity(alias.resolutionDomain, alias.key)),
+          );
+          if (fingerprint === undefined) return {mode: 'fallback', reason: 'cache-incomplete'};
+          aliasFingerprints.add(fingerprint);
+        }
+      }
+      const referenceOrdinals = new Set<number>();
+      const symbolConflictFingerprints = new Set<bigint>();
+      for (let record = 0; record < records; record += 1) {
+        const chunkIndex = Math.floor(record / PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK);
+        const offset = record % PROJECT_RESOLUTION_CANDIDATE_PROJECTION_RECORDS_PER_CHUNK;
+        const fingerprint = recordHashes[chunkIndex]![offset]!;
+        const kind = recordKinds[chunkIndex]![offset]!;
+        if (kind === PROJECTION_SYMBOL_RECORD) {
+          if (aliasFingerprints.has(fingerprint)) symbolConflictFingerprints.add(fingerprint);
+        } else if (affectedFingerprints.has(fingerprint)) {
+          referenceOrdinals.add(kind);
+        }
+      }
+      return {mode: 'eligible', referenceOrdinals, symbolConflictFingerprints};
+    },
+  };
+}
+
+const PROJECTION_SYMBOL_RECORD = 0xffff;
+const PROJECTION_FINGERPRINT_MAXIMUM = 0xffff_ffff_ffff_ffffn;
+const PROJECTION_FINGERPRINT_SEED = 0x85eb_ca6b_27d4_eb2fn;
+
+function resolutionCandidateIdentityFingerprint(identity: string): bigint {
+  return Bun.hash.wyhash(identity, PROJECTION_FINGERPRINT_SEED);
+}
+
+function validProjectionFingerprint(value: unknown): bigint | undefined {
+  return typeof value === 'bigint' && value >= 0n && value <= PROJECTION_FINGERPRINT_MAXIMUM ? value : undefined;
 }
 
 function completePage(page: ProjectResolutionCandidateScanPage, loaded: ProjectResolutionCandidateFactPage): boolean {
@@ -385,12 +630,6 @@ function completePage(page: ProjectResolutionCandidateScanPage, loaded: ProjectR
 
 function isReexport(reference: CodeGraphReference): boolean {
   return reference.relation === 'reexports' && (reference.aliasLookupKeys?.length ?? 0) > 0;
-}
-
-function referenceMatches(reference: CodeGraphReference, lookupKeyIdentities: ReadonlySet<string>): boolean {
-  return reference.lookupTiers.some(tier =>
-    tier.some(key => lookupKeyIdentities.has(resolutionLookupKeyIdentity(reference.resolutionDomain, key))),
-  );
 }
 
 function resolutionLookupKeys(resolutionDomain: string, keys: readonly string[]): ProjectResolutionLookupKey[] {
@@ -440,11 +679,11 @@ function validResolutionLookupKey(value: {readonly key: string; readonly resolut
 }
 
 function utf8Bytes(values: readonly string[]): number {
-  const encoder = new TextEncoder();
-  return values.reduce(
-    (total, value) => Math.min(Number.MAX_SAFE_INTEGER, total + encoder.encode(value).byteLength),
-    0,
-  );
+  return values.reduce((total, value) => saturatingSafeIntegerAdd(total, Buffer.byteLength(value, 'utf8')), 0);
+}
+
+function saturatingSafeIntegerAdd(left: number, right: number): number {
+  return left > Number.MAX_SAFE_INTEGER - right ? Number.MAX_SAFE_INTEGER : left + right;
 }
 
 function unbounded(detail: ProjectResolutionCandidateScanFallbackDetail, observed: number, limit: number) {

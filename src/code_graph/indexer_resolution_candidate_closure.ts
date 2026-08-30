@@ -196,7 +196,7 @@ const assessSelectedResolutionCandidateClosure = Effect.fn('codeGraph.assessSele
       files: input.selectedFiles,
       mode: 'compatible',
       proportionalWork: {
-        attributionContextFiles: input.scan.scannedFiles * 2,
+        attributionContextFiles: input.scan.scannedFiles,
         baseFactsLoaded: input.selectedFiles.length,
         inventoryFilesInspected: input.currentFiles.length,
         probedDependencyPaths: 0,

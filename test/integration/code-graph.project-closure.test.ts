@@ -769,9 +769,7 @@ describe('project-closure incremental indexing', () => {
               baseFactsLoaded: 4,
               changedFiles: 4,
             });
-            expect(incremental.incrementalWork?.attributionContextFiles).toBe(
-              (base.materialization?.totalFiles ?? 0) * 2,
-            );
+            expect(incremental.incrementalWork?.attributionContextFiles).toBe(base.materialization?.totalFiles ?? 0);
             expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
             const discovered = incrementalGraph.symbols.find(symbol => symbol.name === 'discovered');
             expect(discovered).toBeDefined();

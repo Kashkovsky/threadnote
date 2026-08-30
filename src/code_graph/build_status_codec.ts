@@ -643,7 +643,12 @@ type OverlayFallbackBoundaryPair =
   | {
       readonly metric:
         | 'candidate-lookup-keys'
+        | 'candidate-projection-associations'
+        | 'candidate-projection-file-associations'
+        | 'candidate-projection-observations'
+        | 'candidate-projection-observed-key-bytes'
         | 'candidate-reexport-key-bytes'
+        | 'candidate-reexport-lookup-keys'
         | 'candidate-reexports'
         | 'candidate-scan-fact-bytes'
         | 'candidate-scan-files'
@@ -665,7 +670,12 @@ function parseOverlayFallbackBoundaryPair(stage: unknown, metric: unknown): Over
     if (
       ![
         'candidate-lookup-keys',
+        'candidate-projection-associations',
+        'candidate-projection-file-associations',
+        'candidate-projection-observations',
+        'candidate-projection-observed-key-bytes',
         'candidate-reexport-key-bytes',
+        'candidate-reexport-lookup-keys',
         'candidate-reexports',
         'candidate-scan-fact-bytes',
         'candidate-scan-files',
@@ -677,7 +687,12 @@ function parseOverlayFallbackBoundaryPair(stage: unknown, metric: unknown): Over
     return {
       metric: metric as
         | 'candidate-lookup-keys'
+        | 'candidate-projection-associations'
+        | 'candidate-projection-file-associations'
+        | 'candidate-projection-observations'
+        | 'candidate-projection-observed-key-bytes'
         | 'candidate-reexport-key-bytes'
+        | 'candidate-reexport-lookup-keys'
         | 'candidate-reexports'
         | 'candidate-scan-fact-bytes'
         | 'candidate-scan-files'
