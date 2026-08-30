@@ -386,6 +386,38 @@ describe('JSON MCP host configuration', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('does not classify a fresh Cursor MCP install as a legacy integration', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-fresh-cursor-install-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), PATH: bin, THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        const result = yield* captureConsole(
+          runMcpInstall(testRuntime, 'cursor', {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
+        );
+
+        expect(result.output).toContain('No legacy agent integrations found.');
+        expect(result.output).not.toContain('Migrated 1 legacy agent integration');
+        expect(result.output.match(/Wrote instructions:/g)).toHaveLength(1);
+        expect(yield* readAgentIntegrationRegistry(testRuntime)).toMatchObject({
+          hosts: {cursor: {mcp: {name: 'threadnote', repair: true}, status: 'current'}},
+          legacyInstructionsMigrated: true,
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect('serializes concurrent MCP install and uninstall into a consistent winning state', () =>
     Effect.scoped(
       Effect.gen(function* () {

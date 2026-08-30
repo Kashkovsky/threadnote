@@ -42,6 +42,10 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
   const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
   const scope = agent === 'claude' ? (options.scope ?? 'user') : undefined;
   const cwd = options.cwd ?? (agent === 'claude' && scope !== 'user' ? yield* getInvocationCwd() : undefined);
+  const legacyInferredClients =
+    apply && (yield* readAgentIntegrationRegistry(config)) === undefined
+      ? yield* inferConfiguredMcpClients()
+      : undefined;
 
   if (agent === 'cursor') {
     yield* runCursorMcpInstall(config, name, {
@@ -49,7 +53,7 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
       dryRunApplyCommand: options.dryRunApplyCommand,
       toolset,
     });
-    yield* finishAgentIntegrationInstall(config, agent, {apply, name, toolset});
+    yield* finishAgentIntegrationInstall(config, agent, {apply, legacyInferredClients, name, toolset});
     return;
   }
   if (agent === 'copilot') {
@@ -58,7 +62,7 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
       dryRunApplyCommand: options.dryRunApplyCommand,
       toolset,
     });
-    yield* finishAgentIntegrationInstall(config, agent, {apply, name, toolset});
+    yield* finishAgentIntegrationInstall(config, agent, {apply, legacyInferredClients, name, toolset});
     return;
   }
 
@@ -106,6 +110,7 @@ const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(func
   yield* finishAgentIntegrationInstall(config, agent, {
     apply,
     cwd,
+    legacyInferredClients,
     name,
     scope,
     toolset,
@@ -118,6 +123,7 @@ const finishAgentIntegrationInstall = Effect.fn('mcp.finishAgentIntegrationInsta
   options: {
     readonly apply: boolean;
     readonly cwd?: string;
+    readonly legacyInferredClients?: readonly AgentClient[];
     readonly name: string;
     readonly scope?: ClaudeMcpScope;
     readonly toolset: McpToolset;
@@ -134,8 +140,9 @@ const finishAgentIntegrationInstall = Effect.fn('mcp.finishAgentIntegrationInsta
     yield* installAgentIntegrationInTransaction(config, agent, receipt, true);
     return;
   }
-  const inferred = yield* inferConfiguredMcpClients();
-  yield* migrateLegacyAgentIntegrationsInTransaction(config, [...new Set<AgentClient>([...inferred, agent])], false);
+  if (options.legacyInferredClients !== undefined) {
+    yield* migrateLegacyAgentIntegrationsInTransaction(config, options.legacyInferredClients, false);
+  }
   yield* installAgentIntegrationInTransaction(config, agent, receipt, false);
 });
 
