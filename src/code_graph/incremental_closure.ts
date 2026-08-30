@@ -1,6 +1,10 @@
 import type {CodeGraphWorkspaceProject} from './languages/types.js';
 import {compareCodeUnits} from './ordering.js';
-import {isPublishedCodeGraphResolutionSymbol} from './resolution_surface.js';
+import {
+  hasSameCodeGraphReexportResolutionSurface,
+  hasSameCodeGraphResolutionSurface,
+  isPublishedCodeGraphResolutionSymbol,
+} from './resolution_surface.js';
 import type {
   CodeGraphFileFacts,
   CodeGraphInventoryFile,
@@ -82,6 +86,52 @@ export interface ProjectResolutionReexportCandidate {
   readonly aliases: readonly ProjectResolutionLookupKey[];
   readonly candidates: readonly ProjectResolutionLookupKey[];
   readonly sourcePath: string;
+}
+
+export interface ProjectResolutionSurfacePartition {
+  readonly changedCommittedFacts: readonly CodeGraphFileFacts[];
+  readonly changedEffectiveFacts: readonly CodeGraphFileFacts[];
+  readonly stablePaths: readonly string[];
+}
+
+/**
+ * Separates existing file modifications that can be rewritten locally from
+ * modifications that may change resolution in other files. Outgoing edges are
+ * local to the changed file; published symbols and static re-export aliases are
+ * the cross-file surface that must seed a resolver closure.
+ */
+export function partitionProjectResolutionSurfaceChanges(
+  committedFacts: readonly CodeGraphFileFacts[],
+  effectiveFacts: readonly CodeGraphFileFacts[],
+): ProjectResolutionSurfacePartition | undefined {
+  const committedByPath = uniqueFactsByPath(committedFacts);
+  const effectiveByPath = uniqueFactsByPath(effectiveFacts);
+  if (
+    committedByPath === undefined ||
+    effectiveByPath === undefined ||
+    committedByPath.size !== effectiveByPath.size ||
+    [...committedByPath.keys()].some(path => !effectiveByPath.has(path))
+  ) {
+    return undefined;
+  }
+
+  const changedCommittedFacts: CodeGraphFileFacts[] = [];
+  const changedEffectiveFacts: CodeGraphFileFacts[] = [];
+  const stablePaths: string[] = [];
+  for (const path of [...committedByPath.keys()].sort(compareCodeUnits)) {
+    const committed = committedByPath.get(path)!;
+    const effective = effectiveByPath.get(path)!;
+    if (
+      hasSameCodeGraphResolutionSurface(committed.symbols, effective.symbols) &&
+      hasSameCodeGraphReexportResolutionSurface(committed.references ?? [], effective.references ?? [])
+    ) {
+      stablePaths.push(path);
+      continue;
+    }
+    changedCommittedFacts.push(committed);
+    changedEffectiveFacts.push(effective);
+  }
+  return {changedCommittedFacts, changedEffectiveFacts, stablePaths};
 }
 
 /**

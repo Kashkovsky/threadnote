@@ -75,7 +75,7 @@ export const codeGraphStatusBuildLimitFlag = optional(
         ),
       ),
     ),
-    `Maximum build, waiter, and queued-worktree records in JSON; defaults to ${CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT}`,
+    `Maximum compact build, waiter, and queued-worktree records in JSON; defaults to ${CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT}`,
   ),
 );
 

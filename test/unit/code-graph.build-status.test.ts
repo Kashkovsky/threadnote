@@ -999,23 +999,8 @@ describe('code graph cross-process build status', () => {
     expect(result.elapsedMilliseconds).toBeLessThan(2_000);
     const status = JSON.parse(result.output) as Record<string, unknown>;
     expect(status).toMatchObject({
-      build: {
-        counters: {completed: 3, reused: 2, total: 10},
-        materialization: {
-          metrics: {
-            fallbackAssessment: {
-              addedFiles: 1,
-              changedFiles: 2,
-              deletedFiles: 0,
-              detail: 'resolution-domain-unowned',
-              stage: 'file-set-seed-assessment',
-            },
-            fallbackReason: 'project-closure-incomplete',
-            mode: 'full',
-          },
-        },
-        state: 'running',
-      },
+      build: {index: 0},
+      builds: [{counters: {completed: 3, reused: 2, total: 10}, state: 'running'}],
       obsoleteStores: {bytes: 15, fileCount: 1, unsafeEntryCount: 0},
       projection: {
         builds: {limit: 4, omitted: 0, returned: 1, total: 1},
@@ -1024,10 +1009,13 @@ describe('code graph cross-process build status', () => {
         waiters: {limit: 4, omitted: 0, returned: 0, total: 0},
       },
       type: 'code-graph-status',
-      version: 4,
+      version: 5,
     });
+    expect(JSON.stringify(status)).not.toContain('fallbackAssessment');
+    expect(JSON.stringify(status)).not.toContain('temporaryDatabaseHighWaterBytes');
+    expect(Buffer.byteLength(result.output)).toBeLessThan(9_000);
     const idleStatus = JSON.parse(result.idleOutput) as Record<string, unknown>;
-    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 4});
+    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 5});
     expect(Object.keys(idleStatus).sort()).toEqual(Object.keys(status).sort());
     expect(result.human).toContain('Current activity: writing graph facts');
     expect(result.human).toContain('full materialization');
@@ -1168,8 +1156,11 @@ describe('code graph cross-process build status', () => {
       }),
     );
     const status = JSON.parse(result.json) as {
-      readonly build: {readonly identity: {readonly worktreeId: string}} | null;
-      readonly builds: readonly {readonly identity: {readonly worktreeId: string}}[];
+      readonly build: {readonly index: number; readonly worktreeId: string} | null;
+      readonly builds: readonly {
+        readonly buildId: string;
+        readonly identity: {readonly worktreeId: string};
+      }[];
       readonly projection: {
         readonly builds: {
           readonly limit: number;
@@ -1188,10 +1179,13 @@ describe('code graph cross-process build status', () => {
       readonly version: number;
     };
 
-    expect(status.version).toBe(4);
-    expect(status.build?.identity.worktreeId).toBe(result.worktreeId);
+    expect(status.version).toBe(5);
+    expect(status.build?.worktreeId).toBe(result.worktreeId);
     expect(status.builds).toHaveLength(2);
     expect(status.builds.map(build => build.identity.worktreeId)).toContain(result.worktreeId);
+    expect(status.builds[status.build!.index]?.buildId).toBe(
+      status.builds.find(build => build.identity.worktreeId === result.worktreeId)?.buildId,
+    );
     expect(status.projection.builds).toEqual({limit: 2, omitted: 11, returned: 2, total: 13});
     expect(status.languagePacks).toHaveLength(2);
     expect(status.projection.languagePacks).toEqual({

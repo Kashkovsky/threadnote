@@ -4,6 +4,7 @@ import {
   assessProjectClosureSeeds,
   assessProjectFileSetClosureSeeds,
   declaredProjectResolutionClosureProjectIds,
+  partitionProjectResolutionSurfaceChanges,
   planProjectIncrementalClosure,
 } from '../../src/code_graph/incremental_closure.js';
 import {resolvePersistedReexportTerminals} from '../../src/code_graph/indexer.js';
@@ -204,7 +205,7 @@ describe('project incremental closure', () => {
   );
 
   it.prop(
-    'selects file-set closure seeds deterministically from added, modified, and deleted project paths',
+    'selects file-set closure seeds deterministically from added and deleted project paths',
     {
       currentMask: FC.integer({max: 65_535, min: 0}),
       deletedMask: FC.integer({max: 65_535, min: 0}),
@@ -236,6 +237,61 @@ describe('project incremental closure', () => {
       expect(first).toMatchObject({mode: 'eligible', seedProjectIds: expected});
     },
     {fastCheck: {numRuns: 200}},
+  );
+
+  it.prop(
+    'partitions local-only modifications from changed cross-file resolution surfaces deterministically',
+    {
+      changedMask: FC.integer({max: 65_535, min: 0}),
+      fileCount: FC.integer({max: 16, min: 1}),
+      reverse: FC.boolean(),
+    },
+    ({changedMask, fileCount, reverse}) => {
+      const entries = Array.from({length: fileCount}, (_, index) => {
+        const path = `packages/p${index}/index.ts`;
+        const baselineSymbol = {
+          ...symbol(`p${index}`, 1, [`typescript:p${index}:path:${encodeURIComponent(path)}:name:value${index}`]),
+          id: `symbol-${index}`,
+          name: `value${index}`,
+          path,
+          qualifiedName: `value${index}`,
+        };
+        const changed = (changedMask & (1 << index)) !== 0;
+        return {
+          changed,
+          committed: facts(path, [baselineSymbol], false),
+          effective: {
+            ...facts(path, [{...baselineSymbol, arity: changed ? 2 : 1, contentHash: `current-${index}`}], false),
+            diagnostics: [`diagnostic-${index}`],
+          },
+          path,
+        };
+      });
+      const ordered = reverse ? [...entries].reverse() : entries;
+      const partition = partitionProjectResolutionSurfaceChanges(
+        ordered.map(entry => entry.committed),
+        ordered.map(entry => entry.effective),
+      );
+      const changedPaths = entries
+        .filter(entry => entry.changed)
+        .map(entry => entry.path)
+        .sort();
+      const stablePaths = entries
+        .filter(entry => !entry.changed)
+        .map(entry => entry.path)
+        .sort();
+
+      expect(partition?.changedCommittedFacts.map(value => value.path)).toEqual(changedPaths);
+      expect(partition?.changedEffectiveFacts.map(value => value.path)).toEqual(changedPaths);
+      expect(partition?.stablePaths).toEqual(stablePaths);
+      expect(
+        partitionProjectResolutionSurfaceChanges(
+          ordered.map(entry => entry.committed),
+          ordered.slice(1).map(entry => entry.effective),
+        ),
+      ).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 100}},
   );
 
   it.prop(

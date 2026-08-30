@@ -5,12 +5,14 @@ import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/reg
 import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
 import {
   CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT,
+  CODE_GRAPH_STATUS_BUILD_SUMMARY_MAXIMUM_BYTES,
   CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT,
   CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT,
   CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT,
   codeGraphStatusBuildLimit,
   codeGraphStatusLanguagePackLimit,
-  projectCodeGraphStatusActivityV3,
+  projectCodeGraphStatusActivityV5,
+  projectCodeGraphStatusBuildSummaryV5,
   projectCodeGraphStatusLanguagePacksV4,
 } from '../../src/code_graph/status_projection.js';
 
@@ -20,9 +22,13 @@ describe('code graph status JSON projection', () => {
     const waiters = Array.from({length: 74}, (_, index) => status(index + 100, 'active'));
     const currentWorktreeId = builds[73]!.identity.worktreeId;
 
-    const result = projectCodeGraphStatusActivityV3({builds, waiters}, currentWorktreeId, 8);
+    const result = projectCodeGraphStatusActivityV5({builds, waiters}, currentWorktreeId, 8);
 
-    expect(result.build?.identity.worktreeId).toBe(currentWorktreeId);
+    expect(result.build?.worktreeId).toBe(currentWorktreeId);
+    expect(result.builds[result.build!.index]).toMatchObject({
+      buildId: result.build?.buildId,
+      identity: {worktreeId: currentWorktreeId},
+    });
     expect(result.builds).toHaveLength(8);
     expect(result.builds.map(build => build.identity.worktreeId)).toContain(currentWorktreeId);
     expect(result.waiters).toHaveLength(8);
@@ -53,8 +59,8 @@ describe('code graph status JSON projection', () => {
           const originalBuildOrder = builds.map(build => build.identity.worktreeId);
           const originalWaiterOrder = waiters.map(waiter => waiter.identity.worktreeId);
 
-          const first = projectCodeGraphStatusActivityV3({builds, waiters}, current, limit);
-          const second = projectCodeGraphStatusActivityV3({builds, waiters}, current, limit);
+          const first = projectCodeGraphStatusActivityV5({builds, waiters}, current, limit);
+          const second = projectCodeGraphStatusActivityV5({builds, waiters}, current, limit);
 
           expect(second).toEqual(first);
           expect(builds.map(build => build.identity.worktreeId)).toEqual(originalBuildOrder);
@@ -83,13 +89,133 @@ describe('code graph status JSON projection', () => {
             total: queuedTotal,
           });
           if (buildCount > 0) {
-            expect(first.build?.identity.worktreeId).toBe(current);
+            expect(first.build?.worktreeId).toBe(current);
             expect(first.builds.map(build => build.identity.worktreeId)).toContain(current);
+            expect(first.builds[first.build!.index]?.buildId).toBe(first.build?.buildId);
           }
         },
       ),
       {numRuns: 100},
     );
+  });
+
+  it('strips rich diagnostics and bounds live activity without mutating adversarial source records', () => {
+    fc.assert(
+      fc.property(fc.integer({max: 60_000, min: 0}), fc.constantFrom('x', 'é', '混', '🧠'), (size, unit) => {
+        const noise = unit.repeat(size);
+        const source = {
+          ...status(size, 'active'),
+          activity: {
+            batchCompleted: 1,
+            batchTotal: 2,
+            bytes: 3,
+            classifier: noise,
+            degraded: true,
+            factsBytes: Number.MAX_SAFE_INTEGER,
+            language: noise,
+            parseMilliseconds: Number.MAX_SAFE_INTEGER,
+            persistMilliseconds: Number.MAX_SAFE_INTEGER,
+            relations: Number.MAX_SAFE_INTEGER,
+            role: noise,
+            sizeBucket: '1MiB+',
+            stage: 'extracting',
+            symbols: Number.MAX_SAFE_INTEGER,
+            unexpected: noise,
+          },
+          coordination: {lockVerified: true, progressSilent: true, role: 'owner', unexpected: noise},
+          counters: {
+            accepted: Number.MAX_SAFE_INTEGER,
+            completed: Number.MAX_SAFE_INTEGER,
+            edges: Number.MAX_SAFE_INTEGER,
+            embedded: Number.MAX_SAFE_INTEGER,
+            excluded: Number.MAX_SAFE_INTEGER,
+            pagesCompleted: Number.MAX_SAFE_INTEGER,
+            reused: Number.MAX_SAFE_INTEGER,
+            resolved: Number.MAX_SAFE_INTEGER,
+            rowsDeleted: Number.MAX_SAFE_INTEGER,
+            skipped: Number.MAX_SAFE_INTEGER,
+            symbols: Number.MAX_SAFE_INTEGER,
+            total: Number.MAX_SAFE_INTEGER,
+            unexpected: noise,
+            unit: 'files',
+          },
+          error: {summary: noise, unexpected: noise},
+          eta: {
+            basis: 'cached-fact-bytes',
+            confidence: 'high',
+            remainingMilliseconds: Number.MAX_SAFE_INTEGER,
+            scope: 'phase',
+            unexpected: noise,
+          },
+          extraction: {metrics: {unexpected: noise}, topSlowFiles: [{unexpected: noise}]},
+          managerContext: {unexpected: noise, worktreePath: noise},
+          materialization: {metrics: {unexpected: noise}},
+          observation: {
+            heartbeatAgeMilliseconds: Number.MAX_SAFE_INTEGER,
+            liveness: 'active',
+            reason: 'heartbeat-stale',
+            unexpected: noise,
+          },
+          request: {key: noise, unexpected: noise},
+          result: {
+            dirty: true,
+            edges: Number.MAX_SAFE_INTEGER,
+            files: Number.MAX_SAFE_INTEGER,
+            overlayAssessment: {outcome: 'overlay-success', unexpected: noise},
+            snapshotId: noise,
+            symbols: Number.MAX_SAFE_INTEGER,
+            unexpected: noise,
+          },
+          subphase: noise,
+          timestamps: {
+            completedAt: noise,
+            heartbeatAt: noise,
+            lastProgressAt: noise,
+            phaseStartedAt: noise,
+            startedAt: noise,
+            unexpected: noise,
+            updatedAt: noise,
+          },
+        } as unknown as ObservedCodeGraphBuildStatus;
+        const original = JSON.stringify(source);
+
+        const first = projectCodeGraphStatusBuildSummaryV5(source);
+        const second = projectCodeGraphStatusBuildSummaryV5(source);
+
+        expect(second).toEqual(first);
+        expect(JSON.stringify(source)).toBe(original);
+        expect(first).not.toHaveProperty('extraction');
+        expect(first).not.toHaveProperty('managerContext');
+        expect(first).not.toHaveProperty('materialization');
+        expect(first).not.toHaveProperty('owner');
+        expect(first).not.toHaveProperty('request');
+        expect(first.activity).not.toHaveProperty('unexpected');
+        expect(first.error).not.toHaveProperty('unexpected');
+        expect(utf8Bytes(first.error?.summary ?? '')).toBeLessThanOrEqual(300);
+        expect(utf8Bytes(first.subphase ?? '')).toBeLessThanOrEqual(64);
+        expect(utf8Bytes(JSON.stringify(first))).toBeLessThanOrEqual(CODE_GRAPH_STATUS_BUILD_SUMMARY_MAXIMUM_BYTES);
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('keeps a rich 74-build default activity catalog below a deterministic byte ceiling', () => {
+    const richBuilds = Array.from({length: 74}, (_, index) => ({
+      ...status(index, 'completed'),
+      extraction: {metrics: {noise: 'x'.repeat(8_000)}},
+      materialization: {metrics: {noise: 'y'.repeat(8_000)}},
+    })) as unknown as readonly ObservedCodeGraphBuildStatus[];
+    const currentWorktreeId = richBuilds[73]!.identity.worktreeId;
+
+    const result = projectCodeGraphStatusActivityV5(
+      {builds: richBuilds, waiters: []},
+      currentWorktreeId,
+      CODE_GRAPH_STATUS_DEFAULT_BUILD_LIMIT,
+    );
+
+    expect(result.projection.builds).toEqual({limit: 4, omitted: 70, returned: 4, total: 74});
+    expect(result.builds[result.build!.index]?.identity.worktreeId).toBe(currentWorktreeId);
+    expect(utf8Bytes(JSON.stringify(result))).toBeLessThan(4_500);
   });
 
   it('admits only the documented safe build-limit range', () => {
@@ -163,12 +289,36 @@ describe('code graph status JSON projection', () => {
 });
 
 function status(index: number, liveness: 'active' | 'completed'): ObservedCodeGraphBuildStatus {
+  const timestamp = new Date(index * 1_000).toISOString();
   return {
-    identity: {worktreeId: hexId(index)},
+    buildId: `build-${index.toString(16).padStart(16, '0')}`,
+    counters: {completed: index, total: index + 1, unit: 'files'},
+    identity: {
+      checkoutId: hexId(200_000),
+      commit: hexId(index).slice(0, 40),
+      repositoryId: hexId(300_000),
+      worktreeId: hexId(index),
+    },
     observation: {heartbeatAgeMilliseconds: index, liveness},
-  } as ObservedCodeGraphBuildStatus;
+    owner: {processId: index + 1, runtime: 'bun', runtimeVersion: '1.3.14'},
+    phase: 'scanning',
+    schemaVersion: 1,
+    state: liveness === 'active' ? 'running' : 'completed',
+    timestamps: {
+      ...(liveness === 'completed' ? {completedAt: timestamp} : {}),
+      heartbeatAt: timestamp,
+      lastProgressAt: timestamp,
+      phaseStartedAt: timestamp,
+      startedAt: timestamp,
+      updatedAt: timestamp,
+    },
+  };
 }
 
 function hexId(index: number): string {
   return index.toString(16).padStart(64, '0');
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }

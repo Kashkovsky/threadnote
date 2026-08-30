@@ -434,7 +434,7 @@ export function codeGraphStatusHasIndexingActivity(value: unknown): boolean {
   const status = plainRecord(value, 'Code graph status');
   if (
     status.type !== 'code-graph-status' ||
-    (status.version !== 2 && status.version !== 3 && status.version !== 4) ||
+    (status.version !== 2 && status.version !== 3 && status.version !== 4 && status.version !== 5) ||
     !Array.isArray(status.builds) ||
     !Array.isArray(status.waiters) ||
     !Number.isSafeInteger(status.waiterCount) ||
@@ -531,7 +531,7 @@ export function projectCodeMemoryLinkDogfoodGraphStatusV1(value: unknown): CodeM
   const status = plainRecord(value, 'Code graph status');
   if (
     status.type !== 'code-graph-status' ||
-    (status.version !== 2 && status.version !== 3 && status.version !== 4) ||
+    (status.version !== 2 && status.version !== 3 && status.version !== 4 && status.version !== 5) ||
     typeof status.stale !== 'boolean'
   ) {
     throw new ScriptError('Dogfood graph status did not use a supported status contract.');

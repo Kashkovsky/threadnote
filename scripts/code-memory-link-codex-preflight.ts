@@ -209,7 +209,7 @@ export function assertCodeMemoryLinkGraphStatusPreflight(
   const status = object(value, 'graph status');
   if (
     status.type !== 'code-graph-status' ||
-    (status.version !== 2 && status.version !== 3 && status.version !== 4) ||
+    (status.version !== 2 && status.version !== 3 && status.version !== 4 && status.version !== 5) ||
     status.stale !== false
   ) {
     throw new Error('Candidate graph preflight did not publish an exact-current graph.');

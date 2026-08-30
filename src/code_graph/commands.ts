@@ -72,7 +72,7 @@ import {
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
 import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
-import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV4} from './status_projection.js';
+import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV5} from './status_projection.js';
 import {
   codeGraphEtaBasisLabel as etaBasisLabel,
   formatCodeGraphStatusDuration as formatStatusDuration,
@@ -321,7 +321,7 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
   if (options.json) {
     yield* writeFinalCliOutput(
-      serializeCodeGraphStatusV4(
+      serializeCodeGraphStatusV5(
         selection,
         identity.worktreeId,
         statusOptions.buildLimit,

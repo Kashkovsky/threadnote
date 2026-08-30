@@ -36,6 +36,10 @@ import {createWorkspaceAttributor} from './workspace.js';
 export const assessResolutionCandidateIncrementalClosure = Effect.fn(
   'codeGraph.assessResolutionCandidateIncrementalClosure',
 )(function* (input: {
+  readonly baseAttributionContext?: {
+    readonly files: readonly CodeGraphInventoryFile[];
+    readonly workspace: CodeGraphWorkspace;
+  };
   readonly baseFileSetFingerprint: string;
   readonly baseFiles: readonly CodeGraphInventoryFile[];
   readonly candidateReexports: readonly ProjectResolutionReexportCandidate[];
@@ -69,7 +73,10 @@ export const assessResolutionCandidateIncrementalClosure = Effect.fn(
   const plan = planProjectResolutionCandidateScan({bytesByPath: metadata.bytesByPath, files: input.baseFiles});
   if (plan.mode === 'fallback') return resolutionCandidateScanFallback(plan, input.currentChangedFiles.length);
 
-  const attributeBaseFacts = createFactsAttributor(input.baseFiles, input.committedWorkspace);
+  const attributeBaseFacts = createFactsAttributor(
+    input.baseAttributionContext?.files ?? input.baseFiles,
+    input.baseAttributionContext?.workspace ?? input.committedWorkspace,
+  );
   const scan = yield* scanProjectResolutionCandidateClosure({
     additionalReexports: input.candidateReexports,
     initialLookupKeys: input.initialLookupKeys,

@@ -11,6 +11,7 @@ import type {
   CodeGraphStatus,
 } from '../../src/code_graph/types.js';
 import {
+  assembleContextBriefLogicalResult,
   contextBriefAnchoredRepositoryGraphResultMatches,
   contextBriefAnchoredRepositoryGraphRequests,
   fromRepositoryQuery,
@@ -28,6 +29,13 @@ const SNAPSHOT_ID = `cgsn_${'c'.repeat(40)}`;
 const PATH_ANCHOR = 'packages/platform/node/src/NodeHttpClient.ts';
 const SYMBOL_ANCHOR = `cgs_${'d'.repeat(32)}`;
 const MIGRATION_PATH = 'migration/annotations/effect__platform-node__NodeHttpClient.yaml';
+const EFFECT_SOURCE_ANCHORS = [
+  PATH_ANCHOR,
+  'packages/platform/node/src/Undici.ts',
+  'packages/platform/node/src/NodeClusterSocket.ts',
+  'packages/platform/node/src/index.ts',
+  'packages/platform/node/test/NodeHttpClient.test.ts',
+] as const;
 
 describe('Context Brief exact-anchor graph evidence', () => {
   effectIt.effect('traces mixed path and cgs anchors in both directions without task-semantic displacement', () =>
@@ -226,6 +234,96 @@ describe('Context Brief exact-anchor graph evidence', () => {
     );
   });
 
+  it.each(['trace', 'impact'] as const)(
+    'keeps the five-anchor Effect source neighborhood actionable in %s mode',
+    mode => {
+      const plan = planContextBrief({
+        budgetTokens: 1_500,
+        codeRefs: EFFECT_SOURCE_ANCHORS,
+        mode,
+        scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+        task: 'Trace NodeHttpClient, Undici, consumers, re-exports, and tests.',
+      });
+      const relations = ['imports', 'imports', 'imports', 'reexports', 'tests'] as const;
+      const results = EFFECT_SOURCE_ANCHORS.map((anchorPath, index) => {
+        const anchorId = stableId(index * 4 + 1);
+        const consumerId = stableId(index * 4 + 2);
+        const metadataId = stableId(index * 4 + 3);
+        return queryResult({
+          edges: [
+            relationshipEdge(`metadata-${index}`, 'contains', MIGRATION_PATH, metadataId, anchorId),
+            relationshipEdge(`source-${index}`, relations[index]!, sourceConsumerPath(index), consumerId, anchorId),
+          ],
+          nodes: [
+            sourceNode(metadataId, `MigrationProperty${index}`, MIGRATION_PATH, 'property', 'yaml'),
+            sourceNode(consumerId, `SourceConsumer${index}`, sourceConsumerPath(index), 'function'),
+            sourceNode(anchorId, `AnchorSymbol${index}`, anchorPath, 'function'),
+          ],
+          operation: mode === 'impact' ? 'impact' : 'neighbors',
+        });
+      });
+      const evidence = fromRepositoryQuery(mergeContextBriefAnchoredRepositoryGraphResults(plan.graph, results));
+      const logical = assembleContextBriefLogicalResult({
+        graph: evidence,
+        memory: emptyMemoryEvidence(),
+        observedAt: '2026-08-31T00:00:00.000Z',
+        plan,
+      });
+
+      expect(evidence.cards[0]?.symbol.path).not.toBe(MIGRATION_PATH);
+      expect(evidence.cards.some(card => card.symbol.path === MIGRATION_PATH)).toBe(true);
+      expect(evidence.contracts[0]?.relation).toBe('imports');
+      expect(logical.recommendedFollowUps[0]).toMatchObject({
+        operation: 'inspect-node',
+        ref: evidence.cards[0]?.ref,
+      });
+    },
+  );
+
+  it('prioritizes direct impact consumers over arbitrary structural metadata order', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.nat({max: 1_000}), {minLength: 1, maxLength: 40}),
+        fc.constantFrom<CodeGraphEdge['relation']>('exports', 'imports', 'reexports', 'tests'),
+        (values, relation) => {
+          const plan = planContextBrief({
+            budgetTokens: 1_500,
+            codeRefs: [PATH_ANCHOR],
+            mode: 'impact',
+            scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+            task: 'Assess exact downstream impact.',
+          });
+          const anchorId = stableId(1);
+          const consumerId = stableId(2);
+          const metadataNodes = values.map((value, index) =>
+            sourceNode(stableId(index + 10), `migration-${value}`, MIGRATION_PATH, 'property', 'yaml'),
+          );
+          const metadataEdges = metadataNodes.map((node, index) =>
+            relationshipEdge(`metadata-${index}`, 'contains', MIGRATION_PATH, node.id, anchorId),
+          );
+          const result = queryResult({
+            edges: [
+              ...metadataEdges,
+              relationshipEdge('direct-source', relation, 'src/Consumer.ts', consumerId, anchorId),
+            ],
+            nodes: [
+              ...metadataNodes,
+              sourceNode(consumerId, 'Consumer', 'src/Consumer.ts', 'function'),
+              sourceNode(anchorId, 'Anchor', PATH_ANCHOR, 'function'),
+            ],
+            operation: 'impact',
+          });
+          const evidence = fromRepositoryQuery(mergeContextBriefAnchoredRepositoryGraphResults(plan.graph, [result]));
+
+          expect(evidence.cards[0]?.ref).toBe(consumerId);
+          expect(evidence.contracts[0]?.relation).toBe(relation);
+          expect(evidence.cards.filter(card => card.symbol.path === MIGRATION_PATH)).toHaveLength(values.length);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
   it('routes every canonical impact path through exact path seeds while cgs stays a stable selector', () => {
     fc.assert(
       fc.property(
@@ -330,6 +428,39 @@ function graphEdge(id: string, relation: CodeGraphEdge['relation'], evidencePath
     targetId: `cgs_${'7'.repeat(32)}`,
     targetName: 'target',
   };
+}
+
+function relationshipEdge(
+  id: string,
+  relation: CodeGraphEdge['relation'],
+  evidencePath: string,
+  sourceId: string,
+  targetId: string,
+): CodeGraphEdge {
+  return {...graphEdge(id, relation, evidencePath), sourceId, targetId};
+}
+
+function stableId(value: number): string {
+  return `cgs_${value.toString(16).padStart(32, '0')}`;
+}
+
+function sourceConsumerPath(index: number): string {
+  return index === 0
+    ? 'packages/platform/node/src/NodeClusterHttp.ts'
+    : index === 3
+      ? 'packages/platform/node/src/internal.ts'
+      : index === 4
+        ? 'packages/platform/node/test/NodeHttpClient.integration.test.ts'
+        : `packages/platform/node/src/Consumer${index}.ts`;
+}
+
+function emptyMemoryEvidence() {
+  return {
+    candidates: [],
+    consideredCandidates: 0,
+    gaps: [],
+    trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+  } as const;
 }
 
 const STATUS: CodeGraphStatus = {

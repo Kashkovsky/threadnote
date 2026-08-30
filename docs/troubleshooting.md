@@ -261,12 +261,14 @@ threadnote doctor --dry-run
 threadnote graph index --full
 ```
 
-`threadnote graph status --json` emits the bounded version 4 machine projection. By default it returns at most four
-rich build records, four waiter records, four queued worktree IDs, and four rich language-pack records while always
-retaining the exact current-worktree build when one exists. Each list has exact `total`, `returned`, and `omitted`
-counts under `projection`. Use `--build-limit <1..32>` or `--language-pack-limit <1..64>` with `--json` when an operator
-needs a larger bounded sample; the current complete built-in pack catalog fits under the explicit maximum. Human
-status continues to show the complete pack catalog, while Manager retains the complete local activity catalog.
+`threadnote graph status --json` emits the bounded version 5 machine projection. By default it returns at most four
+compact build summaries, four compact waiter summaries, four queued worktree IDs, and four rich language-pack records.
+The top-level `build` is an exact `buildId`/`worktreeId`/`index` selector into `builds`, so the selected current-worktree
+or active record is retained without serializing it twice. Summaries keep state, phase, counters, ETA/error/result,
+freshness observation, timestamps, and bounded live activity; detailed extraction, materialization, owner, and local
+Manager fields stay out of machine output. Each list has exact `total`, `returned`, and `omitted` counts under
+`projection`. Use `--build-limit <1..32>` or `--language-pack-limit <1..64>` with `--json` when an operator needs a
+larger bounded sample. Human status and Manager continue to use the complete internal activity and pack catalogs.
 
 `threadnote graph inventory` is a non-mutating, aggregate-only admission preview. It reports exact file and byte totals
 for eligible and skipped inputs, grouped by language, file role, language-pack classifier, and decision reason. The
@@ -274,6 +276,13 @@ breakdown makes SVG, heavy/generated JSON, Git ignore, and `.threadnoteignore` d
 showing admitted TypeScript, package manifests, Nx configuration, and TypeScript configuration. Add `--json` for the
 versioned path-free payload. Ordinary source blobs are not hydrated; Threadnote reads only the small resolution
 manifests needed to apply the same declared-source-root rules as indexing.
+
+For mixed file-set changes, an existing file from a resolver domain without a declared project can still be rewritten
+locally when its cached before/after facts prove that published symbol lookup keys and static re-export aliases are
+unchanged. Added or deleted files in such an unowned domain, a changed published surface, incomplete cache evidence, or
+an exceeded scan/rewrite bound still triggers a correctness-preserving full materialization. In oversized declared
+projects, Threadnote performs one bounded candidate scan in the current file context so imports that become resolvable
+after a module is added are included in the incremental rewrite.
 
 Interactive indexing shows each Git read batch, then each extraction file and language with parse timing, followed by
 the persistence batches. Long pauses can therefore be attributed to input, parsing, or SQLite publication instead of

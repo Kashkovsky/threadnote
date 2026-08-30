@@ -167,13 +167,14 @@ function rankAnchoredNodes(
 ): readonly CodeGraphQueryNode[] {
   const anchorIds = new Set(plan.codeRefs.filter(ref => ref.startsWith('cgs_')));
   const anchorPaths = new Set(plan.codeRefs.filter(ref => !ref.startsWith('cgs_')));
+  const relationshipPriorities = strongestRelationshipPriorityByNodeId(results);
   const byId = new Map<string, RankedNode>();
   for (const [requestRank, result] of results.entries()) {
     for (const [nodeRank, node] of result.nodes.entries()) {
       const ranked = {
         node,
         nodeRank,
-        priority: anchoredNodePriority(plan.mode, node, anchorIds, anchorPaths),
+        priority: anchoredNodePriority(plan.mode, node, anchorIds, anchorPaths, relationshipPriorities.get(node.id)),
         requestRank,
       } satisfies RankedNode;
       const current = byId.get(node.id);
@@ -188,19 +189,44 @@ function anchoredNodePriority(
   node: CodeGraphQueryNode,
   anchorIds: ReadonlySet<string>,
   anchorPaths: ReadonlySet<string>,
+  relationshipPriority: number | undefined,
 ): number {
   const exact = anchorIds.has(node.id) || anchorPaths.has(node.path);
   const module = node.kind === 'module';
+  const directSourceRelationship = relationshipPriority === 0;
+  const supportingRelationship = relationshipPriority !== undefined && relationshipPriority < 3;
   if (mode === 'trace') {
     if (exact && (module || anchorIds.has(node.id))) return 0;
-    if (module) return 1;
+    if (directSourceRelationship) return 1;
     if (exact) return 2;
-    return 3;
+    if (module) return 3;
+    if (supportingRelationship) return 4;
+    return 5;
   }
-  if (module && !exact) return 0;
-  if (module) return 1;
-  if (!exact) return 2;
-  return 3;
+  if ((directSourceRelationship || module) && !exact) return 0;
+  if (directSourceRelationship || (exact && module)) return 1;
+  if (exact) return 2;
+  if (supportingRelationship) return 3;
+  return 4;
+}
+
+/**
+ * Cards and contracts share one relevance signal. A non-module source consumer reached through an
+ * import, re-export, export, or test edge must not tie with an arbitrary metadata property merely
+ * because both happened to be hydrated as ordinary nodes. Structural metadata remains available
+ * after the direct source neighborhood instead of being filtered out.
+ */
+function strongestRelationshipPriorityByNodeId(results: readonly CodeGraphQueryResult[]): ReadonlyMap<string, number> {
+  const priorities = new Map<string, number>();
+  for (const edge of results.flatMap(result => result.edges)) {
+    const priority = anchoredEdgePriority(edge);
+    for (const nodeId of [edge.sourceId, edge.targetId]) {
+      if (nodeId === undefined) continue;
+      const current = priorities.get(nodeId);
+      if (current === undefined || priority < current) priorities.set(nodeId, priority);
+    }
+  }
+  return priorities;
 }
 
 function rankAnchoredEdges(results: readonly CodeGraphQueryResult[]): readonly CodeGraphEdge[] {

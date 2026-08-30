@@ -1,4 +1,8 @@
-import type {CodeGraphBuildStatusSelection, ObservedCodeGraphBuildStatus} from './build_status.js';
+import type {
+  CodeGraphBuildActivity,
+  CodeGraphBuildStatusSelection,
+  ObservedCodeGraphBuildStatus,
+} from './build_status.js';
 import type {ObsoleteCodeGraphStoreInventory} from './maintenance.js';
 import type {CodeGraphStorage} from './storage.js';
 import type {CodeGraphStatus} from './types.js';
@@ -9,6 +13,7 @@ export const CODE_GRAPH_STATUS_MAXIMUM_BUILD_LIMIT = 32;
 export const CODE_GRAPH_STATUS_DEFAULT_LANGUAGE_PACK_LIMIT = 4;
 export const CODE_GRAPH_STATUS_MINIMUM_LANGUAGE_PACK_LIMIT = 1;
 export const CODE_GRAPH_STATUS_MAXIMUM_LANGUAGE_PACK_LIMIT = 64;
+export const CODE_GRAPH_STATUS_BUILD_SUMMARY_MAXIMUM_BYTES = 4_096;
 
 export interface CodeGraphStatusBoundedListReceiptV3 {
   readonly limit: number;
@@ -23,21 +28,44 @@ export interface CodeGraphStatusProjectionReceiptV3 {
   readonly waiters: CodeGraphStatusBoundedListReceiptV3;
 }
 
-export interface CodeGraphStatusProjectionReceiptV4 extends CodeGraphStatusProjectionReceiptV3 {
+export interface CodeGraphStatusProjectionReceiptV5 extends CodeGraphStatusProjectionReceiptV3 {
   readonly languagePacks: CodeGraphStatusBoundedListReceiptV3;
 }
 
-export interface CodeGraphStatusActivityProjectionV3 {
-  readonly build: ObservedCodeGraphBuildStatus | null;
-  readonly builds: readonly ObservedCodeGraphBuildStatus[];
+export interface CodeGraphStatusBuildSelectionV5 {
+  readonly buildId: string;
+  readonly index: number;
+  readonly worktreeId: string;
+}
+
+export interface CodeGraphStatusBuildSummaryV5 {
+  readonly activity?: CodeGraphBuildActivity;
+  readonly buildId: string;
+  readonly coordination?: NonNullable<ObservedCodeGraphBuildStatus['coordination']>;
+  readonly counters: ObservedCodeGraphBuildStatus['counters'];
+  readonly error?: NonNullable<ObservedCodeGraphBuildStatus['error']>;
+  readonly eta?: NonNullable<ObservedCodeGraphBuildStatus['eta']>;
+  readonly identity: Pick<ObservedCodeGraphBuildStatus['identity'], 'commit' | 'worktreeId'>;
+  readonly observation: ObservedCodeGraphBuildStatus['observation'];
+  readonly phase: ObservedCodeGraphBuildStatus['phase'];
+  readonly result?: NonNullable<ObservedCodeGraphBuildStatus['result']>;
+  readonly state: ObservedCodeGraphBuildStatus['state'];
+  readonly subphase?: string;
+  readonly timestamps: ObservedCodeGraphBuildStatus['timestamps'];
+}
+
+export interface CodeGraphStatusActivityProjectionV5 {
+  /** Exact selector into `builds`; avoids serializing the selected summary twice. */
+  readonly build: CodeGraphStatusBuildSelectionV5 | null;
+  readonly builds: readonly CodeGraphStatusBuildSummaryV5[];
   readonly projection: CodeGraphStatusProjectionReceiptV3;
   readonly queuedWorktreeIds: readonly string[];
   /** Exact total, retained for compatibility with the v2 activity surface. */
   readonly waiterCount: number;
-  readonly waiters: readonly ObservedCodeGraphBuildStatus[];
+  readonly waiters: readonly CodeGraphStatusBuildSummaryV5[];
 }
 
-export type CodeGraphStatusJsonDetailsV4 = Pick<
+export type CodeGraphStatusJsonDetailsV5 = Pick<
   CodeGraphStatus,
   'databasePath' | 'identity' | 'languagePacks' | 'stale'
 > & {
@@ -98,22 +126,30 @@ export function resolveCodeGraphStatusOptions(options: {
  * to human rendering and Manager. The exact current worktree record is pinned
  * even when higher-priority records consume the ordinary prefix budget.
  */
-export function projectCodeGraphStatusActivityV3(
+export function projectCodeGraphStatusActivityV5(
   selection: CodeGraphBuildStatusSelection,
   currentWorktreeId: string,
   limit: number,
-): CodeGraphStatusActivityProjectionV3 {
+): CodeGraphStatusActivityProjectionV5 {
   const boundedLimit = codeGraphStatusBuildLimit(limit);
   if (boundedLimit === undefined) throw new RangeError('Invalid code graph status build limit.');
   const exactCurrent = selection.builds.find(status => status.identity.worktreeId === currentWorktreeId);
   const selectedBuild =
     exactCurrent ?? selection.builds.find(status => status.observation.liveness === 'active') ?? null;
-  const builds = boundedPrefixPreserving(selection.builds, selectedBuild, boundedLimit);
-  const waiters = selection.waiters.slice(0, boundedLimit);
+  const selectedBuilds = boundedPrefixPreserving(selection.builds, selectedBuild, boundedLimit);
+  const builds = selectedBuilds.map(projectCodeGraphStatusBuildSummaryV5);
+  const waiters = selection.waiters.slice(0, boundedLimit).map(projectCodeGraphStatusBuildSummaryV5);
   const allQueuedWorktreeIds = stableUnique(selection.waiters.map(status => status.identity.worktreeId));
   const queuedWorktreeIds = allQueuedWorktreeIds.slice(0, boundedLimit);
   return {
-    build: selectedBuild,
+    build:
+      selectedBuild === null
+        ? null
+        : {
+            buildId: boundedText(selectedBuild.buildId, 64),
+            index: selectedBuilds.indexOf(selectedBuild),
+            worktreeId: boundedText(selectedBuild.identity.worktreeId, 64),
+          },
     builds,
     projection: {
       builds: listReceipt(selection.builds.length, builds.length, boundedLimit),
@@ -126,14 +162,14 @@ export function projectCodeGraphStatusActivityV3(
   };
 }
 
-export function serializeCodeGraphStatusV4(
+export function serializeCodeGraphStatusV5(
   selection: CodeGraphBuildStatusSelection,
   currentWorktreeId: string,
   buildLimit: number,
   languagePackLimit: number,
-  details: CodeGraphStatusJsonDetailsV4,
+  details: CodeGraphStatusJsonDetailsV5,
 ): string {
-  const activity = projectCodeGraphStatusActivityV3(selection, currentWorktreeId, buildLimit);
+  const activity = projectCodeGraphStatusActivityV5(selection, currentWorktreeId, buildLimit);
   const languagePacks = projectCodeGraphStatusLanguagePacksV4(details.languagePacks, languagePackLimit);
   return JSON.stringify({
     ...activity,
@@ -142,10 +178,112 @@ export function serializeCodeGraphStatusV4(
     projection: {
       ...activity.projection,
       languagePacks: languagePacks.receipt,
-    } satisfies CodeGraphStatusProjectionReceiptV4,
+    } satisfies CodeGraphStatusProjectionReceiptV5,
     type: 'code-graph-status',
-    version: 4,
+    version: 5,
   });
+}
+
+export function projectCodeGraphStatusBuildSummaryV5(
+  status: ObservedCodeGraphBuildStatus,
+): CodeGraphStatusBuildSummaryV5 {
+  const retainsActiveActivity = status.state === 'queued' || status.state === 'running';
+  return {
+    ...(retainsActiveActivity && status.activity
+      ? {activity: projectCodeGraphStatusBuildActivityV5(status.activity)}
+      : {}),
+    buildId: boundedText(status.buildId, 64),
+    ...(status.coordination
+      ? {
+          coordination: {
+            lockVerified: status.coordination.lockVerified,
+            ...(status.coordination.progressSilent === undefined
+              ? {}
+              : {progressSilent: status.coordination.progressSilent}),
+            role: status.coordination.role,
+          },
+        }
+      : {}),
+    counters: definedProperties(status.counters, [
+      'accepted',
+      'completed',
+      'edges',
+      'embedded',
+      'excluded',
+      'pagesCompleted',
+      'reused',
+      'resolved',
+      'rowsDeleted',
+      'skipped',
+      'symbols',
+      'total',
+      'unit',
+    ]),
+    ...(status.error ? {error: {summary: boundedText(status.error.summary, 300)}} : {}),
+    ...(status.eta
+      ? {
+          eta: {
+            ...(status.eta.basis ? {basis: status.eta.basis} : {}),
+            confidence: status.eta.confidence,
+            remainingMilliseconds: status.eta.remainingMilliseconds,
+            scope: status.eta.scope,
+          },
+        }
+      : {}),
+    identity: {
+      commit: boundedText(status.identity.commit, 64),
+      worktreeId: boundedText(status.identity.worktreeId, 64),
+    },
+    observation: {
+      heartbeatAgeMilliseconds: status.observation.heartbeatAgeMilliseconds,
+      liveness: status.observation.liveness,
+      ...(status.observation.reason ? {reason: status.observation.reason} : {}),
+    },
+    phase: status.phase,
+    ...(status.result
+      ? {
+          result: {
+            dirty: status.result.dirty,
+            edges: status.result.edges,
+            files: status.result.files,
+            ...(status.result.overlayAssessment
+              ? {overlayAssessment: {outcome: status.result.overlayAssessment.outcome}}
+              : {}),
+            snapshotId: boundedText(status.result.snapshotId, 128),
+            symbols: status.result.symbols,
+          },
+        }
+      : {}),
+    state: status.state,
+    ...(status.subphase ? {subphase: boundedText(status.subphase, 64)} : {}),
+    timestamps: {
+      ...(status.timestamps.completedAt ? {completedAt: boundedText(status.timestamps.completedAt, 64)} : {}),
+      heartbeatAt: boundedText(status.timestamps.heartbeatAt, 64),
+      lastProgressAt: boundedText(status.timestamps.lastProgressAt, 64),
+      phaseStartedAt: boundedText(status.timestamps.phaseStartedAt, 64),
+      startedAt: boundedText(status.timestamps.startedAt, 64),
+      updatedAt: boundedText(status.timestamps.updatedAt, 64),
+    },
+  };
+}
+
+function projectCodeGraphStatusBuildActivityV5(activity: CodeGraphBuildActivity): CodeGraphBuildActivity {
+  return {
+    batchCompleted: activity.batchCompleted,
+    batchTotal: activity.batchTotal,
+    bytes: activity.bytes,
+    ...(activity.classifier ? {classifier: boundedText(activity.classifier, 64)} : {}),
+    ...(activity.degraded === undefined ? {} : {degraded: activity.degraded}),
+    ...(activity.factsBytes === undefined ? {} : {factsBytes: activity.factsBytes}),
+    language: boundedText(activity.language, 64),
+    ...(activity.parseMilliseconds === undefined ? {} : {parseMilliseconds: activity.parseMilliseconds}),
+    ...(activity.persistMilliseconds === undefined ? {} : {persistMilliseconds: activity.persistMilliseconds}),
+    ...(activity.relations === undefined ? {} : {relations: activity.relations}),
+    ...(activity.role ? {role: boundedText(activity.role, 64)} : {}),
+    ...(activity.sizeBucket ? {sizeBucket: activity.sizeBucket} : {}),
+    stage: activity.stage,
+    ...(activity.symbols === undefined ? {} : {symbols: activity.symbols}),
+  };
 }
 
 export function projectCodeGraphStatusLanguagePacksV4(
@@ -166,6 +304,22 @@ function boundedPrefixPreserving<T>(items: readonly T[], required: T | null, lim
 
 function stableUnique(values: readonly string[]): readonly string[] {
   return [...new Set(values)];
+}
+
+function boundedText(value: string, maximumBytes: number): string {
+  let bytes = 0;
+  let end = 0;
+  for (const codePoint of value) {
+    const codePointBytes = Buffer.byteLength(codePoint, 'utf8');
+    if (bytes > maximumBytes - codePointBytes) break;
+    bytes += codePointBytes;
+    end += codePoint.length;
+  }
+  return value.slice(0, end);
+}
+
+function definedProperties<T extends object, K extends keyof T>(value: T, keys: readonly K[]): Pick<T, K> {
+  return Object.fromEntries(keys.flatMap(key => (value[key] === undefined ? [] : [[key, value[key]]]))) as Pick<T, K>;
 }
 
 function listReceipt(total: number, returned: number, limit: number): CodeGraphStatusBoundedListReceiptV3 {
