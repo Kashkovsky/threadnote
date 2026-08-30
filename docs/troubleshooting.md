@@ -59,18 +59,19 @@ no-op. Use `threadnote doctor` for storage, index, and model diagnostics.
 
 ## Cursor does not load the Threadnote instructions
 
-Do not put a rule under `~/.cursor/rules`; Cursor documents `.cursor/rules/*.mdc` as project scope. Install **Threadnote**
-from Cursor's public Marketplace, or ask a Teams or Enterprise administrator to allow it or add it to a team
-marketplace. Configure the MCP server separately with `threadnote mcp-install cursor --apply`, then reload Cursor.
+Run `threadnote mcp-install cursor --apply`, then reload Cursor. The command registers Cursor and installs the MCP entry,
+`~/.cursor/rules/threadnote.mdc`, and the Threadnote skills under `~/.cursor/skills`. A Marketplace-managed Threadnote
+plugin is accepted as an alternative instruction provider; when detected, Threadnote installs the skills but removes
+its duplicate managed user-rule block.
 
-Run `threadnote doctor` afterward. When Cursor is installed, doctor verifies the global MCP entry and the plugin's
-manifest, version, `.mdc` anatomy, and complete always-applied instruction block. When Cursor is not installed, the
-Cursor plugin check is omitted. Threadnote lifecycle commands never install or repair the plugin.
+Run `threadnote doctor` afterward. Doctor checks Cursor only when it has a registered or legacy-inferred Threadnote MCP
+integration. Merely having Cursor installed is healthy and does not require either Threadnote MCP or the optional
+Marketplace plugin.
 
-If doctor reports `~/.cursor/plugins/local/threadnote`, fully quit Cursor and move only that unsupported local copy aside
-before installing through the Marketplace. Threadnote does not remove it automatically. If model access is affected on
-a managed device, preserve needed settings and coordinate with the Cursor administrator or Cursor support before
-clearing broader application state.
+If an older Threadnote doctor or a dedicated plugin-package check reports `~/.cursor/plugins/local/threadnote`, fully
+quit Cursor and move only that unsupported local copy aside before installing through the Marketplace. Threadnote does
+not remove it automatically. If model access is affected on a managed device, preserve needed settings and coordinate
+with the Cursor administrator or Cursor support before clearing broader application state.
 
 ## Collect production logs for support
 

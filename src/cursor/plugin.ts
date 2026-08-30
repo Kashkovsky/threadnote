@@ -81,9 +81,14 @@ export const isCursorInstalled = Effect.fn('cursorPlugin.isCursorInstalled')(fun
   return false;
 });
 
+export const isCursorMarketplacePluginInstalled = Effect.fn('cursorPlugin.isMarketplaceInstalled')(function* () {
+  const root = yield* findCursorMarketplacePluginRoot();
+  if (root === undefined) return false;
+  return (yield* inspectCursorPluginRoot(root)).status !== 'fail';
+});
+
 const cursorPluginDoctorCheck = Effect.fn('cursorPlugin.doctorCheck')(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const localRoot = yield* expandPath(`~/.cursor/plugins/local/${CURSOR_PLUGIN_NAME}`);
   if (yield* fs.exists(localRoot)) {
     return {
@@ -93,23 +98,8 @@ const cursorPluginDoctorCheck = Effect.fn('cursorPlugin.doctorCheck')(function* 
     } satisfies DoctorCheck;
   }
 
-  const cacheRoot = yield* expandPath('~/.cursor/plugins/cache');
-  if (yield* fs.exists(cacheRoot)) {
-    const candidates: Array<{readonly manifest: CursorPluginManifest; readonly root: string}> = [];
-    const entries = (yield* fs.readDirectory(cacheRoot, {recursive: true})).sort();
-    for (const entry of entries) {
-      if (!normalizePath(entry).endsWith(CURSOR_PLUGIN_MANIFEST)) continue;
-      const manifestPath = path.join(cacheRoot, entry);
-      const manifest = yield* readCursorPluginManifest(manifestPath).pipe(
-        Effect.catch(() => Effect.succeed(undefined)),
-      );
-      if (manifest?.name !== CURSOR_PLUGIN_NAME) continue;
-      candidates.push({manifest, root: path.dirname(path.dirname(manifestPath))});
-    }
-    candidates.sort((left, right) => compareSemver(right.manifest.version, left.manifest.version));
-    const current = candidates[0];
-    if (current) return yield* inspectCursorPluginRoot(current.root);
-  }
+  const marketplaceRoot = yield* findCursorMarketplacePluginRoot();
+  if (marketplaceRoot !== undefined) return yield* inspectCursorPluginRoot(marketplaceRoot);
 
   return {
     detail:
@@ -117,6 +107,24 @@ const cursorPluginDoctorCheck = Effect.fn('cursorPlugin.doctorCheck')(function* 
     name: 'Cursor plugin',
     status: 'warn',
   } satisfies DoctorCheck;
+});
+
+const findCursorMarketplacePluginRoot = Effect.fn('cursorPlugin.findMarketplaceRoot')(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const cacheRoot = yield* expandPath('~/.cursor/plugins/cache');
+  if (!(yield* fs.exists(cacheRoot))) return undefined;
+  const candidates: Array<{readonly manifest: CursorPluginManifest; readonly root: string}> = [];
+  const entries = (yield* fs.readDirectory(cacheRoot, {recursive: true})).sort();
+  for (const entry of entries) {
+    if (!normalizePath(entry).endsWith(CURSOR_PLUGIN_MANIFEST)) continue;
+    const manifestPath = path.join(cacheRoot, entry);
+    const manifest = yield* readCursorPluginManifest(manifestPath).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (manifest?.name !== CURSOR_PLUGIN_NAME) continue;
+    candidates.push({manifest, root: path.dirname(path.dirname(manifestPath))});
+  }
+  candidates.sort((left, right) => compareSemver(right.manifest.version, left.manifest.version));
+  return candidates[0]?.root;
 });
 
 const inspectCursorPluginRoot = Effect.fn('cursorPlugin.inspectRoot')(function* (pluginRoot: string) {

@@ -1274,7 +1274,7 @@ const mcpInstall = Command.make(
     toolset: optionalChoice('toolset', ['core', 'full'], 'Stdio adapter toolset'),
   },
   ({agent, ...options}) => withRuntimeEffect(config => runMcpInstall(config, agent, options)),
-).pipe(Command.withDescription('Install the Threadnote stdio MCP config for a supported agent'));
+).pipe(Command.withDescription('Install the Threadnote MCP config, instructions, and skills for one supported agent'));
 
 const installHooks = Command.make(
   'install-hooks',

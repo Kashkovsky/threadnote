@@ -9,7 +9,7 @@ import {commandShimCheck, installCommandShim, renderCommandShim} from '../../src
 import {runCommandEffect} from '../../src/effect/command.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {runInstall, userAgentInstructionsChecks} from '../../src/lifecycle.js';
+import {runInstall} from '../../src/lifecycle.js';
 import {BUILTIN_MODEL_MANIFESTS, CORE_EMBEDDING_MODEL_ID} from '../../src/models/builtin.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -18,7 +18,7 @@ const embeddingManifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === COR
 
 describe('agent instruction lifecycle', () => {
   it.effect(
-    'install and repair paths upsert managed instructions and report every target',
+    'core install leaves every host instruction surface untouched',
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -67,27 +67,23 @@ describe('agent instruction lifecycle', () => {
           const legacyCursorRule = path.join(userHome, '.cursor', 'rules', 'threadnote.md');
           const legacyCursorMdcRule = path.join(userHome, '.cursor', 'rules', 'threadnote.mdc');
           yield* fs.makeDirectory(path.dirname(legacyCursorRule), {recursive: true});
-          yield* fs.writeFileString(
-            legacyCursorRule,
-            [
-              'Preserve this user-authored note.',
-              '',
-              '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
-              'Stale Threadnote instructions.',
-              '<!-- END THREADNOTE USER INSTRUCTIONS -->',
-            ].join('\n'),
-          );
-          yield* fs.writeFileString(
-            legacyCursorMdcRule,
-            [
-              '---',
-              'alwaysApply: true',
-              '---',
-              '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
-              'Stale Threadnote instructions.',
-              '<!-- END THREADNOTE USER INSTRUCTIONS -->',
-            ].join('\n'),
-          );
+          const legacyCursorContent = [
+            'Preserve this user-authored note.',
+            '',
+            '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
+            'Stale Threadnote instructions.',
+            '<!-- END THREADNOTE USER INSTRUCTIONS -->',
+          ].join('\n');
+          const legacyCursorMdcContent = [
+            '---',
+            'alwaysApply: true',
+            '---',
+            '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
+            'Stale Threadnote instructions.',
+            '<!-- END THREADNOTE USER INSTRUCTIONS -->',
+          ].join('\n');
+          yield* fs.writeFileString(legacyCursorRule, legacyCursorContent);
+          yield* fs.writeFileString(legacyCursorMdcRule, legacyCursorMdcContent);
           if (system.platform !== 'win32') {
             yield* fs.makeDirectory(path.dirname(commandShim), {recursive: true});
             yield* fs.writeFileString(
@@ -128,31 +124,14 @@ describe('agent instruction lifecycle', () => {
             expect(commandShimContent).toContain('Threadnote standalone executable is missing');
             expect((yield* commandShimCheck().pipe(Effect.provideService(SystemInfo, testSystem))).status).toBe('ok');
           }
-          expect(installed.output).toContain(`Wrote agent instructions: ${path.join(userHome, '.codex', 'AGENTS.md')}`);
-          expect(yield* fs.readFileString(path.join(userHome, '.codex', 'AGENTS.md'))).toContain(
-            '<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->',
+          expect(installed.output).not.toContain('agent instructions');
+          expect(yield* fs.exists(path.join(userHome, '.codex', 'AGENTS.md'))).toBe(false);
+          expect(yield* fs.exists(path.join(userHome, '.claude', 'CLAUDE.md'))).toBe(false);
+          expect(yield* fs.exists(path.join(userHome, '.copilot', 'instructions', 'threadnote.instructions.md'))).toBe(
+            false,
           );
-          const generatedInstructions = yield* Effect.all([
-            fs.readFileString(path.join(userHome, '.codex', 'AGENTS.md')),
-            fs.readFileString(path.join(userHome, '.claude', 'CLAUDE.md')),
-            fs.readFileString(path.join(userHome, '.copilot', 'instructions', 'threadnote.instructions.md')),
-          ]);
-          expect(generatedInstructions[1]).toContain('<!-- BEGIN THREADNOTE USER INSTRUCTIONS -->');
-          expect(generatedInstructions[2]).toContain('applyTo: "**"');
-          expect(yield* fs.readFileString(legacyCursorRule)).toBe('Preserve this user-authored note.\n');
-          expect(yield* fs.exists(legacyCursorMdcRule)).toBe(false);
-          expect(generatedInstructions.every(content => content.includes('`query` to find a'))).toBe(true);
-          expect(generatedInstructions.every(content => content.includes('`impact` for reverse dependencies'))).toBe(
-            true,
-          );
-          expect(generatedInstructions.every(content => content.includes('`threadnote workset prepare <name>`'))).toBe(
-            true,
-          );
-          expect(generatedInstructions.every(content => !content.includes('report-issue'))).toBe(true);
-
-          const checks = yield* userAgentInstructionsChecks().pipe(Effect.provideService(SystemInfo, testSystem));
-          expect(checks).toHaveLength(3);
-          expect(checks.every(check => check.status === 'ok')).toBe(true);
+          expect(yield* fs.readFileString(legacyCursorRule)).toBe(legacyCursorContent);
+          expect(yield* fs.readFileString(legacyCursorMdcRule)).toBe(legacyCursorMdcContent);
 
           if (system.platform !== 'win32') {
             const missingTargetShim = path.join(root, 'missing-target-threadnote');

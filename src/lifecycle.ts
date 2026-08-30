@@ -1,11 +1,14 @@
 import {Console, Effect, FileSystem, Path, Result} from 'effect';
 import {
-  LEGACY_CURSOR_INSTRUCTION_PATHS,
-  USER_AGENT_INSTRUCTION_TARGETS,
-  USER_INSTRUCTIONS_END_MARKER,
-  USER_INSTRUCTIONS_START_MARKER,
-} from './constants.js';
-import {cursorPluginDoctorChecks} from './cursor/plugin.js';
+  agentIntegrationDoctorChecks,
+  migrateLegacyAgentIntegrations,
+  readAgentIntegrationRegistry,
+  registeredAgentClients,
+  repairableAgentClients,
+  removeAgentIntegrationsInTransaction,
+  repairAgentIntegrations,
+} from './agent-integrations.js';
+import {type AgentIntegrationRegistry, withAgentIntegrationLock} from './agent-integration-registry.js';
 import {startProgress} from './cli_ui.js';
 import {commandShimCheck, installCommandShim, removeCommandShim} from './command-shim.js';
 import {sha256FileHex} from './effect/digest.js';
@@ -18,7 +21,14 @@ import {
   pruneStandaloneReleases,
   withStandaloneInstallationLock,
 } from './installations.js';
-import {mcpConfigurationChecks, removeMcpConfigs, removeMcpSnippets, resolveMcpClients, runMcpInstall} from './mcp.js';
+import {
+  inferConfiguredMcpClients,
+  mcpConfigurationChecks,
+  removeMcpConfigs,
+  removeMcpSnippets,
+  resolveMcpClients,
+  runMcpInstall,
+} from './mcp.js';
 import {legacyProcessDoctorCheck} from './process/diagnostics.js';
 import {maybeRunPostUpdateAfterRepair} from './update.js';
 import {
@@ -60,6 +70,7 @@ import {
   THREADNOTE_STORAGE_LAYOUT_VERSION,
 } from './storage/layout.js';
 import type {
+  AgentClient,
   DoctorCheck,
   DoctorOptions,
   ForgetOptions,
@@ -72,11 +83,9 @@ import type {
 import {
   assertSafeThreadnoteHomeForErase,
   errorMessage,
-  expandPath,
   formatStatus,
   memoryFrontmatterField,
   memoryUriProjectSegment,
-  readFileIfExists,
   toolRoot,
 } from './utils.js';
 
@@ -85,7 +94,6 @@ class LifecycleOperationError extends Error {
 }
 
 const LAYOUT_RECEIPT = 'layout.json';
-type UserAgentInstructionTarget = (typeof USER_AGENT_INSTRUCTION_TARGETS)[number];
 interface RunInstallOptions extends InstallOptions {
   readonly skipRecallIndexes?: boolean;
   readonly skipReleaseLifecycle?: boolean;
@@ -177,7 +185,8 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     yield* safeDoctorCheck('local generation model', localAiDoctorCheck(config)),
     yield* telemetryDoctorCheck(config),
   );
-  checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks())));
+  const inferredMcpClients = yield* inferConfiguredMcpClients().pipe(Effect.catch(() => Effect.succeed([])));
+  checks.push(...(yield* safeDoctorChecks('MCP configuration', mcpConfigurationChecks(config, inferredMcpClients))));
   checks.push(
     recallIndexCheck(lexicalStatus),
     yield* safeDoctorCheck('embedding model', embeddingModelCheck(config)),
@@ -188,8 +197,9 @@ export const collectDoctorChecks = Effect.fn('lifecycle.collectDoctorChecks')(fu
     ),
     yield* safeDoctorCheck('memory project consistency', memoryProjectConsistencyCheck(config)),
   );
-  checks.push(...(yield* safeDoctorChecks('agent instructions', userAgentInstructionsChecks())));
-  checks.push(...(yield* safeDoctorChecks('Cursor plugin', cursorPluginDoctorChecks())));
+  checks.push(
+    ...(yield* safeDoctorChecks('agent integrations', agentIntegrationDoctorChecks(config, inferredMcpClients))),
+  );
   if (config.agentContextHome.endsWith('.openviking')) {
     checks.push({
       detail: 'THREADNOTE_HOME still targets a legacy .openviking directory; run `threadnote migrate`',
@@ -353,7 +363,6 @@ export const runInstall = Effect.fn('lifecycle.install')(function* (config: Runt
       `Recall indexes ready: ${documentCount} lexical document(s), ${vectors.chunkCount} vector chunk(s).`,
     );
   }
-  yield* installUserAgentInstructions(dryRun);
   if (options.start !== false) {
     yield* Console.log(
       'Threadnote 4 uses local storage and a supervised on-demand inference worker; no background server is required.',
@@ -394,13 +403,17 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   } else {
     yield* Console.log('Would validate and rebuild the derived lexical and vector recall indexes.');
   }
-  const mcpClients = yield* resolveMcpClients(options.mcp ?? 'available', 'repair');
-  for (const client of mcpClients) {
-    yield* runMcpInstall(config, client, {
-      apply: !dryRun,
-      dryRunApplyCommand: 'threadnote repair',
-      name: 'threadnote',
-    });
+  const inferredMcpClients = yield* inferConfiguredMcpClients();
+  yield* migrateLegacyAgentIntegrations(config, inferredMcpClients, dryRun);
+  const repairedIntegrationClients = yield* repairAgentIntegrations(config, dryRun);
+  const registry = yield* readAgentIntegrationRegistry(config);
+  const registeredClients = registry === undefined ? inferredMcpClients : registeredAgentClients(registry);
+  const repairableClients = repairableAgentClients(registry);
+  const requestedMcpClients = options.mcp ?? (repairableClients.length === 0 ? 'none' : repairableClients.join(','));
+  const mcpClients = yield* resolveMcpClients(requestedMcpClients, 'repair');
+  yield* repairRegisteredMcpClients(config, registry, mcpClients, dryRun);
+  if (repairedIntegrationClients.length === 0 && registeredClients.length === 0) {
+    yield* Console.log('No agent integrations are registered; skipping host-specific repair.');
   }
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun});
@@ -419,6 +432,31 @@ export const runRepair = Effect.fn('lifecycle.repair')(function* (config: Runtim
   );
   if (options.postUpdate !== false) {
     yield* maybeRunPostUpdateAfterRepair(config, {dryRun});
+  }
+});
+
+export const repairRegisteredMcpClients = Effect.fn('lifecycle.repairRegisteredMcpClients')(function* (
+  config: RuntimeConfig,
+  registry: AgentIntegrationRegistry | undefined,
+  mcpClients: readonly AgentClient[],
+  dryRun: boolean,
+) {
+  for (const client of mcpClients) {
+    const receipt = registry?.hosts[client];
+    if (receipt?.mcp.repair !== true || receipt.mcp.toolset === undefined) {
+      yield* Console.log(
+        `WARN ${client} MCP settings predate repair receipts; run threadnote mcp-install ${client} --apply to manage them.`,
+      );
+      continue;
+    }
+    yield* runMcpInstall(config, client, {
+      apply: !dryRun,
+      cwd: receipt.mcp.cwd,
+      dryRunApplyCommand: 'threadnote repair',
+      name: receipt.mcp.name,
+      scope: receipt.mcp.scope,
+      toolset: receipt.mcp.toolset,
+    });
   }
 });
 
@@ -571,18 +609,47 @@ export const runUninstall = Effect.fn('lifecycle.uninstall')(function* (
   options: UninstallOptions,
 ) {
   const dryRun = options.dryRun === true;
+  const uninstall = runUninstallInTransaction(config, options);
+  yield* dryRun ? uninstall : withAgentIntegrationLock(config, uninstall);
+});
+
+const runUninstallInTransaction = Effect.fn('lifecycle.uninstallInTransaction')(function* (
+  config: RuntimeConfig,
+  options: UninstallOptions,
+) {
+  const dryRun = options.dryRun === true;
   if (options.eraseMemories === true && options.preserveMemories === true) {
     return yield* Effect.fail(
       new LifecycleOperationError('Use either --erase-memories or --preserve-memories, not both.'),
     );
   }
-  yield* removeMcpConfigs(options.mcp ?? 'available', dryRun);
+  const registry = yield* readAgentIntegrationRegistry(config);
+  const registeredClients = registeredAgentClients(registry);
+  const selectedMcpClients =
+    options.mcp ?? (registeredClients.length === 0 ? 'available' : registeredClients.join(','));
+  const receipts = Object.fromEntries(
+    registeredClients.flatMap(agent =>
+      registry?.hosts[agent]?.mcp === undefined ? [] : [[agent, registry.hosts[agent].mcp]],
+    ),
+  );
+  const removedClients = yield* removeMcpConfigs(selectedMcpClients, dryRun, receipts);
+  const retainedClients = registeredClients.filter(client => !removedClients.includes(client));
+  if (retainedClients.length > 0) {
+    const message =
+      `Could not remove MCP configuration for ${retainedClients.join(', ')}; ` +
+      'preserving command launchers, host artifacts, and receipts for retry.';
+    if (dryRun) {
+      yield* Console.log(`WARN ${message}`);
+      return;
+    }
+    return yield* Effect.fail(new LifecycleOperationError(message));
+  }
   yield* removeMcpSnippets(config, dryRun);
   if (yield* hasManagedClaudeHooks()) {
     yield* runHooksInstall(config, 'claude', {apply: !dryRun, dryRun, remove: true});
   }
   yield* removeCommandShim(dryRun);
-  yield* removeUserAgentInstructions(dryRun);
+  yield* removeAgentIntegrationsInTransaction(config, dryRun);
   if (options.eraseMemories === true) {
     yield* eraseThreadnoteHome(config.agentContextHome, dryRun);
   } else {
@@ -801,206 +868,4 @@ function eraseThreadnoteHome(home: string, dryRun: boolean) {
     yield* fs.remove(ownedHome, {recursive: true});
     yield* Console.log(`Erased Threadnote home: ${ownedHome}`);
   });
-}
-
-export const userAgentInstructionsChecks = Effect.fn('lifecycle.userAgentInstructionsChecks')(function* () {
-  return yield* Effect.forEach(
-    USER_AGENT_INSTRUCTION_TARGETS,
-    target =>
-      Effect.gen(function* () {
-        const expectedInstructions = yield* renderUserAgentInstructions(target);
-        const targetPath = yield* expandPath(target.path);
-        const content = yield* readFileIfExists(targetPath);
-        if (content === undefined) {
-          return {
-            detail: `${targetPath} missing; repair will create it`,
-            name: target.label,
-            status: 'warn' as const,
-          };
-        }
-        const existingBlock = extractManagedBlock(content);
-        if (existingBlock === undefined) {
-          return {
-            detail: `${targetPath} missing Threadnote block; repair will add it`,
-            name: target.label,
-            status: 'warn' as const,
-          };
-        }
-        if (
-          (target.kind === 'file' && content !== expectedInstructions) ||
-          (target.kind === 'block' && existingBlock !== expectedInstructions)
-        ) {
-          return {
-            detail: `${targetPath} has stale Threadnote instructions; repair will update them`,
-            name: target.label,
-            status: 'warn' as const,
-          };
-        }
-        return {detail: targetPath, name: target.label, status: 'ok' as const};
-      }),
-    {concurrency: 'unbounded'},
-  );
-});
-
-const installUserAgentInstructions = Effect.fn('lifecycle.installUserAgentInstructions')(function* (dryRun: boolean) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
-    const instructions = yield* renderUserAgentInstructions(target);
-    const targetPath = yield* expandPath(target.path);
-    const currentContent = yield* readFileIfExists(targetPath);
-    if (target.kind === 'file' && currentContent !== undefined && extractManagedBlock(currentContent) === undefined) {
-      yield* Console.log(`WARN ${targetPath} is not managed by Threadnote; not modifying it`);
-      continue;
-    }
-    const nextContent = target.kind === 'file' ? instructions : upsertManagedBlock(currentContent ?? '', instructions);
-    if (nextContent === undefined) {
-      yield* Console.log(`WARN ${targetPath} has partial Threadnote markers; not modifying it`);
-      continue;
-    }
-    if (currentContent === nextContent) {
-      yield* Console.log(`Instructions already current: ${targetPath}`);
-      continue;
-    }
-    if (dryRun) {
-      yield* Console.log(
-        currentContent === undefined
-          ? `Would write agent instructions: ${targetPath}`
-          : `Would update agent instructions: ${targetPath}`,
-      );
-      continue;
-    }
-    yield* fs.makeDirectory(path.dirname(targetPath), {recursive: true, mode: 0o700});
-    yield* fs.writeFileString(targetPath, nextContent, {mode: 0o644});
-    yield* Console.log(
-      currentContent === undefined
-        ? `Wrote agent instructions: ${targetPath}`
-        : `Updated agent instructions: ${targetPath}`,
-    );
-  }
-  yield* removeLegacyCursorUserRules(dryRun);
-});
-
-const removeUserAgentInstructions = Effect.fn('lifecycle.removeUserAgentInstructions')(function* (dryRun: boolean) {
-  const fs = yield* FileSystem.FileSystem;
-  for (const target of USER_AGENT_INSTRUCTION_TARGETS) {
-    const targetPath = yield* expandPath(target.path);
-    const currentContent = yield* readFileIfExists(targetPath);
-    if (currentContent === undefined) continue;
-    if (target.kind === 'file') {
-      if (extractManagedBlock(currentContent) === undefined) continue;
-      if (dryRun) {
-        yield* Console.log(`Would remove ${target.label}: ${targetPath}`);
-      } else {
-        yield* fs.remove(targetPath);
-        yield* Console.log(`Removed ${target.label}: ${targetPath}`);
-      }
-      continue;
-    }
-    const nextContent = removeManagedBlock(currentContent);
-    if (nextContent === undefined || nextContent === currentContent) continue;
-    if (dryRun) {
-      yield* Console.log(`Would update ${targetPath}`);
-    } else if (nextContent.trim().length === 0) {
-      yield* fs.remove(targetPath);
-      yield* Console.log(`Removed ${target.label}: ${targetPath}`);
-    } else {
-      yield* fs.writeFileString(targetPath, nextContent, {mode: 0o644});
-      yield* Console.log(`Updated ${targetPath}`);
-    }
-  }
-  yield* removeLegacyCursorUserRules(dryRun);
-});
-
-const removeLegacyCursorUserRules = Effect.fn('lifecycle.removeLegacyCursorUserRules')(function* (dryRun: boolean) {
-  const fs = yield* FileSystem.FileSystem;
-  for (const legacyPath of LEGACY_CURSOR_INSTRUCTION_PATHS) {
-    const targetPath = yield* expandPath(legacyPath);
-    const currentContent = yield* readFileIfExists(targetPath);
-    if (currentContent === undefined) continue;
-    const contentWithoutBlock = removeManagedBlock(currentContent);
-    if (contentWithoutBlock === undefined) {
-      yield* Console.log(`WARN ${targetPath} has partial Threadnote markers; not modifying it`);
-      continue;
-    }
-    const nextContent = isCursorRuleFrontmatterOnly(contentWithoutBlock) ? '' : contentWithoutBlock;
-    if (nextContent === currentContent) continue;
-    if (dryRun) {
-      yield* Console.log(
-        nextContent.trim().length === 0
-          ? `Would remove legacy Cursor user rule: ${targetPath}`
-          : `Would update ${targetPath} to remove legacy Threadnote instructions`,
-      );
-    } else if (nextContent.trim().length === 0) {
-      yield* fs.remove(targetPath);
-      yield* Console.log(`Removed legacy Cursor user rule: ${targetPath}`);
-    } else {
-      yield* fs.writeFileString(targetPath, nextContent, {mode: 0o644});
-      yield* Console.log(`Updated ${targetPath} to remove legacy Threadnote instructions`);
-    }
-  }
-});
-
-function isCursorRuleFrontmatterOnly(content: string): boolean {
-  const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*$/.exec(content);
-  if (!match) return false;
-  return /^alwaysApply:\s*true\s*$/m.test(match[1] ?? '');
-}
-
-const renderUserAgentInstructions = Effect.fn('lifecycle.renderUserAgentInstructions')(function* (
-  target: UserAgentInstructionTarget,
-) {
-  const block = yield* renderUserAgentInstructionsBlock();
-  if (target.kind === 'block') return block;
-  return [
-    '---',
-    'name: Threadnote',
-    'description: Shared local context and handoffs through Threadnote',
-    'applyTo: "**"',
-    '---',
-    '',
-    block,
-  ].join('\n');
-});
-
-const renderUserAgentInstructionsBlock = Effect.fn('lifecycle.renderUserAgentInstructionsBlock')(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const instructions = (yield* fs.readFileString(
-    path.join(yield* toolRoot(), 'config', 'agent-instructions.md'),
-  )).trim();
-  return `${USER_INSTRUCTIONS_START_MARKER}\n${instructions}\n${USER_INSTRUCTIONS_END_MARKER}`;
-});
-
-function extractManagedBlock(content: string): string | undefined {
-  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
-  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
-  if (startIndex === -1 || endIndex === -1 || endIndex < startIndex) return undefined;
-  return content.slice(startIndex, endIndex + USER_INSTRUCTIONS_END_MARKER.length);
-}
-
-function upsertManagedBlock(content: string, block: string): string | undefined {
-  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
-  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
-  if ((startIndex === -1) !== (endIndex === -1) || endIndex < startIndex) return undefined;
-  if (startIndex !== -1) {
-    const before = content.slice(0, startIndex).trimEnd();
-    const after = content.slice(endIndex + USER_INSTRUCTIONS_END_MARKER.length).trimStart();
-    return joinMarkdownSections([before, block, after]);
-  }
-  return joinMarkdownSections([content.trimEnd(), block]);
-}
-
-function removeManagedBlock(content: string): string | undefined {
-  const startIndex = content.indexOf(USER_INSTRUCTIONS_START_MARKER);
-  const endIndex = content.indexOf(USER_INSTRUCTIONS_END_MARKER);
-  if ((startIndex === -1) !== (endIndex === -1) || endIndex < startIndex) return undefined;
-  if (startIndex === -1) return content;
-  const before = content.slice(0, startIndex).trimEnd();
-  const after = content.slice(endIndex + USER_INSTRUCTIONS_END_MARKER.length).trimStart();
-  return joinMarkdownSections([before, after]);
-}
-
-function joinMarkdownSections(sections: readonly string[]): string {
-  return `${sections.filter(section => section.length > 0).join('\n\n')}\n`;
 }

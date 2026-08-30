@@ -8,15 +8,6 @@ export const USER_INSTRUCTIONS_START_MARKER = '<!-- BEGIN THREADNOTE USER INSTRU
 export const USER_INSTRUCTIONS_END_MARKER = '<!-- END THREADNOTE USER INSTRUCTIONS -->';
 export const USER_MANIFEST_NAME = 'seed-manifest.yaml';
 export const SEED_STATE_FILE = 'seed-state.json';
-export const USER_AGENT_INSTRUCTION_TARGETS = [
-  {kind: 'block', label: 'codex user instructions', path: '~/.codex/AGENTS.md'},
-  {kind: 'block', label: 'claude user instructions', path: '~/.claude/CLAUDE.md'},
-  {
-    kind: 'file',
-    label: 'copilot user instructions',
-    path: '~/.copilot/instructions/threadnote.instructions.md',
-  },
-] as const;
 export const LEGACY_CURSOR_INSTRUCTION_PATHS = [
   '~/.cursor/rules/threadnote.md',
   '~/.cursor/rules/threadnote.mdc',

@@ -5,20 +5,24 @@ import {chmod, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promis
 import {tmpdir} from '../helpers/node-os.js';
 import {delimiter, join} from '../helpers/node-path.js';
 import {Effect, FileSystem, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
+import {readAgentIntegrationRegistry} from '../../src/agent-integrations.js';
+import {installCommandShim} from '../../src/command-shim.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
+import {repairRegisteredMcpClients, runUninstall} from '../../src/lifecycle.js';
 import {mcpAdapterCommand, resolveMcpClients, runMcpInstall} from '../../src/mcp.js';
 import {mcpToolCapabilities, parseMcpToolset} from '../../src/mcp/toolset.js';
 import type {RuntimeConfig} from '../../src/types.js';
 
-function runtime(): RuntimeConfig {
+function runtime(agentContextHome = '/tmp/threadnote-test'): RuntimeConfig {
   return {
     account: 'local',
-    agentContextHome: '/tmp/threadnote-test',
+    agentContextHome,
     agentId: 'threadnote',
-    manifestPath: '/tmp/threadnote-test/seed-manifest.yaml',
+    manifestPath: `${agentContextHome}/seed-manifest.yaml`,
     user: 'test-user',
   };
 }
@@ -208,10 +212,11 @@ describe('JSON MCP host configuration', () => {
         const broker = path.join(bin, 'threadnote-mcp-server');
         const cursorPath = path.join(user, '.cursor', 'mcp.json');
         const copilotPath = path.join(root, 'copilot-mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
         const managedEnvironment = {
           THREADNOTE_USER: 'test-user',
           THREADNOTE_MCP_TOOLSET: 'core',
-          THREADNOTE_HOME: '/tmp/threadnote-test',
+          THREADNOTE_HOME: testRuntime.agentContextHome,
           THREADNOTE_AGENT_ID: 'threadnote',
           THREADNOTE_ACCOUNT: 'local',
           USER_EXTENSION: 'preserved',
@@ -250,12 +255,19 @@ describe('JSON MCP host configuration', () => {
           yield* fs.makeDirectory(path.dirname(configPath), {recursive: true});
           yield* fs.writeFileString(configPath, original);
 
-          const result = yield* captureConsole(runMcpInstall(runtime(), agent, {apply: true})).pipe(
+          const result = yield* captureConsole(runMcpInstall(testRuntime, agent, {apply: true})).pipe(
             Effect.provideService(SystemInfo, testSystem),
           );
 
           expect(result.output, agent).toContain(`Already configured: ${configPath}`);
           expect(yield* fs.readFileString(configPath), agent).toBe(original);
+          const registry = yield* readAgentIntegrationRegistry(testRuntime);
+          expect(registry?.hosts[agent]).toMatchObject({
+            mcp: {name: 'threadnote', repair: true, toolset: 'core'},
+            status: 'current',
+          });
+          const skillRoot = path.join(user, agent === 'cursor' ? '.cursor' : '.copilot', 'skills');
+          expect(yield* fs.exists(path.join(skillRoot, 'threadnote-context', 'SKILL.md')), agent).toBe(true);
         }
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
@@ -273,6 +285,7 @@ describe('JSON MCP host configuration', () => {
         const broker = path.join(bin, 'threadnote-mcp-server');
         const cursorPath = path.join(user, '.cursor', 'mcp.json');
         const copilotPath = path.join(root, 'copilot-mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
         const testSystem = SystemInfo.of({
           ...baseSystem,
           environment: () => ({
@@ -300,7 +313,7 @@ describe('JSON MCP host configuration', () => {
                   env: {
                     THREADNOTE_ACCOUNT: 'local',
                     THREADNOTE_AGENT_ID: 'threadnote',
-                    THREADNOTE_HOME: '/tmp/threadnote-test',
+                    THREADNOTE_HOME: testRuntime.agentContextHome,
                     THREADNOTE_MCP_TOOLSET: 'full',
                     THREADNOTE_USER: 'test-user',
                   },
@@ -310,7 +323,7 @@ describe('JSON MCP host configuration', () => {
             }),
           );
 
-          const result = yield* captureConsole(runMcpInstall(runtime(), agent, {apply: true})).pipe(
+          const result = yield* captureConsole(runMcpInstall(testRuntime, agent, {apply: true})).pipe(
             Effect.provideService(SystemInfo, testSystem),
           );
           const updated: unknown = JSON.parse(yield* fs.readFileString(configPath));
@@ -332,18 +345,188 @@ describe('JSON MCP host configuration', () => {
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
+
+  effectIt.effect('uninstall removes a registered custom MCP name and its host bundle', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-custom-mcp-uninstall-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        yield* fs.makeDirectory(path.dirname(cursorPath), {recursive: true});
+        yield* fs.writeFileString(
+          cursorPath,
+          JSON.stringify({mcpServers: {unrelated: {command: 'keep-me'}}}, undefined, 2),
+        );
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), PATH: bin, THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        yield* runMcpInstall(testRuntime, 'cursor', {
+          apply: true,
+          name: 'team-memory',
+          toolset: 'full',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+        yield* runUninstall(testRuntime, {preserveMemories: true}).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        const cursorConfig: unknown = JSON.parse(yield* fs.readFileString(cursorPath));
+        expect(cursorConfig).toMatchObject({mcpServers: {unrelated: {command: 'keep-me'}}});
+        expect(JSON.stringify(cursorConfig)).not.toContain('team-memory');
+        expect(yield* readAgentIntegrationRegistry(testRuntime)).toBeUndefined();
+        expect(yield* fs.exists(path.join(user, '.cursor', 'rules', 'threadnote.mdc'))).toBe(false);
+        expect(yield* fs.exists(path.join(user, '.cursor', 'skills', 'threadnote-context', 'SKILL.md'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('serializes concurrent MCP install and uninstall into a consistent winning state', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-install-uninstall-race-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const rulePath = path.join(user, '.cursor', 'rules', 'threadnote.mdc');
+        const skillPath = path.join(user, '.cursor', 'skills', 'threadnote-context', 'SKILL.md');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        yield* fs.makeDirectory(path.dirname(cursorPath), {recursive: true});
+        yield* fs.writeFileString(cursorPath, '{}\n');
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), PATH: bin, THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        yield* Effect.all(
+          [
+            runMcpInstall(testRuntime, 'cursor', {apply: true, name: 'team-memory', toolset: 'full'}),
+            runUninstall(testRuntime, {preserveMemories: true}),
+          ].map(operation => operation.pipe(Effect.provideService(SystemInfo, testSystem))),
+          {concurrency: 'unbounded'},
+        ).pipe(TestClock.withLive);
+
+        const registry = yield* readAgentIntegrationRegistry(testRuntime);
+        const cursorConfig = JSON.parse(yield* fs.readFileString(cursorPath)) as {
+          readonly mcpServers?: Record<string, unknown>;
+        };
+        const installed = registry?.hosts.cursor?.status === 'current';
+        expect(cursorConfig.mcpServers?.['team-memory'] !== undefined).toBe(installed);
+        expect(yield* fs.exists(rulePath)).toBe(installed);
+        expect(yield* fs.exists(skillPath)).toBe(installed);
+        expect(registry === undefined || Object.keys(registry.hosts).length === 0).toBe(!installed);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uninstall retains a receipt when its custom MCP entry cannot be removed', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-custom-mcp-retry-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        yield* fs.makeDirectory(path.dirname(cursorPath), {recursive: true});
+        yield* fs.writeFileString(cursorPath, '{}\n');
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), PATH: bin, THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* runMcpInstall(testRuntime, 'cursor', {
+          apply: true,
+          name: 'team-memory',
+          toolset: 'full',
+        }).pipe(Effect.provideService(SystemInfo, testSystem));
+        yield* installCommandShim(false).pipe(Effect.provideService(SystemInfo, testSystem));
+        yield* fs.writeFileString(cursorPath, '{ invalid json\n');
+
+        const uninstall = yield* runUninstall(testRuntime, {preserveMemories: true}).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+          Effect.exit,
+        );
+
+        expect(uninstall._tag).toBe('Failure');
+        expect((yield* readAgentIntegrationRegistry(testRuntime))?.hosts.cursor?.mcp).toMatchObject({
+          name: 'team-memory',
+          repair: true,
+        });
+        expect(yield* fs.readFileString(cursorPath)).toBe('{ invalid json\n');
+        expect(yield* fs.exists(path.join(bin, 'threadnote'))).toBe(true);
+        expect(yield* fs.exists(path.join(bin, 'threadnote-mcp-server'))).toBe(true);
+        expect(yield* fs.exists(path.join(user, '.cursor', 'rules', 'threadnote.mdc'))).toBe(true);
+        expect(yield* fs.exists(path.join(user, '.cursor', 'skills', 'threadnote-context', 'SKILL.md'))).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('refuses explicit MCP omission without removing retry-critical state', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-omitted-uninstall-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        yield* fs.makeDirectory(path.dirname(cursorPath), {recursive: true});
+        yield* fs.writeFileString(cursorPath, '{}\n');
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), PATH: bin, THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+        yield* runMcpInstall(testRuntime, 'cursor', {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem));
+        yield* installCommandShim(false).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        const uninstall = yield* runUninstall(testRuntime, {mcp: 'none', preserveMemories: true}).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+          Effect.exit,
+        );
+
+        expect(uninstall._tag).toBe('Failure');
+        expect((yield* readAgentIntegrationRegistry(testRuntime))?.hosts.cursor?.status).toBe('current');
+        expect(yield* fs.exists(path.join(bin, 'threadnote'))).toBe(true);
+        expect(yield* fs.exists(path.join(bin, 'threadnote-mcp-server'))).toBe(true);
+        expect(yield* fs.exists(path.join(user, '.cursor', 'rules', 'threadnote.mdc'))).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
 
 describe('MCP agent executable resolution', () => {
   posixIt('does not remove or add semantically current Codex and Claude broker configurations', async () => {
     const bin = await mkdtemp(join(tmpdir(), 'threadnote-managed-bin-'));
+    const userHome = await mkdtemp(join(tmpdir(), 'threadnote-agent-home-'));
     temporaryDirectories.push(bin);
+    temporaryDirectories.push(userHome);
+    const system = await runEffect(SystemInfo);
+    const testSystem = SystemInfo.of({...system, homeDirectory: userHome});
+    const testRuntime = runtime(join(userHome, '.threadnote'));
     process.env.THREADNOTE_BIN_DIR = bin;
     const broker = join(bin, 'threadnote-mcp-server');
     const managedEnvironment = {
       THREADNOTE_ACCOUNT: 'local',
       THREADNOTE_AGENT_ID: 'threadnote',
-      THREADNOTE_HOME: '/tmp/threadnote-test',
+      THREADNOTE_HOME: testRuntime.agentContextHome,
       THREADNOTE_MCP_TOOLSET: 'core',
       THREADNOTE_USER: 'test-user',
     };
@@ -372,26 +555,40 @@ describe('MCP agent executable resolution', () => {
       );
       process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
 
-      await runEffect(runMcpInstall(runtime(), agent, {apply: true}));
+      await runEffect(
+        runMcpInstall(testRuntime, agent, {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
+      );
 
       const calls = await readFile(callsPath, 'utf8');
       expect(calls, agent).toContain('mcp get threadnote');
       expect(calls, agent).not.toContain('mcp remove');
       expect(calls, agent).not.toContain('mcp add');
+      const registry = await runEffect(readAgentIntegrationRegistry(testRuntime));
+      expect(registry?.hosts[agent]).toMatchObject({
+        mcp: {name: 'threadnote', repair: true, toolset: 'core'},
+        status: 'current',
+      });
+      const instructionPath = join(userHome, agent === 'codex' ? '.codex/AGENTS.md' : '.claude/CLAUDE.md');
+      expect(await readFile(instructionPath, 'utf8'), agent).toContain('Use the installed Threadnote skills');
       await rm(callsPath, {force: true});
     }
   });
 
   posixIt('migrates legacy direct Codex and Claude server configurations to the broker launcher', async () => {
     const bin = await mkdtemp(join(tmpdir(), 'threadnote-managed-bin-'));
+    const userHome = await mkdtemp(join(tmpdir(), 'threadnote-agent-home-'));
     temporaryDirectories.push(bin);
+    temporaryDirectories.push(userHome);
+    const system = await runEffect(SystemInfo);
+    const testSystem = SystemInfo.of({...system, homeDirectory: userHome});
+    const testRuntime = runtime(join(userHome, '.threadnote'));
     process.env.THREADNOTE_BIN_DIR = bin;
     const broker = join(bin, 'threadnote-mcp-server');
     const legacyCommand = join(bin, 'threadnote');
     const managedEnvironment = {
       THREADNOTE_ACCOUNT: 'local',
       THREADNOTE_AGENT_ID: 'threadnote',
-      THREADNOTE_HOME: '/tmp/threadnote-test',
+      THREADNOTE_HOME: testRuntime.agentContextHome,
       THREADNOTE_MCP_TOOLSET: 'core',
       THREADNOTE_USER: 'test-user',
     };
@@ -420,17 +617,97 @@ describe('MCP agent executable resolution', () => {
       );
       process.env.PATH = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
 
-      await runEffect(runMcpInstall(runtime(), agent, {apply: true}));
+      await runEffect(
+        runMcpInstall(testRuntime, agent, {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
+      );
 
       const calls = await readFile(callsPath, 'utf8');
-      expect(calls, agent).toContain('mcp remove threadnote');
+      expect(calls, agent).toContain(
+        agent === 'claude' ? 'mcp remove --scope user threadnote' : 'mcp remove threadnote',
+      );
       expect(calls, agent).toContain('mcp add');
       expect(calls, agent).toContain(broker);
       await rm(callsPath, {force: true});
     }
   });
 
+  posixIt('removes Claude project scope from its recorded install directory', async () => {
+    const bin = await mkdtemp(join(tmpdir(), 'threadnote-claude-project-bin-'));
+    const userHome = await mkdtemp(join(tmpdir(), 'threadnote-claude-project-home-'));
+    const projectA = await mkdtemp(join(tmpdir(), 'threadnote-claude-project-a-'));
+    const projectB = await mkdtemp(join(tmpdir(), 'threadnote-claude-project-b-'));
+    temporaryDirectories.push(bin, userHome, projectA, projectB);
+    const callsPath = join(tmpdir(), `threadnote-claude-project-calls-${process.pid}-${Date.now()}`);
+    const launcher = await agentLauncher(
+      'claude',
+      [
+        'if [ "$1" = "--version" ]; then printf \'%s\\n\' \'claude 1\'; exit 0; fi',
+        `printf '%s|%s\\n' "$PWD" "$*" >> ${shellLiteral(callsPath)}`,
+        'if [ "$1 $2" = "mcp get" ]; then exit 1; fi',
+        'exit 0',
+      ].join('\n'),
+    );
+    const system = await runEffect(SystemInfo);
+    const pathValue = [join(launcher, '..'), '/usr/bin', '/bin'].join(delimiter);
+    const environment = {
+      ...system.environment(),
+      PATH: pathValue,
+      THREADNOTE_BIN_DIR: bin,
+      THREADNOTE_CALLER_CWD: projectA,
+    };
+    const installSystem = SystemInfo.of({
+      ...system,
+      environment: () => environment,
+      homeDirectory: userHome,
+    });
+    const testRuntime = runtime(join(userHome, '.threadnote'));
+
+    await runEffect(
+      runMcpInstall(testRuntime, 'claude', {
+        apply: true,
+        name: 'team-memory',
+        scope: 'project',
+      }).pipe(Effect.provideService(SystemInfo, installSystem)),
+    );
+    const receipt = await runEffect(readAgentIntegrationRegistry(testRuntime));
+    expect(receipt?.hosts.claude?.mcp).toMatchObject({
+      cwd: projectA,
+      name: 'team-memory',
+      repair: true,
+      scope: 'project',
+    });
+    await writeFile(callsPath, '');
+    const projectBSystem = SystemInfo.of({
+      ...installSystem,
+      environment: () => ({...environment, THREADNOTE_CALLER_CWD: projectB}),
+    });
+    await runEffect(
+      repairRegisteredMcpClients(testRuntime, receipt, ['claude'], false).pipe(
+        Effect.provideService(SystemInfo, projectBSystem),
+      ),
+    );
+    const repairCalls = await readFile(callsPath, 'utf8');
+    expect(repairCalls).toContain(`${projectA}|mcp get team-memory`);
+    expect(repairCalls).toContain(`${projectA}|mcp remove --scope project team-memory`);
+    expect(repairCalls).toContain(`${projectA}|mcp add --scope project team-memory`);
+    expect((await runEffect(readAgentIntegrationRegistry(testRuntime)))?.hosts.claude?.mcp.cwd).toBe(projectA);
+    await writeFile(callsPath, '');
+
+    await runEffect(
+      runUninstall(testRuntime, {preserveMemories: true}).pipe(Effect.provideService(SystemInfo, projectBSystem)),
+    );
+
+    expect(await readFile(callsPath, 'utf8')).toContain(`${projectA}|mcp remove --scope project team-memory`);
+    expect(await runEffect(readAgentIntegrationRegistry(testRuntime))).toBeUndefined();
+    await rm(callsPath, {force: true});
+  });
+
   posixIt('uses a healthy later PATH entry when the first Codex launcher is stale', async () => {
+    const userHome = await mkdtemp(join(tmpdir(), 'threadnote-agent-home-'));
+    temporaryDirectories.push(userHome);
+    const system = await runEffect(SystemInfo);
+    const testSystem = SystemInfo.of({...system, homeDirectory: userHome});
+    const testRuntime = runtime(join(userHome, '.threadnote'));
     const broken = await codexLauncher("printf '%s\\n' 'missing native binary' >&2\nexit 1");
     const callsPath = join(tmpdir(), `threadnote-codex-calls-${process.pid}-${Date.now()}`);
     const healthy = await codexLauncher(
@@ -438,11 +715,13 @@ describe('MCP agent executable resolution', () => {
     );
     process.env.PATH = [join(broken, '..'), join(healthy, '..')].join(delimiter);
 
-    await runEffect(runMcpInstall(runtime(), 'codex', {apply: true}));
+    await runEffect(
+      runMcpInstall(testRuntime, 'codex', {apply: true}).pipe(Effect.provideService(SystemInfo, testSystem)),
+    );
 
     const calls = await readFile(callsPath, 'utf8');
     expect(calls).toContain('mcp remove threadnote');
-    expect(calls).toContain('mcp add --env THREADNOTE_HOME=/tmp/threadnote-test');
+    expect(calls).toContain(`mcp add --env THREADNOTE_HOME=${testRuntime.agentContextHome}`);
     await rm(callsPath, {force: true});
   });
 

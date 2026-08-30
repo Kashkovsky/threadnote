@@ -1,4 +1,12 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
+import {
+  installAgentIntegration,
+  installAgentIntegrationInTransaction,
+  migrateLegacyAgentIntegrationsInTransaction,
+  readAgentIntegrationRegistry,
+  registeredAgentClients,
+} from '../agent-integrations.js';
+import {type AgentIntegrationMcpReceipt, withAgentIntegrationLock} from '../agent-integration-registry.js';
 import {commandLauncherPath} from '../command-shim.js';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';
@@ -20,79 +28,155 @@ import {
 } from '../utils.js';
 
 export function runMcpInstall(config: RuntimeConfig, agent: AgentClient, options: McpInstallOptions) {
-  return Effect.gen(function* () {
-    const name = options.name ?? THREADNOTE_MCP_NAME;
-    const apply = options.apply === true;
-    const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
+  const install = runMcpInstallInTransaction(config, agent, options);
+  return options.apply === true ? withAgentIntegrationLock(config, install) : install;
+}
 
-    if (agent === 'cursor') {
-      yield* runCursorMcpInstall(config, name, {
-        apply,
-        dryRunApplyCommand: options.dryRunApplyCommand,
-        toolset,
-      });
-      return;
-    }
-    if (agent === 'copilot') {
-      yield* runCopilotMcpInstall(config, name, {
-        apply,
-        dryRunApplyCommand: options.dryRunApplyCommand,
-        toolset,
-      });
-      return;
-    }
+const runMcpInstallInTransaction = Effect.fn('mcp.runInstallInTransaction')(function* (
+  config: RuntimeConfig,
+  agent: AgentClient,
+  options: McpInstallOptions,
+) {
+  const name = options.name ?? THREADNOTE_MCP_NAME;
+  const apply = options.apply === true;
+  const toolset = options.toolset ?? DEFAULT_MCP_TOOLSET;
+  const scope = agent === 'claude' ? (options.scope ?? 'user') : undefined;
+  const cwd = options.cwd ?? (agent === 'claude' && scope !== 'user' ? yield* getInvocationCwd() : undefined);
 
-    const agentExecutable = apply ? yield* requiredMcpAgentExecutable(agent) : agent;
-
-    const command = yield* buildMcpInstallCommand(config, agent, agentExecutable, name, {
-      scope: options.scope,
+  if (agent === 'cursor') {
+    yield* runCursorMcpInstall(config, name, {
+      apply,
+      dryRunApplyCommand: options.dryRunApplyCommand,
       toolset,
     });
-    const removeCommand = yield* buildMcpRemoveCommand(agent, agentExecutable, name);
+    yield* finishAgentIntegrationInstall(config, agent, {apply, name, toolset});
+    return;
+  }
+  if (agent === 'copilot') {
+    yield* runCopilotMcpInstall(config, name, {
+      apply,
+      dryRunApplyCommand: options.dryRunApplyCommand,
+      toolset,
+    });
+    yield* finishAgentIntegrationInstall(config, agent, {apply, name, toolset});
+    return;
+  }
 
-    if (!apply) {
-      yield* Console.log(
-        options.dryRunApplyCommand
-          ? `Dry run. Run \`${options.dryRunApplyCommand}\` without \`--dry-run\` to modify the selected agent config.`
-          : 'Dry run. Re-run with --apply to modify the selected agent config.',
-      );
-      if (removeCommand.cwd || command.cwd) {
-        yield* Console.log(`Command working directory: ${removeCommand.cwd ?? command.cwd}`);
-      }
-      yield* Console.log(formatShellCommand(removeCommand.executable, removeCommand.args));
-      yield* Console.log(formatShellCommand(command.executable, command.args));
-      yield* printMcpSnippet(config, agent, name, {scope: options.scope, toolset});
-      return;
+  const agentExecutable = apply ? yield* requiredMcpAgentExecutable(agent) : agent;
+  const command = yield* buildMcpInstallCommand(config, agent, agentExecutable, name, {cwd, scope, toolset});
+  const removeCommand = yield* buildMcpRemoveCommand(agent, agentExecutable, name, {cwd, scope});
+
+  if (!apply) {
+    yield* Console.log(
+      options.dryRunApplyCommand
+        ? `Dry run. Run \`${options.dryRunApplyCommand}\` without \`--dry-run\` to modify the selected agent config.`
+        : 'Dry run. Re-run with --apply to modify the selected agent config.',
+    );
+    if (removeCommand.cwd || command.cwd) {
+      yield* Console.log(`Command working directory: ${removeCommand.cwd ?? command.cwd}`);
     }
+    yield* Console.log(formatShellCommand(removeCommand.executable, removeCommand.args));
+    yield* Console.log(formatShellCommand(command.executable, command.args));
+    yield* printMcpSnippet(config, agent, name, {scope, toolset});
+    yield* installAgentIntegration(config, agent, {
+      cwd,
+      dryRun: true,
+      name,
+      scope,
+      toolset,
+    });
+    return;
+  }
 
-    if (
-      yield* cliMcpConfigurationMatches(config, agent, agentExecutable, name, {
-        scope: options.scope,
-        toolset,
-      })
-    ) {
-      yield* Console.log(`Already configured: ${agent} MCP ${name}`);
-      return;
-    }
-
+  if (
+    yield* cliMcpConfigurationMatches(config, agent, agentExecutable, name, {
+      cwd,
+      scope,
+      toolset,
+    })
+  ) {
+    yield* Console.log(`Already configured: ${agent} MCP ${name}`);
+  } else {
     yield* maybeRunEffect(false, removeCommand.executable, removeCommand.args, {
       allowFailure: true,
       cwd: removeCommand.cwd,
     });
     yield* maybeRunEffect(false, command.executable, command.args, {cwd: command.cwd});
+  }
+  yield* finishAgentIntegrationInstall(config, agent, {
+    apply,
+    cwd,
+    name,
+    scope,
+    toolset,
   });
-}
+});
+
+const finishAgentIntegrationInstall = Effect.fn('mcp.finishAgentIntegrationInstall')(function* (
+  config: RuntimeConfig,
+  agent: AgentClient,
+  options: {
+    readonly apply: boolean;
+    readonly cwd?: string;
+    readonly name: string;
+    readonly scope?: ClaudeMcpScope;
+    readonly toolset: McpToolset;
+  },
+) {
+  const receipt: AgentIntegrationMcpReceipt = {
+    ...(options.cwd === undefined ? {} : {cwd: options.cwd}),
+    name: options.name,
+    repair: true,
+    ...(options.scope === undefined ? {} : {scope: options.scope}),
+    toolset: options.toolset,
+  };
+  if (!options.apply) {
+    yield* installAgentIntegrationInTransaction(config, agent, receipt, true);
+    return;
+  }
+  const inferred = yield* inferConfiguredMcpClients();
+  yield* migrateLegacyAgentIntegrationsInTransaction(config, [...new Set<AgentClient>([...inferred, agent])], false);
+  yield* installAgentIntegrationInTransaction(config, agent, receipt, false);
+});
 
 class McpOperationError extends Error {
   readonly _tag = 'McpOperationError' as const;
 }
 
-export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(function* () {
+export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(function* (
+  config: RuntimeConfig,
+  inferredClients?: readonly AgentClient[],
+) {
   const checks: DoctorCheck[] = [];
-  for (const agent of ['codex', 'claude'] as const) {
+  const registry = yield* readAgentIntegrationRegistry(config);
+  const inferred = registry === undefined ? (inferredClients ?? (yield* inferConfiguredMcpClients())) : [];
+  const clients = registry === undefined ? inferred : registeredAgentClients(registry);
+  for (const agent of clients) {
+    const receipt = registry?.hosts[agent];
+    const name = receipt?.mcp.name ?? THREADNOTE_MCP_NAME;
+    const repair = receipt?.mcp.repair ?? true;
+    if (agent === 'cursor') {
+      checks.push(
+        yield* jsonMcpConfigurationCheck('cursor MCP', yield* cursorMcpConfigPath(), 'mcpServers', name, repair),
+      );
+      continue;
+    }
+    if (agent === 'copilot') {
+      checks.push(
+        yield* jsonMcpConfigurationCheck('copilot MCP', yield* copilotMcpConfigPath(), 'servers', name, repair),
+      );
+      continue;
+    }
     const executable = yield* findMcpAgentExecutable(agent);
-    if (!executable) continue;
-    const result = yield* runCommandEffect(executable, ['mcp', 'get', THREADNOTE_MCP_NAME], {
+    if (!executable) {
+      checks.push({
+        detail: `${agent} command unavailable; cannot inspect registered MCP ${name}`,
+        name: `${agent} MCP`,
+        status: 'warn',
+      });
+      continue;
+    }
+    const result = yield* runCommandEffect(executable, ['mcp', 'get', name], {
       allowFailure: true,
       maxOutputBytes: 64 * 1024,
       timeoutMs: 5_000,
@@ -101,51 +185,76 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
     const current = configured && isBrokerMcpCommandOutput(result.value.stdout);
     checks.push({
       detail: current
-        ? `${THREADNOTE_MCP_NAME} broker configured`
+        ? `${name} broker configured`
         : configured
-          ? `${THREADNOTE_MCP_NAME} uses the legacy direct server command; repair will migrate it to the session broker`
-          : `missing or unreadable; repair will configure ${THREADNOTE_MCP_NAME}`,
+          ? repair
+            ? `${name} uses the legacy direct server command; repair will migrate it to the session broker`
+            : `${name} configuration predates receipts; run threadnote mcp-install ${agent} --apply to manage it`
+          : repair
+            ? `missing or unreadable; repair will configure ${name}`
+            : `missing or unreadable; run threadnote mcp-install ${agent} --apply to manage it`,
       name: `${agent} MCP`,
       status: current ? 'ok' : 'warn',
-    });
-  }
-
-  if (yield* isCursorAvailable()) {
-    checks.push(yield* jsonMcpConfigurationCheck('cursor MCP', yield* cursorMcpConfigPath(), 'mcpServers'));
-  }
-  if (yield* isCopilotAvailable()) {
-    checks.push(yield* jsonMcpConfigurationCheck('copilot MCP', yield* copilotMcpConfigPath(), 'servers'));
-  }
-  if (checks.length === 0) {
-    checks.push({
-      detail: 'no supported agent client detected; run threadnote mcp-install <agent> --apply',
-      name: 'MCP configuration',
-      status: 'warn',
     });
   }
   return checks;
 });
 
-function jsonMcpConfigurationCheck(name: string, configPath: string, containerKey: 'mcpServers' | 'servers') {
+function jsonMcpConfigurationCheck(
+  checkName: string,
+  configPath: string,
+  containerKey: 'mcpServers' | 'servers',
+  serverName: string,
+  repair: boolean,
+) {
   return Effect.gen(function* () {
     const raw = yield* readFileIfExists(configPath);
     const parsed = raw ? parseJsonConfigObject(raw) : undefined;
     const container = parsed?.[containerKey];
-    const server =
-      isJsonObject(container) && isJsonObject(container[THREADNOTE_MCP_NAME])
-        ? container[THREADNOTE_MCP_NAME]
-        : undefined;
+    const server = isJsonObject(container) && isJsonObject(container[serverName]) ? container[serverName] : undefined;
     const configured = server !== undefined;
     const current = configured && isBrokerMcpServerConfig(server);
     return {
       detail: current
-        ? `${THREADNOTE_MCP_NAME} broker configured in ${configPath}`
+        ? `${serverName} broker configured in ${configPath}`
         : configured
-          ? `${configPath} uses the legacy direct server command; repair will migrate it to the session broker`
-          : `${configPath} missing entry`,
-      name,
+          ? repair
+            ? `${configPath} uses the legacy direct server command; repair will migrate it to the session broker`
+            : `${configPath} predates receipts; run threadnote mcp-install ${checkName.split(' ')[0]} --apply to manage it`
+          : repair
+            ? `${configPath} missing entry`
+            : `${configPath} missing entry; run threadnote mcp-install ${checkName.split(' ')[0]} --apply to manage it`,
+      name: checkName,
       status: current ? ('ok' as const) : ('warn' as const),
     };
+  });
+}
+
+export const inferConfiguredMcpClients = Effect.fn('mcp.inferConfiguredClients')(function* () {
+  const clients: AgentClient[] = [];
+  for (const agent of ['codex', 'claude'] as const) {
+    const executable = yield* findMcpAgentExecutable(agent);
+    if (!executable) continue;
+    const result = yield* runCommandEffect(executable, ['mcp', 'get', THREADNOTE_MCP_NAME], {
+      allowFailure: true,
+      maxOutputBytes: 64 * 1024,
+      timeoutMs: 5_000,
+    }).pipe(Effect.option);
+    if (result._tag === 'Some' && result.value.exitCode === 0) clients.push(agent);
+  }
+  const cursor = yield* readJsonMcpServer(yield* cursorMcpConfigPath(), 'mcpServers', THREADNOTE_MCP_NAME);
+  if (cursor !== undefined) clients.push('cursor');
+  const copilot = yield* readJsonMcpServer(yield* copilotMcpConfigPath(), 'servers', THREADNOTE_MCP_NAME);
+  if (copilot !== undefined) clients.push('copilot');
+  return clients;
+});
+
+function readJsonMcpServer(configPath: string, containerKey: 'mcpServers' | 'servers', serverName: string) {
+  return Effect.gen(function* () {
+    const raw = yield* readFileIfExists(configPath);
+    const parsed = raw ? parseJsonConfigObject(raw) : undefined;
+    const container = parsed?.[containerKey];
+    return isJsonObject(container) && isJsonObject(container[serverName]) ? container[serverName] : undefined;
   });
 }
 
@@ -168,6 +277,7 @@ const cliMcpConfigurationMatches = Effect.fn('mcp.cliConfigurationMatches')(func
   agentExecutable: string,
   name: string,
   options: {
+    readonly cwd?: string;
     readonly scope?: ClaudeMcpScope;
     readonly toolset: McpToolset;
   },
@@ -179,6 +289,7 @@ const cliMcpConfigurationMatches = Effect.fn('mcp.cliConfigurationMatches')(func
       allowFailure: true,
       maxOutputBytes: 64 * 1024,
       timeoutMs: 5_000,
+      cwd: options.cwd,
     },
   ).pipe(Effect.option);
   if (result._tag === 'None' || result.value.exitCode !== 0) return false;
@@ -363,28 +474,40 @@ const runCopilotMcpInstall = Effect.fn('mcp.runCopilotInstall')(function* (
   );
 });
 
-export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (value: string, dryRun: boolean) {
+export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (
+  value: string,
+  dryRun: boolean,
+  receipts: Readonly<Partial<Record<AgentClient, AgentIntegrationMcpReceipt>>> = {},
+) {
   const clients = yield* resolveMcpClients(value, 'remove');
   if (clients.length === 0) {
     yield* Console.log('Skipping MCP config removal.');
-    return;
+    return [];
   }
+  const removed: AgentClient[] = [];
   for (const client of clients) {
+    const receipt = receipts[client];
+    const name = receipt?.name ?? THREADNOTE_MCP_NAME;
     if (client === 'cursor') {
-      yield* removeCursorMcpConfig(THREADNOTE_MCP_NAME, dryRun);
+      if (yield* removeCursorMcpConfig(name, dryRun)) removed.push(client);
       continue;
     }
     if (client === 'copilot') {
-      yield* removeCopilotMcpConfig(THREADNOTE_MCP_NAME, dryRun);
+      if (yield* removeCopilotMcpConfig(name, dryRun)) removed.push(client);
       continue;
     }
     const executable = yield* requiredMcpAgentExecutable(client);
-    const command = yield* buildMcpRemoveCommand(client, executable, THREADNOTE_MCP_NAME);
-    yield* maybeRunEffect(dryRun, command.executable, command.args, {
+    const command = yield* buildMcpRemoveCommand(client, executable, name, {
+      cwd: receipt?.cwd,
+      scope: receipt?.scope,
+    });
+    const result = yield* maybeRunEffect(dryRun, command.executable, command.args, {
       allowFailure: true,
       cwd: command.cwd,
     });
+    if (dryRun || result?.exitCode === 0) removed.push(client);
   }
+  return removed;
 });
 
 export const removeMcpSnippets = Effect.fn('mcp.removeSnippets')(function* (config: RuntimeConfig, dryRun: boolean) {
@@ -417,6 +540,7 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
   agentExecutable: string,
   name: string,
   options: {
+    readonly cwd?: string;
     readonly scope?: ClaudeMcpScope;
     readonly toolset: McpToolset;
   },
@@ -429,7 +553,7 @@ const buildMcpInstallCommand = Effect.fn('mcp.buildInstallCommand')(function* (
       new McpOperationError('GitHub Copilot MCP config is written directly to the VS Code user mcp.json file.'),
     );
   }
-  const claudeCwd = yield* getInvocationCwd();
+  const claudeCwd = options.cwd ?? (yield* getInvocationCwd());
   const claudeScope = options.scope ?? 'user';
   const command = yield* mcpAdapterCommand();
   const env = mcpEnvironment(config, options.toolset);
@@ -460,6 +584,7 @@ const buildMcpRemoveCommand = Effect.fn('mcp.buildRemoveCommand')(function* (
   agent: AgentClient,
   agentExecutable: string,
   name: string,
+  options: {readonly cwd?: string; readonly scope?: ClaudeMcpScope} = {},
 ) {
   if (agent === 'cursor') {
     return yield* Effect.fail(new McpOperationError('Cursor MCP config is removed directly from ~/.cursor/mcp.json.'));
@@ -471,7 +596,11 @@ const buildMcpRemoveCommand = Effect.fn('mcp.buildRemoveCommand')(function* (
   }
   return agent === 'codex'
     ? {executable: agentExecutable, args: ['mcp', 'remove', name]}
-    : {executable: agentExecutable, args: ['mcp', 'remove', name], cwd: yield* getInvocationCwd()};
+    : {
+        executable: agentExecutable,
+        args: ['mcp', 'remove', '--scope', options.scope ?? 'user', name],
+        cwd: options.cwd ?? (yield* getInvocationCwd()),
+      };
 });
 
 const findMcpAgentExecutable = Effect.fn('mcp.findAgentExecutable')((agent: 'claude' | 'codex') =>
@@ -598,16 +727,16 @@ const removeCursorMcpConfig = Effect.fn('mcp.removeCursorConfig')(function* (nam
   const currentContent = yield* readFileIfExists(path);
   if (isEmptyConfigContent(currentContent)) {
     yield* Console.log(`Already absent: ${path}`);
-    return;
+    return true;
   }
   const parsed = parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
     yield* Console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
-    return;
+    return false;
   }
   if (!isJsonObject(parsed.mcpServers) || parsed.mcpServers[name] === undefined) {
     yield* Console.log(`No Cursor MCP config found: ${path}`);
-    return;
+    return true;
   }
   const nextConfig: Record<string, unknown> = {...parsed};
   const mcpServers = {...parsed.mcpServers};
@@ -616,10 +745,11 @@ const removeCursorMcpConfig = Effect.fn('mcp.removeCursorConfig')(function* (nam
   const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
   if (dryRun) {
     yield* Console.log(`Would update Cursor MCP config: ${path}`);
-    return;
+    return true;
   }
   yield* fs.writeFileString(path, nextContent, {mode: 0o644});
   yield* Console.log(`Updated Cursor MCP config: ${path}`);
+  return true;
 });
 
 const removeCopilotMcpConfig = Effect.fn('mcp.removeCopilotConfig')(function* (name: string, dryRun: boolean) {
@@ -628,16 +758,16 @@ const removeCopilotMcpConfig = Effect.fn('mcp.removeCopilotConfig')(function* (n
   const currentContent = yield* readFileIfExists(path);
   if (isEmptyConfigContent(currentContent)) {
     yield* Console.log(`Already absent: ${path}`);
-    return;
+    return true;
   }
   const parsed = parseJsonConfigObject(currentContent ?? '');
   if (parsed === undefined) {
     yield* Console.log(`WARN ${path} exists but is not a JSON object; not modifying it.`);
-    return;
+    return false;
   }
   if (!isJsonObject(parsed.servers) || parsed.servers[name] === undefined) {
     yield* Console.log(`No GitHub Copilot MCP config found: ${path}`);
-    return;
+    return true;
   }
   const nextConfig: Record<string, unknown> = {...parsed};
   const servers = {...parsed.servers};
@@ -646,10 +776,11 @@ const removeCopilotMcpConfig = Effect.fn('mcp.removeCopilotConfig')(function* (n
   const nextContent = `${JSON.stringify(nextConfig, null, 2)}\n`;
   if (dryRun) {
     yield* Console.log(`Would update GitHub Copilot MCP config: ${path}`);
-    return;
+    return true;
   }
   yield* fs.writeFileString(path, nextContent, {mode: 0o644});
   yield* Console.log(`Updated GitHub Copilot MCP config: ${path}`);
+  return true;
 });
 
 const printMcpSnippet = Effect.fn('mcp.printSnippet')(function* (

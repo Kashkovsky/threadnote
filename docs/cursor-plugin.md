@@ -1,16 +1,17 @@
 # Cursor plugin
 
-Threadnote's Cursor instructions are an always-applied `.mdc` rule distributed through Cursor's public or team
-Marketplace. Cursor documents `.cursor/rules` as project scope, so Threadnote no longer writes a supposed user rule
-under `~/.cursor/rules`. It also never writes to `~/.cursor/plugins/local`: Cursor and, where applicable, the
-organization administrator own plugin installation, updates, and removal.
+Threadnote normally configures Cursor directly with `threadnote mcp-install cursor --apply`. That command installs the
+user-specific MCP entry, a compact always-on rule at `~/.cursor/rules/threadnote.mdc`, and progressively loaded skills under
+`~/.cursor/skills`. The public or team Marketplace plugin remains an optional alternative instruction provider for
+organizations that prefer centrally managed rules. Threadnote never writes to `~/.cursor/plugins/local`: Cursor and,
+where applicable, the organization administrator own plugin installation, updates, and removal.
 
 The implementation follows Cursor's [plugin reference](https://cursor.com/docs/reference/plugins) and
 [rule anatomy](https://cursor.com/docs/rules). The root `.cursor-plugin/marketplace.json` points to `cursor-plugin/`,
 whose `.cursor-plugin/plugin.json` exposes `rules/threadnote.mdc` and the self-contained `assets/logo.svg` Marketplace
 logo. The logo preserves the canonical mint Threadnote mark and adds a dark background plate for reliable contrast.
-The standalone Threadnote payload includes a copy of that source only so `threadnote doctor` can validate the installed
-Marketplace version; lifecycle commands never copy it into Cursor.
+The standalone Threadnote payload includes a copy of that source for plugin package validation and publishing. Global
+doctor health does not require the optional plugin.
 
 The MCP server remains a separate global Cursor configuration because it contains the user's Threadnote home,
 identity, toolset, and platform-specific absolute launcher path. The plugin intentionally has no `mcp.json` and cannot
@@ -24,31 +25,27 @@ create a duplicate server entry.
    threadnote mcp-install cursor --apply
    ```
 
-2. Install **Threadnote** from Cursor's Marketplace after the public listing is approved, or run
-   `/add-plugin threadnote` in a Cursor agent chat.
-3. On a managed Teams or Enterprise account, ask an administrator to allow the public plugin or add the Threadnote
+2. Reload Cursor or open a new window, then run `threadnote doctor`. No Marketplace plugin is required.
+3. Optionally install **Threadnote** from Cursor's Marketplace, or run `/add-plugin threadnote` in a Cursor agent chat.
+4. On a managed Teams or Enterprise account, ask an administrator to allow the public plugin or add the Threadnote
    repository to a team marketplace. The administrator can make it opt-in, default-on, or required according to the
    organization's policy.
-4. Reload Cursor or open a new window, then run `threadnote doctor`.
+
+When the Marketplace plugin is present, a later `mcp-install cursor --apply` or repair keeps its rule as the instruction
+provider, installs the user-level skills, and removes only a duplicate Threadnote-managed user-rule block.
 
 Before the public listing is approved, an administrator-controlled team marketplace is the supported way to exercise
 the exact default-branch plugin source. Do not test by copying it to `~/.cursor/plugins/local`.
 
 ## Doctor contract
 
-`threadnote doctor` adds a Cursor plugin check only when Cursor is detected. The check is read-only:
+`threadnote doctor` checks Cursor MCP, instructions, and skills only when Cursor is registered through `mcp-install` or
+inferred from a legacy Threadnote MCP entry. A machine with Cursor installed but no Threadnote integration is healthy.
+The optional Marketplace plugin is not a global doctor prerequisite.
 
-- An exact local installation at `~/.cursor/plugins/local/threadnote` fails as unsupported and must be removed outside
-  Threadnote before installing the Marketplace version.
-- An installed Marketplace copy is discovered in Cursor's plugin cache. Doctor validates the plugin name and semantic
-  version, then confirms that `rules/threadnote.mdc` has a description, `alwaysApply: true`, and the complete Threadnote
-  instruction block.
-- A version older than the source bundled with Threadnote warns that it should be updated through Cursor. A same-version
-  rule mismatch fails. A valid newer Marketplace version is accepted.
-- A missing plugin warns with public- and team-Marketplace installation guidance.
-
-Install, update, repair, and uninstall do not mutate either local or Marketplace plugin state. They still remove the
-legacy Threadnote-managed instruction block from the ignored `~/.cursor/rules/threadnote.md` or `.mdc` paths.
+Install, update, repair, and uninstall never mutate either local or Marketplace plugin state. They may add, refresh, or
+remove only Threadnote-managed content in Cursor's supported user rule and skill paths. The dedicated
+`bun run cursor-plugin:check` contributor command validates the Marketplace package before publishing.
 
 ## Why local injection is unsupported
 

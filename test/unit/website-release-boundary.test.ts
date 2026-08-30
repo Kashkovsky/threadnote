@@ -634,11 +634,11 @@ describe('website and standalone release boundary', () => {
   });
 
   it('packages the agent instruction template outside the public docs tree', async () => {
-    const lifecycle = await readFile(join(root, 'src', 'lifecycle.ts'), 'utf8');
+    const agentIntegrations = await readFile(join(root, 'src', 'agent-integrations.ts'), 'utf8');
     const template = await stat(join(root, 'config', 'agent-instructions.md'));
 
-    expect(lifecycle).toContain("'config', 'agent-instructions.md'");
-    expect(lifecycle).not.toContain("'docs', 'agent-instructions.md'");
+    expect(agentIntegrations).toContain("'config', 'agent-instructions.md'");
+    expect(agentIntegrations).not.toContain("'docs', 'agent-instructions.md'");
     expect(template.isFile()).toBe(true);
   });
 });
