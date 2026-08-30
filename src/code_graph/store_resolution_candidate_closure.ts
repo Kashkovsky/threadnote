@@ -5,7 +5,13 @@ import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphReference} fro
 
 /** Two complete scan passes must stay within the 10,000-file incremental attribution-work ceiling. */
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FILES = 5_000;
-export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES = 128 * 1_048_576;
+/**
+ * Pages keep resident memory near 1 MiB; this bound limits aggregate decoded
+ * work across each scan pass. Real repositories can produce roughly 8x as
+ * many cached-fact bytes as source bytes, so 256 MiB keeps ordinary exported
+ * TypeScript edits incremental without making the scan unbounded.
+ */
+export const PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES = 256 * 1_048_576;
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FILES = 32;
 export const PROJECT_RESOLUTION_CANDIDATE_SCAN_PAGE_MAX_FACT_BYTES = 1_048_576;
 export const PROJECT_RESOLUTION_CANDIDATE_MAX_LOOKUP_KEYS = 4_096;

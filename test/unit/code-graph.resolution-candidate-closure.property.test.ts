@@ -11,6 +11,7 @@ import type {CodeGraphReusableReexport} from '../../src/code_graph/store.js';
 import {
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORT_KEY_BYTES,
   PROJECT_RESOLUTION_CANDIDATE_MAX_REEXPORTS,
+  PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES,
   planProjectResolutionCandidateScan,
   resolutionCandidateLookupKeyClosure,
   scanProjectResolutionCandidateClosure,
@@ -347,6 +348,36 @@ describe('resolution-candidate closure', () => {
       limit: 2,
       mode: 'fallback',
       observed: 3,
+      reason: 'project-closure-unbounded',
+    });
+  });
+
+  effectIt('keeps a production-sized cached-fact surface within the default bounded scan', () => {
+    const files = [inventory('a.ts', 1), inventory('b.ts', 1)];
+    const productionSurfaceBytes = 192 * 1_048_576;
+    const plan = planProjectResolutionCandidateScan({
+      bytesByPath: new Map([
+        [files[0]!.path, productionSurfaceBytes / 2],
+        [files[1]!.path, productionSurfaceBytes / 2],
+      ]),
+      files,
+    });
+
+    expect(PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES).toBe(256 * 1_048_576);
+    expect(plan).toMatchObject({factBytes: productionSurfaceBytes, files: 2, mode: 'eligible'});
+    expect(
+      planProjectResolutionCandidateScan({
+        bytesByPath: new Map([
+          [files[0]!.path, PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES],
+          [files[1]!.path, 1],
+        ]),
+        files,
+      }),
+    ).toEqual({
+      detail: 'candidate-scan-fact-bytes',
+      limit: PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES,
+      mode: 'fallback',
+      observed: PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES + 1,
       reason: 'project-closure-unbounded',
     });
   });
