@@ -1,10 +1,12 @@
 import {Effect} from 'effect';
+import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readMemoryRecordsByUri} from '../memory/index.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
+import {finalizeDeferredCodeAnchorsForRoute} from '../memory/deferred_code_anchor.js';
 import type {MemoryRecord} from '../memory/document.js';
 import {uriSegment} from '../manifest.js';
-import {loadRecallCodeLinks, loadRecallIndexData} from '../recall/index.js';
+import {expireRecallIndexValidation, loadRecallCodeLinks, loadRecallIndexData} from '../recall/index.js';
 import type {RuntimeConfig} from '../types.js';
 import type {
   ContextBriefFreshness,
@@ -17,6 +19,8 @@ import type {
 
 const MEMORY_EXCERPT_BYTES = 240;
 const MEMORY_RETRIEVAL_MULTIPLIER = 4;
+const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT = 4;
+const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS = 1_000;
 const MEMORY_RECALL_EMPTY_GAP = 'memory-recall-no-active-durable-or-handoff';
 const THREADNOTE_MEMORY_URI = /^threadnote:\/\/user\/[^/]+\/memories\//u;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
@@ -172,10 +176,42 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     if (resolvedAnchors.length === 0) {
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
     }
+    const identity = yield* resolveRepositoryIdentity(callerCwd).pipe(Effect.option);
+    const finalizedUris: string[] = [];
+    if (identity._tag === 'Some') {
+      yield* finalizeDeferredCodeAnchorsForRoute(
+        config,
+        {
+          callerCwd,
+          kind: 'repository',
+          repositoryId: identity.value.repositoryId,
+          worktreeId: identity.value.worktreeId,
+        },
+        {
+          limit: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
+          onFinalizedUri: uri => {
+            finalizedUris.push(uri);
+          },
+          preferredCodeRefs: plan.codeRefs,
+          waitTimeoutMilliseconds: CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS,
+        },
+      ).pipe(
+        Effect.catchCause(() => Effect.void),
+        Effect.asVoid,
+      );
+    }
+    const forceRecallRefresh =
+      finalizedUris.length === 0
+        ? false
+        : yield* expireRecallIndexValidation(config.agentContextHome, false, finalizedUris).pipe(
+            Effect.as(false),
+            Effect.catchCause(() => Effect.succeed(true)),
+          );
     let truncatedSelectorCount = 0;
     const linked = yield* loadRecallCodeLinks(config, {
       allowedUriScopes: [contextBriefMemoryUriScope(config.user)],
       anchors: resolvedAnchors.map(resolved => resolved.anchor),
+      ...(forceRecallRefresh ? {forceRefresh: true} : {}),
       includeInactive: false,
       limit: plan.candidateLimit,
       onSearchTruncated: count => {

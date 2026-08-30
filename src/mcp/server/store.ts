@@ -311,6 +311,10 @@ function withDeferredCodeAnchorWriteReceipt(
   const recovery = {
     action: preparation.action,
     arguments: preparation.arguments,
+    automaticRetry:
+      preparation.target === 'callerCwd'
+        ? (['after-graph-index', 'next-code-linked-context-brief'] as const)
+        : (['after-workset-prepare'] as const),
     command: preparation.command,
     cliCommand: 'threadnote finalize-code-refs',
     replaceUri: typeof memoryUri === 'string' ? memoryUri : undefined,
@@ -321,9 +325,12 @@ function withDeferredCodeAnchorWriteReceipt(
   const note = [
     'Memory stored now without finalized code citations.',
     `${request.codeRefs.length} code reference(s) are pending in a private local outbox.`,
+    preparation.target === 'callerCwd'
+      ? 'After the graph is prepared, Threadnote retries automatically during graph indexing and the next code-linked Context Brief.'
+      : 'After the Workset is prepared, Threadnote retries automatically.',
     typeof memoryUri === 'string'
-      ? `Prepare the graph, then call remember_context with the same content and replaceUri: "${memoryUri}", or run threadnote finalize-code-refs.`
-      : 'Prepare the graph, then replace the stored memory with the same content and codeRefs, or run threadnote finalize-code-refs.',
+      ? `If it remains pending, call remember_context with the same content and replaceUri: "${memoryUri}", or run threadnote finalize-code-refs.`
+      : 'If it remains pending, replace the stored memory with the same content and codeRefs, or run threadnote finalize-code-refs.',
   ].join(' ');
   return {
     ...result,

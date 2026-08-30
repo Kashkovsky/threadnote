@@ -113,6 +113,8 @@ describe('Effect CLI', () => {
       );
 
       expect(result.stdout).toContain('Stored memory without finalized code citations');
+      expect(result.stdout).toContain('retries automatically after graph indexing');
+      expect(result.stdout).toContain('finalize-code-refs` as a repair fallback');
       const memoryUri = /Stored memory: (threadnote:\/\/\S+)/u.exec(result.stdout)?.[1];
       expect(memoryUri).toBeDefined();
       const stored = await runCli(['read', memoryUri!], {THREADNOTE_HOME: root});
@@ -397,7 +399,10 @@ describe('Effect CLI', () => {
     expect(topology.stdout).toContain('--node-limit, --limit integer');
     expect(contextBrief.stdout).toContain('--task string');
     expect(contextBrief.stdout).toContain('--budget-tokens integer');
+    expect(contextBrief.stdout).toContain('(750-1500)');
     expect(contextBrief.stdout).toContain('--code-ref string');
+    expect(contextBrief.stdout).toContain('Canonical graph-indexed repository-relative path (no ./ or ..)');
+    expect(contextBrief.stdout).toContain('cgr_ unsupported');
     expect(contextBrief.stdout).toContain('repeat up to eight times');
     expect(contextBrief.stdout).toContain('--workset string');
     expect(contextBrief.stdout).toContain('choices: brief, locate, explain, trace, impact');
@@ -445,6 +450,33 @@ describe('Effect CLI', () => {
 
     expect(error).toMatchObject({code: 1});
     expect(String(error.stderr)).toContain('--code-ref');
+  });
+
+  it('rejects below-minimum Context Brief budgets and noncanonical code references actionably', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-context-contract-'));
+    try {
+      const budgetError = await runCli(
+        ['context', 'brief', '--budget-tokens', '749', '--task', 'Find the current contract.'],
+        {THREADNOTE_HOME: home},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+      expect(budgetError).toMatchObject({code: 1});
+      expect(String(budgetError.stderr)).toContain('750');
+
+      for (const [codeRef, expectedMessage] of [
+        ['./src/index.ts', 'canonical'],
+        [`cgs_${'a'.repeat(31)}`, 'cgs_<32 lowercase hex>'],
+        [`cgr_${'a'.repeat(40)}`, 'cgr_ handle, which Context Brief does not support'],
+      ] as const) {
+        const refError = await runCli(
+          ['context', 'brief', '--cwd', process.cwd(), '--code-ref', codeRef, '--task', 'Find the current contract.'],
+          {THREADNOTE_HOME: home},
+        ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+        expect(refError, codeRef).toMatchObject({code: 1});
+        expect(String(refError.stderr), codeRef).toContain(expectedMessage);
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
   });
 
   it('documents graph query paging scope and token bounds before execution', async () => {

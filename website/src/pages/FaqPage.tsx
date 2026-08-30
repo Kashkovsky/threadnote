@@ -31,7 +31,7 @@ const questions = [
   {
     question: 'Can an agent start with code and find related memory?',
     answer:
-      'Yes. Pass up to eight repository-scoped files or cgs_ symbols as Context Brief codeRefs, or repeat --code-ref in the CLI. Context Brief v3 retrieves active memories with explicit matching citations alongside normal task recall, validates their evidence against an already-ready graph, and reports bounded relation and coverage receipts. It does not guess semantic links, start cold indexing, or support Workset and cgr_ anchors in this first milestone.',
+      'Yes. Pass up to eight canonical graph-indexed repository-relative paths or exact local cgs_<32 lowercase hex> symbols as Context Brief codeRefs, or repeat --code-ref in the CLI. Context Brief v3 retrieves active memories with explicit matching citations alongside normal task recall, validates their evidence against an already-ready graph, and reports bounded relation and coverage receipts. Noncanonical paths, malformed handles, and cgr_ handles are argument errors. It does not guess semantic links, start cold indexing, or support Workset code-reference backlinks in this first milestone.',
   },
   {
     question: 'Will my existing memories disappear after upgrading to 4.4?',

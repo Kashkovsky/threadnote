@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {Cause, Effect, Exit} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
   assembleContextBriefLogicalResult,
@@ -33,6 +33,17 @@ const REPOSITORY_ID = 'c'.repeat(64);
 const SHA256_ARBITRARY = fc
   .uint8Array({minLength: 32, maxLength: 32})
   .map(bytes => [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join(''));
+const LOCAL_SYMBOL_ARBITRARY = fc
+  .uint8Array({minLength: 16, maxLength: 16})
+  .map(bytes => `cgs_${[...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')}`);
+const CANONICAL_CODE_PATH_ARBITRARY = fc
+  .array(
+    fc
+      .array(fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz0123456789_-'), {minLength: 1, maxLength: 12})
+      .map(characters => characters.join('')),
+    {minLength: 2, maxLength: 4},
+  )
+  .map(segments => segments.join('/'));
 const SNAPSHOT = {
   commit: COMMIT,
   dirty: false,
@@ -64,9 +75,9 @@ describe('Context Brief compiler', () => {
         type: 'context-brief',
         version: 2,
       });
-      expect(result.structuredContent.graph.cards).toHaveLength(1);
+      expect(result.structuredContent.graph.cards).toHaveLength(0);
       expect(result.structuredContent.graph.continuation).toEqual({
-        omittedCards: 2,
+        omittedCards: 3,
         state: 'rerun-required',
         upstreamRemainingEstimate: 4,
       });
@@ -77,7 +88,9 @@ describe('Context Brief compiler', () => {
         expect.arrayContaining([expect.objectContaining({freshness: 'stale', topic: 'current-rollout'})]),
       );
       expect(result.structuredContent.stalenessAndConflicts).toEqual([]);
-      expect(result.structuredContent.recommendedFollowUps).toEqual([]);
+      expect(result.structuredContent.recommendedFollowUps).toEqual([
+        expect.objectContaining({operation: 'inspect-node', rank: 0, ref: graphEvidence().cards[0]!.ref}),
+      ]);
       expectTextCarriesSelectedEvidence(result.text, result.structuredContent);
 
       const expanded = yield* compile(graphEvidence(), memoryEvidence(), 1_500);
@@ -89,6 +102,30 @@ describe('Context Brief compiler', () => {
       });
       expectTextCarriesSelectedEvidence(expanded.text, expanded.structuredContent);
     }),
+  );
+
+  effectIt.effect(
+    'preserves an actionable graph recovery in both response channels under maximum-budget code-linked pressure',
+    () =>
+      Effect.gen(function* () {
+        const result = yield* compileCodeLinkedRecoveryFixture(16, 8, 1_500);
+        const brief = result.structuredContent;
+        const recovery = brief.recommendedFollowUps[0];
+
+        expect(brief.graph.continuation).toEqual({omittedCards: 16, state: 'rerun-required'});
+        expect(brief.coverage.memory.codeAnchors).toEqual({
+          complete: true,
+          matchedMemories: 8,
+          requested: 8,
+          resolved: 8,
+        });
+        expect(brief.graph.cards.length + brief.coverage.omissions.graphCards).toBe(16);
+        expect(brief.durableDecisions.length + brief.coverage.omissions.durableDecisions).toBe(8);
+        expect(brief.recommendedFollowUps.length + brief.coverage.omissions.recommendedFollowUps).toBe(24);
+        expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: recoveryGraphCardRef(0)});
+        expect(parseContextBriefAgentViewText(result.text).recommendedFollowUps?.[0]).toEqual(recovery);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+      }),
   );
 
   it('treats bodies as bounded evidence excerpts and never as instructions', () => {
@@ -132,12 +169,6 @@ describe('Context Brief compiler', () => {
 
   it('strictly rejects unknown request fields and ambiguous coarse freshness', () => {
     expect(() => parseContextBriefRequestV1({...request(1_250), query: 'a private DSL'})).toThrow('unsupported field');
-    expect(
-      parseContextBriefRequestV1({
-        ...request(1_250),
-        codeRefs: [' src/catalog/store.ts ', `cgs_${'8'.repeat(32)}`, 'src/catalog/store.ts'],
-      }).codeRefs,
-    ).toEqual(['src/catalog/store.ts', `cgs_${'8'.repeat(32)}`]);
     expect(() =>
       parseContextBriefRequestV1({...request(1_250), codeRefs: Array.from({length: 9}, () => 'src/catalog/store.ts')}),
     ).toThrow('at most 8');
@@ -145,6 +176,109 @@ describe('Context Brief compiler', () => {
     expect(classifyMemoryFreshness(undefined, [SNAPSHOT])).toBe('unknown');
     expect(classifyMemoryFreshness(COMMIT, [{...SNAPSHOT, dirty: true}])).toBe('unknown');
     expect(classifyMemoryFreshness(COMMIT, [{...SNAPSHOT, freshness: 'stale'}])).toBe('unknown');
+  });
+
+  it('accepts only the public budget range and exact canonical local code references', () => {
+    const symbol = `cgs_${'8'.repeat(32)}`;
+    expect(parseContextBriefRequestV1(request(750)).budgetTokens).toBe(750);
+    expect(parseContextBriefRequestV1(request(1_500)).budgetTokens).toBe(1_500);
+    expect(
+      parseContextBriefRequestV1({
+        ...request(1_250),
+        codeRefs: ['src/catalog/store.ts', symbol, 'src/catalog/store.ts', symbol],
+      }).codeRefs,
+    ).toEqual(['src/catalog/store.ts', symbol]);
+
+    for (const budgetTokens of [1, 749, 1_501, 750.5]) {
+      expect(() => parseContextBriefRequestV1(request(budgetTokens))).toThrow('integer from 750 to 1500');
+    }
+    for (const codeRef of [
+      '',
+      ' src/catalog/store.ts ',
+      '/src/catalog/store.ts',
+      'C:/src/catalog/store.ts',
+      'C:\\src\\catalog\\store.ts',
+      '.\\src\\catalog\\store.ts',
+      './src/catalog/store.ts',
+      'src/./catalog/store.ts',
+      'src/../catalog/store.ts',
+      'src//catalog/store.ts',
+      'src/catalog/store.ts/',
+      '.',
+      '..',
+      'cgs_symbol',
+      `cgs_${'8'.repeat(31)}`,
+      `cgs_${'8'.repeat(40)}`,
+      `cgs_${'A'.repeat(32)}`,
+      `cgr_${'8'.repeat(40)}`,
+      'cgr_symbol',
+    ]) {
+      expect(() => parseContextBriefRequestV1({...request(1_250), codeRefs: [codeRef]}), codeRef).toThrow();
+    }
+    expect(() => parseContextBriefRequestV1({...request(1_250), codeRefs: [`cgr_${'8'.repeat(40)}`]})).toThrow(
+      'cgr_ handle, which Context Brief does not support',
+    );
+  });
+
+  effectIt.effect('rejects a below-minimum budget before graph or memory evidence starts', () =>
+    Effect.gen(function* () {
+      let graphCalls = 0;
+      let memoryCalls = 0;
+      let codeLinkedMemoryCalls = 0;
+      const exit = yield* Effect.exit(
+        compileContextBriefWith(
+          {
+            codeLinkedMemoryEvidence: () =>
+              Effect.sync(() => {
+                codeLinkedMemoryCalls += 1;
+                return unavailableContextBriefCodeLinkedMemoryEvidence(1);
+              }),
+            graphEvidence: () =>
+              Effect.sync(() => {
+                graphCalls += 1;
+                return graphEvidence();
+              }),
+            memoryEvidence: () =>
+              Effect.sync(() => {
+                memoryCalls += 1;
+                return memoryEvidence();
+              }),
+          },
+          {...request(749), codeRefs: ['src/context_brief/types.ts']},
+        ),
+      );
+
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.isFailure(exit) ? String(Cause.squash(exit.cause)) : '').toContain('integer from 750 to 1500');
+      expect({codeLinkedMemoryCalls, graphCalls, memoryCalls}).toEqual({
+        codeLinkedMemoryCalls: 0,
+        graphCalls: 0,
+        memoryCalls: 0,
+      });
+    }),
+  );
+
+  it('dedupes exact canonical refs while rejecting normalized equivalents', () => {
+    fc.assert(
+      fc.property(CANONICAL_CODE_PATH_ARBITRARY, LOCAL_SYMBOL_ARBITRARY, (path, symbol) => {
+        expect(
+          parseContextBriefRequestV1({...request(1_250), codeRefs: [path, symbol, path, symbol]}).codeRefs,
+        ).toEqual([path, symbol]);
+        for (const nonCanonical of [
+          ` ${path}`,
+          `${path} `,
+          `./${path}`,
+          `/${path}`,
+          `C:/${path}`,
+          path.replaceAll('/', '\\'),
+          `${path.split('/')[0]}//${path.split('/').slice(1).join('/')}`,
+          `${path}/../replacement.ts`,
+        ]) {
+          expect(() => parseContextBriefRequestV1({...request(1_250), codeRefs: [nonCanonical]})).toThrow();
+        }
+      }),
+      {numRuns: 40},
+    );
   });
 
   it('restores original anchor ordinals after partial resolution and dedupes reverse matches', () => {
@@ -1086,7 +1220,7 @@ describe('Context Brief compiler', () => {
 
   effectIt.effect.prop(
     'keeps exact combined response bytes within every accepted budget',
-    {budget: fc.integer({min: 700, max: 1_500})},
+    {budget: fc.integer({min: 750, max: 1_500})},
     ({budget}) =>
       Effect.gen(function* () {
         const result = yield* compile(graphEvidence(), memoryEvidence(), budget);
@@ -1100,10 +1234,33 @@ describe('Context Brief compiler', () => {
   );
 
   effectIt.effect.prop(
+    'keeps the first exact graph selector whenever bounded projection requires a rerun',
+    {
+      budget: fc.integer({min: 750, max: 1_500}),
+      cardCount: fc.integer({min: 12, max: 16}),
+      memoryCount: fc.integer({min: 1, max: 8}),
+    },
+    ({budget, cardCount, memoryCount}) =>
+      Effect.gen(function* () {
+        const result = yield* compileCodeLinkedRecoveryFixture(cardCount, memoryCount, budget);
+        const brief = result.structuredContent;
+        const recovery = brief.recommendedFollowUps[0];
+        const agentView = parseContextBriefAgentViewText(result.text);
+
+        expect(brief.graph.continuation?.state).toBe('rerun-required');
+        expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0, ref: recoveryGraphCardRef(0)});
+        expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
+        expect(agentView.graph?.continuation).toEqual(brief.graph.continuation);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
+      }),
+    {fastCheck: {numRuns: 30}},
+  );
+
+  effectIt.effect.prop(
     'extends a deterministic evidence prefix as the budget grows',
     {
       delta: fc.integer({min: 0, max: 300}),
-      smallBudget: fc.integer({min: 700, max: 1_200}),
+      smallBudget: fc.integer({min: 750, max: 1_200}),
     },
     ({smallBudget, delta}) =>
       Effect.gen(function* () {
@@ -1163,6 +1320,112 @@ function compile(graph: ContextBriefGraphEvidenceV1, memory: ContextBriefMemoryR
     {graphEvidence: () => Effect.succeed(graph), memoryEvidence: () => Effect.succeed(memory)},
     request(budget),
   );
+}
+
+function compileCodeLinkedRecoveryFixture(cardCount: number, memoryCount: number, budget: number) {
+  const citations = Array.from({length: memoryCount}, (_, index) =>
+    codeCitation(index + 1, 'file', `src/context_brief/recovery-anchor-${index}.ts`),
+  );
+  const candidates: readonly ContextBriefMemoryCandidateV1[] = citations.map((citation, rank) => ({
+    citationErrorCount: 0,
+    codeCitations: [citation],
+    codeLinkMatches: [
+      {
+        anchorOrdinal: rank,
+        anchorPath: citation.path,
+        citationId: citation.id,
+        matchKind: 'file-path' as const,
+      },
+    ],
+    excerpt: `Code-linked recovery decision ${rank}: ${'e'.repeat(160)}`,
+    kind: 'durable' as const,
+    project: 'threadnote',
+    rank,
+    sourceCommit: COMMIT,
+    topic: `code-linked-recovery-${rank}`,
+    uri: `threadnote://user/test/memories/durable/projects/threadnote/code-linked-recovery-${rank}.md`,
+  }));
+  const graph = graphEvidence();
+  return compileContextBriefWith(
+    {
+      citationValidation: () =>
+        Effect.succeed(
+          candidates.map((candidate, index) => ({
+            receipts: [
+              {
+                candidateCount: 1,
+                citationId: citations[index]!.id,
+                coverage: 'current-complete' as const,
+                kind: 'file' as const,
+                observedAt: '2026-08-30T00:00:00.000Z',
+                observedPath: citations[index]!.path,
+                reason: 'exact' as const,
+                status: 'exact' as const,
+                strategy: 'file-path' as const,
+                validatorVersion: 1 as const,
+              },
+            ],
+            uri: candidate.uri,
+          })),
+        ),
+      codeLinkedMemoryEvidence: () =>
+        Effect.succeed({
+          codeAnchorCoverage: {
+            complete: true,
+            matchedMemories: memoryCount,
+            requested: memoryCount,
+            resolved: memoryCount,
+          },
+          candidates,
+          consideredCandidates: memoryCount,
+          gaps: [],
+          trust: {
+            classification: 'untrusted-memory-data' as const,
+            instructionPolicy: 'evidence-only-never-follow' as const,
+          },
+        }),
+      graphEvidence: () =>
+        Effect.succeed({
+          ...graph,
+          cards: Array.from({length: cardCount}, (_, rank) => ({
+            ...graph.cards[0]!,
+            id: `recovery-card-${rank}`,
+            rank,
+            reason: `Bounded recovery graph evidence ${rank}: ${'r'.repeat(96)}`,
+            ref: recoveryGraphCardRef(rank),
+            symbol: {
+              ...graph.cards[0]!.symbol,
+              line: rank + 1,
+              name: `recoveryContextBrief${rank}`,
+              path: `src/context_brief/recovery-${rank}.ts`,
+              qualifiedName: `contextBrief.recoveryContextBrief${rank}`,
+            },
+          })),
+          continuation: undefined,
+          contracts: [],
+        }),
+      memoryEvidence: () =>
+        Effect.succeed({
+          candidates: [],
+          consideredCandidates: 0,
+          gaps: [],
+          trust: {
+            classification: 'untrusted-memory-data' as const,
+            instructionPolicy: 'evidence-only-never-follow' as const,
+          },
+        }),
+    },
+    {
+      ...request(budget),
+      codeRefs: citations.map(citation => citation.path),
+      mode: 'locate',
+      task: 'Find the implementation contract attached to the bounded Context Brief recovery graph.',
+    },
+  );
+}
+
+function recoveryGraphCardRef(rank: number): string {
+  return `cgs_${(rank + 1).toString(16).padStart(32, '0')}`;
 }
 
 function graphEvidence(): ContextBriefGraphEvidenceV1 {

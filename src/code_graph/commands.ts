@@ -2,6 +2,7 @@ import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {startProgress} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
+import {healAnchorsAfterGraphIndex, healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
@@ -91,7 +92,6 @@ import {
 interface CwdOption {
   readonly cwd?: string;
 }
-
 export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan};
 export type {CodeGraphCliFreshnessPolicy, CodeGraphCliReadPlan};
 
@@ -791,11 +791,12 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
     });
+    yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
     yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
     return;
   }
   yield* Console.log(`Indexing code graph: ${identity.displayName}`);
-  yield* Effect.acquireUseRelease(
+  const summary = yield* Effect.acquireUseRelease(
     startProgress('Scanning repository source from Git.'),
     progress =>
       indexer
@@ -818,14 +819,12 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
           ),
         ),
     progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
-  ).pipe(
-    Effect.flatMap(summary =>
-      Console.log(
-        `Code graph ready for ${summary.identity.displayName}: ${summary.snapshot.fileCount} file(s), ` +
-          `${summary.snapshot.symbolCount} symbol(s), ${summary.snapshot.edgeCount} relationship(s); ` +
-          `${summary.reusedFiles} file(s) reused.`,
-      ),
-    ),
+  );
+  yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
+  yield* Console.log(
+    `Code graph ready for ${summary.identity.displayName}: ${summary.snapshot.fileCount} file(s), ` +
+      `${summary.snapshot.symbolCount} symbol(s), ${summary.snapshot.edgeCount} relationship(s); ` +
+      `${summary.reusedFiles} file(s) reused.`,
   );
 });
 
@@ -851,6 +850,9 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
           }),
         progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
       );
+  if (result.state === 'ready') {
+    yield* healAnchorsAfterWorksetPrepare(config, result.workset);
+  }
   yield* writeFinalCliOutput(
     options.json ? JSON.stringify(result) : renderCodeGraphWorksetPrepareResult(result).trimEnd(),
   );

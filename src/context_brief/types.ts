@@ -14,6 +14,7 @@ export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS = 1 as const;
 export const CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES = 96 as const;
 export const CONTEXT_BRIEF_MAXIMUM_CODE_REFS = 8 as const;
 export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
+export const CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS = 750 as const;
 export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
 export const CONTEXT_BRIEF_MODES = ['brief', 'locate', 'explain', 'trace', 'impact'] as const;
 
@@ -522,22 +523,26 @@ const UTF8 = new TextEncoder();
 const REQUEST_KEYS = new Set(['budgetTokens', 'codeRefs', 'mode', 'scope', 'task']);
 const REPOSITORY_SCOPE_KEYS = new Set(['callerCwd', 'kind', 'project']);
 const WORKSET_SCOPE_KEYS = new Set(['kind', 'name', 'project']);
+const LOCAL_CONTEXT_BRIEF_SYMBOL_REF = /^cgs_[0-9a-f]{32}$/u;
+const WINDOWS_DRIVE_PATH = /^[A-Za-z]:/u;
 
 /** Strict transport parser: unknown keys are rejected instead of silently becoming a private query language. */
 export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV1 {
   const object = record(value, 'Context Brief request');
   exactKeys(object, REQUEST_KEYS, 'Context Brief request');
   const task = boundedText(object.task, 'task', 4_096);
-  const codeRefs = parseCodeRefs(object.codeRefs);
-  const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
   const budgetTokens = object.budgetTokens === undefined ? CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS : object.budgetTokens;
   if (
     !Number.isSafeInteger(budgetTokens) ||
-    (budgetTokens as number) < 1 ||
+    (budgetTokens as number) < CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS ||
     (budgetTokens as number) > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS
   ) {
-    throw invalid(`budgetTokens must be an integer from 1 to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}.`);
+    throw invalid(
+      `budgetTokens must be an integer from ${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS} to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}.`,
+    );
   }
+  const codeRefs = parseContextBriefCodeRefs(object.codeRefs);
+  const mode = object.mode === undefined ? 'brief' : contextBriefMode(object.mode);
   const scope = parseScope(object.scope);
   return {
     budgetTokens: budgetTokens as number,
@@ -548,14 +553,51 @@ export function parseContextBriefRequestV1(value: unknown): ContextBriefRequestV
   };
 }
 
-function parseCodeRefs(value: unknown): readonly string[] {
+/** Parse exact local Context Brief anchors without silently normalizing caller input. */
+export function parseContextBriefCodeRefs(value: unknown): readonly string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw invalid('codeRefs must be an array.');
   if (value.length > CONTEXT_BRIEF_MAXIMUM_CODE_REFS) {
     throw invalid(`codeRefs may contain at most ${CONTEXT_BRIEF_MAXIMUM_CODE_REFS} entries.`);
   }
-  const refs = value.map((ref, index) => boundedText(ref, `codeRefs[${index}]`, 4_096, false));
+  const refs = value.map((ref, index) => parseContextBriefCodeRef(ref, index));
   return [...new Set(refs)];
+}
+
+function parseContextBriefCodeRef(value: unknown, index: number): string {
+  const label = `codeRefs[${index}]`;
+  if (typeof value !== 'string') throw invalid(`${label} must be text.`);
+  if (value.length === 0 || value.trim() !== value) {
+    throw invalid(`${label} must be an exact canonical code reference without surrounding whitespace.`);
+  }
+  if (UTF8.encode(value).byteLength > 4_096) throw invalid(`${label} exceeds 4096 UTF-8 bytes.`);
+  if ([...value].some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
+    throw invalid(`${label} contains control characters.`);
+  }
+
+  const lower = value.toLowerCase();
+  if (lower.startsWith('cgr_')) {
+    throw invalid(
+      `${label} uses a cgr_ handle, which Context Brief does not support; use a canonical graph-indexed repository-relative path or exact cgs_<32 lowercase hex>.`,
+    );
+  }
+  if (lower.startsWith('cgs_')) {
+    if (!LOCAL_CONTEXT_BRIEF_SYMBOL_REF.test(value)) {
+      throw invalid(`${label} must use the exact cgs_<32 lowercase hex> form.`);
+    }
+    return value;
+  }
+
+  if (value.startsWith('/') || WINDOWS_DRIVE_PATH.test(value)) {
+    throw invalid(`${label} must be a repository-relative path, not an absolute or drive-qualified path.`);
+  }
+  if (value.includes('\\')) {
+    throw invalid(`${label} must use canonical POSIX separators; backslashes are not supported.`);
+  }
+  if (value.split('/').some(segment => segment === '' || segment === '.' || segment === '..')) {
+    throw invalid(`${label} must be canonical with no empty, ".", or ".." path segments.`);
+  }
+  return value;
 }
 
 function parseScope(value: unknown): ContextBriefScopeV1 {

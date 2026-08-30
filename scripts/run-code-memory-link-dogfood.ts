@@ -15,6 +15,7 @@ import {
   type CodeMemoryLinkDogfoodObservationSummaryV1,
 } from '../src/evaluation/code-memory-link-dogfood.js';
 import {parseContextBriefV1, renderContextBriefText} from '../src/context_brief/projector.js';
+import {isDeferredCodeAnchorIntentFilename} from '../src/memory/deferred_code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from '../src/memory/document.js';
 import {
   resolveManagedDevelopmentExecutableForSource,
@@ -222,19 +223,25 @@ const program = Effect.scoped(
       (yield* runExact(['graph', 'status', '--home', home, '--cwd', repository, '--json'])).stdout,
     ) as unknown;
     const graphStatusAfterStore = projectCodeMemoryLinkDogfoodGraphStatusV1(graphStatusAfterStoreRaw);
-
-    yield* runExact(['graph', 'index', '--home', home, '--cwd', repository, '--no-vectors', '--json'], 300_000);
     const beforeFinalizeBrief = yield* invokeBrief(anchorTask, [UNRELATED_FILE]);
     const beforeFinalizeProjection = summarizeDirectMemoryEvidence(beforeFinalizeBrief);
-    const finalizationRaw = JSON.parse(
-      (yield* runExact(['finalize-code-refs', '--home', home, '--uri', deferredMemoryUri])).stdout,
-    ) as unknown;
-    const finalization = projectDeferredAnchorFinalization(finalizationRaw);
+
+    yield* runExact(['graph', 'index', '--home', home, '--cwd', repository, '--no-vectors', '--json'], 300_000);
     const pendingIntentCountAfterFinalize = yield* countDeferredAnchorIntents(pendingRoot);
     const afterContent = (yield* runExact(['read', '--home', home, deferredMemoryUri])).stdout;
     const afterMemory = requireMemoryRecord(deferredMemoryUri, afterContent, 'deferred memory after finalization');
     const afterFinalizeBrief = yield* invokeBrief(anchorTask, [UNRELATED_FILE]);
     const afterFinalizeProjection = summarizeDirectMemoryEvidence(afterFinalizeBrief);
+    // The automatic graph-index hook is deliberately silent so it cannot mutate
+    // the public graph JSON contract. Derive the stable v2 evaluation projection
+    // from the isolated one-intent state transition instead of invoking the
+    // explicit repair command and accidentally testing the wrong product path.
+    const finalization = projectAutomaticDeferredAnchorTransition({
+      citationCountAfter: afterMemory.metadata.codeCitations?.length ?? 0,
+      citationCountBefore: beforeMemory.metadata.codeCitations?.length ?? 0,
+      pendingIntentCountAfter: pendingIntentCountAfterFinalize,
+      pendingIntentCountBefore: pendingIntentCountAfterStore,
+    });
     const deferredAnchorSummary: CodeMemoryLinkDeferredAnchorObservationSummaryV2 = {
       canonicalBodyPreserved: beforeMemory.body === afterMemory.body && afterMemory.body === deferredBody,
       canonicalIdentityPreserved:
@@ -247,6 +254,7 @@ const program = Effect.scoped(
       deferredReceiptGuidanceObserved:
         deferredWrite.stdout.includes('Stored memory without finalized code citations') &&
         deferredWrite.stdout.includes('private local outbox') &&
+        deferredWrite.stdout.includes('retries automatically after graph indexing') &&
         deferredWrite.stdout.includes('threadnote finalize-code-refs'),
       durableReceiptMilliseconds,
       falseCurrentCount: afterFinalizeProjection.falseCurrentCount,
@@ -442,9 +450,52 @@ const countDeferredAnchorIntents = Effect.fn('codeMemoryLinkDogfood.countDeferre
   root: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  const names = yield* fs.readDirectory(root).pipe(Effect.catch(() => Effect.succeed([] as readonly string[])));
-  return names.filter(name => /^(?:[a-f0-9]{64})(?:-tnca_[a-f0-9]+)?\.json$/u.test(name)).length;
+  const path = yield* Path.Path;
+  const names = yield* fs
+    .readDirectory(root, {recursive: true})
+    .pipe(Effect.catch(() => Effect.succeed([] as readonly string[])));
+  return countDeferredAnchorIntentNames(names.map(name => path.basename(name)));
 });
+
+export function countDeferredAnchorIntentNames(names: readonly string[]): number {
+  return names.filter(isDeferredCodeAnchorIntentFilename).length;
+}
+
+export function projectAutomaticDeferredAnchorTransition(input: {
+  readonly citationCountAfter: number;
+  readonly citationCountBefore: number;
+  readonly pendingIntentCountAfter: number;
+  readonly pendingIntentCountBefore: number;
+}): CodeMemoryLinkDeferredAnchorObservationSummaryV2['finalization'] {
+  const counts = [
+    input.citationCountAfter,
+    input.citationCountBefore,
+    input.pendingIntentCountAfter,
+    input.pendingIntentCountBefore,
+  ];
+  if (counts.some(count => !Number.isSafeInteger(count) || count < 0)) {
+    throw new ScriptError('Automatic deferred-anchor transition counts must be non-negative integers.');
+  }
+  const citationCount = Math.max(0, input.citationCountAfter - input.citationCountBefore);
+  const finalized =
+    input.pendingIntentCountBefore === 1 &&
+    input.pendingIntentCountAfter === 0 &&
+    input.citationCountBefore === 0 &&
+    input.citationCountAfter === 1;
+  const remainedPending =
+    input.pendingIntentCountBefore === 1 &&
+    input.pendingIntentCountAfter === 1 &&
+    input.citationCountBefore === 0 &&
+    input.citationCountAfter === 0;
+  return {
+    citationCount,
+    conflictCount: 0,
+    failedCount: finalized || remainedPending ? 0 : 1,
+    finalizedCount: finalized ? 1 : 0,
+    pendingCount: input.pendingIntentCountAfter,
+    scannedCount: input.pendingIntentCountBefore,
+  };
+}
 
 function requireMemoryRecord(uri: string, content: string, label: string): MemoryRecord {
   const record = parseMemoryDocument(uri, content);

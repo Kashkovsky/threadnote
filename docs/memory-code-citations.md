@@ -105,20 +105,26 @@ pending locators are private-only. A strict MCP failure returns a `memory-code-c
 `writeApplied: false` and `indexingStarted: false`; it never starts graph preparation itself.
 Inactive memories cannot own pending anchors, so they also use strict capture unless made active first.
 
-After explicit graph preparation, either call `remember_context` with the same content and the receipt's `memoryUri`
-as `replaceUri`, or finalize the private outbox directly:
+After explicit graph preparation, Threadnote opportunistically retries matching private intents in a small,
+repository/worktree-scoped batch. A successful `graph index` retries local intents, a successful `workset prepare`
+retries matching Workset intents, and the next repository-local Context Brief with `codeRefs` performs a bounded
+same-request retry before reading backlinks. These recovery paths never start or request indexing and never allow an
+automatic failure to fail graph publication or a fail-soft Context Brief.
+
+If an intent remains pending, call `remember_context` with the same content and the receipt's `memoryUri` as
+`replaceUri`, or run the explicit repair finalizer:
 
 ```sh
 threadnote graph index --no-vectors
 threadnote finalize-code-refs --uri threadnote://user/me/memories/durable/projects/payments/retry-contract.md
 ```
 
-The full MCP toolset also exposes `finalize_code_refs`. Finalization never starts indexing. It recaptures only from an
-already-ready exact-current graph, verifies the original repository/worktree identity, and uses a memory-content
-compare-and-swap before adding citations. The body, memory identity, creation/update timestamps, and lifecycle remain
-unchanged; `source_observed_at` records the later citation-capture time.
-Until that succeeds, Context Brief may still find the memory through ordinary task recall, but it cannot return a
-code-to-memory backlink or describe the pending locator as citation evidence.
+The full MCP toolset also exposes `finalize_code_refs`. Automatic and explicit finalization share the same engine: it
+recaptures only from an already-ready exact-current graph, verifies the original repository/worktree identity, and
+uses a memory-content compare-and-swap before adding citations. The body, memory identity, creation/update timestamps,
+and lifecycle remain unchanged; `source_observed_at` records the later citation-capture time. Until finalization
+succeeds, Context Brief may still find the memory through ordinary task recall, but it cannot return a code-to-memory
+backlink or describe the pending locator as citation evidence.
 
 Replacement without code references, archive, expiration, deletion, and an explicit uncited publish cancel the
 pending intent. A changed memory or repository identity becomes a bounded conflict rather than an overwrite. Deferred
@@ -201,16 +207,24 @@ threadnote context brief \
   --json
 ```
 
-After an agent discovers code, repeat `--code-ref` up to eight times with repository-relative files or `cgs_` symbols.
-The MCP `codeRefs` input accepts one string or an array with the same eight-occurrence limit. Context Brief retrieves
-memories whose immutable citations explicitly link to those anchors alongside the ordinary task-text recall lane. It
-does not infer semantic links from nearby code; unsupported `cgr_` or Workset anchors remain explicit coverage gaps.
+After an agent discovers code, repeat `--code-ref` up to eight times with a canonical graph-indexed
+repository-relative path (no `./`, `..`, empty segment, or backslash) or an exact local `cgs_<32 lowercase hex>`
+symbol. The MCP `codeRefs` input accepts one string or an array with the same eight-occurrence limit. Exact duplicates
+are deduplicated; noncanonical equivalents, malformed handles, absolute paths, and `cgr_` handles fail as actionable
+argument errors before graph or memory retrieval starts. Context Brief retrieves memories whose immutable citations
+explicitly link to those anchors alongside the ordinary task-text recall lane. It does not infer semantic links from
+nearby code. Combining otherwise valid `codeRefs` with a Workset scope remains an explicit unsupported coverage gap.
 Requests with nonempty `codeRefs` emit Context Brief v3; task-only requests retain the v2 output contract.
 The v3 projection summarizes direct-link coverage as `coverage.memory.codeAnchors` with `requested`, `resolved`,
 `matchedMemories`, and `complete`. A directly selected memory carries `selectionBasis: "code-citation"` and may expose
 bounded `codeRelations` entries with only the anchor ordinal, citation ID, file-or-symbol kind, and validation status.
 Coverage describes explicit citations in the authorized indexed corpus, not semantic completeness; raw selectors,
 repository IDs, paths, hashes, commits, and snapshots stay private.
+
+The combined MCP text-plus-structured response and CLI projection accept `budgetTokens` or `--budget-tokens` from 750
+through 1,500, defaulting to 1,250. Values below 750 are rejected before any evidence dependency runs. When graph
+cards are omitted and continuation becomes `rerun-required`, both MCP result channels retain the same exact
+`inspect-node` follow-up so an agent always has a bounded narrowing action instead of an unusable truncation notice.
 
 Inverse citation lookup has an independent bounded selector scan. When that scan cannot exhaust a selector prefix and
 the corresponding result lane remains unfilled, Context Brief adds `code-anchor-recall-truncated` to `gaps`. This is an

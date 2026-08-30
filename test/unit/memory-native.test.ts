@@ -169,6 +169,9 @@ describe('native memory workflow', () => {
         );
         expect(recall.output).toContain(uri);
         expect(recall.output).not.toContain('background service');
+        expect(recall.value.ranked[0]).toEqual(expect.objectContaining({category: 'memories', uri}));
+        expect(recall.value.totalRanked).toBeGreaterThanOrEqual(recall.value.ranked.length);
+        expect(recall.output).toContain(`1. ${recall.value.ranked[0]!.contextType} ·`);
 
         yield* runForget(config, uri, {});
         expect(

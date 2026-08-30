@@ -856,7 +856,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. For large repositories, explicit deferred citation policy can store personal memory first and finalize its private anchors after graph preparation; pending anchors are never evidence. Use recall and the graph together when a task needs historical rationale and current source evidence.',
+            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. For large repositories, store-now/anchor-later can persist personal memory before graph preparation; a later successful graph/Workset preparation or local code-linked Context Brief automatically retries a bounded matching batch. Pending anchors are never evidence, and explicit finalization remains the repair fallback. Use recall and the graph together when a task needs historical rationale and current source evidence.',
           },
         ],
       },

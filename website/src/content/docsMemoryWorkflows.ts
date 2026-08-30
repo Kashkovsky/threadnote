@@ -117,7 +117,7 @@ export const memoryWorkflowsDocsSection: DocsSection = {
         },
         {
           type: 'paragraph',
-          text: 'The receipt distinguishes memoryStored from citationsFinalized and returns the stable memory URI plus graph-preparation guidance. Use citationPolicy require-current or --require-current-code-refs when the write must fail unless evidence is exact-current; shared writes remain strict by default because pending locators are private-only. After preparing the graph, use finalize_code_refs in the full MCP toolset, run threadnote finalize-code-refs, or replace the stored memory with the same content, codeRefs, and receipt URI. Finalization never starts indexing and never exposes pending locators as citations or code-to-memory backlinks.',
+          text: 'The receipt distinguishes memoryStored from citationsFinalized and returns the stable memory URI plus graph-preparation guidance. Use citationPolicy require-current or --require-current-code-refs when the write must fail unless evidence is exact-current; shared writes remain strict by default because pending locators are private-only. After graph or Workset preparation, Threadnote automatically retries a small matching batch. The next repository-local Context Brief with codeRefs also retries before reading backlinks, closing a graph-ready/store race in the same request. Automatic and explicit finalization never start indexing and never expose pending locators as citations or code-to-memory backlinks. If an intent remains pending, use finalize_code_refs, run threadnote finalize-code-refs, or replace the stored memory with the same content, codeRefs, and receipt URI.',
         },
         {
           type: 'warning',
@@ -638,7 +638,7 @@ threadnote context brief \\
         },
         {
           type: 'paragraph',
-          text: 'Pass the JSON payload to context_brief. Optional codeRefs accepts one string or an array of at most eight code references: repository-relative files or cgs_ symbols. These anchors retrieve memories with explicit matching citations; task text still supplies the ordinary bounded recall lane. The compiler uses a small typed request rather than exposing its internal plan. It combines ranked graph cards and contracts with relevant durable decisions, active handoffs, graph and memory coverage, fresh, stale, or unknown memory status, conflicts, gaps, and stable recommended follow-ups. Repository evidence and memory excerpts remain separate untrusted evidence classes.',
+          text: 'Pass the JSON payload to context_brief. Optional codeRefs accepts one string or an array of at most eight exact local anchors: a canonical graph-indexed repository-relative path with no ./, .., empty segment, or backslash, or an exact cgs_<32 lowercase hex> symbol. Exact duplicates are deduplicated. Noncanonical equivalents, absolute paths, malformed handles, and cgr_ handles fail as actionable argument errors before graph or memory retrieval starts. Valid anchors retrieve memories with explicit matching citations; task text still supplies the ordinary bounded recall lane. The compiler uses a small typed request rather than exposing its internal plan. It combines ranked graph cards and contracts with relevant durable decisions, active handoffs, graph and memory coverage, fresh, stale, or unknown memory status, conflicts, gaps, and stable recommended follow-ups. Repository evidence and memory excerpts remain separate untrusted evidence classes.',
         },
         {
           type: 'paragraph',
@@ -666,11 +666,11 @@ threadnote context brief \\
         },
         {
           type: 'paragraph',
-          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. MCP structuredContent and CLI --json retain the full v2/v3 audit projection; MCP content and the plain CLI emit parseable context-brief-agent-view v1 JSON with the decision-relevant evidence, authority/trust, citation actions, gaps, issues, follow-ups, and continuation. This supports clients that expose only one MCP result channel. The combined text-plus-structured UTF-8 estimate still defaults to 1,250 tokens and accepts at most 1,500. A legal but tiny budget fails when mandatory scope, trust, and coverage metadata cannot fit. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
+          text: 'Context Brief validates at most eight citations per memory, 96 per brief, and 32 cited repositories with concurrency capped at four. Work beyond those bounds becomes explicit unknown coverage. MCP structuredContent and CLI --json retain the full v2/v3 audit projection; MCP content and the plain CLI emit parseable context-brief-agent-view v1 JSON with the decision-relevant evidence, authority/trust, citation actions, gaps, issues, follow-ups, and continuation. This supports clients that expose only one MCP result channel. The combined text-plus-structured UTF-8 estimate defaults to 1,250 tokens and accepts 750 through 1,500. Values below 750 fail before graph or memory retrieval starts. Its output receipt reports returned and omitted items. When the workset graph has more evidence, the brief can return a cgwc_ continuation; when the brief budget omitted the corresponding cards, it tells the caller to rerun instead of exposing a misleading cursor and retains the same exact inspect-node follow-up in both MCP channels. It never mutates repository source or creates, approves, edits, or publishes canonical memory. Workset mode may register cgr_ handles and persist the same disposable local result-set state used for continuation.',
         },
         {
           type: 'warning',
-          text: 'Context Brief does not automatically run workset path, reverse impact, or topology. Its graph cards and contracts come from the bounded V2 query projection and retained card relationships, including an exact Protobuf bridge relationship when that query projected one; it does not traverse beyond those returned cards. Context Brief v3 code-reference backlinks use repository-local file or cgs_ anchors; requests combining codeRefs with a Workset scope and cgr_ anchors remain explicit unsupported gaps in this milestone. Call inspect_code_graph path, impact, or topology separately when explicit bridge traversal is consequential to the task.',
+          text: 'Context Brief does not automatically run workset path, reverse impact, or topology. Its graph cards and contracts come from the bounded V2 query projection and retained card relationships, including an exact Protobuf bridge relationship when that query projected one; it does not traverse beyond those returned cards. Context Brief v3 code-reference backlinks accept only canonical repository-local paths or exact local cgs_ anchors; cgr_ is rejected as an unsupported argument. Requests combining otherwise valid codeRefs with a Workset scope remain an explicit unsupported coverage gap in this milestone. Call inspect_code_graph path, impact, or topology separately when explicit bridge traversal is consequential to the task.',
         },
         {
           type: 'note',
@@ -732,7 +732,7 @@ threadnote context brief \\
             ],
             [
               'Response is truncated',
-              'Follow continuation.cursor, increase budgetTokens only up to 1,500, or ask a narrower question. Coverage and trust remain present even when evidence cards are omitted.',
+              'Follow continuation.cursor when present. If continuation says rerun-required because cards were omitted, use the retained exact inspect-node follow-up, or ask a narrower question. You may increase budgetTokens only up to 1,500. Coverage and trust remain present even when evidence cards are omitted.',
             ],
             [
               'Cited code is relocated',
@@ -752,7 +752,7 @@ threadnote context brief \\
             ],
             [
               'Budget is too small',
-              'Increase --budget-tokens or budgetTokens until the mandatory generation/scope, trust, coverage, and omission receipt fits. Threadnote errors instead of silently dropping those fields.',
+              'Choose --budget-tokens or budgetTokens from 750 through 1,500. Lower values are rejected before evidence retrieval so Threadnote never spends graph or memory work on a response envelope it cannot guarantee.',
             ],
             [
               'Cursor is expired, unknown, or incompatible',

@@ -18,10 +18,12 @@ write. For active personal memory with explicit code references, a retryable gra
 and queues a private pending anchor by default. Shared and inactive writes remain strict. Use MCP
 `citationPolicy: "require-current"` or CLI `--require-current-code-refs` only when the memory must fail before writing.
 
-Pending locators are not citations or graph-to-memory backlinks and cannot be shared. Prepare the graph explicitly,
-then call `finalize_code_refs`, run `threadnote finalize-code-refs`, or replace the stored memory using the receipt URI.
-These anchors power the code-brief round trip: future agents can move from memory back to verified current code and
-from graph evidence to the memories that cite it. Prefer a few consequential anchors over broad file lists.
+Pending locators are not citations or graph-to-memory backlinks and cannot be shared. Prepare the graph explicitly;
+Threadnote then retries matching intents automatically after graph/Workset preparation and during the next local
+code-linked Context Brief. If an intent remains pending, call `finalize_code_refs`, run
+`threadnote finalize-code-refs`, or replace the stored memory using the receipt URI. These anchors power the code-brief
+round trip: future agents can move from memory back to verified current code and from graph evidence to the memories
+that cite it. Prefer a few consequential anchors over broad file lists.
 
 When a memory moves during replacement, publication, or unpublication, old `threadnote://` pointers may resolve through
 a private identity-fenced relocation receipt. Follow the `canonicalUri` returned by `read_context`; a relocation is

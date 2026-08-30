@@ -467,6 +467,8 @@ function actionProgressLabel(action: 'archive' | 'forget' | 'publish'): string {
 
 function tabTitle(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return 'Context';
     case 'doctor':
       return 'Health';
     case 'graph':
@@ -486,6 +488,8 @@ function tabTitle(name: PanelName): string {
 
 function panelIcon(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return '◎';
     case 'doctor':
       return '✓';
     case 'graph':
@@ -505,6 +509,8 @@ function panelIcon(name: PanelName): string {
 
 function panelNavDescription(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return 'Briefs and recall';
     case 'doctor':
       return 'Runtime diagnostics';
     case 'graph':
@@ -524,6 +530,8 @@ function panelNavDescription(name: PanelName): string {
 
 function panelDescription(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return 'Compose Context Briefs and read ranked memory';
     case 'doctor':
       return 'Diagnostics and runtime repair';
     case 'graph':

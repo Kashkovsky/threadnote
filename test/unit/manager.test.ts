@@ -528,7 +528,11 @@ describe('manager catalog', () => {
     vi.mocked(memory.runForget).mockReset();
     vi.mocked(memory.runRecall)
       .mockReset()
-      .mockImplementation((_config, options) => Console.log(`recall result: ${options.query}`));
+      .mockImplementation((_config, options) =>
+        Console.log(`recall result: ${options.query}`).pipe(
+          Effect.as({queryExpansions: [], ranked: [], totalRanked: 0, warnings: []}),
+        ),
+      );
   });
 
   it('refuses to start while native graph repair or maintenance is active', async () => {

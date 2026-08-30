@@ -5,6 +5,8 @@ import {describe, expect, it} from 'vitest';
 import {
   codeGraphStatusHasIndexingActivity,
   codeMemoryLinkDogfoodEnvironment,
+  countDeferredAnchorIntentNames,
+  projectAutomaticDeferredAnchorTransition,
   projectDeferredAnchorFinalization,
   projectCodeMemoryLinkDogfoodGraphStatusV1,
   verifyDogfoodRunnerCheckout,
@@ -119,6 +121,137 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
         version: 1,
       }),
     ).toThrow(/aggregate counts/);
+  });
+
+  it('counts current routed and legacy deferred-anchor intent filenames through the production classifier', () => {
+    const legacy = `${'a'.repeat(64)}-tnca_${'b'.repeat(32)}.json`;
+    const routed =
+      `${'c'.repeat(32)}-tnca_${'d'.repeat(32)}-r${'e'.repeat(32)}` + `-w${'f'.repeat(32)}-q-b${'0'.repeat(32)}.json`;
+
+    for (const name of [legacy, routed]) {
+      const pendingIntentCountBefore = countDeferredAnchorIntentNames([name]);
+      const pendingIntentCountAfter = countDeferredAnchorIntentNames([]);
+      expect(pendingIntentCountBefore).toBe(1);
+      expect(pendingIntentCountAfter).toBe(0);
+      expect(
+        projectAutomaticDeferredAnchorTransition({
+          citationCountAfter: 1,
+          citationCountBefore: 0,
+          pendingIntentCountAfter,
+          pendingIntentCountBefore,
+        }),
+      ).toMatchObject({citationCount: 1, failedCount: 0, finalizedCount: 1, pendingCount: 0, scannedCount: 1});
+    }
+    expect(
+      countDeferredAnchorIntentNames([
+        legacy,
+        routed,
+        '.0123456789abcdef01234567.tmp',
+        `${'a'.repeat(32)}-tnca_${'b'.repeat(32)}-rnot-a-route.json`,
+        'unrelated.json',
+      ]),
+    ).toBe(2);
+  });
+
+  it.each([
+    {
+      expected: {
+        citationCount: 1,
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 1,
+        pendingCount: 0,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 1,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 0,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'one pending intent becomes one citation',
+    },
+    {
+      expected: {
+        citationCount: 0,
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 0,
+        pendingCount: 1,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 0,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 1,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'a contended or unready intent remains pending',
+    },
+    {
+      expected: {
+        citationCount: 0,
+        conflictCount: 0,
+        failedCount: 1,
+        finalizedCount: 0,
+        pendingCount: 0,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 0,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 0,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'an intent disappears without adding a citation',
+    },
+    {
+      expected: {
+        citationCount: 1,
+        conflictCount: 0,
+        failedCount: 1,
+        finalizedCount: 0,
+        pendingCount: 1,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 1,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 1,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'a citation appears while its intent remains',
+    },
+    {
+      expected: {
+        citationCount: 0,
+        conflictCount: 0,
+        failedCount: 1,
+        finalizedCount: 0,
+        pendingCount: 0,
+        scannedCount: 0,
+      },
+      input: {
+        citationCountAfter: 0,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 0,
+        pendingIntentCountBefore: 0,
+      },
+      label: 'the isolated staged intent was never observed',
+    },
+  ])('projects the automatic transition when $label', ({expected, input}) => {
+    expect(projectAutomaticDeferredAnchorTransition(input)).toEqual(expected);
+  });
+
+  it('rejects invalid automatic transition counters', () => {
+    expect(() =>
+      projectAutomaticDeferredAnchorTransition({
+        citationCountAfter: 1,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: -1,
+        pendingIntentCountBefore: 1,
+      }),
+    ).toThrow(/non-negative integers/);
   });
 
   effectIt.effect('accepts the exact clean checkout that supplied the reviewed runner', () =>

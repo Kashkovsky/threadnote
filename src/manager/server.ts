@@ -83,6 +83,7 @@ import {collectDoctorChecks, runRepair, runStart} from '../lifecycle.js';
 import {runSeed, runSeedSkills} from '../seeding.js';
 import {readManagerRuntimeState} from './state.js';
 import {handleManagerProcessRequest} from './processes.js';
+import {handleManagerContextRequest} from './context.js';
 import {emptyManagerTree, readManagerTreeRoot} from './tree.js';
 import {
   handleManagerWorksetRequest,
@@ -559,6 +560,16 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   });
   if (processResponse) {
     writeJson(response, processResponse.status, processResponse.body);
+    return;
+  }
+  const contextResponse = yield* handleManagerContextRequest({
+    body: request.body,
+    config: context.config,
+    method: request.method,
+    url,
+  });
+  if (contextResponse) {
+    writeJson(response, contextResponse.status, contextResponse.body);
     return;
   }
   if (

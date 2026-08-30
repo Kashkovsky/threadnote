@@ -130,6 +130,10 @@ import {
 } from '../code_graph/workset_evidence.js';
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {
+  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+} from '../context_brief/types.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
@@ -1419,12 +1423,23 @@ const contextBrief = Command.make(
     budgetTokens: optional(
       describeFlag(
         integerFlag('budget-tokens').pipe(
-          Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 1_500}))),
+          Flag.withSchema(
+            Schema.Int.check(
+              Schema.isBetween({
+                minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+                maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+              }),
+            ),
+          ),
         ),
-        'Maximum estimated tokens for the combined structured and text response',
+        `Maximum estimated tokens for the combined structured and text response (${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS}-${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS})`,
       ),
     ),
-    codeRefs: repeatedString('code-ref', 'File/cgs_ backlink; repeat up to eight times', 8),
+    codeRefs: repeatedString(
+      'code-ref',
+      'Canonical graph-indexed repository-relative path (no ./ or ..) or exact cgs_<32 lowercase hex>; cgr_ unsupported; repeat up to eight times',
+      8,
+    ),
     cwd: optionalString('cwd', 'Absolute repository path; defaults to the current directory'),
     json: boolean('json', 'Print the structured Context Brief projection'),
     mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),

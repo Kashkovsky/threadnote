@@ -1,6 +1,6 @@
 import {Cause, Clock, Crypto, Effect, Fiber, FileSystem, Path, Scope} from 'effect';
 import {isMap, isScalar, isSeq, parseDocument, type YAMLMap, type YAMLSeq} from 'yaml';
-import {compileContextBrief, type ContextBriefMode} from '../context_brief/index.js';
+import * as ContextBrief from '../context_brief/index.js';
 import {
   findCodeGraphWorksetPath,
   inspectCodeGraphWorksetTopology,
@@ -814,8 +814,14 @@ function runManagerWorksetTopology(config: RuntimeConfig, body: Record<string, u
 function runManagerWorksetContextBrief(config: RuntimeConfig, body: Record<string, unknown>) {
   return Effect.gen(function* () {
     const workset = yield* knownWorksetFromBody(config, body);
-    return yield* compileContextBrief(config, {
-      budgetTokens: optionalIntegerValue(body.budgetTokens, 'budgetTokens', 1, 1_500) ?? 1_250,
+    return yield* ContextBrief.compileContextBrief(config, {
+      budgetTokens:
+        optionalIntegerValue(
+          body.budgetTokens,
+          'budgetTokens',
+          ContextBrief.CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+          ContextBrief.CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+        ) ?? ContextBrief.CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
       mode: contextBriefMode(body.mode),
       scope: {kind: 'workset', name: workset},
       task: requiredText(body.task, 'task', 4_096),
@@ -1737,24 +1743,20 @@ function projectSeedPatterns(value: unknown): readonly string[] {
   }
 }
 
-function contextBriefMode(value: unknown): ContextBriefMode {
+function contextBriefMode(value: unknown): ContextBrief.ContextBriefMode {
   if (value === undefined || value === 'brief') return 'brief';
   if (value === 'locate' || value === 'explain' || value === 'trace' || value === 'impact') return value;
   throw new ManagerWorksetApiError('invalid-input', 'mode must be brief, locate, explain, trace, or impact.', 400);
 }
-
 function validateExpectedRevision(value: string): void {
   if (!SHA256.test(value)) throw new ManagerWorksetApiError('invalid-input', 'expectedRevision is invalid.', 400);
 }
-
 function findWorksetNodeIndex(sequence: YAMLSeq, name: string): number {
   return findWorksetNodeIndexes(sequence, name)[0] ?? -1;
 }
-
 function findWorksetNodeIndexes(sequence: YAMLSeq, name: string): readonly number[] {
   return findNamedMapIndexes(sequence, name);
 }
-
 function findNamedMapIndexes(sequence: YAMLSeq, name: string): readonly number[] {
   const target = name.toLowerCase();
   return sequence.items.flatMap((item, index) => {

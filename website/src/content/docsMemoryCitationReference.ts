@@ -48,7 +48,15 @@ export const contextBriefMcpTool = {
   toolset: 'core',
   summary:
     'Compile a token-bounded task brief from current graph evidence, durable decisions, active handoffs, freshness signals, and optional explicit code-citation backlinks.',
-  keyInputs: ['task', 'callerCwd', 'codeRefs (max 8 file/cgs_)', 'workset', 'project', 'mode', 'budgetTokens'],
+  keyInputs: [
+    'task',
+    'callerCwd',
+    'codeRefs (max 8 canonical repository-relative path or exact cgs_<32 hex>; no cgr_)',
+    'workset',
+    'project',
+    'mode',
+    'budgetTokens (750-1500)',
+  ],
 } satisfies McpToolReference;
 
 export const reviewSessionContextMcpTool = {

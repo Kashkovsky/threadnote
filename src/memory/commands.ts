@@ -101,9 +101,11 @@ import {loadRecallExactMatches} from '../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
   lexicalIndexUnavailableWarning,
+  mergeRecallOperationalWarnings,
   renderRecallOperationalWarning,
   type RecallOperationalWarning,
 } from '../recall/warning.js';
+import type {RecallConfidence} from '../recall/rank.js';
 import type {
   ArchiveOptions,
   CompactOptions,
@@ -170,6 +172,15 @@ export {
 } from './migrations.js';
 
 export {runEnrichMemories} from './enrichment.js';
+
+/** Stable ranked recall data for product surfaces that should not parse CLI rendering. */
+export interface RecallResult {
+  readonly confidence?: RecallConfidence;
+  readonly queryExpansions: readonly string[];
+  readonly ranked: readonly RecallHit[];
+  readonly totalRanked: number;
+  readonly warnings: readonly RecallOperationalWarning[];
+}
 
 export function parseMemoryKind(value: string): MemoryKind {
   if (['durable', 'handoff', 'incident', 'preference', 'smoke'].includes(value)) {
@@ -340,7 +351,10 @@ function deferredCodeAnchorStoredMessage(memoryUri: string, request: DeferredCod
     `Stored memory without finalized code citations: ${memoryUri}`,
     `${request.codeRefs.length} code reference(s) are pending in the private local outbox.`,
     prepare,
-    'Then run `threadnote finalize-code-refs`.',
+    preparation.target === 'callerCwd'
+      ? 'Threadnote retries automatically after graph indexing and on the next code-linked Context Brief.'
+      : 'Threadnote retries automatically after Workset preparation.',
+    'If the intent remains pending, run `threadnote finalize-code-refs` as a repair fallback.',
   ].join(' ');
 }
 
@@ -467,6 +481,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
         project,
       });
   const exactMatches = exactLookup.matches;
+  let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
   const environment = (yield* SystemInfo).environment();
   const effectAi = dryRun ? undefined : yield* resolveEffectAiConfiguration(config, environment);
   let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold));
@@ -537,6 +552,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           workspaceScope: workspaceComponent?.scope,
         });
         semanticResult = Option.some(prepared.semanticResult);
+        operationalWarnings = mergeRecallOperationalWarnings(operationalWarnings, prepared.operationalWarnings);
         yield* surfaceOperationalWarnings(prepared.operationalWarnings);
         yield* surfaceSemanticWarning(prepared.semanticResult);
         return prepared;
@@ -645,6 +661,13 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     yield* Console.log(`\n${referencedSection}`);
   }
   yield* printRecallHygieneNudges(config, semanticSection ?? '');
+  return {
+    ...(recallSections.confidence === undefined ? {} : {confidence: recallSections.confidence}),
+    queryExpansions: expansionQueries,
+    ranked: recallSections.ranked.slice(0, recallLimit),
+    totalRanked: recallSections.ranked.length,
+    warnings: operationalWarnings,
+  } satisfies RecallResult;
 });
 
 const MAX_REFERENCED_CONTEXT = 5;

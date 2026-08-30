@@ -19,7 +19,10 @@ or visual and binary evidence; use it if the scope expands.
 Named Worksets read only their published ready generation. Run `threadnote workset prepare <name>` explicitly when a
 member needs a ready or fresher snapshot. Treat bounded results as evidence with provenance, not proof of absence.
 
-For the code-brief workflow, use graph paths and stable IDs as bidirectional anchors: pass them to
-`context_brief.codeRefs` to find memories attached to current code, and use memory citations to return to the current
-graph before making relationship claims. Carry the most consequential anchors into the final handoff.
+For the code-brief workflow, use canonical graph-indexed POSIX repository-relative paths or exact lowercase
+`cgs_<32 hex>` IDs as bidirectional anchors: pass them to `context_brief.codeRefs` to find memories attached to current
+code, and use memory citations to return to the current graph before making relationship claims. `cgr_` remains valid
+for `inspect_code_graph` (including Worksets) but is deliberately rejected by Context Brief. If a brief is truncated,
+follow its retained selector to make the next query narrower. Carry the most consequential anchors into the final
+handoff.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

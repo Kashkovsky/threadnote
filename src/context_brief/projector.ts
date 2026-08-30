@@ -9,6 +9,7 @@ import {
   CONTEXT_BRIEF_LEGACY_PROJECTOR_VERSION,
   CONTEXT_BRIEF_LEGACY_VERSION,
   CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS,
   CONTEXT_BRIEF_PROJECTOR_VERSION,
   CONTEXT_BRIEF_VERSION,
@@ -162,17 +163,23 @@ export function projectContextBrief(
 ): ProjectedContextBriefV1 {
   const maximumBytes = projectionMaximumBytes(maximumEstimatedTokens);
   const items = projectionItems(logical);
+  const requiredRecovery = requiredGraphRecoveryItem(logical, items);
+  const optionalItems = requiredRecovery === undefined ? items : items.filter(item => item !== requiredRecovery);
+  const selectItems = (count: number): readonly ProjectionItem[] => [
+    ...(requiredRecovery === undefined ? [] : [requiredRecovery]),
+    ...optionalItems.slice(0, count),
+  ];
   let selectedCount: number | undefined;
   let minimumBytes = Number.POSITIVE_INFINITY;
-  for (let count = 0; count <= items.length; count += 1) {
-    const structuredContent = renderProjection(logical, items.slice(0, count));
+  for (let count = 0; count <= optionalItems.length; count += 1) {
+    const structuredContent = renderProjection(logical, selectItems(count));
     const text = renderContextBriefText(structuredContent);
     const measurement = measureAgentToolResponse({structuredContent, text});
     minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
     if (measurement.totalBytes <= maximumBytes) selectedCount = count;
   }
   if (selectedCount === undefined) throw new AgentResponseBudgetTooSmallError(maximumBytes, minimumBytes);
-  const structuredContent = parseContextBriefV1(renderProjection(logical, items.slice(0, selectedCount)));
+  const structuredContent = parseContextBriefV1(renderProjection(logical, selectItems(selectedCount)));
   const text = renderContextBriefText(structuredContent);
   const measurement = measureAgentToolResponse({structuredContent, text});
   return {maximumBytes, measurement, structuredContent, text};
@@ -789,13 +796,31 @@ function projectionItems(logical: ContextBriefLogicalResultV1): readonly Project
   );
 }
 
+/**
+ * A projected graph page that drops cards cannot expose its upstream cursor: doing so would skip
+ * the omitted part of the current page. Reserve the planner's first exact card selector instead,
+ * so every successful rerun-required response gives both MCP channels one bounded next action.
+ */
+function requiredGraphRecoveryItem(
+  logical: ContextBriefLogicalResultV1,
+  items: readonly ProjectionItem[],
+): ProjectionItem | undefined {
+  if (logical.graph.cards.length === 0) return undefined;
+  const cardRefs = new Set(logical.graph.cards.map(card => card.ref));
+  const followUp = [...logical.recommendedFollowUps]
+    .filter(candidate => candidate.operation === 'inspect-node' && cardRefs.has(candidate.ref))
+    .sort((left, right) => left.rank - right.rank || compareText(left.id, right.id))[0];
+  if (followUp === undefined) return undefined;
+  return items.find(item => item.lane === 'follow-up' && item.id === followUp.id);
+}
+
 function lanePriority(lane: ProjectionLane): number {
   switch (lane) {
-    case 'graph-card':
-      return 0;
     case 'handoff':
-      return 1;
+      return 0;
     case 'durable-decision':
+      return 1;
+    case 'graph-card':
       return 2;
     case 'graph-contract':
       return 3;
@@ -865,8 +890,14 @@ function utf8Prefix(value: string, maximumBytes: number): string {
 }
 
 function projectionMaximumBytes(tokens: number): number {
-  if (!Number.isSafeInteger(tokens) || tokens < 1 || tokens > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS) {
-    throw invalid(`budget must be an integer from 1 to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}`);
+  if (
+    !Number.isSafeInteger(tokens) ||
+    tokens < CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS ||
+    tokens > CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS
+  ) {
+    throw invalid(
+      `budget must be an integer from ${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS} to ${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS}`,
+    );
   }
   return tokens * AGENT_RESPONSE_ESTIMATED_BYTES_PER_TOKEN;
 }

@@ -5,7 +5,9 @@ import {describe, expect} from 'vitest';
 import type {MemoryRecord} from '../../src/memory/document.js';
 import {
   classifyDeferredCodeAnchorEligibility,
+  deferredCodeAnchorIntentMatchesFinalizationRoute,
   deferredCodeAnchorFinalizationVerified,
+  type DeferredCodeAnchorFinalizationRoute,
   type DeferredCodeAnchorIntentV1,
   type DeferredMemoryObservation,
 } from '../../src/memory/deferred_code_anchor.js';
@@ -81,13 +83,74 @@ describe('deferred code-anchor state model', () => {
       ).toBe(false);
     }),
   );
+
+  effectIt.effect.prop(
+    'repository routes admit the exact repository/worktree identity regardless of preparation hint',
+    {
+      callerPreparation: fc.boolean(),
+      repositoryMatches: fc.boolean(),
+      worktreeMatches: fc.boolean(),
+    },
+    input =>
+      Effect.sync(() => {
+        const intent = deferredIntent({preparation: input.callerPreparation ? 'caller' : 'workset'});
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: '/other-checkout-spelling-is-not-authority',
+          kind: 'repository',
+          repositoryId: input.repositoryMatches ? intent.repositoryId : '3'.repeat(64),
+          worktreeId: input.worktreeMatches ? intent.worktreeId : '4'.repeat(64),
+        };
+        expect(deferredCodeAnchorIntentMatchesFinalizationRoute(intent, route)).toBe(
+          input.repositoryMatches && input.worktreeMatches,
+        );
+      }),
+  );
+
+  effectIt.effect.prop(
+    'workset routes admit the exact prepared workset or a qualified cross-repository reference',
+    {
+      hasQualifiedRef: fc.boolean(),
+      nameMatches: fc.boolean(),
+      worksetPreparation: fc.boolean(),
+    },
+    input =>
+      Effect.sync(() => {
+        const intent = deferredIntent({
+          codeRefs: input.hasQualifiedRef ? [`cgr_${'a'.repeat(40)}`] : ['src/index.ts'],
+          preparation: input.worksetPreparation ? 'workset' : 'caller',
+        });
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          kind: 'workset',
+          name: input.nameMatches ? 'platform' : 'other',
+        };
+        expect(deferredCodeAnchorIntentMatchesFinalizationRoute(intent, route)).toBe(
+          input.hasQualifiedRef || (input.worksetPreparation && input.nameMatches),
+        );
+      }),
+  );
 });
 
-function deferredIntent(): DeferredCodeAnchorIntentV1 {
+function deferredIntent(
+  options: {readonly codeRefs?: readonly string[]; readonly preparation?: 'caller' | 'workset'} = {},
+): DeferredCodeAnchorIntentV1 {
+  const preparation =
+    options.preparation === 'workset'
+      ? {
+          action: 'prepare-workset' as const,
+          arguments: ['platform'] as const,
+          command: 'threadnote workset prepare' as const,
+          target: 'workset' as const,
+        }
+      : {
+          action: 'index-current-graph' as const,
+          arguments: [] as const,
+          command: 'threadnote graph index --no-vectors' as const,
+          target: 'callerCwd' as const,
+        };
   return {
     authorization: 'explicit-code-refs',
     callerCwd: '/repo',
-    codeRefs: ['src/index.ts'],
+    codeRefs: options.codeRefs ?? ['src/index.ts'],
     createdAt: '2026-08-29T00:00:00.000Z',
     expectedMemoryHash: 'expected-hash',
     intentId: 'tnca_test',
@@ -97,12 +160,7 @@ function deferredIntent(): DeferredCodeAnchorIntentV1 {
       code: 'exact-current-evidence-unavailable',
       indexingStarted: false,
       observedGraph: {freshness: 'stale', readySnapshot: 'available', stale: true},
-      preparation: {
-        action: 'index-current-graph',
-        arguments: [],
-        command: 'threadnote graph index --no-vectors',
-        target: 'callerCwd',
-      },
+      preparation,
       recovery: 'prepare-current-graph',
       retryCondition: 'after-current-graph-ready',
       retryable: true,

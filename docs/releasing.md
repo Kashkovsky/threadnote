@@ -200,9 +200,10 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    task-only memory recall, file and symbol backlinks, multi-anchor retrieval, no-backlink and stale-graph abstention,
    and bounded output. The same artifact must attest the deferred-anchor lifecycle: a strict cited write rejects
    atomically without starting indexing; the default private write returns task-recallable durable memory within
-   10 seconds while preserving the stale graph; its private intent is not exposed as a backlink after an explicit graph refresh; a
-   separate finalizer process adds exactly one citation; and the resulting exact backlink appears without changing the
-   memory body, identity, lifecycle, or creation/update timestamps. The private intent count must move from one to zero. Its canonical
+   10 seconds while preserving the stale graph; its private intent is not exposed as a backlink before graph preparation;
+   an explicit graph refresh automatically adds exactly one citation without a separate finalizer command; and the
+   resulting exact backlink appears in the first post-refresh code-linked Context Brief without changing the memory body,
+   identity, lifecycle, or creation/update timestamps. The private intent count must move from one to zero. Its canonical
    evidence hash must be present in the separate source-reviewed practical-dogfood allowlist. Generate it only with the
    isolated-home, exact-installed runner from that same canonical clean checkout:
 

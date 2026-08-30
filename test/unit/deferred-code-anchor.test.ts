@@ -2,18 +2,29 @@ import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
+import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {runCommandEffect} from '../../src/effect/command.js';
+import {sha256Hex} from '../../src/effect/digest.js';
 import {ResourceIoFailed, ResourceStore} from '../../src/effect/resource-store.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
+  discardDeferredCodeAnchorIntent,
   discardOtherDeferredCodeAnchorIntents,
-  withDeferredCodeAnchorMutationLocks,
   deferredCodeAnchorDoctorCheck,
   findUrisWithDeferredCodeAnchorIntents,
   finalizeDeferredCodeAnchors,
+  finalizeDeferredCodeAnchorsForRoute,
+  hasDeferredCodeAnchorIntent,
   stageDeferredCodeAnchorIntent,
   type DeferredCodeAnchorWriteRequest,
+  type DeferredCodeAnchorFinalizationRoute,
+  withDeferredCodeAnchorMutationLocks,
 } from '../../src/memory/deferred_code_anchor.js';
+import {
+  ensurePrivateDeferredCodeAnchorDirectory,
+  quarantinePrivateDeferredCodeAnchorRouteEntry,
+  writePrivateDeferredCodeAnchorFile,
+} from '../../src/memory/deferred_code_anchor_private_fs.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -75,8 +86,6 @@ describe('deferred code-anchor outbox', () => {
     Effect.scoped(
       Effect.gen(function* () {
         const fixture = yield* makeFixture();
-        yield* fixture.fs.makeDirectory(fixture.outbox, {recursive: true, mode: 0o777});
-        yield* fixture.fs.chmod(fixture.outbox, 0o777);
         const first = yield* stageDeferredCodeAnchorIntent(fixture.config, {
           memoryContent: memoryContent(fixture.metadata, 'First revision.'),
           memoryMetadata: fixture.metadata,
@@ -91,8 +100,8 @@ describe('deferred code-anchor outbox', () => {
         });
 
         expect(first.intentId).not.toBe(second.intentId);
-        const stagedNames = (yield* fixture.fs.readDirectory(fixture.outbox)).filter(name => name.endsWith('.json'));
-        expect(stagedNames).toHaveLength(2);
+        const stagedPaths = yield* fixtureIntentPaths(fixture);
+        expect(stagedPaths).toHaveLength(2);
         expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toEqual({
           detail: '2 private code-anchor intent(s) are pending finalization',
           name: 'deferred code anchors',
@@ -100,8 +109,8 @@ describe('deferred code-anchor outbox', () => {
         });
         if (process.platform !== 'win32') {
           expect((yield* fixture.fs.stat(fixture.outbox)).mode & 0o777).toBe(0o700);
-          for (const name of stagedNames) {
-            expect((yield* fixture.fs.stat(fixture.path.join(fixture.outbox, name))).mode & 0o777).toBe(0o600);
+          for (const intentPath of stagedPaths) {
+            expect((yield* fixture.fs.stat(intentPath)).mode & 0o777).toBe(0o600);
           }
         }
         expect(
@@ -112,11 +121,775 @@ describe('deferred code-anchor outbox', () => {
         ).toEqual(new Set([MEMORY_URI]));
 
         yield* discardOtherDeferredCodeAnchorIntents(fixture.config, MEMORY_URI, second.intentId);
-        const remaining = (yield* fixture.fs.readDirectory(fixture.outbox)).filter(name => name.endsWith('.json'));
+        const remaining = yield* fixtureIntentPaths(fixture);
         expect(remaining).toHaveLength(1);
-        expect(yield* fixture.fs.readFileString(fixture.path.join(fixture.outbox, remaining[0]!))).toContain(
-          second.intentId,
+        expect(yield* fixture.fs.readFileString(remaining[0]!)).toContain(second.intentId);
+
+        const shardedPath = remaining[0]!;
+        const shardedName = fixture.path.basename(shardedPath);
+        const legacyDuplicateName = `${yield* sha256Hex(MEMORY_URI)}-${second.intentId}.json`;
+        yield* fixture.fs.writeFileString(
+          fixture.path.join(fixture.outbox, legacyDuplicateName),
+          yield* fixture.fs.readFileString(shardedPath),
+          {mode: 0o600},
         );
+        yield* discardOtherDeferredCodeAnchorIntents(fixture.config, MEMORY_URI, second.intentId);
+        const deduplicated = yield* fixtureIntentPaths(fixture);
+        expect(deduplicated.map(candidate => fixture.path.basename(candidate))).toEqual([shardedName]);
+        expect(shardedName).toMatch(/-b[a-f0-9]{32}\.json$/u);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('fails closed instead of repairing an existing non-private outbox through a path', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* fixture.fs.makeDirectory(fixture.outbox, {recursive: true, mode: 0o700});
+        if (process.platform === 'win32') return;
+        yield* fixture.fs.chmod(fixture.outbox, 0o777);
+
+        const failure = yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Non-private root must remain untouched.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/private-root.ts']),
+        }).pipe(Effect.flip);
+
+        expect(String(failure)).toContain('private directory');
+        expect((yield* fixture.fs.stat(fixture.outbox)).mode & 0o777).toBe(0o777);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('does not chmod an outside target after an AlreadyExists directory race', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        const fixture = yield* makeFixture();
+        const parent = fixture.path.join(fixture.config.agentContextHome, 'private-parent');
+        const target = fixture.path.join(parent, 'child');
+        const outside = fixture.path.join(fixture.config.agentContextHome, 'outside-directory');
+        yield* fixture.fs.makeDirectory(parent, {mode: 0o700});
+        yield* fixture.fs.makeDirectory(outside, {mode: 0o755});
+        yield* fixture.fs.chmod(outside, 0o755);
+        yield* fixture.fs.writeFileString(fixture.path.join(outside, 'sentinel.txt'), 'outside\n', {mode: 0o600});
+        const racingFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          makeDirectory: (directory, options) =>
+            directory === target
+              ? fixture.fs.symlink(outside, target).pipe(Effect.andThen(fixture.fs.makeDirectory(directory, options)))
+              : fixture.fs.makeDirectory(directory, options),
+        });
+
+        const failure = yield* ensurePrivateDeferredCodeAnchorDirectory(racingFileSystem, target, [parent]).pipe(
+          Effect.flip,
+        );
+
+        expect(String(failure)).toContain('must not be a link');
+        expect((yield* fixture.fs.stat(outside)).mode & 0o777).toBe(0o755);
+        expect(yield* fixture.fs.readFileString(fixture.path.join(outside, 'sentinel.txt'))).toBe('outside\n');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('does not chmod an outside target when a fresh quarantine slot is swapped', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Quarantine race fixture.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/quarantine-race.ts']),
+        });
+        const markerPath = yield* fixtureRepositoryRouteMarkerPath(fixture);
+        const laneRoot = fixture.path.dirname(markerPath);
+        const queueRoot = fixture.path.dirname(laneRoot);
+        const routeRoot = fixture.path.dirname(queueRoot);
+        const sourceAncestors = [fixture.outbox, routeRoot, queueRoot, laneRoot];
+        const queueAncestors = [fixture.outbox, routeRoot, queueRoot];
+        const poison = fixture.path.join(laneRoot, 'poison.ref');
+        yield* fixture.fs.writeFileString(poison, 'poison\n', {mode: 0o600});
+        const outside = fixture.path.join(fixture.config.agentContextHome, 'outside-quarantine-directory');
+        yield* fixture.fs.makeDirectory(outside, {mode: 0o755});
+        yield* fixture.fs.chmod(outside, 0o755);
+        yield* fixture.fs.writeFileString(fixture.path.join(outside, 'sentinel.txt'), 'outside\n', {mode: 0o600});
+        let swapped = false;
+        const racingFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          makeDirectory: (directory, options) => {
+            if (swapped || !fixture.path.basename(directory).startsWith('q-')) {
+              return fixture.fs.makeDirectory(directory, options);
+            }
+            swapped = true;
+            return fixture.fs
+              .makeDirectory(directory, options)
+              .pipe(
+                Effect.andThen(fixture.fs.remove(directory, {recursive: true})),
+                Effect.andThen(fixture.fs.symlink(outside, directory)),
+              );
+          },
+        });
+
+        const failure = yield* quarantinePrivateDeferredCodeAnchorRouteEntry(
+          racingFileSystem,
+          fixture.path,
+          poison,
+          sourceAncestors,
+          queueAncestors,
+        ).pipe(Effect.flip);
+
+        expect(String(failure)).toContain('must not be a link');
+        expect(swapped).toBe(true);
+        expect((yield* fixture.fs.stat(outside)).mode & 0o777).toBe(0o755);
+        expect(yield* fixture.fs.readFileString(fixture.path.join(outside, 'sentinel.txt'))).toBe('outside\n');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('does not mutate a symlink target swapped in after private-file publication', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        const fixture = yield* makeFixture();
+        const parent = fixture.path.join(fixture.config.agentContextHome, 'private-write-parent');
+        const target = fixture.path.join(parent, 'intent.json');
+        const displaced = fixture.path.join(parent, 'displaced.json');
+        const outside = fixture.path.join(fixture.config.agentContextHome, 'outside-write-target.json');
+        yield* fixture.fs.makeDirectory(parent, {mode: 0o700});
+        yield* fixture.fs.writeFileString(outside, 'outside\n', {mode: 0o644});
+        yield* fixture.fs.chmod(outside, 0o644);
+        let swapped = false;
+        const racingFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          readLink: path => {
+            if (path !== target || swapped) return fixture.fs.readLink(path);
+            swapped = true;
+            return fixture.fs
+              .rename(target, displaced)
+              .pipe(Effect.andThen(fixture.fs.symlink(outside, target)), Effect.andThen(fixture.fs.readLink(target)));
+          },
+        });
+
+        const failure = yield* writePrivateDeferredCodeAnchorFile(
+          racingFileSystem,
+          fixture.path,
+          target,
+          'private\n',
+          'race fixture',
+          [parent],
+        ).pipe(Effect.flip);
+
+        expect(String(failure)).toContain('must not be a symbolic link');
+        expect(swapped).toBe(true);
+        expect((yield* fixture.fs.stat(outside)).mode & 0o777).toBe(0o644);
+        expect(yield* fixture.fs.readFileString(outside)).toBe('outside\n');
+        expect(yield* fixture.fs.readFileString(displaced)).toBe('private\n');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('takes the absent-route fast path without graph or canonical reads', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending revision.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/pending.ts']),
+        });
+        yield* fixture.fs.writeFileString(
+          fixture.path.join(fixture.outbox, `${'0'.repeat(64)}-tnca_corrupt.json`),
+          '{not-json}\n',
+          {mode: 0o600},
+        );
+
+        let graphReads = 0;
+        let intentOpens = 0;
+        let memoryReads = 0;
+        const query = yield* CodeGraphQueryService;
+        const store = yield* ResourceStore;
+        const unreadableQuery = CodeGraphQueryService.of({
+          ...query,
+          status: () =>
+            Effect.sync(() => {
+              graphReads += 1;
+              throw new Error('unexpected graph read');
+            }),
+        } as Parameters<typeof CodeGraphQueryService.of>[0]);
+        const unreadableStore = ResourceStore.of({
+          ...store,
+          read: (location, uri) =>
+            Effect.sync(() => {
+              memoryReads += 1;
+              return undefined;
+            }).pipe(Effect.andThen(store.read(location, uri))),
+        });
+        const observedFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          open: (target, options) => {
+            if (target.endsWith('.json')) intentOpens += 1;
+            return fixture.fs.open(target, options);
+          },
+        });
+        const receipt = yield* finalizeDeferredCodeAnchorsForRoute(
+          fixture.config,
+          {
+            callerCwd: fixture.repository,
+            kind: 'repository',
+            repositoryId: 'f'.repeat(64),
+            worktreeId: 'e'.repeat(64),
+          },
+          {limit: 1},
+        ).pipe(
+          Effect.provideService(CodeGraphQueryService, unreadableQuery),
+          Effect.provideService(FileSystem.FileSystem, observedFileSystem),
+          Effect.provideService(ResourceStore, unreadableStore),
+        );
+
+        expect(receipt).toEqual({
+          conflictCount: 0,
+          failedCount: 0,
+          finalizedCount: 0,
+          matchedCount: 0,
+          pendingCount: 0,
+          scannedCount: 0,
+          state: 'completed',
+          type: 'threadnote-deferred-code-anchor-route-finalization',
+          version: 1,
+        });
+        expect(graphReads).toBe(0);
+        expect(intentOpens).toBe(0);
+        expect(memoryReads).toBe(0);
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(
+            fixture.config,
+            {kind: 'workset', name: 'test'},
+            {waitTimeoutMilliseconds: 5_001},
+          ),
+        ).toMatchObject({state: 'failed', scannedCount: 0});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('routes exact workset and repository identities while retaining legacy v1 intent filenames', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending workset revision.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredWorksetRequest(fixture.repository, ['src/workset.ts'], 'platform'),
+        });
+        const [intentPath] = yield* fixtureIntentPaths(fixture);
+        const name = fixture.path.basename(intentPath!);
+        expect(name).toMatch(/^[a-f0-9]{32}-tnca_[a-f0-9]{32}-b[a-f0-9]{32}\.json$/u);
+        expect(new TextEncoder().encode(name).byteLength).toBeLessThanOrEqual(131);
+        const representativeWindowsOutbox =
+          'C:\\Users\\threadnote\\AppData\\Local\\threadnote\\data\\local\\user\\tester\\private\\deferred-code-anchors\\v1\\i\\u' +
+          'a'.repeat(32) +
+          '\\';
+        expect(new TextEncoder().encode(`${representativeWindowsOutbox}${name}`).byteLength).toBeLessThanOrEqual(260);
+        expect(name).not.toContain('platform');
+        expect(name).not.toContain('src/workset.ts');
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        const repositoryRoute: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: fixture.repository,
+          kind: 'repository',
+          repositoryId: intent.repositoryId,
+          worktreeId: intent.worktreeId,
+        };
+
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {kind: 'workset', name: 'other'}),
+        ).toMatchObject({matchedCount: 0, scannedCount: 0, state: 'completed'});
+
+        const digest = yield* sha256Hex(MEMORY_URI);
+        yield* fixture.fs.rename(intentPath!, fixture.path.join(fixture.outbox, `${digest}.json`));
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {kind: 'workset', name: 'platform'}),
+        ).toMatchObject({
+          conflictCount: 1,
+          matchedCount: 1,
+          scannedCount: 1,
+          state: 'completed',
+        });
+        expect(yield* fixtureIntentPaths(fixture)).toEqual([]);
+
+        const repositoryUri = 'threadnote://user/tester/memories/durable/projects/threadnote/deferred-repository.md';
+        const repositoryMetadata = {
+          ...fixture.metadata,
+          memoryId: 'tn_deferred_repository',
+          topic: 'deferred-repository',
+        };
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(repositoryMetadata, 'Pending repository revision.'),
+          memoryMetadata: repositoryMetadata,
+          memoryUri: repositoryUri,
+          request: deferredWorksetRequest(fixture.repository, ['src/repository.ts'], 'platform'),
+        });
+        expect(yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, repositoryRoute)).toMatchObject({
+          conflictCount: 1,
+          matchedCount: 1,
+          scannedCount: 1,
+          state: 'completed',
+        });
+
+        const qualifiedUri = 'threadnote://user/tester/memories/durable/projects/threadnote/deferred-qualified.md';
+        const qualifiedMetadata = {
+          ...fixture.metadata,
+          memoryId: 'tn_deferred_qualified',
+          topic: 'deferred-qualified',
+        };
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(qualifiedMetadata, 'Pending qualified revision.'),
+          memoryMetadata: qualifiedMetadata,
+          memoryUri: qualifiedUri,
+          request: deferredRequest(fixture.repository, [`cgr_${'a'.repeat(40)}`]),
+        });
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {kind: 'workset', name: 'another-workset'}),
+        ).toMatchObject({conflictCount: 1, matchedCount: 1, scannedCount: 1, state: 'completed'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('prioritizes a requested backlink while rotating the bounded route window', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const store = yield* ResourceStore;
+        for (let index = 0; index < 3; index += 1) {
+          const uri = `threadnote://user/tester/memories/durable/projects/threadnote/deferred-${index}.md`;
+          const metadata = {...fixture.metadata, memoryId: `tn_deferred_${index}`, topic: `deferred-${index}`};
+          const content = memoryContent(metadata, `Pending revision ${index}.`);
+          yield* stageDeferredCodeAnchorIntent(fixture.config, {
+            memoryContent: content,
+            memoryMetadata: metadata,
+            memoryUri: uri,
+            request: deferredRequest(fixture.repository, [`src/pending-${index}.ts`]),
+          });
+          yield* store.write(resourceStoreLocation(fixture.config), uri, content, {mode: 'create'});
+        }
+
+        const addressed = yield* Effect.forEach(yield* fixtureIntentPaths(fixture), intentPath =>
+          fixture.fs.readFileString(intentPath).pipe(
+            Effect.map(content => ({
+              intent: JSON.parse(content) as {
+                codeRefs: string[];
+                memoryUri: string;
+                repositoryId: string;
+                worktreeId: string;
+              },
+              name: fixture.path.basename(intentPath),
+            })),
+          ),
+        );
+        const preferred = addressed[addressed.length - 1]!.intent;
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: fixture.repository,
+          kind: 'repository',
+          repositoryId: preferred.repositoryId,
+          worktreeId: preferred.worktreeId,
+        };
+        const observedReads: string[] = [];
+        const instrumentedStore = ResourceStore.of({
+          ...store,
+          read: (location, uri) =>
+            Effect.sync(() => {
+              if (uri.includes('/deferred-')) observedReads.push(uri);
+            }).pipe(Effect.andThen(store.read(location, uri))),
+        });
+        const run = (preferredCodeRefs: readonly string[] = []) =>
+          finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {
+            limit: 1,
+            preferredCodeRefs,
+          }).pipe(Effect.provideService(ResourceStore, instrumentedStore));
+
+        expect(yield* run(preferred.codeRefs)).toMatchObject({
+          matchedCount: 3,
+          pendingCount: 1,
+          scannedCount: 1,
+          state: 'contended',
+        });
+        expect(observedReads[0]).toBe(preferred.memoryUri);
+        for (let opportunity = 0; opportunity < 12; opportunity += 1) {
+          expect(yield* run()).toMatchObject({pendingCount: 1, scannedCount: 1, state: 'contended'});
+        }
+        expect(new Set(observedReads.slice(1))).toEqual(new Set(addressed.map(entry => entry.intent.memoryUri)));
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('bounds routed intent opens while promoting a requested backlink outside the fair window', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const store = yield* ResourceStore;
+        for (let index = 0; index < 12; index += 1) {
+          const uri = `threadnote://user/tester/memories/durable/projects/threadnote/deferred-bounded-${index}.md`;
+          const metadata = {
+            ...fixture.metadata,
+            memoryId: `tn_deferred_bounded_${index}`,
+            topic: `deferred-bounded-${index}`,
+          };
+          yield* stageDeferredCodeAnchorIntent(fixture.config, {
+            memoryContent: memoryContent(metadata, `Pending bounded revision ${index}.`),
+            memoryMetadata: metadata,
+            memoryUri: uri,
+            request: deferredRequest(fixture.repository, [`src/bounded-${index}.ts`]),
+          });
+        }
+
+        const addressed = yield* Effect.forEach(yield* fixtureIntentPaths(fixture), intentPath =>
+          fixture.fs.readFileString(intentPath).pipe(
+            Effect.map(
+              content =>
+                JSON.parse(content) as {
+                  codeRefs: string[];
+                  memoryUri: string;
+                  repositoryId: string;
+                  worktreeId: string;
+                },
+            ),
+          ),
+        );
+        const preferred = addressed[4]!;
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: fixture.repository,
+          kind: 'repository',
+          repositoryId: preferred.repositoryId,
+          worktreeId: preferred.worktreeId,
+        };
+        let intentOpens = 0;
+        const observedReads: string[] = [];
+        const observedFileSystem = FileSystem.FileSystem.of({
+          ...fixture.fs,
+          open: (target, options) => {
+            if (target.endsWith('.json')) intentOpens += 1;
+            return fixture.fs.open(target, options);
+          },
+        });
+        const observedStore = ResourceStore.of({
+          ...store,
+          read: (location, uri) =>
+            Effect.sync(() => {
+              if (uri.includes('/deferred-bounded-')) observedReads.push(uri);
+            }).pipe(Effect.andThen(store.read(location, uri))),
+        });
+
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {
+            limit: 1,
+            preferredCodeRefs: preferred.codeRefs,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, observedFileSystem),
+            Effect.provideService(ResourceStore, observedStore),
+          ),
+        ).toMatchObject({conflictCount: 1, scannedCount: 1, state: 'contended'});
+        expect(observedReads[0]).toBe(preferred.memoryUri);
+        expect(intentOpens).toBeLessThanOrEqual(16);
+        expect(intentOpens).toBeLessThan(24);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('returns a contended receipt when another process-shaped route pass owns the lock', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        const store = yield* ResourceStore;
+        const content = memoryContent(fixture.metadata, 'Pending revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/pending.ts']),
+        });
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const [intentPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: fixture.repository,
+          kind: 'repository',
+          repositoryId: intent.repositoryId,
+          worktreeId: intent.worktreeId,
+        };
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const blockingStore = ResourceStore.of({
+          ...store,
+          read: (location, uri) =>
+            Deferred.succeed(entered, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(store.read(location, uri)),
+            ),
+        });
+        const owner = yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route).pipe(
+          Effect.provideService(ResourceStore, blockingStore),
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(entered);
+
+        expect(yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route)).toMatchObject({
+          matchedCount: 1,
+          scannedCount: 0,
+          state: 'contended',
+        });
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Fiber.join(owner)).toMatchObject({pendingCount: 1, scannedCount: 1, state: 'contended'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('interrupts the complete opportunistic pass at its total deadline without losing the intent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture().pipe(TestClock.withLive);
+        const store = yield* ResourceStore;
+        const content = memoryContent(fixture.metadata, 'Pending deadline revision.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/deadline.ts']),
+        });
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const [intentPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        const entered = yield* Deferred.make<void>();
+        const blockedStore = ResourceStore.of({
+          ...store,
+          read: (location, uri) =>
+            uri === MEMORY_URI
+              ? Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Effect.never),
+                  Effect.andThen(store.read(location, uri)),
+                )
+              : store.read(location, uri),
+        });
+        const fiber = yield* finalizeDeferredCodeAnchorsForRoute(
+          fixture.config,
+          {
+            callerCwd: fixture.repository,
+            kind: 'repository',
+            repositoryId: intent.repositoryId,
+            worktreeId: intent.worktreeId,
+          },
+          {limit: 1, passTimeoutMilliseconds: 100},
+        ).pipe(Effect.provideService(ResourceStore, blockedStore), Effect.forkScoped);
+        yield* Deferred.await(entered);
+        yield* TestClock.adjust('100 millis');
+
+        expect(yield* Fiber.join(fiber)).toMatchObject({
+          matchedCount: 1,
+          scannedCount: 0,
+          state: 'contended',
+        });
+        expect(yield* fixtureIntentPaths(fixture)).toHaveLength(1);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('cleans a crash-orphaned opaque route marker without deriving intent deletion authority', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Orphaned before canonical commit.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/orphan.ts']),
+        });
+        const [intentPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        yield* fixture.fs.remove(intentPath!, {force: true});
+        const markersBefore = (yield* fixture.fs.readDirectory(fixture.outbox, {recursive: true})).filter(name =>
+          name.endsWith('.ref'),
+        );
+        expect(markersBefore.length).toBeGreaterThan(0);
+
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(
+            fixture.config,
+            {
+              callerCwd: fixture.repository,
+              kind: 'repository',
+              repositoryId: intent.repositoryId,
+              worktreeId: intent.worktreeId,
+            },
+            {preferredCodeRefs: ['src/orphan.ts']},
+          ),
+        ).toMatchObject({matchedCount: 0, scannedCount: 0, state: 'completed'});
+        expect(
+          (yield* fixture.fs.readDirectory(fixture.outbox, {recursive: true})).filter(name => name.endsWith('.ref')),
+        ).toEqual([]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('cleans poisoned marker pages without deleting an address-mismatched canonical intent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending behind a poisoned marker page.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/later-page.ts']),
+        });
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
+        const pendingContent = yield* fixture.fs.readFileString(pendingPath!);
+        const intent = JSON.parse(pendingContent) as {repositoryId: string; worktreeId: string};
+        const markerPath = yield* fixtureRepositoryRouteMarkerPath(fixture);
+        const laneRoot = fixture.path.dirname(markerPath);
+        const stagedMarker = fixture.path.join(fixture.config.agentContextHome, 'staged-valid-route-marker.ref');
+        yield* fixture.fs.rename(markerPath, stagedMarker);
+        yield* fixture.fs.remove(laneRoot, {recursive: true});
+        yield* fixture.fs.makeDirectory(laneRoot, {mode: 0o700});
+        const mismatchedName = `${'0'.repeat(32)}-tnca_${'0'.repeat(32)}-b${'0'.repeat(32)}`;
+        const mismatchedDirectory = fixture.path.join(fixture.outbox, 'i', `u${'0'.repeat(32)}`);
+        const mismatchedIntentPath = fixture.path.join(mismatchedDirectory, `${mismatchedName}.json`);
+        const mismatchedMarkerPath = fixture.path.join(laneRoot, `${mismatchedName}.ref`);
+        yield* fixture.fs.makeDirectory(mismatchedDirectory, {recursive: true, mode: 0o700});
+        yield* fixture.fs.writeFileString(mismatchedIntentPath, pendingContent, {mode: 0o600});
+        yield* fixture.fs.makeDirectory(mismatchedMarkerPath, {mode: 0o700});
+        yield* fixture.fs.writeFileString(
+          fixture.path.join(mismatchedMarkerPath, 'address-shaped-sentinel.txt'),
+          'address-shaped-sentinel\n',
+          {mode: 0o600},
+        );
+        const unexpectedEntry = fixture.path.join(laneRoot, '000-unexpected-entry');
+        const poisonedMarkers = [mismatchedMarkerPath, unexpectedEntry];
+        yield* fixture.fs.writeFileString(unexpectedEntry, 'unexpected\n', {mode: 0o600});
+        const nonPrivateMarker = fixture.path.join(laneRoot, '001-non-private.ref');
+        poisonedMarkers.push(nonPrivateMarker);
+        yield* fixture.fs.writeFileString(nonPrivateMarker, 'non-private-marker\n', {mode: 0o600});
+        if (process.platform !== 'win32') yield* fixture.fs.chmod(nonPrivateMarker, 0o644);
+        const invalidDirectory = fixture.path.join(laneRoot, '002-invalid-directory.ref');
+        poisonedMarkers.push(invalidDirectory);
+        yield* fixture.fs.makeDirectory(invalidDirectory, {mode: 0o700});
+        yield* fixture.fs.writeFileString(
+          fixture.path.join(invalidDirectory, 'non-address-shaped-sentinel.txt'),
+          'non-address-shaped-sentinel\n',
+          {mode: 0o600},
+        );
+        const outsideSentinel = fixture.path.join(fixture.config.agentContextHome, 'outside-route-entry-sentinel.txt');
+        yield* fixture.fs.writeFileString(outsideSentinel, 'outside-route-entry-sentinel\n', {mode: 0o600});
+        const symlinkMarker = fixture.path.join(laneRoot, '003-invalid-symlink.ref');
+        poisonedMarkers.push(symlinkMarker);
+        yield* fixture.fs.symlink(outsideSentinel, symlinkMarker);
+        if (process.platform !== 'win32') {
+          const fifoMarker = fixture.path.join(laneRoot, '004-invalid-fifo.ref');
+          poisonedMarkers.push(fifoMarker);
+          yield* runCommandEffect('mkfifo', [fifoMarker]);
+        }
+        for (let index = 0; index < 8; index += 1) {
+          poisonedMarkers.push(fixture.path.join(laneRoot, `0bad-${index}.ref`));
+          yield* fixture.fs.writeFileString(fixture.path.join(laneRoot, `0bad-${index}.ref`), '1\n', {mode: 0o600});
+        }
+        yield* fixture.fs.rename(stagedMarker, markerPath);
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: fixture.repository,
+          kind: 'repository',
+          repositoryId: intent.repositoryId,
+          worktreeId: intent.worktreeId,
+        };
+
+        const receipts = [];
+        for (let opportunity = 0; opportunity < 8; opportunity += 1) {
+          receipts.push(yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {limit: 1}));
+          if (
+            !(yield* fixture.fs.exists(pendingPath!)) &&
+            !(yield* fixture.fs.exists(mismatchedMarkerPath)) &&
+            !(yield* Effect.forEach(poisonedMarkers, marker => fixture.fs.exists(marker), {concurrency: 4})).some(
+              Boolean,
+            )
+          ) {
+            break;
+          }
+        }
+        expect(receipts.some(receipt => receipt.conflictCount === 1 && receipt.scannedCount === 1)).toBe(true);
+        expect(receipts.some(receipt => receipt.state === 'contended')).toBe(true);
+        expect(receipts.every(receipt => receipt.state !== 'failed')).toBe(true);
+        expect(yield* fixture.fs.readFileString(mismatchedIntentPath)).toBe(pendingContent);
+        expect(yield* fixture.fs.readFileString(outsideSentinel)).toBe('outside-route-entry-sentinel\n');
+        expect(yield* fixture.fs.exists(mismatchedMarkerPath)).toBe(false);
+        expect(
+          (yield* Effect.forEach(poisonedMarkers, marker => fixture.fs.exists(marker), {concurrency: 4})).some(Boolean),
+        ).toBe(false);
+        expect(yield* fixture.fs.exists(pendingPath!)).toBe(false);
+        const quarantineRoot = fixture.path.join(fixture.path.dirname(laneRoot), '.quarantine-v1');
+        const quarantined = yield* fixture.fs.readDirectory(quarantineRoot, {recursive: true});
+        expect(quarantined.filter(entry => fixture.path.basename(entry) === 'entry')).toHaveLength(
+          poisonedMarkers.length,
+        );
+        expect(quarantined.some(entry => entry.includes('0bad-'))).toBe(false);
+        const addressSentinel = quarantined.find(
+          entry => fixture.path.basename(entry) === 'address-shaped-sentinel.txt',
+        );
+        const nonAddressSentinel = quarantined.find(
+          entry => fixture.path.basename(entry) === 'non-address-shaped-sentinel.txt',
+        );
+        expect(yield* fixture.fs.readFileString(fixture.path.join(quarantineRoot, addressSentinel!))).toBe(
+          'address-shaped-sentinel\n',
+        );
+        expect(yield* fixture.fs.readFileString(fixture.path.join(quarantineRoot, nonAddressSentinel!))).toBe(
+          'non-address-shaped-sentinel\n',
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('continues from a poisoned route lane to later valid work in the same protected pass', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending in a later route lane.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/later-lane.ts']),
+        });
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        const markerPath = yield* fixtureRepositoryRouteMarkerPath(fixture);
+        const laneRoot = fixture.path.dirname(markerPath);
+        const laterLane = fixture.path.join(fixture.path.dirname(laneRoot), '7');
+        yield* fixture.fs.makeDirectory(laterLane, {mode: 0o700});
+        yield* fixture.fs.rename(markerPath, fixture.path.join(laterLane, fixture.path.basename(markerPath)));
+        const poisonedMarker = fixture.path.join(laneRoot, '000-poison.ref');
+        yield* fixture.fs.writeFileString(poisonedMarker, '1\n', {mode: 0o600});
+
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {
+            callerCwd: fixture.repository,
+            kind: 'repository',
+            repositoryId: intent.repositoryId,
+            worktreeId: intent.worktreeId,
+          }),
+        ).toMatchObject({conflictCount: 1, matchedCount: 1, scannedCount: 1, state: 'completed'});
+        expect(yield* fixture.fs.exists(poisonedMarker)).toBe(false);
+        expect(yield* fixture.fs.exists(pendingPath!)).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
@@ -198,9 +971,7 @@ describe('deferred code-anchor outbox', () => {
           ],
           scannedCount: 1,
         });
-        expect((yield* fixture.fs.readDirectory(fixture.outbox)).filter(name => name.endsWith('.json'))).toHaveLength(
-          1,
-        );
+        expect(yield* fixtureIntentPaths(fixture)).toHaveLength(1);
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
@@ -276,6 +1047,118 @@ describe('deferred code-anchor outbox', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('quarantines a poisoned legacy prefix so bounded automatic recovery reaches later intents', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* fixture.fs.makeDirectory(fixture.outbox, {recursive: true, mode: 0o700});
+        for (let index = 0; index < 48; index += 1) {
+          yield* fixture.fs.writeFileString(
+            fixture.path.join(fixture.outbox, `${index.toString(16).padStart(64, '0')}-poison.json`),
+            '{not-json}\n',
+            {mode: 0o600},
+          );
+        }
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending after poisoned legacy prefix.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/after-poison.ts']),
+        });
+        const [intentPath] = (yield* fixtureIntentPaths(fixture)).filter(path =>
+          path.includes(`${fixture.path.sep}i${fixture.path.sep}`),
+        );
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        yield* fixture.fs.rename(
+          intentPath!,
+          fixture.path.join(fixture.outbox, `${yield* sha256Hex(MEMORY_URI)}.json`),
+        );
+        const route: DeferredCodeAnchorFinalizationRoute = {
+          callerCwd: fixture.repository,
+          kind: 'repository',
+          repositoryId: intent.repositoryId,
+          worktreeId: intent.worktreeId,
+        };
+
+        let recovered = false;
+        for (let attempt = 0; attempt < 4 && !recovered; attempt += 1) {
+          const receipt = yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {limit: 1});
+          recovered = receipt.conflictCount === 1;
+        }
+
+        expect(recovered).toBe(true);
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(false);
+        const quarantined = (yield* fixture.fs.readDirectory(fixture.outbox, {recursive: true})).filter(name =>
+          name.endsWith(`${fixture.path.sep}entry`),
+        );
+        expect(quarantined).toHaveLength(48);
+        expect(yield* deferredCodeAnchorDoctorCheck(fixture.config)).toMatchObject({status: 'fail'});
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('fails closed without following symlinked item ancestors during publication lookup or cleanup', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        for (const boundary of ['i', 'u'] as const) {
+          const fixture = yield* makeFixture();
+          yield* stageDeferredCodeAnchorIntent(fixture.config, {
+            memoryContent: memoryContent(fixture.metadata, `Pending ${boundary} symlink revision.`),
+            memoryMetadata: fixture.metadata,
+            memoryUri: MEMORY_URI,
+            request: deferredRequest(fixture.repository, [`src/${boundary}-ancestor-link.ts`]),
+          });
+          const [pendingPath] = yield* fixtureIntentPaths(fixture);
+          const itemRoot = fixture.path.join(fixture.outbox, 'i');
+          const ancestor = boundary === 'i' ? itemRoot : fixture.path.dirname(pendingPath!);
+          const outside = fixture.path.join(fixture.config.agentContextHome, `outside-${boundary}-items`);
+          yield* fixture.fs.rename(ancestor, outside);
+          const sentinel = fixture.path.join(outside, 'outside-sentinel.txt');
+          yield* fixture.fs.writeFileString(sentinel, `${boundary}-sentinel\n`, {mode: 0o600});
+          yield* fixture.fs.symlink(outside, ancestor);
+
+          const lookupFailure = yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI).pipe(Effect.flip);
+          expect(String(lookupFailure)).toContain('private directory must not be a link');
+          const cleanupFailure = yield* discardDeferredCodeAnchorIntent(fixture.config, MEMORY_URI).pipe(Effect.flip);
+          expect(String(cleanupFailure)).toContain('private directory must not be a link');
+          expect(yield* fixture.fs.readFileString(sentinel)).toBe(`${boundary}-sentinel\n`);
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  effectIt.effect('fails closed without deleting through non-private item ancestors', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        for (const boundary of ['i', 'u'] as const) {
+          const fixture = yield* makeFixture();
+          yield* stageDeferredCodeAnchorIntent(fixture.config, {
+            memoryContent: memoryContent(fixture.metadata, `Pending ${boundary} mode revision.`),
+            memoryMetadata: fixture.metadata,
+            memoryUri: MEMORY_URI,
+            request: deferredRequest(fixture.repository, [`src/${boundary}-ancestor-mode.ts`]),
+          });
+          const [pendingPath] = yield* fixtureIntentPaths(fixture);
+          const itemRoot = fixture.path.join(fixture.outbox, 'i');
+          const ancestor = boundary === 'i' ? itemRoot : fixture.path.dirname(pendingPath!);
+          const sentinel = fixture.path.join(ancestor, 'outside-sentinel.txt');
+          yield* fixture.fs.writeFileString(sentinel, `${boundary}-mode-sentinel\n`, {mode: 0o600});
+          yield* fixture.fs.chmod(ancestor, 0o755);
+
+          const lookupFailure = yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI).pipe(Effect.flip);
+          expect(String(lookupFailure)).toContain('private directory is not private');
+          const cleanupFailure = yield* discardDeferredCodeAnchorIntent(fixture.config, MEMORY_URI).pipe(Effect.flip);
+          expect(String(cleanupFailure)).toContain('private directory is not private');
+          expect(yield* fixture.fs.readFileString(sentinel)).toBe(`${boundary}-mode-sentinel\n`);
+        }
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('refuses a pending intent whose file permissions are no longer private', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -286,8 +1169,8 @@ describe('deferred code-anchor outbox', () => {
           memoryUri: MEMORY_URI,
           request: deferredRequest(fixture.repository, ['src/private.ts']),
         });
-        const [name] = yield* fixture.fs.readDirectory(fixture.outbox);
-        yield* fixture.fs.chmod(fixture.path.join(fixture.outbox, name!), 0o644);
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
+        yield* fixture.fs.chmod(pendingPath!, 0o644);
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
         expect(receipt).toMatchObject({
@@ -309,11 +1192,10 @@ describe('deferred code-anchor outbox', () => {
           memoryUri: MEMORY_URI,
           request: deferredRequest(fixture.repository, ['src/symlink.ts']),
         });
-        const [name] = yield* fixture.fs.readDirectory(fixture.outbox);
-        const pendingPath = fixture.path.join(fixture.outbox, name!);
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
         const movedPath = fixture.path.join(fixture.config.agentContextHome, 'outside-intent.json');
-        yield* fixture.fs.rename(pendingPath, movedPath);
-        yield* fixture.fs.symlink(movedPath, pendingPath);
+        yield* fixture.fs.rename(pendingPath!, movedPath);
+        yield* fixture.fs.symlink(movedPath, pendingPath!);
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
         expect(receipt).toMatchObject({
@@ -347,6 +1229,43 @@ describe('deferred code-anchor outbox', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  effectIt.effect('does not follow a symlinked route lane or alter its outside target', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture();
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: memoryContent(fixture.metadata, 'Pending route-ancestor revision.'),
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/route-ancestor-link.ts']),
+        });
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        const markerPath = yield* fixtureRepositoryRouteMarkerPath(fixture);
+        const laneRoot = fixture.path.dirname(markerPath);
+        const outside = fixture.path.join(fixture.config.agentContextHome, 'outside-route-lane');
+        yield* fixture.fs.rename(laneRoot, outside);
+        const sentinel = fixture.path.join(outside, 'outside-sentinel.txt');
+        yield* fixture.fs.writeFileString(sentinel, 'route-sentinel\n', {mode: 0o600});
+        yield* fixture.fs.symlink(outside, laneRoot);
+
+        expect(
+          yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, {
+            callerCwd: fixture.repository,
+            kind: 'repository',
+            repositoryId: intent.repositoryId,
+            worktreeId: intent.worktreeId,
+          }),
+        ).toMatchObject({scannedCount: 0, state: 'failed'});
+        expect(yield* fixture.fs.readFileString(sentinel)).toBe('route-sentinel\n');
+        expect(yield* hasDeferredCodeAnchorIntent(fixture.config, MEMORY_URI)).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('rejects an intent whose content no longer matches its addressed URI', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -357,11 +1276,10 @@ describe('deferred code-anchor outbox', () => {
           memoryUri: MEMORY_URI,
           request: deferredRequest(fixture.repository, ['src/tampered.ts']),
         });
-        const [name] = yield* fixture.fs.readDirectory(fixture.outbox);
-        const pendingPath = fixture.path.join(fixture.outbox, name!);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as Record<string, unknown>;
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as Record<string, unknown>;
         intent.memoryUri = 'threadnote://user/tester/memories/durable/projects/threadnote/other.md';
-        yield* fixture.fs.writeFileString(pendingPath, `${JSON.stringify(intent)}\n`, {mode: 0o600});
+        yield* fixture.fs.writeFileString(pendingPath!, `${JSON.stringify(intent)}\n`, {mode: 0o600});
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
         expect(receipt).toMatchObject({
@@ -385,22 +1303,21 @@ describe('deferred code-anchor outbox', () => {
             request: deferredRequest(fixture.repository, ['src/tampered-context.ts']),
           });
         yield* stage();
-        const [name] = yield* fixture.fs.readDirectory(fixture.outbox);
-        const pendingPath = fixture.path.join(fixture.outbox, name!);
-        const callerTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as Record<string, unknown>;
+        const [pendingPath] = yield* fixtureIntentPaths(fixture);
+        const callerTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as Record<string, unknown>;
         callerTamper.callerCwd = fixture.config.agentContextHome;
-        yield* fixture.fs.writeFileString(pendingPath, `${JSON.stringify(callerTamper)}\n`, {mode: 0o600});
+        yield* fixture.fs.writeFileString(pendingPath!, `${JSON.stringify(callerTamper)}\n`, {mode: 0o600});
         expect(yield* finalizeDeferredCodeAnchors(fixture.config)).toMatchObject({
           failedCount: 1,
           items: [{code: 'invalid-intent', state: 'failed'}],
         });
 
         yield* stage();
-        const recoveryTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as {
+        const recoveryTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as {
           recovery: {observedGraph: {stale: boolean}};
         };
         recoveryTamper.recovery.observedGraph.stale = false;
-        yield* fixture.fs.writeFileString(pendingPath, `${JSON.stringify(recoveryTamper)}\n`, {mode: 0o600});
+        yield* fixture.fs.writeFileString(pendingPath!, `${JSON.stringify(recoveryTamper)}\n`, {mode: 0o600});
         expect(yield* finalizeDeferredCodeAnchors(fixture.config)).toMatchObject({
           failedCount: 1,
           items: [{code: 'invalid-intent', state: 'failed'}],
@@ -408,6 +1325,36 @@ describe('deferred code-anchor outbox', () => {
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
+});
+
+const fixtureIntentPaths = Effect.fn('deferredCodeAnchorTest.intentPaths')(function* (fixture: {
+  readonly fs: FileSystem.FileSystem;
+  readonly outbox: string;
+  readonly path: Path.Path;
+}) {
+  return (yield* fixture.fs.readDirectory(fixture.outbox, {recursive: true}))
+    .filter(name => name.endsWith('.json'))
+    .map(name => fixture.path.join(fixture.outbox, name))
+    .sort();
+});
+
+const fixtureRepositoryRouteMarkerPath = Effect.fn('deferredCodeAnchorTest.repositoryRouteMarker')(function* (fixture: {
+  readonly fs: FileSystem.FileSystem;
+  readonly outbox: string;
+  readonly path: Path.Path;
+}) {
+  const relative = (yield* fixture.fs.readDirectory(fixture.outbox, {recursive: true})).find(entry => {
+    const segments = entry.split(fixture.path.sep);
+    return (
+      segments.length === 4 &&
+      segments[0] === 'r' &&
+      /^r[a-f0-9]{32}$/u.test(segments[1] ?? '') &&
+      segments[2] === '0' &&
+      segments[3]?.endsWith('.ref') === true
+    );
+  });
+  if (relative === undefined) return yield* Effect.die(new Error('Repository route marker fixture is missing.'));
+  return fixture.path.join(fixture.outbox, relative);
 });
 
 const makeFixture = Effect.fn('deferredCodeAnchorTest.makeFixture')(function* () {
@@ -483,6 +1430,37 @@ function deferredRequest(callerCwd: string, codeRefs: readonly string[]): Deferr
       version: 1 as const,
     },
   };
+}
+
+function deferredWorksetRequest(
+  callerCwd: string,
+  codeRefs: readonly string[],
+  workset: string,
+): DeferredCodeAnchorWriteRequest {
+  return {
+    callerCwd,
+    codeRefs,
+    recovery: {
+      code: 'ready-graph-unavailable',
+      indexingStarted: false,
+      observedGraph: {freshness: 'stale', readySnapshot: 'absent', stale: true},
+      preparation: {
+        action: 'prepare-workset',
+        arguments: [workset],
+        command: 'threadnote workset prepare',
+        target: 'workset',
+      },
+      recovery: 'prepare-current-graph',
+      retryCondition: 'after-current-graph-ready',
+      retryable: true,
+      type: 'memory-code-citation-capture-recovery',
+      version: 1,
+    },
+  };
+}
+
+function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>) {
+  return {account: config.account, home: config.agentContextHome, user: config.user} as const;
 }
 
 function memoryContent(metadata: MemoryMetadata, body: string): string {

@@ -34,7 +34,12 @@ import {
   type CodeGraphWorksetTopologyResultV1,
 } from '../../code_graph/cross_repository/runtime.js';
 import type {CodeGraphCrossRepositoryTraversalResultV1} from '../../code_graph/cross_repository/traversal.js';
-import {compileContextBrief, CONTEXT_BRIEF_MAXIMUM_CODE_REFS} from '../../context_brief/index.js';
+import {
+  compileContextBrief,
+  CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
+  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+} from '../../context_brief/index.js';
 import {
   CodeGraphWatcher,
   type CodeGraphProgressTiming,
@@ -93,19 +98,20 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
     {
       annotations: {readOnlyHint: false, destructiveHint: false, idempotentHint: true},
       description:
-        'Compile ready graph+memory evidence. codeRefs (max 8 files/cgs_ symbols) retrieve citing memories. content: agent-view v1; structuredContent: full v2/v3. Untrusted; cold indexing is never started.',
+        'Ready graph+memory brief. codeRefs: max 8 canonical repo paths/local cgs_; cgr_ invalid. content: compact agent view; structuredContent: full v2/v3. Untrusted; never indexes.',
       inputSchema: {
-        budgetTokens: McpInput.integer('Response-token budget; default 1250, maximum 1500', {
-          minimum: 1,
-          maximum: 1_500,
+        budgetTokens: McpInput.integer('750-1500; default 1250', {
+          minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+          maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
         }),
-        callerCwd: McpInput.string('Absolute caller workspace path'),
-        codeRefs: McpInput.stringOrStrings('Local file/cgs_ anchor for explicit memory backlinks; max 8', {
-          maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
-        }),
-        mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Planning mode; default brief'),
-        project: McpInput.string('Memory project scope'),
-        task: McpInput.string('Engineering task or question'),
+        callerCwd: McpInput.string('Absolute workspace'),
+        codeRefs: McpInput.stringOrStrings(
+          'Canonical graph-indexed POSIX repo path or exact cgs_<32 lowercase hex>; no dot segments; cgr_ invalid; max 8',
+          {maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS},
+        ),
+        mode: McpInput.literals(['brief', 'locate', 'explain', 'trace', 'impact'], 'Default brief'),
+        project: McpInput.string('Project'),
+        task: McpInput.string('Task/question'),
         workset: McpInput.string('Prepared workset scope; otherwise uses callerCwd'),
       },
     },
