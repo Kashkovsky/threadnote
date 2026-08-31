@@ -29,13 +29,6 @@ export const websiteDefaultSiteSocialImage: WebsiteSocialImage = Object.freeze({
   url: 'https://threadnote.io/og.png',
   width: 1200,
 });
-export const websiteDefaultPostSocialImage: WebsiteSocialImage = Object.freeze({
-  alt: "What's new — Threadnote articles and releases",
-  height: 909,
-  type: 'image/png',
-  url: 'https://threadnote.io/whats-new-og.png',
-  width: 1731,
-});
 
 export function websiteSocialImageForArticle(
   article: Pick<WebsiteArticle, 'socialImage' | 'socialImageAlt'>,
@@ -48,7 +41,7 @@ export function websiteSocialImageForArticle(
         url: new URL(article.socialImage, 'https://threadnote.io/').href,
         width: websiteArticleSocialImageWidth,
       }
-    : websiteDefaultPostSocialImage;
+    : websiteDefaultSiteSocialImage;
 }
 
 export function websiteSocialImageForRelease(

@@ -71,6 +71,7 @@ import {
 import {renderDocsArticleHtml, renderDocsSitemap} from '../../scripts/site-doc-pages.js';
 import {
   orderWebsiteUpdatesDescending,
+  websiteSocialImageForArticle,
   websiteSocialImageForRelease,
 } from '../../website/src/content/websiteArticles.js';
 import type {BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
@@ -1450,8 +1451,59 @@ Make the bottleneck observable.
     expect(renderWebsitePostsSitemap(renderedSitemap, [article, releasePost])).toBe(renderedSitemap);
     expect(renderedIndex).toContain('data-threadnote-index');
     expect(renderedIndex).toContain('<h1>Threadnote articles and releases</h1>');
-    const orderedTitles = orderWebsitePostsDescending([releasePost, article]).map(post => post.title);
+    const orderedPosts = orderWebsitePostsDescending([releasePost, article]);
+    const latestPost = orderedPosts[0]!;
+    const latestSocialImage =
+      latestPost.kind === 'article'
+        ? websiteSocialImageForArticle(latestPost)
+        : websiteSocialImageForRelease(latestPost);
+    expect(renderedIndex).toContain(`<meta property="og:image" content="${latestSocialImage.url}" />`);
+    expect(renderedIndex).toContain(`<meta property="og:image:type" content="${latestSocialImage.type}" />`);
+    expect(renderedIndex).toContain(`<meta property="og:image:width" content="${latestSocialImage.width}" />`);
+    expect(renderedIndex).toContain(`<meta property="og:image:height" content="${latestSocialImage.height}" />`);
+    expect(renderedIndex).toContain(`<meta property="og:image:alt" content="${latestSocialImage.alt}" />`);
+    expect(renderedIndex).toContain(`<meta name="twitter:image" content="${latestSocialImage.url}" />`);
+    expect(renderedIndex).toContain(`<meta name="twitter:image:alt" content="${latestSocialImage.alt}" />`);
+    expect(renderedIndex).toContain(`"image":"${latestSocialImage.url}"`);
+    expect(renderedIndex).not.toContain('whats-new-og.png');
+    const orderedTitles = orderedPosts.map(post => post.title);
     expect(renderedIndex.indexOf(orderedTitles[0]!)).toBeLessThan(renderedIndex.indexOf(orderedTitles[1]!));
+  });
+
+  it("keeps the What's New root image aligned with the newest post for arbitrary timelines", async () => {
+    const template = await readFile(join(root, 'website', 'whats-new', 'index.html'), 'utf8');
+    const publicationOffsets = fc.uniqueArray(fc.integer({min: 0, max: 31_536_000}), {
+      maxLength: 8,
+      minLength: 1,
+    });
+
+    fc.assert(
+      fc.property(publicationOffsets, offsets => {
+        const posts = offsets.map(offset => ({
+          author: 'Threadnote',
+          body: 'A generated article body.',
+          highlights: ['A generated highlight'],
+          kind: 'article' as const,
+          publishedAt: new Date(Date.UTC(2026, 0, 1) + offset * 1_000).toISOString(),
+          slug: `generated-${offset}`,
+          socialImage: `generated-${offset}.png`,
+          socialImageAlt: `Generated article ${offset}`,
+          summary: `Generated summary ${offset}.`,
+          title: `Generated article ${offset}`,
+        }));
+        const latestOffset = Math.max(...offsets);
+        const latestImageUrl = `https://threadnote.io/generated-${latestOffset}.png`;
+        const rendered = renderWhatsNewIndexHtml(template, posts);
+
+        expect(rendered).toContain(`<meta property="og:image" content="${latestImageUrl}" />`);
+        expect(rendered).toContain(`<meta name="twitter:image" content="${latestImageUrl}" />`);
+        expect(rendered).toContain(`"image":"${latestImageUrl}"`);
+        for (const olderOffset of offsets.filter(offset => offset !== latestOffset)) {
+          expect(rendered).not.toContain(`https://threadnote.io/generated-${olderOffset}.png`);
+        }
+      }),
+      {numRuns: 100},
+    );
   });
 
   it('maps every valid authored article image to exact crawler metadata', async () => {
