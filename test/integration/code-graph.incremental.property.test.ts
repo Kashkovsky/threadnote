@@ -410,6 +410,8 @@ describe('code graph incremental-overlay differential properties', () => {
               fallbackReason:
                 scenario.mutation === 'arity' ? 'project-closure-incomplete' : 'resolution-surface-changed',
               mode: 'full',
+              resolutionLookupKeyForm: 'typescript-path-unscoped',
+              resolutionPublicationGate: scenario.mutation === 'export' ? 'own-path-local' : 'exported',
               stagedFiles: scenario.fileCount,
               totalFiles: scenario.fileCount,
             });

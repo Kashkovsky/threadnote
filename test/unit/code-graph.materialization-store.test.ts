@@ -5301,7 +5301,9 @@ describe('code graph full-build materialization store', () => {
       expect(result.resumed[1]!.finalFactBytes).toBeGreaterThan(result.resumed[0]!.finalFactBytes);
       expect(result.afterResume).toEqual({
         active: 1,
-        flags: 1,
+        // Ordinary promotion keeps a clean snapshot warm; only dirty views
+        // receive the automatic retire-on-inactive baton.
+        flags: 0,
         state: 'ready',
         unrelatedLeases: leaseCount,
         unrelatedState: 'ready',
