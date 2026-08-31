@@ -2500,13 +2500,14 @@ describe('Threadnote MCP toolsets', () => {
             'export function addedAfterPull(): string { return "after"; }\n',
             'utf8',
           );
-          await writeFile(
-            join(repository, 'src', 'context-brief-recovery.ts'),
-            Array.from(
-              {length: 16},
-              (_, index) => `export function recoveryContextBrief${index}(): string { return "recovery-${index}"; }`,
-            ).join('\n'),
-            'utf8',
+          await Promise.all(
+            Array.from({length: 7}, (_, index) =>
+              writeFile(
+                join(repository, 'src', `context-brief-recovery-${index}.ts`),
+                `export function recoveryContextBrief${index}(): string { return "recovery-${index}"; }\n`,
+                'utf8',
+              ),
+            ),
           );
 
           const dirtyStale = await client.callTool(
@@ -2780,7 +2781,10 @@ describe('Threadnote MCP toolsets', () => {
             arguments: {
               budgetTokens: 1_500,
               callerCwd: repository,
-              codeRefs: ['src/index.ts'],
+              codeRefs: [
+                'src/index.ts',
+                ...Array.from({length: 7}, (_, index) => `src/context-brief-recovery-${index}.ts`),
+              ],
               mode: 'locate',
               project: 'threadnote',
               task: 'Locate every recoveryContextBrief implementation and its attached memory contract.',
@@ -2792,6 +2796,14 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(boundedRecovery.isError, JSON.stringify(boundedRecovery)).not.toBe(true);
         const boundedRecoveryBrief = parseContextBriefV1(boundedRecovery.structuredContent);
+        expect(boundedRecoveryBrief.version).toBe(3);
+        expect(boundedRecoveryBrief.coverage.memory.codeAnchors).toMatchObject({
+          complete: true,
+          requested: 8,
+          resolved: 8,
+        });
+        expect(boundedRecoveryBrief.output.truncated).toBe(true);
+        expect(boundedRecoveryBrief.coverage.omissions.graphCards).toBeGreaterThan(0);
         expect(boundedRecoveryBrief.graph.continuation?.state).toBe('rerun-required');
         const structuredRecovery = boundedRecoveryBrief.recommendedFollowUps[0];
         expect(structuredRecovery).toMatchObject({
