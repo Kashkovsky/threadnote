@@ -57,7 +57,7 @@
       "wholeGraphAnalysisP95MillisecondsMaximum": 10000
     },
     "100000": {
-      "coldIndexP95MillisecondsMaximum": 900000,
+      "coldIndexP95MillisecondsMaximum": 1350000,
       "coldMaterializationP95MillisecondsMaximum": 600000,
       "derivedIndexBytesMaximum": 3221225472,
       "hotQueryP95MillisecondsMaximum": 10000,
@@ -96,8 +96,9 @@
     "Hosted Windows uses explicit development-only scheduler headroom for hot query, one-file indexing, and structural analysis; Linux and macOS retain the tighter reviewed fixture ceilings.",
     "The Windows overrides still reject multi-second hot queries and minute-scale one-file rebuilds instead of weakening vector, scale, quality, or safety gates.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",
-    "The 100k real-model vector lane uses the explicit hosted macOS ARM64 runner class; the 10k Linux lane retains cross-platform model coverage without making the 100k gate depend on a two-context CPU runner that cannot finish the reviewed workload.",
+    "The 100k real-model vector lane uses the explicit hosted macOS ARM64 runner class; the 10k Linux lane retains independent cross-platform model coverage.",
     "The 10k pinned-vector cold-index wall ceiling is 600 seconds: twice the prior 300-second hosted-runner envelope and about 20% above the reviewed 498-second slow-host tail; materialization, incremental, query, analysis, RSS, and disk guards remain unchanged.",
+    "The 100k pinned-vector cold-index wall ceiling is 1,350 seconds: 10% above the first authoritative 1,194.864-second hosted macOS ARM64 observation, rounded up to the next 50 seconds. The retained calibration projection records that vector generation dominated the observation while materialization, incremental, query, analysis, RSS, disk, parity, and sampler guards remained green; a replacement candidate must pass this ceiling prospectively.",
     "Generated 10k and 100k lexical artifacts are budget-gated on graph/runtime pull requests in Linux and on scheduled runners; production-shaped repositories remain a separate soak gate.",
     "Reviewed lexical incremental ceilings retain substantial cross-runner headroom over the stored baselines while rejecting minute-scale one-file rebuild regressions.",
     "Materialization has separate cold and one-file ceilings so parser/extraction improvements cannot hide a graph-row staging or SQLite write regression inside the end-to-end budget."
