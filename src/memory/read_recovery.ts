@@ -1,7 +1,7 @@
-import {parsePersonalMemoryUri} from '../memory/hygiene.js';
-import {MemoryPointerNotFound} from '../memory/relocation.js';
 import {parseResourceId} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
+import {parsePersonalMemoryUri} from './hygiene.js';
+import {MemoryPointerNotFound} from './relocation.js';
 
 export interface MemoryReadRecoveryV1 {
   readonly code: 'memory-resource-not-found';

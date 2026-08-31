@@ -213,6 +213,46 @@ describe('native memory workflow', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('prints canonical-recall recovery when a historical memory URI has no relocation receipt', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-native-missing-relocation-'});
+        const config: RuntimeConfig = {
+          account: 'local',
+          agentContextHome: home,
+          agentId: 'threadnote',
+          manifestPath: path.join(home, 'seed-manifest.yaml'),
+          user: 'tester',
+        };
+        const uri = 'threadnote://user/tester/memories/durable/projects/threadnote/historical-published-contract.md';
+
+        const observed = yield* captureConsole(runRead(config, uri, {}).pipe(Effect.exit));
+
+        expect(Exit.isFailure(observed.value)).toBe(true);
+        const recoveryLine = observed.output
+          .split('\n')
+          .find(line => line.startsWith('{"code":"memory-resource-not-found"'));
+        expect(recoveryLine).toBeDefined();
+        expect(JSON.parse(recoveryLine!)).toEqual({
+          code: 'memory-resource-not-found',
+          nextAction: {
+            arguments: {query: 'historical-published-contract'},
+            tool: 'recall_context',
+          },
+          recoveryAction: 'recall-canonical-uri',
+          requestedUri: uri,
+          retryable: false,
+          summary:
+            'The memory may have moved or been published before relocation receipts were available. Recall by its stable topic, then read the canonical URI returned.',
+          type: 'threadnote-memory-read-recovery',
+          version: 1,
+        });
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('leaves pending-anchor memory revisions out of enrichment plans', () =>
     Effect.scoped(
       Effect.gen(function* () {

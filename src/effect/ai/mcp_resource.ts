@@ -12,7 +12,7 @@ import {
   verifyResolvedMemoryIdentity,
 } from '../../recall/memory_identity.js';
 import {uriSegment} from '../../manifest.js';
-import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../mcp/memory_read_recovery.js';
+import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../memory/read_recovery.js';
 import {canonicalResourceUri, parseResourceId, resourceIdIsWithin} from '../../storage/resource-id.js';
 import {ResourceNotFound, ResourceStore} from '../resource-store.js';
 import {

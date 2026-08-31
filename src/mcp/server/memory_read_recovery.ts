@@ -1,5 +1,5 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../memory_read_recovery.js';
+import {memoryReadRecoveryForError, memoryReadRecoveryText} from '../../memory/read_recovery.js';
 import type {RuntimeConfig} from '../../types.js';
 import {memoryIdentityAlias} from '../../memory/identity_alias.js';
 import {MemoryIdentityResolutionError} from '../../recall/memory_identity.js';
