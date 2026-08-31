@@ -10,9 +10,10 @@ export const CONTEXT_BRIEF_PROJECTOR_VERSION = 3 as const;
 export const CONTEXT_BRIEF_AGENT_VIEW_VERSION = 1 as const;
 export const CONTEXT_BRIEF_CITATION_VALIDATOR_VERSION = 1 as const;
 export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS = 8 as const;
-export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS = 1 as const;
 export const CONTEXT_BRIEF_CITATION_RELOCATION_HINT_MAXIMUM_BYTES = 96 as const;
 export const CONTEXT_BRIEF_MAXIMUM_CODE_REFS = 8 as const;
+export const CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS = CONTEXT_BRIEF_MAXIMUM_CODE_REFS;
+export const CONTEXT_BRIEF_DEFAULT_PUBLIC_CODE_RELATIONS = 1 as const;
 export const CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS = 1_250 as const;
 export const CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS = 800 as const;
 export const CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS = 1_500 as const;
@@ -255,6 +256,11 @@ export interface ContextBriefMemoryEvidenceV1 extends Omit<
   readonly selectionBasis?: 'code-citation';
 }
 
+/** @internal Complete current relations retained only for ambiguity-safe projection decisions. */
+export interface ContextBriefLogicalMemoryEvidenceV1 extends ContextBriefMemoryEvidenceV1 {
+  readonly cohortCodeRelations?: readonly ContextBriefCodeRelationV3[];
+}
+
 /** @internal Private reverse-index evidence; anchor identity is stripped before projection. */
 export interface ContextBriefCodeLinkMatchV3 {
   readonly anchorNodeId?: string;
@@ -356,10 +362,10 @@ export interface ContextBriefLogicalResultV1 {
       readonly unknown: number;
     };
   };
-  readonly durableDecisions: readonly ContextBriefMemoryEvidenceV1[];
+  readonly durableDecisions: readonly ContextBriefLogicalMemoryEvidenceV1[];
   readonly recommendedFollowUps: readonly ContextBriefFollowUpV1[];
   readonly graph: ContextBriefGraphEvidenceV1;
-  readonly activeHandoffs: readonly ContextBriefMemoryEvidenceV1[];
+  readonly activeHandoffs: readonly ContextBriefLogicalMemoryEvidenceV1[];
   readonly stalenessAndConflicts: readonly ContextBriefContextIssueV1[];
   readonly mode: ContextBriefMode;
   readonly scope: {

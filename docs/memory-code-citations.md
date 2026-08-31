@@ -228,6 +228,9 @@ The v3 projection summarizes direct-link coverage as `coverage.memory.codeAnchor
 position in the deduplicated request without echoing its private selector; correct or remove those positions and
 rerun. A directly selected memory carries `selectionBasis: "code-citation"` and may expose
 bounded `codeRelations` entries with only the anchor ordinal, citation ID, file-or-symbol kind, and validation status.
+The ordinary compact projection keeps the strongest relation. When multiple memories share requested anchors,
+Threadnote may expose the overlap-connected current relations needed to prove that the cohort was admitted atomically;
+the public array remains capped at the eight-request anchor limit.
 Coverage describes explicit citations in the authorized indexed corpus, not semantic completeness; raw selectors,
 repository IDs, paths, hashes, commits, and snapshots stay private.
 

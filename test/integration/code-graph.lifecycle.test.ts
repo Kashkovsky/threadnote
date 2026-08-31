@@ -4955,6 +4955,110 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('releases an interrupted persistent owner while preserving its resumable snapshot', () =>
+    Effect.gen(function* () {
+      const root = createManySourceRepository(3);
+      const home = join(root, '.threadnote-test-home');
+      const identity = yield* resolveRepositoryIdentity(root);
+      const buildStarted = yield* Deferred.make<void>();
+      const releaseBuild = yield* Deferred.make<void>();
+      const releasedBuilds: Array<{
+        readonly ownerToken: string | undefined;
+        readonly snapshotId: string;
+        readonly summary: string;
+      }> = [];
+      const store = yield* CodeGraphStore;
+      const interruptedStore = CodeGraphStore.of({
+        ...store,
+        cacheMaterializedFileShardBatches: (...args) =>
+          Deferred.succeed(buildStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseBuild)),
+            Effect.andThen(store.cacheMaterializedFileShardBatches(...args)),
+          ),
+        releasePersistentBuild: (databasePath, snapshotId, summary, ownerToken) =>
+          Effect.sync(() => {
+            releasedBuilds.push({ownerToken, snapshotId, summary});
+          }).pipe(Effect.andThen(store.releasePersistentBuild(databasePath, snapshotId, summary, ownerToken))),
+      });
+      const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
+        Layer.provide(Layer.succeed(CodeGraphStore, interruptedStore)),
+      );
+
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const context = yield* Layer.build(indexerLayer);
+          const indexer = Context.get(context, CodeGraphIndexer);
+          const building = yield* indexer
+            .index({
+              cwd: root,
+              diskCapacityAvailableBytes: () => Effect.succeed(Number.MAX_SAFE_INTEGER),
+              incrementalOverlay: false,
+              threadnoteHome: home,
+            })
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(buildStarted);
+
+          const databasePath = codeGraphDatabasePath(home, {identity});
+          const beforeInterruption = new Database(databasePath, {readonly: true});
+          try {
+            expect(
+              beforeInterruption
+                .query<{readonly count: number}, []>("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'building'")
+                .get()?.count,
+            ).toBe(1);
+            expect(
+              beforeInterruption
+                .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners')
+                .get()?.count,
+            ).toBe(1);
+          } finally {
+            beforeInterruption.close();
+          }
+
+          yield* Fiber.interrupt(building);
+        }),
+      );
+
+      expect(releasedBuilds).toEqual([
+        {
+          ownerToken: expect.any(String),
+          snapshotId: expect.any(String),
+          summary: 'Code graph build was interrupted before completion.',
+        },
+      ]);
+      expect(
+        (yield* readAllCodeGraphBuildStatuses(home)).find(status => status.identity.worktreeId === identity.worktreeId),
+      ).toMatchObject({
+        error: {summary: 'Code graph build was interrupted before completion.'},
+        state: 'failed',
+      });
+      const database = new Database(codeGraphDatabasePath(home, {identity}), {readonly: true});
+      try {
+        expect(
+          database
+            .query<{readonly count: number}, []>("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'building'")
+            .get()?.count,
+        ).toBe(1);
+        expect(
+          database
+            .query<{readonly state: string; readonly failure_summary: string}, []>(
+              'SELECT state, failure_summary FROM snapshots ORDER BY started_at DESC LIMIT 1',
+            )
+            .get(),
+        ).toEqual({
+          failure_summary: 'Code graph build was interrupted before completion.',
+          state: 'building',
+        });
+        expect(
+          database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()
+            ?.count,
+        ).toBe(0);
+      } finally {
+        database.close();
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it('indexes linked worktrees concurrently across processes without mixing dirty overlays or waiters', async () => {
     const root = createConcurrentProjectRepository();
     const home = join(root, '.threadnote-test-home');

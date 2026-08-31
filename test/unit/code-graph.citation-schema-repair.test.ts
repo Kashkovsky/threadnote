@@ -30,6 +30,8 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {join} from '../helpers/effect-filesystem.js';
 import {TestError} from '../helpers/test-error.js';
 
+const LIVE_LEASE_EXPIRY_MILLISECONDS = Number.MAX_SAFE_INTEGER;
+
 describe('code graph snapshot-file citation schema repair', () => {
   effectIt.effect('migrates revision 15 with dry-run parity while preserving live lease authority', () =>
     Effect.gen(function* () {
@@ -68,7 +70,7 @@ describe('code graph snapshot-file citation schema repair', () => {
           database.exec('DROP TABLE citation_schema_cookie_bump');
           database
             .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-            .run('migration-preview-live-lease', snapshot.id, Date.now() + 60_000);
+            .run('migration-preview-live-lease', snapshot.id, LIVE_LEASE_EXPIRY_MILLISECONDS);
         } finally {
           database.close(false);
         }
@@ -300,7 +302,7 @@ describe('code graph snapshot-file citation schema repair', () => {
             }
             database
               .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-              .run(`revision-16-${aliasState}-lease`, snapshot.id, Date.now() + 60_000);
+              .run(`revision-16-${aliasState}-lease`, snapshot.id, LIVE_LEASE_EXPIRY_MILLISECONDS);
           } finally {
             database.close(false);
           }
@@ -483,7 +485,7 @@ describe('code graph snapshot-file citation schema repair', () => {
           database.exec('CREATE INDEX snapshot_files_raw_content_hash ON file_blobs(content_hash)');
           database
             .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-            .run('migration-drift-live-lease', snapshot.id, Date.now() + 60_000);
+            .run('migration-drift-live-lease', snapshot.id, LIVE_LEASE_EXPIRY_MILLISECONDS);
         } finally {
           database.close(false);
         }

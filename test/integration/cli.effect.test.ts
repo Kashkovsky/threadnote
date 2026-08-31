@@ -1436,42 +1436,57 @@ describe('Effect CLI', () => {
   });
 
   it('accepts compatibility aliases for memory command options', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-compatibility-aliases-'));
     const durableUri = 'threadnote://user/compat/memories/durable/projects/threadnote/previous.md';
     const handoffUri = 'threadnote://user/compat/memories/handoffs/active/threadnote/previous.md';
-    const [recallResult, rememberResult, handoffResult, listResult] = await Promise.all([
-      runCli(['recall', '--dry-run', '--cwd', process.cwd(), '--limit', '1', '--query', 'compatibility aliases']),
-      runCli([
-        'remember',
-        '--dry-run',
-        '--text',
-        'compatibility aliases',
-        '--project',
-        'threadnote',
-        '--topic',
-        'compatibility-aliases',
-        `--replace-uri=${durableUri}`,
-      ]),
-      runCli([
-        'handoff',
-        '--dry-run',
-        '--task',
-        'compatibility aliases',
-        '--project',
-        'threadnote',
-        '--topic',
-        'compatibility-aliases',
-        `--replace-uri=${handoffUri}`,
-      ]),
-      runCli(['list', '--dry-run', '--limit', '1', 'threadnote://user/compat/memories']),
-    ]);
+    const environment = {THREADNOTE_HOME: home};
+    try {
+      const [recallResult, rememberResult, handoffResult, listResult] = await Promise.all([
+        runCli(
+          ['recall', '--dry-run', '--cwd', process.cwd(), '--limit', '1', '--query', 'compatibility aliases'],
+          environment,
+        ),
+        runCli(
+          [
+            'remember',
+            '--dry-run',
+            '--text',
+            'compatibility aliases',
+            '--project',
+            'threadnote',
+            '--topic',
+            'compatibility-aliases',
+            `--replace-uri=${durableUri}`,
+          ],
+          environment,
+        ),
+        runCli(
+          [
+            'handoff',
+            '--dry-run',
+            '--task',
+            'compatibility aliases',
+            '--project',
+            'threadnote',
+            '--topic',
+            'compatibility-aliases',
+            `--replace-uri=${handoffUri}`,
+          ],
+          environment,
+        ),
+        runCli(['list', '--dry-run', '--limit', '1', 'threadnote://user/compat/memories'], environment),
+      ]);
 
-    expect(recallResult.stdout).toContain('Would search native recall index for "compatibility aliases"');
-    expect(recallResult.stdout).toContain('/memories/durable/projects/threadnote');
-    expect(rememberResult.stdout).toContain(`supersedes: ${durableUri}`);
-    expect(rememberResult.stdout).toContain(`Would remove superseded native resource: ${durableUri}`);
-    expect(handoffResult.stdout).toContain(`supersedes: ${handoffUri}`);
-    expect(handoffResult.stdout).toContain(`Would remove superseded native resource: ${handoffUri}`);
-    expect(listResult.stdout).toContain('Would list native resource: threadnote://user/compat/memories');
+      expect(recallResult.stdout).toContain('Would search native recall index for "compatibility aliases"');
+      expect(recallResult.stdout).toContain('/memories/durable/projects/threadnote');
+      expect(rememberResult.stdout).toContain(`supersedes: ${durableUri}`);
+      expect(rememberResult.stdout).toContain(`Would remove superseded native resource: ${durableUri}`);
+      expect(handoffResult.stdout).toContain(`supersedes: ${handoffUri}`);
+      expect(handoffResult.stdout).toContain(`Would remove superseded native resource: ${handoffUri}`);
+      expect(listResult.stdout).toContain('Would list native resource: threadnote://user/compat/memories');
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
   });
 
   it('rejects retired daemon port flags', async () => {

@@ -1,6 +1,11 @@
 import {Effect, FileSystem, Option} from 'effect';
 import type {CodeGraphBuildAnonymousTelemetryReporter} from './anonymous_telemetry.js';
-import {buildAndActivate, retiredSnapshotCleanupReporter, reuseReadySnapshot} from './indexer_build.js';
+import {
+  buildAndActivate,
+  retiredSnapshotCleanupReporter,
+  reuseReadySnapshot,
+  settleInterruptedCodeGraphBuild,
+} from './indexer_build.js';
 import {assessIncrementalOverlay} from './indexer_incremental.js';
 import {createRepositoryFactAttributionContext, type RepositoryFactAttributionContext} from './extractor_context.js';
 import {finalCodeGraphFactBatches} from './fact_budget.js';
@@ -353,6 +358,9 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
           threadnoteHome: input.options.threadnoteHome,
           workspace,
         }).pipe(
+          Effect.onInterrupt(() =>
+            settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id),
+          ),
           Effect.catch(cause =>
             input.store
               .markFailed(input.layout.databasePath, building.id, messageOf(cause))

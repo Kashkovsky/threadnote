@@ -35,6 +35,8 @@ import {SystemInfo} from '../../src/effect/system.js';
 import {CodeGraphMaintenanceCoordinator} from '../../src/code_graph/maintenance_coordinator.js';
 import {inspectCodeGraphViewDatabaseTarget} from '../../src/code_graph/view_removal.js';
 
+const LIVE_LEASE_EXPIRY_MILLISECONDS = Number.MAX_SAFE_INTEGER;
+
 describe('bounded code graph maintenance', () => {
   const homes: string[] = [];
 
@@ -144,7 +146,7 @@ describe('bounded code graph maintenance', () => {
         try {
           database
             .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-            .run('repair-spool-live-lease', leasedSnapshot.id, Date.now() + 60_000);
+            .run('repair-spool-live-lease', leasedSnapshot.id, LIVE_LEASE_EXPIRY_MILLISECONDS);
         } finally {
           database.close(false);
         }
@@ -294,7 +296,7 @@ describe('bounded code graph maintenance', () => {
         try {
           database
             .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-            .run('migration-preview-live-lease', leasedSnapshot.id, Date.now() + 60_000);
+            .run('migration-preview-live-lease', leasedSnapshot.id, LIVE_LEASE_EXPIRY_MILLISECONDS);
         } finally {
           database.close(false);
         }
@@ -403,7 +405,7 @@ describe('bounded code graph maintenance', () => {
                     try {
                       database
                         .query('INSERT INTO snapshot_leases (token, snapshot_id, expires_at) VALUES (?, ?, ?)')
-                        .run('database-appeared-live-lease', building.id, Date.now() + 60_000);
+                        .run('database-appeared-live-lease', building.id, LIVE_LEASE_EXPIRY_MILLISECONDS);
                     } finally {
                       database.close(false);
                     }

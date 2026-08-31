@@ -34,6 +34,7 @@ import {parseContextBriefV1} from '../../src/context_brief/projector.js';
 import {
   assembleCalibrationPlanV1,
   assembleCodeMemoryLinkSealedSuiteV1,
+  assertCodeMemoryLinkCanonicalNoMemoryResponseV1,
   assertCodeMemoryLinkInstructionInjectionControlPreflightV1,
   assertCodeMemoryLinkMalformedSealedMemoryV1,
   assertPreparedGraphObjectFormat,
@@ -48,6 +49,22 @@ import {
 import {parseCodeMemoryLinkCodexSuiteLayoutV1} from '../../scripts/code-memory-link-codex-suite.js';
 
 describe('Code Memory Link sealed preparation', () => {
+  it('keeps the empty control visible and equivalent for content-only MCP clients', () => {
+    expect(() => assertCodeMemoryLinkCanonicalNoMemoryResponseV1()).not.toThrow();
+    expect(CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.content).toEqual([
+      {
+        text: JSON.stringify(CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.structuredContent),
+        type: 'text',
+      },
+    ]);
+    expect(() =>
+      assertCodeMemoryLinkCanonicalNoMemoryResponseV1({
+        ...CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
+        content: [],
+      }),
+    ).toThrow('content-equivalent empty response');
+  });
+
   it('binds candidate graph object format to the repository observed through Git', () => {
     expect(assertPreparedGraphObjectFormat('sha1', 'sha1')).toBe('sha1');
     expect(() => assertPreparedGraphObjectFormat('sha256', 'sha1')).toThrow(
