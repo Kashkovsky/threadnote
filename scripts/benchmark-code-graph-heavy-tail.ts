@@ -10,7 +10,12 @@ import {CodeGraphStore, type StoredCodeGraph} from '../src/code_graph/store.js';
 import type {CodeGraphProgress} from '../src/code_graph/types.js';
 import {runCommandEffect} from '../src/effect/command.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {SystemInfo, type SystemInfoShape} from '../src/effect/system.js';
+import {
+  processResourceUsageMaxRssBytes,
+  SystemInfo,
+  type ProcessResourceUsageRuntime,
+  type SystemInfoShape,
+} from '../src/effect/system.js';
 import {
   BENCHMARK_ARTIFACT_VERSION,
   benchmarkMeasurement,
@@ -1270,7 +1275,8 @@ function boundedOutput(label: string, output: string): string {
 
 function processPeakRssBytes(): number {
   const maxRss = process.resourceUsage().maxRSS;
-  return 'bun' in process.versions ? maxRss : maxRss * 1_024;
+  const runtime: ProcessResourceUsageRuntime = 'bun' in process.versions ? 'bun' : 'node';
+  return processResourceUsageMaxRssBytes(maxRss, process.platform, runtime);
 }
 
 const git = Effect.fn('benchmarkCodeGraphHeavyTail.git')((cwd: string, args: readonly string[]) =>

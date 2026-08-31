@@ -126,6 +126,22 @@ const nativeFileSystemModule = process.getBuiltinModule('fs') as NativeFileSyste
 const nativeFileSystemPromises = nativeFileSystemModule.promises;
 const nativePathModule = process.getBuiltinModule('path') as NativePathModuleShape;
 
+export type ProcessResourceUsageRuntime = 'bun' | 'node';
+
+/**
+ * Node exposes process.resourceUsage().maxRSS in KiB on every platform. The
+ * release-pinned Bun 1.3.14 exposes bytes on Darwin and KiB on its other
+ * supported platforms. Revalidate this adapter whenever the pinned Bun
+ * version moves.
+ */
+export function processResourceUsageMaxRssBytes(
+  maxRss: number,
+  platform: NodeJS.Platform,
+  runtime: ProcessResourceUsageRuntime,
+): number {
+  return runtime === 'bun' && platform === 'darwin' ? maxRss : maxRss * 1_024;
+}
+
 export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {
   return platform === 'win32' ? nativePathModule.win32 : nativePathModule.posix;
 }
@@ -419,10 +435,11 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
         memoryUsage: () => {
           const usage = process.memoryUsage();
           const runtimePeakRss = process.resourceUsage().maxRSS;
+          const runtime: ProcessResourceUsageRuntime = 'bun' in process.versions ? 'bun' : 'node';
           return {
             external: usage.external,
             heapUsed: usage.heapUsed,
-            peakRss: 'bun' in process.versions ? runtimePeakRss : runtimePeakRss * 1_024,
+            peakRss: processResourceUsageMaxRssBytes(runtimePeakRss, runtimePlatform, runtime),
             rss: usage.rss,
           };
         },

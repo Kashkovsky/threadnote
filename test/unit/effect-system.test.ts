@@ -33,6 +33,7 @@ import {
   parseProcessStartIdentityOutput,
   parseWindowsAvailableDiskBytes,
   platformPathFor,
+  processResourceUsageMaxRssBytes,
   probeAvailableDiskBytes,
   probeRuntimeAvailableDiskBytes,
   readCanonicalProcessStartIdentity,
@@ -48,6 +49,23 @@ import {
 } from '../../src/effect/system.js';
 
 describe('SystemInfo structural path adapter', () => {
+  it.each([
+    {expected: 544_440, platform: 'darwin', runtime: 'bun'},
+    {expected: 557_506_560, platform: 'freebsd', runtime: 'bun'},
+    {expected: 557_506_560, platform: 'linux', runtime: 'bun'},
+    {expected: 557_506_560, platform: 'win32', runtime: 'bun'},
+    {expected: 557_506_560, platform: 'darwin', runtime: 'node'},
+    {expected: 557_506_560, platform: 'freebsd', runtime: 'node'},
+    {expected: 557_506_560, platform: 'linux', runtime: 'node'},
+    {expected: 557_506_560, platform: 'win32', runtime: 'node'},
+  ] satisfies ReadonlyArray<{
+    readonly expected: number;
+    readonly platform: NodeJS.Platform;
+    readonly runtime: 'bun' | 'node';
+  }>)('normalizes $runtime process maxRSS on $platform to bytes', ({expected, platform, runtime}) => {
+    expect(processResourceUsageMaxRssBytes(544_440, platform, runtime)).toBe(expected);
+  });
+
   effectIt.effect.prop(
     'enforces group and other privacy bits only on platforms with POSIX modes',
     {
@@ -1024,6 +1042,16 @@ function waitForRecordedProcessIds(path: string, expectedCount: number, timeoutM
 }
 
 describe('SystemInfo benchmark metadata', () => {
+  effectIt.effect('reports process peak RSS in bytes', () =>
+    Effect.gen(function* () {
+      const memory = (yield* SystemInfo).memoryUsage();
+      const peakRss = memory.peakRss ?? 0;
+
+      expect(peakRss).toBeGreaterThan(1_048_576);
+      expect(peakRss).toBeGreaterThanOrEqual(memory.rss);
+    }).pipe(provideTestLayer(SystemInfo.layer)),
+  );
+
   effectIt.effect('reports real CPU, memory, and operating-system values', () =>
     Effect.gen(function* () {
       const hardware = yield* (yield* SystemInfo).hardwareInfo;

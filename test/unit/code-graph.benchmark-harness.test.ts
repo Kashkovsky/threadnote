@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {readFileSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path, PlatformError, Schedule} from 'effect';
+import {Clock, Effect, FileSystem, Path, PlatformError, Schedule, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -25,7 +25,6 @@ import {
   measureBenchmarkIndex,
   measureSampledBenchmarkIndex,
   parseCodeGraphBenchmarkArguments,
-  processMaxRssBytes,
   productionBenchmarkStorageGoverned,
   requiresLongScaleBenchmarkEvidence,
   restoreBenchmarkOverlay,
@@ -362,17 +361,34 @@ describe('code graph external benchmark harness', () => {
     expect(source.match(/sampler\s*\? Effect\.void\s*:\s*observeSqliteStoragePeak/g)).toHaveLength(3);
   });
 
-  it.each([
-    {expected: 544_440, platform: 'darwin', runtime: 'bun'},
-    {expected: 557_506_560, platform: 'linux', runtime: 'bun'},
-    {expected: 557_506_560, platform: 'darwin', runtime: 'node'},
-    {expected: 557_506_560, platform: 'linux', runtime: 'node'},
-  ] satisfies ReadonlyArray<{
-    readonly expected: number;
-    readonly platform: NodeJS.Platform;
-    readonly runtime: 'bun' | 'node';
-  }>)('normalizes $runtime maxRSS on $platform to bytes', ({expected, platform, runtime}) => {
-    expect(processMaxRssBytes(544_440, platform, runtime)).toBe(expected);
+  it('uses the centralized process maxRSS byte normalizer', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+
+    expect(source).toContain('processResourceUsageMaxRssBytes(maxRss, process.platform, runtime)');
+    expect(source).not.toContain("return 'bun' in process.versions ? maxRss : maxRss * 1_024");
+  });
+
+  it('preserves the governed Linux RSS ceiling while expressing it in bytes', () => {
+    const ratchet = Schema.decodeUnknownSync(
+      Schema.fromJsonString(
+        Schema.Struct({
+          measurements: Schema.Struct({
+            'cold-process-peak-rss': Schema.Struct({
+              p95Maximum: Schema.Number,
+              unit: Schema.Literal('bytes'),
+            }),
+            'incremental-process-peak-rss': Schema.Struct({
+              p95Maximum: Schema.Number,
+              unit: Schema.Literal('bytes'),
+            }),
+          }),
+        }),
+      ),
+    )(readFileSync('test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json', 'utf8'));
+    const governedCeilingBytes = 1_195_010 * 1_024;
+
+    expect(ratchet.measurements['cold-process-peak-rss'].p95Maximum).toBe(governedCeilingBytes);
+    expect(ratchet.measurements['incremental-process-peak-rss'].p95Maximum).toBe(governedCeilingBytes);
   });
 
   it('retains provenance-valid artifact evidence before reporting a budget or ratchet regression', () => {

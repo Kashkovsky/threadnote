@@ -43,7 +43,7 @@ import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../src/effect/runtime.js';
 import {THREADNOTE_EMBEDDING_CONTEXTS_ENV, type EmbeddingContextPoolSize} from '../src/effect/ai/node-llama-cpp.js';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {processResourceUsageMaxRssBytes, SystemInfo, type ProcessResourceUsageRuntime} from '../src/effect/system.js';
 import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
 import {LocalModelCatalog} from '../src/models/catalog.js';
 import {selectLocalModel} from '../src/models/selection.js';
@@ -1730,7 +1730,9 @@ const benchmarkCodeGraph = Effect.scoped(
           : {}),
         ...(runtimeProvenance ? benchmarkRuntimeProvenanceMetadata(runtimeProvenance) : {}),
         rssMeasurement:
-          'boundary RSS plus process-lifetime resourceUsage.maxRSS; peak is cumulative, not phase-isolated',
+          'boundary RSS plus process-lifetime resourceUsage.maxRSS normalized to bytes; ' +
+          'Bun 1.3.14 Darwin is bytes, while Bun Linux/Windows and Node KiB are multiplied by 1024; ' +
+          'peak is cumulative, not phase-isolated',
         statusSamples,
         sqliteDurableStorageMeasurement:
           'SQLite durable database allocated-page high-water from direct materialization progress; WAL and SHM remain separately sampled filesystem artifacts',
@@ -3014,21 +3016,6 @@ export interface ProcessTelemetry {
   readonly cpuUserMicroseconds: number;
   readonly peakRssBytes: number;
   readonly rssBytes: number;
-}
-
-export type ProcessResourceUsageRuntime = 'bun' | 'node';
-
-/**
- * Node normalizes resourceUsage().maxRSS to KiB on every platform. The
- * release-pinned Bun runtime follows the native Darwin byte unit but reports
- * KiB on Linux; revalidate this branch whenever the pinned Bun version changes.
- */
-export function processMaxRssBytes(
-  maxRss: number,
-  platform: NodeJS.Platform,
-  runtime: ProcessResourceUsageRuntime,
-): number {
-  return runtime === 'bun' && platform === 'darwin' ? maxRss : maxRss * 1_024;
 }
 
 function processTelemetry(): ProcessTelemetry {
@@ -7973,7 +7960,7 @@ export function enforceCodeGraphBenchmarkBudget(
 function processPeakRssBytes(): number {
   const maxRss = process.resourceUsage().maxRSS;
   const runtime: ProcessResourceUsageRuntime = 'bun' in process.versions ? 'bun' : 'node';
-  return processMaxRssBytes(maxRss, process.platform, runtime);
+  return processResourceUsageMaxRssBytes(maxRss, process.platform, runtime);
 }
 
 export function requiresLongScaleBenchmarkEvidence(scaleSymbols: number | undefined): boolean {
