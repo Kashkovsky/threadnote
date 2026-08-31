@@ -3,6 +3,7 @@ import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {sha256FileHex, sha256Hex} from '../../src/effect/digest.js';
+import {readCanonicalMutationGeneration} from '../../src/effect/resource_mutation_generation.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {
@@ -82,6 +83,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(true);
         expect(yield* fs.exists(path.join(home, 'data', 'local', '.DS_Store'))).toBe(false);
         expect(yield* fs.exists(path.join(home, 'data', 'viking', 'local', '.DS_Store'))).toBe(true);
+        expect(yield* readCanonicalMutationGeneration(fs, path, home, 'local')).toMatch(/^v1:/);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -326,6 +328,7 @@ describe('Threadnote storage layout migration', () => {
           action: 'resumed',
         });
         expect(yield* fs.readFileString(target)).toBe('already moved');
+        expect(yield* readCanonicalMutationGeneration(fs, path, home, 'local')).toMatch(/^v1:/);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
