@@ -1179,6 +1179,22 @@ export const McpInput = {
     Schema.optionalKey(numberSchema(description, {...options, integer: true})),
   literals: <const Values extends readonly [string, ...string[]]>(values: Values, description?: string) =>
     Schema.optionalKey(annotate(Schema.Literals(values), description)),
+  literalsOrLiterals: <const Values extends readonly [string, ...string[]]>(
+    values: Values,
+    description?: string,
+    options: {readonly maximumItems?: number} = {},
+  ) =>
+    Schema.optionalKey(
+      annotate(
+        Schema.Union([
+          Schema.Literals(values),
+          options.maximumItems === undefined
+            ? Schema.Array(Schema.Literals(values))
+            : Schema.Array(Schema.Literals(values)).check(Schema.isMaxLength(options.maximumItems)),
+        ]),
+        description,
+      ),
+    ),
   messages: (description?: string) =>
     Schema.optionalKey(
       annotate(Schema.Array(Schema.Struct({content: Schema.String, role: Schema.String})), description),

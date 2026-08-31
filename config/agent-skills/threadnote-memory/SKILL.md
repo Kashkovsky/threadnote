@@ -12,6 +12,13 @@ Store reusable decisions and contracts with `kind: durable`. Store status, check
 creating timestamped duplicates. Use `review_session_context` only for additional candidates that require explicit
 approval.
 
+Author `relations` only when the memory content or an explicit review establishes the connection. Use the closed types
+`depends_on`, `evidence_for`, `references`, `related_to`, and `supersedes`, and target a stable memory ID or canonical
+managed-memory URI that you have read in the same authorized memory scope. Never infer a durable edge from topical
+similarity alone or publish a memory merely to make an edge possible. A replacement supplies the complete intended
+relation set, so carry forward relations that remain valid. Keep `replaceUri` as the update mechanism; use a
+`supersedes` relation only for explicit lifecycle lineage, not as a substitute for replacement.
+
 For consequential source claims, attach graph-indexed repository paths or returned `cgs_` and `cgr_` handles as code
 references. Threadnote first attempts capture from a ready exact-current graph and never starts indexing during the
 write. For active personal memory with explicit code references, a retryable graph-readiness failure stores the memory

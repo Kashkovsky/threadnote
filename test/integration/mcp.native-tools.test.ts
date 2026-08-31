@@ -480,6 +480,17 @@ describe('Threadnote MCP toolsets', () => {
           },
           type: 'object',
         });
+        expect(recall?.inputSchema.properties).toMatchObject({
+          memoryRefs: {
+            anyOf: [{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}],
+          },
+          relationTypes: {
+            anyOf: [
+              {enum: MEMORY_RELATION_TYPES, type: 'string'},
+              {items: {enum: MEMORY_RELATION_TYPES, type: 'string'}, maxItems: 5, type: 'array'},
+            ],
+          },
+        });
         expect(JSON.stringify(recall?.inputSchema)).not.toContain('null');
         const read = tools.tools.find(tool => tool.name === 'read_context');
         expect(read?.inputSchema.properties).not.toHaveProperty('full');
@@ -526,6 +537,16 @@ describe('Threadnote MCP toolsets', () => {
           query: 'threadnote',
         });
         expect(validationError).toContain('greater than or equal to 1');
+        const missingMemoryRefs = await callErrorText(client, 'recall_context', {
+          query: 'threadnote',
+          relationTypes: ['depends_on'],
+        });
+        expect(missingMemoryRefs).toContain('relationTypes requires memoryRefs');
+        const tooManyMemoryRefs = await callErrorText(client, 'recall_context', {
+          memoryRefs: Array.from({length: 9}, (_, index) => `threadnote://memory/tn_${index}`),
+          query: 'threadnote',
+        });
+        expect(tooManyMemoryRefs).toContain('at most 8');
         const tooManyCodeRefs = await callErrorText(client, 'remember_context', {
           callerCwd: fixture.root,
           codeRefs: Array.from({length: MAX_MEMORY_CODE_CITATIONS + 1}, (_, index) => `src/${index}.ts`),
@@ -613,6 +634,84 @@ describe('Threadnote MCP toolsets', () => {
           threshold: 0,
         });
         expect(tooSmall).toContain('greater than or equal to 700');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('returns budgeted seeded one-hop receipts without exposing internal diagnostics', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const memory = (topic: string, memoryId: string, body: string, relation?: string) =>
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            `topic: ${topic}`,
+            'source_agent_client: integration-test',
+            'timestamp: 2026-08-31T00:00:00.000Z',
+            `memory_id: ${memoryId}`,
+            ...(relation ? [`relation: ${relation}`] : []),
+            '',
+            body,
+          ].join('\n');
+        await writeCanonicalMemory(
+          fixture.home,
+          'mcp-connection-seed.md',
+          memory(
+            'mcp-connection-seed',
+            'tn_mcp_connection_seed',
+            'Seed body is lexically unrelated.',
+            'depends_on threadnote://memory/tn_mcp_connection_target',
+          ),
+        );
+        await writeCanonicalMemory(
+          fixture.home,
+          'mcp-connection-target.md',
+          memory('mcp-connection-target', 'tn_mcp_connection_target', 'Direct neighbor is also lexically unrelated.'),
+        );
+
+        const result = await client.callTool(
+          {
+            arguments: {
+              memoryRefs: ['threadnote://memory/tn_mcp_connection_seed'],
+              project: 'threadnote',
+              query: 'no lexical overlap whatsoever',
+              relationTypes: ['depends_on'],
+            },
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+
+        expect(result.isError).not.toBe(true);
+        const structured = result.structuredContent as {
+          readonly memoryConnections?: {
+            readonly connections: readonly Record<string, unknown>[];
+            readonly coverage: Record<string, unknown>;
+            readonly premises: readonly Record<string, unknown>[];
+          };
+          readonly results?: readonly {readonly uri?: string}[];
+        };
+        expect(structured.memoryConnections?.premises).toEqual([
+          expect.objectContaining({memoryId: 'tn_mcp_connection_seed', state: 'current'}),
+        ]);
+        expect(structured.memoryConnections?.connections).toEqual([
+          expect.objectContaining({
+            currentness: 'current',
+            direction: 'outgoing',
+            neighborMemoryId: 'tn_mcp_connection_target',
+            relationType: 'depends_on',
+            resolution: 'resolved',
+          }),
+        ]);
+        expect(structured.results?.some(item => item.uri?.includes('mcp-connection-target.md'))).toBe(true);
+        expect(structured.memoryConnections).not.toHaveProperty('diagnostics');
+        expect((result.content as TextContent[]).map(item => item.text).join('\n')).toContain(
+          'Relations are navigation evidence, not entailment.',
+        );
       },
       {toolset: 'core'},
     );

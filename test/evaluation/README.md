@@ -14,8 +14,44 @@ parity:
 bun --bun vitest run test/unit/memory-connections-bench.test.ts
 ```
 
-This is deliberately an `authoring-projection` oracle. It does not claim one-hop retrieval, currentness assembly,
-Context Brief integration, agent usefulness, or release-scale latency; those remain Milestone C gates.
+This is deliberately an `authoring-projection` oracle. It does not claim one-hop retrieval or currentness assembly;
+those are governed separately so changing retrieval truth cannot silently rewrite the A+B hash.
+
+## MemoryConnections retrieval and scale v1 (C–E)
+
+`fixtures/memory-connections-retrieval-bench-v1/fixture.json` freezes direct incoming/outgoing retrieval, multi-seed
+fairness, the exactly-one-hop boundary, cycle handling, unresolved legacy targets, identity conflicts, validity windows,
+explicit supersession, authorization nondisclosure, and no-answer behavior across all five knowledge abilities:
+
+```sh
+bun run eval:memory-connections-retrieval
+```
+
+The gate executes canonical files, the production SQLite selector, live rereads, and currentness assembly. It requires
+Precision/Recall/currentness/no-answer accuracy of `1.0`, zero authority or authorization leaks and duplicates, and a
+maximum 1,500-estimated-token response. Relationships remain navigation evidence, never automatic entailment.
+An unresolved or identity-conflicted premise produces only its premise receipt and is never expanded; this abstention
+boundary is part of the frozen truth rather than a loss of neighbor recall.
+
+The scheduled/opt-in scale lane materializes and indexes exactly 100,000 canonical memories: a dense incoming hub, a
+sparse incoming neighborhood, a no-answer premise, and a same-user but unauthorized-project decoy. It samples five
+warmups plus 25 measured production lookups, requires the exact first eight hub neighbors, deterministic truncation,
+zero result or receipt identity leaks, row-aligned connection roles and ordinals, current/resolved serialized receipts,
+and exact accounting plus truncation when the response budget omits a receipt suffix. It gates the JSON-round-tripped
+MCP projection rather than trusting the raw retrieval object. The latency envelope is p95 at most 250 ms with every
+sample at most 1,000 ms; the dense lookup also
+permits no more than 257 raw link rows and 322 canonical proof reads:
+
+```sh
+bun run bench:memory-connections-scale -- \
+  --candidate-commit <exact-clean-candidate-sha> \
+  --output artifacts/memory-connections-scale.json
+```
+
+For local iteration only, add `--development-smoke` and optionally override `--memory-candidates`, `--samples`, and
+`--warmups`. Smoke evidence is derived as non-release and cannot be relabeled. Hosted remote memory v1 remains
+task-recall-only: it lacks the stable identity, relation index, and live currentness contract required for parity, so a
+future versioned protocol must add those capabilities rather than silently widening the strict v1 schema.
 
 ## CodeMemoryLinkBench v1
 

@@ -235,9 +235,11 @@ export interface RecallOptions {
   readonly dryRun?: boolean;
   readonly inferScope?: boolean;
   readonly includeArchived?: boolean;
+  readonly memoryRefs?: readonly string[];
   readonly nodeLimit?: string;
   readonly project?: string;
   readonly query: string;
+  readonly relationTypes?: readonly string[];
   readonly threshold?: string;
   readonly uri?: string;
   readonly workset?: string;

@@ -1,0 +1,18 @@
+{
+  "corpusMemoryCount": 100000,
+  "id": "memory-connections-one-hop-scale-v1",
+  "maximumAddedPeakRssBytes": 3221225472,
+  "maximumCanonicalRereadsPerLookup": 322,
+  "maximumCorpusBytes": 268435456,
+  "maximumIndexBuildMilliseconds": 600000,
+  "maximumLookupP95Milliseconds": 250,
+  "maximumLookupSampleMilliseconds": 1000,
+  "maximumMaterializationMilliseconds": 300000,
+  "maximumRawLinkRowsPerLookup": 257,
+  "maximumRecallStorageBytes": 2147483648,
+  "maximumResponseEstimatedTokens": 1500,
+  "minimumSamples": 25,
+  "minimumWarmups": 5,
+  "queryLimit": 8,
+  "version": 1
+}

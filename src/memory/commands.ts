@@ -116,6 +116,8 @@ import {
   type RecallOperationalWarning,
 } from '../recall/warning.js';
 import type {RecallConfidence} from '../recall/rank.js';
+import {parseRecallCliMemoryConnectionInput, renderRecallMemoryConnections} from '../recall/cli_response.js';
+import type {RecallMemoryConnectionsResult} from '../recall/memory_connections.js';
 import type {
   ArchiveOptions,
   CompactOptions,
@@ -124,7 +126,6 @@ import type {
   HandoffOptions,
   ListOptions,
   MemoryKind,
-  MemoryStatus,
   PackOptions,
   ProjectManifest,
   ReadOptions,
@@ -133,6 +134,7 @@ import type {
   ResolvedWorkset,
   RuntimeConfig,
 } from '../types.js';
+export {parseCompactKind, parseMemoryStatus} from './parse.js';
 import {
   assertResourceUri,
   enrichRecallQueryWithWorkspaceProjectContext,
@@ -187,6 +189,7 @@ export {runEnrichMemories} from './enrichment.js';
 /** Stable ranked recall data for product surfaces that should not parse CLI rendering. */
 export interface RecallResult {
   readonly confidence?: RecallConfidence;
+  readonly memoryConnections?: RecallMemoryConnectionsResult;
   readonly queryExpansions: readonly string[];
   readonly ranked: readonly RecallHit[];
   readonly totalRanked: number;
@@ -200,22 +203,6 @@ export function parseMemoryKind(value: string): MemoryKind {
   throw new MemoryOperationError(
     `Unsupported memory kind "${value}". Expected durable, handoff, incident, preference, or smoke.`,
   );
-}
-
-export function parseMemoryStatus(value: string): MemoryStatus {
-  if (['active', 'archived', 'expired', 'superseded'].includes(value)) {
-    return value as MemoryStatus;
-  }
-  throw new MemoryOperationError(
-    `Unsupported memory status "${value}". Expected active, archived, expired, or superseded.`,
-  );
-}
-
-export function parseCompactKind(value: string): CompactableMemoryKind {
-  if (['durable', 'handoff', 'incident'].includes(value)) {
-    return value as CompactableMemoryKind;
-  }
-  throw new MemoryOperationError(`Unsupported compact kind "${value}". Expected durable, handoff, or incident.`);
 }
 
 const requireValue = <A>(value: A | undefined, message: string): Effect.Effect<A, Error> =>
@@ -391,6 +378,7 @@ function deferredCodeAnchorStoredMessage(memoryUri: string, request: DeferredCod
 }
 
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
+  const memoryConnections = yield* attemptSync(() => parseRecallCliMemoryConnectionInput(options));
   if (options.dryRun !== true) {
     yield* withAnonymousTelemetryPhase('recall.shared-sync', syncSharedReposAndLog(config));
     yield* withAnonymousTelemetryPhase('recall.obsidian-sync', syncObsidianSourcesAndLog(config));
@@ -570,6 +558,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           feedbackQuery: options.query,
           includeInactive: includeArchived,
           limit: recallLimit,
+          memoryRefs: memoryConnections?.memoryRefs,
           minimumScore: hybridMinimumScore,
           passes,
           preferredUriScopes: explicitUri ? undefined : [...scopedRecallUris],
@@ -577,6 +566,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           query,
           queryVariants: expansionQueries,
           readRecords: uris => readMemoryRecordsByUri(config, uris),
+          relationTypes: memoryConnections?.relationTypes,
           rerankerCache,
           seedUris: [inferredUri, seededUri].filter((uri): uri is string => uri !== undefined),
           semanticResult,
@@ -688,6 +678,9 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   if (exactTail) {
     yield* Console.log(`\n${exactTail}`);
   }
+  if (recallSections.memoryConnections) {
+    yield* Console.log(`\n${renderRecallMemoryConnections(recallSections.memoryConnections)}`);
+  }
   const referencedSection = yield* referencedContextSection(config, semanticSection ?? '');
   if (referencedSection) {
     yield* Console.log(`\n${referencedSection}`);
@@ -695,6 +688,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   yield* printRecallHygieneNudges(config, semanticSection ?? '');
   return {
     ...(recallSections.confidence === undefined ? {} : {confidence: recallSections.confidence}),
+    ...(recallSections.memoryConnections ? {memoryConnections: recallSections.memoryConnections} : {}),
     queryExpansions: expansionQueries,
     ranked: recallSections.ranked.slice(0, recallLimit),
     totalRanked: recallSections.ranked.length,

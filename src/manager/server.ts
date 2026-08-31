@@ -60,6 +60,7 @@ import {
   storeManagerPersonalMemoryMove,
 } from './memory_move.js';
 import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory_save.js';
+import {updateManagerMemoryRelations} from './memory_relations.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -776,6 +777,9 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
       return;
     case '/api/memory/save':
       writeJson(response, 200, yield* saveMemory(context.config, body, context.runEffect));
+      return;
+    case '/api/memory/relations':
+      writeJson(response, 200, yield* updateManagerMemoryRelations(context.config, body));
       return;
     case '/api/memory/move':
       requireConfirm(body);

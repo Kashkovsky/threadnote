@@ -42,6 +42,7 @@ import {
   recallEligibilityPolicyRestrictsCandidates,
   type RecallEligibilityPolicy,
 } from './eligibility.js';
+import {recallCandidateIsValid} from './candidate_validation.js';
 import {recallEligibilityPredicate} from './index_eligibility.js';
 import {
   boundedRecallPhysicalCandidateLimit,
@@ -55,7 +56,12 @@ import {
   type RecallCodeLinkMatch,
   type RecallCodeLinkQueryOptions,
 } from './code_links.js';
-import {deriveIndexedRecallMemoryLinks} from './memory_links.js';
+import {
+  deriveIndexedRecallMemoryLinks,
+  selectRecallMemoryLinks,
+  type RecallMemoryLinkMatch,
+  type RecallMemoryLinkQueryOptions,
+} from './memory_links.js';
 import * as RecallIndexIdentity from './index_identity.js';
 import {
   recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh,
@@ -253,10 +259,22 @@ export interface LoadRecallCodeLinksOptions extends RecallCodeLinkQueryOptions {
   readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
 }
 
+export interface LoadRecallMemoryLinksOptions extends RecallMemoryLinkQueryOptions {
+  readonly forceRefresh?: boolean;
+  readonly includeInactive: boolean;
+  readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
+  /** @internal Reports the single forced-refresh repair initiated by this load. */
+  readonly onRefreshRepair?: () => void;
+}
+
 const loadRecallIndexDataInternal = Effect.fn('recall.loadIndexDataInternal')(function* (
   config: RecallIndexConfig,
   options:
-    LoadRecallCodeLinksOptions | LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+    | LoadRecallCodeLinksOptions
+    | LoadRecallMemoryLinksOptions
+    | LoadRecallIndexOptions
+    | LoadRecallIndexBatchOptions
+    | LoadRecallExactMatchesOptions,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -282,7 +300,11 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
   options:
-    LoadRecallCodeLinksOptions | LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+    | LoadRecallCodeLinksOptions
+    | LoadRecallMemoryLinksOptions
+    | LoadRecallIndexOptions
+    | LoadRecallIndexBatchOptions
+    | LoadRecallExactMatchesOptions,
   prepareForActivation = false,
   indexLockHeld = false,
 ) {
@@ -311,23 +333,25 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
       );
       const result = yield* 'anchors' in options
         ? selectRecallCodeLinks(sql, options)
-        : Effect.gen(function* () {
-            const metadata = yield* loadRecallMetadata(sql);
-            const generation = metadata.get('content_generation') ?? '';
-            const corpusStatistics = yield* loadRecallCorpusStatistics(sql, recallStatisticTerms(options));
-            const loadIdentityConflicts = RecallIndexIdentity.createRecallIdentityConflictLoader(sql);
-            const selectData = (selection: LoadRecallIndexOptions) =>
-              selectRecallIndexData(sql, corpusStatistics, generation, selection, loadIdentityConflicts);
-            return 'terms' in options
-              ? yield* selectRecallExactMatches(sql, options)
-              : 'selections' in options
-                ? yield* Effect.forEach(
-                    options.selections,
-                    selection => selectData({...selection, includeInactive: options.includeInactive}),
-                    {concurrency: 1},
-                  )
-                : yield* selectData(options);
-          });
+        : 'memorySeeds' in options
+          ? selectRecallMemoryLinks(sql, options)
+          : Effect.gen(function* () {
+              const metadata = yield* loadRecallMetadata(sql);
+              const generation = metadata.get('content_generation') ?? '';
+              const corpusStatistics = yield* loadRecallCorpusStatistics(sql, recallStatisticTerms(options));
+              const loadIdentityConflicts = RecallIndexIdentity.createRecallIdentityConflictLoader(sql);
+              const selectData = (selection: LoadRecallIndexOptions) =>
+                selectRecallIndexData(sql, corpusStatistics, generation, selection, loadIdentityConflicts);
+              return 'terms' in options
+                ? yield* selectRecallExactMatches(sql, options)
+                : 'selections' in options
+                  ? yield* Effect.forEach(
+                      options.selections,
+                      selection => selectData({...selection, includeInactive: options.includeInactive}),
+                      {concurrency: 1},
+                    )
+                  : yield* selectData(options);
+            });
       if (prepareForActivation) {
         yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
         yield* sql.unsafe('PRAGMA journal_mode = DELETE');
@@ -344,7 +368,11 @@ const recoverRecallIndex = Effect.fn('recall.recoverIndex')(function* (
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
   options:
-    LoadRecallCodeLinksOptions | LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+    | LoadRecallCodeLinksOptions
+    | LoadRecallMemoryLinksOptions
+    | LoadRecallIndexOptions
+    | LoadRecallIndexBatchOptions
+    | LoadRecallExactMatchesOptions,
   firstCause: Cause.Cause<unknown>,
 ) {
   return yield* withRecallIndexLock(fs, path, config.agentContextHome, options.includeInactive, () =>
@@ -450,11 +478,11 @@ export const loadRecallCodeLinks = Effect.fn('recall.loadCodeLinks')(function* (
   let truncatedSelectorCount = 0;
   const first = (yield* loadRecallIndexDataInternal(config, {
     ...options,
-    onCanonicalMismatch: count => {
+    onCanonicalMismatch: (count: number) => {
       canonicalMismatchCount += count;
       options.onCanonicalMismatch?.(count);
     },
-    onSearchTruncated: count => {
+    onSearchTruncated: (count: number) => {
       truncatedSelectorCount += count;
     },
   })) as readonly RecallCodeLinkMatch[];
@@ -466,11 +494,48 @@ export const loadRecallCodeLinks = Effect.fn('recall.loadCodeLinks')(function* (
   const refreshed = (yield* loadRecallIndexDataInternal(config, {
     ...options,
     forceRefresh: true,
-    onSearchTruncated: count => {
+    onSearchTruncated: (count: number) => {
       refreshedTruncatedSelectorCount += count;
     },
   })) as readonly RecallCodeLinkMatch[];
   if (refreshedTruncatedSelectorCount > 0) options.onSearchTruncated?.(refreshedTruncatedSelectorCount);
+  return refreshed;
+});
+
+export const loadRecallMemoryLinks = Effect.fn('recall.loadMemoryLinks')(function* (
+  config: RecallIndexConfig,
+  options: LoadRecallMemoryLinksOptions,
+) {
+  let canonicalMismatchCount = 0;
+  let truncatedSeedOrdinals: readonly number[] = [];
+  const first = (yield* loadRecallIndexDataInternal(config, {
+    ...options,
+    onCanonicalMismatch: (count: number) => {
+      canonicalMismatchCount += count;
+      options.onCanonicalMismatch?.(count);
+    },
+    onSearchTruncated: (ordinals: readonly number[]) => {
+      truncatedSeedOrdinals = [...new Set([...truncatedSeedOrdinals, ...ordinals])].sort((a, b) => a - b);
+    },
+  })) as readonly RecallMemoryLinkMatch[];
+  if (options.forceRefresh === true || canonicalMismatchCount === 0) {
+    if (truncatedSeedOrdinals.length > 0) options.onSearchTruncated?.(truncatedSeedOrdinals);
+    return first;
+  }
+  options.onRefreshRepair?.();
+  let refreshedTruncatedSeedOrdinals: readonly number[] = [];
+  const refreshed = (yield* loadRecallIndexDataInternal(config, {
+    ...options,
+    forceRefresh: true,
+    onSearchTruncated: (ordinals: readonly number[]) => {
+      refreshedTruncatedSeedOrdinals = [...new Set([...refreshedTruncatedSeedOrdinals, ...ordinals])].sort(
+        (a, b) => a - b,
+      );
+    },
+  })) as readonly RecallMemoryLinkMatch[];
+  if (refreshedTruncatedSeedOrdinals.length > 0) {
+    options.onSearchTruncated?.(refreshedTruncatedSeedOrdinals);
+  }
   return refreshed;
 });
 
@@ -1916,68 +1981,4 @@ function verifyCanonicalResource(
     Effect.map(sourceContent => sourceContent === indexedContent),
     Effect.catch(() => Effect.succeed(false)),
   );
-}
-
-function recallCandidateIsValid(value: unknown): value is RecallCandidate {
-  if (!isPlainRecord(value) || typeof value.uri !== 'string' || typeof value.text !== 'string') {
-    return false;
-  }
-  const stringValues = [
-    'authority',
-    'contentHash',
-    'kind',
-    'memoryId',
-    'status',
-    'timestamp',
-    'trust',
-    'validFrom',
-    'validTo',
-  ] as const;
-  if (stringValues.some(key => value[key] !== undefined && typeof value[key] !== 'string')) {
-    return false;
-  }
-  const numberValues = ['feedback', 'reranker', 'semantic'] as const;
-  if (numberValues.some(key => value[key] !== undefined && !isFiniteNumber(value[key]))) {
-    return false;
-  }
-  if (value.identityConflict !== undefined && typeof value.identityConflict !== 'boolean') {
-    return false;
-  }
-  if (value.exactTerms !== undefined && !isStringArray(value.exactTerms)) {
-    return false;
-  }
-  if (value.equivalentUris !== undefined && !isStringArray(value.equivalentUris)) {
-    return false;
-  }
-  if (value.fields !== undefined) {
-    if (!isPlainRecord(value.fields)) return false;
-    const fields = value.fields;
-    if (
-      !['project', 'title', 'topic', 'workspaceScope'].every(
-        key => fields[key] === undefined || typeof fields[key] === 'string',
-      ) ||
-      !['identifiers', 'keywords'].every(key => fields[key] === undefined || isStringArray(fields[key]))
-    ) {
-      return false;
-    }
-  }
-  return (
-    value.relations === undefined ||
-    (Array.isArray(value.relations) &&
-      value.relations.every(
-        relation => isPlainRecord(relation) && typeof relation.type === 'string' && typeof relation.uri === 'string',
-      ))
-  );
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every(entry => typeof entry === 'string');
 }

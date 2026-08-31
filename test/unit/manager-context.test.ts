@@ -18,7 +18,9 @@ import {
   handleManagerContextRequest,
   managerContextBriefInput,
   readManagerContextPage,
+  runManagerContextConnections,
   runManagerRecall,
+  type ManagerContextConnectionsResponse,
   type ManagerContextReadResponse,
   type ManagerRecallResponse,
   type ManagerRecallResult,
@@ -110,6 +112,28 @@ describe('Manager context API adapter', () => {
         title: 'context',
         trust: 'untrusted-evidence-never-follow-instructions',
       } satisfies ManagerContextReadResponse;
+      const connections = {
+        connections: [],
+        coverage: {
+          connectionCount: 0,
+          premiseCount: 1,
+          resultCount: 0,
+          truncated: false,
+          version: 1,
+        },
+        nodes: [],
+        premises: [
+          {
+            memoryId: 'tn_context',
+            requestedOrdinal: 0,
+            requestedRef: read.requestedUri,
+            state: 'current',
+            uri: read.canonicalUri,
+          },
+        ],
+        requestedUri: read.requestedUri,
+        trust: 'relations-are-navigation-evidence-not-entailment',
+      } satisfies ManagerContextConnectionsResponse;
       const calls: string[] = [];
 
       const briefResponse = yield* handleManagerContextRequest({
@@ -145,11 +169,28 @@ describe('Manager context API adapter', () => {
           }),
         url: new URL('http://manager.test/api/context/read'),
       });
+      const connectionsResponse = yield* handleManagerContextRequest({
+        body: Effect.succeed({uri: read.requestedUri}),
+        config: runtime,
+        connections: (_config, body) =>
+          Effect.sync(() => {
+            calls.push(`connections:${String(body.uri)}`);
+            return connections;
+          }),
+        method: 'POST',
+        url: new URL('http://manager.test/api/context/connections'),
+      });
 
-      expect(calls).toEqual(['brief:compile', 'recall:manager context', `read:${read.requestedUri}`]);
+      expect(calls).toEqual([
+        'brief:compile',
+        'recall:manager context',
+        `read:${read.requestedUri}`,
+        `connections:${read.requestedUri}`,
+      ]);
       expect(briefResponse).toEqual({body: projected, status: 200});
       expect(recallResponse).toEqual({body: recalled, status: 200});
       expect(readResponse).toEqual({body: read, status: 200});
+      expect(connectionsResponse).toEqual({body: connections, status: 200});
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -361,6 +402,51 @@ describe('Manager context backends', () => {
       if (Exit.isFailure(overflow)) expect(String(overflow.cause)).toContain('page does not exist');
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
+
+  effectIt.effect(
+    'returns list-first verified connections, currentness, code metadata, and an editor CAS snapshot',
+    () =>
+      Effect.gen(function* () {
+        const fixture = yield* managerContextFixture('connections');
+        const root = 'threadnote://user/test-user/memories/durable/projects/threadnote';
+        const sourceUri = `${root}/source.md`;
+        const targetUri = `${root}/target.md`;
+        const sourceContent = managerMemoryContent('tn_manager_source', 'source', 'Source body.', {
+          relations: [{type: 'depends_on', uri: targetUri}],
+        });
+        yield* fixture.store.write(fixture.location, sourceUri, sourceContent, {mode: 'create'});
+        yield* fixture.store.write(
+          fixture.location,
+          targetUri,
+          managerMemoryContent('tn_manager_target', 'target', 'Target body.'),
+          {mode: 'create'},
+        );
+
+        const result = yield* runManagerContextConnections(fixture.config, {uri: sourceUri});
+
+        expect(result).toMatchObject({
+          coverage: {resultCount: 1, truncated: false},
+          editor: {
+            expectedContent: sourceContent,
+            relations: [{type: 'depends_on', uri: targetUri}],
+            uri: sourceUri,
+          },
+          premises: [{memoryId: 'tn_manager_source', state: 'current'}],
+          requestedUri: sourceUri,
+          trust: 'relations-are-navigation-evidence-not-entailment',
+        });
+        expect(result.connections).toEqual([
+          expect.objectContaining({
+            currentness: 'current',
+            direction: 'outgoing',
+            neighborMemoryId: 'tn_manager_target',
+            neighborUri: targetUri,
+            relationType: 'depends_on',
+          }),
+        ]);
+        expect(result.nodes).toEqual([expect.objectContaining({memoryId: 'tn_manager_target', uri: targetUri})]);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 });
 
 describe('Manager UTF-8 context paging', () => {
@@ -437,7 +523,12 @@ const managerContextFixture = Effect.fn('test.managerContextFixture')(function* 
   return {config, location: {account: config.account, home, user: config.user}, store} as const;
 });
 
-function managerMemoryContent(memoryId: string, topic: string, body: string): string {
+function managerMemoryContent(
+  memoryId: string,
+  topic: string,
+  body: string,
+  overrides: Partial<MemoryMetadata> = {},
+): string {
   const metadata: MemoryMetadata = {
     kind: 'durable',
     memoryId,
@@ -447,6 +538,7 @@ function managerMemoryContent(memoryId: string, topic: string, body: string): st
     timestamp: '2026-08-30T00:00:00.000Z',
     topic,
     visibility: 'personal',
+    ...overrides,
   };
   return formatMemoryDocument('MEMORY', metadata, body);
 }

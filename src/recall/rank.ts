@@ -51,6 +51,8 @@ export interface RecallRankContext {
   readonly minimumScore?: number;
   readonly now?: Date;
   readonly project?: string;
+  /** Canonically verified one-hop memories that occupy a protected result prefix. */
+  readonly protectedUris?: readonly string[];
   readonly queryVariants?: readonly string[];
   readonly seedUris?: readonly string[];
   readonly workspaceBranch?: string;
@@ -297,6 +299,9 @@ export function rankRecallCandidates(
     new Set(explicitSeedUris),
   );
   const now = context.now ?? DETERMINISTIC_DEFAULT_NOW;
+  const protectedOrdinalByUri = new Map(
+    [...new Set(context.protectedUris ?? [])].map((uri, ordinal) => [uri, ordinal] as const),
+  );
   const recencyIntent = originalQueryRequestsRecency(query);
   const ranked = logicalCandidates
     .map(candidate =>
@@ -306,31 +311,51 @@ export function rankRecallCandidates(
         recencyIntent,
       }),
     )
-    .filter(
-      result =>
-        result.passedRelevanceGate &&
-        (context.minimumScore === undefined ||
-          result.relevanceScore >= context.minimumScore ||
-          (context.allowExactRescue === true &&
-            result.signals.exact >= EXACT_TERM_RESCUE_MINIMUM &&
-            (result.signals.kindIntent === 1 ||
-              result.signals.field >= EXACT_TERM_RESCUE_FIELD_MINIMUM ||
-              qualifyingExactTerms(result.candidate).some(term => /[\p{N}_.-]/u.test(term))))) &&
+    .filter(result => {
+      const protectedResult = protectedRecallOrdinal(result.candidate, protectedOrdinalByUri) !== undefined;
+      return (
+        (protectedResult ||
+          (result.passedRelevanceGate &&
+            (context.minimumScore === undefined ||
+              result.relevanceScore >= context.minimumScore ||
+              (context.allowExactRescue === true &&
+                result.signals.exact >= EXACT_TERM_RESCUE_MINIMUM &&
+                (result.signals.kindIntent === 1 ||
+                  result.signals.field >= EXACT_TERM_RESCUE_FIELD_MINIMUM ||
+                  qualifyingExactTerms(result.candidate).some(term => /[\p{N}_.-]/u.test(term))))))) &&
         (context.includeInactive === true || result.signals.lifecycle === LIFECYCLE_SCORES.active) &&
-        (context.includeTemporallyInvalid === true || result.signals.temporal === 1),
-    )
-    .sort(
-      (left, right) =>
+        (context.includeTemporallyInvalid === true || result.signals.temporal === 1)
+      );
+    })
+    .sort((left, right) => {
+      const leftProtected = protectedRecallOrdinal(left.candidate, protectedOrdinalByUri);
+      const rightProtected = protectedRecallOrdinal(right.candidate, protectedOrdinalByUri);
+      return (
+        (leftProtected === undefined ? 1 : 0) - (rightProtected === undefined ? 1 : 0) ||
+        (leftProtected ?? 0) - (rightProtected ?? 0) ||
         right.finalScore - left.finalScore ||
         right.signals.reranker - left.signals.reranker ||
         right.signals.semantic - left.signals.semantic ||
-        compareCodeUnits(left.candidate.uri, right.candidate.uri),
-    );
+        compareCodeUnits(left.candidate.uri, right.candidate.uri)
+      );
+    });
   return {
     confidence: assessConfidence(ranked, query, queryTermVariants[0] ?? []),
     rankerVersion: RECALL_RANKER_VERSION,
     results: ranked,
   };
+}
+
+function protectedRecallOrdinal(
+  candidate: RecallCandidate,
+  protectedOrdinalByUri: ReadonlyMap<string, number>,
+): number | undefined {
+  let ordinal = protectedOrdinalByUri.get(candidate.uri);
+  for (const uri of candidate.equivalentUris ?? []) {
+    const aliasOrdinal = protectedOrdinalByUri.get(uri);
+    if (aliasOrdinal !== undefined && (ordinal === undefined || aliasOrdinal < ordinal)) ordinal = aliasOrdinal;
+  }
+  return ordinal;
 }
 
 /**

@@ -448,6 +448,7 @@ const readTextIfExists = Effect.fn('mcpServer.readTextIfExists')(function* (path
 export interface WriteDurableMemoryParams {
   readonly bodyText: string;
   readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
+  readonly expectedReplaceContent?: string;
   readonly expectedReplaceContentHash?: string;
   readonly expectedSourceContent?: readonly {
     readonly allowedUriScopes?: readonly string[];
@@ -484,6 +485,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
     ];
     const mutation = Effect.gen(function* () {
       const ov = 'threadnote-native';
+      const expectedReplaceContent = params.expectedReplaceContent ?? prepared.expectedReplaceContent;
       if (params.operation === 'replace' && !params.replaceUri) {
         return argumentError('A replace write requires replaceUri.');
       }
@@ -496,10 +498,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
         }
         const schemaRewriteError = memorySchemaRewriteError(currentReplaceTarget.content);
         if (schemaRewriteError) return argumentError(schemaRewriteError.message);
-        if (
-          prepared.expectedReplaceContent !== undefined &&
-          currentReplaceTarget.content !== prepared.expectedReplaceContent
-        ) {
+        if (expectedReplaceContent !== undefined && currentReplaceTarget.content !== expectedReplaceContent) {
           return argumentError(
             `Memory ${params.replaceUri} changed while its replacement was being prepared. Retry the update.`,
           );
@@ -818,7 +817,9 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
   const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
   const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
-  const finalMetadata: MemoryMetadata = isInPlaceUpdate ? {...metadata, supersedes: undefined} : candidateMetadata;
+  const finalMetadata: MemoryMetadata = isInPlaceUpdate
+    ? {...metadata, supersedes: replaced?.metadata.supersedes}
+    : candidateMetadata;
   const memory = isInPlaceUpdate ? formatMemoryDocument('MEMORY', finalMetadata, params.bodyText) : candidateMemory;
   return {
     expectedReplaceContent: replaced?.content,

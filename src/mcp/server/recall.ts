@@ -47,6 +47,7 @@ import {
   assertMemoryRecordArchivable,
   canonicalMemoryDocumentContent,
   isSharedMemoryUri,
+  MEMORY_RELATION_TYPES,
   memoryArchiveBody,
   memoryArchiveMetadata,
   type MemoryMetadata,
@@ -92,6 +93,11 @@ import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
 import {loadRecallExactMatches} from '../../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
+import {
+  parseRecallMemoryConnectionInput,
+  type ParsedRecallMemoryConnectionInput,
+} from '../../recall/memory_connections.js';
+import type {MemoryRelationType} from '../../memory/document.js';
 import {
   projectRecallMcpResponse,
   RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
@@ -162,25 +168,25 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'After routine durable and handoff writes, form up to three additional reviewable memory candidates. Persists a pending review, never active memory.',
+        'After routine durable and handoff writes, form up to three additional reviewable candidates; persists pending review only.',
       inputSchema: {
-        callerCwd: McpInput.string('Absolute cwd; infers project'),
+        callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
-        decisions: McpInput.stringOrStrings('Reusable decisions'),
-        evidence: McpInput.stringOrStrings('Bounded file, commit, or session pointers'),
-        handoff: McpInput.stringOrStrings('Status, blockers, checks, and next steps'),
-        invariants: McpInput.stringOrStrings('Stable constraints or contracts'),
-        outcome: McpInput.string('Concise task outcome'),
-        preferences: McpInput.stringOrStrings('Explicit user preferences'),
-        project: McpInput.string('Stable project; inferred from callerCwd'),
-        sourceAgentClient: McpInput.string('Originating client'),
-        sourceCommit: McpInput.string('Source commit'),
-        sourceSessionId: McpInput.string('Source session/thread'),
-        task: McpInput.string('Concise task description'),
-        topic: McpInput.string('Stable topic; defaults from task'),
+        decisions: McpInput.stringOrStrings('Decisions'),
+        evidence: McpInput.stringOrStrings('Evidence pointers'),
+        handoff: McpInput.stringOrStrings('Handoff'),
+        invariants: McpInput.stringOrStrings('Stable contracts'),
+        outcome: McpInput.string('Task outcome'),
+        preferences: McpInput.stringOrStrings('User preferences'),
+        project: McpInput.string('Project; infer from cwd'),
+        sourceAgentClient: McpInput.string('Client'),
+        sourceCommit: McpInput.string('Commit'),
+        sourceSessionId: McpInput.string('Session/thread'),
+        task: McpInput.string('Task'),
+        topic: McpInput.string('Topic; defaults from task'),
       },
     },
     ({
@@ -693,26 +699,45 @@ export function registerSearchTool(
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        budgetTokens: McpInput.integer('Response budget; 700-1500 tokens, default 1500', {
+        budgetTokens: McpInput.integer('Response tokens: 700-1500; default 1500', {
           minimum: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
           maximum: RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
         }),
-        query: McpInput.string('Search query'),
-        uri: McpInput.string('threadnote:// subtree'),
-        callerCwd: McpInput.string('Absolute nested workspace cwd'),
-        project: McpInput.string('Restrict to this project plus projectless guidance; omit for global recall'),
-        nodeLimit: McpInput.integer('Result limit', {minimum: 1, maximum: 100}),
+        query: McpInput.string('Task query'),
+        uri: McpInput.string('Scope subtree'),
+        callerCwd: McpInput.string('Absolute workspace cwd'),
+        project: McpInput.string('Project + projectless; omit for global'),
+        nodeLimit: McpInput.integer('Max results', {minimum: 1, maximum: 100}),
         includeArchived: McpInput.boolean('Include archived'),
-        explain: McpInput.boolean('Include reasons, signals, and warnings'),
-        threshold: McpInput.number('Topical relevanceScore floor before lifecycle/trust; env or 0.3 default', {
+        memoryRefs: McpInput.stringOrStrings('One-hop memory IDs/URIs', {
+          maximumItems: 8,
+        }),
+        relationTypes: McpInput.literalsOrLiterals(MEMORY_RELATION_TYPES, 'Relation-type filter', {
+          maximumItems: 5,
+        }),
+        explain: McpInput.boolean('Include reasons and warnings'),
+        threshold: McpInput.number('Relevance floor; env or 0.3', {
           minimum: 0,
           maximum: 1,
         }),
-        workset: McpInput.string('Seed-manifest workset'),
+        workset: McpInput.string('Named workset'),
       },
     },
     (
-      {budgetTokens, callerCwd, explain, includeArchived, nodeLimit, project, query, threshold, uri, workset},
+      {
+        budgetTokens,
+        callerCwd,
+        explain,
+        includeArchived,
+        memoryRefs,
+        nodeLimit,
+        project,
+        query,
+        relationTypes,
+        threshold,
+        uri,
+        workset,
+      },
       {progress},
     ) => {
       const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
@@ -725,6 +750,23 @@ export function registerSearchTool(
       }
       if (workset?.trim() && memoryScope) {
         return argumentError(`${name} does not allow worksets in the Cursor Cloud profile.`);
+      }
+      let memoryConnections: ParsedRecallMemoryConnectionInput | undefined;
+      try {
+        const normalizedMemoryRefs = normalizeStringOrStrings(memoryRefs);
+        const normalizedRelationTypes = normalizeStringOrStrings(relationTypes);
+        if (normalizedRelationTypes.length > 0 && normalizedMemoryRefs.length === 0) {
+          return argumentError(`${name} relationTypes requires memoryRefs.`);
+        }
+        memoryConnections =
+          normalizedMemoryRefs.length > 0
+            ? parseRecallMemoryConnectionInput({
+                memoryRefs: normalizedMemoryRefs,
+                relationTypes: normalizedRelationTypes,
+              })
+            : undefined;
+      } catch (error) {
+        return argumentError(errorMessage(error));
       }
       const scopedUri = checkedUri.value ?? memoryScope?.root;
       if (scopedUri && memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
@@ -741,6 +783,8 @@ export function registerSearchTool(
           pinnedUri: scopedUri,
           nodeLimit,
           includeArchived: includeArchived === true,
+          memoryRefs: memoryConnections?.memoryRefs,
+          relationTypes: memoryConnections?.relationTypes,
           threshold: threshold === undefined ? undefined : String(threshold),
           workset: workset?.trim() || undefined,
         },
@@ -759,15 +803,21 @@ export function registerSearchTool(
   );
 }
 
+function normalizeStringOrStrings(value: string | readonly string[] | undefined): readonly string[] {
+  return value === undefined ? [] : typeof value === 'string' ? [value] : value;
+}
+
 interface RecallToolParams {
   readonly budgetTokens: number | undefined;
   readonly callerCwd: string | undefined;
   readonly explain: boolean;
   readonly includeArchived: boolean;
+  readonly memoryRefs: readonly string[] | undefined;
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
   readonly project: string | undefined;
   readonly query: string;
+  readonly relationTypes: readonly MemoryRelationType[] | undefined;
   readonly threshold: string | undefined;
   readonly workset: string | undefined;
 }
@@ -989,6 +1039,7 @@ function runRecallTool(
                 feedbackQuery: params.query,
                 includeInactive: params.includeArchived,
                 limit: recallLimit,
+                memoryRefs: params.memoryRefs,
                 minimumScore: hybridMinimumScore,
                 passes,
                 preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
@@ -996,6 +1047,7 @@ function runRecallTool(
                 query,
                 queryVariants: expansionQueries,
                 readRecords: uris => readMemoryRecordsByUri(config, uris),
+                relationTypes: params.relationTypes,
                 rerankerCache,
                 seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
                 semanticGenerationMismatchPolicy: 'fallback',
@@ -1132,6 +1184,7 @@ function runRecallTool(
           {
             confidence: recallSections.confidence,
             ...(memoryScope ? {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
+            ...(recallSections.memoryConnections ? {memoryConnections: recallSections.memoryConnections} : {}),
             notices: responseNotices,
             warnings: operationalWarnings,
             queryExpansions: expansionQueries,

@@ -48,15 +48,15 @@ export function registerStoreTool(
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
-        callerCwd: McpInput.string('Absolute caller cwd'),
+        callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path or cgs_/cgr_ ref; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
-        citationPolicy: McpInput.literals(['require-current', 'defer'], 'codeRefs policy; default defer'),
+        citationPolicy: McpInput.literals(['require-current', 'defer'], 'codeRefs policy'),
         kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
         project: McpInput.string(),
-        references: McpInput.stringOrStrings('Read-only memory URI(s)'),
+        references: McpInput.stringOrStrings('Memory URI(s)'),
         relations: Schema.optionalKey(
           Schema.Array(
             Schema.Struct({
@@ -66,10 +66,10 @@ export function registerStoreTool(
           )
             .check(Schema.isMaxLength(MAX_MEMORY_RELATIONS))
             .annotate({
-              description: `Typed memory links; max ${MAX_MEMORY_RELATIONS}`,
+              description: `Typed links; max ${MAX_MEMORY_RELATIONS}`,
             }),
         ),
-        replaceUri: McpInput.string('Memory URI to replace'),
+        replaceUri: McpInput.string('Replaced memory URI'),
         text: McpInput.string(),
         sourceAgentClient: McpInput.string(),
         status: McpInput.literals(['active', 'archived', 'expired', 'superseded']),

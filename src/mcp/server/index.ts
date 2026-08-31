@@ -244,7 +244,7 @@ function registerTools(
       server,
       config,
       'recall_context',
-      'Search memory for a project/current callerCwd. Results are unread threadnote:// pointers, not evidence; read relevant ones with read_context. Lower threshold if sparse.',
+      'Search memory. Results are unread threadnote:// pointers, not evidence; read useful ones with read_context.',
       recallProgressTiming,
       memoryScope,
     );
@@ -289,7 +289,7 @@ function registerTools(
   }
 
   if (capabilities.memoryWrite) {
-    registerStoreTool(server, config, 'remember_context', 'Store Threadnote memory; text is required.', memoryScope);
+    registerStoreTool(server, config, 'remember_context', 'Store memory.', memoryScope);
   }
   if (toolset === 'full') {
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');

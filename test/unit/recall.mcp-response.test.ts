@@ -130,6 +130,197 @@ describe('recall MCP response projection', () => {
     });
   });
 
+  it('projects bounded one-hop receipts only when seeded recall requested them', () => {
+    const firstHit = hit(1);
+    const omittedHit = hit(2);
+    const projected = projectRecallMcpResponse(
+      {
+        ...logical([firstHit]),
+        memoryConnections: {
+          candidates: [],
+          connections: [
+            {
+              currentness: 'current',
+              direction: 'outgoing',
+              distance: 1,
+              neighborMemoryId: 'tn_first',
+              neighborUri: firstHit.uri,
+              origin: 'relation',
+              relationOrdinal: 0,
+              relationType: 'depends_on',
+              requestedOrdinal: 0,
+              resolution: 'resolved',
+              sourceMemoryId: 'tn_seed',
+            },
+            {
+              currentness: 'current',
+              direction: 'outgoing',
+              distance: 1,
+              neighborMemoryId: 'tn_omitted',
+              neighborUri: omittedHit.uri,
+              origin: 'relation',
+              relationOrdinal: 1,
+              relationType: 'related_to',
+              requestedOrdinal: 0,
+              resolution: 'resolved',
+              sourceMemoryId: 'tn_seed',
+            },
+          ],
+          coverage: {
+            connectionCount: 2,
+            premiseCount: 1,
+            resultCount: 2,
+            truncated: false,
+            version: 1,
+          },
+          diagnostics: {
+            canonicalMismatches: 0,
+            canonicalRereads: 3,
+            rawLinkRows: 3,
+            refreshRepairs: 0,
+            truncatedSeedOrdinals: [],
+          },
+          premises: [
+            {
+              memoryId: 'tn_seed',
+              requestedOrdinal: 0,
+              requestedRef: 'threadnote://memory/tn_seed',
+              state: 'current',
+            },
+          ],
+        },
+      },
+      {budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS},
+    );
+
+    expect(projected.structuredContent.memoryConnections).toMatchObject({
+      connections: [{neighborMemoryId: 'tn_first'}],
+      coverage: {connectionCount: 1, resultCount: 1, truncated: true},
+      premises: [{memoryId: 'tn_seed', state: 'current'}],
+    });
+    expect(projected.structuredContent.memoryConnections).not.toHaveProperty('diagnostics');
+    expect(projected.text).toContain('Relations are navigation evidence, not entailment');
+    expect(projected.measurement.totalBytes).toBeLessThanOrEqual(RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS * 3);
+  });
+
+  it('budgets the maximum unresolved receipt shape at the advertised minimum', () => {
+    const premises = Array.from({length: 8}, (_, requestedOrdinal) => ({
+      memoryId: `tn_seed_${requestedOrdinal}`,
+      requestedOrdinal,
+      requestedRef: `threadnote://memory/tn_seed_${requestedOrdinal}`,
+      state: 'unresolved' as const,
+    }));
+    const connections = Array.from({length: 32}, (_, relationOrdinal) => ({
+      currentness: 'unresolved' as const,
+      direction: 'outgoing' as const,
+      distance: 1 as const,
+      neighborMemoryId: `tn_missing_${relationOrdinal}`,
+      origin: 'relation' as const,
+      relationOrdinal,
+      relationType: 'references' as const,
+      requestedOrdinal: relationOrdinal % premises.length,
+      resolution: 'unresolved' as const,
+      sourceMemoryId: `tn_seed_${relationOrdinal % premises.length}`,
+      targetMemoryId: `tn_missing_${relationOrdinal}`,
+    }));
+    const response = {
+      ...logical([]),
+      memoryConnections: {
+        candidates: [],
+        connections,
+        coverage: {
+          connectionCount: connections.length,
+          premiseCount: premises.length,
+          resultCount: 0,
+          truncated: false,
+          version: 1 as const,
+        },
+        diagnostics: {
+          canonicalMismatches: 0,
+          canonicalRereads: 32,
+          rawLinkRows: 32,
+          refreshRepairs: 0,
+          truncatedSeedOrdinals: [],
+        },
+        premises,
+      },
+    };
+
+    const first = projectRecallMcpResponse(response, {
+      budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
+    });
+    const second = projectRecallMcpResponse(response, {
+      budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
+    });
+
+    expect(first).toEqual(second);
+    expect(first.measurement.totalBytes).toBeLessThanOrEqual(RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS * 3);
+    expect(first.structuredContent.memoryConnections).toMatchObject({
+      coverage: {resultCount: 0, truncated: true},
+    });
+    expect(first.structuredContent.memoryConnections?.connections.length).toBeLessThan(connections.length);
+    expect(first.structuredContent.memoryConnections?.coverage.connectionCount).toBe(
+      first.structuredContent.memoryConnections?.connections.length,
+    );
+    expect(first.structuredContent.memoryConnections?.coverage.premiseCount).toBe(
+      first.structuredContent.memoryConnections?.premises.length,
+    );
+  });
+
+  it('counts only projected direct neighbors in seeded one-hop coverage', () => {
+    const directHit = hit(1);
+    const topicalHit = hit(2);
+    const projected = projectRecallMcpResponse({
+      ...logical([directHit, topicalHit]),
+      memoryConnections: {
+        candidates: [],
+        connections: [
+          {
+            currentness: 'current',
+            direction: 'outgoing',
+            distance: 1,
+            neighborMemoryId: 'tn_direct',
+            neighborUri: directHit.uri,
+            origin: 'relation',
+            relationOrdinal: 0,
+            relationType: 'depends_on',
+            requestedOrdinal: 0,
+            resolution: 'resolved',
+            sourceMemoryId: 'tn_seed',
+          },
+        ],
+        coverage: {
+          connectionCount: 1,
+          premiseCount: 1,
+          resultCount: 1,
+          truncated: false,
+          version: 1,
+        },
+        diagnostics: {
+          canonicalMismatches: 0,
+          canonicalRereads: 2,
+          rawLinkRows: 2,
+          refreshRepairs: 0,
+          truncatedSeedOrdinals: [],
+        },
+        premises: [
+          {
+            memoryId: 'tn_seed',
+            requestedOrdinal: 0,
+            requestedRef: 'threadnote://memory/tn_seed',
+            state: 'current',
+          },
+        ],
+      },
+    });
+
+    expect(projected.structuredContent.results.map(result => result.uri)).toEqual([directHit.uri, topicalHit.uri]);
+    expect(projected.structuredContent.memoryConnections).toMatchObject({
+      connections: [{neighborUri: directHit.uri}],
+      coverage: {connectionCount: 1, resultCount: 1, truncated: false},
+    });
+  });
+
   it('surfaces a typed identity-conflict warning without enabling diagnostic explanations', () => {
     const compact = projectRecallMcpResponse(logical([hit(1, {identityConflict: true})]));
 
