@@ -146,7 +146,7 @@ function registerResources(
   server.registerResourceTemplate(
     {
       description:
-        'Read one Threadnote URI already returned by recall_context or list_context. This template does not enumerate private memories; resources/read and read_context are bounded.',
+        'Read one canonical Threadnote URI or bounded threadnote://memory/tn_ identity selector already returned by Threadnote. This template does not enumerate private memories; resources/read and read_context are bounded.',
       meta: {'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES},
       mimeType: MCP_RESOURCE_MIME_TYPE,
       name: 'Threadnote canonical resource',

@@ -235,6 +235,19 @@ The combined MCP text-plus-structured response and CLI projection accept `budget
 through 1,500, defaulting to 1,250. Values below 800 are rejected before any evidence dependency runs. When graph
 cards are omitted and continuation becomes `rerun-required`, both MCP result channels retain the same exact
 `inspect-node` follow-up so an agent always has a bounded narrowing action instead of an unusable truncation notice.
+For `trace` and `impact`, direct imports, exports, re-exports, and tests are protected before the graph edge limit and
+the first retained contract is co-ranked with that selector. Under maximum-budget code-linked pressure, Threadnote
+keeps memory, the incident direct contract, and the selector as one protected bundle when the memory has a valid stable
+identity; it may omit the redundant graph card. Projected contract evidence paths are bounded to 48 UTF-8 bytes and
+carry `pathTruncated: true` when shortened, so a valid long repository path cannot consume the recovery budget
+silently. Modern v3 memory pointers use the bounded `threadnote://memory/<memory_id>` selector. `read_context`, CLI
+`read`, MCP `resources/read`, and Manager resolve that selector only inside the caller-authorized active corpus and
+recheck the live document's `memory_id` after relocation before returning bytes. The canonical storage URI therefore
+does not have to fit in or survive beyond the brief. A legacy cited memory without a valid identity retains its
+canonical URI when it fits; otherwise the protected bundle fails soft to a
+`stable-memory-identity-unavailable` gap plus the exact graph selector. Task-only v2 output keeps canonical URIs.
+When detailed citation receipts, summary, and relations are elided to guarantee the protected v3 bundle, both channels
+report `citationDetailsOmitted: true`.
 Coverage gaps participate in the deterministic projection too: the first gap remains visible and
 `coverage.omissions.coverageGaps` reports how many additional gap codes did not fit.
 

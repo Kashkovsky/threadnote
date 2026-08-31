@@ -733,7 +733,7 @@ function ContextReader(props: {
         </button>
       </header>
       {result && result.requestedUri !== result.canonicalUri ? (
-        <p className="context-reader-relocation">Resolved a moved pointer to its canonical URI.</p>
+        <p className="context-reader-relocation">Resolved the requested pointer to its canonical memory.</p>
       ) : null}
       {result?.metadata ? (
         <div className="context-reader-metadata">
@@ -750,7 +750,7 @@ function ContextReader(props: {
         <footer>
           <button
             disabled={result.page.previous === undefined || props.busy}
-            onClick={() => props.onPage(result.canonicalUri, result.page.previous!)}
+            onClick={() => props.onPage(result.requestedUri, result.page.previous!)}
             type="button"
           >
             Previous page
@@ -760,7 +760,7 @@ function ContextReader(props: {
           </span>
           <button
             disabled={result.page.next === undefined || props.busy}
-            onClick={() => props.onPage(result.canonicalUri, result.page.next!)}
+            onClick={() => props.onPage(result.requestedUri, result.page.next!)}
             type="button"
           >
             Next page

@@ -74,6 +74,7 @@ import {
   uriSegment,
 } from './common.js';
 import {memoryReadErrorResult} from './memory_read_recovery.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory_identity.js';
 export function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',
@@ -1186,7 +1187,11 @@ export const runNativeHealthTool = Effect.fn('mcp_server.runNativeHealthTool')(f
 export function runNativeReadTool(
   config: RuntimeConfig,
   uris: readonly string[],
-  options: {readonly followRelocations?: boolean} = {},
+  options: {
+    readonly allowedUriScopes?: readonly string[];
+    readonly followRelocations?: boolean;
+    readonly resolveIdentityAliases?: boolean;
+  } = {},
 ) {
   // Canonical memory reads are intentionally complete. Context budgets belong
   // to derived graph/search evidence, never to user-authored memory content.
@@ -1198,6 +1203,14 @@ export function runNativeReadTool(
   // protocol-reserved _meta field instead of a model-facing result field.
   return Effect.gen(function* () {
     const store = yield* ResourceStore;
+    const resolvedInputs =
+      options.resolveIdentityAliases === true
+        ? yield* resolveMemoryIdentityAliases(
+            config,
+            uris,
+            options.allowedUriScopes ?? [`threadnote://user/${uriSegment(config.user)}/memories`],
+          )
+        : uris.map(requestedUri => ({canonicalUri: requestedUri, requestedUri}));
     const content: Array<{readonly text: string; readonly type: 'text'}> = [];
     const resources: Array<{
       readonly canonicalUri: string;
@@ -1207,7 +1220,8 @@ export function runNativeReadTool(
       /** Compatibility field retained for canonical-read v1 consumers. */
       readonly uri: string;
     }> = [];
-    for (const uri of uris) {
+    for (const input of resolvedInputs) {
+      const uri = input.canonicalUri;
       const resolved =
         options.followRelocations !== false && isMemoryRelocationUri(config, uri)
           ? yield* readMemoryWithRelocations(config, uri)
@@ -1217,12 +1231,13 @@ export function runNativeReadTool(
               relocationDepth: 0,
               requestedUri: parseResourceId(uri).canonicalUri,
             };
+      yield* verifyResolvedMemoryIdentity(input, resolved.canonicalUri, resolved.content);
       resources.push({
         canonicalUri: resolved.canonicalUri,
         contentIndex: content.length,
         relocationDepth: resolved.relocationDepth,
-        requestedUri: resolved.requestedUri,
-        uri: resolved.requestedUri,
+        requestedUri: input.requestedUri,
+        uri: input.requestedUri,
       });
       content.push({text: resolved.content, type: 'text'});
     }

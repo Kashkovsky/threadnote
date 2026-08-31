@@ -13,12 +13,18 @@ import {captureConsole} from '../effect/console.js';
 import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
 import {uriSegment} from '../manifest.js';
 import {parseMemoryDocument, type MemoryMetadata, type MemoryRecord} from '../memory/document.js';
+import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
 import {runRecall} from '../memory/index.js';
 import {MemoryPointerNotFound, readMemoryWithRelocations} from '../memory/relocation.js';
 import {parseResourceId, resourceIdIsManagedMemoryNamespace} from '../storage/resource-id.js';
 import type {ApplicationServices} from '../effect/runtime.js';
 import type {RuntimeConfig} from '../types.js';
 import type {RecallHit} from '../utils.js';
+import {
+  MemoryIdentityResolutionError,
+  resolveMemoryIdentityAliases,
+  verifyResolvedMemoryIdentity,
+} from '../recall/memory_identity.js';
 
 export const MANAGER_CONTEXT_RECALL_RESULT_MAXIMUM = 48 as const;
 export const MANAGER_CONTEXT_READ_PAGE_BYTES = 12_000 as const;
@@ -248,11 +254,11 @@ export const readManagerContextPage = Effect.fn('managerContext.read')(function*
   const requestedUri = canonicalContextUri(requiredText(body.uri, 'uri', MANAGER_CONTEXT_TEXT_MAXIMUM_BYTES));
   const page = optionalInteger(body.page, 'page', 0, 10_000) ?? 0;
   const resource = parseResourceId(requestedUri);
-  const managedMemory = resourceIdIsManagedMemoryNamespace(requestedUri);
   if (resource.namespace === 'user' && resource.segments[0] !== uriSegment(config.user)) {
     throw new ManagerContextApiError('read-forbidden', 'Manager can only read the current user context.', 403);
   }
   const resolved = yield* readManagerContextUri(config, requestedUri);
+  const managedMemory = resourceIdIsManagedMemoryNamespace(resolved.canonicalUri);
   const memory = managedMemory ? parseMemoryDocument(resolved.canonicalUri, resolved.content) : undefined;
   const pages = chunkUtf8(memory?.body ?? resolved.content, MANAGER_CONTEXT_READ_PAGE_BYTES);
   if (page >= pages.length) {
@@ -412,17 +418,29 @@ const hydrateRecallPointers = Effect.fn('managerContext.hydrateRecallPointers')(
 });
 
 const readManagerContextUri = Effect.fn('managerContext.readUri')(function* (config: RuntimeConfig, uri: string) {
-  const resource = parseResourceId(uri);
+  const identityAlias = memoryIdFromIdentityAlias(uri);
+  const resolvedIdentity =
+    identityAlias === undefined
+      ? {canonicalUri: uri, requestedUri: uri}
+      : (yield* resolveMemoryIdentityAliases(
+          config,
+          [uri],
+          [`threadnote://user/${uriSegment(config.user)}/memories`],
+        ))[0]!;
+  const resource = parseResourceId(resolvedIdentity.canonicalUri);
   if (
     resource.namespace === 'user' &&
     resource.segments[0] === uriSegment(config.user) &&
     resource.segments[1] === 'memories'
   ) {
-    return yield* readMemoryWithRelocations(config, uri);
+    const resolved = yield* readMemoryWithRelocations(config, resolvedIdentity.canonicalUri);
+    yield* verifyResolvedMemoryIdentity(resolvedIdentity, resolved.canonicalUri, resolved.content);
+    return {...resolved, requestedUri: resolvedIdentity.requestedUri};
   }
   const store = yield* ResourceStore;
-  const content = yield* store.read(resourceStoreLocation(config), uri);
-  return {canonicalUri: uri, content, requestedUri: uri};
+  const content = yield* store.read(resourceStoreLocation(config), resolvedIdentity.canonicalUri);
+  yield* verifyResolvedMemoryIdentity(resolvedIdentity, resolvedIdentity.canonicalUri, content);
+  return {...resolvedIdentity, content};
 });
 
 function recallResult(pointer: ParsedRecallPointer, canonicalUri: string, record?: MemoryRecord): ManagerRecallResult {
@@ -490,6 +508,13 @@ function managerContextErrorResponse(error: unknown): ManagerContextApiResponse 
   }
   if (error instanceof ResourceNotFound || error instanceof MemoryPointerNotFound) {
     return response(404, {code: 'context-not-found', error: 'The requested context does not exist.'});
+  }
+  if (error instanceof MemoryIdentityResolutionError) {
+    return response(error.reason === 'not-found' ? 404 : 409, {
+      code: error.reason === 'not-found' ? 'memory-identity-not-found' : 'memory-identity-conflict',
+      error: error.message,
+      retryAfterMilliseconds: 0,
+    });
   }
   return response(500, {
     code: 'context-operation-failed',

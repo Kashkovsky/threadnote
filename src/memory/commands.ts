@@ -99,6 +99,7 @@ import {
   type RecallSemanticScoresResult,
 } from '../recall/runtime.js';
 import {loadRecallExactMatches} from '../recall/index.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../recall/memory_identity.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../recall/eligibility.js';
 import {
   lexicalIndexUnavailableWarning,
@@ -718,15 +719,24 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
     return;
   }
   const store = yield* ResourceStore;
-  if (isMemoryRelocationUri(config, uri)) {
-    const resolved = yield* readMemoryWithRelocations(config, uri);
-    if (resolved.requestedUri !== resolved.canonicalUri) {
-      yield* Console.error(`Relocated memory: ${resolved.requestedUri} -> ${resolved.canonicalUri}`);
+  const [identity] = yield* resolveMemoryIdentityAliases(
+    config,
+    [uri],
+    [`threadnote://user/${uriSegment(config.user)}/memories`],
+  );
+  const canonicalUri = identity!.canonicalUri;
+  if (isMemoryRelocationUri(config, canonicalUri)) {
+    const resolved = yield* readMemoryWithRelocations(config, canonicalUri);
+    yield* verifyResolvedMemoryIdentity(identity!, resolved.canonicalUri, resolved.content);
+    if (identity!.requestedUri !== resolved.canonicalUri) {
+      yield* Console.error(`Resolved memory: ${identity!.requestedUri} -> ${resolved.canonicalUri}`);
     }
     yield* writeFinalCliOutput(resolved.content);
     return;
   }
-  yield* writeFinalCliOutput(yield* store.read(resourceStoreLocation(config), uri));
+  const content = yield* store.read(resourceStoreLocation(config), canonicalUri);
+  yield* verifyResolvedMemoryIdentity(identity!, canonicalUri, content);
+  yield* writeFinalCliOutput(content);
 });
 
 const syncSharedReposAndLog = Effect.fn('memory.syncSharedReposAndLog')(function* (config: RuntimeConfig) {

@@ -64,6 +64,37 @@ export function selectRecallDocumentRows(
   });
 }
 
+/** Exact indexed lookup for bounded stable memory aliases; URI authorization stays in SQL. */
+export function selectRecallDocumentRowsByMemoryIds(
+  sql: SqlClient.SqlClient,
+  memoryIds: readonly string[],
+  allowedUriScopes: readonly string[] | undefined,
+  eligibility: RecallEligibilityPolicy | undefined,
+) {
+  return Effect.gen(function* () {
+    const rows: RecallDocumentSampleRow[] = [];
+    const scope = combineRecallSqlPredicates(
+      recallUriScopePredicate('d', allowedUriScopes),
+      recallEligibilityPredicate('d', eligibility),
+    );
+    for (let index = 0; index < memoryIds.length; index += 400) {
+      const batch = memoryIds.slice(index, index + 400);
+      const parameters = batch.map(() => '?').join(', ');
+      rows.push(
+        ...(yield* sql.unsafe<RecallDocumentSampleRow>(
+          `SELECT d.id, d.uri, d.candidate_json
+           FROM documents AS d
+           WHERE ${scope.sql}
+             AND json_extract(d.candidate_json, '$.memoryId') IN (${parameters})
+           ORDER BY d.uri`,
+          [...scope.params, ...batch],
+        )),
+      );
+    }
+    return rows;
+  });
+}
+
 export function selectTopRecallPostingsByTerms(
   sql: SqlClient.SqlClient,
   terms: readonly string[],

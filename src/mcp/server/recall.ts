@@ -87,6 +87,7 @@ import {recordRecallFeedback} from '../../recall/feedback.js';
 import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
 import type {CursorCloudMemoryScope} from '../../cursor/cloud.js';
 import {resourceIdIsWithin} from '../../storage/resource-id.js';
+import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
 import {loadRecallExactMatches} from '../../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
@@ -1230,7 +1231,7 @@ export function registerReadTool(
     name,
     {
       annotations: {readOnlyHint: true, destructiveHint: false},
-      description: `${description} Paged at no more than 1500 estimated tokens. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
+      description: `${description} Accepts canonical pointers and bounded threadnote://memory/tn_ identity aliases. Paged at no more than 1500 estimated tokens. Start with uri or uris. To continue, pass cursor without uri, uris, mode, or section; budgetTokens may be adjusted.`,
       inputSchema: {
         budgetTokens: McpInput.integer('Whole-response budget; defaults to 1500 tokens', {
           minimum: MEMORY_READ_MINIMUM_BUDGET_TOKENS,
@@ -1278,7 +1279,9 @@ export function registerReadTool(
           return argumentError(`${name} section requires exactly one uri.`);
         }
         const outsideScope = memoryScope
-          ? requestedUris.find(uri => !resourceIdIsWithin(uri, memoryScope.root))
+          ? requestedUris.find(
+              uri => memoryIdFromIdentityAlias(uri) === undefined && !resourceIdIsWithin(uri, memoryScope.root),
+            )
           : undefined;
         if (outsideScope) {
           return argumentError(`${name} uri must stay within ${memoryScope!.root}.`);
@@ -1294,7 +1297,10 @@ export function registerReadTool(
             return Effect.succeed([] as readonly string[]);
           }),
         );
-        const result = yield* runNativeReadTool(config, requestedUris);
+        const result = yield* runNativeReadTool(config, requestedUris, {
+          allowedUriScopes: [memoryScope?.root ?? `threadnote://user/${uriSegment(config.user)}/memories`],
+          resolveIdentityAliases: true,
+        });
         const scopedResult = memoryScope
           ? {
               ...result,
@@ -1313,8 +1319,9 @@ export function registerReadTool(
         ].filter((part): part is string => part !== undefined);
         const resources = memoryReadResourcesFromNativeResult(result, requestedUris);
         if (!resources) return argumentError(`${name} could not project the canonical read response.`);
+        const canonicalRead = canonicalReadMetadata(result);
         const relocatedOutsideScope = memoryScope
-          ? resources.find(resource => !resourceIdIsWithin(resource.uri, memoryScope.root))
+          ? canonicalRead?.resources.find(resource => !resourceIdIsWithin(resource.canonicalUri, memoryScope.root))
           : undefined;
         if (relocatedOutsideScope) {
           return argumentError(`${name} relocated uri must stay within ${memoryScope!.root}.`);
@@ -1398,6 +1405,10 @@ function memoryReadResourcesFromNativeResult(
     if (content?.type !== 'text') return undefined;
     const requestedUri = mapping?.requestedUri ?? uri;
     const canonicalUri = mapping?.canonicalUri ?? uri;
+    if (memoryIdFromIdentityAlias(requestedUri) !== undefined) {
+      resources.push({requestedUri, text: content.text, uri: requestedUri});
+      continue;
+    }
     resources.push({
       ...(requestedUri === canonicalUri ? {} : {canonicalUri, requestedUri}),
       text: content.text,

@@ -22,6 +22,7 @@ import {
   CODE_GRAPH_FILE_BLOB_AUTHORITY_TABLE_SQL,
   CODE_GRAPH_FILE_BLOB_AUTHORITY_TRIGGER_SQL,
 } from '../../src/code_graph/store_cache_authority.js';
+import {neighborQuery} from '../../src/code_graph/query.js';
 import type {CodeGraphEdge, CodeGraphProvenance} from '../../src/code_graph/types.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 
@@ -30,15 +31,15 @@ const currentSnapshotId = 'snapshot-current';
 const repositoryId = 'repository-query-property';
 const worktreeId = 'worktree-query-property';
 const allProvenances = ['declared', 'heuristic', 'model', 'resolved', 'syntactic'] as const;
-const relations = ['calls', 'extends', 'imports', 'references'] as const;
+const relations = ['calls', 'contains', 'extends', 'imports', 'references'] as const;
 
 interface EdgeSpec {
   readonly confidence: number;
   readonly id: number;
   readonly provenance: CodeGraphProvenance;
   readonly relation: (typeof relations)[number];
-  readonly source: number;
-  readonly target: number;
+  readonly source: number | undefined;
+  readonly target: number | undefined;
 }
 
 interface LexicalPostingSpec {
@@ -54,8 +55,8 @@ const edgeSpec = FC.record({
   id: FC.integer({max: 15, min: 0}),
   provenance: FC.constantFrom(...allProvenances),
   relation: FC.constantFrom(...relations),
-  source: FC.integer({max: 5, min: 0}),
-  target: FC.integer({max: 5, min: 0}),
+  source: FC.option(FC.integer({max: 5, min: 0}), {nil: undefined}),
+  target: FC.option(FC.integer({max: 5, min: 0}), {nil: undefined}),
 });
 const lexicalPostingSpec = FC.record({
   symbol: FC.integer({max: 7, min: 0}),
@@ -358,6 +359,111 @@ describe('code graph indexed query properties', () => {
         }),
       ).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 35}},
+  );
+
+  it.effect('retains a direct source relationship ahead of high-fanout structural metadata', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-source-relation-priority-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        const metadata = Array.from({length: 65}, (_, index) =>
+          graphEdge({
+            confidence: 100,
+            id: index,
+            provenance: 'declared',
+            relation: 'contains',
+            source: index + 1,
+            target: 0,
+          }),
+        );
+        const sourceImport = graphEdge({
+          confidence: 100,
+          id: 1_000,
+          provenance: 'resolved',
+          relation: 'imports',
+          source: 1_000,
+          target: 0,
+        });
+        yield* Effect.sync(() => insertOverlayFixture(databasePath, [], [...metadata, sourceImport], new Set()));
+
+        const actual = yield* store.edgesForNodes(databasePath, currentSnapshotId, [nodeId(0)], 'incoming', 64, [
+          'declared',
+          'resolved',
+        ]);
+
+        expect(actual).toHaveLength(64);
+        expect(actual[0]).toMatchObject({id: sourceImport.id, relation: 'imports'});
+        expect(actual.filter(edge => edge.relation === 'contains')).toHaveLength(63);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  it.effect('retains a traversable edge ahead of unresolved direct source relationships', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* CodeGraphStore;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-graph-traversable-edge-priority-'});
+        const databasePath = path.join(root, 'graph-v3.sqlite');
+        yield* store.initialize(databasePath);
+        const sourceId = nodeId(0);
+        const targetId = nodeId(1);
+        const unresolvedImports = Array.from({length: 65}, (_, index): CodeGraphEdge => ({
+          confidence: 1,
+          evidencePath: `src/unresolved-${index}.ts`,
+          evidenceSpan: {column: 1, endColumn: 2, endLine: 1, line: 1},
+          id: `unresolved-import-${String(index).padStart(2, '0')}`,
+          provenance: 'syntactic',
+          relation: 'imports',
+          sourceId,
+          sourceName: sourceId,
+          targetName: `missing-${String(index).padStart(2, '0')}`,
+        }));
+        const usableCall = graphEdge({
+          confidence: 100,
+          id: 1_000,
+          provenance: 'resolved',
+          relation: 'calls',
+          source: 0,
+          target: 1,
+        });
+        const heuristicImport = graphEdge({
+          confidence: 100,
+          id: 1_001,
+          provenance: 'heuristic',
+          relation: 'imports',
+          source: 0,
+          target: 2,
+        });
+        yield* Effect.sync(() => {
+          insertOverlayFixture(databasePath, [], [...unresolvedImports, usableCall, heuristicImport], new Set());
+          insertQuerySymbols(databasePath, [sourceId, targetId]);
+        });
+
+        const adjacency = yield* store.edgesForNodes(databasePath, currentSnapshotId, [sourceId], 'outgoing', 64, [
+          'heuristic',
+          'resolved',
+          'syntactic',
+        ]);
+        const neighbors = yield* neighborQuery(store, databasePath, currentSnapshotId, sourceId, 'outgoing', 2, 64, 1, [
+          'heuristic',
+          'resolved',
+          'syntactic',
+        ]);
+
+        expect(adjacency).toHaveLength(64);
+        expect(adjacency[0]).toMatchObject({id: usableCall.id, targetId});
+        expect(adjacency[1]).toMatchObject({id: heuristicImport.id});
+        expect(adjacency.filter(edge => edge.targetId === undefined)).toHaveLength(62);
+        expect(neighbors.nodes.map(node => node.id)).toEqual([sourceId, targetId]);
+        expect(neighbors.edges.map(edge => edge.id)).toEqual([usableCall.id]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   it.effect('suppresses a base edge when its overlay replacement moves away from the requested node', () =>
@@ -723,6 +829,8 @@ function lastEdgeById(values: readonly EdgeSpec[]): ReadonlyMap<string, CodeGrap
 }
 
 function graphEdge(value: EdgeSpec): CodeGraphEdge {
+  const sourceId = value.source === undefined ? undefined : nodeId(value.source);
+  const targetId = value.target === undefined ? undefined : nodeId(value.target);
   return {
     confidence: value.confidence / 100,
     evidencePath: `src/${value.id}.ts`,
@@ -730,10 +838,10 @@ function graphEdge(value: EdgeSpec): CodeGraphEdge {
     id: edgeId(value.id),
     provenance: value.provenance,
     relation: value.relation,
-    sourceId: nodeId(value.source),
-    sourceName: nodeId(value.source),
-    targetId: nodeId(value.target),
-    targetName: nodeId(value.target),
+    sourceId,
+    sourceName: sourceId ?? `unresolved-source-${value.id}`,
+    targetId,
+    targetName: targetId ?? `unresolved-target-${value.id}`,
   };
 }
 
@@ -766,6 +874,9 @@ function referenceAdjacency(
 
 function compareEdges(left: CodeGraphEdge, right: CodeGraphEdge): number {
   return (
+    endpointCompletenessOrder(left) - endpointCompletenessOrder(right) ||
+    authorityOrder(left.provenance) - authorityOrder(right.provenance) ||
+    sourceRelationshipOrder(left.relation) - sourceRelationshipOrder(right.relation) ||
     provenanceOrder(left.provenance) - provenanceOrder(right.provenance) ||
     right.confidence - left.confidence ||
     compareText(left.sourceName, right.sourceName) ||
@@ -773,6 +884,18 @@ function compareEdges(left: CodeGraphEdge, right: CodeGraphEdge): number {
     compareText(left.targetName, right.targetName) ||
     compareText(left.id, right.id)
   );
+}
+
+function authorityOrder(provenance: CodeGraphProvenance): number {
+  return provenance === 'heuristic' || provenance === 'model' ? 1 : 0;
+}
+
+function endpointCompletenessOrder(edge: CodeGraphEdge): number {
+  return edge.sourceId === undefined || edge.targetId === undefined ? 1 : 0;
+}
+
+function sourceRelationshipOrder(relation: CodeGraphEdge['relation']): number {
+  return relation === 'exports' || relation === 'imports' || relation === 'reexports' || relation === 'tests' ? 0 : 1;
 }
 
 function provenanceOrder(provenance: CodeGraphProvenance): number {
@@ -1002,6 +1125,22 @@ function insertRankingFixture(databasePath: string): void {
           spanJson,
         );
       }
+    })();
+  } finally {
+    database.close(false);
+  }
+}
+
+function insertQuerySymbols(databasePath: string, ids: readonly string[]): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    const insert = database.query(`INSERT INTO symbols (
+      snapshot_id, id, content_hash, kind, name, qualified_name, path, language, arity,
+      lookup_keys_json, resolution_domain, resolution_scope_id, package_name, exported,
+      signature, documentation, span_json
+    ) VALUES (?, ?, ?, 'function', ?, ?, ?, 'typescript', NULL, '[]', 'typescript', NULL, NULL, 1, NULL, NULL, ?)`);
+    database.transaction(() => {
+      for (const id of ids) insert.run(currentSnapshotId, id, `hash-${id}`, id, id, `src/${id}.ts`, spanJson);
     })();
   } finally {
     database.close(false);

@@ -56,6 +56,7 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
       candidateLimit: 24,
       ...(request.scope.project === undefined ? {} : {project: request.scope.project}),
       query: request.task,
+      requireResolvableMemoryIdentity: (request.codeRefs?.length ?? 0) > 0,
     },
     mode: request.mode,
     outputBudgetTokens: request.budgetTokens,

@@ -1050,10 +1050,89 @@ describe('Threadnote MCP toolsets', () => {
         await expect(client.readResource({uri: requestedUri})).resolves.toEqual({
           contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: canonicalUri}],
         });
+        const recalled = await client.callTool(
+          {arguments: {project: 'threadnote', query: 'Canonical relocated evidence'}, name: 'recall_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(recalled.isError, JSON.stringify(recalled)).not.toBe(true);
+        const identityAlias = `threadnote://memory/${memoryId}`;
+        const aliasRead = await client.callTool(
+          {arguments: {budgetTokens: 1_500, uri: identityAlias}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(aliasRead.isError, JSON.stringify(aliasRead)).not.toBe(true);
+        expect(aliasRead.structuredContent).toMatchObject({content, requestedUri: identityAlias});
+        expect(aliasRead.structuredContent).not.toHaveProperty('canonicalUri');
+        await expect(client.readResource({uri: identityAlias})).resolves.toEqual({
+          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: identityAlias}],
+        });
       },
       {toolset: 'core'},
     );
   });
+
+  it('reads stable identity aliases through tools and resources without leaking a canonical URI', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const memoryId = 'tn_mcp_identity_alias';
+        const alias = `threadnote://memory/${memoryId}`;
+        const canonicalUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/identity-alias.md';
+        const content = canonicalMemoryContent('identity-alias', 'Identity alias anchor qz-alias-4411.').replace(
+          'source_agent_client:',
+          `memory_id: ${memoryId}\nsource_agent_client:`,
+        );
+        await writeCanonicalMemory(fixture.home, 'identity-alias.md', content);
+        const recalled = await client.callTool(
+          {arguments: {project: 'threadnote', query: 'qz-alias-4411'}, name: 'recall_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(recalled.isError, JSON.stringify(recalled)).not.toBe(true);
+
+        const result = await client.callTool(
+          {arguments: {budgetTokens: 128, uri: alias}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const output = Array.isArray(result.content) ? result.content : [];
+        const structured = result.structuredContent as ReadPageStructuredContent;
+        expect((output[0] as TextContent | undefined)?.text).toBe(structured.content);
+        expect(structured.requestedUri).toBe(alias);
+        expect(structured.canonicalUri).toBeUndefined();
+        expect(JSON.stringify(result)).not.toContain(canonicalUri);
+        const responseBytes =
+          output.reduce((total, item) => total + (item.type === 'text' ? Buffer.byteLength(item.text, 'utf8') : 0), 0) +
+          Buffer.byteLength(JSON.stringify(structured), 'utf8');
+        expect(responseBytes).toBeLessThanOrEqual(128 * 3);
+
+        await expect(client.readResource({uri: alias})).resolves.toEqual({
+          contents: [{mimeType: 'text/plain; charset=utf-8', text: content, uri: alias}],
+        });
+
+        const missingAlias = 'threadnote://memory/tn_mcp_identity_missing';
+        const missing = await client.callTool(
+          {arguments: {budgetTokens: 128, uri: missingAlias}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(missing.isError).toBe(true);
+        const missingOutput = Array.isArray(missing.content) ? missing.content : [];
+        expect((missingOutput[0] as TextContent | undefined)?.text).toBe(JSON.stringify(missing.structuredContent));
+        expect(missing.structuredContent).toMatchObject({
+          alias: missingAlias,
+          reason: 'not-found',
+          type: 'threadnote-memory-identity-error',
+          version: 1,
+        });
+        expect(JSON.stringify(missing)).not.toContain(canonicalUri);
+        await expect(client.readResource({uri: missingAlias})).rejects.toThrow(/does not resolve/u);
+      },
+      {toolset: 'core'},
+    );
+  }, 40_000);
 
   it('gives content- and structured-first clients recovery for a legacy moved pointer without a receipt', async () => {
     await withMcpClient(

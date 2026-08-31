@@ -64,6 +64,8 @@ export type ProjectClosureSeedAssessment =
   | {
       readonly candidateLookupKeys?: readonly ProjectResolutionLookupKey[];
       readonly candidateReexports?: readonly ProjectResolutionReexportCandidate[];
+      /** The changed surface has no declared project owner and must use the bounded repository candidate scan. */
+      readonly candidateScanRequired?: true;
       readonly mode: 'eligible';
       readonly planningOperations: {
         readonly ownershipChecks: number;
@@ -349,9 +351,11 @@ export function selectProjectIncrementalClosure(
 
 /**
  * Determines whether changed facts may expand from the changed-file resolver to
- * project closure. Committed published symbol identity is immutable; a newly
- * exported symbol may seed its unique declared resolver project when every
- * lookup key is owned by that project. Unexported symbols whose
+ * project closure. Committed published symbol identity is immutable while
+ * present; a newly exported or removed symbol may seed its unique declared
+ * resolver project when every current or prior lookup key is owned by that
+ * project. A bounded candidate scan can then find consumers of removed keys
+ * without rebuilding an oversized project. Unexported symbols whose
  * lookup keys are all local to their own TypeScript path are rewritten with
  * the changed file. Only arity and lookup keys owned by one declared project
  * may differ for existing published symbols. Static reexports seed their
@@ -369,6 +373,7 @@ export function assessProjectClosureSeeds(input: {
   }
   const indexesByDomain = projectPathIndexesByDomain(input.projects);
   const candidateLookupKeys = new Map<string, ProjectResolutionLookupKey>();
+  let candidateScanRequired = false;
   let ownershipChecks = 0;
 
   const committedByPath = uniqueFactsByPath(input.committedFacts);
@@ -432,13 +437,49 @@ export function assessProjectClosureSeeds(input: {
   const effectivePublishedSymbols = publishedSymbols(effectiveSymbols);
   for (const [id, left] of committedPublishedSymbols) {
     const right = effectivePublishedSymbols.get(id);
-    if (right === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
-    if (!hasSameGlobalSymbolSurface(left, right)) {
+    if (right === undefined) {
+      if (isCandidateScannableDocumentationSymbol(left)) {
+        for (const key of left.lookupKeys ?? []) {
+          addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+        }
+        candidateScanRequired = true;
+        continue;
+      }
+      const project = declaredProjectForPath(projectsById, indexesByDomain, left.path, left.resolutionDomain);
+      if (project.mode !== 'unique') return {mode: 'fallback', reason: 'resolution-surface-changed'};
+      if (left.resolutionScopeId !== project.project.id) {
+        return {mode: 'fallback', reason: 'project-closure-incomplete'};
+      }
+      if ((left.lookupKeys ?? []).some(key => !isOwnedLookupKey(key, project.project))) {
+        return {mode: 'fallback', reason: 'resolution-surface-changed'};
+      }
+      for (const key of left.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+      }
+      ownershipChecks += 1;
+      seeds.add(project.project.id);
+      continue;
+    }
+    const candidateScannableDocumentationPair =
+      isCandidateScannableDocumentationSymbol(left) &&
+      isCandidateScannableDocumentationSymbol(right) &&
+      hasSameCandidateScannableDocumentationSurface(left, right);
+    if (!hasSameGlobalSymbolSurface(left, right) && !candidateScannableDocumentationPair) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
     const arityChanged = left.arity !== right.arity;
     const lookupChanged = !sameStrings(left.lookupKeys ?? [], right.lookupKeys ?? []);
     if (!arityChanged && !lookupChanged) continue;
+    if (candidateScannableDocumentationPair) {
+      for (const key of left.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+      }
+      for (const key of right.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
+      }
+      candidateScanRequired = true;
+      continue;
+    }
     if (right.resolutionDomain === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
     for (const key of left.lookupKeys ?? []) {
       addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
@@ -469,6 +510,13 @@ export function assessProjectClosureSeeds(input: {
     if (committedSymbols.has(id) || !right.exported) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
+    if (isCandidateScannableDocumentationSymbol(right)) {
+      for (const key of right.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
+      }
+      candidateScanRequired = true;
+      continue;
+    }
     if (right.resolutionDomain === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
     for (const key of right.lookupKeys ?? []) {
       addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
@@ -493,10 +541,55 @@ export function assessProjectClosureSeeds(input: {
   return {
     candidateLookupKeys: [...candidateLookupKeys.values()].sort(compareResolutionLookupKeys),
     candidateReexports,
+    ...(candidateScanRequired ? {candidateScanRequired: true as const} : {}),
     mode: 'eligible',
     planningOperations: {ownershipChecks, pathIndexProjects: input.projects.length},
     seedProjectIds: [...seeds].sort(compareCodeUnits),
   };
+}
+
+/**
+ * Markdown document resolution is the one non-project surface whose complete
+ * cross-file lookup contract is explicit in persisted facts: the documentation
+ * extractor publishes only these canonical global keys, and every consumer
+ * carries the same keys in its reference lookup tiers. Restrict candidate-scan
+ * admission to that exact contract; other non-TypeScript domains remain
+ * fail-closed until they can prove equivalent exhaustive coverage.
+ */
+function isCandidateScannableDocumentationSymbol(symbol: CodeGraphSymbol): boolean {
+  if (
+    symbol.language !== 'markdown' ||
+    !['document', 'heading'].includes(symbol.kind) ||
+    symbol.exported !== true ||
+    symbol.resolutionDomain !== 'documentation' ||
+    symbol.resolutionScopeId !== undefined
+  ) {
+    return false;
+  }
+  const expected = [
+    `global:qualified:${encodeURIComponent(symbol.qualifiedName)}`,
+    `global:name:${encodeURIComponent(symbol.name)}`,
+    ...(symbol.kind === 'document' ? [`global:path:${encodeURIComponent(symbol.path)}`] : []),
+  ];
+  return sameStrings(symbol.lookupKeys ?? [], expected);
+}
+
+function hasSameCandidateScannableDocumentationSurface(left: CodeGraphSymbol, right: CodeGraphSymbol): boolean {
+  // Persisted clean inventory deliberately omits manifest bodies, so an old
+  // documentation fact can lack the current package presentation label. That
+  // label is not consulted by global document resolution; every resolver input
+  // remains compared here or in the lookup-key/arity checks above.
+  return (
+    left.id === right.id &&
+    left.exported === right.exported &&
+    left.kind === right.kind &&
+    left.language === right.language &&
+    left.name === right.name &&
+    left.path === right.path &&
+    left.qualifiedName === right.qualifiedName &&
+    left.resolutionDomain === right.resolutionDomain &&
+    left.resolutionScopeId === right.resolutionScopeId
+  );
 }
 
 function addResolutionLookupKey(

@@ -10,6 +10,7 @@ import {
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {ResourceStore} from '../../src/effect/resource-store.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {runRemember} from '../../src/memory/index.js';
 import {MemoryPointerNotFound, readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {
@@ -23,6 +24,8 @@ import {
   type ManagerRecallResult,
 } from '../../src/manager/context.js';
 import {projectManagerRecallPage} from '../../src/manager/context_paging.js';
+import {loadRecallIndex} from '../../src/recall/index.js';
+import {MemoryIdentityResolutionError} from '../../src/recall/memory_identity.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -183,6 +186,34 @@ describe('Manager context API adapter', () => {
           ),
         url: new URL('http://manager.test/api/context/read'),
       });
+      const missingIdentity = yield* handleManagerContextRequest({
+        body: Effect.succeed({uri: 'threadnote://memory/tn_manager_missing'}),
+        config: runtime,
+        method: 'POST',
+        readContext: () =>
+          Effect.fail(
+            new MemoryIdentityResolutionError({
+              memoryId: 'tn_manager_missing',
+              message: 'Stable memory identity does not resolve inside the authorized active corpus.',
+              reason: 'not-found',
+            }),
+          ),
+        url: new URL('http://manager.test/api/context/read'),
+      });
+      const conflictedIdentity = yield* handleManagerContextRequest({
+        body: Effect.succeed({uri: 'threadnote://memory/tn_manager_conflict'}),
+        config: runtime,
+        method: 'POST',
+        readContext: () =>
+          Effect.fail(
+            new MemoryIdentityResolutionError({
+              memoryId: 'tn_manager_conflict',
+              message: 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
+              reason: 'ambiguous',
+            }),
+          ),
+        url: new URL('http://manager.test/api/context/read'),
+      });
 
       expect(invalidJson).toEqual({
         body: {code: 'invalid-json', error: 'Provide a JSON object request body.', retryAfterMilliseconds: 0},
@@ -201,6 +232,14 @@ describe('Manager context API adapter', () => {
       expect(missingContext).toEqual({
         body: {code: 'context-not-found', error: 'The requested context does not exist.'},
         status: 404,
+      });
+      expect(missingIdentity).toMatchObject({
+        body: {code: 'memory-identity-not-found', retryAfterMilliseconds: 0},
+        status: 404,
+      });
+      expect(conflictedIdentity).toMatchObject({
+        body: {code: 'memory-identity-conflict', retryAfterMilliseconds: 0},
+        status: 409,
       });
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -291,9 +330,12 @@ describe('Manager context backends', () => {
       });
       yield* fixture.store.remove(fixture.location, sourceUri);
       expect(yield* readMemoryWithRelocations(fixture.config, sourceUri)).toMatchObject({canonicalUri: targetUri});
+      yield* loadRecallIndex(fixture.config, {forceRefresh: true, includeInactive: false});
+      const alias = memoryIdentityAlias('tn_manager_relocated');
 
       const first = yield* readManagerContextPage(fixture.config, {page: 0, uri: sourceUri});
-      const second = yield* readManagerContextPage(fixture.config, {page: 1, uri: targetUri});
+      const aliasFirst = yield* readManagerContextPage(fixture.config, {page: 0, uri: alias});
+      const second = yield* readManagerContextPage(fixture.config, {page: 1, uri: alias});
 
       expect(first).toMatchObject({
         canonicalUri: targetUri,
@@ -304,9 +346,10 @@ describe('Manager context backends', () => {
       expect(second).toMatchObject({
         canonicalUri: targetUri,
         page: {complete: true, index: 1, previous: 0, total: 2},
-        requestedUri: targetUri,
+        requestedUri: alias,
       });
-      expect(first.content + second.content).toBe(body);
+      expect(aliasFirst).toMatchObject({canonicalUri: targetUri, requestedUri: alias});
+      expect(aliasFirst.content + second.content).toBe(body);
 
       const foreign = yield* readManagerContextPage(fixture.config, {
         uri: 'threadnote://user/other/memories/durable/projects/threadnote/foreign.md',

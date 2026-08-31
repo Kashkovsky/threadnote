@@ -129,6 +129,7 @@ export interface ContextBriefPlanV1 {
     readonly candidateLimit: number;
     readonly project?: string;
     readonly query: string;
+    readonly requireResolvableMemoryIdentity: boolean;
   };
   readonly mode: ContextBriefMode;
   readonly outputBudgetTokens: number;
@@ -180,7 +181,9 @@ export interface ContextBriefGraphContractV1 {
   readonly evidence: {
     readonly line: number;
     readonly path: string;
+    readonly pathTruncated?: true;
     readonly repositoryKey: string;
+    readonly repositoryKeyTruncated?: true;
   };
   readonly id: string;
   readonly provenance: CodeGraphProvenance;
@@ -226,6 +229,8 @@ export interface ContextBriefMemoryCandidateV1 {
   readonly citationErrorCount: number;
   readonly excerpt: string;
   readonly kind: 'durable' | 'handoff';
+  /** Stable storage identity used to emit a bounded read alias when the canonical URI cannot fit safely. */
+  readonly memoryId?: string;
   readonly project?: string;
   readonly rank: number;
   readonly sourceCommit?: string;
@@ -239,6 +244,8 @@ export interface ContextBriefMemoryEvidenceV1 extends Omit<
   'citationErrorCount' | 'codeCitations' | 'codeLinkMatches' | 'lexicallySelected'
 > {
   readonly citationErrorCount?: number;
+  /** Detailed citation receipts were omitted to protect an actionable relationship bundle. */
+  readonly citationDetailsOmitted?: true;
   readonly citationReceipts?: readonly ContextBriefCitationReceiptV2[];
   readonly citationSummary?: ContextBriefCitationSummaryV2;
   readonly freshness: ContextBriefFreshness;
@@ -487,6 +494,7 @@ export interface ContextBriefAgentViewMemoryV1 {
     readonly relocationHints?: readonly NonNullable<ContextBriefCitationReceiptV2['relocationHint']>[];
     readonly status: ContextBriefCitationReceiptV2['status'];
   }[];
+  readonly citationDetailsOmitted?: true;
   readonly citationSummary?: Pick<
     ContextBriefCitationSummaryV2,
     'coverage' | 'exact' | 'relocated' | 'stale' | 'unknown'

@@ -5,8 +5,15 @@ import {readMemoryRecordsByUri} from '../memory/index.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from '../memory/code_citation_capture.js';
 import {finalizeDeferredCodeAnchorsForRoute} from '../memory/deferred_code_anchor.js';
 import type {MemoryRecord} from '../memory/document.js';
+import {isMemoryId} from '../memory/identity_alias.js';
 import {uriSegment} from '../manifest.js';
-import {expireRecallIndexValidation, loadRecallCodeLinks, loadRecallIndexData} from '../recall/index.js';
+import {
+  expireRecallIndexValidation,
+  loadRecallCodeLinks,
+  loadRecallIndexData,
+  loadRecallMemoryIdentities,
+} from '../recall/index.js';
+import {classifyMemoryIdentityCandidates} from '../recall/memory_identity.js';
 import {withCodeAnchorFinalizationAnonymousTelemetry} from '../telemetry/code_anchor_finalization.js';
 import type {RuntimeConfig} from '../types.js';
 import type {
@@ -114,11 +121,21 @@ export const retrieveContextBriefMemoryEvidence = Effect.fn('contextBrief.retrie
         candidate.status === 'active',
     )
     .map(candidate => candidate.uri);
-  const candidates = yield* readContextBriefMemoryCandidates(config, rankedUris, plan.candidateLimit);
+  const read = yield* readContextBriefMemoryCandidates(
+    config,
+    rankedUris,
+    plan.candidateLimit,
+    new Map(),
+    plan.requireResolvableMemoryIdentity,
+  );
+  const candidates = read.candidates;
   return {
     candidates,
     consideredCandidates: index.candidates.length,
-    gaps: candidates.length === 0 ? [MEMORY_RECALL_EMPTY_GAP] : [],
+    gaps: [
+      ...(candidates.length === 0 ? [MEMORY_RECALL_EMPTY_GAP] : []),
+      ...(read.stableIdentityUnavailable ? ['stable-memory-identity-unavailable'] : []),
+    ],
     trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
   } satisfies ContextBriefMemoryRetrievalV1;
 });
@@ -245,8 +262,9 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       rankedUris,
       plan.candidateLimit,
       matchesByUri,
+      true,
     );
-    const candidates = readCandidates.filter(candidate => (candidate.codeLinkMatches?.length ?? 0) > 0);
+    const candidates = readCandidates.candidates.filter(candidate => (candidate.codeLinkMatches?.length ?? 0) > 0);
     const complete = resolvedAnchors.length === requested;
     const unresolvedOrdinals = unresolvedContextBriefCodeAnchorOrdinals(requested, resolvedOrdinals);
     return {
@@ -259,7 +277,10 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       },
       candidates,
       consideredCandidates: linked.value.length,
-      gaps: contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
+      gaps: stableUnique([
+        ...contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
+        ...(readCandidates.stableIdentityUnavailable ? ['stable-memory-identity-unavailable'] : []),
+      ]),
       trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
     } satisfies ContextBriefMemoryRetrievalV1;
   },
@@ -435,20 +456,48 @@ const readContextBriefMemoryCandidates = Effect.fn('contextBrief.readMemoryCandi
   rankedUris: readonly string[],
   limit: number,
   codeLinkMatchesByUri: ReadonlyMap<string, NonNullable<ContextBriefMemoryCandidateV1['codeLinkMatches']>> = new Map(),
+  requireResolvableMemoryIdentity = false,
 ) {
   const records = yield* readMemoryRecordsByUri(config, rankedUris);
   const recordsByUri = new Map(records.map(record => [record.uri, record]));
+  const memoryIds = [
+    ...new Set(
+      records.flatMap(record =>
+        record.metadata.memoryId !== undefined && isMemoryId(record.metadata.memoryId)
+          ? [record.metadata.memoryId]
+          : [],
+      ),
+    ),
+  ];
+  const allowedUriScopes = [contextBriefMemoryUriScope(config.user)];
+  const identityCandidates =
+    requireResolvableMemoryIdentity && memoryIds.length > 0
+      ? yield* loadRecallMemoryIdentities(config, {allowedUriScopes, memoryIds})
+      : [];
+  const resolvableMemoryIds = new Set(
+    memoryIds.filter(
+      memoryId => classifyMemoryIdentityCandidates(identityCandidates, memoryId, allowedUriScopes).state === 'resolved',
+    ),
+  );
   const candidates: ContextBriefMemoryCandidateV1[] = [];
   const seen = new Set<string>();
+  let stableIdentityUnavailable = false;
   for (const uri of rankedUris) {
     if (seen.has(uri)) continue;
     seen.add(uri);
     const record = recordsByUri.get(uri);
     if (!contextBriefMemoryRecordIsEligible(record)) continue;
-    candidates.push(contextBriefMemoryCandidate(record, candidates.length, codeLinkMatchesByUri.get(uri)));
+    const memoryId = record.metadata.memoryId;
+    const identityResolvable =
+      !requireResolvableMemoryIdentity ||
+      (memoryId !== undefined && isMemoryId(memoryId) && resolvableMemoryIds.has(memoryId));
+    if (!identityResolvable) stableIdentityUnavailable = true;
+    candidates.push(
+      contextBriefMemoryCandidate(record, candidates.length, codeLinkMatchesByUri.get(uri), identityResolvable),
+    );
     if (candidates.length >= limit) break;
   }
-  return candidates;
+  return {candidates, stableIdentityUnavailable};
 });
 
 function contextBriefMemoryRecordIsEligible(record: MemoryRecord | undefined): record is MemoryRecord {
@@ -463,6 +512,7 @@ function contextBriefMemoryCandidate(
   record: MemoryRecord,
   rank: number,
   codeLinkMatches: ContextBriefMemoryCandidateV1['codeLinkMatches'],
+  memoryIdentityResolvable = true,
 ): ContextBriefMemoryCandidateV1 {
   if (record.metadata.kind !== 'durable' && record.metadata.kind !== 'handoff') {
     throw new Error('Context Brief memory candidate must be durable or handoff.');
@@ -480,6 +530,9 @@ function contextBriefMemoryCandidate(
     excerpt:
       record.metadata.kind === 'handoff' ? handoffEvidenceExcerpt(record.body) : memoryEvidenceExcerpt(record.body),
     kind: record.metadata.kind,
+    ...(memoryIdentityResolvable && record.metadata.memoryId !== undefined && isMemoryId(record.metadata.memoryId)
+      ? {memoryId: record.metadata.memoryId}
+      : {}),
     ...(record.metadata.project === undefined ? {} : {project: record.metadata.project}),
     rank,
     ...(sourceCommit === undefined ? {} : {sourceCommit}),

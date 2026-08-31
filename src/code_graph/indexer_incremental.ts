@@ -537,6 +537,25 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
   if (seeds.mode === 'fallback') {
     return seeds satisfies IncrementalOverlayPreassessment;
   }
+  if (seeds.candidateScanRequired) {
+    if (input.workspaceSeedProjectIds.length > 0 || (seeds.candidateLookupKeys?.length ?? 0) === 0) {
+      return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+    }
+    return yield* assessResolutionCandidateIncrementalClosure({
+      baseFileSetFingerprint: input.baseFileSetFingerprint,
+      baseFiles: input.baseFiles,
+      candidateReexports: seeds.candidateReexports ?? [],
+      committedWorkspace: input.baseWorkspace,
+      currentChangedFiles: input.currentChangedFiles,
+      currentFiles: input.currentFiles,
+      currentWorkspace: input.currentWorkspace,
+      initialLookupKeys: seeds.candidateLookupKeys!,
+      languagePacks: input.languagePacks,
+      layout: input.layout,
+      projectCount: seeds.seedProjectIds.length,
+      store: input.store,
+    });
+  }
   const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
     compareCodeUnits,
   );
@@ -632,6 +651,13 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     store: input.store,
   });
   if (modificationSeeds.mode === 'fallback') return modificationSeeds;
+  // A non-project publication can be scanned safely only while the repository
+  // file set is unchanged. Additions and deletions can introduce endpoints
+  // that have no complete cached-base candidate surface, so this mixed case
+  // retains the existing full-materialization safety gate.
+  if (modificationSeeds.candidateScanRequired) {
+    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+  }
   const seedProjectIds = [
     ...new Set([...seeds.seedProjectIds, ...modificationSeeds.seedProjectIds, ...input.workspaceSeedProjectIds]),
   ].sort(compareCodeUnits);

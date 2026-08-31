@@ -615,15 +615,9 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it.effect('fails closed for global-surface and unreconciled-workspace changes', () =>
+  it.effect('fails closed for unreconciled workspace changes', () =>
     Effect.forEach(
       [
-        {
-          create: () => createProjectClosureRepository(),
-          mutate: (root: string) =>
-            writeFile(root, 'packages/core/index.ts', 'export function renamed() { return "renamed"; }\n'),
-          reason: 'resolution-surface-changed' as const,
-        },
         {
           create: () => createProjectClosureRepository({orphanProjectBoundary: true}),
           mutate: redirectBarrel,
@@ -648,6 +642,92 @@ describe('project-closure incremental indexing', () => {
         ),
       {concurrency: 1},
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect(
+    'candidate-scans existing Markdown heading additions, removals, renames, and ambiguity transitions',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(createLargeRootProjectRepository),
+        root =>
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            const path = yield* Path.Path;
+            const store = yield* CodeGraphStore;
+            const incrementalHome = join(root, '.threadnote-document-candidate-incremental');
+            const fullHome = join(root, '.threadnote-document-candidate-full');
+            yield* Effect.sync(() => {
+              writeFile(root, 'docs/surface.md', '# Retiring\n\n# Renaming\n');
+              writeFile(root, 'docs/existing.md', '# Collision\n');
+              writeFile(root, 'docs/consumer-retiring.md', '`Retiring`\n');
+              writeFile(root, 'docs/consumer-added.md', '`Added`\n');
+              writeFile(root, 'docs/consumer-renaming-old.md', '`Renaming`\n');
+              writeFile(root, 'docs/consumer-renaming-new.md', '`Renamed`\n');
+              writeFile(root, 'docs/consumer-collision.md', '`Collision`\n');
+              git(root, ['add', 'docs']);
+              git(root, ['commit', '-qm', 'add documentation resolution fixture']);
+            });
+            const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const incrementalLayout = codeGraphLayout(
+              path,
+              incrementalHome,
+              base.identity.checkoutId,
+              base.identity.worktreeId,
+            );
+            const baseGraph = yield* store.loadGraph(incrementalLayout.databasePath, base.snapshot.id);
+            expect(documentEdge(baseGraph, 'docs/consumer-retiring.md', 'Retiring')?.targetId).toBeDefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-added.md', 'Added')?.targetId).toBeUndefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-renaming-old.md', 'Renaming')?.targetId).toBeDefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-renaming-new.md', 'Renamed')?.targetId).toBeUndefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-collision.md', 'Collision')?.targetId).toBeDefined();
+
+            yield* Effect.sync(() => {
+              writeFile(root, 'docs/surface.md', '# Added\n\n# Renamed\n\n# Collision\n');
+              git(root, ['add', 'docs/surface.md']);
+              git(root, ['commit', '-qm', 'change documentation publication surface']);
+            });
+            const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+            const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+            const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+            const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+            expect(base.materialization?.totalFiles).toBeGreaterThan(128);
+            expect(incremental.materialization).toMatchObject({
+              closureProjects: 0,
+              mode: 'incremental-clean',
+              resolutionClosure: 'project',
+              resolutionLookupKeyForm: 'non-typescript',
+              resolutionPublicationGate: 'exported',
+              stagedFiles: 6,
+            });
+            expect(incremental.materialization?.stagedFiles).toBeLessThan(incremental.materialization?.totalFiles ?? 0);
+            expect(incremental.incrementalWork).toMatchObject({baseFactsLoaded: 6, changedFiles: 6});
+            expect(incremental.incrementalWork?.attributionContextFiles).toBe(base.materialization?.totalFiles ?? 0);
+            expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+            expect(documentEdge(incrementalGraph, 'docs/consumer-retiring.md', 'Retiring')?.targetId).toBeUndefined();
+            expect(documentEdge(incrementalGraph, 'docs/consumer-added.md', 'Added')?.targetId).toBeDefined();
+            expect(
+              documentEdge(incrementalGraph, 'docs/consumer-renaming-old.md', 'Renaming')?.targetId,
+            ).toBeUndefined();
+            expect(documentEdge(incrementalGraph, 'docs/consumer-renaming-new.md', 'Renamed')?.targetId).toBeDefined();
+            expect(documentEdge(incrementalGraph, 'docs/consumer-collision.md', 'Collision')?.targetId).toBeUndefined();
+            expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
+              'docs/consumer-added.md',
+              'docs/consumer-collision.md',
+              'docs/consumer-renaming-new.md',
+              'docs/consumer-renaming-old.md',
+              'docs/consumer-retiring.md',
+              'docs/surface.md',
+            ]);
+            expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+              foreignKeyViolations: 0,
+              integrity: 'ok',
+            });
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
   );
 
   it.effect('keeps a stable unowned-domain modification local during an owned file-set closure', () =>
@@ -877,7 +957,7 @@ describe('project-closure incremental indexing', () => {
   );
 
   it.effect(
-    'selects transitive reexports and their consumer instead of rebuilding an oversized root project',
+    'selects resolved and unresolved consumers through transitive aliases when an export is renamed',
     () =>
       Effect.acquireUseRelease(
         Effect.sync(createLargeRootProjectRepository),
@@ -888,6 +968,22 @@ describe('project-closure incremental indexing', () => {
             const path = yield* Path.Path;
             const incrementalHome = join(root, '.threadnote-incremental');
             const fullHome = join(root, '.threadnote-full');
+            yield* Effect.sync(() => {
+              writeFile(
+                root,
+                'src/core.ts',
+                'export const stable = 1;\nexport function retiring() { return stable; }\n',
+              );
+              writeFile(root, 'src/barrel-a.ts', 'export {discovered, retiring} from "./core.js";\n');
+              writeFile(root, 'src/barrel-b.ts', 'export {discovered, retiring} from "./barrel-a.js";\n');
+              writeFile(
+                root,
+                'src/consumer.ts',
+                'import {discovered, retiring} from "./barrel-b.js";\nexport function consume() { return discovered() + retiring(); }\n',
+              );
+              git(root, ['add', 'src/core.ts', 'src/barrel-a.ts', 'src/barrel-b.ts', 'src/consumer.ts']);
+              git(root, ['commit', '-qm', 'add retiring export']);
+            });
             const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
 
             yield* Effect.sync(() => {
@@ -932,6 +1028,16 @@ describe('project-closure incremental indexing', () => {
                 edge => edge.sourceName === 'consume' && edge.relation === 'calls' && edge.targetId === discovered?.id,
               ),
             ).toBe(true);
+            expect(incrementalGraph.symbols.some(symbol => symbol.name === 'retiring')).toBe(false);
+            expect(
+              incrementalGraph.edges.some(
+                edge =>
+                  edge.sourceName === 'consume' &&
+                  edge.targetName === 'retiring' &&
+                  edge.provenance === 'resolved' &&
+                  edge.targetId !== undefined,
+              ),
+            ).toBe(false);
             expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
               'src/barrel-a.ts',
               'src/barrel-b.ts',
@@ -1193,6 +1299,12 @@ function normalizeGraph(graph: StoredCodeGraph): unknown {
     edges: [...graph.edges].sort((left, right) => left.id.localeCompare(right.id)),
     symbols: [...graph.symbols].sort((left, right) => left.id.localeCompare(right.id)),
   };
+}
+
+function documentEdge(graph: StoredCodeGraph, path: string, targetName: string) {
+  return graph.edges.find(
+    edge => edge.evidencePath === path && edge.relation === 'documents' && edge.targetName === targetName,
+  );
 }
 
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {

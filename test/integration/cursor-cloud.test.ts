@@ -335,6 +335,13 @@ describe('Cursor Cloud integration', () => {
             uri: 'threadnote://user/cloud-user/memories/durable/projects/threadnote/private.md',
           }),
         ).resolves.toContain('must stay within');
+        const privateAlias = `threadnote://memory/${memoryId}`;
+        const aliasReadError = await callError(client, 'read_context', {uri: privateAlias});
+        expect(aliasReadError).toContain('does not resolve inside the authorized active corpus');
+        expect(aliasReadError).not.toContain(privateSentinel);
+        await expect(client.readResource({uri: privateAlias})).rejects.toThrow(
+          'does not resolve inside the authorized active corpus',
+        );
         const relocatedReadError = await callError(client, 'read_context', {uri: formerSharedUri});
         expect(relocatedReadError).toContain('relocated uri must stay within');
         expect(relocatedReadError).not.toContain(privateSentinel);

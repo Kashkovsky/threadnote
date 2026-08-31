@@ -687,7 +687,16 @@ function effectiveAdjacentEdgesCte(
 }
 
 function edgePriorityOrder(alias: string): string {
-  return `CASE ${alias}.provenance WHEN 'declared' THEN 0 WHEN 'resolved' THEN 1 WHEN 'syntactic' THEN 2 ELSE 3 END,
+  return `CASE WHEN ${alias}.source_id IS NULL OR ${alias}.target_id IS NULL THEN 1 ELSE 0 END,
+    CASE ${alias}.provenance WHEN 'heuristic' THEN 1 WHEN 'model' THEN 1 ELSE 0 END,
+    CASE ${alias}.relation
+      WHEN 'exports' THEN 0
+      WHEN 'imports' THEN 0
+      WHEN 'reexports' THEN 0
+      WHEN 'tests' THEN 0
+      ELSE 1
+    END,
+    CASE ${alias}.provenance WHEN 'declared' THEN 0 WHEN 'resolved' THEN 1 WHEN 'syntactic' THEN 2 ELSE 3 END,
     ${alias}.confidence DESC, ${alias}.source_name, ${alias}.relation, ${alias}.target_name, ${alias}.id`;
 }
 
@@ -713,9 +722,7 @@ export function codeGraphAdjacencyQueryStatement(
     parameters: [...adjacent.parameters, safeLimit],
     text: `${adjacent.text}
       SELECT * FROM adjacent_edges
-      ORDER BY
-        CASE provenance WHEN 'declared' THEN 0 WHEN 'resolved' THEN 1 WHEN 'syntactic' THEN 2 ELSE 3 END,
-        confidence DESC, source_name, relation, target_name, id
+      ORDER BY ${edgePriorityOrder('adjacent_edges')}
       LIMIT ?`,
   };
 }

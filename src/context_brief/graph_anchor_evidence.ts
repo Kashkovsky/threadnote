@@ -24,6 +24,7 @@ interface RankedNode {
 interface RankedEdge {
   readonly edge: CodeGraphEdge;
   readonly edgeRank: number;
+  readonly endpointRank: number;
   readonly priority: number;
   readonly requestRank: number;
 }
@@ -118,7 +119,7 @@ export function mergeContextBriefAnchoredRepositoryGraphResults(
   const first = results[0];
   if (first === undefined) throw new Error('No anchored Context Brief graph read completed.');
   const nodes = rankAnchoredNodes(plan, results);
-  const edges = rankAnchoredEdges(results);
+  const edges = rankAnchoredEdges(results, nodes);
   const warnings = stableUnique([
     ...results.flatMap(result => result.warnings),
     ...(warningCount === 0
@@ -229,11 +230,21 @@ function strongestRelationshipPriorityByNodeId(results: readonly CodeGraphQueryR
   return priorities;
 }
 
-function rankAnchoredEdges(results: readonly CodeGraphQueryResult[]): readonly CodeGraphEdge[] {
+function rankAnchoredEdges(
+  results: readonly CodeGraphQueryResult[],
+  rankedNodes: readonly CodeGraphQueryNode[],
+): readonly CodeGraphEdge[] {
+  const nodeRanks = new Map(rankedNodes.map((node, rank) => [node.id, rank] as const));
   const byId = new Map<string, RankedEdge>();
   for (const [requestRank, result] of results.entries()) {
     for (const [edgeRank, edge] of result.edges.entries()) {
-      const ranked = {edge, edgeRank, priority: anchoredEdgePriority(edge), requestRank} satisfies RankedEdge;
+      const ranked = {
+        edge,
+        edgeRank,
+        endpointRank: minimumEndpointRank(edge, nodeRanks),
+        priority: anchoredEdgePriority(edge),
+        requestRank,
+      } satisfies RankedEdge;
       const current = byId.get(edge.id);
       if (current === undefined || compareRankedEdge(ranked, current) < 0) byId.set(edge.id, ranked);
     }
@@ -278,10 +289,25 @@ function compareRankedNode(left: RankedNode, right: RankedNode): number {
 
 function compareRankedEdge(left: RankedEdge, right: RankedEdge): number {
   return (
+    topCardRelationshipPriority(left) - topCardRelationshipPriority(right) ||
     left.priority - right.priority ||
-    left.edgeRank - right.edgeRank ||
+    left.endpointRank - right.endpointRank ||
     left.requestRank - right.requestRank ||
+    left.edgeRank - right.edgeRank ||
     compareText(left.edge.id, right.edge.id)
+  );
+}
+
+function topCardRelationshipPriority(edge: RankedEdge): number {
+  if (edge.endpointRank === 0 && edge.priority === 0) return 0;
+  if (edge.endpointRank === 0) return 1;
+  return edge.priority === 0 ? 2 : 3;
+}
+
+function minimumEndpointRank(edge: CodeGraphEdge, nodeRanks: ReadonlyMap<string, number>): number {
+  return Math.min(
+    edge.sourceId === undefined ? Number.MAX_SAFE_INTEGER : (nodeRanks.get(edge.sourceId) ?? Number.MAX_SAFE_INTEGER),
+    edge.targetId === undefined ? Number.MAX_SAFE_INTEGER : (nodeRanks.get(edge.targetId) ?? Number.MAX_SAFE_INTEGER),
   );
 }
 

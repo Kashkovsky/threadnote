@@ -28,6 +28,8 @@ import {
   type ContextBriefV1,
 } from '../../src/context_brief/index.js';
 import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
+import {canonicalResourceUri} from '../../src/storage/resource-id.js';
 
 const COMMIT = 'a'.repeat(40);
 const OTHER_COMMIT = 'b'.repeat(40);
@@ -130,6 +132,42 @@ describe('Context Brief compiler', () => {
       }),
   );
 
+  effectIt.effect(
+    'preserves the highest-ranked source relationship in trace and impact under maximum-budget code-linked pressure',
+    () =>
+      Effect.gen(function* () {
+        for (const mode of ['trace', 'impact'] as const) {
+          const minimum = yield* compileCodeLinkedRecoveryFixture(24, 1, 800, {contractCount: 64, mode});
+          const result = yield* compileCodeLinkedRecoveryFixture(24, 1, 1_500, {contractCount: 64, mode});
+          const brief = result.structuredContent;
+          const agentView = parseContextBriefAgentViewText(result.text);
+
+          expect(minimum.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+          expect(minimum.structuredContent.recommendedFollowUps[0]).toMatchObject({
+            operation: 'inspect-node',
+            rank: 0,
+          });
+          expect(brief.graph.contracts[0]).toMatchObject({
+            id: 'recovery-contract-0',
+            relation: 'imports',
+            sourceRef: recoveryGraphCardRef(1),
+            targetRef: recoveryGraphCardRef(0),
+          });
+          expect(agentView.graph?.contracts?.[0]).toEqual({
+            authority: brief.graph.contracts[0]?.authority,
+            evidence: brief.graph.contracts[0]?.evidence,
+            provenance: brief.graph.contracts[0]?.provenance,
+            relation: brief.graph.contracts[0]?.relation,
+            sourceRef: brief.graph.contracts[0]?.sourceRef,
+            targetRef: brief.graph.contracts[0]?.targetRef,
+          });
+          expect(brief.durableDecisions[0]?.selectionBasis).toBe('code-citation');
+          expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+          expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+        }
+      }),
+  );
+
   effectIt.effect('fits actionable code-linked recovery at the advertised minimum under v3 gap pressure', () =>
     Effect.gen(function* () {
       const result = yield* compileCodeLinkedRecoveryFixture(16, 8, 800, {
@@ -145,6 +183,43 @@ describe('Context Brief compiler', () => {
       expect(brief.coverage.gaps[0]).toBe('graph-evidence-partial');
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
     }),
+  );
+
+  effectIt.effect(
+    'atomically preserves a linked handoff, incident contract, and selector with durable and long-path pressure',
+    () =>
+      Effect.gen(function* () {
+        const originalEvidencePath = `src/${'very-long-relationship-evidence-segment/'.repeat(128)}consumer.ts`;
+        const result = yield* compileCodeLinkedRecoveryFixture(24, 8, 1_500, {
+          contractCount: 64,
+          contractEvidencePath: originalEvidencePath,
+          extraGraphGaps: ['graph-evidence-partial'],
+          includeActiveHandoff: true,
+          mode: 'impact',
+        });
+        const brief = result.structuredContent;
+        const contract = brief.graph.contracts[0]!;
+        const recovery = brief.recommendedFollowUps[0]!;
+        const agentView = parseContextBriefAgentViewText(result.text);
+
+        expect(brief.activeHandoffs[0]?.selectionBasis).toBe('code-citation');
+        expect(brief.activeHandoffs.length + brief.coverage.omissions.activeHandoffs).toBe(1);
+        expect(brief.durableDecisions.length + brief.coverage.omissions.durableDecisions).toBe(7);
+        expect(brief.coverage.gaps[0]).toBe('graph-evidence-partial');
+        expect(contract).toMatchObject({
+          evidence: {pathTruncated: true},
+          id: 'recovery-contract-0',
+          relation: 'imports',
+        });
+        expect(new TextEncoder().encode(contract.evidence.path).byteLength).toBeLessThanOrEqual(48);
+        expect(originalEvidencePath.startsWith(contract.evidence.path.replace(/…$/u, ''))).toBe(true);
+        expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0});
+        if (recovery.operation !== 'inspect-node') throw new Error('Expected an exact graph inspection action.');
+        expect([contract.sourceRef, contract.targetRef]).toContain(recovery.ref);
+        expect(agentView.graph?.contracts?.[0]?.evidence).toEqual(contract.evidence);
+        expect(agentView.recommendedFollowUps?.[0]).toEqual(recovery);
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+      }),
   );
 
   effectIt.effect('fits unresolved anchor ordinals in both minimum-budget response channels', () =>
@@ -165,6 +240,110 @@ describe('Context Brief compiler', () => {
       expect(agentCoverage).toEqual(coverage);
       expect(result.structuredContent.coverage.gaps).toContain('code-anchors-unresolved');
       expect(result.measurement.totalBytes).toBeLessThanOrEqual(800 * 3);
+    }),
+  );
+
+  effectIt.effect(
+    'protects the maximum-budget relationship bundle for maximum valid durable and handoff identities',
+    () =>
+      Effect.gen(function* () {
+        for (const includeActiveHandoff of [false, true] as const) {
+          const result = yield* compileCodeLinkedRecoveryFixture(24, 1, 1_500, {
+            contractCount: 1,
+            contractEvidencePath: `src/${'p'.repeat(4_096)}`,
+            extraGraphGaps: ['graph-evidence-partial'],
+            includeActiveHandoff,
+            maximumMemoryIdentity: true,
+            mode: 'impact',
+            scope: {callerCwd: `/${'c'.repeat(4_095)}`, kind: 'repository', project: 'threadnote'},
+            task: 'T'.repeat(4_096),
+          });
+          const brief = result.structuredContent;
+          const memory = includeActiveHandoff ? brief.activeHandoffs[0]! : brief.durableDecisions[0]!;
+          const contract = brief.graph.contracts[0]!;
+          const recovery = brief.recommendedFollowUps[0]!;
+          const agentMemory = includeActiveHandoff
+            ? parseContextBriefAgentViewText(result.text).activeHandoffs?.[0]
+            : parseContextBriefAgentViewText(result.text).durableDecisions?.[0];
+
+          expect(memory.uri).toBe(memoryIdentityAlias(`tn_${'0'.repeat(127)}1`));
+          expect(new TextEncoder().encode(memory.uri).byteLength).toBeLessThan(160);
+          expect(JSON.stringify(brief)).not.toContain(encodeURIComponent('界'));
+          expect(memory).toMatchObject({
+            citationDetailsOmitted: true,
+            selectionBasis: 'code-citation',
+          });
+          expect(memory).not.toHaveProperty('citationReceipts');
+          expect(memory).not.toHaveProperty('citationSummary');
+          expect(memory).not.toHaveProperty('codeRelations');
+          expect(agentMemory).toMatchObject({
+            citationDetailsOmitted: true,
+            selectionBasis: 'code-citation',
+            uri: memory.uri,
+          });
+          expect(contract).toMatchObject({
+            evidence: {pathTruncated: true, repositoryKeyTruncated: true},
+            id: 'recovery-contract-0',
+          });
+          expect(recovery).toMatchObject({operation: 'inspect-node', rank: 0});
+          if (recovery.operation !== 'inspect-node') throw new Error('Expected an exact graph inspection action.');
+          expect([contract.sourceRef, contract.targetRef]).toContain(recovery.ref);
+          expect(brief.coverage.gaps[0]).toBe('graph-evidence-partial');
+          expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+        }
+      }),
+  );
+
+  effectIt.effect('fails soft with an actionable gap when a legacy maximum URI has no stable memory identity', () =>
+    Effect.gen(function* () {
+      const result = yield* compileCodeLinkedRecoveryFixture(24, 1, 1_500, {
+        contractCount: 1,
+        contractEvidencePath: `src/${'p'.repeat(4_096)}`,
+        extraGraphGaps: ['graph-evidence-partial'],
+        maximumMemoryIdentity: true,
+        mode: 'impact',
+        omitMemoryId: true,
+        scope: {callerCwd: `/${'c'.repeat(4_095)}`, kind: 'repository', project: 'threadnote'},
+        task: 'T'.repeat(4_096),
+      });
+      const brief = result.structuredContent;
+
+      expect(brief.coverage.gaps[0]).toBe('stable-memory-identity-unavailable');
+      expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+      expect(brief.durableDecisions).toHaveLength(0);
+      expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+      expect(parseContextBriefAgentViewText(result.text).coverage?.gaps?.[0]).toBe(
+        'stable-memory-identity-unavailable',
+      );
+    }),
+  );
+
+  effectIt.effect('retains canonical v2 memory, issue, and read-follow-up URIs when memory IDs are present', () =>
+    Effect.gen(function* () {
+      const evidence = memoryEvidence();
+      const candidates = evidence.candidates.map((candidate, rank) => ({
+        ...candidate,
+        memoryId: `tn_v2_contract_${rank}`,
+      }));
+      const result = yield* compile(
+        {...minimalGraphEvidence(), cards: [], contracts: [], gaps: []},
+        {...evidence, candidates},
+        1_500,
+      );
+      const brief = result.structuredContent;
+      const canonicalUris = new Set(candidates.map(candidate => candidate.uri));
+      const memories = [...brief.activeHandoffs, ...brief.durableDecisions];
+      const readFollowUps = brief.recommendedFollowUps.filter(followUp => followUp.operation === 'read-memory');
+
+      expect(brief.version).toBe(2);
+      expect(memories.length).toBeGreaterThan(0);
+      expect(memories.every(memory => canonicalUris.has(memory.uri))).toBe(true);
+      expect(readFollowUps.length).toBeGreaterThan(0);
+      expect(readFollowUps.every(followUp => canonicalUris.has(followUp.uri))).toBe(true);
+      expect(brief.stalenessAndConflicts.length).toBeGreaterThan(0);
+      expect(brief.stalenessAndConflicts.flatMap(issue => issue.uris).every(uri => canonicalUris.has(uri))).toBe(true);
+      expect(JSON.stringify(brief)).not.toContain('memoryId');
+      expect(JSON.stringify(brief)).not.toContain('threadnote://memory/');
     }),
   );
 
@@ -1366,6 +1545,82 @@ describe('Context Brief compiler', () => {
   );
 
   effectIt.effect.prop(
+    'keeps relationship-mode projection bounded while admitting only a highest-ranked contract prefix',
+    {
+      budget: fc.integer({min: 800, max: 1_500}),
+      evidencePathLength: fc.integer({min: 1, max: 4_096}),
+      includeActiveHandoff: fc.boolean(),
+      mode: fc.constantFrom<'impact' | 'trace'>('impact', 'trace'),
+    },
+    ({budget, evidencePathLength, includeActiveHandoff, mode}) =>
+      Effect.gen(function* () {
+        const originalEvidencePath = `src/${'p'.repeat(evidencePathLength)}`;
+        const result = yield* compileCodeLinkedRecoveryFixture(24, 2, budget, {
+          contractCount: 64,
+          contractEvidencePath: originalEvidencePath,
+          includeActiveHandoff,
+          mode,
+        });
+        const brief = result.structuredContent;
+
+        expect(result.measurement.totalBytes).toBeLessThanOrEqual(budget * 3);
+        expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
+        expect(brief.graph.contracts.length).toBeLessThanOrEqual(1);
+        if (brief.graph.contracts.length === 1) {
+          const contract = brief.graph.contracts[0]!;
+          expect(contract.id).toBe('recovery-contract-0');
+          expect(new TextEncoder().encode(contract.evidence.path).byteLength).toBeLessThanOrEqual(48);
+          expect(contract.evidence.pathTruncated).toBe(
+            new TextEncoder().encode(originalEvidencePath).byteLength > 48 ? true : undefined,
+          );
+        }
+        expect(parseContextBriefAgentViewText(result.text).graph?.contracts ?? []).toHaveLength(
+          brief.graph.contracts.length,
+        );
+      }),
+    {fastCheck: {numRuns: 30}},
+  );
+
+  effectIt.effect.prop(
+    'extends each relationship evidence lane monotonically as the accepted budget grows',
+    {
+      delta: fc.integer({min: 0, max: 700}),
+      evidencePathLength: fc.integer({min: 1, max: 4_096}),
+      includeActiveHandoff: fc.boolean(),
+      mode: fc.constantFrom<'impact' | 'trace'>('impact', 'trace'),
+      smallBudget: fc.integer({min: 800, max: 1_400}),
+    },
+    ({delta, evidencePathLength, includeActiveHandoff, mode, smallBudget}) =>
+      Effect.gen(function* () {
+        const largeBudget = Math.min(1_500, smallBudget + delta);
+        const options = {
+          contractCount: 64,
+          contractEvidencePath: `src/${'p'.repeat(evidencePathLength)}`,
+          includeActiveHandoff,
+          mode,
+        } as const;
+        const small = (yield* compileCodeLinkedRecoveryFixture(24, 8, smallBudget, options)).structuredContent;
+        const large = (yield* compileCodeLinkedRecoveryFixture(24, 8, largeBudget, options)).structuredContent;
+
+        expect(sectionIds(small.graph.cards)).toEqual(sectionIds(large.graph.cards).slice(0, small.graph.cards.length));
+        expect(sectionIds(small.graph.contracts)).toEqual(
+          sectionIds(large.graph.contracts).slice(0, small.graph.contracts.length),
+        );
+        expect(memoryUris(small.durableDecisions)).toEqual(
+          memoryUris(large.durableDecisions).slice(0, small.durableDecisions.length),
+        );
+        expect(memoryUris(small.activeHandoffs)).toEqual(
+          memoryUris(large.activeHandoffs).slice(0, small.activeHandoffs.length),
+        );
+        expect(sectionIds(small.recommendedFollowUps)).toEqual(
+          sectionIds(large.recommendedFollowUps).slice(0, small.recommendedFollowUps.length),
+        );
+        expect(small.coverage.gaps).toEqual(large.coverage.gaps.slice(0, small.coverage.gaps.length));
+      }),
+    {fastCheck: {numRuns: 30}},
+  );
+
+  effectIt.effect.prop(
     'keeps the minimum envelope bounded across task, workset, and reachable gap pressure',
     {
       gapCount: fc.integer({min: 0, max: 24}),
@@ -1473,7 +1728,13 @@ function compileCodeLinkedRecoveryFixture(
   memoryCount: number,
   budget: number,
   options: {
+    readonly contractCount?: number;
+    readonly contractEvidencePath?: string;
     readonly extraGraphGaps?: readonly string[];
+    readonly includeActiveHandoff?: boolean;
+    readonly maximumMemoryIdentity?: boolean;
+    readonly mode?: 'impact' | 'locate' | 'trace';
+    readonly omitMemoryId?: boolean;
     readonly scope?: ContextBriefScopeV1;
     readonly task?: string;
     readonly unresolvedOrdinals?: readonly number[];
@@ -1482,25 +1743,49 @@ function compileCodeLinkedRecoveryFixture(
   const citations = Array.from({length: memoryCount}, (_, index) =>
     codeCitation(index + 1, 'file', `src/context_brief/recovery-anchor-${index}.ts`),
   );
-  const candidates: readonly ContextBriefMemoryCandidateV1[] = citations.map((citation, rank) => ({
-    citationErrorCount: 0,
-    codeCitations: [citation],
-    codeLinkMatches: [
-      {
-        anchorOrdinal: rank,
-        anchorPath: citation.path,
-        citationId: citation.id,
-        matchKind: 'file-path' as const,
-      },
-    ],
-    excerpt: `Code-linked recovery decision ${rank}: ${'e'.repeat(160)}`,
-    kind: 'durable' as const,
-    project: 'threadnote',
-    rank,
-    sourceCommit: COMMIT,
-    topic: `code-linked-recovery-${rank}`,
-    uri: `threadnote://user/test/memories/durable/projects/threadnote/code-linked-recovery-${rank}.md`,
-  }));
+  const candidates: readonly ContextBriefMemoryCandidateV1[] = citations.map((citation, rank) => {
+    const kind = options.includeActiveHandoff === true && rank === 0 ? ('handoff' as const) : ('durable' as const);
+    const maximumSegment = '界'.repeat(85);
+    const user = options.maximumMemoryIdentity === true ? maximumSegment : 'u';
+    const project = options.maximumMemoryIdentity === true ? maximumSegment : 'threadnote';
+    const topic = options.maximumMemoryIdentity === true ? '界'.repeat(84) : `code-linked-recovery-${rank}`;
+    const memoryId = `tn_${(rank + 1).toString(16).padStart(options.maximumMemoryIdentity === true ? 128 : 32, '0')}`;
+    const uri =
+      kind === 'handoff'
+        ? canonicalResourceUri('user', [user, 'memories', 'handoffs', 'active', project, `${topic}.md`])
+        : canonicalResourceUri('user', [
+            user,
+            'memories',
+            ...(options.maximumMemoryIdentity === true ? ['shared', maximumSegment] : []),
+            'durable',
+            'projects',
+            project,
+            `${topic}.md`,
+          ]);
+    return {
+      citationErrorCount: 0,
+      ...(options.maximumMemoryIdentity === true
+        ? {authority: 'reviewed_shared' as const, trust: 'untrusted' as const}
+        : {}),
+      codeCitations: [citation],
+      codeLinkMatches: [
+        {
+          anchorOrdinal: rank,
+          anchorPath: citation.path,
+          citationId: citation.id,
+          matchKind: 'file-path' as const,
+        },
+      ],
+      excerpt: `Code-linked recovery decision ${rank}: ${'e'.repeat(160)}`,
+      kind,
+      ...(options.omitMemoryId === true ? {} : {memoryId}),
+      project,
+      rank,
+      sourceCommit: COMMIT,
+      topic,
+      uri,
+    };
+  });
   const unresolvedOrdinals = [...new Set(options.unresolvedOrdinals ?? [])].filter(
     ordinal => ordinal >= 0 && ordinal < memoryCount,
   );
@@ -1555,6 +1840,7 @@ function compileCodeLinkedRecoveryFixture(
             rank,
             reason: `Bounded recovery graph evidence ${rank}: ${'r'.repeat(96)}`,
             ref: recoveryGraphCardRef(rank),
+            ...(options.maximumMemoryIdentity === true ? {repositoryKey: '界'.repeat(85)} : {}),
             symbol: {
               ...graph.cards[0]!.symbol,
               line: rank + 1,
@@ -1564,7 +1850,23 @@ function compileCodeLinkedRecoveryFixture(
             },
           })),
           continuation: undefined,
-          contracts: [],
+          contracts: Array.from({length: options.contractCount ?? 0}, (_, rank) => ({
+            ...graph.contracts[0]!,
+            evidence: {
+              ...graph.contracts[0]!.evidence,
+              line: rank + 1,
+              path:
+                rank === 0 && options.contractEvidencePath !== undefined
+                  ? options.contractEvidencePath
+                  : `src/context_brief/recovery-consumer-${rank}.ts`,
+              ...(options.maximumMemoryIdentity === true ? {repositoryKey: '界'.repeat(85)} : {}),
+            },
+            id: `recovery-contract-${rank}`,
+            rank,
+            relation: 'imports' as const,
+            sourceRef: recoveryGraphCardRef(rank + 1),
+            targetRef: recoveryGraphCardRef(0),
+          })),
           gaps: [...graph.gaps, ...(options.extraGraphGaps ?? [])],
         }),
       memoryEvidence: () =>
@@ -1581,7 +1883,7 @@ function compileCodeLinkedRecoveryFixture(
     {
       ...request(budget),
       codeRefs: citations.map(citation => citation.path),
-      mode: 'locate',
+      mode: options.mode ?? 'locate',
       ...(options.scope === undefined ? {} : {scope: options.scope}),
       task: options.task ?? 'Find the implementation contract attached to the bounded Context Brief recovery graph.',
     },
@@ -1900,6 +2202,7 @@ function expectTextCarriesSelectedEvidence(text: string, brief: ContextBriefV1):
     );
     expect(projected).toMatchObject({
       ...(memory.authority === undefined ? {} : {authority: memory.authority}),
+      ...(memory.citationDetailsOmitted === undefined ? {} : {citationDetailsOmitted: memory.citationDetailsOmitted}),
       excerpt: memory.excerpt,
       freshness: memory.freshness,
       freshnessBasis: memory.freshnessBasis,

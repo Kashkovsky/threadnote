@@ -17,6 +17,7 @@ import {
   fromRepositoryQuery,
   mergeContextBriefAnchoredRepositoryGraphResults,
   planContextBrief,
+  projectContextBrief,
   retrieveContextBriefGraphEvidence,
 } from '../../src/context_brief/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
@@ -249,11 +250,16 @@ describe('Context Brief exact-anchor graph evidence', () => {
         const anchorId = stableId(index * 4 + 1);
         const consumerId = stableId(index * 4 + 2);
         const metadataId = stableId(index * 4 + 3);
+        const metadataEdge = relationshipEdge(`metadata-${index}`, 'contains', MIGRATION_PATH, metadataId, anchorId);
+        const sourceEdge = relationshipEdge(
+          `source-${index}`,
+          relations[index]!,
+          sourceConsumerPath(index),
+          consumerId,
+          anchorId,
+        );
         return queryResult({
-          edges: [
-            relationshipEdge(`metadata-${index}`, 'contains', MIGRATION_PATH, metadataId, anchorId),
-            relationshipEdge(`source-${index}`, relations[index]!, sourceConsumerPath(index), consumerId, anchorId),
-          ],
+          edges: index === 0 ? [metadataEdge, sourceEdge] : [sourceEdge, metadataEdge],
           nodes: [
             sourceNode(metadataId, `MigrationProperty${index}`, MIGRATION_PATH, 'property', 'yaml'),
             sourceNode(consumerId, `SourceConsumer${index}`, sourceConsumerPath(index), 'function'),
@@ -269,14 +275,29 @@ describe('Context Brief exact-anchor graph evidence', () => {
         observedAt: '2026-08-31T00:00:00.000Z',
         plan,
       });
+      const projected = projectContextBrief(logical, 1_500);
+      const topCardRef = evidence.cards[0]!.ref;
+      const topContract = evidence.contracts[0]!;
+      const selectedContract = projected.structuredContent.graph.contracts[0]!;
+      const selectedAction = projected.structuredContent.recommendedFollowUps[0]!;
 
       expect(evidence.cards[0]?.symbol.path).not.toBe(MIGRATION_PATH);
       expect(evidence.cards.some(card => card.symbol.path === MIGRATION_PATH)).toBe(true);
-      expect(evidence.contracts[0]?.relation).toBe('imports');
+      expect(topContract).toMatchObject({
+        evidence: {path: sourceConsumerPath(0)},
+        relation: 'imports',
+        sourceRef: stableId(2),
+        targetRef: stableId(1),
+      });
+      expect([topContract.sourceRef, topContract.targetRef]).toContain(topCardRef);
       expect(logical.recommendedFollowUps[0]).toMatchObject({
         operation: 'inspect-node',
-        ref: evidence.cards[0]?.ref,
+        ref: topCardRef,
       });
+      expect(selectedAction).toMatchObject({operation: 'inspect-node', ref: topCardRef});
+      if (selectedAction.operation !== 'inspect-node') throw new Error('Expected an exact graph inspection action.');
+      expect([selectedContract.sourceRef, selectedContract.targetRef]).toContain(selectedAction.ref);
+      expect(projected.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
     },
   );
 

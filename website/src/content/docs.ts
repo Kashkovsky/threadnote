@@ -688,7 +688,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'MCP clients can read one canonical threadnote:// URI through the standard resources/read protocol without enumerating private memories. Protocol reads are UTF-8 text capped at 4,500 bytes and authorize the active account and user; use paged read_context for larger evidence.',
+            text: 'MCP clients can read one canonical threadnote:// URI or bounded threadnote://memory/tn_ identity selector through the standard resources/read protocol without enumerating private memories. Identity selectors resolve only inside the authorized active corpus and are checked against the live document memory_id. Protocol reads are UTF-8 text capped at 4,500 bytes; use paged read_context for larger evidence.',
           },
           {
             type: 'table',

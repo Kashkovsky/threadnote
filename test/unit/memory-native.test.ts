@@ -31,6 +31,7 @@ import {loadRecallIndex} from '../../src/recall/index.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {readMemoryWithRelocations, recordMemoryRelocation} from '../../src/memory/relocation.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {fatalLocalModelWorkerHarness} from '../helpers/fatal-local-model-worker.js';
@@ -160,6 +161,24 @@ describe('native memory workflow', () => {
           query: 'QX7 missed heartbeat lease recovery',
         });
         expect(indexed.map(candidate => candidate.uri)).toContain(uri);
+        const canonicalContent = yield* fs.readFileString(
+          path.join(
+            home,
+            'data',
+            'local',
+            'user',
+            'tester',
+            'memories',
+            'durable',
+            'projects',
+            'threadnote',
+            'lease-recovery.md',
+          ),
+        );
+        const memoryId = parseMemoryDocument(uri, canonicalContent)?.metadata.memoryId;
+        expect(memoryId).toBeDefined();
+        const aliasRead = yield* captureConsole(runRead(config, memoryIdentityAlias(memoryId!), {}));
+        expect(aliasRead.output).toContain('QX7 lease recovery');
 
         const recall = yield* captureConsole(
           runRecall(config, {

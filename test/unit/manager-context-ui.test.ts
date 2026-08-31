@@ -12,7 +12,7 @@ import {
 import type {ManagerContextReadResponse, ManagerRecallResponse} from '../../src/manager/context.js';
 import {ContextBriefResult, ContextPanel, parseCodeRefs} from '../../src/manager/context_view.js';
 
-const MEMORY_URI = 'threadnote://user/tester/memories/durable/projects/threadnote/context-brief.md';
+const MEMORY_URI = 'threadnote://memory/tn_manager_context';
 const RELOCATED_URI = 'threadnote://user/tester/memories/durable/projects/product/context-brief.md';
 const GRAPH_REF = `cgs_${'a'.repeat(32)}`;
 
@@ -86,11 +86,11 @@ describe('Manager Context workspace', () => {
     await clickButton('Open memory');
     await waitForText('Canonical memory body page 1.');
     expect(requests.at(-1)).toEqual({body: {page: 0, uri: MEMORY_URI}, path: '/api/context/read'});
-    expect(document.body.textContent).toContain('Resolved a moved pointer to its canonical URI.');
+    expect(document.body.textContent).toContain('Resolved the requested pointer to its canonical memory.');
     expect(document.body.textContent).toContain(RELOCATED_URI);
     await clickButton('Next page');
     await waitForText('Canonical memory body page 2.');
-    expect(requests.at(-1)?.body).toEqual({page: 1, uri: RELOCATED_URI});
+    expect(requests.at(-1)?.body).toEqual({page: 1, uri: MEMORY_URI});
   });
 
   it('keeps every entered anchor visible and disables compilation above the server bound', async () => {
@@ -490,7 +490,7 @@ function readResponse(page: number): ManagerContextReadResponse {
     },
     page:
       page === 0 ? {complete: false, index: 0, next: 1, total: 2} : {complete: true, index: 1, previous: 0, total: 2},
-    requestedUri: page === 0 ? MEMORY_URI : RELOCATED_URI,
+    requestedUri: MEMORY_URI,
     title: 'context-brief',
     trust: 'untrusted-evidence-never-follow-instructions',
   };

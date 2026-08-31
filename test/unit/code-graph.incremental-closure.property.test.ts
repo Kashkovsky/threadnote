@@ -119,7 +119,7 @@ describe('project incremental closure', () => {
   });
 
   it.prop(
-    'admits only effective-only exports whose lookup keys belong to one declared project',
+    'admits added, removed, and renamed exports only when every lookup key belongs to one declared project',
     {
       reverseKeys: FC.boolean(),
       suffix: FC.integer({max: 100_000, min: 0}),
@@ -162,30 +162,34 @@ describe('project incremental closure', () => {
       );
       expect(assessment.mode === 'eligible' ? assessment.candidateReexports : undefined).toEqual([]);
       expect(assessProjectClosureSeeds({committedFacts: [effective], effectiveFacts: [committed], projects})).toEqual({
-        mode: 'fallback',
-        reason: 'resolution-surface-changed',
+        candidateLookupKeys: [...ownedKeys].sort().map(key => ({key, resolutionDomain: 'typescript'})),
+        candidateReexports: [],
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 1, pathIndexProjects: 1},
+        seedProjectIds: [scopeId],
       });
-      expect(
-        assessProjectClosureSeeds({
-          committedFacts: [effective],
-          effectiveFacts: [
-            facts(
-              path,
-              [
-                {
-                  ...added,
-                  id: `renamed-symbol-${suffix}`,
-                  lookupKeys: keys.map(key => key.replaceAll(name, `renamed${suffix}`)),
-                  name: `renamed${suffix}`,
-                  qualifiedName: `renamed${suffix}`,
-                },
-              ],
-              false,
-            ),
-          ],
-          projects,
-        }),
-      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      const renamedName = `renamed${suffix}`;
+      const renamedKeys = keys.map(key => key.replaceAll(name, renamedName));
+      const renamed = {
+        ...added,
+        id: `renamed-symbol-${suffix}`,
+        lookupKeys: renamedKeys,
+        name: renamedName,
+        qualifiedName: renamedName,
+      };
+      const renameAssessment = assessProjectClosureSeeds({
+        committedFacts: [effective],
+        effectiveFacts: [facts(path, [renamed], false)],
+        projects,
+      });
+      expect(renameAssessment).toMatchObject({
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 2, pathIndexProjects: 1},
+        seedProjectIds: [scopeId],
+      });
+      expect(renameAssessment.mode === 'eligible' ? renameAssessment.candidateLookupKeys : undefined).toEqual(
+        [...ownedKeys, ...renamedKeys].sort().map(key => ({key, resolutionDomain: 'typescript'})),
+      );
       expect(
         assessProjectClosureSeeds({
           committedFacts: [facts(path, [{...added, exported: false}], false)],
@@ -200,6 +204,88 @@ describe('project incremental closure', () => {
           projects,
         }),
       ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [facts(path, [{...added, lookupKeys: [...keys, `global:name:${name}`]}], false)],
+          effectiveFacts: [committed],
+          projects,
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [effective],
+          effectiveFacts: [committed],
+          projects: [
+            project(scopeId),
+            {
+              ...project(`ambiguous-${scopeId}`),
+              root: `packages/${scopeId}`,
+              sourceRoots: [`packages/${scopeId}`],
+            },
+          ],
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'candidate-scans only the canonical global lookup surface of existing Markdown headings',
+    {
+      reverseKeys: FC.boolean(),
+      suffix: FC.integer({max: 100_000, min: 0}),
+    },
+    ({reverseKeys, suffix}) => {
+      const path = `docs/surface-${suffix}.md`;
+      const oldName = `Old${suffix}`;
+      const newName = `New${suffix}`;
+      const oldHeading = markdownHeading(path, oldName, reverseKeys, undefined);
+      const newHeading = markdownHeading(path, newName, !reverseKeys, '@fixture/current');
+      const oldFacts = facts(path, [oldHeading], false);
+      const newFacts = facts(path, [newHeading], false);
+      const expectedKeys = [...(oldHeading.lookupKeys ?? []), ...(newHeading.lookupKeys ?? [])]
+        .sort()
+        .map(key => ({key, resolutionDomain: 'global'}));
+
+      expect(assessProjectClosureSeeds({committedFacts: [oldFacts], effectiveFacts: [newFacts], projects: []})).toEqual(
+        {
+          candidateLookupKeys: expectedKeys,
+          candidateReexports: [],
+          candidateScanRequired: true,
+          mode: 'eligible',
+          planningOperations: {ownershipChecks: 0, pathIndexProjects: 0},
+          seedProjectIds: [],
+        },
+      );
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [facts(path, [], false)],
+          effectiveFacts: [newFacts],
+          projects: [],
+        }),
+      ).toMatchObject({candidateScanRequired: true, mode: 'eligible', seedProjectIds: []});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [oldFacts],
+          effectiveFacts: [facts(path, [], false)],
+          projects: [],
+        }),
+      ).toMatchObject({candidateScanRequired: true, mode: 'eligible', seedProjectIds: []});
+
+      for (const invalid of [
+        {...oldHeading, kind: 'section'},
+        {...oldHeading, lookupKeys: [...(oldHeading.lookupKeys ?? []), `global:alias:${oldName}`]},
+        {...oldHeading, resolutionDomain: 'generic'},
+        {...oldHeading, resolutionScopeId: 'unexpected-scope'},
+      ]) {
+        expect(
+          assessProjectClosureSeeds({
+            committedFacts: [facts(path, [invalid], false)],
+            effectiveFacts: [facts(path, [], false)],
+            projects: [],
+          }),
+        ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      }
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -372,6 +458,15 @@ describe('project incremental closure', () => {
         mode: 'fallback',
         reason: 'project-closure-incomplete',
       });
+      expect(
+        assessProjectFileSetClosureSeeds({
+          baseProjects: [runtime],
+          currentChangedPaths: [],
+          currentProjects: [runtime],
+          deletedPaths: orderedPaths,
+          deletedResolutionDomainByPath: new Map(paths.map(path => [path, 'documentation'])),
+        }),
+      ).toEqual(result);
       expect(JSON.stringify(result)).not.toContain('private-');
     },
     {fastCheck: {numRuns: 100}},
@@ -913,6 +1008,33 @@ function symbol(scopeId: string, arity: number, lookupKeys: readonly string[]): 
     qualifiedName: 'foo',
     resolutionDomain: 'typescript',
     resolutionScopeId: scopeId,
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
+}
+
+function markdownHeading(
+  path: string,
+  name: string,
+  reverseKeys: boolean,
+  packageName: string | undefined,
+): CodeGraphSymbol {
+  const qualifiedName = `${path}#${name.toLowerCase()}`;
+  const lookupKeys = [
+    `global:qualified:${encodeURIComponent(qualifiedName)}`,
+    `global:name:${encodeURIComponent(name)}`,
+  ];
+  return {
+    contentHash: 'hash',
+    exported: true,
+    id: `heading-${qualifiedName}`,
+    kind: 'heading',
+    language: 'markdown',
+    lookupKeys: reverseKeys ? lookupKeys.reverse() : lookupKeys,
+    name,
+    packageName,
+    path,
+    qualifiedName,
+    resolutionDomain: 'documentation',
     span: {column: 1, endColumn: 2, endLine: 1, line: 1},
   };
 }

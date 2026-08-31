@@ -1426,10 +1426,10 @@ const read = Command.make(
   'read',
   {
     dryRun: boolean('dry-run', 'Print the native read without running it'),
-    uri: argument('uri', 'threadnote:// URI to read'),
+    uri: argument('uri', 'Canonical threadnote:// URI or threadnote://memory/tn_ stable selector'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
-).pipe(Command.withDescription('Read a threadnote:// URI returned by recall or list'));
+).pipe(Command.withDescription('Read a canonical or stable-identity threadnote:// pointer'));
 
 const list = Command.make(
   'list',
