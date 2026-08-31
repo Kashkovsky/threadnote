@@ -1,17 +1,20 @@
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {symlink, writeFile as writeFileBytes} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {Effect, FileSystem, Option} from 'effect';
+import {Deferred, Effect, FileSystem, Layer, Option, Ref} from 'effect';
 import {
   ResourceAlreadyExists,
   ResourceConflict,
   ResourceIoFailed,
+  ResourceNotFound,
   ResourcePathUnsafe,
   ResourceStore,
   resourceMutationLockFailureMessage,
 } from '../../src/effect/resource-store.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {loadRecallExactMatches, loadRecallIndex} from '../../src/recall/index.js';
 import {InvalidResourceId, parseResourceId} from '../../src/storage/resource-id.js';
 import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from '../helpers/effect-filesystem.js';
@@ -74,6 +77,7 @@ describe('ResourceId', () => {
 
 describe('native ResourceStore', () => {
   const location = (home: string) => ({account: 'local', home, user: 'test-user'});
+  const resourceStoreDependencies = Layer.mergeAll(BunServices.layer, SystemInfo.layer);
 
   it('reports privacy-safe lock ownership and bounded recovery guidance', () => {
     const uri = 'threadnote://resources/repos/threadnote/locked.md';
@@ -86,6 +90,56 @@ describe('native ResourceStore', () => {
     expect(message).not.toContain('/locks/');
     expect(message).not.toContain('token');
   });
+
+  it.effect.prop(
+    'converges when concurrent first-use callers observe the same missing owned root',
+    {callerCount: FC.integer({max: 8, min: 2}), distinctAccounts: FC.boolean()},
+    ({callerCount, distinctAccounts}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-first-use-race-'});
+          const dataRoot = join(home, 'data');
+          const release = yield* Deferred.make<void>();
+          const observations = yield* Ref.make(0);
+          const racingFileSystem = FileSystem.FileSystem.of({
+            ...fs,
+            exists: target =>
+              String(target) === dataRoot
+                ? Effect.gen(function* () {
+                    const exists = yield* fs.exists(target);
+                    const observed = yield* Ref.updateAndGet(observations, count => count + 1);
+                    if (observed === callerCount) yield* Deferred.succeed(release, undefined);
+                    yield* Deferred.await(release);
+                    return exists;
+                  })
+                : fs.exists(target),
+          });
+          const store = yield* ResourceStore.pipe(
+            provideTestLayer(ResourceStore.layerWith()),
+            Effect.provideService(FileSystem.FileSystem, racingFileSystem),
+          );
+          const accounts = Array.from({length: callerCount}, (_, index) =>
+            distinctAccounts ? `account-${index}` : 'local',
+          );
+
+          const failures = yield* Effect.all(
+            accounts.map(account =>
+              Effect.flip(store.stat({...location(home), account}, 'threadnote://resources/first-use-race.md')),
+            ),
+            {concurrency: 'unbounded'},
+          );
+
+          expect(failures).toHaveLength(callerCount);
+          for (const failure of failures) expect(failure).toBeInstanceOf(ResourceNotFound);
+          expect((yield* fs.stat(dataRoot)).type).toBe('Directory');
+          for (const account of new Set(accounts))
+            expect((yield* fs.stat(join(dataRoot, account))).type).toBe('Directory');
+          expect(yield* fs.realPath(dataRoot)).toBe(join(yield* fs.realPath(home), 'data'));
+        }),
+      ).pipe(provideTestLayer(resourceStoreDependencies)),
+    {fastCheck: {numRuns: 20}},
+  );
 
   it('atomically creates, reads, compares, replaces, lists, greps, and removes resources', async () => {
     const home = await mkdtemp('threadnote-resource-store-');

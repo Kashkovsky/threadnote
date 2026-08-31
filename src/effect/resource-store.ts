@@ -1,4 +1,4 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, Result, Schema} from 'effect';
+import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, PlatformError, Result, Schema} from 'effect';
 import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
 import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file_lock.js';
@@ -480,7 +480,16 @@ function resolveOwnedAccountBoundary(
         });
       }
       if (!(yield* fs.exists(logicalCurrent))) {
-        yield* fs.makeDirectory(logicalCurrent, {mode: 0o700});
+        // First-use callers may race here. Only an existing entry is recoverable; validation below decides its safety.
+        yield* fs
+          .makeDirectory(logicalCurrent, {mode: 0o700})
+          .pipe(
+            Effect.catch(error =>
+              error instanceof PlatformError.PlatformError && error.reason._tag === 'AlreadyExists'
+                ? Effect.void
+                : Effect.fail(error),
+            ),
+          );
       }
       const info = yield* fs.stat(logicalCurrent);
       if (info.type !== 'Directory') {
