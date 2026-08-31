@@ -24,11 +24,13 @@ const GRAPH_REF = `cgs_${'a'.repeat(32)}`;
 let reactRoot: Root | undefined;
 let originalFetch: typeof fetch;
 let requests: Array<{readonly body: Record<string, unknown>; readonly path: string}>;
+let canonicalMemoryBody: string;
 
 beforeEach(() => {
   (globalThis as typeof globalThis & {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
   originalFetch = globalThis.fetch;
   requests = [];
+  canonicalMemoryBody = 'Canonical memory body';
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const path =
       typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
@@ -67,6 +69,7 @@ beforeEach(() => {
       return Promise.resolve(jsonResponse(connectionsResponse(String(body.uri ?? ''))));
     }
     if (path === '/api/memory/relations') {
+      canonicalMemoryBody = 'Updated canonical memory body';
       return Promise.resolve(
         jsonResponse({
           content: 'updated canonical content',
@@ -318,9 +321,14 @@ describe('Manager Context workspace', () => {
       uri: RELOCATED_URI,
     });
     await waitForRequestCount('/api/context/connections', 2);
+    await waitForRequestCount('/api/context/read', 2);
+
+    await clickButton('Content');
+    await waitForText('Updated canonical memory body page 1.');
+    await clickButton('Connections');
 
     await clickButton('Open neighbor');
-    await waitForRequestCount('/api/context/read', 2);
+    await waitForRequestCount('/api/context/read', 3);
     expect(requests.at(-1)).toMatchObject({
       body: {uri: expect.stringContaining('neighbor.md')},
       path: '/api/context/read',
@@ -473,7 +481,9 @@ async function waitForRequestCount(path: string, count: number): Promise<void> {
     if (requests.filter(request => request.path === path).length >= count) return;
     await flush();
   }
-  throw new Error(`Expected ${count} requests to ${path}.`);
+  throw new Error(
+    `Expected ${count} requests to ${path}; observed ${requests.filter(request => request.path === path).length}. Requests: ${JSON.stringify(requests)}`,
+  );
 }
 
 async function flush(): Promise<void> {
@@ -671,7 +681,7 @@ function recallResponse(query: string): ManagerRecallResponse {
 function readResponse(page: number): ManagerContextReadResponse {
   return {
     canonicalUri: RELOCATED_URI,
-    content: `Canonical memory body page ${page + 1}.`,
+    content: `${canonicalMemoryBody} page ${page + 1}.`,
     metadata: {
       kind: 'durable',
       project: 'product',

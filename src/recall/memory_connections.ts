@@ -5,7 +5,7 @@ import {
   type MemoryRecord,
   type MemoryRelationType,
 } from '../memory/document.js';
-import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
+import {isMemoryId, memoryIdentityAlias, memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
 import {parseResourceId, resourceIdIsManagedMemoryNamespace} from '../storage/resource-id.js';
 import type {MemoryStatus} from '../types.js';
 import {recallCandidateIsEligible, type RecallEligibilityPolicy} from './eligibility.js';
@@ -111,6 +111,11 @@ interface ResolvedConnection {
   readonly receipt: RecallMemoryConnectionReceiptV1;
 }
 
+interface ResolvedRequestedPremise {
+  readonly memoryId?: string;
+  readonly requestedRef: string;
+}
+
 const CONNECTION_RECEIPT_LIMIT = 32;
 const RELATION_PRIORITY: Readonly<Record<MemoryRelationType, number>> = {
   depends_on: 1,
@@ -122,27 +127,20 @@ const RELATION_PRIORITY: Readonly<Record<MemoryRelationType, number>> = {
 
 /**
  * Parse the explicit connection-recall controls before any index or filesystem
- * work. Identity aliases and canonical managed-memory URIs are the only valid
- * premise forms; arbitrary resources must not become graph traversal roots.
+ * work. Raw stable memory IDs, identity aliases, and canonical managed-memory
+ * URIs are the only valid premise forms; arbitrary resources must not become
+ * graph traversal roots.
  */
 export function parseRecallMemoryConnectionInput(
   input: RecallMemoryConnectionInput,
 ): ParsedRecallMemoryConnectionInput {
-  const memoryRefs = uniqueStrings(input.memoryRefs, 'memory reference');
+  const memoryRefs = uniqueStrings(
+    uniqueStrings(input.memoryRefs, 'memory reference').map(normalizeRecallMemoryReference),
+    'memory reference',
+  );
   if (memoryRefs.length === 0) throw new Error('Recall memory connections require at least one memory reference.');
   if (memoryRefs.length > MAX_RECALL_MEMORY_REFS) {
     throw new Error(`Recall memory connections accept at most ${MAX_RECALL_MEMORY_REFS} memory references.`);
-  }
-  for (const ref of memoryRefs) {
-    let canonicalUri: string;
-    try {
-      canonicalUri = parseResourceId(ref).canonicalUri;
-    } catch {
-      throw new Error(`Invalid memory reference: ${ref}`);
-    }
-    if (memoryIdFromIdentityAlias(canonicalUri) === undefined && !resourceIdIsManagedMemoryNamespace(canonicalUri)) {
-      throw new Error(`Recall memory reference must identify a managed memory: ${ref}`);
-    }
   }
 
   const relationTypes = input.relationTypes
@@ -160,6 +158,24 @@ export function parseRecallMemoryConnectionInput(
     memoryRefs,
     ...(relationTypes && relationTypes.length > 0 ? {relationTypes: [...relationTypes].sort(compareCodeUnits)} : {}),
   };
+}
+
+function normalizeRecallMemoryReference(ref: string): string {
+  if (isMemoryId(ref)) return memoryIdentityAlias(ref);
+  let resource: ReturnType<typeof parseResourceId>;
+  try {
+    resource = parseResourceId(ref);
+  } catch {
+    throw new Error(`Invalid memory reference: ${ref}`);
+  }
+  if (resource.anchor !== undefined) {
+    throw new Error(`Recall memory reference must identify a whole managed memory: ${ref}`);
+  }
+  const canonicalUri = resource.canonicalUri;
+  if (memoryIdFromIdentityAlias(canonicalUri) === undefined && !resourceIdIsManagedMemoryNamespace(canonicalUri)) {
+    throw new Error(`Recall memory reference must identify a managed memory: ${ref}`);
+  }
+  return canonicalUri;
 }
 
 /** Currentness is evidence-derived and deliberately independent of ranking freshness. */
@@ -197,12 +213,18 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
   const requestedRecordByUri = new Map(
     requestedRecords.filter(record => authorizedRecord(record, input)).map(record => [record.uri, record] as const),
   );
-  const requestedMemoryIds = parsed.memoryRefs.flatMap(ref => {
-    const aliasId = memoryIdFromIdentityAlias(ref);
-    if (aliasId) return [aliasId];
-    const record = requestedRecordByUri.get(parseResourceId(ref).canonicalUri);
-    return record?.metadata.memoryId ? [record.metadata.memoryId] : [];
-  });
+  const requestedPremises: ResolvedRequestedPremise[] = [];
+  const seenPremises = new Set<string>();
+  for (const requestedRef of parsed.memoryRefs) {
+    const requestedUri = parseResourceId(requestedRef).canonicalUri;
+    const memoryId =
+      memoryIdFromIdentityAlias(requestedUri) ?? requestedRecordByUri.get(requestedUri)?.metadata.memoryId;
+    const identity = memoryId ? `memory-id:${memoryId}` : `memory-ref:${requestedUri}`;
+    if (seenPremises.has(identity)) continue;
+    seenPremises.add(identity);
+    requestedPremises.push({...(memoryId ? {memoryId} : {}), requestedRef: requestedUri});
+  }
+  const requestedMemoryIds = requestedPremises.flatMap(premise => (premise.memoryId ? [premise.memoryId] : []));
   const premiseIndex =
     requestedMemoryIds.length === 0
       ? undefined
@@ -217,10 +239,7 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
   const premiseCandidateUris = [...new Set((premiseIndex?.candidates ?? []).flatMap(candidateUrisForRead))];
   const premiseLiveRecords = premiseCandidateUris.length === 0 ? [] : yield* input.readRecords(premiseCandidateUris);
   const verifiedPremises = verifyLiveRecallCandidates(premiseIndex?.candidates ?? [], premiseLiveRecords, input);
-  const premiseSeeds = parsed.memoryRefs.flatMap((ref, requestedOrdinal) => {
-    const requestedUri = parseResourceId(ref).canonicalUri;
-    const memoryId =
-      memoryIdFromIdentityAlias(requestedUri) ?? requestedRecordByUri.get(requestedUri)?.metadata.memoryId;
+  const premiseSeeds = requestedPremises.flatMap(({memoryId}, requestedOrdinal) => {
     return memoryId && verifiedPremises.liveCandidateById.has(memoryId) && !verifiedPremises.conflictIds.has(memoryId)
       ? [{memoryId, requestedOrdinal}]
       : [];
@@ -371,16 +390,13 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
     );
   };
 
-  const premises = parsed.memoryRefs.map((requestedRef, requestedOrdinal): RecallMemoryPremiseReceiptV1 => {
-    const canonicalRef = parseResourceId(requestedRef).canonicalUri;
-    const memoryId =
-      memoryIdFromIdentityAlias(canonicalRef) ?? requestedRecordByUri.get(canonicalRef)?.metadata.memoryId;
+  const premises = requestedPremises.map(({memoryId, requestedRef}, requestedOrdinal): RecallMemoryPremiseReceiptV1 => {
     const candidate = memoryId ? liveCandidateById.get(memoryId) : undefined;
     const requestedCandidate = memoryId ? premiseCandidatesById.get(memoryId)?.[0] : undefined;
     return {
       ...(memoryId ? {memoryId} : {}),
       requestedOrdinal,
-      requestedRef: canonicalRef,
+      requestedRef,
       state: stateForId(memoryId),
       ...((candidate?.uri ?? requestedCandidate?.uri) ? {uri: candidate?.uri ?? requestedCandidate?.uri} : {}),
     };

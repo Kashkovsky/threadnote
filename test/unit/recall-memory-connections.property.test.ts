@@ -8,6 +8,7 @@ import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '..
 import {clearRecallIndexMemoryCache, loadRecallIndexData} from '../../src/recall/index.js';
 import {
   classifyRecallMemoryPremiseState,
+  parseRecallMemoryConnectionInput,
   retrieveRecallMemoryConnections,
 } from '../../src/recall/memory_connections.js';
 import {rankRecallCandidates, type RecallCandidate} from '../../src/recall/rank.js';
@@ -16,6 +17,25 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const NOW = new Date('2026-08-31T12:00:00.000Z');
 
 describe('recall memory connection properties', () => {
+  effectIt.effect.prop(
+    'normalizes raw and URI-form stable identities to one deterministic premise',
+    {
+      suffix: FC.array(FC.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-'), {
+        maxLength: 64,
+        minLength: 1,
+      }).map(characters => characters.join('')),
+    },
+    ({suffix}) =>
+      Effect.sync(() => {
+        const memoryId = `tn_${suffix}`;
+        const alias = `threadnote://memory/${memoryId}`;
+        expect(parseRecallMemoryConnectionInput({memoryRefs: [memoryId, alias, memoryId]})).toEqual({
+          memoryRefs: [alias],
+        });
+      }),
+    {fastCheck: {numRuns: 64}},
+  );
+
   effectIt.effect.prop(
     'never lets timestamps make inactive, unresolved, conflicted, or superseded evidence current',
     {

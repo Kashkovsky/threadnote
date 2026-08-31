@@ -344,6 +344,7 @@ export function ContextPanel(): React.ReactElement {
             }
           : current,
       );
+      await readContext(updated.uri, 0);
       await readConnections(updated.uri);
     } catch (cause) {
       if (!controller.signal.aborted) setRelationsError(errorMessage(cause));

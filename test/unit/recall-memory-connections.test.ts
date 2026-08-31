@@ -22,6 +22,7 @@ describe('recall memory connections', () => {
     expect(
       parseRecallMemoryConnectionInput({
         memoryRefs: [
+          'tn_target',
           'threadnote://memory/tn_target',
           'threadnote://user/test/memories/durable/projects/threadnote/source.md',
           'threadnote://memory/tn_target',
@@ -44,6 +45,14 @@ describe('recall memory connections', () => {
     expect(() =>
       parseRecallMemoryConnectionInput({memoryRefs: ['threadnote://resources/repos/threadnote/README.md']}),
     ).toThrow('managed memory');
+    expect(() => parseRecallMemoryConnectionInput({memoryRefs: ['tn:not-a-memory-id']})).toThrow(
+      'Invalid memory reference',
+    );
+    expect(() =>
+      parseRecallMemoryConnectionInput({
+        memoryRefs: ['threadnote://user/test/memories/durable/projects/threadnote/source.md#decision'],
+      }),
+    ).toThrow('whole managed memory');
     expect(() =>
       parseRecallMemoryConnectionInput({
         memoryRefs: ['threadnote://memory/tn_target'],
@@ -119,7 +128,7 @@ describe('recall memory connections', () => {
 
       const result = yield* retrieveRecallMemoryConnections(config, {
         allowedUriScopes: [memoryRoot(config.user)],
-        memoryRefs: [seed],
+        memoryRefs: [seed, 'tn_seed'],
         readRecords: uris => readMemoryRecordsByUri(config, uris),
       });
       expect(result.premises).toEqual([

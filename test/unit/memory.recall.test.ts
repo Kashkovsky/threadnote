@@ -57,7 +57,7 @@ describe('runRecall native index', () => {
     Effect.gen(function* () {
       const {output} = yield* captureRecall(runtime, {
         dryRun: true,
-        memoryRefs: ['threadnote://memory/tn_cli_seed'],
+        memoryRefs: ['tn_cli_seed'],
         query: 'connection navigation',
         relationTypes: ['depends_on'],
       });
