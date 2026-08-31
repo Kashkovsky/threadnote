@@ -9,10 +9,12 @@ import {
   attemptReusableDirtyBase,
   buildAndActivate,
   buildOwnedCleanSnapshot,
+  CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY,
   codeGraphBuildRequestKey,
   ensureCommittedBase,
   retiredSnapshotCleanupReporter,
   reuseReadySnapshot,
+  terminateInterruptedCodeGraphBuild,
   withCodeGraphProcessLock,
   withSharedCleanRequestGate,
   writerSessionOptions,
@@ -833,6 +835,14 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         threadnoteHome: options.threadnoteHome,
                         workspace,
                       }).pipe(
+                        Effect.onInterrupt(() =>
+                          terminateInterruptedCodeGraphBuild(
+                            store,
+                            layout.databasePath,
+                            building.id,
+                            persistentOwnerToken,
+                          ),
+                        ),
                         Effect.catch(cause =>
                           persistentOwnerToken !== undefined && isCodeGraphCapacityPause(cause)
                             ? Effect.fail(cause)
@@ -845,6 +855,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     writerSessionOptions(layout, options),
                   )
                   .pipe(
+                    Effect.onInterrupt(() =>
+                      reporter.fail(new CodeGraphIndexOperationError(CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY)),
+                    ),
                     Effect.tap(summary => reporter.complete(summary)),
                     Effect.tapError(cause => reporter.fail(cause)),
                   );
@@ -1076,6 +1089,9 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                     writerSessionOptions(layout, options),
                   )
                   .pipe(
+                    Effect.onInterrupt(() =>
+                      reporter.fail(new CodeGraphIndexOperationError(CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY)),
+                    ),
                     Effect.tap(result => reporter.completeSnapshot(result.lease.snapshot)),
                     Effect.tapError(cause => reporter.fail(cause)),
                   );

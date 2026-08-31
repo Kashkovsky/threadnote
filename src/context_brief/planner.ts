@@ -5,8 +5,9 @@ import {
   CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
   CONTEXT_BRIEF_LEGACY_VERSION,
   CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
-  CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS,
+  CONTEXT_BRIEF_DEFAULT_PUBLIC_CODE_RELATIONS,
   CONTEXT_BRIEF_MAXIMUM_PUBLIC_CITATION_RECEIPTS,
+  CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS,
   CONTEXT_BRIEF_VERSION,
   parseContextBriefRequestV1,
   type ContextBriefCitationReceiptV2,
@@ -83,7 +84,10 @@ export function assembleContextBriefLogicalResult(input: {
     const publicReceipts = publicCitationReceipts(privateCitationReceipts);
     const citationSummary = summarizeCitationReceipts(privateCitationReceipts);
     const validatedCodeRelations = publicCodeRelations(candidate, privateCitationReceipts);
-    const codeRelations = validatedCodeRelations.slice(0, CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS);
+    const cohortCodeRelations = validatedCodeRelations
+      .filter(relation => relation.status === 'exact' || relation.status === 'relocated')
+      .slice(0, CONTEXT_BRIEF_MAXIMUM_PUBLIC_CODE_RELATIONS);
+    const codeRelations = validatedCodeRelations.slice(0, CONTEXT_BRIEF_DEFAULT_PUBLIC_CODE_RELATIONS);
     const citationReceipts = compactCodeLinkedCitationReceipts(publicReceipts, validatedCodeRelations);
     const coarse = classifyMemoryFreshness(candidate.sourceCommit, input.graph.resolvedSnapshots);
     const {
@@ -107,6 +111,7 @@ export function assembleContextBriefLogicalResult(input: {
         ...(citationErrorCount === 0 ? {} : {citationErrorCount}),
         ...(citationReceipts.length === 0 ? {} : {citationReceipts}),
         ...(citationSummary === undefined ? {} : {citationSummary}),
+        ...(cohortCodeRelations.length === 0 ? {} : {cohortCodeRelations}),
         ...(codeRelations.length === 0 ? {} : {codeRelations, selectionBasis: 'code-citation' as const}),
         freshness: preciseStatus === undefined ? coarse : reconcileContextBriefMemoryFreshness(coarse, preciseStatus),
         freshnessBasis: preciseStatus === undefined ? ('source-commit' as const) : ('code-citations' as const),

@@ -127,6 +127,17 @@ import {
   type RepositoryIdentity,
 } from './types.js';
 
+export const CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY = 'Code graph build was interrupted before completion.';
+
+export function terminateInterruptedCodeGraphBuild(
+  store: CodeGraphStoreShape,
+  databasePath: string,
+  snapshotId: string,
+  ownerToken?: string,
+) {
+  return store.markFailed(databasePath, snapshotId, CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY, ownerToken);
+}
+
 export function withCodeGraphProcessLock<A, E, R>(
   fs: FileSystem.FileSystem,
   lockPath: string,
@@ -372,6 +383,9 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         store: input.store,
         threadnoteHome: input.threadnoteHome,
       }).pipe(
+        Effect.onInterrupt(() =>
+          terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
+        ),
         Effect.catch(cause =>
           isCodeGraphCapacityPause(cause)
             ? Effect.fail(cause)
@@ -633,6 +647,9 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           threadnoteHome: input.threadnoteHome,
           workspace,
         }).pipe(
+          Effect.onInterrupt(() =>
+            terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id),
+          ),
           Effect.catch(cause =>
             input.store
               .markFailed(input.layout.databasePath, building.id, messageOf(cause))
@@ -938,6 +955,9 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         inventory: cleanInventory,
         persistentOwnerToken: ownerToken,
       }).pipe(
+        Effect.onInterrupt(() =>
+          terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
+        ),
         Effect.catch(cause =>
           isCodeGraphCapacityPause(cause)
             ? Effect.fail(cause)
