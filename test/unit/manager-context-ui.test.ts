@@ -335,6 +335,54 @@ describe('Manager Context workspace', () => {
     });
   });
 
+  it('does not let a delayed relation refresh override newer reader navigation', async () => {
+    const routedFetch = globalThis.fetch;
+    let refreshAborted = false;
+    globalThis.fetch = Object.assign(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const path =
+          typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        if (path !== '/api/context/read' || body.uri !== RELOCATED_URI) return routedFetch(input, init);
+        requests.push({body, path});
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              refreshAborted = true;
+              reject(new DOMException('Cancelled', 'AbortError'));
+            },
+            {once: true},
+          );
+        });
+      },
+      {preconnect: originalFetch.preconnect},
+    );
+    await renderContext();
+    await clickButton('Recall & read');
+    await changeInput(inputWithLabel('Recall query'), 'relation refresh race');
+    await clickButton('Recall context');
+    await waitForText('9 ranked pointers');
+    const row = document.querySelector<HTMLButtonElement>('.context-recall-card > button');
+    await act(async () => row?.click());
+    await waitForText('Canonical memory body page 1.');
+    await clickButton('Connections');
+    await waitForText('Structured relations');
+
+    await clickButton('Save relations');
+    await waitForRequestCount('/api/context/read', 2);
+    await clickButton('Open neighbor');
+    await waitForRequestCount('/api/context/read', 3);
+    await flush();
+
+    expect(refreshAborted).toBe(true);
+    expect(requests.filter(request => request.path === '/api/context/connections')).toHaveLength(1);
+    expect(requests.at(-1)).toMatchObject({
+      body: {uri: expect.stringContaining('neighbor.md')},
+      path: '/api/context/read',
+    });
+  });
+
   it('cancels an in-flight connection lookup when the reader returns to content', async () => {
     const routedFetch = globalThis.fetch;
     let aborted = false;

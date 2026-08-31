@@ -89,6 +89,7 @@ export function ContextPanel(): React.ReactElement {
   const readRequest = useRef<AbortController>(undefined);
   const connectionsRequest = useRef<AbortController>(undefined);
   const relationsRequest = useRef<AbortController>(undefined);
+  const readerNavigationRevision = useRef(0);
   const codeRefs = useMemo(() => parseCodeRefs(codeRefsText), [codeRefsText]);
   const tooManyCodeRefs = codeRefs.length > CONTEXT_BRIEF_MAXIMUM_CODE_REFS;
   const codeRefsError = useMemo(() => {
@@ -266,7 +267,8 @@ export function ContextPanel(): React.ReactElement {
     }
   }
 
-  async function readContext(uri: string, page = 0): Promise<void> {
+  async function readContext(uri: string, page = 0, trackNavigation = true): Promise<void> {
+    if (trackNavigation) readerNavigationRevision.current += 1;
     readRequest.current?.abort();
     const controller = new AbortController();
     readRequest.current = controller;
@@ -320,6 +322,7 @@ export function ContextPanel(): React.ReactElement {
   async function saveRelations(relations: readonly MemoryRelation[]): Promise<void> {
     const editor = connections?.editor;
     if (!editor) return;
+    const navigationRevision = readerNavigationRevision.current;
     relationsRequest.current?.abort();
     const controller = new AbortController();
     relationsRequest.current = controller;
@@ -331,7 +334,7 @@ export function ContextPanel(): React.ReactElement {
         {expectedContent: editor.expectedContent, relations, uri: editor.uri},
         {signal: controller.signal},
       );
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || readerNavigationRevision.current !== navigationRevision) return;
       setConnections(current =>
         current?.editor
           ? {
@@ -344,7 +347,8 @@ export function ContextPanel(): React.ReactElement {
             }
           : current,
       );
-      await readContext(updated.uri, 0);
+      await readContext(updated.uri, 0, false);
+      if (controller.signal.aborted || readerNavigationRevision.current !== navigationRevision) return;
       await readConnections(updated.uri);
     } catch (cause) {
       if (!controller.signal.aborted) setRelationsError(errorMessage(cause));
