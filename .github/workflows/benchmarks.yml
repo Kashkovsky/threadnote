@@ -160,6 +160,7 @@ jobs:
           --output artifacts/code-graph-pr-${{ matrix.scale }}-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-pr-${{ matrix.scale }}-Linux-${{ runner.arch }}
           path: artifacts/
@@ -197,6 +198,7 @@ jobs:
           --output artifacts/code-graph-${{ runner.os }}-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-benchmarks-${{ runner.os }}-${{ runner.arch }}
           path: artifacts/
@@ -356,6 +358,7 @@ jobs:
           --output artifacts/code-graph-10k-${{ runner.os }}-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-benchmarks-10k-${{ runner.os }}-${{ runner.arch }}
           path: artifacts/
@@ -456,6 +459,7 @@ jobs:
           --output artifacts/code-graph-vectors-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-vector-benchmark-Linux-${{ runner.arch }}
           path: artifacts/code-graph-vectors-Linux-${{ runner.arch }}.json
@@ -528,6 +532,7 @@ jobs:
           --output artifacts/code-graph-100k-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-benchmarks-100k-Linux-${{ runner.arch }}
           path: artifacts/
@@ -568,6 +573,7 @@ jobs:
           --output artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
           name: code-graph-vector-benchmark-100k-Linux-${{ runner.arch }}
           path: artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json

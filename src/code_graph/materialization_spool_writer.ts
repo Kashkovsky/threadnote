@@ -16,6 +16,7 @@ import {
   type CodeGraphMaterializationSymbolTermRow,
 } from './materialization_rows.js';
 import type {CodeGraphReusableReexport} from './store_models.js';
+import {codeGraphSqliteRun} from './sqlite_statement.js';
 import type {CodeGraphEdge, CodeGraphReference, CodeGraphSymbol} from './types.js';
 
 const SPOOL_INSERT_PARAMETER_MAXIMUM = 32_000;
@@ -157,8 +158,10 @@ function insertRows<Row>(
   for (let offset = 0; offset < rows.length; offset += pageRows) {
     const page = rows.slice(offset, offset + pageRows);
     const placeholders = `(${Array.from({length: columnCount}, () => '?').join(', ')})`;
-    database
-      .prepare(`INSERT INTO materialization_raw_${surface} VALUES ${page.map(() => placeholders).join(', ')}`)
-      .run(...page.flatMap(row => [...parameters(row)]));
+    codeGraphSqliteRun(
+      database,
+      `INSERT INTO materialization_raw_${surface} VALUES ${page.map(() => placeholders).join(', ')}`,
+      ...page.flatMap(row => [...parameters(row)]),
+    );
   }
 }

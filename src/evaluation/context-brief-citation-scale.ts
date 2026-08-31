@@ -12,6 +12,9 @@ import {
 } from '../context_brief/index.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
+  contextBriefCitationRssSampleGapFailures,
   contextBriefCitationScaleGate,
   contextBriefCitationScaleRetainedRootRssGrowthBytes,
   contextBriefCitationScaleReleaseIdentityFailures,
@@ -71,18 +74,23 @@ export interface ContextBriefCitationScaleRssArtifact {
     readonly treeRssBytes: number;
   };
   readonly intervalMilliseconds: number;
+  readonly maximumConsecutiveSampleGapBreaches: number;
   readonly maximumSampleGapMilliseconds: number;
   readonly observations: readonly ContextBriefCitationScaleRssObservation[];
   readonly observerExcluded: true;
   readonly processCountPeakObserved: number;
   readonly rootIdentityValidation: 'darwin-ps-lstart' | 'linux-proc-starttime';
   readonly rootStartIdentity: string;
+  readonly sampleGapBreachCount: number;
+  readonly sampleGapBreachRate: number;
+  readonly sampleGapPolicy: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1;
   readonly sampleAttempts: number;
   readonly sampleFailures: number;
   readonly scope: 'recursive-process-tree';
+  readonly samplingSchedule: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE;
   readonly source: 'darwin-ps' | 'linux-proc';
   readonly successfulSamples: number;
-  readonly version: 1;
+  readonly version: 2;
 }
 
 export interface ContextBriefCitationScaleRssObserver {
@@ -226,6 +234,7 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
   if (rssEvidence.sampleFailures !== 0) {
     failures.push(`external RSS observer recorded ${rssEvidence.sampleFailures} failed samples`);
   }
+  failures.push(...contextBriefCitationRssSampleGapFailures(rssEvidence, rssEvidence.observations.length));
   if (rssEvidence.finalSample.processCount !== 1) {
     failures.push(
       `external RSS observer final retained-root sample contained ${rssEvidence.finalSample.processCount} processes; expected the benchmark root only`,
@@ -305,9 +314,12 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
     if (
       rssEvidence.source !== 'darwin-ps' ||
       rssEvidence.rootIdentityValidation !== 'darwin-ps-lstart' ||
-      rssEvidence.intervalMilliseconds !== 25
+      rssEvidence.intervalMilliseconds !== 25 ||
+      rssEvidence.samplingSchedule !== CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE
     ) {
-      failures.push('release RSS evidence must use the reviewed observer-excluded Darwin 25ms process-tree sampler');
+      failures.push(
+        'release RSS evidence must use the reviewed observer-excluded Darwin 25ms absolute-deadline process-tree sampler',
+      );
     }
   }
   return {
@@ -322,7 +334,7 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
         'instruments calls that reach the production CodeGraphStore.withSession implementation against real prebuilt SQLite files; OS file-descriptor opens are not separately counted',
       graphSnapshots: 'real-sqlite-prebuilt-ready',
       memoryMeasurement:
-        'a first-use untimed pass runs before timing, uses begin/end barriers around each production observation and an observer-excluded external recursive process-tree sampler, then records a post-final-GC stop sample; the hard gates use observed tree peak minus its immediate baseline and retained root growth through that final sample, while boundary RSS remains diagnostic',
+        'a first-use untimed pass runs before timing, uses begin/end barriers around each production observation and an observer-excluded external recursive process-tree sampler on absolute monotonic deadlines, then records a post-final-GC stop sample; the hard gates retain raw maximum gaps while bounding >100ms observation breaches to 10%, two consecutive breaches, and a 250ms hard maximum, and use observed tree peak minus its immediate baseline plus retained root growth through the final sample; boundary RSS remains diagnostic',
       recallIndex: 'real-sqlite-prebuilt-before-timing',
       timingScope:
         'observer-free warm real SQLite recall retrieval after first-use memory evidence, plus production Git identity/status observation, graph SQLite session/lease/evidence reads, citation grouping/validation, Context Brief assembly, and projection; every sample uses unseen citation IDs; fixture creation, recall indexing, ready-snapshot activation, catalog publication, and cold graph indexing are excluded',
@@ -344,6 +356,7 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
     memoryObserver: {
       finalSample: rssEvidence.finalSample,
       intervalMilliseconds: rssEvidence.intervalMilliseconds,
+      maximumConsecutiveSampleGapBreaches: rssEvidence.maximumConsecutiveSampleGapBreaches,
       maximumSampleGapMilliseconds: rssEvidence.maximumSampleGapMilliseconds,
       observationCount: rssEvidence.observations.length,
       observerExcluded: rssEvidence.observerExcluded,
@@ -351,9 +364,13 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
       rootIdentityValidation: rssEvidence.rootIdentityValidation,
       rootStartIdentity: rssEvidence.rootStartIdentity,
       retainedRootRssGrowthBytes,
+      sampleGapBreachCount: rssEvidence.sampleGapBreachCount,
+      sampleGapBreachRate: rssEvidence.sampleGapBreachRate,
+      sampleGapPolicy: rssEvidence.sampleGapPolicy,
       sampleAttempts: rssEvidence.sampleAttempts,
       sampleFailures: rssEvidence.sampleFailures,
       scope: rssEvidence.scope,
+      samplingSchedule: rssEvidence.samplingSchedule,
       source: rssEvidence.source,
       successfulSamples: rssEvidence.successfulSamples,
       version: rssEvidence.version,

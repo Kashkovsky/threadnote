@@ -7811,6 +7811,9 @@ function formatRatchetValue(value: unknown): string {
   return value === undefined ? '<missing>' : JSON.stringify(value);
 }
 
+const CODE_GRAPH_HOT_QUERY_WALL_P95_TOLERANCE_RATIO_MAXIMUM = 0.05;
+const CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM = 25;
+
 export function enforceCodeGraphBenchmarkBudget(
   artifact: BenchmarkArtifactV1,
   value: unknown,
@@ -7852,15 +7855,13 @@ export function enforceCodeGraphBenchmarkBudget(
     );
   }
   const budget = selected as Readonly<Record<string, unknown>>;
+  const hotQueryName =
+    artifact.metadata.vectorEnabled === true ? 'hot-semantic-vector-query' : 'hot-exact-lexical-query';
   const checks = [
     ['cold-index', 'coldIndexP95MillisecondsMaximum'],
     ['cold-materialization', 'coldMaterializationP95MillisecondsMaximum'],
     ['one-file-reindex-index', 'oneFileIncrementalP95MillisecondsMaximum'],
     ['one-file-reindex-materialization', 'oneFileMaterializationP95MillisecondsMaximum'],
-    [
-      artifact.metadata.vectorEnabled === true ? 'hot-semantic-vector-query' : 'hot-exact-lexical-query',
-      'hotQueryP95MillisecondsMaximum',
-    ],
     ['whole-graph-structural-analysis', 'wholeGraphAnalysisP95MillisecondsMaximum'],
     ['incremental-process-peak-rss', 'processPeakRssBytesMaximum'],
     ['derived-index-disk', 'derivedIndexBytesMaximum'],
@@ -7879,6 +7880,75 @@ export function enforceCodeGraphBenchmarkBudget(
           ? `single observation ${measurement.maximum}`
           : `p95 ${measurement.p95} over ${measurement.samples} samples`;
       failures.push(`${measurementName} ${statistic} exceeds ${maximum}`);
+    }
+  }
+  const hotQuery = artifact.measurements.find(candidate => candidate.name === hotQueryName);
+  const hotQueryMaximum = budget.hotQueryP95MillisecondsMaximum;
+  if (!hotQuery) {
+    failures.push(`missing ${hotQueryName} measurement`);
+  } else if (typeof hotQueryMaximum !== 'number' || !Number.isFinite(hotQueryMaximum)) {
+    failures.push('missing numeric hotQueryP95MillisecondsMaximum');
+  } else {
+    const p50Maximum = budget.hotQueryP50MillisecondsMaximum;
+    const processCpuMaximum = budget.hotQueryProcessCpuP95MillisecondsMaximum;
+    const p95ToleranceRatio = budget.hotQueryWallP95ToleranceRatioMaximum;
+    const guardedToleranceConfigured =
+      p50Maximum !== undefined || processCpuMaximum !== undefined || p95ToleranceRatio !== undefined;
+    const guardConfigurationValid =
+      typeof p50Maximum === 'number' &&
+      Number.isFinite(p50Maximum) &&
+      p50Maximum >= 0 &&
+      typeof processCpuMaximum === 'number' &&
+      Number.isFinite(processCpuMaximum) &&
+      processCpuMaximum >= 0 &&
+      typeof p95ToleranceRatio === 'number' &&
+      Number.isFinite(p95ToleranceRatio) &&
+      p95ToleranceRatio >= 0 &&
+      p95ToleranceRatio <= CODE_GRAPH_HOT_QUERY_WALL_P95_TOLERANCE_RATIO_MAXIMUM;
+    const processCpu = artifact.measurements.find(candidate => candidate.name === 'hot-query-process-cpu');
+    if (guardedToleranceConfigured && !guardConfigurationValid) {
+      failures.push(
+        'hot query wall tolerance requires non-negative numeric p50 and process-CPU bounds plus a ratio from 0 to 0.05',
+      );
+    }
+    if (guardConfigurationValid) {
+      if (hotQuery.unit !== 'milliseconds') {
+        failures.push(`${hotQueryName} measurement must use milliseconds`);
+      }
+      if (hotQuery.samples < CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM) {
+        failures.push(
+          `${hotQueryName} requires at least ${CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM} samples for wall tolerance`,
+        );
+      }
+      if (hotQuery.p50 > p50Maximum) {
+        failures.push(`${hotQueryName} p50 ${hotQuery.p50} exceeds ${p50Maximum}`);
+      }
+      if (!processCpu) {
+        failures.push('missing hot-query-process-cpu measurement');
+      } else if (processCpu.unit !== 'milliseconds') {
+        failures.push('hot-query-process-cpu measurement must use milliseconds');
+      } else if (processCpu.samples !== hotQuery.samples) {
+        failures.push('hot-query-process-cpu sample count must match the hot-query wall measurement');
+      } else if (processCpu.p95 > processCpuMaximum) {
+        failures.push(`hot-query-process-cpu p95 ${processCpu.p95} exceeds ${processCpuMaximum}`);
+      }
+    }
+    const boundedTailMaximum = guardConfigurationValid ? hotQueryMaximum * (1 + p95ToleranceRatio) : hotQueryMaximum;
+    const companionBoundsPassed =
+      guardConfigurationValid &&
+      hotQuery.unit === 'milliseconds' &&
+      hotQuery.samples >= CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM &&
+      hotQuery.p50 <= p50Maximum &&
+      processCpu !== undefined &&
+      processCpu.unit === 'milliseconds' &&
+      processCpu.samples === hotQuery.samples &&
+      processCpu.p95 <= processCpuMaximum;
+    if (hotQuery.p95 > hotQueryMaximum && (!companionBoundsPassed || hotQuery.p95 > boundedTailMaximum)) {
+      const statistic =
+        hotQuery.samples === 1
+          ? `single observation ${hotQuery.maximum}`
+          : `p95 ${hotQuery.p95} over ${hotQuery.samples} samples`;
+      failures.push(`${hotQueryName} ${statistic} exceeds ${hotQueryMaximum}`);
     }
   }
   if (failures.length > 0) throw new ScriptError(`Code graph performance budget failed: ${failures.join('; ')}`);

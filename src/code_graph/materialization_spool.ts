@@ -7,6 +7,7 @@ import {
   initializeCodeGraphMaterializationSpoolSurfaces,
   sortCodeGraphMaterializationSpoolSurface,
 } from './materialization_spool_surfaces.js';
+import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from './sqlite_statement.js';
 
 export const CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION = 1 as const;
 export const CODE_GRAPH_MATERIALIZATION_APPLY_PAGE_ROWS = 50_000;
@@ -87,6 +88,10 @@ interface CodeGraphMaterializationSpoolStateRow {
   readonly expected_surface_count: number | null;
   readonly sorted_surface_count: number;
   readonly stage: 'appending' | 'ready' | 'sealed' | 'sorting';
+}
+
+interface CodeGraphMaterializationSpoolCountRow {
+  readonly count: number | bigint;
 }
 
 /**
@@ -207,29 +212,26 @@ export function initializeCodeGraphMaterializationSpoolDatabase(
         reexport_count INTEGER NOT NULL CHECK (reexport_count >= 0)
       ) WITHOUT ROWID
     `);
-    const current = database
-      .prepare(
-        `SELECT format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
-         FROM materialization_spool_header
-         WHERE singleton = 1
-         LIMIT 2`,
-      )
-      .all() as readonly CodeGraphMaterializationSpoolHeaderRow[];
+    const current = codeGraphSqliteAll<CodeGraphMaterializationSpoolHeaderRow>(
+      database,
+      `SELECT format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
+       FROM materialization_spool_header
+       WHERE singleton = 1
+       LIMIT 2`,
+    );
     if (current.length === 0) {
-      database
-        .prepare(
-          `INSERT INTO materialization_spool_header (
-             singleton, format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
-           ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION,
-          expected.checkoutId,
-          expected.repositoryId,
-          expected.snapshotId,
-          expected.graphContentId,
-          expected.extractorSet,
-        );
+      codeGraphSqliteRun(
+        database,
+        `INSERT INTO materialization_spool_header (
+           singleton, format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
+         ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
+        CODE_GRAPH_MATERIALIZATION_SPOOL_FORMAT_VERSION,
+        expected.checkoutId,
+        expected.repositoryId,
+        expected.snapshotId,
+        expected.graphContentId,
+        expected.extractorSet,
+      );
       database.exec(`
         INSERT INTO materialization_spool_state (
           singleton, stage, appended_batch_count, expected_batch_count,
@@ -262,15 +264,15 @@ export function commitCodeGraphMaterializationSpoolBatch(
   validateCodeGraphMaterializationSpoolBatchReceipt(receipt);
   return database.transaction(() => {
     const state = readCodeGraphMaterializationSpoolState(database);
-    const current = database
-      .prepare(
-        `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
-           symbol_count, edge_count, term_count, lookup_count, reference_count,
-           candidate_count, reexport_count
-         FROM materialization_spool_batches
-         WHERE batch_index = ?`,
-      )
-      .get(receipt.batchIndex) as CodeGraphMaterializationSpoolBatchReceiptRow | null;
+    const current = codeGraphSqliteGet<CodeGraphMaterializationSpoolBatchReceiptRow>(
+      database,
+      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
+         symbol_count, edge_count, term_count, lookup_count, reference_count,
+         candidate_count, reexport_count
+       FROM materialization_spool_batches
+       WHERE batch_index = ?`,
+      receipt.batchIndex,
+    );
     if (current !== null) {
       if (!codeGraphMaterializationSpoolBatchReceiptMatches(current, receipt)) {
         throw new Error('Code graph materialization spool batch identity does not match the committed receipt.');
@@ -284,35 +286,33 @@ export function commitCodeGraphMaterializationSpoolBatch(
       throw new Error('Code graph materialization spool batch sequence is not contiguous.');
     }
     writeBatch();
-    database
-      .prepare(
-        `INSERT INTO materialization_spool_batches (
-           batch_index, batch_id, fact_bytes, source_bytes, row_count,
-           symbol_count, edge_count, term_count, lookup_count, reference_count,
-           candidate_count, reexport_count
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        receipt.batchIndex,
-        receipt.batchId,
-        receipt.factBytes,
-        receipt.sourceBytes,
-        receipt.rowCount,
-        receipt.symbolCount,
-        receipt.edgeCount,
-        receipt.termCount,
-        receipt.lookupCount,
-        receipt.referenceCount,
-        receipt.candidateCount,
-        receipt.reexportCount,
-      );
-    database
-      .prepare(
-        `UPDATE materialization_spool_state
-         SET appended_batch_count = appended_batch_count + 1
-         WHERE singleton = 1 AND stage = 'appending' AND appended_batch_count = ?`,
-      )
-      .run(state.appendedBatchCount);
+    codeGraphSqliteRun(
+      database,
+      `INSERT INTO materialization_spool_batches (
+         batch_index, batch_id, fact_bytes, source_bytes, row_count,
+         symbol_count, edge_count, term_count, lookup_count, reference_count,
+         candidate_count, reexport_count
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      receipt.batchIndex,
+      receipt.batchId,
+      receipt.factBytes,
+      receipt.sourceBytes,
+      receipt.rowCount,
+      receipt.symbolCount,
+      receipt.edgeCount,
+      receipt.termCount,
+      receipt.lookupCount,
+      receipt.referenceCount,
+      receipt.candidateCount,
+      receipt.reexportCount,
+    );
+    codeGraphSqliteRun(
+      database,
+      `UPDATE materialization_spool_state
+       SET appended_batch_count = appended_batch_count + 1
+       WHERE singleton = 1 AND stage = 'appending' AND appended_batch_count = ?`,
+      state.appendedBatchCount,
+    );
     observeTransaction?.();
     return 'appended';
   })();
@@ -335,13 +335,14 @@ export function sealCodeGraphMaterializationSpool(
     if (state.appendedBatchCount !== expectedBatchCount) {
       throw new Error('Code graph materialization spool cannot seal before every expected batch is committed.');
     }
-    database
-      .prepare(
-        `UPDATE materialization_spool_state
-         SET stage = 'sealed', expected_batch_count = ?
-         WHERE singleton = 1 AND stage = 'appending' AND appended_batch_count = ?`,
-      )
-      .run(expectedBatchCount, expectedBatchCount);
+    codeGraphSqliteRun(
+      database,
+      `UPDATE materialization_spool_state
+       SET stage = 'sealed', expected_batch_count = ?
+       WHERE singleton = 1 AND stage = 'appending' AND appended_batch_count = ?`,
+      expectedBatchCount,
+      expectedBatchCount,
+    );
     return 'sealed';
   })();
 }
@@ -362,13 +363,13 @@ export function beginCodeGraphMaterializationSpoolSort(
     if (state.stage !== 'sealed') {
       throw new Error('Code graph materialization spool must be sealed before sorting.');
     }
-    database
-      .prepare(
-        `UPDATE materialization_spool_state
-         SET stage = 'sorting', expected_surface_count = ?
-         WHERE singleton = 1 AND stage = 'sealed'`,
-      )
-      .run(expectedSurfaceCount);
+    codeGraphSqliteRun(
+      database,
+      `UPDATE materialization_spool_state
+       SET stage = 'sorting', expected_surface_count = ?
+       WHERE singleton = 1 AND stage = 'sealed'`,
+      expectedSurfaceCount,
+    );
     return 'sorting';
   })();
 }
@@ -392,13 +393,13 @@ export function commitCodeGraphMaterializationSpoolSortedSurface(
       throw new Error('Code graph materialization spool sorted surface sequence is not contiguous.');
     }
     writeSurface();
-    database
-      .prepare(
-        `UPDATE materialization_spool_state
-         SET sorted_surface_count = sorted_surface_count + 1
-         WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = ?`,
-      )
-      .run(surfaceIndex);
+    codeGraphSqliteRun(
+      database,
+      `UPDATE materialization_spool_state
+       SET sorted_surface_count = sorted_surface_count + 1
+       WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = ?`,
+      surfaceIndex,
+    );
     observeTransaction?.();
     return 'sorted';
   })();
@@ -415,13 +416,12 @@ export function finishCodeGraphMaterializationSpoolSort(database: Database): 're
     ) {
       throw new Error('Code graph materialization spool cannot become ready before every surface is sorted.');
     }
-    database
-      .prepare(
-        `UPDATE materialization_spool_state
-         SET stage = 'ready'
-         WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = expected_surface_count`,
-      )
-      .run();
+    codeGraphSqliteRun(
+      database,
+      `UPDATE materialization_spool_state
+       SET stage = 'ready'
+       WHERE singleton = 1 AND stage = 'sorting' AND sorted_surface_count = expected_surface_count`,
+    );
     return 'ready';
   })();
 }
@@ -447,43 +447,44 @@ export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): 
   }
   assertCodeGraphMaterializationSpoolLedger(database);
   assertCodeGraphMaterializationSpoolSurfaceState(database, state.stage, state.sortedSurfaceCount ?? 0);
-  const headers = database
-    .prepare(
-      `SELECT format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
-       FROM materialization_spool_header
-       WHERE singleton = 1
-       LIMIT 2`,
-    )
-    .all() as readonly CodeGraphMaterializationSpoolHeaderRow[];
+  const headers = codeGraphSqliteAll<CodeGraphMaterializationSpoolHeaderRow>(
+    database,
+    `SELECT format_version, checkout_id, repository_id, snapshot_id, graph_content_id, extractor_set
+     FROM materialization_spool_header
+     WHERE singleton = 1
+     LIMIT 2`,
+  );
   if (headers.length !== 1) {
     throw new Error('Code graph materialization spool header is missing or corrupt.');
   }
-  const receipts = database
-    .prepare(
-      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
-         symbol_count, edge_count, term_count, lookup_count, reference_count,
-         candidate_count, reexport_count
-       FROM materialization_spool_batches
-       ORDER BY batch_index`,
-    )
-    .all() as readonly CodeGraphMaterializationSpoolBatchReceiptRow[];
+  const receipts = codeGraphSqliteAll<CodeGraphMaterializationSpoolBatchReceiptRow>(
+    database,
+    `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
+       symbol_count, edge_count, term_count, lookup_count, reference_count,
+       candidate_count, reexport_count
+     FROM materialization_spool_batches
+     ORDER BY batch_index`,
+  );
   const surfaces = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.map(surface => {
-    const row = database.prepare(`SELECT COUNT(*) AS count FROM materialization_ordered_${surface.name}`).get() as {
-      readonly count: number | bigint;
-    };
+    const row = codeGraphSqliteGet<CodeGraphMaterializationSpoolCountRow>(
+      database,
+      `SELECT COUNT(*) AS count FROM materialization_ordered_${surface.name}`,
+    );
+    if (row === null) throw new Error('Code graph materialization spool surface row count is missing.');
     const rowCount = Number(row.count);
     if (!Number.isSafeInteger(rowCount) || rowCount < 0) {
       throw new Error('Code graph materialization spool surface row count is invalid.');
     }
     return {name: surface.name, rowCount};
   });
-  const lexicalTermCount = Number(
-    (
-      database.prepare('SELECT COUNT(*) AS count FROM materialization_ordered_terms').get() as {
-        readonly count: number | bigint;
-      }
-    ).count,
+  const lexicalTermCountRow = codeGraphSqliteGet<CodeGraphMaterializationSpoolCountRow>(
+    database,
+    'SELECT COUNT(*) AS count FROM materialization_ordered_terms',
   );
+  if (lexicalTermCountRow === null) {
+    throw new Error('Code graph materialization spool lexical term count is missing.');
+  }
+  const lexicalTermCount = Number(lexicalTermCountRow.count);
   if (!Number.isSafeInteger(lexicalTermCount) || lexicalTermCount < 0) {
     throw new Error('Code graph materialization spool lexical term count is invalid.');
   }
@@ -506,15 +507,14 @@ export function readCodeGraphMaterializationSpoolReadyPlan(database: Database): 
 }
 
 export function readCodeGraphMaterializationSpoolState(database: Database): CodeGraphMaterializationSpoolState {
-  const rows = database
-    .prepare(
-      `SELECT stage, appended_batch_count, expected_batch_count,
-         sorted_surface_count, expected_surface_count
-       FROM materialization_spool_state
-       WHERE singleton = 1
-       LIMIT 2`,
-    )
-    .all() as readonly CodeGraphMaterializationSpoolStateRow[];
+  const rows = codeGraphSqliteAll<CodeGraphMaterializationSpoolStateRow>(
+    database,
+    `SELECT stage, appended_batch_count, expected_batch_count,
+       sorted_surface_count, expected_surface_count
+     FROM materialization_spool_state
+     WHERE singleton = 1
+     LIMIT 2`,
+  );
   if (rows.length !== 1) {
     throw new Error('Code graph materialization spool state is missing or corrupt.');
   }
@@ -553,15 +553,14 @@ export function readCodeGraphMaterializationSpoolState(database: Database): Code
 
 function assertCodeGraphMaterializationSpoolLedger(database: Database): void {
   const state = readCodeGraphMaterializationSpoolState(database);
-  const receipts = database
-    .prepare(
-      `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
-         symbol_count, edge_count, term_count, lookup_count, reference_count,
-         candidate_count, reexport_count
-       FROM materialization_spool_batches
-       ORDER BY batch_index`,
-    )
-    .all() as readonly CodeGraphMaterializationSpoolBatchReceiptRow[];
+  const receipts = codeGraphSqliteAll<CodeGraphMaterializationSpoolBatchReceiptRow>(
+    database,
+    `SELECT batch_index, batch_id, fact_bytes, source_bytes, row_count,
+       symbol_count, edge_count, term_count, lookup_count, reference_count,
+       candidate_count, reexport_count
+     FROM materialization_spool_batches
+     ORDER BY batch_index`,
+  );
   if (
     receipts.length !== state.appendedBatchCount ||
     receipts.some((receipt, index) => receipt.batch_index !== index || !/^[0-9a-f]{64}$/u.test(receipt.batch_id))

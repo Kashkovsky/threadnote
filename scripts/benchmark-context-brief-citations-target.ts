@@ -35,10 +35,10 @@ import {
   runContextBriefCitationRssObserverMode,
   waitForContextBriefCitationRssAcknowledgement,
   writeContextBriefCitationRssRequest,
-  type ContextBriefCitationRssAcknowledgementV1,
-  type ContextBriefCitationRssArtifactV1,
-  type ContextBriefCitationRssReadyV1,
-  type ContextBriefCitationRssRequestV1,
+  type ContextBriefCitationRssAcknowledgementV2,
+  type ContextBriefCitationRssArtifactV2,
+  type ContextBriefCitationRssReadyV2,
+  type ContextBriefCitationRssRequestV2,
 } from './context-brief-citation-rss-observer.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, readJsonFile, scriptArguments} from './effect/script.js';
@@ -55,7 +55,7 @@ type ContextBriefCitationRssBarrierRequest =
 
 export interface ContextBriefCitationRssReadyProbe {
   readonly childExitCode: () => number | null;
-  readonly readReady: Effect.Effect<ContextBriefCitationRssReadyV1 | undefined, Error>;
+  readonly readReady: Effect.Effect<ContextBriefCitationRssReadyV2 | undefined, Error>;
   readonly stderr: Promise<string>;
   readonly timeoutMilliseconds?: number;
 }
@@ -69,12 +69,12 @@ export interface ContextBriefCitationRssTerminationControl {
 export interface ContextBriefCitationRssControllerAdapter {
   readonly barrier: (
     request: ContextBriefCitationRssBarrierRequest,
-    expected: ContextBriefCitationRssAcknowledgementV1['state'],
+    expected: ContextBriefCitationRssAcknowledgementV2['state'],
   ) => Effect.Effect<void, Error>;
   readonly childExitCode: () => number | null;
   readonly exitWithin: Effect.Effect<number | undefined>;
-  readonly readArtifact: Effect.Effect<ContextBriefCitationRssArtifactV1, Error>;
-  readonly ready: ContextBriefCitationRssReadyV1;
+  readonly readArtifact: Effect.Effect<ContextBriefCitationRssArtifactV2, Error>;
+  readonly ready: ContextBriefCitationRssReadyV2;
   readonly stderr: Promise<string>;
   readonly terminate: Effect.Effect<void, Error>;
 }
@@ -214,9 +214,9 @@ export const validateContextBriefCitationRssBundleDigest = Effect.fn(
 export const validateContextBriefCitationRssAcknowledgement = Effect.fn(
   'contextBriefCitationScale.validateRssAcknowledgement',
 )(function* (
-  request: ContextBriefCitationRssRequestV1,
-  expected: ContextBriefCitationRssAcknowledgementV1['state'],
-  acknowledgement: ContextBriefCitationRssAcknowledgementV1,
+  request: ContextBriefCitationRssRequestV2,
+  expected: ContextBriefCitationRssAcknowledgementV2['state'],
+  acknowledgement: ContextBriefCitationRssAcknowledgementV2,
 ) {
   if (
     acknowledgement.sequence === request.sequence &&
@@ -232,12 +232,13 @@ export const validateContextBriefCitationRssAcknowledgement = Effect.fn(
 
 export const validateContextBriefCitationRssReadyArtifact = Effect.fn(
   'contextBriefCitationScale.validateRssReadyArtifact',
-)(function* (ready: ContextBriefCitationRssReadyV1, artifact: ContextBriefCitationRssArtifactV1) {
+)(function* (ready: ContextBriefCitationRssReadyV2, artifact: ContextBriefCitationRssArtifactV2) {
   if (
     artifact.intervalMilliseconds === ready.intervalMilliseconds &&
     artifact.observerExcluded === ready.observerExcluded &&
     artifact.rootIdentityValidation === ready.rootIdentityValidation &&
     artifact.rootStartIdentity === ready.rootStartIdentity &&
+    artifact.samplingSchedule === ready.samplingSchedule &&
     artifact.scope === ready.scope &&
     artifact.source === ready.source &&
     artifact.version === ready.version
@@ -362,11 +363,11 @@ const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScal
   let sequence = 0;
   const barrier = (
     request: ContextBriefCitationRssBarrierRequest,
-    expected: ContextBriefCitationRssAcknowledgementV1['state'],
+    expected: ContextBriefCitationRssAcknowledgementV2['state'],
   ) =>
     Effect.gen(function* () {
       sequence += 1;
-      const sequenced = {...request, sequence, version: 1 as const} as ContextBriefCitationRssRequestV1;
+      const sequenced = {...request, sequence, version: 2 as const} as ContextBriefCitationRssRequestV2;
       yield* writeContextBriefCitationRssRequest(paths.requestPath, sequenced).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
       );

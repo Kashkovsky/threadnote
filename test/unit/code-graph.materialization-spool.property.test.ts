@@ -16,9 +16,40 @@ import {
   sortCodeGraphMaterializationSpoolSurfaces,
 } from '../../src/code_graph/materialization_spool.js';
 import {CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES} from '../../src/code_graph/materialization_spool_surfaces.js';
+import {codeGraphSqliteAll, codeGraphSqliteGet, codeGraphSqliteRun} from '../../src/code_graph/sqlite_statement.js';
 import type {CodeGraphLayout} from '../../src/code_graph/layout.js';
 
 describe('code graph materialization spool', () => {
+  it.prop(
+    'releases successful and failed prepared statements before strong close',
+    {values: FC.array(FC.integer(), {maxLength: 64})},
+    ({values}) => {
+      const database = new Database(':memory:', {strict: true});
+      try {
+        database.exec('CREATE TABLE statement_ownership (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)');
+        codeGraphSqliteRun(database, 'INSERT INTO statement_ownership (id, value) VALUES (?, ?)', -1, 0);
+        for (const [id, value] of values.entries()) {
+          codeGraphSqliteRun(database, 'INSERT INTO statement_ownership (id, value) VALUES (?, ?)', id, value);
+        }
+        expect(() =>
+          codeGraphSqliteRun(database, 'INSERT INTO statement_ownership (id, value) VALUES (?, ?)', -1, 1),
+        ).toThrow();
+        expect(
+          codeGraphSqliteAll<{readonly id: number; readonly value: number}>(
+            database,
+            'SELECT id, value FROM statement_ownership WHERE id >= 0 ORDER BY id',
+          ),
+        ).toEqual(values.map((value, id) => ({id, value})));
+        expect(
+          codeGraphSqliteGet<{readonly count: number}>(database, 'SELECT COUNT(*) AS count FROM statement_ownership'),
+        ).toEqual({count: values.length + 1});
+      } finally {
+        expect(() => database.close(true)).not.toThrow();
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it.prop(
     'covers every ordered row once with median-block bounded cursors',
     {
