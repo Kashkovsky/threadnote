@@ -96,6 +96,7 @@
     "Hosted Windows uses explicit development-only scheduler headroom for hot query, one-file indexing, and structural analysis; Linux and macOS retain the tighter reviewed fixture ceilings.",
     "The Windows overrides still reject multi-second hot queries and minute-scale one-file rebuilds instead of weakening vector, scale, quality, or safety gates.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",
+    "The 100k real-model vector lane uses the explicit hosted macOS ARM64 runner class; the 10k Linux lane retains cross-platform model coverage without making the 100k gate depend on a two-context CPU runner that cannot finish the reviewed workload.",
     "The 10k pinned-vector cold-index wall ceiling is 600 seconds: twice the prior 300-second hosted-runner envelope and about 20% above the reviewed 498-second slow-host tail; materialization, incremental, query, analysis, RSS, and disk guards remain unchanged.",
     "Generated 10k and 100k lexical artifacts are budget-gated on graph/runtime pull requests in Linux and on scheduled runners; production-shaped repositories remain a separate soak gate.",
     "Reviewed lexical incremental ceilings retain substantial cross-runner headroom over the stored baselines while rejecting minute-scale one-file rebuild regressions.",

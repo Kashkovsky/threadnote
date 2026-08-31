@@ -25,7 +25,9 @@ import {
   measureBenchmarkIndex,
   measureSampledBenchmarkIndex,
   parseCodeGraphBenchmarkArguments,
+  processMaxRssBytes,
   productionBenchmarkStorageGoverned,
+  requiresLongScaleBenchmarkEvidence,
   restoreBenchmarkOverlay,
   sanitizedBenchmarkEnvironmentProvenance,
   semanticBenchmarkOverlay,
@@ -334,11 +336,43 @@ describe('code graph external benchmark harness', () => {
     expect(source).not.toContain('const sameOverlayReferenceStarted = yield* Clock.currentTimeNanos');
   });
 
-  it('enables recursive process sampling for explicit embedding-context candidates', () => {
+  it('checkpoints and samples 100k evidence without enabling unrelated large-evidence behavior', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
-    expect(source).toContain('const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined');
+    expect(requiresLongScaleBenchmarkEvidence(99_999)).toBe(false);
+    expect(requiresLongScaleBenchmarkEvidence(100_000)).toBe(true);
+    expect(requiresLongScaleBenchmarkEvidence(250_000)).toBe(true);
+    fc.assert(
+      fc.property(fc.integer({max: 200_000, min: 0}), fc.integer({max: 200_000, min: 0}), (first, second) => {
+        const lower = Math.min(first, second);
+        const upper = Math.max(first, second);
+        expect(Number(requiresLongScaleBenchmarkEvidence(lower))).toBeLessThanOrEqual(
+          Number(requiresLongScaleBenchmarkEvidence(upper)),
+        );
+      }),
+      {numRuns: 100},
+    );
+    expect(source).toContain('const checkpointedEvidenceRun = largeEvidenceRun || longScaleEvidenceRun');
+    expect(source).toContain(
+      'const sampleProcessTree = checkpointedEvidenceRun || options.embeddingContexts !== undefined',
+    );
+    expect(source).toContain('checkpointedEvidenceRun && options.outputPath');
+    expect(source).toContain('const mcpOperationMatrix = largeEvidenceRun');
+    expect(source).toContain('Math.min(options.samples, largeEvidenceRun ? 3 : 10)');
     expect(source.match(/sampleProcessTree\s*\? startExternalSampler/g)).toHaveLength(3);
     expect(source.match(/sampler\s*\? Effect\.void\s*:\s*observeSqliteStoragePeak/g)).toHaveLength(3);
+  });
+
+  it.each([
+    {expected: 544_440, platform: 'darwin', runtime: 'bun'},
+    {expected: 557_506_560, platform: 'linux', runtime: 'bun'},
+    {expected: 557_506_560, platform: 'darwin', runtime: 'node'},
+    {expected: 557_506_560, platform: 'linux', runtime: 'node'},
+  ] satisfies ReadonlyArray<{
+    readonly expected: number;
+    readonly platform: NodeJS.Platform;
+    readonly runtime: 'bun' | 'node';
+  }>)('normalizes $runtime maxRSS on $platform to bytes', ({expected, platform, runtime}) => {
+    expect(processMaxRssBytes(544_440, platform, runtime)).toBe(expected);
   });
 
   it('retains provenance-valid artifact evidence before reporting a budget or ratchet regression', () => {
@@ -874,6 +908,15 @@ describe('code graph external benchmark harness', () => {
       }),
     ).toMatchObject({
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-linux-x64',
+      THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
+    });
+    expect(
+      sanitizedBenchmarkEnvironmentProvenance({
+        THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-macos-15-ARM64',
+        THREADNOTE_BENCHMARK_RUNNER_ID: 'macos-arm64-runner',
+      }),
+    ).toMatchObject({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-macos-arm64',
       THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
     });
   });

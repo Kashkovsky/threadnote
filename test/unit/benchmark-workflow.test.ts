@@ -285,6 +285,29 @@ describe('platform benchmark workflow', () => {
       name: 'code-graph-vector-benchmark-10k-Linux-${{ runner.arch }}',
       path: 'artifacts/code-graph-vectors-10k-Linux-${{ runner.arch }}.json',
     });
+
+    const vector100k = workflow.jobs['code-graph-vectors-100k']!;
+    const vector100kCapture = vector100k.steps?.find(step => step.run?.includes('--scale-symbols 100000'));
+    const vector100kCommand = vector100kCapture?.run;
+    const vector100kArtifact = vector100k.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
+    expect(vector100k['runs-on']).toBe('macos-15');
+    expect(vector100k['timeout-minutes']).toBe(60);
+    expect(vector100k.env).toBeUndefined();
+    expect(vector100kCapture?.['timeout-minutes']).toBe(50);
+    expect(vector100kCapture?.env).toEqual({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-macos-15-ARM64',
+      THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
+    });
+    expect(vector100kCommand).toContain(
+      '--output artifacts/code-graph-vectors-100k-${{ runner.os }}-${{ runner.arch }}.json',
+    );
+    expect(vector100kArtifact?.with).toMatchObject({
+      'if-no-files-found': 'error',
+      name: 'code-graph-vector-benchmark-100k-${{ runner.os }}-${{ runner.arch }}',
+      path: 'artifacts/code-graph-vectors-100k-${{ runner.os }}-${{ runner.arch }}.json*',
+    });
+    expect(vector100kArtifact?.if).toBe('always()');
+    expect(vector100kArtifact?.['timeout-minutes']).toBe(5);
   });
 
   it('bounds the shared production-large n=1 workflow for schedule, opt-in, and release evidence', () => {

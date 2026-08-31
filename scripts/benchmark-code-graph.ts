@@ -560,10 +560,9 @@ const benchmarkCodeGraph = Effect.scoped(
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
     const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
     if (ratchet !== undefined) validateCodeGraphBenchmarkRatchet(ratchet);
+    const longScaleEvidenceRun = requiresLongScaleBenchmarkEvidence(options.scaleSymbols);
     const runtimeProvenanceRequired =
-      options.profile === 'production-large' ||
-      options.repository !== undefined ||
-      (options.scaleSymbols ?? 0) >= LONG_SCALE_PROVENANCE_THRESHOLD;
+      options.profile === 'production-large' || options.repository !== undefined || longScaleEvidenceRun;
     const runtimeProvenance = runtimeProvenanceRequired
       ? yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot)
       : undefined;
@@ -573,7 +572,8 @@ const benchmarkCodeGraph = Effect.scoped(
       process.env.THREADNOTE_BENCHMARK_RELEASE_SHA?.trim() || undefined,
     );
     const largeEvidenceRun = options.profile === 'production-large' || options.repository !== undefined;
-    const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined;
+    const checkpointedEvidenceRun = largeEvidenceRun || longScaleEvidenceRun;
+    const sampleProcessTree = checkpointedEvidenceRun || options.embeddingContexts !== undefined;
     const externalPrepared =
       options.repository !== undefined ? yield* prepareExternalCodeGraphFixture(options) : undefined;
     if (externalPrepared && releaseEvidenceSource) {
@@ -623,7 +623,7 @@ const benchmarkCodeGraph = Effect.scoped(
         Effect.fail(new ScriptError('External benchmark homes could not be retained after preflight.'));
     }
     const runCheckpoint =
-      largeEvidenceRun && options.outputPath
+      checkpointedEvidenceRun && options.outputPath
         ? yield* Effect.acquireRelease(
             makeBenchmarkRunCheckpoint(`${options.outputPath}.run.json`),
             (checkpoint, exit) => checkpoint.finish(Exit.isSuccess(exit) ? 'complete' : 'failed'),
@@ -3014,6 +3014,21 @@ export interface ProcessTelemetry {
   readonly cpuUserMicroseconds: number;
   readonly peakRssBytes: number;
   readonly rssBytes: number;
+}
+
+export type ProcessResourceUsageRuntime = 'bun' | 'node';
+
+/**
+ * Node normalizes resourceUsage().maxRSS to KiB on every platform. The
+ * release-pinned Bun runtime follows the native Darwin byte unit but reports
+ * KiB on Linux; revalidate this branch whenever the pinned Bun version changes.
+ */
+export function processMaxRssBytes(
+  maxRss: number,
+  platform: NodeJS.Platform,
+  runtime: ProcessResourceUsageRuntime,
+): number {
+  return runtime === 'bun' && platform === 'darwin' ? maxRss : maxRss * 1_024;
 }
 
 function processTelemetry(): ProcessTelemetry {
@@ -6562,6 +6577,7 @@ function benchmarkRunnerLabel(
     if (normalized === 'local-unclassified') return normalized;
     if (/^github-hosted-ubuntu-[a-z0-9.]+-x64$/.test(normalized)) return 'github-hosted-linux-x64';
     if (/^github-hosted-ubuntu-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-linux-arm64';
+    if (/^github-hosted-macos-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-macos-arm64';
     return 'other';
   }
   const digest = new Bun.CryptoHasher('sha256').update(value).digest('hex');
@@ -7956,7 +7972,12 @@ export function enforceCodeGraphBenchmarkBudget(
 
 function processPeakRssBytes(): number {
   const maxRss = process.resourceUsage().maxRSS;
-  return 'bun' in process.versions ? maxRss : maxRss * 1_024;
+  const runtime: ProcessResourceUsageRuntime = 'bun' in process.versions ? 'bun' : 'node';
+  return processMaxRssBytes(maxRss, process.platform, runtime);
+}
+
+export function requiresLongScaleBenchmarkEvidence(scaleSymbols: number | undefined): boolean {
+  return (scaleSymbols ?? 0) >= LONG_SCALE_PROVENANCE_THRESHOLD;
 }
 
 const prepareBenchmarkEmbedding = Effect.fn('benchmarkCodeGraph.prepareEmbedding')(function* (
