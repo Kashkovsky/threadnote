@@ -162,12 +162,14 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     if (plan.codeRefs.some(ref => ref.startsWith('cgr_'))) {
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-ref-unsupported');
     }
+    const retryBudget = {remaining: CONTEXT_BRIEF_CODE_ANCHOR_READ_RETRIES};
     const capturedBatch = yield* Effect.result(
       retryContextBriefCodeAnchorRead(
         captureMemoryCodeCitations(config, {
           callerCwd,
           refs: plan.codeRefs,
         }),
+        retryBudget,
       ),
     );
     if (
@@ -180,20 +182,24 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     const fallbackAttempts =
       Result.isSuccess(capturedBatch) && capturedBatch.success.length === requested
         ? undefined
-        : yield* Effect.forEach(
-            plan.codeRefs,
-            ref =>
-              Effect.result(
-                retryContextBriefCodeAnchorRead(
-                  captureMemoryCodeCitations(config, {
-                    callerCwd,
-                    refs: [ref],
-                  }),
+        : Result.isSuccess(capturedBatch) || isUnresolvedContextBriefCodeAnchorFailure(capturedBatch.failure)
+          ? yield* Effect.forEach(
+              plan.codeRefs,
+              ref =>
+                Effect.result(
+                  retryContextBriefCodeAnchorRead(
+                    captureMemoryCodeCitations(config, {
+                      callerCwd,
+                      refs: [ref],
+                    }),
+                    retryBudget,
+                  ),
                 ),
-              ),
-            // A failed batch must not amplify cold large-graph reads.
-            {concurrency: 1},
-          );
+              // A deterministic unresolved member is isolated serially; a
+              // global or non-retryable batch failure never fans out 8x.
+              {concurrency: 1},
+            )
+          : undefined;
     const resolvedAnchors =
       Result.isSuccess(capturedBatch) && capturedBatch.success.length === requested
         ? capturedBatch.success.map((anchor, anchorOrdinal) => ({anchor, anchorOrdinal}))
@@ -208,6 +214,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       ...(Result.isFailure(capturedBatch) ? [capturedBatch.failure] : []),
       ...unresolvedCaptureFailures,
     ];
+    const captureUnavailable = captureFailures.some(failure => !isUnresolvedContextBriefCodeAnchorFailure(failure));
     if (resolvedAnchors.length === 0) {
       const unexpected = captureFailures.find(isUnexpectedContextBriefCodeAnchorFailure);
       if (unexpected !== undefined) return yield* Effect.fail(unexpected);
@@ -261,10 +268,11 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       ...(plan.project === undefined ? {} : {project: plan.project}),
     }).pipe(Effect.option);
     if (linked._tag === 'None') {
-      return unavailableContextBriefCodeLinkedMemoryEvidence(
+      return unavailableContextBriefCodeLinkedMemoryEvidenceAfterCapture(
         requested,
-        'code-anchor-recall-unavailable',
         resolvedOrdinals,
+        'code-anchor-recall-unavailable',
+        captureUnavailable ? ['code-anchor-resolution-unavailable'] : [],
       );
     }
     const matchesByUri = mapContextBriefCodeLinkMatches(
@@ -276,13 +284,18 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       })),
     );
     const rankedUris = [...matchesByUri.keys()];
-    const readCandidates = yield* readContextBriefMemoryCandidates(
-      config,
-      rankedUris,
-      plan.candidateLimit,
-      matchesByUri,
-      true,
+    const readCandidatesResult = yield* Effect.result(
+      readContextBriefMemoryCandidates(config, rankedUris, plan.candidateLimit, matchesByUri, true),
     );
+    if (Result.isFailure(readCandidatesResult)) {
+      return unavailableContextBriefCodeLinkedMemoryEvidenceAfterCapture(
+        requested,
+        resolvedOrdinals,
+        'code-anchor-recall-unavailable',
+        captureUnavailable ? ['code-anchor-resolution-unavailable'] : [],
+      );
+    }
+    const readCandidates = readCandidatesResult.success;
     const candidates = readCandidates.candidates.filter(candidate => (candidate.codeLinkMatches?.length ?? 0) > 0);
     const complete = resolvedAnchors.length === requested;
     const unresolvedOrdinals = unresolvedContextBriefCodeAnchorOrdinals(requested, resolvedOrdinals);
@@ -298,7 +311,7 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       consideredCandidates: linked.value.length,
       gaps: stableUnique([
         ...contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
-        ...(unresolvedCaptureFailures.length === 0 ? [] : ['code-anchor-resolution-unavailable']),
+        ...(captureUnavailable ? ['code-anchor-resolution-unavailable'] : []),
         ...(readCandidates.stableIdentityUnavailable ? ['stable-memory-identity-unavailable'] : []),
       ]),
       trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
@@ -306,15 +319,27 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
   },
 );
 
-function retryContextBriefCodeAnchorRead<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
+function retryContextBriefCodeAnchorRead<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  budget: {remaining: number},
+): Effect.Effect<A, E, R> {
   return effect.pipe(
     Effect.retry({
       schedule: Schedule.spaced(CONTEXT_BRIEF_CODE_ANCHOR_RETRY_MILLISECONDS),
       times: CONTEXT_BRIEF_CODE_ANCHOR_READ_RETRIES,
-      while: error =>
-        !(error instanceof MemoryCodeCitationCaptureError && error.failureCode === 'code-reference-unresolved'),
+      while: error => {
+        if (!(error instanceof MemoryCodeCitationCaptureError) || !error.retryable || budget.remaining === 0) {
+          return false;
+        }
+        budget.remaining -= 1;
+        return true;
+      },
     }),
   );
+}
+
+function isUnresolvedContextBriefCodeAnchorFailure(error: unknown): boolean {
+  return error instanceof MemoryCodeCitationCaptureError && error.failureCode === 'code-reference-unresolved';
 }
 
 function isUnexpectedContextBriefCodeAnchorFailure(error: unknown): boolean {
@@ -429,6 +454,24 @@ export function unavailableContextBriefCodeLinkedMemoryEvidence(
     consideredCandidates: 0,
     gaps: [gap],
     trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+  };
+}
+
+/** Preserve successful anchor resolution when inverse recall or canonical reads abstain. */
+function unavailableContextBriefCodeLinkedMemoryEvidenceAfterCapture(
+  requested: number,
+  resolvedOrdinals: readonly number[],
+  gap: string,
+  additionalGaps: readonly string[] = [],
+): ContextBriefMemoryRetrievalV1 {
+  const evidence = unavailableContextBriefCodeLinkedMemoryEvidence(requested, gap, resolvedOrdinals);
+  return {
+    ...evidence,
+    gaps: stableUnique([
+      ...evidence.gaps,
+      ...additionalGaps,
+      ...(evidence.codeAnchorCoverage?.complete === false ? ['code-anchors-unresolved'] : []),
+    ]),
   };
 }
 

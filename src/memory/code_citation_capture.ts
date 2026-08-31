@@ -7,7 +7,7 @@ import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_
 import {decodeUtf8} from '../code_graph/inventory_content.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStatus, CodeGraphSymbol} from '../code_graph/types.js';
+import {CodeGraphStoreError, type CodeGraphStatus, type CodeGraphSymbol} from '../code_graph/types.js';
 import {
   resolveCodeGraphQualifiedRefTargets,
   type ResolvedCodeGraphQualifiedRefTargetV1,
@@ -70,15 +70,19 @@ export class MemoryCodeCitationCaptureError extends Error {
   override readonly name = 'MemoryCodeCitationCaptureError';
   readonly failureCode?: MemoryCodeCitationCaptureFailureCode;
   readonly recovery?: MemoryCodeCitationCaptureRecoveryV1;
+  /** Immediate retry eligibility preserved from a classified graph-store failure. */
+  readonly retryable: boolean;
 
   constructor(
     message: string,
     recovery?: MemoryCodeCitationCaptureRecoveryV1,
     failureCode?: MemoryCodeCitationCaptureFailureCode,
+    retryable = false,
   ) {
     super(message);
     this.recovery = recovery;
     this.failureCode = failureCode;
+    this.retryable = retryable;
   }
 }
 
@@ -586,5 +590,8 @@ function captureError(target: string, cause: unknown): MemoryCodeCitationCapture
     ? cause
     : new MemoryCodeCitationCaptureError(
         `Could not capture code citation ${target}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        undefined,
+        undefined,
+        cause instanceof CodeGraphStoreError && cause.retryable,
       );
 }

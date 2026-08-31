@@ -863,14 +863,22 @@ function requiredCoverageGapItem(
 
 /**
  * A projected graph page that drops cards cannot expose its upstream cursor: doing so would skip
- * the omitted part of the current page. Reserve the planner's first exact card selector instead,
- * so every successful rerun-required response gives both MCP channels one bounded next action.
+ * the omitted part of the current page. Reserve the planner's first exact card selector instead.
+ * If the ready snapshot itself could not be read, reserve the bounded graph-status diagnostic.
+ * Every successful partial response therefore gives both MCP channels one next action.
  */
 function requiredGraphRecoveryItem(
   logical: ContextBriefLogicalResultV1,
   items: readonly ProjectionItem[],
 ): ProjectionItem | undefined {
-  if (logical.graph.cards.length === 0) return undefined;
+  if (logical.graph.cards.length === 0) {
+    if (logical.scope.readyRepositories !== 0 && !logical.coverage.gaps.includes('graph-repository-read-failed')) {
+      return undefined;
+    }
+    const graphStatus = logical.recommendedFollowUps.find(candidate => candidate.operation === 'graph-status');
+    if (graphStatus === undefined) return undefined;
+    return items.find(item => item.lane === 'follow-up' && item.id === graphStatus.id);
+  }
   const cardRefs = new Set(logical.graph.cards.map(card => card.ref));
   const followUp = [...logical.recommendedFollowUps]
     .filter(candidate => candidate.operation === 'inspect-node' && cardRefs.has(candidate.ref))

@@ -23,6 +23,7 @@ For the code-brief workflow, use canonical graph-indexed POSIX repository-relati
 `cgs_<32 hex>` IDs as bidirectional anchors: pass them to `context_brief.codeRefs` to find memories attached to current
 code, and use memory citations to return to the current graph before making relationship claims. `cgr_` remains valid
 for `inspect_code_graph` (including Worksets) but is deliberately rejected by Context Brief. If a brief is truncated,
-follow its retained selector to make the next query narrower. Carry the most consequential anchors into the final
-handoff.
+follow its retained selector to make the next query narrower. If it retains `graph-status` after a ready-read failure,
+inspect graph health and rerun; do not infer absence from the empty evidence lane. Carry the most consequential anchors
+into the final handoff.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

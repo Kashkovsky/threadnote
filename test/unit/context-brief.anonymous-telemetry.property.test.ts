@@ -647,6 +647,107 @@ describe('Context Brief anonymous telemetry', () => {
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 
+  effectIt.effect('keeps a mixed resolved and unresolved code-anchor phase successful', () => {
+    const capture = capturingTracer();
+    const reporter = makeContextBriefAnonymousTelemetryReporter('local');
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'context_brief'},
+        Effect.gen(function* () {
+          yield* reporter.annotate;
+          return yield* compileContextBriefWith(
+            instrumentContextBriefCompilerDependencies(
+              reporter,
+              {
+                citationValidation: () => Effect.succeed([]),
+                codeLinkedMemoryEvidence: () =>
+                  Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(3, 'code-anchors-unresolved', [0, 2])),
+                graphEvidence: () => Effect.succeed(unavailableContextBriefGraphEvidence()),
+                memoryEvidence: () => Effect.succeed(unavailableContextBriefMemoryEvidence()),
+                projection: (logical, maximumEstimatedTokens) =>
+                  Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+              },
+              1,
+            ),
+            {
+              budgetTokens: 1_250,
+              codeRefs: ['src/first.ts', 'src/missing.ts', 'src/third.ts'],
+              mode: 'locate',
+              scope: {callerCwd: '/workspace/threadnote', kind: 'repository', project: 'threadnote'},
+              task: 'Compile a partial code-linked brief.',
+            },
+          );
+        }),
+      );
+
+      expect(
+        capture.spans.map(spanAttributes).find(item => item['threadnote.phase'] === 'context.brief.code-linked-memory'),
+      ).toMatchObject({
+        'threadnote.outcome': 'success',
+        'threadnote.phase.outcome': 'success',
+      });
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('marks incomplete repository and workset graph evidence unavailable', () => {
+    const capture = capturingTracer();
+    const reporter = makeContextBriefAnonymousTelemetryReporter('workset');
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'context_brief'},
+        Effect.gen(function* () {
+          yield* reporter.annotate;
+          for (const gap of ['graph-coverage-incomplete', 'graph-snapshots-missing']) {
+            yield* compileContextBriefWith(
+              instrumentContextBriefCompilerDependencies(
+                reporter,
+                {
+                  citationValidation: () => Effect.succeed([]),
+                  graphEvidence: () =>
+                    Effect.succeed({
+                      ...unavailableContextBriefGraphEvidence(gap, 2, {current: 1, missing: 1}),
+                      coverage: {
+                        complete: false,
+                        consideredRepositories: 2,
+                        readyRepositories: 1,
+                        requestedRepositories: 2,
+                        states: {current: 1, missing: 1},
+                      },
+                    }),
+                  memoryEvidence: () => Effect.succeed(unavailableContextBriefMemoryEvidence()),
+                  projection: (logical, maximumEstimatedTokens) =>
+                    Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+                },
+                2,
+              ),
+              {
+                budgetTokens: 1_250,
+                mode: 'brief',
+                scope: {kind: 'workset', name: 'partial-workset'},
+                task: 'Compile an incomplete Workset brief.',
+              },
+            );
+          }
+        }),
+      );
+
+      const graphPhases = capture.spans
+        .map(spanAttributes)
+        .filter(item => item['threadnote.phase'] === 'context.brief.graph');
+      expect(graphPhases).toHaveLength(2);
+      expect(graphPhases).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            'threadnote.outcome': 'unavailable',
+            'threadnote.phase.outcome': 'unavailable',
+          }),
+        ]),
+      );
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
   effectIt.effect.prop(
     'never exports anchored task, code-ref, node, or memory tokens',
     {

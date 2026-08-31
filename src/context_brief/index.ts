@@ -153,9 +153,16 @@ export function instrumentContextBriefCompilerDependencies<
 }
 
 function contextBriefGraphPhaseOutcome(evidence: ContextBriefGraphEvidenceV1): 'success' | 'unavailable' {
-  return evidence.gaps.some(gap =>
-    ['graph-query-unavailable', 'graph-ready-snapshot-missing', 'graph-repository-read-failed'].includes(gap),
-  )
+  return !evidence.coverage.complete ||
+    evidence.gaps.some(gap =>
+      [
+        'graph-coverage-incomplete',
+        'graph-query-unavailable',
+        'graph-ready-snapshot-missing',
+        'graph-repository-read-failed',
+        'graph-snapshots-missing',
+      ].includes(gap),
+    )
     ? 'unavailable'
     : 'success';
 }
@@ -163,7 +170,7 @@ function contextBriefGraphPhaseOutcome(evidence: ContextBriefGraphEvidenceV1): '
 function contextBriefCodeLinkedMemoryPhaseOutcome(evidence: ContextBriefMemoryRetrievalV1): 'success' | 'unavailable' {
   const anchors = evidence.codeAnchorCoverage;
   return anchors === undefined ||
-    !anchors.complete ||
+    anchors.resolved === 0 ||
     evidence.gaps.some(gap =>
       [
         'code-anchor-recall-unavailable',

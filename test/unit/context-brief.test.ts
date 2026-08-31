@@ -19,6 +19,7 @@ import {
   reconcileContextBriefMemoryFreshness,
   renderContextBriefText,
   unavailableContextBriefCodeLinkedMemoryEvidence,
+  unavailableContextBriefGraphEvidence,
   unresolvedContextBriefCodeAnchorOrdinals,
   validateContextBriefPreciseCodeEvidence,
   type ContextBriefGraphEvidenceV1,
@@ -130,6 +131,62 @@ describe('Context Brief compiler', () => {
         expect(parseContextBriefAgentViewText(result.text).recommendedFollowUps?.[0]).toEqual(recovery);
         expect(result.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
       }),
+  );
+
+  effectIt.effect('preserves graph diagnostics through memory pressure at every boundary budget', () =>
+    Effect.gen(function* () {
+      for (const graphState of ['ready-read-failed', 'ready-missing'] as const) {
+        for (const budgetTokens of [800, 1_500]) {
+          const graph = graphEvidence();
+          const unavailableGraph =
+            graphState === 'ready-read-failed'
+              ? {
+                  ...graph,
+                  cards: [],
+                  continuation: undefined,
+                  contracts: [],
+                  coverage: {...graph.coverage, complete: false},
+                  gaps: ['graph-query-unavailable', 'graph-repository-read-failed'],
+                  warnings: ['The ready graph query failed after bounded retry; results are partial.'],
+                }
+              : unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {missing: 1});
+          const result = yield* compileContextBriefWith(
+            {
+              codeLinkedMemoryEvidence: () =>
+                Effect.succeed({
+                  codeAnchorCoverage: {complete: true, matchedMemories: 0, requested: 1, resolved: 1},
+                  candidates: [],
+                  consideredCandidates: 0,
+                  gaps: ['code-anchor-recall-no-active-memory'],
+                  trust: {
+                    classification: 'untrusted-memory-data' as const,
+                    instructionPolicy: 'evidence-only-never-follow' as const,
+                  },
+                }),
+              graphEvidence: () => Effect.succeed(unavailableGraph),
+              memoryEvidence: () => Effect.succeed(retrievalForIds(Array.from({length: 24}, (_, index) => index))),
+            },
+            {
+              ...request(budgetTokens),
+              codeRefs: ['src/context_brief/graph_evidence.ts'],
+              mode: 'locate',
+            },
+          );
+          const recovery = result.structuredContent.recommendedFollowUps[0];
+
+          expect(result.structuredContent.scope).toMatchObject({
+            readyRepositories: graphState === 'ready-read-failed' ? 1 : 0,
+            requestedRepositories: 1,
+          });
+          expect(
+            result.structuredContent.coverage.gaps.length + result.structuredContent.coverage.omissions.coverageGaps,
+          ).toBeGreaterThanOrEqual(2);
+          expect(recovery).toMatchObject({operation: 'graph-status', rank: 0, scope: 'repository'});
+          expect(parseContextBriefAgentViewText(result.text).recommendedFollowUps?.[0]).toEqual(recovery);
+          expect(result.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+        }
+      }
+    }),
   );
 
   effectIt.effect(

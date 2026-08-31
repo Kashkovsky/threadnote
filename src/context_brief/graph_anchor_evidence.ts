@@ -30,14 +30,17 @@ interface RankedEdge {
 }
 
 /**
- * Turn exact Context Brief anchors into one-hop graph reads. Task text is intentionally absent:
- * trace walks both directions, while impact walks incoming dependents. This prevents a semantic
- * task match in repository metadata from displacing the source neighborhood the caller selected.
+ * Turn exact Context Brief anchors into graph reads. Task text is intentionally absent: locate
+ * resolves the selected node itself, trace walks both directions, and impact walks incoming
+ * dependents. This prevents a semantic task match in repository metadata from displacing the
+ * source the caller selected.
  */
 export function contextBriefAnchoredRepositoryGraphRequests(
   plan: ContextBriefPlanV1['graph'],
 ): readonly ContextBriefAnchoredRepositoryGraphRequestV1[] {
-  if (plan.codeRefs.length === 0 || (plan.mode !== 'trace' && plan.mode !== 'impact')) return [];
+  if (plan.codeRefs.length === 0 || (plan.mode !== 'locate' && plan.mode !== 'trace' && plan.mode !== 'impact')) {
+    return [];
+  }
   return plan.codeRefs.map(ref => {
     const stableId = ref.startsWith('cgs_');
     return plan.mode === 'impact'
@@ -53,9 +56,9 @@ export function contextBriefAnchoredRepositoryGraphRequests(
         }
       : stableId
         ? {
-            depth: 1,
+            depth: plan.mode === 'locate' ? 0 : 1,
             direction: 'both',
-            edgeLimit: plan.edgeLimit,
+            edgeLimit: plan.mode === 'locate' ? 1 : plan.edgeLimit,
             nodeId: ref,
             nodeLimit: plan.nodeLimit,
             operation: 'neighbors',
@@ -196,7 +199,7 @@ function anchoredNodePriority(
   const module = node.kind === 'module';
   const directSourceRelationship = relationshipPriority === 0;
   const supportingRelationship = relationshipPriority !== undefined && relationshipPriority < 3;
-  if (mode === 'trace') {
+  if (mode === 'trace' || mode === 'locate') {
     if (exact && (module || anchorIds.has(node.id))) return 0;
     if (directSourceRelationship) return 1;
     if (exact) return 2;

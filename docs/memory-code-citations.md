@@ -235,8 +235,10 @@ The combined MCP text-plus-structured response and CLI projection accept `budget
 through 1,500, defaulting to 1,250. Values below 800 are rejected before any evidence dependency runs. When graph
 cards are omitted and continuation becomes `rerun-required`, both MCP result channels retain the same exact
 `inspect-node` follow-up so an agent always has a bounded narrowing action instead of an unusable truncation notice.
-For `trace` and `impact`, direct imports, exports, re-exports, and tests are protected before the graph edge limit and
-the first retained contract is co-ranked with that selector. Under maximum-budget code-linked pressure, Threadnote
+With repository `codeRefs`, `locate` resolves the exact selected source nodes instead of allowing a task-semantic
+metadata match to displace them. For `trace` and `impact`, direct imports, exports, re-exports, and tests are protected
+before the graph edge limit and the first retained contract is co-ranked with that selector. Under maximum-budget
+code-linked pressure, Threadnote
 keeps memory, the incident direct contract, and the selector as one protected bundle when the memory has a valid stable
 identity; it may omit the redundant graph card. Projected contract evidence paths are bounded to 48 UTF-8 bytes and
 carry `pathTruncated: true` when shortened, so a valid long repository path cannot consume the recovery budget
@@ -250,6 +252,9 @@ When detailed citation receipts, summary, and relations are elided to guarantee 
 report `citationDetailsOmitted: true`.
 Coverage gaps participate in the deterministic projection too: the first gap remains visible and
 `coverage.omissions.coverageGaps` reports how many additional gap codes did not fit.
+Ready-graph reads use one shared two-retry budget for the whole brief and retry only storage failures explicitly marked
+retryable. If the ready snapshot remains unreadable, its known ready coverage and citation fence survive and both MCP
+channels retain a bounded `graph-status` diagnostic instead of returning an actionless empty graph.
 
 Inverse citation lookup has an independent bounded selector scan. When that scan cannot exhaust a selector prefix and
 the corresponding result lane remains unfilled, Context Brief adds `code-anchor-recall-truncated` to `gaps`. This is an

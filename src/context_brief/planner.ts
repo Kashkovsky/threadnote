@@ -299,6 +299,14 @@ function exactFollowUps(
       ref: card.ref,
     });
   }
+  if (graph.coverage.readyRepositories === 0 || graph.gaps.includes('graph-repository-read-failed')) {
+    followUps.push({
+      id: followUpId('graph-status', plan.scope.kind),
+      operation: 'graph-status',
+      rank: followUps.length,
+      scope: plan.scope.kind,
+    });
+  }
   const graphCardRefs = new Set(graph.cards.map(card => card.ref));
   const relocatedNodeIds = stableUnique(
     memories.flatMap(memory =>
@@ -338,14 +346,6 @@ function exactFollowUps(
       operation: 'prepare-workset',
       rank: followUps.length,
       workset: plan.scope.name,
-    });
-  }
-  if (graph.coverage.readyRepositories === 0) {
-    followUps.push({
-      id: followUpId('graph-status', plan.scope.kind),
-      operation: 'graph-status',
-      rank: followUps.length,
-      scope: plan.scope.kind,
     });
   }
   return followUps.slice(0, MAXIMUM_FOLLOW_UPS).map((followUp, rank) => ({...followUp, rank}));
