@@ -129,13 +129,15 @@ import {
 
 export const CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY = 'Code graph build was interrupted before completion.';
 
-export function terminateInterruptedCodeGraphBuild(
+export function settleInterruptedCodeGraphBuild(
   store: CodeGraphStoreShape,
   databasePath: string,
   snapshotId: string,
   ownerToken?: string,
 ) {
-  return store.markFailed(databasePath, snapshotId, CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY, ownerToken);
+  return ownerToken === undefined
+    ? Effect.void
+    : store.releasePersistentBuild(databasePath, snapshotId, CODE_GRAPH_INTERRUPTED_BUILD_SUMMARY, ownerToken);
 }
 
 export function withCodeGraphProcessLock<A, E, R>(
@@ -384,7 +386,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         threadnoteHome: input.threadnoteHome,
       }).pipe(
         Effect.onInterrupt(() =>
-          terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
+          settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
         ),
         Effect.catch(cause =>
           isCodeGraphCapacityPause(cause)
@@ -648,7 +650,7 @@ const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSn
           workspace,
         }).pipe(
           Effect.onInterrupt(() =>
-            terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id),
+            settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id),
           ),
           Effect.catch(cause =>
             input.store
@@ -956,7 +958,7 @@ export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(fu
         persistentOwnerToken: ownerToken,
       }).pipe(
         Effect.onInterrupt(() =>
-          terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
+          settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id, ownerToken),
         ),
         Effect.catch(cause =>
           isCodeGraphCapacityPause(cause)

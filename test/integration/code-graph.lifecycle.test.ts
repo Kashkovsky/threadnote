@@ -4955,14 +4955,14 @@ describe('native code graph lifecycle', () => {
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('retires a claimed persistent build immediately when its caller is interrupted', () =>
+  effectIt.effect('releases an interrupted persistent owner while preserving its resumable snapshot', () =>
     Effect.gen(function* () {
       const root = createManySourceRepository(3);
       const home = join(root, '.threadnote-test-home');
       const identity = yield* resolveRepositoryIdentity(root);
       const buildStarted = yield* Deferred.make<void>();
       const releaseBuild = yield* Deferred.make<void>();
-      const markedFailed: Array<{
+      const releasedBuilds: Array<{
         readonly ownerToken: string | undefined;
         readonly snapshotId: string;
         readonly summary: string;
@@ -4975,10 +4975,10 @@ describe('native code graph lifecycle', () => {
             Effect.andThen(Deferred.await(releaseBuild)),
             Effect.andThen(store.cacheMaterializedFileShardBatches(...args)),
           ),
-        markFailed: (databasePath, snapshotId, summary, ownerToken) =>
+        releasePersistentBuild: (databasePath, snapshotId, summary, ownerToken) =>
           Effect.sync(() => {
-            markedFailed.push({ownerToken, snapshotId, summary});
-          }).pipe(Effect.andThen(store.markFailed(databasePath, snapshotId, summary, ownerToken))),
+            releasedBuilds.push({ownerToken, snapshotId, summary});
+          }).pipe(Effect.andThen(store.releasePersistentBuild(databasePath, snapshotId, summary, ownerToken))),
       });
       const indexerLayer = Layer.fresh(CodeGraphIndexer.layer).pipe(
         Layer.provide(Layer.succeed(CodeGraphStore, interruptedStore)),
@@ -5019,7 +5019,7 @@ describe('native code graph lifecycle', () => {
         }),
       );
 
-      expect(markedFailed).toEqual([
+      expect(releasedBuilds).toEqual([
         {
           ownerToken: expect.any(String),
           snapshotId: expect.any(String),
@@ -5038,7 +5038,7 @@ describe('native code graph lifecycle', () => {
           database
             .query<{readonly count: number}, []>("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'building'")
             .get()?.count,
-        ).toBe(0);
+        ).toBe(1);
         expect(
           database
             .query<{readonly state: string; readonly failure_summary: string}, []>(
@@ -5047,7 +5047,7 @@ describe('native code graph lifecycle', () => {
             .get(),
         ).toEqual({
           failure_summary: 'Code graph build was interrupted before completion.',
-          state: 'retired',
+          state: 'building',
         });
         expect(
           database.query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM snapshot_build_owners').get()

@@ -481,6 +481,12 @@ export interface CodeGraphStoreShape {
     snapshot: CodeGraphSnapshot,
     claim: CodeGraphPersistentBuildClaim,
   ) => Effect.Effect<string, CodeGraphStoreError>;
+  readonly releasePersistentBuild: (
+    databasePath: string,
+    snapshotId: string,
+    summary: string,
+    ownerToken: string,
+  ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly resumableForcedBuild: (
     databasePath: string,
     logicalSnapshotId: string,

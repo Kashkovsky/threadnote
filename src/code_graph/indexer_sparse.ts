@@ -4,7 +4,7 @@ import {
   buildAndActivate,
   retiredSnapshotCleanupReporter,
   reuseReadySnapshot,
-  terminateInterruptedCodeGraphBuild,
+  settleInterruptedCodeGraphBuild,
 } from './indexer_build.js';
 import {assessIncrementalOverlay} from './indexer_incremental.js';
 import {createRepositoryFactAttributionContext, type RepositoryFactAttributionContext} from './extractor_context.js';
@@ -359,7 +359,7 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
           workspace,
         }).pipe(
           Effect.onInterrupt(() =>
-            terminateInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id),
+            settleInterruptedCodeGraphBuild(input.store, input.layout.databasePath, building.id),
           ),
           Effect.catch(cause =>
             input.store

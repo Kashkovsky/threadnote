@@ -14,7 +14,7 @@ import {
   ensureCommittedBase,
   retiredSnapshotCleanupReporter,
   reuseReadySnapshot,
-  terminateInterruptedCodeGraphBuild,
+  settleInterruptedCodeGraphBuild,
   withCodeGraphProcessLock,
   withSharedCleanRequestGate,
   writerSessionOptions,
@@ -836,7 +836,7 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                         workspace,
                       }).pipe(
                         Effect.onInterrupt(() =>
-                          terminateInterruptedCodeGraphBuild(
+                          settleInterruptedCodeGraphBuild(
                             store,
                             layout.databasePath,
                             building.id,

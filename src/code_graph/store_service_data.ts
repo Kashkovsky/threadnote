@@ -50,6 +50,7 @@ import {
   retireIncompleteWorktreeSnapshots,
   finalizePersistentMaterializationPlan,
   failBuildingSnapshot,
+  releasePersistentSnapshotBuild,
 } from './store_persistent_build.js';
 import {
   selectVisualizationCatalog,
@@ -126,6 +127,7 @@ type CodeGraphStoreDataMethods = Pick<
   | 'representativeEdgesForNodes'
   | 'markBuilding'
   | 'claimPersistentBuild'
+  | 'releasePersistentBuild'
   | 'resumableForcedBuild'
   | 'resumableBuildById'
   | 'retireIncompleteWorktreeSnapshots'
@@ -577,6 +579,18 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
         );
         return ownerToken;
       }).pipe(Effect.mapError(cause => storeError('claim persistent code graph snapshot', cause))),
+    releasePersistentBuild: (databasePath, snapshotId, summary, ownerToken) =>
+      prepare(databasePath).pipe(
+        Effect.andThen(
+          useDatabase(
+            databasePath,
+            withWriterGate(databasePath, releasePersistentSnapshotBuild(snapshotId, summary, ownerToken)).pipe(
+              Effect.asVoid,
+            ),
+          ),
+        ),
+        Effect.mapError(cause => storeError('release persistent code graph snapshot', cause)),
+      ),
     resumableForcedBuild: (databasePath, logicalSnapshotId) =>
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>

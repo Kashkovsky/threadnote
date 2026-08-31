@@ -398,6 +398,35 @@ const failBuildingSnapshot = Effect.fn('codeGraph.failBuildingSnapshot')(functio
   return changed;
 });
 
+const releasePersistentSnapshotBuild = Effect.fn('codeGraph.releasePersistentSnapshotBuild')(function* (
+  snapshotId: string,
+  summary: string,
+  ownerToken: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* configureConnection(sql);
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const released = yield* sql<{readonly id: string}>`
+        UPDATE snapshots
+        SET failure_summary = COALESCE(failure_summary, ${summary.slice(0, 2_000)})
+        WHERE id = ${snapshotId}
+          AND state = 'building'
+          AND EXISTS (
+            SELECT 1 FROM snapshot_build_owners AS owner
+            WHERE owner.snapshot_id = snapshots.id AND owner.owner_token = ${ownerToken}
+          )
+        RETURNING id
+      `;
+      if (released.length === 0) return;
+      yield* sql`
+        DELETE FROM snapshot_build_owners
+        WHERE snapshot_id = ${snapshotId} AND owner_token = ${ownerToken}
+      `;
+    }),
+  );
+});
+
 // Stay comfortably below SQLite's cross-platform parameter ceiling while
 // avoiding thousands of statement preparations on production-sized graphs.
 
@@ -886,6 +915,7 @@ export {
   retireIncompleteWorktreeSnapshots,
   finalizePersistentMaterializationPlan,
   failBuildingSnapshot,
+  releasePersistentSnapshotBuild,
   activationStagingObserver,
   stageActivationWorkspace,
   stagePersistedFullWorkspace,
