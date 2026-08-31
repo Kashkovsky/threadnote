@@ -586,7 +586,7 @@ describe('website and standalone release boundary', () => {
       ['performance/index.html', '/performance/', 'og.png'],
       ['performance/graphify/index.html', '/performance/graphify/', 'og.png'],
       ['docs/index.html', '/docs/', 'og.png'],
-      ['whats-new/index.html', '/whats-new/', 'whats-new-og.png'],
+      ['whats-new/index.html', '/whats-new/', 'og.png'],
       ['pro-tips/index.html', '/pro-tips/', 'og.png'],
       ['manager-demo/index.html', '/manager-demo/', 'og.png'],
       ['faq/index.html', '/faq/', 'og.png'],
@@ -606,6 +606,8 @@ describe('website and standalone release boundary', () => {
       expect(html).toContain(`<meta name="twitter:image" content="${origin}/${socialImage}" />`);
       expect(html).not.toContain('kashkovsky.github.io/threadnote');
     }
+
+    await expect(access(join(root, 'website', 'public', 'whats-new-og.png'))).rejects.toThrow();
 
     const structuredDataSource = htmlDocuments[0]?.html.match(
       /<script type="application\/ld\+json">([\s\S]*?)<\/script>/,

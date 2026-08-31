@@ -333,6 +333,17 @@ function postDetails(post: WebsitePost): {
   };
 }
 
+function replaceSocialImageMetadata(html: string, socialImage: WebsiteSocialImage): string {
+  let updated = html;
+  updated = replaceTagAttribute(updated, 'meta', 'property', 'og:image', 'content', socialImage.url);
+  updated = replaceTagAttribute(updated, 'meta', 'property', 'og:image:type', 'content', socialImage.type);
+  updated = replaceTagAttribute(updated, 'meta', 'property', 'og:image:width', 'content', String(socialImage.width));
+  updated = replaceTagAttribute(updated, 'meta', 'property', 'og:image:height', 'content', String(socialImage.height));
+  updated = replaceTagAttribute(updated, 'meta', 'property', 'og:image:alt', 'content', socialImage.alt);
+  updated = replaceTagAttribute(updated, 'meta', 'name', 'twitter:image', 'content', socialImage.url);
+  return replaceTagAttribute(updated, 'meta', 'name', 'twitter:image:alt', 'content', socialImage.alt);
+}
+
 function crawlerFallback(post: WebsitePost): string {
   const details = postDetails(post);
   const shareText = encodeURIComponent(post.title);
@@ -388,6 +399,9 @@ function crawlerIndexFallback(posts: readonly WebsitePost[]): string {
 
 export function renderWhatsNewIndexHtml(template: string, posts: readonly WebsitePost[]): string {
   const orderedPosts = orderWebsitePostsDescending(posts);
+  const latestPost = orderedPosts[0];
+  if (!latestPost) throw new ScriptError("What's New index requires at least one post");
+  const latestSocialImage = postDetails(latestPost).socialImage;
   if (!template.includes('<div id="root"></div>')) throw new ScriptError("What's New HTML template is missing #root");
   if (!template.includes('</head>')) throw new ScriptError("What's New HTML template is missing </head>");
   const itemList = {
@@ -401,11 +415,12 @@ export function renderWhatsNewIndexHtml(template: string, posts: readonly Websit
         url: details.canonicalUrl,
       };
     }),
+    image: latestSocialImage.url,
     name: "What's new in Threadnote",
     url: new URL('whats-new/', publicOrigin).href,
   };
   const structuredData = JSON.stringify(itemList).replaceAll('<', '\\u003c');
-  return template
+  return replaceSocialImageMetadata(template, latestSocialImage)
     .replace(
       '</head>',
       `    <script type="application/ld+json" data-threadnote-index>${structuredData}</script>\n  </head>`,
@@ -443,22 +458,9 @@ export function renderWebsitePostHtml(template: string, post: WebsitePost): stri
   html = replaceTagAttribute(html, 'meta', 'property', 'og:description', 'content', post.summary);
   html = replaceTagAttribute(html, 'meta', 'property', 'og:type', 'content', 'article');
   html = replaceTagAttribute(html, 'meta', 'property', 'og:url', 'content', details.canonicalUrl);
-  html = replaceTagAttribute(html, 'meta', 'property', 'og:image', 'content', details.socialImage.url);
-  html = replaceTagAttribute(html, 'meta', 'property', 'og:image:type', 'content', details.socialImage.type);
-  html = replaceTagAttribute(html, 'meta', 'property', 'og:image:width', 'content', String(details.socialImage.width));
-  html = replaceTagAttribute(
-    html,
-    'meta',
-    'property',
-    'og:image:height',
-    'content',
-    String(details.socialImage.height),
-  );
-  html = replaceTagAttribute(html, 'meta', 'property', 'og:image:alt', 'content', details.socialImage.alt);
+  html = replaceSocialImageMetadata(html, details.socialImage);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:title', 'content', details.pageTitle);
   html = replaceTagAttribute(html, 'meta', 'name', 'twitter:description', 'content', post.summary);
-  html = replaceTagAttribute(html, 'meta', 'name', 'twitter:image', 'content', details.socialImage.url);
-  html = replaceTagAttribute(html, 'meta', 'name', 'twitter:image:alt', 'content', details.socialImage.alt);
   if (!/<title>[^<]*<\/title>/i.test(html)) throw new ScriptError("What's New HTML template is missing its title");
   html = html.replace(/<title>[^<]*<\/title>/i, `<title>${escapeHtml(details.pageTitle)}</title>`);
 

@@ -8,7 +8,6 @@ import {PostShare} from '../components/PostShare';
 import {SiteShell} from '../components/SiteShell';
 import {
   orderWebsiteUpdatesDescending,
-  websiteDefaultPostSocialImage,
   websiteSocialImageForArticle,
   websiteSocialImageForRelease,
   type WebsiteSocialImage,
@@ -129,9 +128,15 @@ function WhatsNewIndex({updates}: {readonly updates: readonly WebsiteUpdate[]}) 
     setDocumentMeta(
       "What's new",
       'Threadnote articles, stable releases, engineering stories, and upgrade highlights.',
-      websiteDefaultPostSocialImage,
+      latest.socialImage,
     );
-  }, []);
+  }, [
+    latest.socialImage.alt,
+    latest.socialImage.height,
+    latest.socialImage.type,
+    latest.socialImage.url,
+    latest.socialImage.width,
+  ]);
 
   return (
     <SiteShell page="whats-new" fullBleed>
