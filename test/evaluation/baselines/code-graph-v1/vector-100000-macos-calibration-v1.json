@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "provenance": {
+    "workflowRun": 33438134814,
+    "workflowAttempt": 1,
+    "artifactId": 9776673313,
+    "candidateCommit": "4cf4c966cf272a3cb066db29750a415766ec5954",
+    "createdAt": "2026-08-31T21:36:55.663Z",
+    "rawArtifactSha256": "a4b0a2eb9c9bfae8e55427f23f210ea51ef974f29a26e487a9c85a958bda2110"
+  },
+  "artifact": {
+    "dirty": false,
+    "fixtureHash": "generated-code-graph-vectors-v2:100000",
+    "suite": "code-graph-vectors-v1",
+    "version": 1,
+    "warmups": 1
+  },
+  "runner": {
+    "architecture": "arm64",
+    "cpu": "Apple M1 (Virtual)",
+    "memoryBytes": 7516192768,
+    "operatingSystem": "macOS 15.7.7",
+    "runnerClass": "github-hosted-macos-arm64",
+    "runtime": "bun/1.3.14"
+  },
+  "workload": {
+    "embeddingContextCpuMathCores": 3,
+    "embeddingContextPoolSizeEffective": 2,
+    "embeddingContextPoolSizeRequested": 8,
+    "embeddingContextThreadCounts": [2, 1],
+    "embeddingModelGpuLayers": 0,
+    "modelBackend": "node-llama-cpp",
+    "modelId": "bge-small-en-v1.5-q8",
+    "modelRevision": "builtin-pinned",
+    "scaleSymbols": 100000,
+    "vectorRows": 202006
+  },
+  "sampler": {
+    "coldProcessFailures": 0,
+    "coldProcessSamples": 4156,
+    "oneFileReindexProcessFailures": 0,
+    "oneFileReindexProcessSamples": 152,
+    "sameOverlayProcessFailures": 0,
+    "sameOverlayProcessSamples": 4352
+  },
+  "parity": {
+    "incrementalStructuralGraphDigest": "377c64f1ef86c3326250fa313877bc2cffbabebb1974fcac548fc7a3b8975ba7",
+    "sameOverlayStructuralGraphDigest": "377c64f1ef86c3326250fa313877bc2cffbabebb1974fcac548fc7a3b8975ba7",
+    "coldPrimaryQueryStructuralDigest": "f939f1a94180f17d02055a83db72607068c9daa2fe274b546893e9710b437810",
+    "incrementalPrimaryQueryStructuralDigest": "f939f1a94180f17d02055a83db72607068c9daa2fe274b546893e9710b437810",
+    "sameOverlayPrimaryQueryStructuralDigest": "f939f1a94180f17d02055a83db72607068c9daa2fe274b546893e9710b437810"
+  },
+  "capacityCrossCheck": {
+    "sourcePath": "test/evaluation/candidates/threadnote-4.2.5/benchmarks/darwin-arm64-m1-max/code-graph-embedding-contexts-10000-2026-08-14.json",
+    "sourceSha256": "50bd2c39327d4c3a735db4dc13ed9ea809d420688c7ffcc656e01510306fcb2b",
+    "sourceCommit": "304738cccc51ac5fd944b7e3fe7139a79ee180ff",
+    "sourceScaleSymbols": 10000,
+    "sourceCpuMathCores": 8,
+    "sourceEffectiveContexts": 2,
+    "sourceThreadCounts": [4, 4],
+    "sourceMedianColdIndexMilliseconds": 49046.387666,
+    "sourceVectorRows": 20206,
+    "predictedTargetColdIndexMilliseconds": 1307554.1373002073,
+    "observedFasterThanPredictionRatio": 0.08618398268914983
+  },
+  "observations": {
+    "coldEmbeddingProgressProcessFailures": 0,
+    "coldEmbeddingProgressProcessSamples": 3894,
+    "coldIndexMilliseconds": 1194863.914166,
+    "coldIndexSamples": 1,
+    "coldMaterializationMilliseconds": 30434.043875,
+    "coldVectorIndexMilliseconds": 1120743.251458,
+    "derivedIndexBytes": 1635588400,
+    "hotSemanticVectorQueryP95Milliseconds": 3026.648208,
+    "hotSemanticVectorQuerySamples": 3,
+    "incrementalProcessPeakRssBytes": 1146437632,
+    "oneFileReindexMilliseconds": 41693.51175,
+    "oneFileReindexMaterializationMilliseconds": 100.150666,
+    "oneFileReindexVectorIndexMilliseconds": 39880.480708,
+    "primaryQueryStructuralParity": 1,
+    "sameOverlayFullRebuildMilliseconds": 1257493.159208,
+    "structuralGraphDigestParity": 1,
+    "wholeGraphAnalysisP95Milliseconds": 66.007791,
+    "wholeGraphAnalysisSamples": 3
+  },
+  "calibration": {
+    "basis": "fixed-class-admission-envelope",
+    "admissionMarginRatio": 0.1,
+    "roundUpIncrementMilliseconds": 50000,
+    "derivedColdIndexMaximumMilliseconds": 1350000,
+    "prospectiveValidationRuns": 1,
+    "automaticRecalibrationOnFailure": false
+  }
+}

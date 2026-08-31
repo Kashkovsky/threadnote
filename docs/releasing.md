@@ -86,7 +86,7 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    instead of adding a fixed delay after a slow sample. Each memory observation must have at least three successful
    samples, no failed samples, a root-only baseline, and valid root/tree baseline, peak, and growth arithmetic. Across
    the ordered memory series, observations whose maximum successful-sample gap exceeds 100 ms may comprise at most
-   10%, with at most two such observations consecutively and an absolute 250 ms hard maximum; retain the raw maximum,
+   10%, with at most two such observations consecutively and an absolute 350 ms hard maximum; retain the raw maximum,
    breach count, rate, and maximum consecutive run in the artifact. The
    single-repository profile must sample a workload descendant at least once; each sustained multi-repository Workset
    profile must do so in at least 80% of its observations. This avoids pretending that the roughly 45 ms macOS `ps`

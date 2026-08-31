@@ -1,10 +1,10 @@
 import * as yaml from 'js-yaml';
 import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
-import {Effect} from 'effect';
+import {Effect, Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
-  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
   CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE,
   CONTEXT_BRIEF_CITATION_SCALE_EXECUTION_V2,
@@ -28,11 +28,48 @@ import {
 } from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import {parseContextBriefCitationScaleBenchmarkArguments} from '../../scripts/benchmark-context-brief-citations-target.js';
 
+const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const GitCommit = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
+const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const IsoInstant = Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u));
+
 const budget = parseContextBriefCitationScaleBudgetV1(
   JSON.parse(
     await Bun.file('test/evaluation/baselines/context-brief-citations-v1/scale-budgets.json').text(),
   ) as unknown,
 );
+const sampleGapCalibration = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      breachThresholdMilliseconds: PositiveInteger,
+      calibrationMargin: Schema.Number,
+      expected: Schema.Struct({
+        breachCount: NonNegativeInteger,
+        derivedHardMaximumMilliseconds: PositiveInteger,
+        maximumConsecutiveBreachesWithinRun: NonNegativeInteger,
+        maximumMilliseconds: NonNegativeInteger,
+        observationCount: PositiveInteger,
+        p50Milliseconds: NonNegativeInteger,
+        p95Milliseconds: NonNegativeInteger,
+        p99Milliseconds: NonNegativeInteger,
+      }),
+      roundUpIncrementMilliseconds: PositiveInteger,
+      runs: Schema.Array(
+        Schema.Struct({
+          artifactId: PositiveInteger,
+          candidateCommit: GitCommit,
+          createdAt: IsoInstant,
+          maximumSampleGapsMilliseconds: Schema.Array(NonNegativeInteger),
+          rawArtifactSha256: Sha256,
+          workflowAttempt: PositiveInteger,
+          workflowRun: PositiveInteger,
+        }),
+      ),
+      version: Schema.Literal(1),
+    }),
+  ),
+)(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text());
 const benchmarkWorkflow = await Bun.file('.github/workflows/benchmarks.yml').text();
 const scaleEvaluationSource = await Bun.file('src/evaluation/context-brief-citation-scale.ts').text();
 
@@ -167,15 +204,72 @@ describe('Context Brief citation scale benchmark', () => {
     );
   });
 
+  it('rederives the v2 sample-gap ceiling from retained hosted-runner calibration evidence', () => {
+    expect(sampleGapCalibration.runs).toHaveLength(4);
+    expect(new Set(sampleGapCalibration.runs.map(run => run.artifactId)).size).toBe(4);
+    const gaps = sampleGapCalibration.runs.flatMap(run => {
+      expect(run.maximumSampleGapsMilliseconds).toHaveLength(75);
+      expect(Number.isFinite(Date.parse(run.createdAt))).toBe(true);
+      return run.maximumSampleGapsMilliseconds;
+    });
+    const sorted = [...gaps].sort((left, right) => left - right);
+    const percentile = (quantile: number): number => {
+      const value = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))];
+      if (value === undefined) throw new Error('Sample-gap calibration must retain observations.');
+      return value;
+    };
+    const maximumConsecutiveBreachesWithinRun = Math.max(
+      ...sampleGapCalibration.runs.map(run => {
+        let current = 0;
+        let maximum = 0;
+        for (const gap of run.maximumSampleGapsMilliseconds) {
+          current = gap > sampleGapCalibration.breachThresholdMilliseconds ? current + 1 : 0;
+          maximum = Math.max(maximum, current);
+        }
+        return maximum;
+      }),
+    );
+    const maximumMilliseconds = sorted.at(-1);
+    if (maximumMilliseconds === undefined) throw new Error('Sample-gap calibration must retain observations.');
+    const derivedHardMaximumMilliseconds =
+      Math.ceil(
+        (maximumMilliseconds * (1 + sampleGapCalibration.calibrationMargin)) /
+          sampleGapCalibration.roundUpIncrementMilliseconds,
+      ) * sampleGapCalibration.roundUpIncrementMilliseconds;
+
+    expect({
+      breachCount: gaps.filter(gap => gap > sampleGapCalibration.breachThresholdMilliseconds).length,
+      derivedHardMaximumMilliseconds,
+      maximumConsecutiveBreachesWithinRun,
+      maximumMilliseconds,
+      observationCount: gaps.length,
+      p50Milliseconds: percentile(0.5),
+      p95Milliseconds: percentile(0.95),
+      p99Milliseconds: percentile(0.99),
+    }).toEqual(sampleGapCalibration.expected);
+    expect(sampleGapCalibration.breachThresholdMilliseconds).toBe(
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.breachThresholdMilliseconds,
+    );
+    expect(derivedHardMaximumMilliseconds).toBe(
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.hardMaximumGapMilliseconds,
+    );
+    expect(
+      sampleGapCalibration.expected.breachCount / sampleGapCalibration.expected.observationCount,
+    ).toBeLessThanOrEqual(CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumBreachRate);
+    expect(maximumConsecutiveBreachesWithinRun).toBeLessThanOrEqual(
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumConsecutiveBreaches,
+    );
+  });
+
   effectIt.effect.prop(
-    'derives and gates bounded sample-gap breach rate and consecutive runs from observation order',
-    {breaches: fc.array(fc.boolean(), {maxLength: 75, minLength: 1})},
-    ({breaches}) =>
+    'derives and gates sample-gap rate, consecutive runs, and hard maximum from observation order',
+    {gaps: fc.array(fc.integer({max: 500, min: 0}), {maxLength: 75, minLength: 1})},
+    ({gaps}) =>
       Effect.sync(() => {
-        const gaps = breaches.map(breach =>
-          breach ? CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.breachThresholdMilliseconds + 1 : 100,
-        );
         const summary = contextBriefCitationRssSampleGapSummary(gaps);
+        const breaches = gaps.map(
+          gap => gap > CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.breachThresholdMilliseconds,
+        );
         const breachCount = breaches.filter(Boolean).length;
         let run = 0;
         let maximumRun = 0;
@@ -191,15 +285,16 @@ describe('Context Brief citation scale benchmark', () => {
           sampleGapBreachRate: breachCount / breaches.length,
         });
         const shouldPass =
-          breachCount / breaches.length <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.maximumBreachRate &&
-          maximumRun <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.maximumConsecutiveBreaches;
+          breachCount / breaches.length <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumBreachRate &&
+          maximumRun <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumConsecutiveBreaches &&
+          Math.max(...gaps) <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.hardMaximumGapMilliseconds;
         expect(contextBriefCitationRssSampleGapFailures(summary, breaches.length).length === 0).toBe(shouldPass);
       }),
     {fastCheck: {numRuns: 100}},
   );
 
   it('accepts bounded hosted stalls and rejects rate, consecutive, and hard-maximum violations independently', () => {
-    const pass = contextBriefCitationRssSampleGapSummary([101, 101, ...Array.from({length: 73}, () => 100)]);
+    const pass = contextBriefCitationRssSampleGapSummary([297, 115, ...Array.from({length: 73}, () => 100)]);
     expect(contextBriefCitationRssSampleGapFailures(pass, 75)).toEqual([]);
 
     const excessiveRate = contextBriefCitationRssSampleGapSummary([
@@ -220,9 +315,9 @@ describe('Context Brief citation scale benchmark', () => {
       expect.arrayContaining([expect.stringContaining('3 consecutive')]),
     );
 
-    const hardMaximum = contextBriefCitationRssSampleGapSummary([251, ...Array.from({length: 74}, () => 100)]);
+    const hardMaximum = contextBriefCitationRssSampleGapSummary([351, ...Array.from({length: 74}, () => 100)]);
     expect(contextBriefCitationRssSampleGapFailures(hardMaximum, 75)).toEqual(
-      expect.arrayContaining([expect.stringContaining('251ms exceeds hard maximum 250ms')]),
+      expect.arrayContaining([expect.stringContaining('351ms exceeds hard maximum 350ms')]),
     );
   });
 
@@ -261,7 +356,14 @@ describe('Context Brief citation scale benchmark', () => {
         ...artifact,
         memoryObserver: {
           ...artifact.memoryObserver,
-          sampleGapPolicy: {...artifact.memoryObserver.sampleGapPolicy, version: 2},
+          sampleGapPolicy: {...artifact.memoryObserver.sampleGapPolicy, version: 1},
+        },
+      },
+      {
+        ...artifact,
+        memoryObserver: {
+          ...artifact.memoryObserver,
+          sampleGapPolicy: {...artifact.memoryObserver.sampleGapPolicy, hardMaximumGapMilliseconds: 250},
         },
       },
       {
@@ -604,7 +706,7 @@ function scaleArtifact(): ContextBriefCitationScaleArtifactV2 {
       rootStartIdentity: 'root-start',
       sampleGapBreachCount: 0,
       sampleGapBreachRate: 0,
-      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
       sampleAttempts: 10,
       sampleFailures: 0,
       scope: 'recursive-process-tree',
