@@ -13,6 +13,15 @@ export interface CodeMemoryLinkRuntimeIdentityV1 {
   readonly sourceCommit: string;
 }
 
+export function projectCodeMemoryLinkRuntimeIdentityV1(
+  runtime: CodeMemoryLinkRuntimeIdentityV1,
+): CodeMemoryLinkRuntimeIdentityV1 {
+  return {
+    executableSha256: runtime.executableSha256,
+    sourceCommit: runtime.sourceCommit,
+  };
+}
+
 export interface CodeMemoryLinkInvocationAttestationV1 {
   readonly harnessCommit: string;
   readonly harnessVersion: typeof CODE_MEMORY_LINK_HARNESS_VERSION;
@@ -42,8 +51,8 @@ export function createCodeMemoryLinkInvocationAttestationV1(input: {
   const candidate = parseCandidate(input.candidate);
   const harnessCommit = matching(input.harnessCommit, COMMIT, 'harness commit');
   const invocationNonce = matching(input.invocationNonce, INVOCATION_NONCE, 'invocation nonce');
-  const preRuntime = parseRuntime(input.preRuntime, 'pre-run runtime');
-  const postRuntime = parseRuntime(input.postRuntime, 'post-run runtime');
+  const preRuntime = parseRuntime(projectCodeMemoryLinkRuntimeIdentityV1(input.preRuntime), 'pre-run runtime');
+  const postRuntime = parseRuntime(projectCodeMemoryLinkRuntimeIdentityV1(input.postRuntime), 'post-run runtime');
   assertRuntime(candidate, preRuntime, 'pre-run runtime');
   assertRuntime(candidate, postRuntime, 'post-run runtime');
   const invocationDigest = digest({
