@@ -91,6 +91,7 @@ import {
   managerWorksetRequestAllowedDuringMaintenance,
 } from './worksets.js';
 import * as graphProjects from './graph_projects.js';
+import * as graphActions from './graph_actions.js';
 import {
   cleanupMode,
   consolidationAgent,
@@ -1616,6 +1617,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     return yield* runCaptured(() => runCodeGraphPurge(config, {all: true, dryRun}), runEffect);
   }
   if (action === 'index-project') return yield* graphProjects.runManagerManifestProjectGraphIndex(config, body);
+  if (action === 'index-cwd') return yield* graphActions.runManagerExplicitCwdGraphIndex(config, body);
   const checkoutId = yield* Effect.try({
     try: () => requireGraphIdentity(body.checkoutId, 'checkoutId'),
     catch: managerOperationError,

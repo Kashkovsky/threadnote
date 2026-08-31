@@ -871,11 +871,19 @@ function requiredGraphRecoveryItem(
   logical: ContextBriefLogicalResultV1,
   items: readonly ProjectionItem[],
 ): ProjectionItem | undefined {
+  const graphStatus = logical.recommendedFollowUps.find(candidate => candidate.operation === 'graph-status');
+  const staleRepositoryAnchors =
+    logical.scope.kind === 'repository' &&
+    logical.scope.freshness === 'stale' &&
+    logical.scope.readyRepositories > 0 &&
+    logical.coverage.memory.codeAnchors?.complete === false;
+  if (staleRepositoryAnchors && graphStatus !== undefined) {
+    return items.find(item => item.lane === 'follow-up' && item.id === graphStatus.id);
+  }
   if (logical.graph.cards.length === 0) {
     if (logical.scope.readyRepositories !== 0 && !logical.coverage.gaps.includes('graph-repository-read-failed')) {
       return undefined;
     }
-    const graphStatus = logical.recommendedFollowUps.find(candidate => candidate.operation === 'graph-status');
     if (graphStatus === undefined) return undefined;
     return items.find(item => item.lane === 'follow-up' && item.id === graphStatus.id);
   }

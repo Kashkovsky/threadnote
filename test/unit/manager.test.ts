@@ -2090,6 +2090,77 @@ describe('manager http API', () => {
     }
   });
 
+  it('isolated-indexes an explicit Context recovery workspace only after the authenticated action', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const repositoryRoot = join(config.agentContextHome, 'context-recovery-project');
+    initializeGitRepository(repositoryRoot);
+    const identity = await runEffect(resolveRepositoryIdentity(repositoryRoot));
+    const snapshot: CodeGraphSnapshot = {
+      commit: identity.headCommit,
+      completedAt: '2026-08-31T00:00:00.000Z',
+      dirty: false,
+      edgeCount: 21,
+      extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
+      fileCount: 12,
+      id: `cgsn_${'7'.repeat(40)}-context-recovery`,
+      repositoryId: identity.repositoryId,
+      state: 'ready',
+      symbolCount: 40,
+      worktreeId: identity.worktreeId,
+    };
+    vi.mocked(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).mockReturnValueOnce(
+      Effect.succeed({durationMs: 1, identity, snapshot}),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const response = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index-cwd', cwd: repositoryRoot}),
+        headers,
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        output: 'Ready in an isolated process · 12 files · 40 symbols · 21 edges',
+      });
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledWith({
+        cwd: identity.repoRoot,
+        expectedIdentity: {
+          checkoutId: identity.checkoutId,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        },
+        force: false,
+        threadnoteHome: config.agentContextHome,
+      });
+
+      const rejected = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index-cwd', cwd: 'relative/project'}),
+        headers,
+        method: 'POST',
+      });
+      expect(rejected.status).toBe(500);
+      expect(await rejected.json()).toEqual({error: 'Supply cwd as an absolute local worktree path.'});
+
+      const unavailable = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index-cwd', cwd: config.agentContextHome}),
+        headers,
+        method: 'POST',
+      });
+      expect(unavailable.status).toBe(500);
+      const unavailableBody = await unavailable.json();
+      expect(unavailableBody).toEqual({
+        error: 'The selected workspace is not an available local Git repository. Check its path and retry.',
+      });
+      expect(JSON.stringify(unavailableBody)).not.toContain(config.agentContextHome);
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledTimes(1);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('exposes and isolated-indexes a configured project before any graph database exists', async () => {
     const config = await makeRuntime();
     homes.push(config.agentContextHome);

@@ -190,6 +190,46 @@ describe('Context Brief compiler', () => {
   );
 
   effectIt.effect(
+    'protects graph refresh in both response channels when stale ready evidence cannot resolve code anchors',
+    () =>
+      Effect.gen(function* () {
+        for (const budgetTokens of [800, 1_500]) {
+          const result = yield* compileCodeLinkedRecoveryFixture(24, 8, budgetTokens, {
+            staleGraph: true,
+            unresolvedOrdinals: Array.from({length: 8}, (_, ordinal) => ordinal),
+          });
+          const brief = result.structuredContent;
+          const agentView = parseContextBriefAgentViewText(result.text);
+
+          expect(brief.scope).toMatchObject({
+            freshness: 'stale',
+            readyRepositories: 1,
+            requestedRepositories: 1,
+          });
+          expect(brief.coverage.graph).toMatchObject({
+            complete: true,
+            readyRepositories: 1,
+            states: {stale: 1},
+          });
+          expect(brief.coverage.memory.codeAnchors).toEqual({
+            complete: false,
+            matchedMemories: 0,
+            requested: 8,
+            resolved: 0,
+            unresolvedOrdinals: [0, 1, 2, 3, 4, 5, 6, 7],
+          });
+          const recovery = brief.recommendedFollowUps.find(followUp => followUp.operation === 'graph-status');
+          expect(recovery).toMatchObject({
+            operation: 'graph-status',
+            scope: 'repository',
+          });
+          expect(agentView.recommendedFollowUps).toContainEqual(recovery);
+          expect(result.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+        }
+      }),
+  );
+
+  effectIt.effect(
     'preserves the highest-ranked source relationship in trace and impact under maximum-budget code-linked pressure',
     () =>
       Effect.gen(function* () {
@@ -1793,6 +1833,7 @@ function compileCodeLinkedRecoveryFixture(
     readonly mode?: 'impact' | 'locate' | 'trace';
     readonly omitMemoryId?: boolean;
     readonly scope?: ContextBriefScopeV1;
+    readonly staleGraph?: boolean;
     readonly task?: string;
     readonly unresolvedOrdinals?: readonly number[];
   } = {},
@@ -1925,6 +1966,15 @@ function compileCodeLinkedRecoveryFixture(
             targetRef: recoveryGraphCardRef(0),
           })),
           gaps: [...graph.gaps, ...(options.extraGraphGaps ?? [])],
+          ...(options.staleGraph === true
+            ? {
+                coverage: {...graph.coverage, states: {stale: 1}},
+                resolvedSnapshots: graph.resolvedSnapshots.map(snapshot => ({
+                  ...snapshot,
+                  freshness: 'stale' as const,
+                })),
+              }
+            : {}),
         }),
       memoryEvidence: () =>
         Effect.succeed({

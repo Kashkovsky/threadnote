@@ -29,7 +29,32 @@ beforeEach(() => {
       typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     requests.push({body, path});
-    if (path === '/api/context/brief') return Promise.resolve(jsonResponse(projectedBrief()));
+    if (path === '/api/context/brief') {
+      return Promise.resolve(
+        jsonResponse(
+          projectedBrief(GRAPH_REF, body.workset ? 'workset' : 'repository', {
+            staleAnchorRecovery: body.task === 'Recover this Context Brief graph',
+          }),
+        ),
+      );
+    }
+    if (path === '/api/graphs/action') {
+      return Promise.resolve(jsonResponse({output: 'Ready in an isolated process · 12 files · 40 symbols · 21 edges'}));
+    }
+    if (path === '/api/worksets/prepare') {
+      return Promise.resolve(
+        jsonResponse({
+          job: {
+            createdAt: '2026-08-31T00:00:00.000Z',
+            id: 'cgwj_context_recovery',
+            progress: {message: 'Ready.', phase: 'completed', total: 1},
+            result: {state: 'ready'},
+            status: 'completed',
+            workset: body.workset,
+          },
+        }),
+      );
+    }
     if (path === '/api/context/recall') {
       return Promise.resolve(jsonResponse(recallResponse(String(body.query ?? ''))));
     }
@@ -108,6 +133,64 @@ describe('Manager Context workspace', () => {
     expect(findButton('Compile Context Brief')?.disabled).toBe(true);
   });
 
+  it('indexes an explicitly selected repository graph and recompiles without losing the Context form or result', async () => {
+    await renderContext();
+    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeTextArea(textareaWithLabel('Engineering task'), 'Recover this Context Brief graph');
+    await changeTextArea(textareaWithLabel('Code anchors'), 'src/manager/context.ts');
+    await clickButton('Compile Context Brief');
+    await waitForText('Context Brief evidence is projected here');
+
+    expect(document.body.textContent).toContain('stale');
+    expect(document.body.textContent).toContain('0/1 resolved');
+    expect(document.body.textContent).toContain('Code anchor resolution is incomplete.');
+
+    await clickButton('Index graph and rerun');
+    await waitForRequestCount('/api/context/brief', 2);
+
+    expect(requests.filter(request => request.path === '/api/graphs/action')).toEqual([
+      {body: {action: 'index-cwd', cwd: '/private/threadnote'}, path: '/api/graphs/action'},
+    ]);
+    expect(inputWithLabel('Caller workspace').value).toBe('/private/threadnote');
+    expect(textareaWithLabel('Engineering task').value).toBe('Recover this Context Brief graph');
+    expect(textareaWithLabel('Code anchors').value).toBe('src/manager/context.ts');
+    expect(document.body.textContent).toContain('Context Brief recompiled with the refreshed graph.');
+    expect(document.body.textContent).toContain('Context Brief evidence is projected here');
+  });
+
+  it('does not index a different workspace after the displayed brief inputs change', async () => {
+    await renderContext();
+    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await changeTextArea(textareaWithLabel('Engineering task'), 'Recover only the displayed scope');
+    await clickButton('Compile Context Brief');
+    await waitForText('Context Brief evidence is projected here');
+    await changeInput(inputWithLabel('Caller workspace'), '/private/other-repository');
+
+    await clickButton('Index graph and rerun');
+    await waitForText('The Context Brief inputs changed. Rerun the brief before preparing its graph scope.');
+
+    expect(requests.filter(request => request.path === '/api/graphs/action')).toHaveLength(0);
+    expect(requests.filter(request => request.path === '/api/context/brief')).toHaveLength(1);
+  });
+
+  it('prepares an explicitly selected Workset and recompiles its Context Brief in place', async () => {
+    await renderContext();
+    await clickButton('Workset');
+    await changeInput(inputWithLabel('Prepared Workset'), 'platform');
+    await changeTextArea(textareaWithLabel('Engineering task'), 'Recover the prepared Workset graph');
+    await clickButton('Compile Context Brief');
+    await waitForText('Context Brief evidence is projected here');
+
+    await clickButton('Prepare Workset and rerun');
+    await waitForRequestCount('/api/context/brief', 2);
+
+    expect(requests.filter(request => request.path === '/api/worksets/prepare')).toEqual([
+      {body: {concurrency: 2, workset: 'platform'}, path: '/api/worksets/prepare'},
+    ]);
+    expect(inputWithLabel('Prepared Workset').value).toBe('platform');
+    expect(document.body.textContent).toContain('Workset platform is ready. Context Brief recompiled');
+  });
+
   it('returns the brief composer to an interactive state after cancellation', async () => {
     globalThis.fetch = Object.assign(
       (_input: string | URL | Request, init?: RequestInit) =>
@@ -141,9 +224,11 @@ describe('Manager Context workspace', () => {
         React.createElement(ContextBriefResult, {
           brief: projectedBrief(`cgr_${'c'.repeat(40)}`).structuredContent,
           onOpenMemory: () => undefined,
+          onRecoverGraph: () => undefined,
           onRerun: overrides => {
             reruns.push(overrides);
           },
+          recoveryBusy: false,
         }),
       ),
     );
@@ -304,7 +389,12 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {headers: {'content-type': 'application/json'}, status});
 }
 
-function projectedBrief(graphRef = GRAPH_REF): ProjectedContextBriefV1 {
+function projectedBrief(
+  graphRef = GRAPH_REF,
+  recoveryScope: 'repository' | 'workset' = 'repository',
+  options: {readonly staleAnchorRecovery?: boolean} = {},
+): ProjectedContextBriefV1 {
+  const staleAnchorRecovery = options.staleAnchorRecovery === true;
   return {
     maximumBytes: 3_750,
     measurement: {estimatedTokens: 500, structuredBytes: 900, textBytes: 600, totalBytes: 1_500},
@@ -321,16 +411,18 @@ function projectedBrief(graphRef = GRAPH_REF): ProjectedContextBriefV1 {
         },
       ],
       coverage: {
-        gaps: ['Graph snapshot is partial.'],
+        gaps: ['Graph snapshot is partial.', ...(staleAnchorRecovery ? ['Code anchor resolution is incomplete.'] : [])],
         graph: {
           complete: true,
           consideredRepositories: 1,
           readyRepositories: 1,
           requestedRepositories: 1,
-          states: {current: 1},
+          states: staleAnchorRecovery ? {stale: 1} : {current: 1},
         },
         memory: {
-          codeAnchors: {complete: true, matchedMemories: 1, requested: 2, resolved: 2},
+          codeAnchors: staleAnchorRecovery
+            ? {complete: false, matchedMemories: 0, requested: 1, resolved: 0, unresolvedOrdinals: [0]}
+            : {complete: true, matchedMemories: 1, requested: 2, resolved: 2},
           consideredCandidates: 5,
           durableCandidates: 2,
           fresh: 1,
@@ -413,11 +505,12 @@ function projectedBrief(graphRef = GRAPH_REF): ProjectedContextBriefV1 {
         {id: 'follow-read', operation: 'read-memory', rank: 0, uri: MEMORY_URI},
         {id: 'follow-inspect', operation: 'inspect-node', rank: 1, ref: graphRef},
         {id: 'follow-workset', operation: 'prepare-workset', rank: 2, workset: 'platform'},
+        {id: 'follow-graph-status', operation: 'graph-status', rank: 3, scope: recoveryScope},
       ],
       scope: {
-        freshness: 'fresh',
-        kind: 'repository',
-        name: 'threadnote',
+        freshness: staleAnchorRecovery ? 'stale' : 'fresh',
+        kind: recoveryScope,
+        name: recoveryScope === 'repository' ? 'threadnote' : 'platform',
         readyRepositories: 1,
         requestedRepositories: 1,
       },

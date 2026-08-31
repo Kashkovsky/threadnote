@@ -116,6 +116,11 @@ export type GraphAdministrationAction =
       readonly worktreeId: string;
     }
   | {
+      readonly action: 'index-cwd';
+      readonly cwd: string;
+      readonly full?: boolean;
+    }
+  | {
       readonly action: 'index-project';
       readonly expectedRevision: string;
       readonly full?: boolean;

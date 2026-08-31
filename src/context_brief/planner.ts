@@ -13,6 +13,7 @@ import {
   type ContextBriefCitationSummaryV2,
   type ContextBriefContextIssueV1,
   type ContextBriefCitationValidationReceiptV2,
+  type ContextBriefCodeAnchorCoverageV3,
   type ContextBriefFollowUpV1,
   type ContextBriefFreshness,
   type ContextBriefGraphEvidenceV1,
@@ -155,7 +156,7 @@ export function assembleContextBriefLogicalResult(input: {
       },
     },
     durableDecisions,
-    recommendedFollowUps: exactFollowUps(input.graph, memories, input.plan),
+    recommendedFollowUps: exactFollowUps(input.graph, memories, input.plan, input.memory.codeAnchorCoverage),
     graph: input.graph,
     activeHandoffs: handoffs,
     stalenessAndConflicts: issues,
@@ -289,22 +290,33 @@ function exactFollowUps(
   graph: ContextBriefGraphEvidenceV1,
   memories: readonly ContextBriefMemoryEvidenceV1[],
   plan: ContextBriefPlanV1,
+  codeAnchorCoverage?: ContextBriefCodeAnchorCoverageV3,
 ): readonly ContextBriefFollowUpV1[] {
   const followUps: ContextBriefFollowUpV1[] = [];
+  const staleRepositoryAnchors =
+    plan.scope.kind === 'repository' &&
+    plan.codeAnchors.codeRefs.length > 0 &&
+    graph.coverage.readyRepositories > 0 &&
+    scopeFreshness(graph) === 'stale' &&
+    codeAnchorCoverage?.complete === false;
+  const graphStatusRequired =
+    graph.coverage.readyRepositories === 0 ||
+    graph.gaps.includes('graph-repository-read-failed') ||
+    staleRepositoryAnchors;
+  if (graphStatusRequired) {
+    followUps.push({
+      id: followUpId('graph-status', plan.scope.kind),
+      operation: 'graph-status',
+      rank: followUps.length,
+      scope: plan.scope.kind,
+    });
+  }
   for (const card of [...graph.cards].sort((left, right) => left.rank - right.rank || compareText(left.id, right.id))) {
     followUps.push({
       id: followUpId('inspect-node', card.ref),
       operation: 'inspect-node',
       rank: followUps.length,
       ref: card.ref,
-    });
-  }
-  if (graph.coverage.readyRepositories === 0 || graph.gaps.includes('graph-repository-read-failed')) {
-    followUps.push({
-      id: followUpId('graph-status', plan.scope.kind),
-      operation: 'graph-status',
-      rank: followUps.length,
-      scope: plan.scope.kind,
     });
   }
   const graphCardRefs = new Set(graph.cards.map(card => card.ref));

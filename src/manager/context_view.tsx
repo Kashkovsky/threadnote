@@ -15,15 +15,32 @@ import type {
 import type {ManagerContextReadResponse, ManagerRecallResponse, ManagerRecallResult} from './context.js';
 import {MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT, projectManagerRecallPage} from './context_paging.js';
 import {api, errorMessage} from './ui_support.js';
+import type {ManagerWorksetPrepareJob} from './worksets.js';
 
 type ContextWorkspaceView = 'brief' | 'recall';
 type ContextScopeKind = 'repository' | 'workset';
+const CONTEXT_WORKSET_RECOVERY_POLL_MILLISECONDS = 750;
+const CONTEXT_WORKSET_RECOVERY_MAXIMUM_POLLS = 800;
 
 interface BriefRunOverrides {
   readonly codeRefs?: readonly string[];
   readonly mode?: ContextBriefMode;
   readonly task?: string;
   readonly workset?: string;
+}
+
+interface BriefRequestSnapshot {
+  readonly body: {
+    readonly budgetTokens: number;
+    readonly callerCwd?: string;
+    readonly codeRefs: readonly string[];
+    readonly mode: ContextBriefMode;
+    readonly project?: string;
+    readonly task: string;
+    readonly workset?: string;
+  };
+  readonly scope:
+    {readonly callerCwd: string; readonly kind: 'repository'} | {readonly kind: 'workset'; readonly workset: string};
 }
 
 export function ContextPanel(): React.ReactElement {
@@ -37,8 +54,12 @@ export function ContextPanel(): React.ReactElement {
   const [budgetTokens, setBudgetTokens] = useState(1_250);
   const [codeRefsText, setCodeRefsText] = useState('');
   const [brief, setBrief] = useState<ProjectedContextBriefV1>();
+  const [briefRequestSnapshot, setBriefRequestSnapshot] = useState<BriefRequestSnapshot>();
   const [briefBusy, setBriefBusy] = useState(false);
   const [briefError, setBriefError] = useState('');
+  const [graphRecoveryBusy, setGraphRecoveryBusy] = useState(false);
+  const [graphRecoveryError, setGraphRecoveryError] = useState('');
+  const [graphRecoveryNotice, setGraphRecoveryNotice] = useState('');
   const [recallQuery, setRecallQuery] = useState('');
   const [includeArchived, setIncludeArchived] = useState(false);
   const [recall, setRecall] = useState<ManagerRecallResponse>();
@@ -49,6 +70,7 @@ export function ContextPanel(): React.ReactElement {
   const [readBusy, setReadBusy] = useState(false);
   const [readError, setReadError] = useState('');
   const briefRequest = useRef<AbortController>(undefined);
+  const graphRecoveryRequest = useRef<AbortController>(undefined);
   const recallRequest = useRef<AbortController>(undefined);
   const readRequest = useRef<AbortController>(undefined);
   const codeRefs = useMemo(() => parseCodeRefs(codeRefsText), [codeRefsText]);
@@ -69,6 +91,7 @@ export function ContextPanel(): React.ReactElement {
   useEffect(
     () => () => {
       briefRequest.current?.abort();
+      graphRecoveryRequest.current?.abort();
       recallRequest.current?.abort();
       readRequest.current?.abort();
     },
@@ -88,11 +111,11 @@ export function ContextPanel(): React.ReactElement {
       (nextScopeKind === 'repository' ? !callerCwd.trim() : !nextWorkset.trim())
     )
       return;
-    briefRequest.current?.abort();
-    const controller = new AbortController();
-    briefRequest.current = controller;
-    setBriefBusy(true);
-    setBriefError('');
+    graphRecoveryRequest.current?.abort();
+    graphRecoveryRequest.current = undefined;
+    setGraphRecoveryBusy(false);
+    setGraphRecoveryError('');
+    setGraphRecoveryNotice('');
     if (overrides.task !== undefined) setTask(overrides.task);
     if (overrides.mode !== undefined) setMode(overrides.mode);
     if (overrides.codeRefs !== undefined) setCodeRefsText(overrides.codeRefs.join('\n'));
@@ -101,24 +124,97 @@ export function ContextPanel(): React.ReactElement {
       setScopeKind('workset');
       setWorkset(overrides.workset);
     }
+    const snapshot: BriefRequestSnapshot = {
+      body: {
+        budgetTokens,
+        codeRefs: nextCodeRefs,
+        mode: nextMode,
+        ...(project.trim() ? {project: project.trim()} : {}),
+        task: nextTask.trim(),
+        ...(nextScopeKind === 'repository' ? {callerCwd: callerCwd.trim()} : {workset: nextWorkset.trim()}),
+      },
+      scope:
+        nextScopeKind === 'repository'
+          ? {callerCwd: callerCwd.trim(), kind: 'repository'}
+          : {kind: 'workset', workset: nextWorkset.trim()},
+    };
+    await executeBrief(snapshot);
+  }
+
+  async function executeBrief(snapshot: BriefRequestSnapshot): Promise<boolean> {
+    briefRequest.current?.abort();
+    const controller = new AbortController();
+    briefRequest.current = controller;
+    setBriefBusy(true);
+    setBriefError('');
     try {
-      const result = await api<ProjectedContextBriefV1>(
-        '/api/context/brief',
-        {
-          budgetTokens,
-          codeRefs: nextCodeRefs,
-          mode: nextMode,
-          ...(project.trim() ? {project: project.trim()} : {}),
-          task: nextTask.trim(),
-          ...(nextScopeKind === 'repository' ? {callerCwd: callerCwd.trim()} : {workset: nextWorkset.trim()}),
-        },
-        {signal: controller.signal},
-      );
-      if (!controller.signal.aborted) setBrief(result);
+      const result = await api<ProjectedContextBriefV1>('/api/context/brief', snapshot.body, {
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return false;
+      setBrief(result);
+      setBriefRequestSnapshot(snapshot);
+      return true;
     } catch (cause) {
       if (!controller.signal.aborted) setBriefError(errorMessage(cause));
+      return false;
     } finally {
       if (!controller.signal.aborted) setBriefBusy(false);
+    }
+  }
+
+  async function recoverGraph(scope: 'repository' | 'workset'): Promise<void> {
+    const snapshot = briefRequestSnapshot;
+    const currentScopeMatches =
+      snapshot?.scope.kind === 'repository'
+        ? scopeKind === 'repository' && snapshot.scope.callerCwd === callerCwd.trim()
+        : snapshot?.scope.kind === 'workset'
+          ? scopeKind === 'workset' && snapshot.scope.workset === workset.trim()
+          : false;
+    if (
+      !snapshot ||
+      snapshot.scope.kind !== scope ||
+      !currentScopeMatches ||
+      snapshot.body.task !== task.trim() ||
+      snapshot.body.mode !== mode ||
+      snapshot.body.budgetTokens !== budgetTokens ||
+      (snapshot.body.project ?? '') !== project.trim() ||
+      snapshot.body.codeRefs.join('\n') !== codeRefs.join('\n')
+    ) {
+      setGraphRecoveryError('The Context Brief inputs changed. Rerun the brief before preparing its graph scope.');
+      return;
+    }
+    graphRecoveryRequest.current?.abort();
+    const controller = new AbortController();
+    graphRecoveryRequest.current = controller;
+    setGraphRecoveryBusy(true);
+    setGraphRecoveryError('');
+    setGraphRecoveryNotice('');
+    try {
+      const recoveryOutput =
+        snapshot.scope.kind === 'repository'
+          ? (
+              await api<{readonly output: string}>(
+                '/api/graphs/action',
+                {action: 'index-cwd', cwd: snapshot.scope.callerCwd},
+                {signal: controller.signal},
+              )
+            ).output
+          : await prepareWorksetForContext(snapshot.scope.workset, controller.signal);
+      if (controller.signal.aborted) return;
+      setGraphRecoveryNotice(`${recoveryOutput} Recompiling the Context Brief…`);
+      const recompiled = await executeBrief(snapshot);
+      if (!controller.signal.aborted) {
+        setGraphRecoveryNotice(
+          recompiled
+            ? `${recoveryOutput} Context Brief recompiled with the refreshed graph.`
+            : `${recoveryOutput} Graph recovery completed; retry the Context Brief compile.`,
+        );
+      }
+    } catch (cause) {
+      if (!controller.signal.aborted) setGraphRecoveryError(errorMessage(cause));
+    } finally {
+      if (!controller.signal.aborted) setGraphRecoveryBusy(false);
     }
   }
 
@@ -213,6 +309,7 @@ export function ContextPanel(): React.ReactElement {
             <button
               aria-selected={view === next}
               className={view === next ? 'is-active' : undefined}
+              disabled={graphRecoveryBusy}
               key={next}
               onClick={() => setView(next)}
               role="tab"
@@ -230,6 +327,7 @@ export function ContextPanel(): React.ReactElement {
           <div className="segmented-control">
             <button
               className={scopeKind === 'repository' ? 'is-active' : undefined}
+              disabled={graphRecoveryBusy}
               onClick={() => setScope('repository')}
               type="button"
             >
@@ -237,6 +335,7 @@ export function ContextPanel(): React.ReactElement {
             </button>
             <button
               className={scopeKind === 'workset' ? 'is-active' : undefined}
+              disabled={graphRecoveryBusy}
               onClick={() => setScope('workset')}
               type="button"
             >
@@ -247,6 +346,7 @@ export function ContextPanel(): React.ReactElement {
         <label>
           {scopeKind === 'repository' ? 'Caller workspace' : 'Prepared Workset'}
           <input
+            disabled={graphRecoveryBusy}
             onChange={event => {
               invalidateRecall();
               if (scopeKind === 'repository') setCallerCwd(event.target.value);
@@ -259,6 +359,7 @@ export function ContextPanel(): React.ReactElement {
         <label>
           Memory project
           <input
+            disabled={graphRecoveryBusy}
             onChange={event => {
               invalidateRecall();
               setProject(event.target.value);
@@ -270,11 +371,12 @@ export function ContextPanel(): React.ReactElement {
       </section>
 
       {view === 'brief' ? (
-        <section aria-busy={briefBusy} className="context-compose" role="tabpanel">
+        <section aria-busy={briefBusy || graphRecoveryBusy} className="context-compose" role="tabpanel">
           <div className="context-compose-form">
             <label className="context-task-field">
               Engineering task
               <textarea
+                disabled={graphRecoveryBusy}
                 onChange={event => setTask(event.target.value)}
                 placeholder="Explain the contract around this code and surface current decisions"
                 rows={4}
@@ -283,7 +385,11 @@ export function ContextPanel(): React.ReactElement {
             </label>
             <label>
               Mode
-              <select onChange={event => setMode(event.target.value as ContextBriefMode)} value={mode}>
+              <select
+                disabled={graphRecoveryBusy}
+                onChange={event => setMode(event.target.value as ContextBriefMode)}
+                value={mode}
+              >
                 {(['brief', 'locate', 'explain', 'trace', 'impact'] as const).map(value => (
                   <option key={value}>{value}</option>
                 ))}
@@ -292,6 +398,7 @@ export function ContextPanel(): React.ReactElement {
             <label>
               Budget
               <input
+                disabled={graphRecoveryBusy}
                 max={1_500}
                 min={CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS}
                 onChange={event => setBudgetTokens(Number(event.target.value))}
@@ -305,6 +412,7 @@ export function ContextPanel(): React.ReactElement {
                 {codeRefs.length}/{CONTEXT_BRIEF_MAXIMUM_CODE_REFS}
               </span>
               <textarea
+                disabled={graphRecoveryBusy}
                 onChange={event => setCodeRefsText(event.target.value)}
                 placeholder={'src/manager/context.ts\ncgs_…'}
                 rows={3}
@@ -316,6 +424,7 @@ export function ContextPanel(): React.ReactElement {
               <button
                 disabled={
                   briefBusy ||
+                  graphRecoveryBusy ||
                   Boolean(codeRefsError) ||
                   invalidBudget ||
                   !task.trim() ||
@@ -338,10 +447,22 @@ export function ContextPanel(): React.ReactElement {
             loading={briefBusy}
             loadingText="Compiling bounded graph and memory evidence…"
           />
+          <ContextStatus
+            error={graphRecoveryError}
+            loading={graphRecoveryBusy}
+            loadingText="Preparing graph evidence and recompiling this Context Brief…"
+          />
+          {graphRecoveryNotice && !graphRecoveryBusy ? (
+            <p aria-live="polite" className="context-status is-success" role="status">
+              {graphRecoveryNotice}
+            </p>
+          ) : null}
           {brief ? (
             <ContextBriefResult
               brief={brief.structuredContent}
               onOpenMemory={uri => void readContext(uri)}
+              onRecoverGraph={scope => void recoverGraph(scope)}
+              recoveryBusy={graphRecoveryBusy}
               onRerun={overrides => void runBrief(overrides)}
             />
           ) : !briefBusy && !briefError ? (
@@ -421,7 +542,9 @@ export function ContextPanel(): React.ReactElement {
 export function ContextBriefResult(props: {
   readonly brief: ContextBriefV1;
   readonly onOpenMemory: (uri: string) => void;
+  readonly onRecoverGraph: (scope: 'repository' | 'workset') => void;
   readonly onRerun: (overrides: BriefRunOverrides) => void;
+  readonly recoveryBusy: boolean;
 }): React.ReactElement {
   const brief = props.brief;
   const anchors = brief.coverage.memory.codeAnchors;
@@ -555,7 +678,9 @@ export function ContextBriefResult(props: {
               followUp={followUp}
               key={followUp.id}
               onOpenMemory={props.onOpenMemory}
+              onRecoverGraph={props.onRecoverGraph}
               onRerun={props.onRerun}
+              recoveryBusy={props.recoveryBusy}
             />
           ))}
         </section>
@@ -817,7 +942,9 @@ function MemoryEvidenceCard(props: {
 function FollowUpAction(props: {
   readonly followUp: ContextBriefFollowUpV1;
   readonly onOpenMemory: (uri: string) => void;
+  readonly onRecoverGraph: (scope: 'repository' | 'workset') => void;
   readonly onRerun: (overrides: BriefRunOverrides) => void;
+  readonly recoveryBusy: boolean;
 }): React.ReactElement {
   const followUp = props.followUp;
   if (followUp.operation === 'read-memory') {
@@ -864,16 +991,12 @@ function FollowUpAction(props: {
   }
   if (followUp.operation === 'graph-status') {
     return (
-      <button
-        onClick={() =>
-          props.onRerun({
-            mode: 'locate',
-            task: `Recheck ${followUp.scope} graph readiness and return bounded evidence.`,
-          })
-        }
-        type="button"
-      >
-        Recheck graph readiness
+      <button disabled={props.recoveryBusy} onClick={() => props.onRecoverGraph(followUp.scope)} type="button">
+        {props.recoveryBusy
+          ? 'Preparing graph…'
+          : followUp.scope === 'repository'
+            ? 'Index graph and rerun'
+            : 'Prepare Workset and rerun'}
       </button>
     );
   }
@@ -887,6 +1010,51 @@ function FollowUpAction(props: {
       Narrow before continuing Workset
     </button>
   );
+}
+
+async function prepareWorksetForContext(workset: string, signal: AbortSignal): Promise<string> {
+  let job = (
+    await api<{readonly job: ManagerWorksetPrepareJob}>('/api/worksets/prepare', {concurrency: 2, workset}, {signal})
+  ).job;
+  let polls = 0;
+  while (job.status === 'running' || job.status === 'cancelling') {
+    if (polls >= CONTEXT_WORKSET_RECOVERY_MAXIMUM_POLLS) {
+      throw new Error('Workset preparation is still running. Monitor it in Worksets, then rerun this Context Brief.');
+    }
+    await contextRecoveryDelay(signal);
+    job = (
+      await api<{readonly job: ManagerWorksetPrepareJob}>(
+        `/api/worksets/jobs/${encodeURIComponent(job.id)}`,
+        undefined,
+        {
+          signal,
+        },
+      )
+    ).job;
+    polls += 1;
+  }
+  if (job.status !== 'completed' || job.result?.state !== 'ready') {
+    throw new Error(job.error ?? `Workset preparation ended with status ${job.status}.`);
+  }
+  return `Workset ${job.workset} is ready.`;
+}
+
+function contextRecoveryDelay(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error('Context graph recovery was cancelled.'));
+      return;
+    }
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(new Error('Context graph recovery was cancelled.'));
+    };
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, CONTEXT_WORKSET_RECOVERY_POLL_MILLISECONDS);
+    signal.addEventListener('abort', onAbort, {once: true});
+  });
 }
 
 function Metric(props: {
