@@ -1,4 +1,5 @@
 import {ScriptError} from './effect/errors.js';
+import {websiteReleaseSocialImageTemplateRevision} from './site-release-social-image.js';
 export interface StableReleaseVersion {
   readonly version: string;
   readonly major: number;
@@ -12,9 +13,12 @@ export interface PublishedReleaseRef extends StableReleaseVersion {
 
 export interface WebsiteRelease extends PublishedReleaseRef {
   readonly body: string;
+  readonly headline: string;
   readonly summary: string;
   readonly highlights: readonly string[];
   readonly releaseUrl: string;
+  readonly socialImage: string;
+  readonly socialImageAlt: string;
 }
 
 interface WebsiteReleaseSource extends PublishedReleaseRef {
@@ -22,6 +26,7 @@ interface WebsiteReleaseSource extends PublishedReleaseRef {
 }
 
 const STABLE_RELEASE = /^v(\d+)\.(\d+)\.(\d+)$/;
+const releaseHeadlineMaximumLength = 240;
 
 export function parseStableReleaseVersion(version: string): StableReleaseVersion | undefined {
   const match = STABLE_RELEASE.exec(version);
@@ -95,6 +100,29 @@ export function summarizeReleaseNote(markdown: string): {
     summary: plainText(summaryLines.join(' ')),
     highlights: [...new Set(sectionHeadings.length > 0 ? sectionHeadings : bulletHeadings)],
   };
+}
+
+export function releaseHeadlineFromSummary(summary: string): string {
+  const sentence = /^.*?[.!?](?=\s|$)/u.exec(summary)?.[0];
+  if (!sentence) throw new ScriptError('The release-note opening summary must contain a complete first sentence.');
+  const withoutProductVersion = sentence.replace(/^Threadnote\s+\d+(?:\.\d+){0,2}\s+/u, '');
+  const withoutCopula = withoutProductVersion.replace(/^is\s+/u, '');
+  const headline = withoutCopula ? `${withoutCopula[0]!.toUpperCase()}${withoutCopula.slice(1)}` : sentence;
+  if (!headline.trim()) throw new ScriptError('The release-note opening sentence must contain a social-card headline.');
+  if (headline.length > releaseHeadlineMaximumLength) {
+    throw new ScriptError(
+      `The release-note opening sentence must produce a social-card headline of at most ${releaseHeadlineMaximumLength} characters.`,
+    );
+  }
+  return headline;
+}
+
+function releaseSocialImage(version: string, headline: string): string {
+  const digest = new Bun.CryptoHasher('sha256')
+    .update(`${websiteReleaseSocialImageTemplateRevision}\0${version}\0${headline}`)
+    .digest('hex')
+    .slice(0, 12);
+  return `whats-new/releases/${version}/social-card.${digest}.png`;
 }
 
 function runGit(repositoryRoot: string, arguments_: readonly string[]): string {
@@ -176,11 +204,16 @@ export function loadLatestMajorWebsiteReleases(repositoryRoot: string): readonly
     const markdown = runGit(repositoryRoot, ['show', `${source.noteRef}:${releaseNotePath}`]);
     const {summary, highlights} = summarizeReleaseNote(markdown);
     if (!summary) throw new ScriptError(`${releaseNotePath} needs an introductory release summary.`);
+    const headline = releaseHeadlineFromSummary(summary);
+    const socialImage = releaseSocialImage(release.version, headline);
     return {
       ...release,
       body: markdown,
+      headline,
       highlights,
       releaseUrl: `https://github.com/Kashkovsky/threadnote/releases/tag/${release.version}`,
+      socialImage,
+      socialImageAlt: `Threadnote ${release.version.replace(/^v/, '')} — ${headline}`,
       summary,
     };
   });

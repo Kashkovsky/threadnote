@@ -224,6 +224,7 @@ describe('dependency-aware CI workflow', () => {
         'package.json',
         'scripts/site-performance-evidence.ts',
         'scripts/site-release-notes.ts',
+        'scripts/site-release-social-image.ts',
         'src/evaluation/benchmark.ts',
         'website/**',
       ]),

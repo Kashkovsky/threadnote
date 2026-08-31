@@ -64,9 +64,10 @@ PERFORMANCE OF THIS SOFTWARE.
 ## Public website
 
 The separately deployed GitHub Pages website is not part of the standalone release. Its build uses Vite and
-`@vitejs/plugin-react` (MIT), and it self-hosts Spline Sans and JetBrains Mono through Fontsource packages. The font
-packages and font files are distributed under the SIL Open Font License 1.1. A copy is included with the website
-assets.
+`@vitejs/plugin-react` (MIT). Release social cards are rendered during the website build with `@resvg/resvg-js` 2.6.2
+(MIT) and Spline Sans from `@expo-google-fonts/spline-sans` 0.4.2 (MIT package, SIL Open Font License 1.1 font). The
+website also self-hosts Spline Sans and JetBrains Mono through Fontsource packages. The font packages and font files
+are distributed under the SIL Open Font License 1.1. A copy is included with the website assets.
 
 ## Historical migration compatibility
 

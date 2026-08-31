@@ -98,6 +98,7 @@ describe('website and standalone release boundary', () => {
 
   it('does not invoke the public website from the CLI build', async () => {
     const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')) as {
+      devDependencies: Record<string, string>;
       scripts: Record<string, string>;
     };
 
@@ -105,14 +106,19 @@ describe('website and standalone release boundary', () => {
     expect(manifest.scripts['site:build']).toBeDefined();
     expect(manifest.scripts['site:build']).toContain('scripts/site-articles.ts');
     expect(manifest.scripts['site:check']).toContain('site:test');
+    expect(manifest.devDependencies).toMatchObject({
+      '@expo-google-fonts/spline-sans': '0.4.2',
+      '@resvg/resvg-js': '2.6.2',
+    });
   });
 
   it('keeps retained evidence binding Bun-only and outside the standalone payload', async () => {
-    const [evidenceBuild, viteConfig, standaloneBuild, manifest] = await Promise.all([
+    const [evidenceBuild, viteConfig, standaloneBuild, manifest, thirdParty] = await Promise.all([
       readFile(join(root, 'scripts', 'site-performance-evidence.ts'), 'utf8'),
       readFile(join(root, 'website', 'vite.config.ts'), 'utf8'),
       readFile(join(root, 'scripts', 'build.ts'), 'utf8'),
       readFile(join(root, 'package.json'), 'utf8'),
+      readFile(join(root, 'THIRD_PARTY.md'), 'utf8'),
     ]);
 
     expect(evidenceBuild).toContain("new Bun.CryptoHasher('sha256')");
@@ -127,6 +133,7 @@ describe('website and standalone release boundary', () => {
     expect(evidenceBuild).toContain('writePerformanceArtifactBinding');
     expect(evidenceBuild).toContain('assertPerformanceSourceClean');
     expect(evidenceBuild).toContain("'scripts/site-articles.ts'");
+    expect(evidenceBuild).toContain("'scripts/site-release-social-image.ts'");
     expect(evidenceBuild).toContain("'scripts/site-performance-evidence.ts'");
     expect(evidenceBuild).toContain("!name.startsWith('site:')");
     expect(measuredPerformanceSourcePathspecs).toContain('bun.lock');
@@ -135,6 +142,8 @@ describe('website and standalone release boundary', () => {
       "const FORBIDDEN_RELEASE_DIRECTORIES = ['docs', 'training', 'website', 'site-dist'] as const;",
     );
     expect(standaloneBuild).not.toContain('site-performance-evidence');
+    expect(thirdParty).toContain('`@resvg/resvg-js` 2.6.2');
+    expect(thirdParty).toContain('`@expo-google-fonts/spline-sans` 0.4.2');
   });
 
   it('normalizes arbitrary site package scripts without weakening runtime package fields', () => {
@@ -473,6 +482,7 @@ describe('website and standalone release boundary', () => {
     expect(pushTrigger).toContain("'scripts/site-articles.ts'");
     expect(pushTrigger).toContain("'scripts/site-performance-evidence.ts'");
     expect(pushTrigger).toContain("'scripts/site-release-notes.ts'");
+    expect(pushTrigger).toContain("'scripts/site-release-social-image.ts'");
     expect(pushTrigger).toContain("'src/evaluation/benchmark.ts'");
     expect(pushTrigger).not.toContain("'src/**'");
     expect(workflow).toContain('path: site-dist');

@@ -10,6 +10,7 @@ on:
       - 'scripts/site-articles.ts'
       - 'scripts/site-performance-evidence.ts'
       - 'scripts/site-release-notes.ts'
+      - 'scripts/site-release-social-image.ts'
       - 'src/evaluation/benchmark.ts'
       - '.github/release-notes/**'
       - 'test/evaluation/candidates/threadnote-4.0.0/benchmarks/darwin-arm64-m1-max/code-graph-intellij-*.json'
