@@ -13,6 +13,7 @@ import type {
 } from '../types.js';
 import {CodeGraphLanguagePackError} from '../languages/types.js';
 import type {CodeGraphExtractionContext, VerifiedLanguageAsset} from '../languages/types.js';
+import {createSourceLineIndex, sourceSpan} from '../languages/source_line_index.js';
 import {TreeSitterRuntime} from './runtime.js';
 
 export interface TreeSitterImport {
@@ -45,7 +46,7 @@ export interface TreeSitterReferenceInput {
 }
 
 export const TREE_SITTER_EXTRACTOR_POLICY_VERSION =
-  'tree-sitter-extractor-v3-unified-source-spans-unique-symbol-identities';
+  'tree-sitter-extractor-v4-unified-crlf-safe-source-spans-unique-symbol-identities';
 
 type NodeSpan = (node: Node) => CodeGraphSpan;
 
@@ -542,33 +543,8 @@ function leadingDocumentation(node: Node): string | undefined {
 }
 
 function createNodeSpan(content: string): NodeSpan {
-  const lineStarts = [0];
-  for (let cursor = 0; cursor < content.length; cursor += 1) {
-    const character = content[cursor];
-    if (character === '\r') {
-      if (content[cursor + 1] === '\n') cursor += 1;
-      lineStarts.push(cursor + 1);
-    } else if (character === '\n' || character === '\u2028' || character === '\u2029') {
-      lineStarts.push(cursor + 1);
-    }
-  }
-  const positionAt = (rawOffset: number): {readonly column: number; readonly line: number} => {
-    const offset = Math.max(0, Math.min(content.length, rawOffset));
-    let lower = 0;
-    let upper = lineStarts.length;
-    while (lower < upper) {
-      const middle = lower + Math.floor((upper - lower) / 2);
-      if (lineStarts[middle]! <= offset) lower = middle + 1;
-      else upper = middle;
-    }
-    const lineIndex = Math.max(0, lower - 1);
-    return {column: offset - lineStarts[lineIndex]! + 1, line: lineIndex + 1};
-  };
-  return node => {
-    const from = positionAt(node.startIndex);
-    const to = positionAt(node.endIndex);
-    return {column: from.column, endColumn: to.column, endLine: to.line, line: from.line};
-  };
+  const lineIndex = createSourceLineIndex(content);
+  return node => sourceSpan(lineIndex, node.startIndex, node.endIndex);
 }
 
 function treeSitterSymbolId(
