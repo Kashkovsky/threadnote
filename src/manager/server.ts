@@ -60,7 +60,7 @@ import {
   storeManagerPersonalMemoryMove,
 } from './memory_move.js';
 import {assertManagerRawPersonalMemorySave, assertManagerRawSharedMemorySave} from './memory_save.js';
-import {updateManagerMemoryRelations} from './memory_relations.js';
+import {ManagerMemoryRelationsError, updateManagerMemoryRelations} from './memory_relations.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -168,7 +168,6 @@ interface ManagerDirectoryEntry {
   readonly isDirectory: () => boolean;
   readonly isFile: () => boolean;
 }
-
 class ManagerOperationError extends Error {
   readonly _tag = 'ManagerOperationError' as const;
 }
@@ -528,6 +527,8 @@ function handleRequestEffect(
           writeJson(response, 409, {code: 'graph-view-stale', error: error.message, retryAfterMilliseconds: 0});
           return;
         }
+        if (error instanceof ManagerMemoryRelationsError)
+          return writeJson(response, error.status, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
         if (error instanceof graphProjects.ManagerGraphProjectActionError)
           return writeJson(response, 409, {code: error.code, error: error.message, retryAfterMilliseconds: 0});
         writeJson(response, 500, {error: errorMessage(error)});

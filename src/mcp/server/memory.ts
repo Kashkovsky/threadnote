@@ -48,7 +48,11 @@ import {
 } from '../../memory/code_citation_policy.js';
 import {MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
-import {memoryIdentityWriteLockKeys, verifyAuthoredMemoryRelationTargetIdentities} from '../../memory/relations.js';
+import {
+  MemoryRelationWriteError,
+  memoryIdentityWriteLockKeys,
+  verifyAuthoredMemoryRelationTargetIdentities,
+} from '../../memory/relations.js';
 import {
   discardDeferredCodeAnchorIntent,
   discardDeferredCodeAnchorIntentsWithin,
@@ -635,7 +639,9 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
       ? withSharedRepositoryLock(config, write)
       : write;
   return serializedWrite.pipe(
-    Effect.catch(error => Effect.succeed(mcpErrorResult(error))),
+    Effect.catch(error =>
+      Effect.succeed(error instanceof MemoryRelationWriteError ? argumentError(error.message) : mcpErrorResult(error)),
+    ),
     Effect.map(result => result as CallToolResult),
   );
 }
