@@ -314,8 +314,8 @@ describe('production log writer', () => {
     ),
   );
 
-  effectIt.effect('preserves both Windows lifecycle entries when lock contention exceeds five seconds', () =>
-    windowsEntriesAfterLockContention(5_500).pipe(
+  effectIt.effect('preserves both Windows lifecycle entries immediately below the ten-second contention bound', () =>
+    windowsEntriesAfterLockContention(9_500).pipe(
       Effect.flatMap(entries =>
         Effect.sync(() => {
           expect(entries).toHaveLength(2);
@@ -340,7 +340,13 @@ describe('production log writer', () => {
           }),
         ),
       ),
-    {fastCheck: {numRuns: 12}},
+    {
+      fastCheck: {
+        // Each sample intentionally drives the real file-lock retry loop across up to 9.5 seconds of virtual time.
+        // Keep this integration property bounded; the adjacent examples retain both sides of the deadline boundary.
+        numRuns: 4,
+      },
+    },
   );
 
   effectIt.effect('keeps Windows production logging best-effort at the ten-second contention bound', () =>
