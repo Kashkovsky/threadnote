@@ -138,7 +138,7 @@ describe('doctor report resilience', () => {
         yield* fs.writeFileString(
           path.join(home, 'telemetry', 'config.json'),
           `${JSON.stringify({
-            consentVersion: 4,
+            consentVersion: 5,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
             sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(9)),
@@ -147,7 +147,7 @@ describe('doctor report resilience', () => {
         );
         expect(yield* telemetryDoctorCheck(config)).toEqual({
           detail:
-            'disabled; consent v4 needs explicit renewal for v5; run `threadnote telemetry enable`, then `threadnote telemetry enable --apply` after review',
+            'disabled; consent v5 needs explicit renewal for v6; run `threadnote telemetry enable`, then `threadnote telemetry enable --apply` after review',
           name: 'anonymous telemetry',
           status: 'warn',
         });
@@ -156,7 +156,7 @@ describe('doctor report resilience', () => {
           path.join(home, 'telemetry', 'config.json'),
           `${JSON.stringify({
             autoAccept: true,
-            consentVersion: 4,
+            consentVersion: 5,
             enabled: true,
             endpoint: DEFAULT_TELEMETRY_ENDPOINT,
             sessionSalt: Encoding.encodeBase64Url(new Uint8Array(32).fill(9)),

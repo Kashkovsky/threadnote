@@ -453,7 +453,10 @@ describe('cross-session code graph increments', () => {
         writeUseFile(root, 'temporary dirty revision');
         const dirty = yield* indexAndLoadEffect(root, home);
         expect(dirty.summary.materialization?.mode).toBe('incremental-overlay');
-        expect(persistedSnapshotState(committed.databasePath, committed.summary.snapshot.id)).toBe('ready');
+        expect(
+          persistedSnapshotState(committed.databasePath, committed.summary.snapshot.id),
+          JSON.stringify(persistedSnapshotStates(committed.databasePath)),
+        ).toBe('ready');
 
         git(root, ['checkout', '--', 'src/use.ts']);
         const restored = yield* indexAndLoadEffect(root, home);
@@ -471,6 +474,45 @@ describe('cross-session code graph increments', () => {
         ),
         provideTestLayer(ApplicationLayer),
         TestClock.withLive,
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'reuses an exactly committed dirty root across fresh indexer services',
+    () => {
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(16);
+        const home = join(root, '.threadnote-dirty-root-fresh-indexers');
+        yield* indexWithFreshIndexerEffect(root, home);
+
+        writeUseFile(root, 'dirty root committed verbatim');
+        const dirtyRoot = yield* indexWithFreshIndexerEffect(root, home, {incrementalOverlay: false});
+        expect(dirtyRoot.materialization).toMatchObject({fallbackReason: 'disabled', mode: 'full'});
+        expect(dirtyRoot.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
+        git(root, ['add', 'src/use.ts']);
+        git(root, ['commit', '-qm', 'commit the indexed dirty root']);
+
+        const committed = yield* indexWithFreshIndexerEffect(root, home);
+        expect(committed.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: false});
+        expect(committed.materialization).toEqual({mode: 'reused-snapshot', stagedFiles: 0, totalFiles: 18});
+        expect(projectGraph(yield* loadGraphEffect(root, home, committed))).toEqual(
+          projectGraph(yield* loadGraphEffect(root, home, dirtyRoot)),
+        );
+
+        writeFileSync(join(root, 'src/passive-0.ts'), 'export function passive0(): number { return 1000; }\n');
+        const next = yield* indexWithFreshIndexerEffect(root, home);
+        expect(next.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: true});
+        expect(next.materialization).toEqual({mode: 'incremental-overlay', stagedFiles: 1, totalFiles: 18});
+        const nextGraph = yield* loadGraphEffect(root, home, next);
+        const forced = yield* indexWithFreshIndexerEffect(root, home, {force: true});
+        expect(projectGraph(nextGraph)).toEqual(projectGraph(yield* loadGraphEffect(root, home, forced)));
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root])),
       );
     },
     60_000,
@@ -1347,6 +1389,24 @@ const indexAndLoadEffect = Effect.fn('test.indexAndLoad')(function* (root: strin
   };
 });
 
+const indexWithFreshIndexerEffect = Effect.fn('test.indexWithFreshIndexer')(function* (
+  root: string,
+  home: string,
+  options: {readonly force?: boolean; readonly incrementalOverlay?: boolean} = {},
+) {
+  const layer = Layer.fresh(CodeGraphIndexer.layer).pipe(Layer.provide(ApplicationLayer));
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(layer);
+      return yield* Context.get(context, CodeGraphIndexer).index({
+        cwd: root,
+        threadnoteHome: home,
+        ...options,
+      });
+    }),
+  );
+});
+
 const loadGraphEffect = Effect.fn('test.loadGraph')(function* (
   root: string,
   home: string,
@@ -1400,6 +1460,19 @@ function persistedSnapshotState(databasePath: string, snapshotId: string): strin
   try {
     return (database.query('SELECT state FROM snapshots WHERE id = ?').get(snapshotId) as {state?: string} | null)
       ?.state;
+  } finally {
+    database.close(false);
+  }
+}
+
+function persistedSnapshotStates(databasePath: string): readonly unknown[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query(
+        'SELECT id, state, dirty, base_snapshot_id, commit_id, graph_content_id, completed_at FROM snapshots ORDER BY completed_at, id',
+      )
+      .all();
   } finally {
     database.close(false);
   }

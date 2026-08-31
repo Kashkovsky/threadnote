@@ -652,14 +652,21 @@ const markSnapshotLeaseRetirementBaton = Effect.fn('codeGraph.markSnapshotLeaseR
   sql: SqlClient.SqlClient,
   snapshotId: string,
   now: number,
+  onlyIfDirty = false,
 ) {
+  // Ordinary pointer displacement retires only disposable dirty overlays.
+  // Explicit view removal leaves onlyIfDirty false so its exact clean or dirty
+  // target still retires after the final reader releases it.
   const rows = yield* sql.unsafe<BoundedSnapshotLeaseRow & {readonly lease_rowid: unknown}>(
     `SELECT
        CASE WHEN typeof(lease.rowid) = 'integer' AND lease.rowid BETWEEN 1 AND 9007199254740991
          THEN lease.rowid ELSE NULL END AS lease_rowid,
        ${boundedSnapshotLeaseProjection('lease')}
      FROM snapshot_leases AS lease INDEXED BY snapshot_leases_snapshot_expiry
+     JOIN snapshots AS snapshot
+       ON snapshot.id = lease.snapshot_id
      WHERE lease.snapshot_id = ? AND lease.expires_at > ?
+       AND (${onlyIfDirty ? 1 : 0} = 0 OR snapshot.dirty = 1)
      ORDER BY lease.expires_at
      LIMIT 1`,
     [snapshotId, now],

@@ -104,6 +104,67 @@ describe('code graph ready snapshot retention', () => {
     }
   });
 
+  effectIt.effect.prop(
+    'retains a displaced clean snapshot across lease acquisition order',
+    {acquireBeforePromotion: fc.boolean()},
+    ({acquireBeforePromotion}) =>
+      TestClock.withLive(
+        Effect.gen(function* () {
+          const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-clean-view-'));
+          temporaryRoots.push(root);
+          const databasePath = join(root, 'graph-v3.sqlite');
+          const identity = repositoryIdentity(root);
+          const clean = snapshot(identity, 'clean-view', {dirty: false});
+          const current = snapshot(identity, 'clean-view-successor');
+          const store = yield* CodeGraphStore;
+          yield* store.initialize(databasePath);
+          yield* registerReadySnapshots(store, databasePath, identity, [clean, current]);
+
+          const lease = acquireBeforePromotion
+            ? yield* store.acquireSnapshotLease(databasePath, clean.id, 60_000)
+            : undefined;
+          yield* store.promote(databasePath, identity, clean.id);
+          const activeLease = lease ?? (yield* store.acquireSnapshotLease(databasePath, clean.id, 60_000));
+          yield* store.promote(databasePath, identity, current.id);
+          yield* store.releaseSnapshotLease(databasePath, activeLease);
+
+          expect(readSnapshotState(databasePath, clean.id)).toBe('ready');
+          expect(readSnapshotState(databasePath, current.id)).toBe('ready');
+          expect(readSnapshotLeaseTokens(databasePath)).toEqual([]);
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      ),
+    {fastCheck: {numRuns: 4}},
+  );
+
+  effectIt.effect('retires an explicitly removed leased clean view after its final reader releases it', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        const root = yield* Effect.promise(() => mkdtemp('threadnote-ready-retention-removed-clean-view-'));
+        temporaryRoots.push(root);
+        const databasePath = join(root, 'graph-v3.sqlite');
+        const identity = {
+          ...repositoryIdentity(root),
+          repositoryId: 'b'.repeat(64),
+          worktreeId: 'a'.repeat(64),
+        };
+        const clean = snapshot(identity, 'removed-clean-view', {dirty: false});
+        const store = yield* CodeGraphStore;
+        yield* store.initialize(databasePath);
+        yield* registerReadySnapshots(store, databasePath, identity, [clean]);
+        yield* store.promote(databasePath, identity, clean.id);
+        const lease = yield* store.acquireSnapshotLease(databasePath, clean.id, 60_000);
+
+        expect(yield* store.removeView(databasePath, identity.worktreeId, clean.id)).toMatchObject({state: 'removed'});
+        expect(readSnapshotState(databasePath, clean.id)).toBe('ready');
+        yield* store.releaseSnapshotLease(databasePath, lease);
+        yield* waitForSnapshotRemoval(databasePath, clean.id);
+
+        expect(readSnapshotState(databasePath, clean.id)).toBeUndefined();
+        expect(readSnapshotLeaseTokens(databasePath)).toEqual([]);
+      }).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
   it('reclaims a non-active snapshot after an explicitly transient lease is released', async () => {
     const root = await mkdtemp('threadnote-ready-retention-transient-');
     temporaryRoots.push(root);

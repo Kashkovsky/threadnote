@@ -412,9 +412,15 @@ const acquireSnapshotLease = Effect.fn('codeGraph.acquireSnapshotLease')(functio
         INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
         VALUES (
           ${token}, ${snapshotId}, ${now + duration},
+          -- Clean snapshots remain bounded warm-cache candidates after
+          -- displacement. An explicit transient lease still opts into
+          -- retirement independently of this dirty-view baton.
           CASE WHEN ${retireWhenInactive ? 1 : 0} = 1 OR EXISTS (
             SELECT 1
             FROM active_snapshots AS active
+            JOIN snapshots AS snapshot
+              ON snapshot.id = active.snapshot_id
+             AND snapshot.dirty = 1
             WHERE active.snapshot_id = ${snapshotId}
               AND NOT EXISTS (
                 SELECT 1 FROM removed_views AS removed

@@ -161,6 +161,15 @@ export interface CodeGraphReusableBaseReceiptInput {
   readonly workspaceFingerprint: string;
 }
 
+/** Exact physical-root evidence required when a clean commit aliases its just-committed dirty graph. */
+export interface CodeGraphCleanSnapshotAliasOptions {
+  readonly exactBaseFiles?: readonly Pick<
+    CodeGraphInventoryFile,
+    'contentHash' | 'language' | 'mode' | 'path' | 'size'
+  >[];
+  readonly expectedBaseGraphContentId?: string;
+}
+
 export interface CodeGraphLanguagePackProvenance {
   readonly cacheIdentity: string;
   readonly derivationIdentity: string;

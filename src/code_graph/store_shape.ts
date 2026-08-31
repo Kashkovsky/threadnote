@@ -27,6 +27,7 @@ import type {
   CodeGraphCheckpointImportReceiptRecordResult,
   CodeGraphCheckpointImportRecordPage,
   CodeGraphCheckpointImportRecordPageResult,
+  CodeGraphCleanSnapshotAliasOptions,
   CodeGraphDatabaseHealth,
   CodeGraphDatabaseRepair,
   CodeGraphDirectPersistentCapacityProtector,
@@ -171,6 +172,7 @@ export interface CodeGraphStoreShape {
     snapshot: CodeGraphSnapshot,
     baseSnapshotId: string,
     currentSnapshotReceipt: CodeGraphReusableBaseReceiptInput,
+    options?: CodeGraphCleanSnapshotAliasOptions,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheFacts: (
     databasePath: string,

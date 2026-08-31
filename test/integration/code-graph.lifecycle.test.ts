@@ -927,6 +927,113 @@ describe('native code graph lifecycle', () => {
     }
   });
 
+  effectIt.effect('aliases an exactly committed dirty root and reuses it for the next overlay', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.sync(() => createManySourceRepository(12));
+      const home = join(root, '.threadnote-test-home');
+      const indexer = yield* CodeGraphIndexer;
+      const store = yield* CodeGraphStore;
+      yield* indexer.index({cwd: root, threadnoteHome: home});
+      const committedPath = join(root, 'src/file-000.ts');
+      yield* Effect.sync(() => {
+        writeFileSync(committedPath, readFileSync(committedPath, 'utf8').replace('return 0;', 'return 1000;'));
+      });
+      const dirtyRoot = yield* indexer.index({
+        cwd: root,
+        incrementalOverlay: false,
+        threadnoteHome: home,
+      });
+      const databasePath = codeGraphDatabasePath(home, dirtyRoot);
+      const dirtyReceipt = yield* store.reusableBaseReceipt(databasePath, dirtyRoot.snapshot.id, {
+        allowDirtyRoot: true,
+      });
+      if (!dirtyReceipt) return yield* Effect.fail(new TestError('Expected the dirty root to have a reuse receipt.'));
+      const overlayFingerprint = dirtyRoot.snapshot.overlayFingerprint;
+      if (!overlayFingerprint) {
+        return yield* Effect.fail(new TestError('Expected the dirty root to have an overlay fingerprint.'));
+      }
+      const dirtyCandidate = yield* store.reusableOverlayBase!(
+        databasePath,
+        dirtyRoot.identity.repositoryId,
+        dirtyRoot.snapshot.extractorSet,
+        overlayFingerprint,
+      );
+      if (!dirtyCandidate) {
+        return yield* Effect.fail(new TestError('Expected the dirty root to remain reusable.'));
+      }
+      const aliasCandidate = {
+        baseSnapshotId: dirtyRoot.snapshot.id,
+        commit: dirtyRoot.identity.headCommit,
+        dirty: false,
+        edgeCount: dirtyRoot.snapshot.edgeCount,
+        extractorSet: dirtyRoot.snapshot.extractorSet,
+        fileCount: dirtyRoot.snapshot.fileCount,
+        graphContentId: dirtyRoot.snapshot.graphContentId ?? dirtyRoot.snapshot.id,
+        id: `cgsn_${'f'.repeat(40)}`,
+        repositoryId: dirtyRoot.identity.repositoryId,
+        state: 'ready' as const,
+        symbolCount: dirtyRoot.snapshot.symbolCount,
+        worktreeId: dirtyRoot.identity.worktreeId,
+      };
+      const rejectedWithoutExactEvidence = yield* store.activateCleanSnapshotAlias!(
+        databasePath,
+        dirtyRoot.identity,
+        aliasCandidate,
+        dirtyRoot.snapshot.id,
+        dirtyReceipt,
+      ).pipe(Effect.flip);
+      expect(rejectedWithoutExactEvidence.message).toContain('does not exactly match');
+      const rejectedMismatchedGraph = yield* store.activateCleanSnapshotAlias!(
+        databasePath,
+        dirtyRoot.identity,
+        {...aliasCandidate, graphContentId: `cgc_${'e'.repeat(40)}`, id: `cgsn_${'e'.repeat(40)}`},
+        dirtyRoot.snapshot.id,
+        dirtyReceipt,
+        {
+          exactBaseFiles: dirtyCandidate.files,
+          expectedBaseGraphContentId: dirtyRoot.snapshot.graphContentId ?? dirtyRoot.snapshot.id,
+        },
+      ).pipe(Effect.flip);
+      expect(rejectedMismatchedGraph.message).toContain('does not exactly match');
+      yield* Effect.sync(() => {
+        git(root, ['add', 'src/file-000.ts']);
+        git(root, [
+          '-c',
+          'user.name=Threadnote Test',
+          '-c',
+          'user.email=test@threadnote.local',
+          'commit',
+          '-qm',
+          'commit indexed worktree',
+        ]);
+      });
+
+      const committed = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const dirtyGraph = yield* store.loadGraph(databasePath, dirtyRoot.snapshot.id);
+      const committedGraph = yield* store.loadGraph(databasePath, committed.snapshot.id);
+
+      expect(dirtyRoot.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
+      expect(dirtyRoot.materialization).toMatchObject({fallbackReason: 'disabled', mode: 'full'});
+      expect(committed.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: false});
+      expect(committed.materialization).toEqual({mode: 'reused-snapshot', stagedFiles: 0, totalFiles: 12});
+      expect(committed.reusedFiles).toBe(12);
+      expect(normalizeStoredGraph(committedGraph)).toEqual(normalizeStoredGraph(dirtyGraph));
+
+      const nextPath = join(root, 'src/file-001.ts');
+      yield* Effect.sync(() => {
+        writeFileSync(nextPath, readFileSync(nextPath, 'utf8').replace('return 1;', 'return 1001;'));
+      });
+      const next = yield* indexer.index({cwd: root, threadnoteHome: home});
+      const nextGraph = yield* store.loadGraph(databasePath, next.snapshot.id);
+      const forced = yield* indexer.index({cwd: root, force: true, threadnoteHome: home});
+      const forcedGraph = yield* store.loadGraph(databasePath, forced.snapshot.id);
+
+      expect(next.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: true});
+      expect(next.materialization).toEqual({mode: 'incremental-overlay', stagedFiles: 1, totalFiles: 12});
+      expect(normalizeStoredGraph(nextGraph)).toEqual(normalizeStoredGraph(forcedGraph));
+    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   effectIt.effect('materializes only body-changed files for a compatible clean commit', () =>
     Effect.gen(function* () {
       const root = createManySourceRepository(24);
@@ -3138,10 +3245,15 @@ describe('native code graph lifecycle', () => {
         const retired = database
           .query<{readonly count: number}, []>("SELECT COUNT(*) AS count FROM snapshots WHERE state = 'retired'")
           .get();
-        expect(retired?.count).toBe(1);
-        expect(database.query("SELECT id FROM snapshots WHERE state = 'ready'").all()).toEqual([
-          {id: current.snapshot.id},
-        ]);
+        expect(retired?.count).toBe(0);
+        const ready = database
+          .query<{readonly dirty: number; readonly id: string}, []>(
+            "SELECT dirty, id FROM snapshots WHERE state = 'ready' ORDER BY dirty, id",
+          )
+          .all();
+        expect(ready).toHaveLength(2);
+        expect(ready.filter(snapshot => snapshot.dirty === 0)).toHaveLength(1);
+        expect(ready.filter(snapshot => snapshot.dirty === 1)).toEqual([{dirty: 1, id: current.snapshot.id}]);
         expect(database.query('PRAGMA foreign_key_check').all()).toEqual([]);
       } finally {
         database.close(false);
@@ -5969,7 +6081,7 @@ function createFactBudgetExpandedRepository(): string {
   mkdirSync(sourceRoot, {recursive: true});
   git(root, ['init', '-q']);
   const identifierPadding = 'x'.repeat(192);
-  for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
+  for (let fileIndex = 0; fileIndex < 3; fileIndex += 1) {
     const declarations = Array.from(
       {length: 2_000},
       (_, symbolIndex) =>
@@ -5979,7 +6091,7 @@ function createFactBudgetExpandedRepository(): string {
   }
   git(root, ['add', '.']);
   git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
-  for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
+  for (let fileIndex = 0; fileIndex < 3; fileIndex += 1) {
     const sourcePath = join(sourceRoot, `expanded-${fileIndex}.ts`);
     writeFileSync(sourcePath, readFileSync(sourcePath, 'utf8').replace('// base-state', '// work-state'));
   }

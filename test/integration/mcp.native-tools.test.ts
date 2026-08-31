@@ -2734,7 +2734,9 @@ describe('Threadnote MCP toolsets', () => {
         );
         expect(automaticBacklink.isError).not.toBe(true);
         const automaticBrief = parseContextBriefV1(automaticBacklink.structuredContent);
-        const automaticMemoryMatches = automaticBrief.durableDecisions.filter(memory => memory.uri === citationUri);
+        const automaticMemoryMatches = automaticBrief.durableDecisions.filter(memory =>
+          memory.codeRelations?.some(relation => relation.citationId === finalizedCitation.id),
+        );
         expect(automaticMemoryMatches).toHaveLength(1);
         expect(automaticMemoryMatches[0]).toMatchObject({
           codeRelations: [
@@ -2746,7 +2748,7 @@ describe('Threadnote MCP toolsets', () => {
             },
           ],
           selectionBasis: 'code-citation',
-          uri: citationUri,
+          uri: expect.stringMatching(/^threadnote:\/\/memory\/tn_[a-z0-9_-]+$/u),
         });
         const boundedRecovery = await client.callTool(
           {

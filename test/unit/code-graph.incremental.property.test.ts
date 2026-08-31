@@ -2,6 +2,7 @@ import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {createResolutionAttributor} from '../../src/code_graph/extractor.js';
 import {hasSameCodeGraphResolutionSurface} from '../../src/code_graph/indexer.js';
+import {sameEffectiveCodeGraphInventory} from '../../src/code_graph/indexer_shared.js';
 import {
   assessCodeGraphResolutionSymbolPublication,
   hasSameCodeGraphReexportResolutionSurface,
@@ -104,6 +105,29 @@ const resolutionScopeIdArbitrary = FC.oneof(
   FC.integer({max: 10_000, min: 0}).map(suffix => `project-${suffix}`),
 );
 
+const effectiveInventoryArbitrary = FC.uniqueArray(
+  FC.record({
+    contentHash: FC.string({maxLength: 64}),
+    language: FC.string({maxLength: 16}),
+    mode: FC.string({maxLength: 8}),
+    ordinal: FC.integer({max: 10_000, min: 0}),
+    size: FC.integer({max: 10_000_000, min: 0}),
+  }),
+  {maxLength: 24, minLength: 1, selector: value => value.ordinal},
+).map(values =>
+  values
+    .map((value): CodeGraphInventoryFile => ({
+      blobId: `blob-${value.ordinal}`,
+      contentHash: value.contentHash,
+      language: value.language,
+      mode: value.mode,
+      path: `src/file-${value.ordinal}.ts`,
+      size: value.size,
+      source: 'worktree',
+    }))
+    .sort((left, right) => left.path.localeCompare(right.path)),
+);
+
 const pathLocalTypeScriptSymbolArbitrary = FC.record({
   arity: optionalArity,
   path: typescriptPathArbitrary,
@@ -131,6 +155,35 @@ const pathLocalTypeScriptSymbolArbitrary = FC.record({
 });
 
 describe('code graph incremental-overlay properties', () => {
+  it.prop(
+    'treats commit provenance as irrelevant only while the effective inventory stays exact',
+    {files: effectiveInventoryArbitrary},
+    ({files}) => {
+      const committed = files.map((file, index): CodeGraphInventoryFile => ({
+        ...file,
+        blobId: `committed-${index}`,
+        rawContentHash: `raw-${index}`,
+        source: 'commit',
+      }));
+      expect(sameEffectiveCodeGraphInventory(files, committed)).toBe(true);
+      expect(sameEffectiveCodeGraphInventory(committed, files)).toBe(true);
+
+      const [first, ...rest] = committed;
+      const mutations: readonly CodeGraphInventoryFile[][] = [
+        [{...first!, contentHash: `changed:${first!.contentHash}`}, ...rest],
+        [{...first!, language: `changed:${first!.language}`}, ...rest],
+        [{...first!, mode: `changed:${first!.mode}`}, ...rest],
+        [{...first!, path: `changed/${first!.path}`}, ...rest],
+        [{...first!, size: first!.size + 1}, ...rest],
+        committed.slice(1),
+        [first!, first!, ...rest],
+      ];
+      expect(mutations.every(mutated => !sameEffectiveCodeGraphInventory(files, mutated))).toBe(true);
+      if (files.length > 1) expect(sameEffectiveCodeGraphInventory(files, [...committed].reverse())).toBe(false);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   it.prop(
     'treats only span, reference order, and set-order churn as an unchanged static re-export surface',
     {reference: staticReexportReferenceArbitrary},

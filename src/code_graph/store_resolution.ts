@@ -963,10 +963,10 @@ const promoteSnapshot = Effect.fn('codeGraph.promoteSnapshot')(function* (
           return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view authority changed.'));
         }
       }
-      // A lease acquired by ID may precede promotion. Once its snapshot owns
-      // an active pointer, its final release must reclaim that view after it is
-      // displaced just like a lease acquired while the pointer was active.
-      yield* markSnapshotLeaseRetirementBaton(sql, snapshotId, now);
+      // A lease acquired by ID may precede promotion. Once a dirty snapshot
+      // owns an active pointer, carry retirement to its final release after
+      // displacement. Clean snapshots remain bounded warm-cache candidates.
+      yield* markSnapshotLeaseRetirementBaton(sql, snapshotId, now, true);
       if (displacedSnapshotId === undefined || displacedSnapshotId === snapshotId) return 0;
       // Dirty overlays cannot be exact future aliases. Recent clean snapshots
       // remain ready and are bounded by routine per-repository LRU retention,
