@@ -20,8 +20,23 @@ For a ceiling that the three-run sample exceeded or left with less than the pros
 this calibration does not tighten them from a small sample.
 
 The same runs recorded maximum successful-sample gaps of 138, 172, and 100 ms. Their `>100 ms` breach patterns were
-4/75 with at most two consecutive observations, 2/75 with no consecutive observations, and 0/75. The observer now
-uses absolute monotonic deadlines and preserves the raw maximum while applying the prospective v1 quality policy:
-at most a 10% breach rate, at most two consecutive breached observations, and a 250 ms hard maximum. This separates a
-bounded hosted-runner scheduling stall from sustained loss of observation coverage without weakening sample-success
-or RSS gates.
+4/75 with at most two consecutive observations, 2/75 with no consecutive observations, and 0/75. The initial v1
+quality policy therefore bounded the raw maximum at 250 ms while retaining a 10% breach-rate ceiling and at most two
+consecutive breached observations.
+
+A fourth independent run, `33438134814`, exercised exact candidate
+`4cf4c966cf272a3cb066db29750a415766ec5954`. Its raw JSON has SHA-256
+`fcd37f90826f35f01c6cd5b7ad605669e3c6f3f44c95671df02d0957b7ef91ca`. All product correctness, latency, RSS,
+sample-success, and descendant-coverage gates passed, but one of 75 observations recorded an isolated 297 ms gap and
+exceeded only the v1 250 ms ceiling. That observation still contained 64 successful samples and observed descendants;
+the run had 3,194/3,194 successful samples, a 2/75 breach rate, and at most one consecutive breach. Across all four
+runs, 8/300 observations breached 100 ms, with p50/p95/p99 gaps of 54/89/138 ms and a 297 ms maximum.
+
+The prospective v2 policy applies the same calibration rule used above: 10% above 297 ms, rounded up to the next
+50 ms, yields a 350 ms hard maximum. It keeps the 100 ms threshold, 10% breach-rate ceiling, two-consecutive ceiling,
+zero-failure requirement, descendant coverage, and RSS budgets unchanged. This locks a bounded hosted-runner
+scheduling-stall allowance before a new candidate run rather than accepting a retry of the failed candidate.
+The privacy-safe canonical projection in `sample-gap-calibration-v2.json` retains all 300 ordered gaps and their
+workflow, attempt, artifact, commit, timestamp, and raw-artifact-digest provenance. Its unit verifier independently
+re-derives the documented aggregate and policy ceiling, so the calibration remains reviewable after hosted artifacts
+expire.

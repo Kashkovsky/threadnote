@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "breachThresholdMilliseconds": 100,
+  "calibrationMargin": 0.1,
+  "roundUpIncrementMilliseconds": 50,
+  "expected": {
+    "observationCount": 300,
+    "breachCount": 8,
+    "maximumConsecutiveBreachesWithinRun": 2,
+    "p50Milliseconds": 54,
+    "p95Milliseconds": 89,
+    "p99Milliseconds": 138,
+    "maximumMilliseconds": 297,
+    "derivedHardMaximumMilliseconds": 350
+  },
+  "runs": [
+    {
+      "workflowRun": 33395986972,
+      "workflowAttempt": 1,
+      "artifactId": 9759672021,
+      "createdAt": "2026-08-31T13:25:37.569Z",
+      "candidateCommit": "172c4d45e2cbc5dedb8f5fd088a8d5b93ca005d3",
+      "rawArtifactSha256": "f5fede4b95a93e364b4d144f73b835d7b9c78865af834a7df4ac98024c3b7f17",
+      "maximumSampleGapsMilliseconds": [
+        88, 81, 53, 58, 59, 72, 74, 61, 69, 57, 60, 62, 62, 50, 61, 61, 55, 64, 53, 62, 62, 56, 58, 58, 60, 67, 58, 63,
+        62, 58, 64, 57, 63, 82, 70, 56, 54, 65, 65, 67, 65, 61, 91, 61, 70, 65, 78, 73, 80, 63, 59, 103, 130, 63, 130,
+        138, 77, 69, 90, 79, 70, 69, 75, 81, 91, 61, 74, 66, 70, 80, 62, 68, 70, 79, 62
+      ]
+    },
+    {
+      "workflowRun": 33395986972,
+      "workflowAttempt": 2,
+      "artifactId": 9760842666,
+      "createdAt": "2026-08-31T13:59:11.651Z",
+      "candidateCommit": "172c4d45e2cbc5dedb8f5fd088a8d5b93ca005d3",
+      "rawArtifactSha256": "8e7c8271dfd451cbd34f414ba60394577da0a6a860be1f947ca9766bbedbd6cc",
+      "maximumSampleGapsMilliseconds": [
+        61, 50, 51, 46, 50, 47, 49, 43, 56, 56, 61, 54, 104, 48, 49, 53, 54, 59, 61, 62, 63, 56, 54, 52, 50, 55, 89, 58,
+        57, 55, 57, 59, 51, 67, 53, 56, 54, 62, 54, 57, 55, 66, 67, 59, 59, 96, 72, 58, 54, 67, 63, 54, 55, 73, 56, 56,
+        61, 53, 54, 50, 54, 58, 59, 72, 66, 62, 57, 73, 75, 74, 59, 172, 81, 76, 89
+      ]
+    },
+    {
+      "workflowRun": 33395986972,
+      "workflowAttempt": 3,
+      "artifactId": 9761179800,
+      "createdAt": "2026-08-31T14:08:45.000Z",
+      "candidateCommit": "172c4d45e2cbc5dedb8f5fd088a8d5b93ca005d3",
+      "rawArtifactSha256": "781035bd16be8afc3fa1eb6818c6b4216b24b192bf9fed0b0038fff3e099d325",
+      "maximumSampleGapsMilliseconds": [
+        47, 42, 48, 45, 45, 43, 45, 43, 42, 47, 44, 45, 44, 42, 50, 46, 43, 100, 42, 44, 52, 44, 55, 42, 45, 47, 46, 47,
+        50, 48, 51, 49, 49, 51, 49, 55, 46, 47, 51, 60, 48, 46, 44, 53, 46, 59, 47, 42, 48, 46, 50, 54, 47, 47, 52, 55,
+        51, 51, 61, 64, 45, 46, 45, 47, 44, 47, 48, 46, 50, 49, 53, 48, 47, 48, 49
+      ]
+    },
+    {
+      "workflowRun": 33438134814,
+      "workflowAttempt": 1,
+      "artifactId": 9775364473,
+      "createdAt": "2026-08-31T20:55:41.805Z",
+      "candidateCommit": "4cf4c966cf272a3cb066db29750a415766ec5954",
+      "rawArtifactSha256": "fcd37f90826f35f01c6cd5b7ad605669e3c6f3f44c95671df02d0957b7ef91ca",
+      "maximumSampleGapsMilliseconds": [
+        48, 46, 42, 41, 42, 44, 39, 42, 45, 43, 43, 40, 48, 40, 44, 40, 41, 54, 42, 40, 45, 45, 40, 42, 41, 58, 115, 43,
+        40, 43, 80, 43, 50, 46, 47, 51, 43, 46, 47, 45, 39, 45, 41, 43, 41, 39, 297, 55, 60, 48, 75, 53, 40, 47, 43, 42,
+        51, 48, 54, 69, 46, 43, 44, 55, 52, 47, 42, 43, 45, 44, 41, 41, 49, 39, 46
+      ]
+    }
+  ]
+}

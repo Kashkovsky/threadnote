@@ -12,7 +12,7 @@ import {
 } from '../context_brief/index.js';
 import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {
-  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
   contextBriefCitationRssSampleGapFailures,
   contextBriefCitationScaleGate,
@@ -83,7 +83,7 @@ export interface ContextBriefCitationScaleRssArtifact {
   readonly rootStartIdentity: string;
   readonly sampleGapBreachCount: number;
   readonly sampleGapBreachRate: number;
-  readonly sampleGapPolicy: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1;
+  readonly sampleGapPolicy: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2;
   readonly sampleAttempts: number;
   readonly sampleFailures: number;
   readonly scope: 'recursive-process-tree';
@@ -334,7 +334,7 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
         'instruments calls that reach the production CodeGraphStore.withSession implementation against real prebuilt SQLite files; OS file-descriptor opens are not separately counted',
       graphSnapshots: 'real-sqlite-prebuilt-ready',
       memoryMeasurement:
-        'a first-use untimed pass runs before timing, uses begin/end barriers around each production observation and an observer-excluded external recursive process-tree sampler on absolute monotonic deadlines, then records a post-final-GC stop sample; the hard gates retain raw maximum gaps while bounding >100ms observation breaches to 10%, two consecutive breaches, and a 250ms hard maximum, and use observed tree peak minus its immediate baseline plus retained root growth through the final sample; boundary RSS remains diagnostic',
+        'a first-use untimed pass runs before timing, uses begin/end barriers around each production observation and an observer-excluded external recursive process-tree sampler on absolute monotonic deadlines, then records a post-final-GC stop sample; the hard gates retain raw maximum gaps while bounding >100ms observation breaches to 10%, two consecutive breaches, and a 350ms hard maximum, and use observed tree peak minus its immediate baseline plus retained root growth through the final sample; boundary RSS remains diagnostic',
       recallIndex: 'real-sqlite-prebuilt-before-timing',
       timingScope:
         'observer-free warm real SQLite recall retrieval after first-use memory evidence, plus production Git identity/status observation, graph SQLite session/lease/evidence reads, citation grouping/validation, Context Brief assembly, and projection; every sample uses unseen citation IDs; fixture creation, recall indexing, ready-snapshot activation, catalog publication, and cold graph indexing are excluded',

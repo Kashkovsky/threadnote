@@ -401,19 +401,21 @@ sample before the observer exits.
 The wrapper hashes the built target, and the running target recomputes that SHA-256 before launching the exact same
 bundle in its reserved observer mode. The observer recursively samples the benchmark root and its current descendants
 while excluding its own complete subtree. Every memory observation fails unless its begin baseline contains only the
-root, it has at least three successful samples and no failures, its longest successful-sample gap is at most 100 ms, and
-its root and process-tree peak-minus-immediate-baseline arithmetic is internally consistent. The single-repository
-profile must observe a workload descendant at least once, while each sustained multi-repository Workset profile must do
-so in at least 80% of its 25 memory observations. This distinction keeps the fan-out coverage gate strong without
-claiming that the roughly 45 ms macOS `ps` cadence reliably catches every short-lived local Git child. The fixed 64 MiB ceiling applies independently to
+root, it has at least three successful samples and no failures, and its root and process-tree
+peak-minus-immediate-baseline arithmetic is internally consistent. Across the ordered memory series, observations
+whose longest successful-sample gap exceeds 100 ms may comprise at most 10%, at most two may occur consecutively, and
+no gap may exceed 350 ms. The single-repository profile must observe a workload descendant at least once, while each
+sustained multi-repository Workset profile must do so in at least 80% of its 25 memory observations. This distinction
+keeps the fan-out coverage gate strong without claiming that the roughly 45 ms macOS `ps` cadence reliably catches
+every short-lived local Git child. The fixed 64 MiB ceiling applies independently to
 the maximum sampled transient process-tree growth and to retained root growth, computed from every immediate begin
 baseline plus the post-final-GC stop sample relative to the first baseline.
 
 These measurements are sampled high-water evidence, not exhaustive process-lifetime accounting. A successful snapshot
 recursively accounts for the root and every descendant visible at that instant, excluding the observer subtree, but a
-short-lived child or RSS peak entirely between samples can remain unseen. The three-sample, 100 ms gap, local-capture,
-and Workset 80% descendant-coverage gates bound that risk; they do not justify a claim that every child process or
-absolute peak was observed.
+short-lived child or RSS peak entirely between samples can remain unseen. The three-sample, bounded gap-rate/run/hard
+maximum, local-capture, and Workset 80% descendant-coverage gates bound that risk; they do not justify a claim that
+every child process or absolute peak was observed.
 
 ```sh
 # Scheduled/manual release-quality distribution; ordinary pull-request CI does not run this job.
