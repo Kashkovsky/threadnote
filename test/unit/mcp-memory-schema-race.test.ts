@@ -161,23 +161,9 @@ describe('MCP personal-memory schema rewrite guard', () => {
           'Divergent content introduces an identity conflict.',
         );
 
-        // Simulate a serialized writer whose best-effort recall invalidation failed:
-        // the live conflict exists, but the identity index still has its cached generation.
-        yield* fs.writeFileString(
-          path.join(
-            home,
-            'data',
-            'local',
-            'user',
-            'tester',
-            'memories',
-            'durable',
-            'projects',
-            'threadnote',
-            'identity-conflict.md',
-          ),
-          conflict,
-        );
+        // A serialized writer advances the durable canonical generation. The
+        // identity recheck must reconcile that generation before committing.
+        yield* store.write(location, conflictUri, conflict, {mode: 'create'});
         const result = yield* writeDurableMemory(config, {
           bodyText: 'The source must not commit against an ambiguous identity.',
           expectedSourceContent: authored.targets,
