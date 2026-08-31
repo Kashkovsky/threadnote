@@ -281,7 +281,7 @@ export function planProjectIncrementalClosure(input: ProjectIncrementalClosureIn
 /**
  * Plans the smallest project-local resolution closure that contains every seed.
  * The planner consumes metadata only: parser facts are decoded after this result
- * has proven the bounded two-batch materialization envelope.
+ * has proven the bounded four-batch materialization envelope.
  */
 export function selectProjectIncrementalClosure(
   input: ProjectIncrementalClosureSelectionInput,

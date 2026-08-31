@@ -412,7 +412,7 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it.effect('materializes an exact project closure across two bounded fact batches', () =>
+  it.effect('materializes an exact project closure beyond the former aggregate fact ceiling', () =>
     Effect.acquireUseRelease(
       Effect.sync(createProjectClosureRepository),
       root =>
@@ -420,8 +420,8 @@ describe('project-closure incremental indexing', () => {
           const indexer = yield* CodeGraphIndexer;
           const store = yield* CodeGraphStore;
           const path = yield* Path.Path;
-          const incrementalHome = join(root, '.threadnote-two-batch-incremental');
-          const fullHome = join(root, '.threadnote-two-batch-full');
+          const incrementalHome = join(root, '.threadnote-expanded-facts-incremental');
+          const fullHome = join(root, '.threadnote-expanded-facts-full');
           const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
           const incrementalLayout = codeGraphLayout(
             path,
@@ -429,11 +429,13 @@ describe('project-closure incremental indexing', () => {
             base.identity.checkoutId,
             base.identity.worktreeId,
           );
-          const inflatedHashes = ['packages/app/index.ts', 'packages/app/package.json'].map(value =>
-            snapshotFileContentHash(incrementalLayout.databasePath, base.snapshot.id, value),
-          );
+          const inflatedHashes = [
+            'packages/app/index.ts',
+            'packages/app/package.json',
+            'packages/barrel/package.json',
+          ].map(value => snapshotFileContentHash(incrementalLayout.databasePath, base.snapshot.id, value));
           yield* Effect.sync(() => {
-            inflateCachedFacts(incrementalLayout.databasePath, inflatedHashes, 5 * 1_048_576);
+            inflateCachedFacts(incrementalLayout.databasePath, inflatedHashes, 7 * 1_048_576);
             redirectBarrel(root);
           });
 
@@ -445,8 +447,8 @@ describe('project-closure incremental indexing', () => {
             mode: 'incremental-overlay',
             resolutionClosure: 'project',
           });
-          expect(incremental.incrementalWork?.factBytes).toBeGreaterThan(8 * 1_048_576);
-          expect(incremental.incrementalWork?.factBytes).toBeLessThanOrEqual(16 * 1_048_576);
+          expect(incremental.incrementalWork?.factBytes).toBeGreaterThan(16 * 1_048_576);
+          expect(incremental.incrementalWork?.factBytes).toBeLessThanOrEqual(32 * 1_048_576);
           expect(
             normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
           ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));

@@ -38,6 +38,10 @@ import {
   storedCodeGraphFactRawBytesSql,
 } from '../../src/code_graph/fact_storage.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
+import {
+  CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
+  CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES,
+} from '../../src/code_graph/incremental_work.js';
 import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
 import {readPersistedCodeGraphLocalAssociation} from '../../src/code_graph/local_provenance.js';
 import {
@@ -2849,17 +2853,26 @@ describe('native code graph lifecycle', () => {
     ['an added eligible file', createAddedFileRepository, 'file-set-changed'],
     ['a deleted eligible file', createDeletedFileRepository, 'file-set-changed'],
     ['an expanded changed-fact batch', createFactBudgetExpandedRepository, 'project-closure-unbounded'],
-  ] as const)('full materialization fallback for %s', (_label, createRepository, fallbackReason) => {
+  ] as const)('full materialization fallback for %s', (label, createRepository, fallbackReason) => {
     effectIt.effect('fails closed with the exact bounded reason', () =>
       Effect.gen(function* () {
         const root = yield* Effect.sync(createRepository);
         const planObservations: Pick<CodeGraphMaterializationMetrics, 'fallbackReason' | 'mode'>[] = [];
+        let scanningFactsBytesCompleted = 0;
+        let scanningSourceBytesTotal = 0;
         const storageObservations: NonNullable<CodeGraphMaterializationMetrics['storage']>[] = [];
         const indexer = yield* CodeGraphIndexer;
         const result = yield* indexer.index({
           cwd: root,
           onProgress: progress =>
             Effect.sync(() => {
+              if (progress.phase === 'scanning' && progress.metrics !== undefined) {
+                scanningFactsBytesCompleted = Math.max(
+                  scanningFactsBytesCompleted,
+                  progress.metrics.factsBytesCompleted ?? 0,
+                );
+                scanningSourceBytesTotal = Math.max(scanningSourceBytesTotal, progress.metrics.sourceBytesTotal ?? 0);
+              }
               if (progress.phase === 'materializing' && progress.metrics?.storage !== undefined) {
                 storageObservations.push(progress.metrics.storage);
                 planObservations.push({
@@ -2873,6 +2886,10 @@ describe('native code graph lifecycle', () => {
         expect(result.materialization).toMatchObject({fallbackReason, mode: 'full'});
         expect(result.materialization?.stagedFiles).toBe(result.materialization?.totalFiles);
         expect(planObservations.at(-1)).toEqual({fallbackReason, mode: 'full'});
+        if (label === 'an expanded changed-fact batch') {
+          expect(scanningFactsBytesCompleted).toBeGreaterThan(CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES);
+          expect(scanningSourceBytesTotal).toBeLessThan(CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES);
+        }
         expect(result.diagnostics.some(message => message.startsWith('Dirty overlay used full materialization:'))).toBe(
           true,
         );
@@ -6081,7 +6098,7 @@ function createFactBudgetExpandedRepository(): string {
   mkdirSync(sourceRoot, {recursive: true});
   git(root, ['init', '-q']);
   const identifierPadding = 'x'.repeat(192);
-  for (let fileIndex = 0; fileIndex < 3; fileIndex += 1) {
+  for (let fileIndex = 0; fileIndex < 6; fileIndex += 1) {
     const declarations = Array.from(
       {length: 2_000},
       (_, symbolIndex) =>
@@ -6091,7 +6108,7 @@ function createFactBudgetExpandedRepository(): string {
   }
   git(root, ['add', '.']);
   git(root, ['-c', 'user.name=Threadnote Test', '-c', 'user.email=test@threadnote.local', 'commit', '-qm', 'fixture']);
-  for (let fileIndex = 0; fileIndex < 3; fileIndex += 1) {
+  for (let fileIndex = 0; fileIndex < 6; fileIndex += 1) {
     const sourcePath = join(sourceRoot, `expanded-${fileIndex}.ts`);
     writeFileSync(sourcePath, readFileSync(sourcePath, 'utf8').replace('// base-state', '// work-state'));
   }

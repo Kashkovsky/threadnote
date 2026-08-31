@@ -559,21 +559,23 @@ describe('project incremental closure', () => {
       inventory('packages/a/one.ts', 1),
       inventory('packages/a/two.ts', 1),
       inventory('packages/a/three.ts', 1),
+      inventory('packages/a/four.ts', 1),
+      inventory('packages/a/five.ts', 1),
     ];
     expect(
       planProjectIncrementalClosure({
         ...common,
-        cachedFactBytesByPath: new Map(aggregateBudgetFiles.slice(0, 2).map(value => [value.path, 8 * 1_048_576])),
-        files: aggregateBudgetFiles.slice(0, 2),
+        cachedFactBytesByPath: new Map(aggregateBudgetFiles.slice(0, 4).map(value => [value.path, 8 * 1_048_576])),
+        files: aggregateBudgetFiles.slice(0, 4),
         modifiedPaths: [aggregateBudgetFiles[0]!.path],
         projects: [base],
       }),
-    ).toMatchObject({cachedFactBytes: 16 * 1_048_576, mode: 'eligible'});
+    ).toMatchObject({cachedFactBytes: 32 * 1_048_576, mode: 'eligible'});
     expect(
       planProjectIncrementalClosure({
         ...common,
         cachedFactBytesByPath: new Map(
-          aggregateBudgetFiles.map((value, index) => [value.path, index === 2 ? 1 : 8 * 1_048_576]),
+          aggregateBudgetFiles.map((value, index) => [value.path, index === 4 ? 1 : 8 * 1_048_576]),
         ),
         files: aggregateBudgetFiles,
         modifiedPaths: [aggregateBudgetFiles[0]!.path],
@@ -582,9 +584,9 @@ describe('project incremental closure', () => {
     ).toEqual({
       fallbackBoundary: {
         changedFiles: 1,
-        limit: 16 * 1_048_576,
+        limit: 32 * 1_048_576,
         metric: 'cached-fact-bytes',
-        observedAtDecision: 16 * 1_048_576 + 1,
+        observedAtDecision: 32 * 1_048_576 + 1,
         stage: 'project-closure-selection',
       },
       mode: 'fallback',

@@ -5,8 +5,9 @@ import type {CodeGraphFileFacts, CodeGraphInventoryFile} from './types.js';
 
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES = 128;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES = 16 * 1_048_576;
-export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES = 16 * 1_048_576;
-export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES = 2;
+/** Matches one governed persistent materialization transaction while retaining 8 MiB per-file batches. */
+export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES = 32 * 1_048_576;
+export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES = 4;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS = 250_000;
 /** Persisted rows may be carried without decoding, but remain independently bounded. */
 export const CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES = 256;
