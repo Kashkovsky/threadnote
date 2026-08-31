@@ -1,12 +1,18 @@
 import * as yaml from 'js-yaml';
 import fc from 'fast-check';
+import {it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
   CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE,
   CONTEXT_BRIEF_CITATION_SCALE_EXECUTION_V2,
   CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
   contextBriefCitationScaleGate,
+  contextBriefCitationRssSampleGapFailures,
+  contextBriefCitationRssSampleGapSummary,
   contextBriefCitationScaleReleaseIdentityFailures,
   contextBriefCitationScaleRetainedRootRssGrowthBytes,
   evaluateContextBriefCitationScaleProfile,
@@ -38,9 +44,30 @@ describe('Context Brief citation scale benchmark', () => {
       maximumEstimatedTokens: 1_500,
       maximumObservedAddedProcessTreeRssBytes: 64 * 1_024 * 1_024,
       profiles: [
-        {citationCount: 96, citedRepositories: 1, id: 'local-100k', worksetMembers: 1},
-        {citationCount: 64, citedRepositories: 16, id: 'workset-50', worksetMembers: 50},
-        {citationCount: 96, citedRepositories: 32, id: 'workset-128', worksetMembers: 128},
+        {
+          citationCount: 96,
+          citedRepositories: 1,
+          id: 'local-100k',
+          maximumBriefP95Milliseconds: 1_500,
+          maximumValidationP95Milliseconds: 250,
+          worksetMembers: 1,
+        },
+        {
+          citationCount: 64,
+          citedRepositories: 16,
+          id: 'workset-50',
+          maximumBriefP95Milliseconds: 3_250,
+          maximumValidationP95Milliseconds: 950,
+          worksetMembers: 50,
+        },
+        {
+          citationCount: 96,
+          citedRepositories: 32,
+          id: 'workset-128',
+          maximumBriefP95Milliseconds: 5_000,
+          maximumValidationP95Milliseconds: 1_400,
+          worksetMembers: 128,
+        },
       ],
     });
     expect(parseContextBriefCitationScaleBenchmarkArguments(['--built-artifact-sha256', 'a'.repeat(64)])).toMatchObject(
@@ -138,6 +165,113 @@ describe('Context Brief citation scale benchmark', () => {
     expect(rejected.failures).toContain(
       `local-100k observed added process-tree RSS ${64 * 1_024 * 1_024 + 1} exceeds ${64 * 1_024 * 1_024}`,
     );
+  });
+
+  effectIt.effect.prop(
+    'derives and gates bounded sample-gap breach rate and consecutive runs from observation order',
+    {breaches: fc.array(fc.boolean(), {maxLength: 75, minLength: 1})},
+    ({breaches}) =>
+      Effect.sync(() => {
+        const gaps = breaches.map(breach =>
+          breach ? CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.breachThresholdMilliseconds + 1 : 100,
+        );
+        const summary = contextBriefCitationRssSampleGapSummary(gaps);
+        const breachCount = breaches.filter(Boolean).length;
+        let run = 0;
+        let maximumRun = 0;
+        for (const breach of breaches) {
+          run = breach ? run + 1 : 0;
+          maximumRun = Math.max(maximumRun, run);
+        }
+
+        expect(summary).toEqual({
+          maximumConsecutiveSampleGapBreaches: maximumRun,
+          maximumSampleGapMilliseconds: Math.max(...gaps),
+          sampleGapBreachCount: breachCount,
+          sampleGapBreachRate: breachCount / breaches.length,
+        });
+        const shouldPass =
+          breachCount / breaches.length <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.maximumBreachRate &&
+          maximumRun <= CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.maximumConsecutiveBreaches;
+        expect(contextBriefCitationRssSampleGapFailures(summary, breaches.length).length === 0).toBe(shouldPass);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('accepts bounded hosted stalls and rejects rate, consecutive, and hard-maximum violations independently', () => {
+    const pass = contextBriefCitationRssSampleGapSummary([101, 101, ...Array.from({length: 73}, () => 100)]);
+    expect(contextBriefCitationRssSampleGapFailures(pass, 75)).toEqual([]);
+
+    const excessiveRate = contextBriefCitationRssSampleGapSummary([
+      ...Array.from({length: 8}, () => 101),
+      ...Array.from({length: 67}, () => 100),
+    ]);
+    expect(contextBriefCitationRssSampleGapFailures(excessiveRate, 75)).toEqual(
+      expect.arrayContaining([expect.stringContaining('breach rate 8/75')]),
+    );
+
+    const excessiveRun = contextBriefCitationRssSampleGapSummary([
+      101,
+      101,
+      101,
+      ...Array.from({length: 72}, () => 100),
+    ]);
+    expect(contextBriefCitationRssSampleGapFailures(excessiveRun, 75)).toEqual(
+      expect.arrayContaining([expect.stringContaining('3 consecutive')]),
+    );
+
+    const hardMaximum = contextBriefCitationRssSampleGapSummary([251, ...Array.from({length: 74}, () => 100)]);
+    expect(contextBriefCitationRssSampleGapFailures(hardMaximum, 75)).toEqual(
+      expect.arrayContaining([expect.stringContaining('251ms exceeds hard maximum 250ms')]),
+    );
+  });
+
+  it('fails closed on every derived sample-gap summary and reviewed schedule dimension', () => {
+    const artifact = scaleArtifact();
+    const mutations: readonly unknown[] = [
+      {
+        ...artifact,
+        memoryObserver: {
+          ...artifact.memoryObserver,
+          maximumConsecutiveSampleGapBreaches: artifact.memoryObserver.maximumConsecutiveSampleGapBreaches + 1,
+        },
+      },
+      {
+        ...artifact,
+        memoryObserver: {
+          ...artifact.memoryObserver,
+          maximumSampleGapMilliseconds: artifact.memoryObserver.maximumSampleGapMilliseconds + 1,
+        },
+      },
+      {
+        ...artifact,
+        memoryObserver: {
+          ...artifact.memoryObserver,
+          sampleGapBreachCount: artifact.memoryObserver.sampleGapBreachCount + 1,
+        },
+      },
+      {
+        ...artifact,
+        memoryObserver: {
+          ...artifact.memoryObserver,
+          sampleGapBreachRate: artifact.memoryObserver.sampleGapBreachRate + 0.1,
+        },
+      },
+      {
+        ...artifact,
+        memoryObserver: {
+          ...artifact.memoryObserver,
+          sampleGapPolicy: {...artifact.memoryObserver.sampleGapPolicy, version: 2},
+        },
+      },
+      {
+        ...artifact,
+        memoryObserver: {...artifact.memoryObserver, samplingSchedule: 'fixed-delay-v0'},
+      },
+    ];
+    for (const mutation of mutations) {
+      expect(() => parseContextBriefCitationScaleArtifactV2(mutation, budget)).toThrow(/Invalid Context Brief/u);
+    }
   });
 
   it('fails closed when a claimed OS peak growth is not derivable from its fixed baseline', () => {
@@ -460,6 +594,7 @@ function scaleArtifact(): ContextBriefCitationScaleArtifactV2 {
         treeRssBytes: 512 * 1_024 * 1_024,
       },
       intervalMilliseconds: 25,
+      maximumConsecutiveSampleGapBreaches: 0,
       maximumSampleGapMilliseconds: 25,
       observationCount: 3,
       observerExcluded: true,
@@ -467,12 +602,16 @@ function scaleArtifact(): ContextBriefCitationScaleArtifactV2 {
       retainedRootRssGrowthBytes: 0,
       rootIdentityValidation: 'darwin-ps-lstart',
       rootStartIdentity: 'root-start',
+      sampleGapBreachCount: 0,
+      sampleGapBreachRate: 0,
+      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
       sampleAttempts: 10,
       sampleFailures: 0,
       scope: 'recursive-process-tree',
+      samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
       source: 'darwin-ps',
       successfulSamples: 10,
-      version: 1,
+      version: 2,
     },
     profiles,
     samples: 1,

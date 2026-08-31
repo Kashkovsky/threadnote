@@ -1,4 +1,5 @@
 import type {Database} from 'bun:sqlite';
+import {codeGraphSqliteAll} from './sqlite_statement.js';
 
 export interface CodeGraphMaterializationSpoolSurface {
   readonly columns: string;
@@ -151,13 +152,10 @@ export function assertCodeGraphMaterializationSpoolSurfaceState(
   sortedSurfaceCount: number,
 ): void {
   const tables = new Set(
-    (
-      database
-        .prepare(
-          `SELECT name FROM sqlite_master
-           WHERE type = 'table' AND (name LIKE 'materialization_raw_%' OR name LIKE 'materialization_ordered_%')`,
-        )
-        .all() as readonly {readonly name: string}[]
+    codeGraphSqliteAll<{readonly name: string}>(
+      database,
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND (name LIKE 'materialization_raw_%' OR name LIKE 'materialization_ordered_%')`,
     ).map(row => row.name),
   );
   for (let index = 0; index < CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length; index += 1) {

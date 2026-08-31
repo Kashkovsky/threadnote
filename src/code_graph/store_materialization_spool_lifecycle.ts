@@ -40,6 +40,7 @@ import {partitionPersistedReferenceEdges} from './store_resolution_core.js';
 import {persistedFullBatchFingerprint} from './store_staging_core.js';
 import type {CodeGraphStoreRuntime} from './store_runtime.js';
 import {classifyCodeGraphStoreFailure} from './store_failure.js';
+import {codeGraphSqliteGet} from './sqlite_statement.js';
 import {CODE_GRAPH_SCHEMA_VERSION, CodeGraphStoreError} from './types.js';
 
 interface PersistentSpoolSnapshotRow {
@@ -167,11 +168,13 @@ export const finalizePersistentMaterializationSpool = Effect.fn('codeGraph.final
     );
     const sortBoundary = yield* usePersistentSpool(runtime, header, context, database => {
       sealCodeGraphMaterializationSpool(database, expectedBatchCount);
-      const totals = database
-        .prepare(
-          'SELECT COALESCE(SUM(fact_bytes), 0) AS fact_bytes, COALESCE(SUM(row_count), 0) AS row_count FROM materialization_spool_batches',
-        )
-        .get() as {readonly fact_bytes: number | bigint; readonly row_count: number | bigint};
+      const totals = codeGraphSqliteGet<{readonly fact_bytes: number | bigint; readonly row_count: number | bigint}>(
+        database,
+        'SELECT COALESCE(SUM(fact_bytes), 0) AS fact_bytes, COALESCE(SUM(row_count), 0) AS row_count FROM materialization_spool_batches',
+      );
+      if (totals === null) {
+        throw new CodeGraphStoreError('Persistent materialization spool totals are missing.');
+      }
       return {
         finalFactBytes: Number(totals.fact_bytes),
         operation: 'sort persistent code graph materialization spool',
@@ -329,7 +332,11 @@ function usePersistentSpool<Value>(
         },
         catch: () => new CodeGraphStoreError('Persistent materialization spool operation failed.'),
       }),
-    database => Effect.sync(() => database.close()),
+    database =>
+      Effect.try({
+        try: () => database.close(true),
+        catch: () => new CodeGraphStoreError('Persistent materialization spool could not be closed.'),
+      }),
   );
 }
 

@@ -82,8 +82,12 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    required stop-barrier sample. The observer exits before the latency series begins, so timing has no observer or
    boundary-RSS instrumentation. The exact bundled target recomputes its own wrapper-supplied
    SHA-256 and launches that same bundle as the observer; the observer and its descendants are excluded from the
-   recursive process tree. Each memory observation must have at least three successful samples, no failed samples, a
-   maximum 100 ms sample gap, a root-only baseline, and valid root/tree baseline, peak, and growth arithmetic. The
+   recursive process tree. The v2 observer schedules against absolute monotonic deadlines and skips missed deadlines
+   instead of adding a fixed delay after a slow sample. Each memory observation must have at least three successful
+   samples, no failed samples, a root-only baseline, and valid root/tree baseline, peak, and growth arithmetic. Across
+   the ordered memory series, observations whose maximum successful-sample gap exceeds 100 ms may comprise at most
+   10%, with at most two such observations consecutively and an absolute 250 ms hard maximum; retain the raw maximum,
+   breach count, rate, and maximum consecutive run in the artifact. The
    single-repository profile must sample a workload descendant at least once; each sustained multi-repository Workset
    profile must do so in at least 80% of its observations. This avoids pretending that the roughly 45 ms macOS `ps`
    cadence can reliably catch every short-lived local Git child while preserving a strong fan-out coverage gate.
