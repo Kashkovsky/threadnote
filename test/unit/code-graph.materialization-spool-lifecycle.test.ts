@@ -12,6 +12,7 @@ import type {
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
 import {materializationStorageFiles} from '../../src/code_graph/indexer_materialization.js';
+import {codeGraphSqliteGet} from '../../src/code_graph/sqlite_statement.js';
 
 effectIt.effect('materializes a full build through the sorted sidecar and removes it after finalization', () =>
   Effect.gen(function* () {
@@ -99,7 +100,9 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
       }),
     );
     const sidecarPath = path.join(repositoryRoot, `materialization-spool-v1-${snapshot.id}.sqlite`);
-    expect(yield* fs.exists(sidecarPath)).toBe(false);
+    for (const candidate of [sidecarPath, `${sidecarPath}-journal`, `${sidecarPath}-shm`, `${sidecarPath}-wal`]) {
+      expect(yield* fs.exists(candidate)).toBe(false);
+    }
     expect(Math.max(databaseJournalHighWaterBytes, databaseWalHighWaterBytes)).toBeGreaterThan(0);
     expect(sidecarDatabaseHighWaterBytes).toBeGreaterThan(0);
     expect(sidecarJournalHighWaterBytes).toBeGreaterThan(0);
@@ -107,18 +110,26 @@ effectIt.effect('materializes a full build through the sorted sidecar and remove
     const database = new Database(databasePath, {readonly: true, strict: true});
     try {
       expect(
-        database
-          .prepare(
-            `SELECT
-               (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ?) AS symbols,
-               (SELECT COUNT(*) FROM snapshot_symbol_lookup WHERE snapshot_id = ?) AS lookup,
-               (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ?) AS receipts,
-               (SELECT posting_count FROM building_lexical_counters WHERE snapshot_id = ?) AS postings`,
-          )
-          .get(snapshot.id, snapshot.id, snapshot.id, snapshot.id),
+        codeGraphSqliteGet<{
+          readonly lookup: number;
+          readonly postings: number;
+          readonly receipts: number;
+          readonly symbols: number;
+        }>(
+          database,
+          `SELECT
+             (SELECT COUNT(*) FROM symbols WHERE snapshot_id = ?) AS symbols,
+             (SELECT COUNT(*) FROM snapshot_symbol_lookup WHERE snapshot_id = ?) AS lookup,
+             (SELECT COUNT(*) FROM building_materialization_batches WHERE snapshot_id = ?) AS receipts,
+             (SELECT posting_count FROM building_lexical_counters WHERE snapshot_id = ?) AS postings`,
+          snapshot.id,
+          snapshot.id,
+          snapshot.id,
+          snapshot.id,
+        ),
       ).toEqual({lookup: 2, postings: 3, receipts: 1, symbols: 1});
     } finally {
-      database.close(false);
+      database.close(true);
     }
   }).pipe(provideTestLayer(ApplicationLayer)),
 );

@@ -2327,6 +2327,102 @@ describe('code graph release evidence', () => {
     ).toThrow(/hot-exact-lexical-query/);
   });
 
+  it('admits only a five-percent hot-query wall tail while median and process CPU remain bounded', () => {
+    const hotWall = benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', [
+      ...Array.from({length: 23}, () => 50),
+      105,
+      106,
+    ]);
+    const measurements = [
+      'cold-index',
+      'cold-materialization',
+      'one-file-reindex-index',
+      'one-file-reindex-materialization',
+      'whole-graph-structural-analysis',
+    ].map(name => benchmarkMeasurement(name, 'milliseconds', [10]));
+    const artifact = benchmarkArtifact([
+      ...measurements,
+      hotWall,
+      benchmarkMeasurement(
+        'hot-query-process-cpu',
+        'milliseconds',
+        Array.from({length: 25}, () => 80),
+      ),
+      benchmarkMeasurement('incremental-process-peak-rss', 'bytes', [10]),
+      benchmarkMeasurement('derived-index-disk', 'bytes', [10]),
+    ]);
+    const developmentPerformance = {
+      coldIndexP95MillisecondsMaximum: 20,
+      coldMaterializationP95MillisecondsMaximum: 20,
+      derivedIndexBytesMaximum: 20,
+      hotQueryP50MillisecondsMaximum: 60,
+      hotQueryP95MillisecondsMaximum: 100,
+      hotQueryProcessCpuP95MillisecondsMaximum: 90,
+      hotQueryWallP95ToleranceRatioMaximum: 0.05,
+      oneFileIncrementalP95MillisecondsMaximum: 20,
+      oneFileMaterializationP95MillisecondsMaximum: 20,
+      processPeakRssBytesMaximum: 20,
+      wholeGraphAnalysisP95MillisecondsMaximum: 20,
+    };
+
+    expect(hotWall.p95).toBe(105);
+    expect(() => enforceCodeGraphBenchmarkBudget(artifact, {developmentPerformance}, undefined)).not.toThrow();
+    expect(artifact.measurements.find(measurement => measurement.name === hotWall.name)?.p95).toBe(105);
+
+    const replace = (name: string, measurement: BenchmarkArtifactV1['measurements'][number]) => ({
+      ...artifact,
+      measurements: artifact.measurements.map(candidate => (candidate.name === name ? measurement : candidate)),
+    });
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        replace(
+          hotWall.name,
+          benchmarkMeasurement(hotWall.name, 'milliseconds', [...Array.from({length: 23}, () => 50), 105.001, 106]),
+        ),
+        {developmentPerformance},
+        undefined,
+      ),
+    ).toThrow(/hot-exact-lexical-query/);
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        replace(
+          hotWall.name,
+          benchmarkMeasurement(hotWall.name, 'milliseconds', [...Array.from({length: 23}, () => 61), 105, 106]),
+        ),
+        {developmentPerformance},
+        undefined,
+      ),
+    ).toThrow(/p50 61 exceeds 60/);
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        replace(hotWall.name, benchmarkMeasurement(hotWall.name, 'milliseconds', [50])),
+        {developmentPerformance},
+        undefined,
+      ),
+    ).toThrow(/requires at least 25 samples/);
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        replace(
+          'hot-query-process-cpu',
+          benchmarkMeasurement(
+            'hot-query-process-cpu',
+            'milliseconds',
+            Array.from({length: 25}, () => 91),
+          ),
+        ),
+        {developmentPerformance},
+        undefined,
+      ),
+    ).toThrow(/hot-query-process-cpu p95 91 exceeds 90/);
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        artifact,
+        {developmentPerformance: {...developmentPerformance, hotQueryWallP95ToleranceRatioMaximum: 0.051}},
+        undefined,
+      ),
+    ).toThrow(/ratio from 0 to 0.05/);
+  });
+
   it('accepts repeatable structured controls without retaining them in the artifact contract', () => {
     const javaControl = JSON.stringify({
       expectedLanguage: 'java',

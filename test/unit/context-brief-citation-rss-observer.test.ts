@@ -1,10 +1,17 @@
 import fc from 'fast-check';
+import {it as effectIt} from '@effect/vitest';
+import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
+import {
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
+} from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import type {BenchmarkProcessTreeSample} from '../../scripts/code-graph-benchmark-sampler.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_OBSERVER_MODE,
   applyContextBriefCitationRssRequest,
   contextBriefCitationRssArtifact,
+  contextBriefCitationRssNextSampleDeadlineNanos,
   contextBriefCitationRssObserverArguments,
   isContextBriefCitationRssObserverMode,
   makeContextBriefCitationRssObserverState,
@@ -25,7 +32,7 @@ describe('Context Brief citation RSS observer protocol', () => {
       observationId: 'workset-128-memory-001',
       sequence: 1,
       state: 'begun',
-      version: 1,
+      version: 2,
     });
     expect(
       applyContextBriefCitationRssRequest(begun.state, beginRequest, attempt(999, sample(999, 999))),
@@ -43,17 +50,18 @@ describe('Context Brief citation RSS observer protocol', () => {
       attempt(120, sample(120, 150), 2, 1),
     );
     expect(() =>
-      applyContextBriefCitationRssRequest(ended.state, {operation: 'stop', sequence: 3, version: 1}),
+      applyContextBriefCitationRssRequest(ended.state, {operation: 'stop', sequence: 3, version: 2}),
     ).toThrow(/barriers require a process-tree sample/u);
     const stopped = applyContextBriefCitationRssRequest(
       ended.state,
-      {operation: 'stop', sequence: 3, version: 1},
+      {operation: 'stop', sequence: 3, version: 2},
       attempt(130, sample(110, 110)),
     );
     const artifact = contextBriefCitationRssArtifact(stopped.state);
 
     expect(artifact).toMatchObject({
       maximumSampleGapMilliseconds: 10,
+      maximumConsecutiveSampleGapBreaches: 0,
       finalSample: {
         processCount: 1,
         rootRssBytes: 110,
@@ -65,12 +73,16 @@ describe('Context Brief citation RSS observer protocol', () => {
       processCountPeakObserved: 2,
       rootIdentityValidation: 'linux-proc-starttime',
       rootStartIdentity: '4242',
+      sampleGapBreachCount: 0,
+      sampleGapBreachRate: 0,
+      sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
       sampleAttempts: 6,
       sampleFailures: 2,
       scope: 'recursive-process-tree',
+      samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
       source: 'linux-proc',
       successfulSamples: 4,
-      version: 1,
+      version: 2,
     });
     expect(artifact.observations).toEqual([
       {
@@ -118,7 +130,7 @@ describe('Context Brief citation RSS observer protocol', () => {
       ),
     ).toThrow(/does not match/u);
     expect(() =>
-      applyContextBriefCitationRssRequest(begun.state, {operation: 'stop', sequence: 2, version: 1}),
+      applyContextBriefCitationRssRequest(begun.state, {operation: 'stop', sequence: 2, version: 2}),
     ).toThrow(/active observation/u);
     expect(() => observeContextBriefCitationRssSample(begun.state, attempt(0, sample(10, 10)))).toThrow(
       /time moved backwards/u,
@@ -129,10 +141,10 @@ describe('Context Brief citation RSS observer protocol', () => {
     expect(() =>
       parseContextBriefCitationRssRequest({...request('begin', 1, 'local-100k-memory-001'), extra: 1}),
     ).toThrow(/fields are invalid/u);
-    expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 1, state: 'begun', version: 1})).toThrow(
+    expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 1, state: 'begun', version: 2})).toThrow(
       /fields are invalid/u,
     );
-    expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 514, state: 'stopped', version: 1})).toThrow(
+    expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 514, state: 'stopped', version: 2})).toThrow(
       /protocol bound/u,
     );
     expect(() =>
@@ -141,10 +153,11 @@ describe('Context Brief citation RSS observer protocol', () => {
         observerExcluded: true,
         rootIdentityValidation: 'darwin-ps-lstart',
         rootStartIdentity: '4242',
+        samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
         scope: 'recursive-process-tree',
         source: 'linux-proc',
         state: 'ready',
-        version: 1,
+        version: 2,
       }),
     ).toThrow(/do not match/u);
 
@@ -164,6 +177,20 @@ describe('Context Brief citation RSS observer protocol', () => {
         finalSample: {...artifact.finalSample, rootRssBytes: artifact.finalSample.treeRssBytes + 1},
       }),
     ).toThrow(/final root RSS exceeds tree RSS/u);
+    for (const inconsistent of [
+      {...artifact, maximumConsecutiveSampleGapBreaches: artifact.maximumConsecutiveSampleGapBreaches + 1},
+      {...artifact, maximumSampleGapMilliseconds: artifact.maximumSampleGapMilliseconds + 1},
+      {...artifact, sampleGapBreachCount: artifact.sampleGapBreachCount + 1},
+      {...artifact, sampleGapBreachRate: artifact.sampleGapBreachRate + 0.1},
+    ]) {
+      expect(() => parseContextBriefCitationRssArtifact(inconsistent)).toThrow(/is inconsistent/u);
+    }
+    expect(() =>
+      parseContextBriefCitationRssArtifact({
+        ...artifact,
+        sampleGapPolicy: {...artifact.sampleGapPolicy, hardMaximumGapMilliseconds: 251},
+      }),
+    ).toThrow(/sample-gap policy is invalid/u);
   });
 
   it('keeps observed growth translation-invariant and equal to the independent maximum model', () => {
@@ -210,6 +237,35 @@ describe('Context Brief citation RSS observer protocol', () => {
     expect(isContextBriefCitationRssObserverMode(['--user-option'])).toBe(false);
     expect(JSON.stringify(oneObservationArtifact())).not.toContain('/tmp/private');
   });
+
+  effectIt.effect.prop(
+    'advances absolute monotonic deadlines without adding a fixed interval after slow samples',
+    {
+      elapsedIntervals: fc.integer({max: 10_000, min: 0}),
+      intervalMilliseconds: fc.integer({max: 1_000, min: 10}),
+      offsetNanos: fc.integer({max: 999_999, min: 0}),
+      originNanos: fc.bigInt({max: 1_000_000_000_000n, min: 0n}),
+    },
+    ({elapsedIntervals, intervalMilliseconds, offsetNanos, originNanos}) =>
+      Effect.sync(() => {
+        const intervalNanos = BigInt(intervalMilliseconds) * 1_000_000n;
+        const currentDeadline = originNanos + intervalNanos;
+        const observedAt = currentDeadline + BigInt(elapsedIntervals) * intervalNanos + BigInt(offsetNanos);
+        const next = contextBriefCitationRssNextSampleDeadlineNanos(currentDeadline, observedAt, intervalMilliseconds);
+
+        expect(next).toBeGreaterThan(observedAt);
+        expect(next - observedAt).toBeLessThanOrEqual(intervalNanos);
+        expect((next - currentDeadline) % intervalNanos).toBe(0n);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('retains an upcoming absolute deadline and rejects unreviewed sampling intervals', () => {
+    expect(contextBriefCitationRssNextSampleDeadlineNanos(20_000_000n, 19_999_999n, 10)).toBe(20_000_000n);
+    expect(() => contextBriefCitationRssNextSampleDeadlineNanos(20_000_000n, 20_000_000n, 9)).toThrow(
+      /interval is out of bounds/u,
+    );
+  });
 });
 
 function modeledArtifact(
@@ -236,7 +292,7 @@ function modeledArtifact(
   ).state;
   current = applyContextBriefCitationRssRequest(
     current,
-    {operation: 'stop', sequence: 3, version: 1},
+    {operation: 'stop', sequence: 3, version: 2},
     attempt(endAt + 1, sample(baseline, baseline)),
   ).state;
   return contextBriefCitationRssArtifact(current);
@@ -256,7 +312,7 @@ function state(): ContextBriefCitationRssObserverState {
 }
 
 function request(operation: 'begin' | 'end', sequence: number, observationId: string) {
-  return {observationId, operation, sequence, version: 1 as const};
+  return {observationId, operation, sequence, version: 2 as const};
 }
 
 function attempt(observedAtMilliseconds: number, observed: BenchmarkProcessTreeSample, attempts = 1, failures = 0) {

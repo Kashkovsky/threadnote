@@ -17,7 +17,10 @@
     "coldIndexP95MillisecondsMaximum": 10000,
     "coldMaterializationP95MillisecondsMaximum": 5000,
     "derivedIndexBytesMaximum": 67108864,
+    "hotQueryP50MillisecondsMaximum": 125,
     "hotQueryP95MillisecondsMaximum": 250,
+    "hotQueryProcessCpuP95MillisecondsMaximum": 250,
+    "hotQueryWallP95ToleranceRatioMaximum": 0.05,
     "oneFileIncrementalP95MillisecondsMaximum": 5000,
     "oneFileMaterializationP95MillisecondsMaximum": 4000,
     "processPeakRssBytesMaximum": 1073741824,
@@ -25,7 +28,9 @@
   },
   "developmentPerformanceByPlatform": {
     "win32": {
+      "hotQueryP50MillisecondsMaximum": 750,
       "hotQueryP95MillisecondsMaximum": 1000,
+      "hotQueryProcessCpuP95MillisecondsMaximum": 500,
       "oneFileIncrementalP95MillisecondsMaximum": 10000,
       "wholeGraphAnalysisP95MillisecondsMaximum": 2000
     }
@@ -87,6 +92,7 @@
   "notes": [
     "Quality and safety budgets are release gates on every platform.",
     "Development performance budgets detect order-of-magnitude regressions on the reviewed fixture.",
+    "The development hot-query wall p95 admits at most 5% scheduler-tail hysteresis only while its independent hard p50 and process-CPU ceilings both remain green; raw observations remain unchanged in the retained artifact.",
     "Hosted Windows uses explicit development-only scheduler headroom for hot query, one-file indexing, and structural analysis; Linux and macOS retain the tighter reviewed fixture ceilings.",
     "The Windows overrides still reject multi-second hot queries and minute-scale one-file rebuilds instead of weakening vector, scale, quality, or safety gates.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",

@@ -135,6 +135,18 @@ describe('platform benchmark workflow', () => {
     for (const jobName of ['code-graph-100k', 'code-graph-vectors-100k', 'recall-100k']) {
       expect(workflow.jobs[jobName]?.if).toContain("github.event_name == 'schedule'");
     }
+    for (const jobName of [
+      'code-graph-pr-scale',
+      'code-graph',
+      'code-graph-10k',
+      'code-graph-vectors',
+      'code-graph-vectors-10k',
+      'code-graph-100k',
+      'code-graph-vectors-100k',
+    ]) {
+      const upload = workflow.jobs[jobName]?.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
+      expect(upload?.if).toBe('always()');
+    }
   });
 
   it('runs one reduced production ratchet only for graph-affecting pull requests', () => {

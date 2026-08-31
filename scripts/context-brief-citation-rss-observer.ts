@@ -1,6 +1,12 @@
 import {Clock, Effect, FileSystem, Option} from 'effect';
 import {SystemInfo} from '../src/effect/system.js';
 import {
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
+  contextBriefCitationRssSampleGapSummary,
+  type ContextBriefCitationRssSampleGapSummaryV1,
+} from '../src/evaluation/context-brief-citation-scale-contract.js';
+import {
   linuxClockTicksPerSecond,
   readProcessTreeSample,
   samplerProcessTelemetryContract,
@@ -10,7 +16,8 @@ import {ScriptError} from './effect/errors.js';
 
 export const CONTEXT_BRIEF_CITATION_RSS_OBSERVER_MODE = '--internal-context-brief-citation-rss-observer';
 
-const ARTIFACT_VERSION = 1 as const;
+const ARTIFACT_VERSION = 2 as const;
+const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
 const MAXIMUM_OBSERVATIONS = 256;
 const MAXIMUM_PROTOCOL_SEQUENCE = MAXIMUM_OBSERVATIONS * 2 + 1;
 const MAXIMUM_REQUEST_BYTES = 4 * 1_024;
@@ -19,7 +26,7 @@ const MAXIMUM_RUNTIME_MILLISECONDS = 3 * 60 * 60 * 1_000;
 export type ContextBriefCitationRssSource = 'darwin-ps' | 'linux-proc';
 export type ContextBriefCitationRssRootIdentityValidation = 'darwin-ps-lstart' | 'linux-proc-starttime';
 
-export type ContextBriefCitationRssRequestV1 =
+export type ContextBriefCitationRssRequestV2 =
   | {
       readonly observationId: string;
       readonly operation: 'begin' | 'end';
@@ -32,7 +39,7 @@ export type ContextBriefCitationRssRequestV1 =
       readonly version: typeof ARTIFACT_VERSION;
     };
 
-export type ContextBriefCitationRssAcknowledgementV1 =
+export type ContextBriefCitationRssAcknowledgementV2 =
   | {
       readonly observationId: string;
       readonly sequence: number;
@@ -45,18 +52,19 @@ export type ContextBriefCitationRssAcknowledgementV1 =
       readonly version: typeof ARTIFACT_VERSION;
     };
 
-export interface ContextBriefCitationRssReadyV1 {
+export interface ContextBriefCitationRssReadyV2 {
   readonly intervalMilliseconds: number;
   readonly observerExcluded: true;
   readonly rootIdentityValidation: ContextBriefCitationRssRootIdentityValidation;
   readonly rootStartIdentity: string;
+  readonly samplingSchedule: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE;
   readonly scope: 'recursive-process-tree';
   readonly source: ContextBriefCitationRssSource;
   readonly state: 'ready';
   readonly version: typeof ARTIFACT_VERSION;
 }
 
-export interface ContextBriefCitationRssObservationV1 {
+export interface ContextBriefCitationRssObservationV2 {
   readonly durationMilliseconds: number;
   readonly maximumSampleGapMilliseconds: number;
   readonly observationId: string;
@@ -73,7 +81,7 @@ export interface ContextBriefCitationRssObservationV1 {
   readonly treeRssPeakObservedBytes: number;
 }
 
-export interface ContextBriefCitationRssFinalSampleV1 {
+export interface ContextBriefCitationRssFinalSampleV2 {
   readonly processCount: number;
   readonly rootRssBytes: number;
   readonly sampleAttempts: number;
@@ -81,18 +89,19 @@ export interface ContextBriefCitationRssFinalSampleV1 {
   readonly treeRssBytes: number;
 }
 
-export interface ContextBriefCitationRssArtifactV1 {
-  readonly finalSample: ContextBriefCitationRssFinalSampleV1;
+export interface ContextBriefCitationRssArtifactV2 extends ContextBriefCitationRssSampleGapSummaryV1 {
+  readonly finalSample: ContextBriefCitationRssFinalSampleV2;
   readonly intervalMilliseconds: number;
-  readonly maximumSampleGapMilliseconds: number;
-  readonly observations: readonly ContextBriefCitationRssObservationV1[];
+  readonly observations: readonly ContextBriefCitationRssObservationV2[];
   readonly observerExcluded: true;
   readonly processCountPeakObserved: number;
   readonly rootIdentityValidation: ContextBriefCitationRssRootIdentityValidation;
   readonly rootStartIdentity: string;
+  readonly sampleGapPolicy: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1;
   readonly sampleAttempts: number;
   readonly sampleFailures: number;
   readonly scope: 'recursive-process-tree';
+  readonly samplingSchedule: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE;
   readonly source: ContextBriefCitationRssSource;
   readonly successfulSamples: number;
   readonly version: typeof ARTIFACT_VERSION;
@@ -123,20 +132,21 @@ interface ActiveObservation {
 
 export interface ContextBriefCitationRssObserverState {
   readonly active?: ActiveObservation;
-  readonly finalSample?: ContextBriefCitationRssFinalSampleV1;
+  readonly finalSample?: ContextBriefCitationRssFinalSampleV2;
   readonly intervalMilliseconds: number;
-  readonly lastAcknowledgement?: ContextBriefCitationRssAcknowledgementV1;
-  readonly lastRequest?: ContextBriefCitationRssRequestV1;
+  readonly lastAcknowledgement?: ContextBriefCitationRssAcknowledgementV2;
+  readonly lastRequest?: ContextBriefCitationRssRequestV2;
   readonly nextSequence: number;
-  readonly observations: readonly ContextBriefCitationRssObservationV1[];
+  readonly observations: readonly ContextBriefCitationRssObservationV2[];
   readonly rootIdentityValidation: ContextBriefCitationRssRootIdentityValidation;
   readonly rootStartIdentity: string;
+  readonly samplingSchedule: typeof CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE;
   readonly source: ContextBriefCitationRssSource;
   readonly stopped: boolean;
 }
 
 export interface ContextBriefCitationRssProtocolTransition {
-  readonly acknowledgement: ContextBriefCitationRssAcknowledgementV1;
+  readonly acknowledgement: ContextBriefCitationRssAcknowledgementV2;
   readonly replayed: boolean;
   readonly state: ContextBriefCitationRssObserverState;
 }
@@ -179,7 +189,26 @@ export function contextBriefCitationRssObserverArguments(
   ];
 }
 
-export function parseContextBriefCitationRssRequest(value: unknown): ContextBriefCitationRssRequestV1 {
+/** Advance an absolute monotonic schedule past work completed at the supplied instant. */
+export function contextBriefCitationRssNextSampleDeadlineNanos(
+  currentDeadlineNanos: bigint,
+  observedAtNanos: bigint,
+  intervalMilliseconds: number,
+): bigint {
+  if (currentDeadlineNanos < 0n || observedAtNanos < 0n) {
+    invalid('RSS observer monotonic deadline is invalid.');
+  }
+  const parsedIntervalMilliseconds = positiveSafeInteger(intervalMilliseconds, 'RSS observer interval');
+  if (parsedIntervalMilliseconds < 10 || parsedIntervalMilliseconds > 1_000) {
+    invalid('RSS observer interval is out of bounds.');
+  }
+  const intervalNanos = BigInt(parsedIntervalMilliseconds) * NANOSECONDS_PER_MILLISECOND;
+  if (observedAtNanos < currentDeadlineNanos) return currentDeadlineNanos;
+  const elapsedIntervals = (observedAtNanos - currentDeadlineNanos) / intervalNanos + 1n;
+  return currentDeadlineNanos + elapsedIntervals * intervalNanos;
+}
+
+export function parseContextBriefCitationRssRequest(value: unknown): ContextBriefCitationRssRequestV2 {
   const request = record(value, 'RSS observer request');
   const operation = request.operation;
   if (operation !== 'begin' && operation !== 'end' && operation !== 'stop') {
@@ -197,7 +226,7 @@ export function parseContextBriefCitationRssRequest(value: unknown): ContextBrie
   return {observationId, operation, sequence, version: ARTIFACT_VERSION};
 }
 
-export function parseContextBriefCitationRssAcknowledgement(value: unknown): ContextBriefCitationRssAcknowledgementV1 {
+export function parseContextBriefCitationRssAcknowledgement(value: unknown): ContextBriefCitationRssAcknowledgementV2 {
   const acknowledgement = record(value, 'RSS observer acknowledgement');
   if (acknowledgement.state !== 'begun' && acknowledgement.state !== 'ended' && acknowledgement.state !== 'stopped') {
     invalid('RSS observer acknowledgement state is invalid.');
@@ -222,7 +251,7 @@ export function parseContextBriefCitationRssAcknowledgement(value: unknown): Con
   };
 }
 
-export function parseContextBriefCitationRssReady(value: unknown): ContextBriefCitationRssReadyV1 {
+export function parseContextBriefCitationRssReady(value: unknown): ContextBriefCitationRssReadyV2 {
   const ready = record(value, 'RSS observer ready evidence');
   exactKeys(
     ready,
@@ -231,6 +260,7 @@ export function parseContextBriefCitationRssReady(value: unknown): ContextBriefC
       'observerExcluded',
       'rootIdentityValidation',
       'rootStartIdentity',
+      'samplingSchedule',
       'scope',
       'source',
       'state',
@@ -243,21 +273,26 @@ export function parseContextBriefCitationRssReady(value: unknown): ContextBriefC
   return {...contract, state: 'ready'};
 }
 
-export function parseContextBriefCitationRssArtifact(value: unknown): ContextBriefCitationRssArtifactV1 {
+export function parseContextBriefCitationRssArtifact(value: unknown): ContextBriefCitationRssArtifactV2 {
   const artifact = record(value, 'RSS observer artifact');
   exactKeys(
     artifact,
     [
       'intervalMilliseconds',
       'finalSample',
+      'maximumConsecutiveSampleGapBreaches',
       'maximumSampleGapMilliseconds',
       'observations',
       'observerExcluded',
       'processCountPeakObserved',
       'rootIdentityValidation',
       'rootStartIdentity',
+      'sampleGapBreachCount',
+      'sampleGapBreachRate',
+      'sampleGapPolicy',
       'sampleAttempts',
       'sampleFailures',
+      'samplingSchedule',
       'scope',
       'source',
       'successfulSamples',
@@ -274,19 +309,27 @@ export function parseContextBriefCitationRssArtifact(value: unknown): ContextBri
     invalid('RSS observer artifact observation IDs must be unique.');
   }
   const finalSample = parseFinalSample(artifact.finalSample);
+  parseSampleGapPolicy(artifact.sampleGapPolicy);
   const expected = observationTotals(observations, finalSample);
   for (const [key, value] of Object.entries(expected)) {
     if (artifact[key] !== value) invalid(`RSS observer artifact ${key} is inconsistent.`);
   }
-  return {...contract, ...expected, finalSample, observations};
+  return {
+    ...contract,
+    ...expected,
+    finalSample,
+    observations,
+    sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  };
 }
 
 export function makeContextBriefCitationRssObserverState(
-  ready: Omit<ContextBriefCitationRssReadyV1, 'observerExcluded' | 'scope' | 'state' | 'version'>,
+  ready: Omit<ContextBriefCitationRssReadyV2, 'observerExcluded' | 'samplingSchedule' | 'scope' | 'state' | 'version'>,
 ): ContextBriefCitationRssObserverState {
   const parsed = parseContextBriefCitationRssReady({
     ...ready,
     observerExcluded: true,
+    samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     scope: 'recursive-process-tree',
     state: 'ready',
     version: ARTIFACT_VERSION,
@@ -297,6 +340,7 @@ export function makeContextBriefCitationRssObserverState(
     observations: [],
     rootIdentityValidation: parsed.rootIdentityValidation,
     rootStartIdentity: parsed.rootStartIdentity,
+    samplingSchedule: parsed.samplingSchedule,
     source: parsed.source,
     stopped: false,
   };
@@ -309,7 +353,7 @@ export function makeContextBriefCitationRssObserverState(
  */
 export function applyContextBriefCitationRssRequest(
   current: ContextBriefCitationRssObserverState,
-  input: ContextBriefCitationRssRequestV1,
+  input: ContextBriefCitationRssRequestV2,
   barrierSample?: ContextBriefCitationRssSampleAttempt,
 ): ContextBriefCitationRssProtocolTransition {
   const request = parseContextBriefCitationRssRequest(input);
@@ -322,7 +366,7 @@ export function applyContextBriefCitationRssRequest(
   if (current.stopped) invalid('RSS observer protocol is already stopped.');
   if (request.sequence !== current.nextSequence) invalid('RSS observer protocol sequence is not contiguous.');
   let state: ContextBriefCitationRssObserverState;
-  let acknowledgement: ContextBriefCitationRssAcknowledgementV1;
+  let acknowledgement: ContextBriefCitationRssAcknowledgementV2;
   if (request.operation === 'begin') {
     if (current.active !== undefined) invalid('RSS observer cannot begin while another observation is active.');
     if (current.observations.length >= MAXIMUM_OBSERVATIONS) invalid('RSS observer observation bound exceeded.');
@@ -441,7 +485,7 @@ export function observeContextBriefCitationRssSample(
 
 export function contextBriefCitationRssArtifact(
   state: ContextBriefCitationRssObserverState,
-): ContextBriefCitationRssArtifactV1 {
+): ContextBriefCitationRssArtifactV2 {
   if (!state.stopped || state.active !== undefined || state.finalSample === undefined) {
     invalid('RSS observer artifact requires a sampled clean stop barrier.');
   }
@@ -452,7 +496,9 @@ export function contextBriefCitationRssArtifact(
     observerExcluded: true,
     rootIdentityValidation: state.rootIdentityValidation,
     rootStartIdentity: state.rootStartIdentity,
+    sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
     scope: 'recursive-process-tree',
+    samplingSchedule: state.samplingSchedule,
     source: state.source,
     version: ARTIFACT_VERSION,
     ...observationTotals(state.observations, state.finalSample),
@@ -462,7 +508,7 @@ export function contextBriefCitationRssArtifact(
 /** Write one request atomically so the observer never parses a partial barrier. */
 export const writeContextBriefCitationRssRequest = Effect.fn('contextBriefCitationRss.writeRequest')(function* (
   requestPath: string,
-  input: ContextBriefCitationRssRequestV1,
+  input: ContextBriefCitationRssRequestV2,
 ) {
   const request = parseContextBriefCitationRssRequest(input);
   yield* atomicWrite(requestPath, `${JSON.stringify(request)}\n`);
@@ -528,6 +574,7 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
     observerExcluded: true,
     rootIdentityValidation: telemetry.parentIdentityValidation,
     rootStartIdentity: initial.sample!.rootStartIdentity,
+    samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     scope: 'recursive-process-tree',
     source: telemetry.source,
     state: 'ready',
@@ -535,10 +582,14 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
   });
   let state = makeContextBriefCitationRssObserverState(ready);
   let lastRequestText: string | undefined;
-  const startedAt = yield* Clock.currentTimeMillis;
+  let nextSampleDeadlineNanos: bigint | undefined;
+  const startedAt = yield* Clock.monotonicTimeNanos;
   yield* atomicWrite(options.readyPath, `${JSON.stringify(ready)}\n`);
   while (!state.stopped) {
-    if ((yield* Clock.currentTimeMillis) - startedAt > MAXIMUM_RUNTIME_MILLISECONDS) {
+    if (
+      (yield* Clock.monotonicTimeNanos) - startedAt >
+      BigInt(MAXIMUM_RUNTIME_MILLISECONDS) * NANOSECONDS_PER_MILLISECOND
+    ) {
       return yield* Effect.fail(new ScriptError('RSS observer exceeded its bounded runtime.'));
     }
     if (!system.isProcessRunning(options.rootProcessId)) {
@@ -562,6 +613,12 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
       state = transition.state;
       lastRequestText = requestText;
       handledBarrier = request.operation !== 'stop';
+      if (request.operation === 'begin') {
+        nextSampleDeadlineNanos =
+          (yield* Clock.monotonicTimeNanos) + BigInt(options.intervalMilliseconds) * NANOSECONDS_PER_MILLISECOND;
+      } else {
+        nextSampleDeadlineNanos = undefined;
+      }
       yield* atomicWrite(options.acknowledgementPath, `${JSON.stringify(transition.acknowledgement)}\n`);
       if (state.stopped) {
         const artifact = contextBriefCitationRssArtifact(state);
@@ -569,9 +626,16 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
         break;
       }
     }
-    if (state.active !== undefined && !handledBarrier) {
+    const beforeScheduledSampleNanos = yield* Clock.monotonicTimeNanos;
+    if (
+      state.active !== undefined &&
+      !handledBarrier &&
+      nextSampleDeadlineNanos !== undefined &&
+      beforeScheduledSampleNanos >= nextSampleDeadlineNanos
+    ) {
       const sample = yield* readProcessTreeSample(options.rootProcessId, clockTicksPerSecond, [system.processId]);
-      const observedAtMilliseconds = yield* Clock.currentTimeMillis;
+      const observedAtNanos = yield* Clock.monotonicTimeNanos;
+      const observedAtMilliseconds = monotonicMilliseconds(observedAtNanos);
       if (sample !== undefined && sample.rootStartIdentity !== state.rootStartIdentity) {
         return yield* Effect.fail(new ScriptError('RSS observer benchmark root identity changed.'));
       }
@@ -581,8 +645,21 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
         observedAtMilliseconds,
         ...(sample === undefined ? {} : {sample}),
       });
+      nextSampleDeadlineNanos = contextBriefCitationRssNextSampleDeadlineNanos(
+        nextSampleDeadlineNanos,
+        observedAtNanos,
+        options.intervalMilliseconds,
+      );
     }
-    yield* Effect.sleep(options.intervalMilliseconds);
+    const beforeSleepNanos = yield* Clock.monotonicTimeNanos;
+    const sleepMilliseconds =
+      state.active !== undefined && nextSampleDeadlineNanos !== undefined
+        ? Math.max(
+            0,
+            Math.ceil(Number(nextSampleDeadlineNanos - beforeSleepNanos) / Number(NANOSECONDS_PER_MILLISECOND)),
+          )
+        : options.intervalMilliseconds;
+    yield* Effect.sleep(sleepMilliseconds);
   }
   // Keep the dependency explicit for bundlers and ensure the final path exists.
   yield* fs.stat(options.outputPath);
@@ -638,7 +715,7 @@ function validateProcessTreeSample(
 function finalizeObservation(
   active: ActiveObservation,
   endedAtMilliseconds: number,
-): ContextBriefCitationRssObservationV1 {
+): ContextBriefCitationRssObservationV2 {
   if (endedAtMilliseconds < active.startedAtMilliseconds) invalid('RSS observer observation time moved backwards.');
   return parseObservation({
     durationMilliseconds: endedAtMilliseconds - active.startedAtMilliseconds,
@@ -658,7 +735,7 @@ function finalizeObservation(
   });
 }
 
-function parseObservation(value: unknown): ContextBriefCitationRssObservationV1 {
+function parseObservation(value: unknown): ContextBriefCitationRssObservationV2 {
   const observation = record(value, 'RSS observer observation');
   const keys = [
     'durationMilliseconds',
@@ -681,7 +758,7 @@ function parseObservation(value: unknown): ContextBriefCitationRssObservationV1 
     keys
       .filter(key => key !== 'observationId')
       .map(key => [key, nonNegativeSafeInteger(observation[key], `RSS observer observation ${key}`)]),
-  ) as unknown as Omit<ContextBriefCitationRssObservationV1, 'observationId'>;
+  ) as unknown as Omit<ContextBriefCitationRssObservationV2, 'observationId'>;
   const result = {
     ...parsed,
     observationId: boundedIdentifier(observation.observationId, 'RSS observer observation ID'),
@@ -713,7 +790,7 @@ function parseObservation(value: unknown): ContextBriefCitationRssObservationV1 
   return result;
 }
 
-function parseFinalSample(value: unknown): ContextBriefCitationRssFinalSampleV1 {
+function parseFinalSample(value: unknown): ContextBriefCitationRssFinalSampleV2 {
   const sample = record(value, 'RSS observer final sample');
   exactKeys(
     sample,
@@ -735,11 +812,11 @@ function parseFinalSample(value: unknown): ContextBriefCitationRssFinalSampleV1 
 }
 
 function observationTotals(
-  observations: readonly ContextBriefCitationRssObservationV1[],
-  finalSample: ContextBriefCitationRssFinalSampleV1,
+  observations: readonly ContextBriefCitationRssObservationV2[],
+  finalSample: ContextBriefCitationRssFinalSampleV2,
 ) {
   return {
-    maximumSampleGapMilliseconds: Math.max(0, ...observations.map(value => value.maximumSampleGapMilliseconds)),
+    ...contextBriefCitationRssSampleGapSummary(observations.map(value => value.maximumSampleGapMilliseconds)),
     processCountPeakObserved: Math.max(
       finalSample.processCount,
       ...observations.map(value => value.processCountPeakObserved),
@@ -767,15 +844,44 @@ function parseObserverContract(value: Readonly<Record<string, unknown>>) {
     invalid('RSS observer source and root identity validation do not match.');
   }
   const rootStartIdentity = boundedText(value.rootStartIdentity, 'RSS observer root identity', 128);
+  if (value.samplingSchedule !== CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE) {
+    invalid('RSS observer sampling schedule is invalid.');
+  }
   return {
     intervalMilliseconds,
     observerExcluded: true as const,
     rootIdentityValidation: rootIdentityValidation as ContextBriefCitationRssRootIdentityValidation,
     rootStartIdentity,
+    samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     scope: 'recursive-process-tree' as const,
     source: source as ContextBriefCitationRssSource,
     version: ARTIFACT_VERSION,
   };
+}
+
+function parseSampleGapPolicy(value: unknown): void {
+  const policy = record(value, 'RSS observer sample-gap policy');
+  exactKeys(
+    policy,
+    [
+      'breachThresholdMilliseconds',
+      'hardMaximumGapMilliseconds',
+      'maximumBreachRate',
+      'maximumConsecutiveBreaches',
+      'version',
+    ],
+    'RSS observer sample-gap policy',
+  );
+  if (
+    policy.breachThresholdMilliseconds !==
+      CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.breachThresholdMilliseconds ||
+    policy.hardMaximumGapMilliseconds !== CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.hardMaximumGapMilliseconds ||
+    policy.maximumBreachRate !== CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.maximumBreachRate ||
+    policy.maximumConsecutiveBreaches !== CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.maximumConsecutiveBreaches ||
+    policy.version !== CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1.version
+  ) {
+    invalid('RSS observer sample-gap policy is invalid.');
+  }
 }
 
 const requiredProcessTreeSample = Effect.fn('contextBriefCitationRss.requiredProcessTreeSample')(function* (
@@ -785,13 +891,14 @@ const requiredProcessTreeSample = Effect.fn('contextBriefCitationRss.requiredPro
   timeoutMilliseconds: number,
   excludedDescendantRootProcessIds: readonly number[],
 ) {
-  const startedAt = yield* Clock.currentTimeMillis;
+  const startedAt = yield* Clock.monotonicTimeNanos;
   let attempts = 0;
   let failures = 0;
   while (true) {
     attempts += 1;
     const sample = yield* readProcessTreeSample(rootProcessId, clockTicksPerSecond, excludedDescendantRootProcessIds);
-    const observedAtMilliseconds = yield* Clock.currentTimeMillis;
+    const observedAtNanos = yield* Clock.monotonicTimeNanos;
+    const observedAtMilliseconds = monotonicMilliseconds(observedAtNanos);
     if (sample !== undefined) {
       if (expectedRootStartIdentity !== undefined && sample.rootStartIdentity !== expectedRootStartIdentity) {
         return yield* Effect.fail(new ScriptError('RSS observer benchmark root identity changed.'));
@@ -799,12 +906,20 @@ const requiredProcessTreeSample = Effect.fn('contextBriefCitationRss.requiredPro
       return {attempts, failures, observedAtMilliseconds, sample} satisfies ContextBriefCitationRssSampleAttempt;
     }
     failures += 1;
-    if (observedAtMilliseconds - startedAt >= timeoutMilliseconds) {
+    if (observedAtNanos - startedAt >= BigInt(timeoutMilliseconds) * NANOSECONDS_PER_MILLISECOND) {
       return yield* Effect.fail(new ScriptError('RSS observer could not complete a process-tree barrier sample.'));
     }
     yield* Effect.sleep(10);
   }
 });
+
+function monotonicMilliseconds(value: bigint): number {
+  const milliseconds = Number(value / NANOSECONDS_PER_MILLISECOND);
+  if (!Number.isSafeInteger(milliseconds) || milliseconds < 0) {
+    invalid('RSS observer monotonic timestamp is invalid.');
+  }
+  return milliseconds;
+}
 
 function parseObserverArguments(args: readonly string[]): ContextBriefCitationRssObserverProcessOptions {
   if (!isContextBriefCitationRssObserverMode(args)) invalid('RSS observer mode flag is missing.');

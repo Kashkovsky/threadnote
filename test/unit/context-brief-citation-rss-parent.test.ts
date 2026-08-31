@@ -9,10 +9,14 @@ import {
   waitForContextBriefCitationRssReady,
 } from '../../scripts/benchmark-context-brief-citations-target.js';
 import type {
-  ContextBriefCitationRssAcknowledgementV1,
-  ContextBriefCitationRssArtifactV1,
-  ContextBriefCitationRssReadyV1,
+  ContextBriefCitationRssAcknowledgementV2,
+  ContextBriefCitationRssArtifactV2,
+  ContextBriefCitationRssReadyV2,
 } from '../../scripts/context-brief-citation-rss-observer.js';
+import {
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
+  CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
+} from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import {ScriptError} from '../../scripts/effect/errors.js';
 
 describe('Context Brief citation RSS parent controller', () => {
@@ -58,16 +62,16 @@ describe('Context Brief citation RSS parent controller', () => {
 
   it.effect('rejects every non-exact acknowledgement dimension', () =>
     Effect.gen(function* () {
-      const request = {observationId: 'local-100k-0', operation: 'begin', sequence: 1, version: 1} as const;
+      const request = {observationId: 'local-100k-0', operation: 'begin', sequence: 1, version: 2} as const;
       const valid = {
         observationId: request.observationId,
         sequence: request.sequence,
         state: 'begun',
-        version: 1,
+        version: 2,
       } as const;
       yield* validateContextBriefCitationRssAcknowledgement(request, 'begun', valid);
 
-      const mismatches: readonly ContextBriefCitationRssAcknowledgementV1[] = [
+      const mismatches: readonly ContextBriefCitationRssAcknowledgementV2[] = [
         {...valid, sequence: 2},
         {...valid, state: 'ended'},
         {...valid, observationId: 'local-100k-1'},
@@ -153,7 +157,7 @@ describe('Context Brief citation RSS parent controller', () => {
 
 function controllerHarness(
   options: {
-    readonly artifact?: ContextBriefCitationRssArtifactV1;
+    readonly artifact?: ContextBriefCitationRssArtifactV2;
     readonly barrierFailure?: 'begin' | 'end';
   } = {},
 ) {
@@ -187,20 +191,21 @@ function controllerHarness(
   return {controller, events};
 }
 
-function ready(): ContextBriefCitationRssReadyV1 {
+function ready(): ContextBriefCitationRssReadyV2 {
   return {
     intervalMilliseconds: 10,
     observerExcluded: true,
     rootIdentityValidation: 'linux-proc-starttime',
     rootStartIdentity: '4242',
+    samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     scope: 'recursive-process-tree',
     source: 'linux-proc',
     state: 'ready',
-    version: 1,
+    version: 2,
   };
 }
 
-function artifact(overrides: Partial<ContextBriefCitationRssArtifactV1> = {}): ContextBriefCitationRssArtifactV1 {
+function artifact(overrides: Partial<ContextBriefCitationRssArtifactV2> = {}): ContextBriefCitationRssArtifactV2 {
   return {
     finalSample: {
       processCount: 1,
@@ -210,18 +215,23 @@ function artifact(overrides: Partial<ContextBriefCitationRssArtifactV1> = {}): C
       treeRssBytes: 100,
     },
     intervalMilliseconds: 10,
+    maximumConsecutiveSampleGapBreaches: 0,
     maximumSampleGapMilliseconds: 0,
     observations: [],
     observerExcluded: true,
     processCountPeakObserved: 1,
     rootIdentityValidation: 'linux-proc-starttime',
     rootStartIdentity: '4242',
+    sampleGapBreachCount: 0,
+    sampleGapBreachRate: 0,
+    sampleGapPolicy: CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V1,
     sampleAttempts: 1,
     sampleFailures: 0,
     scope: 'recursive-process-tree',
+    samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     source: 'linux-proc',
     successfulSamples: 1,
-    version: 1,
+    version: 2,
     ...overrides,
   };
 }
