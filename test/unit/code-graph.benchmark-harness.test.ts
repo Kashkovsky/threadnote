@@ -1134,7 +1134,9 @@ describe('code graph external benchmark harness', () => {
       expect(result.privacySafeEvidence).not.toContain(result.privatePath);
       expect(result.privacySafeEvidence).not.toContain('3'.repeat(40));
       expect(result.failureMessage).not.toContain(result.privatePath);
-      expect(result.protectedSnapshotRows).toBe(1);
+      // Clean displaced snapshots remain warm after their last reader exits;
+      // retaining the overlay also retains its physical base.
+      expect(result.protectedSnapshotRows).toBe(2);
       expect(result.leaseRows).toBe(0);
     }).pipe(TestClock.withLive),
   );
