@@ -1,6 +1,7 @@
 import {it as effectIt} from '@effect/vitest';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Effect, Layer} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {CodeGraphQueryService, type CodeGraphInspectOptions} from '../../src/code_graph/query.js';
@@ -23,6 +24,7 @@ import {
 import type {RuntimeConfig} from '../../src/types.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
+import {TestError} from '../helpers/test-error.js';
 
 const REPOSITORY_ID = 'a'.repeat(64);
 const COMMIT = 'b'.repeat(40);
@@ -197,6 +199,82 @@ describe('Context Brief exact-anchor graph evidence', () => {
       expect(evidence.contracts).toEqual([]);
       expect(evidence.gaps).toEqual(['graph-query-unavailable']);
     }),
+  );
+
+  effectIt.effect('recovers an exact anchored read after bounded transient failures', () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const plan = planContextBrief({
+        budgetTokens: 1_500,
+        codeRefs: [SYMBOL_ANCHOR],
+        mode: 'impact',
+        scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+        task: 'Assess one exact source anchor.',
+      });
+      const query = queryServiceEffect(() =>
+        Effect.suspend(() => {
+          calls += 1;
+          return calls <= 2
+            ? Effect.fail(new TestError('transient graph read'))
+            : Effect.succeed(
+                queryResult({
+                  edges: [],
+                  nodes: [sourceNode(SYMBOL_ANCHOR, 'makeUndici', 'packages/platform/node/src/Undici.ts', 'function')],
+                  operation: 'impact',
+                }),
+              );
+        }),
+      );
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(calls).toBe(3);
+      expect(evidence.cards[0]?.ref).toBe(SYMBOL_ANCHOR);
+      expect(evidence.gaps).toEqual([]);
+    }).pipe(TestClock.withLive),
+  );
+
+  effectIt.effect('preserves ready snapshot coverage when bounded anchored reads keep failing', () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const plan = planContextBrief({
+        budgetTokens: 1_500,
+        codeRefs: [SYMBOL_ANCHOR],
+        mode: 'impact',
+        scope: {callerCwd: '/workspace/effect', kind: 'repository'},
+        task: 'Assess one exact source anchor.',
+      });
+      const query = queryServiceEffect(() =>
+        Effect.suspend(() => {
+          calls += 1;
+          return Effect.fail(new TestError('persistent graph read'));
+        }),
+      );
+
+      const evidence = yield* retrieveContextBriefGraphEvidence(CONFIG, plan.graph).pipe(
+        Effect.provideService(CodeGraphQueryService, query),
+        provideTestLayer(Layer.mergeAll(BunServices.layer, SystemInfo.layer)),
+      );
+
+      expect(calls).toBe(3);
+      expect(evidence.coverage).toMatchObject({
+        complete: false,
+        consideredRepositories: 1,
+        readyRepositories: 1,
+        requestedRepositories: 1,
+        states: {current: 1},
+      });
+      expect(evidence.resolvedSnapshots).toEqual([
+        expect.objectContaining({repositoryId: REPOSITORY_ID, snapshotId: SNAPSHOT_ID}),
+      ]);
+      expect(evidence.gaps).toEqual(['graph-query-unavailable', 'graph-repository-read-failed']);
+      expect(evidence.warnings).toEqual([
+        'One or more exact anchored graph reads failed after bounded retry; results are partial.',
+      ]);
+    }).pipe(TestClock.withLive),
   );
 
   it('protects exact source modules and direct source relations from arbitrary metadata order', () => {
@@ -396,6 +474,19 @@ function queryService(
         calls.push(options);
         return inspect(options);
       }),
+    purge: () => Effect.die('Unexpected graph purge.'),
+    status: () => Effect.succeed(STATUS),
+    statusForIdentity: () => Effect.die('Unexpected identity status.'),
+    statusForPublishedIdentity: () => Effect.die('Unexpected published identity status.'),
+  });
+}
+
+function queryServiceEffect(
+  inspect: (options: CodeGraphInspectOptions) => Effect.Effect<CodeGraphQueryResult, TestError>,
+) {
+  return CodeGraphQueryService.of({
+    attachSharedReadySnapshot: () => Effect.die('Unexpected shared snapshot attachment.'),
+    inspect,
     purge: () => Effect.die('Unexpected graph purge.'),
     status: () => Effect.succeed(STATUS),
     statusForIdentity: () => Effect.die('Unexpected identity status.'),

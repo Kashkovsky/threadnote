@@ -1,4 +1,4 @@
-import {Effect} from 'effect';
+import {Effect, Result, Schedule} from 'effect';
 import {resolveRepositoryIdentity} from '../code_graph/repository.js';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {readMemoryRecordsByUri} from '../memory/index.js';
@@ -29,6 +29,8 @@ const MEMORY_EXCERPT_BYTES = 240;
 const MEMORY_RETRIEVAL_MULTIPLIER = 4;
 const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT = 4;
 const CONTEXT_BRIEF_DEFERRED_CODE_ANCHOR_WAIT_MILLISECONDS = 1_000;
+const CONTEXT_BRIEF_CODE_ANCHOR_READ_RETRIES = 2;
+const CONTEXT_BRIEF_CODE_ANCHOR_RETRY_MILLISECONDS = 25;
 const MEMORY_RECALL_EMPTY_GAP = 'memory-recall-no-active-durable-or-handoff';
 const THREADNOTE_MEMORY_URI = /^threadnote:\/\/user\/[^/]+\/memories\//u;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
@@ -160,38 +162,55 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
     if (plan.codeRefs.some(ref => ref.startsWith('cgr_'))) {
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-ref-unsupported');
     }
-    const capturedBatch = yield* captureMemoryCodeCitations(config, {
-      callerCwd,
-      refs: plan.codeRefs,
-    }).pipe(
-      Effect.match({
-        onFailure: error => ({error}),
-        onSuccess: anchors => ({anchors}),
-      }),
+    const capturedBatch = yield* Effect.result(
+      retryContextBriefCodeAnchorRead(
+        captureMemoryCodeCitations(config, {
+          callerCwd,
+          refs: plan.codeRefs,
+        }),
+      ),
     );
     if (
-      'error' in capturedBatch &&
-      capturedBatch.error instanceof MemoryCodeCitationCaptureError &&
-      capturedBatch.error.recovery !== undefined
+      Result.isFailure(capturedBatch) &&
+      capturedBatch.failure instanceof MemoryCodeCitationCaptureError &&
+      capturedBatch.failure.recovery !== undefined
     ) {
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
     }
-    const resolvedAnchors =
-      'anchors' in capturedBatch && capturedBatch.anchors.length === requested
-        ? capturedBatch.anchors.map((anchor, anchorOrdinal) => ({anchor, anchorOrdinal}))
-        : (yield* Effect.forEach(
+    const fallbackAttempts =
+      Result.isSuccess(capturedBatch) && capturedBatch.success.length === requested
+        ? undefined
+        : yield* Effect.forEach(
             plan.codeRefs,
             ref =>
-              captureMemoryCodeCitations(config, {
-                callerCwd,
-                refs: [ref],
-              }).pipe(Effect.option),
-            {concurrency: 4},
-          )).flatMap((option, anchorOrdinal) => {
-            const anchor = option._tag === 'Some' ? option.value[0] : undefined;
+              Effect.result(
+                retryContextBriefCodeAnchorRead(
+                  captureMemoryCodeCitations(config, {
+                    callerCwd,
+                    refs: [ref],
+                  }),
+                ),
+              ),
+            // A failed batch must not amplify cold large-graph reads.
+            {concurrency: 1},
+          );
+    const resolvedAnchors =
+      Result.isSuccess(capturedBatch) && capturedBatch.success.length === requested
+        ? capturedBatch.success.map((anchor, anchorOrdinal) => ({anchor, anchorOrdinal}))
+        : (fallbackAttempts ?? []).flatMap((attempt, anchorOrdinal) => {
+            const anchor = Result.isSuccess(attempt) ? attempt.success[0] : undefined;
             return anchor === undefined ? [] : [{anchor, anchorOrdinal}];
           });
+    const unresolvedCaptureFailures = (fallbackAttempts ?? []).flatMap(attempt =>
+      Result.isFailure(attempt) ? [attempt.failure] : [],
+    );
+    const captureFailures = [
+      ...(Result.isFailure(capturedBatch) ? [capturedBatch.failure] : []),
+      ...unresolvedCaptureFailures,
+    ];
     if (resolvedAnchors.length === 0) {
+      const unexpected = captureFailures.find(isUnexpectedContextBriefCodeAnchorFailure);
+      if (unexpected !== undefined) return yield* Effect.fail(unexpected);
       return unavailableContextBriefCodeLinkedMemoryEvidence(requested, 'code-anchor-resolution-unavailable');
     }
     const resolvedOrdinals = resolvedAnchors.map(anchor => anchor.anchorOrdinal);
@@ -279,12 +298,31 @@ export const retrieveContextBriefCodeLinkedMemoryEvidence = Effect.fn('contextBr
       consideredCandidates: linked.value.length,
       gaps: stableUnique([
         ...contextBriefCodeLinkRecallGaps(complete, candidates.length, truncatedSelectorCount),
+        ...(unresolvedCaptureFailures.length === 0 ? [] : ['code-anchor-resolution-unavailable']),
         ...(readCandidates.stableIdentityUnavailable ? ['stable-memory-identity-unavailable'] : []),
       ]),
       trust: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
     } satisfies ContextBriefMemoryRetrievalV1;
   },
 );
+
+function retryContextBriefCodeAnchorRead<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> {
+  return effect.pipe(
+    Effect.retry({
+      schedule: Schedule.spaced(CONTEXT_BRIEF_CODE_ANCHOR_RETRY_MILLISECONDS),
+      times: CONTEXT_BRIEF_CODE_ANCHOR_READ_RETRIES,
+      while: error =>
+        !(error instanceof MemoryCodeCitationCaptureError && error.failureCode === 'code-reference-unresolved'),
+    }),
+  );
+}
+
+function isUnexpectedContextBriefCodeAnchorFailure(error: unknown): boolean {
+  return (
+    !(error instanceof MemoryCodeCitationCaptureError) ||
+    (error.failureCode === undefined && error.recovery === undefined)
+  );
+}
 
 /** Explicitly distinguish bounded inverse-search abstention from evidence of no backlink. */
 export function contextBriefCodeLinkRecallGaps(

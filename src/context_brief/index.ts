@@ -97,7 +97,7 @@ export function instrumentContextBriefCompilerDependencies<
         ),
     graphEvidence: graphPlan =>
       reporter
-        .graph(sources.graphEvidence(graphPlan))
+        .graph(sources.graphEvidence(graphPlan), contextBriefGraphPhaseOutcome)
         .pipe(
           Effect.catch(() =>
             Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
@@ -107,13 +107,18 @@ export function instrumentContextBriefCompilerDependencies<
       ? {}
       : {
           codeLinkedMemoryEvidence: (codePlan: ContextBriefPlanV1['codeAnchors']) =>
-            reporter.codeLinkedMemory(
-              sources.codeLinkedMemoryEvidence!(codePlan).pipe(
+            reporter
+              .codeLinkedMemory(sources.codeLinkedMemoryEvidence!(codePlan), contextBriefCodeLinkedMemoryPhaseOutcome)
+              .pipe(
                 Effect.catch(() =>
-                  Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(codePlan.codeRefs.length)),
+                  Effect.succeed(
+                    unavailableContextBriefCodeLinkedMemoryEvidence(
+                      codePlan.codeRefs.length,
+                      'code-anchor-resolution-unavailable',
+                    ),
+                  ),
                 ),
               ),
-            ),
         }),
     memoryEvidence: memoryPlan =>
       reporter
@@ -145,6 +150,31 @@ export function instrumentContextBriefCompilerDependencies<
         },
       ),
   };
+}
+
+function contextBriefGraphPhaseOutcome(evidence: ContextBriefGraphEvidenceV1): 'success' | 'unavailable' {
+  return evidence.gaps.some(gap =>
+    ['graph-query-unavailable', 'graph-ready-snapshot-missing', 'graph-repository-read-failed'].includes(gap),
+  )
+    ? 'unavailable'
+    : 'success';
+}
+
+function contextBriefCodeLinkedMemoryPhaseOutcome(evidence: ContextBriefMemoryRetrievalV1): 'success' | 'unavailable' {
+  const anchors = evidence.codeAnchorCoverage;
+  return anchors === undefined ||
+    !anchors.complete ||
+    evidence.gaps.some(gap =>
+      [
+        'code-anchor-recall-unavailable',
+        'code-anchor-ref-unsupported',
+        'code-anchor-resolution-unavailable',
+        'code-anchor-scope-unsupported',
+        'code-anchor-selector-matches-unvalidated',
+      ].includes(gap),
+    )
+    ? 'unavailable'
+    : 'success';
 }
 
 /** Deterministic compiler core with injected read boundaries for focused tests and alternate clients. */

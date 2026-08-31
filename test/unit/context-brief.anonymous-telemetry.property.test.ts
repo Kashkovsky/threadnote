@@ -7,6 +7,9 @@ import {
   instrumentContextBriefCompilerDependencies,
   projectContextBrief,
   summarizeContextBriefCitationTelemetry,
+  unavailableContextBriefCodeLinkedMemoryEvidence,
+  unavailableContextBriefGraphEvidence,
+  unavailableContextBriefMemoryEvidence,
   type ContextBriefCitationValidationReasonV2,
   type ContextBriefMemoryCandidateV1,
 } from '../../src/context_brief/index.js';
@@ -547,6 +550,7 @@ describe('Context Brief anonymous telemetry', () => {
               reporter,
               {
                 citationValidation: () => Effect.fail(privateFailure),
+                codeLinkedMemoryEvidence: () => Effect.fail(privateFailure),
                 graphEvidence: () => Effect.fail(privateFailure),
                 memoryEvidence: () => Effect.fail(privateFailure),
                 projection: (logical, maximumEstimatedTokens) =>
@@ -556,6 +560,7 @@ describe('Context Brief anonymous telemetry', () => {
             ),
             {
               budgetTokens: 1_250,
+              codeRefs: ['src/context_brief/types.ts'],
               mode: 'brief',
               scope: {callerCwd: '/workspace/threadnote', kind: 'repository', project: 'threadnote'},
               task: 'Compile a bounded brief while evidence sources are unavailable.',
@@ -565,10 +570,19 @@ describe('Context Brief anonymous telemetry', () => {
       );
 
       expect(result.structuredContent.coverage.gaps).toEqual(
-        expect.arrayContaining(['graph-query-unavailable', 'memory-recall-unavailable']),
+        expect.arrayContaining([
+          'code-anchor-resolution-unavailable',
+          'graph-query-unavailable',
+          'memory-recall-unavailable',
+        ]),
       );
       const attributes = capture.spans.map(spanAttributes);
-      for (const phase of ['context.brief.graph', 'context.brief.memory', 'context.brief.citation-validation']) {
+      for (const phase of [
+        'context.brief.code-linked-memory',
+        'context.brief.graph',
+        'context.brief.memory',
+        'context.brief.citation-validation',
+      ]) {
         expect(attributes.find(item => item['threadnote.phase'] === phase)).toMatchObject({
           'threadnote.context_brief.scope': 'local',
           'threadnote.outcome': 'failure',
@@ -583,6 +597,53 @@ describe('Context Brief anonymous telemetry', () => {
         'threadnote.outcome': 'success',
       });
       expect(JSON.stringify(attributes)).not.toContain('/private/repository');
+    }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
+  });
+
+  effectIt.effect('marks successful fail-soft graph and code-linked gaps unavailable', () => {
+    const capture = capturingTracer();
+    const reporter = makeContextBriefAnonymousTelemetryReporter('local');
+
+    return Effect.gen(function* () {
+      yield* withAnonymousTelemetry(
+        {component: 'mcp', operation: 'context_brief'},
+        Effect.gen(function* () {
+          yield* reporter.annotate;
+          return yield* compileContextBriefWith(
+            instrumentContextBriefCompilerDependencies(
+              reporter,
+              {
+                citationValidation: () => Effect.succeed([]),
+                codeLinkedMemoryEvidence: () =>
+                  Effect.succeed(
+                    unavailableContextBriefCodeLinkedMemoryEvidence(1, 'code-anchor-resolution-unavailable'),
+                  ),
+                graphEvidence: () =>
+                  Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', 1, {failed: 1})),
+                memoryEvidence: () => Effect.succeed(unavailableContextBriefMemoryEvidence()),
+                projection: (logical, maximumEstimatedTokens) =>
+                  Effect.sync(() => projectContextBrief(logical, maximumEstimatedTokens)),
+              },
+              1,
+            ),
+            {
+              budgetTokens: 1_250,
+              codeRefs: ['src/context_brief/types.ts'],
+              mode: 'impact',
+              scope: {callerCwd: '/workspace/threadnote', kind: 'repository', project: 'threadnote'},
+              task: 'Compile a bounded fail-soft brief.',
+            },
+          );
+        }),
+      );
+
+      const attributes = capture.spans.map(spanAttributes);
+      for (const phase of ['context.brief.code-linked-memory', 'context.brief.graph']) {
+        expect(attributes.find(item => item['threadnote.phase'] === phase)).toMatchObject({
+          'threadnote.outcome': 'unavailable',
+          'threadnote.phase.outcome': 'unavailable',
+        });
+      }
     }).pipe(provideTestLayer(anonymousTelemetryTestLayer({system: systemInfoStub(), tracer: capture.tracer})));
   });
 

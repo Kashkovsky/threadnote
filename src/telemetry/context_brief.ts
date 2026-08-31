@@ -48,8 +48,14 @@ export interface ContextBriefAnonymousTelemetryReporter {
     effect: Effect.Effect<A, E, R>,
     summarize: ContextBriefCitationTelemetrySummary | ((value: A) => ContextBriefCitationTelemetrySummary),
   ) => Effect.Effect<A, E, R>;
-  readonly graph: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
-  readonly codeLinkedMemory: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  readonly graph: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    outcome?: (value: A) => 'success' | 'unavailable',
+  ) => Effect.Effect<A, E, R>;
+  readonly codeLinkedMemory: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+    outcome?: (value: A) => 'success' | 'unavailable',
+  ) => Effect.Effect<A, E, R>;
   readonly memory: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   readonly projection: <A, E, R>(
     effect: Effect.Effect<A, E, R>,
@@ -193,7 +199,16 @@ export function makeContextBriefAnonymousTelemetryReporter(
   const checkpoint = <A, E, R>(
     phase: 'context.brief.code-linked-memory' | 'context.brief.graph' | 'context.brief.memory',
     effect: Effect.Effect<A, E, R>,
-  ) => withAnonymousTelemetryCheckpoint({fields: {...requestFields, phase}, retainFields: false}, effect);
+    outcome?: (value: A) => 'success' | 'unavailable',
+  ) =>
+    withAnonymousTelemetryCheckpoint(
+      {
+        fields: {...requestFields, phase},
+        retainFields: false,
+        ...(outcome === undefined ? {} : {successOutcome: outcome}),
+      },
+      effect,
+    );
 
   return {
     annotate: recordAnonymousTelemetryFields(requestFields),
@@ -229,8 +244,8 @@ export function makeContextBriefAnonymousTelemetryReporter(
         Effect.map(measuredValue => measuredValue.value),
       );
     },
-    codeLinkedMemory: effect => checkpoint('context.brief.code-linked-memory', effect),
-    graph: effect => checkpoint('context.brief.graph', effect),
+    codeLinkedMemory: (effect, outcome) => checkpoint('context.brief.code-linked-memory', effect, outcome),
+    graph: (effect, outcome) => checkpoint('context.brief.graph', effect, outcome),
     memory: effect => checkpoint('context.brief.memory', effect),
     projection: (effect, outputTruncated, codeAnchors, returnedLane) => {
       const measured = effect.pipe(
