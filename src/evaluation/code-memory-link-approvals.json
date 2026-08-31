@@ -1,6 +1,9 @@
 {
   "agentAbEvidenceHashes": [],
-  "agentAbManifestHashes": ["b01aadcdd828e5cb4c8877d75f10f385da047f79c47c289850c6eee441f84f3e"],
+  "agentAbManifestHashes": [
+    "b01aadcdd828e5cb4c8877d75f10f385da047f79c47c289850c6eee441f84f3e",
+    "f64630ab0a6403c39f24fb5ae83ba610baa9d6600b7f8bb444c7973e113d3bf8"
+  ],
   "dogfoodEvidenceHashes": [],
   "retainedEvidenceBundleHashes": [],
   "version": 1
