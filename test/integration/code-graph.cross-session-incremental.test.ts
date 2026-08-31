@@ -480,11 +480,11 @@ describe('cross-session code graph increments', () => {
   );
 
   it.effect(
-    'reuses an exactly committed dirty root across fresh indexer services',
+    'keeps an imported-symbol body edit incremental immediately after dirty-root alias promotion',
     () => {
       let root: string | undefined;
       return Effect.gen(function* () {
-        root = createRepository(16);
+        root = createRepository(3);
         const home = join(root, '.threadnote-dirty-root-fresh-indexers');
         yield* indexWithFreshIndexerEffect(root, home);
 
@@ -497,15 +497,24 @@ describe('cross-session code graph increments', () => {
 
         const committed = yield* indexWithFreshIndexerEffect(root, home);
         expect(committed.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: false});
-        expect(committed.materialization).toEqual({mode: 'reused-snapshot', stagedFiles: 0, totalFiles: 18});
+        expect(committed.materialization).toEqual({mode: 'reused-snapshot', stagedFiles: 0, totalFiles: 5});
         expect(projectGraph(yield* loadGraphEffect(root, home, committed))).toEqual(
           projectGraph(yield* loadGraphEffect(root, home, dirtyRoot)),
         );
 
-        writeFileSync(join(root, 'src/passive-0.ts'), 'export function passive0(): number { return 1000; }\n');
+        // Keep the import/re-export evidence stable while changing only the
+        // function body. This exercises persisted re-export lookup against the
+        // leased dirty physical root behind the clean logical alias.
+        writeUseFile(root, 'post-alias dirty revision');
         const next = yield* indexWithFreshIndexerEffect(root, home);
         expect(next.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: true});
-        expect(next.materialization).toEqual({mode: 'incremental-overlay', stagedFiles: 1, totalFiles: 18});
+        expect(next.materialization).toEqual({
+          mode: 'incremental-overlay',
+          resolutionLookupKeyForm: 'typescript-path-unscoped',
+          resolutionPublicationGate: 'own-path-local',
+          stagedFiles: 1,
+          totalFiles: 5,
+        });
         const nextGraph = yield* loadGraphEffect(root, home, next);
         const forced = yield* indexWithFreshIndexerEffect(root, home, {force: true});
         expect(projectGraph(nextGraph)).toEqual(projectGraph(yield* loadGraphEffect(root, home, forced)));

@@ -789,10 +789,11 @@ const selectReusableReexports = Effect.fn('codeGraph.selectReusableReexports')(f
   snapshotId: string,
   seeds: readonly CodeGraphReusableReexportSeed[],
   maxRows = Number.MAX_SAFE_INTEGER,
+  allowDirtyRoot = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
-  if (!(yield* selectReusableBaseReceipt(snapshotId))) return undefined;
+  if (!(yield* selectReusableBaseReceipt(snapshotId, allowDirtyRoot))) return undefined;
   const uniqueSeeds = uniqueBy(seeds, seed => `${seed.path}\0${seed.name}`);
   if (uniqueSeeds.length === 0) return [];
   if (!Number.isSafeInteger(maxRows) || maxRows < 0) return undefined;

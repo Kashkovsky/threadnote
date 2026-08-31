@@ -1045,7 +1045,6 @@ describe('code graph external benchmark harness', () => {
             leaseRows: 0,
           };
           let leaseRenewals = 0;
-          let comparisonLease: string | undefined;
           const pruneRetiredSnapshots = () =>
             store.pruneRetiredSnapshots(databasePath).pipe(
               Effect.retry({
@@ -1058,10 +1057,8 @@ describe('code graph external benchmark harness', () => {
             onReadTransactionStarted: Effect.gen(function* () {
               yield* store.promote(databasePath, identity, replacementSnapshotId);
               yield* pruneRetiredSnapshots();
-              // Lease release now retires a superseded view automatically. Hold
-              // a second reader lease so this test can intentionally compare
-              // the post-write digest after the pinned read transaction ends.
-              comparisonLease = yield* store.acquireSnapshotLease(databasePath, firstSnapshotId, 60_000);
+              // Superseded clean snapshots remain warm after lease release, so
+              // the post-write parity check can read this generation directly.
               const writer = new Database(databasePath, {strict: true});
               try {
                 writer.run('PRAGMA busy_timeout = 5000');
@@ -1078,9 +1075,6 @@ describe('code graph external benchmark harness', () => {
             snapshotLeaseRenewalMilliseconds: 100,
           });
           const after = yield* sqliteStructuralGraphEvidence(databasePath, firstSnapshotId);
-          if (comparisonLease === undefined)
-            return yield* Effect.die(new TestError('Comparison lease was not acquired.'));
-          yield* store.releaseSnapshotLease(databasePath, comparisonLease);
           const mismatch = codeGraphStructuralParityEvidence(before, after);
           const failureMessage = codeGraphStructuralParityFailureMessage(mismatch);
           yield* pruneRetiredSnapshots();
@@ -1124,7 +1118,7 @@ describe('code graph external benchmark harness', () => {
         baseFileRows: 1,
         baseState: 'ready',
         firstState: 'ready',
-        leaseRows: 2,
+        leaseRows: 1,
       });
       expect(result.mismatch.mismatchedStreams.map(stream => stream.name)).toEqual(['snapshot']);
       expect(result.leaseRenewals).toBeGreaterThanOrEqual(1);

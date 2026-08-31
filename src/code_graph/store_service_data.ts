@@ -820,7 +820,10 @@ export function makeCodeGraphStoreDataMethods(runtime: CodeGraphStoreRuntime): C
       fs.exists(databasePath).pipe(
         Effect.flatMap(exists =>
           exists
-            ? useReadOnlyDatabase(databasePath, selectReusableReexports(snapshotId, seeds, options?.maxRows))
+            ? useReadOnlyDatabase(
+                databasePath,
+                selectReusableReexports(snapshotId, seeds, options?.maxRows, options?.allowDirtyRoot === true),
+              )
             : Effect.succeed(undefined),
         ),
         Effect.mapError(cause => storeError('load reusable code graph reexport provenance', cause)),

@@ -149,7 +149,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
         input.layout.databasePath,
         input.committedBase.snapshot.id,
         seeds,
-        {maxRows: 10_000},
+        {allowDirtyRoot: input.committedBase.snapshot.dirty, maxRows: 10_000},
       );
       if (reexports === undefined) {
         return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;

@@ -610,7 +610,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
     seeds: readonly CodeGraphReusableReexportSeed[],
-    options?: {readonly maxRows?: number},
+    options?: {readonly allowDirtyRoot?: boolean; readonly maxRows?: number},
   ) => Effect.Effect<readonly CodeGraphReusableReexport[] | undefined, CodeGraphStoreError>;
   readonly pruneCachedFacts: (
     databasePath: string,
