@@ -141,6 +141,18 @@ export function assessCodeGraphResolutionSymbolPublication(
   if (symbol.exported) {
     return {gate: 'exported', lookupKeyForm: firstLookupKeyForm(symbol), published: true};
   }
+  // Rationale annotations are derived from a source file and only emit a direct
+  // `documents` edge to an owner in that same file. Their human-facing lookup
+  // terms are query metadata, not resolver endpoints. Line movement therefore
+  // stays inside the changed-file rewrite instead of forcing repository-wide
+  // resolution closure.
+  if (symbol.kind === 'rationale' && symbol.resolutionDomain === 'documentation') {
+    return {
+      gate: 'own-path-local',
+      lookupKeyForm: symbol.lookupKeys?.length ? 'non-typescript' : 'none',
+      published: false,
+    };
+  }
   if (symbol.resolutionDomain !== 'typescript') {
     return {
       gate: 'non-typescript-domain',

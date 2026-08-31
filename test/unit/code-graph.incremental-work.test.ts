@@ -14,9 +14,16 @@ import {
   measureCodeGraphIncrementalWork,
   planCodeGraphIncrementalFoldForwardPaths,
 } from '../../src/code_graph/incremental_work.js';
+import {overlayFallbackDescription} from '../../src/code_graph/indexer_incremental.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 describe('incremental rewrite work', () => {
+  it('describes the current two-batch project closure envelope', () => {
+    expect(overlayFallbackDescription('project-closure-unbounded')).toBe(
+      'the project dependency closure exceeded the bounded two-batch materialization envelope',
+    );
+  });
+
   it('admits at most two per-file-bounded fact batches under the aggregate rewrite envelope', () => {
     const maximumBatchBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
     const batches = fc.array(

@@ -246,6 +246,64 @@ describe('code graph incremental-overlay properties', () => {
     ).toMatchObject({gate: 'scope-mismatch', published: true});
   });
 
+  it('keeps non-exported rationale line shifts inside the changed-file resolution surface', () => {
+    const rationale: CodeGraphSymbol = {
+      contentHash: 'before',
+      documentation: 'preserve the bounded invariant',
+      exported: false,
+      id: 'rationale-line-10',
+      kind: 'rationale',
+      language: 'typescript',
+      lookupKeys: ['WHY: preserve the bounded invariant', 'WHY', 'src/example.ts#rationale-10-1'],
+      name: 'WHY: preserve the bounded invariant',
+      path: 'src/example.ts',
+      qualifiedName: 'src/example.ts#rationale-10-1',
+      resolutionDomain: 'documentation',
+      signature: 'WHY',
+      span: {column: 1, endColumn: 1, endLine: 10, line: 10},
+    };
+    const shifted: CodeGraphSymbol = {
+      ...rationale,
+      contentHash: 'after',
+      id: 'rationale-line-11',
+      lookupKeys: ['WHY: preserve the bounded invariant', 'WHY', 'src/example.ts#rationale-11-1'],
+      qualifiedName: 'src/example.ts#rationale-11-1',
+      span: {column: 1, endColumn: 1, endLine: 11, line: 11},
+    };
+
+    expect(assessCodeGraphResolutionSymbolPublication(rationale)).toEqual({
+      gate: 'own-path-local',
+      lookupKeyForm: 'non-typescript',
+      published: false,
+    });
+    expect(hasSameCodeGraphResolutionSurface([rationale], [shifted])).toBe(true);
+  });
+
+  it.prop(
+    'keeps arbitrary rationale position changes resolution-local',
+    {fromLine: FC.integer({max: 100_000, min: 1}), toLine: FC.integer({max: 100_000, min: 1})},
+    ({fromLine, toLine}) => {
+      const at = (line: number): CodeGraphSymbol => ({
+        contentHash: `content-${line}`,
+        documentation: 'bounded invariant',
+        exported: false,
+        id: `rationale-line-${line}`,
+        kind: 'rationale',
+        language: 'typescript',
+        lookupKeys: ['WHY: bounded invariant', 'WHY', `src/example.ts#rationale-${line}-1`],
+        name: 'WHY: bounded invariant',
+        path: 'src/example.ts',
+        qualifiedName: `src/example.ts#rationale-${line}-1`,
+        resolutionDomain: 'documentation',
+        signature: 'WHY',
+        span: {column: 1, endColumn: 1, endLine: line, line},
+      });
+
+      expect(hasSameCodeGraphResolutionSurface([at(fromLine)], [at(toLine)])).toBe(true);
+    },
+    {fastCheck: {numRuns: 200}},
+  );
+
   it('does not synthesize active global endpoints for TypeScript while preserving explicit extractor keys', () => {
     const path = 'src/example.ts';
     const ownKey = `typescript:path:${encodeURIComponent(path)}:name:local`;

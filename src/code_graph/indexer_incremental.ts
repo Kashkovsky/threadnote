@@ -1101,7 +1101,7 @@ export function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReaso
     case 'project-closure-incomplete':
       return 'the declared project dependency closure was incomplete or ambiguous';
     case 'project-closure-unbounded':
-      return 'the project dependency closure exceeded one bounded materialization batch';
+      return 'the project dependency closure exceeded the bounded two-batch materialization envelope';
     case 'reexport-closure-unbounded':
       return 'persisted reexport provenance exceeded the bounded project-closure lookup';
     case 'resolution-surface-changed':

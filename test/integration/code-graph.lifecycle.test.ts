@@ -495,22 +495,25 @@ describe('native code graph lifecycle', () => {
     expect(resultB.nodes.some(node => node.name === 'ensureBranchBVectorIndex')).toBe(true);
     expect(resultB.nodes.some(node => node.name === 'ensureBranchAVectorIndex')).toBe(false);
     expect(resultA.snapshot.worktreeId).not.toBe(resultB.snapshot.worktreeId);
-    expect(resultA.snapshot.id).toMatch(/-direct$/);
-    expect(resultB.snapshot.id).toMatch(/-direct$/);
+    expect(resultA.snapshot.id).not.toBe(resultB.snapshot.id);
+    expect(resultA.snapshot.id).toMatch(/^cgsn_[0-9a-f]{40}$/u);
+    expect(resultB.snapshot.id).toMatch(/^cgsn_[0-9a-f]{40}$/u);
+    expect(resultA.snapshot).toMatchObject({dirty: true});
+    expect(resultB.snapshot).toMatchObject({dirty: true});
 
     const offlineWorktreeB = `${worktreeB}-offline`;
     const identityA = await runEffect(resolveRepositoryIdentity(worktreeA));
     const databasePath = codeGraphDatabasePath(home, {identity: identityA});
     renameSync(worktreeB, offlineWorktreeB);
     try {
-      expect(await graphHealthAfterIndex(worktreeA, home)).toMatchObject({activeSnapshots: 2, readySnapshots: 2});
+      expect(await graphHealthAfterIndex(worktreeA, home)).toMatchObject({activeSnapshots: 2, readySnapshots: 3});
       expect(activeSnapshotId(databasePath, resultB.snapshot.worktreeId)).toBe(resultB.snapshot.id);
     } finally {
       renameSync(offlineWorktreeB, worktreeB);
     }
 
     git(root, ['worktree', 'remove', '--force', worktreeB]);
-    expect(await graphHealthAfterIndex(worktreeA, home)).toMatchObject({activeSnapshots: 2, readySnapshots: 2});
+    expect(await graphHealthAfterIndex(worktreeA, home)).toMatchObject({activeSnapshots: 2, readySnapshots: 3});
     expect(activeSnapshotId(databasePath, resultB.snapshot.worktreeId)).toBe(resultB.snapshot.id);
   });
 
@@ -584,14 +587,21 @@ describe('native code graph lifecycle', () => {
         refresh: false,
         threadnoteHome: home,
       });
+      const effectiveDirtyGraph = yield* store.loadGraph(databasePath, indexed.snapshot.id);
       const afterDirtyHealth = yield* store.diagnose(databasePath);
       const materialization = indexed.materialization;
-      expect(materialization).toMatchObject({
-        fallbackReason: 'resolution-surface-changed',
-        mode: 'full',
+      expect(materialization).toEqual({
+        closureProjects: 2,
+        mode: 'incremental-overlay',
+        resolutionClosure: 'project',
+        resolutionLookupKeyForm: 'typescript-path-scoped',
+        resolutionPublicationGate: 'exported',
+        stagedFiles: 6,
+        totalFiles: 13,
       });
-      expect(materialization?.stagedFiles).toBe(materialization?.totalFiles);
-      expect(indexed.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
+      expect(indexed.snapshot).toMatchObject({baseSnapshotId: forced.snapshot.id, dirty: true});
+      expect(effectiveDirtyGraph.symbols).toHaveLength(indexed.snapshot.symbolCount);
+      expect(effectiveDirtyGraph.edges).toHaveLength(indexed.snapshot.edgeCount);
       expect(dirty.nodes.some(node => node.name === 'ensureDirtyVectorIndex')).toBe(true);
       expect(clean.nodes.some(node => node.name === 'ensureVectorIndex')).toBe(true);
       expect(afterDirtyHealth).toMatchObject({
@@ -613,8 +623,8 @@ describe('native code graph lifecycle', () => {
           const cacheWrites = database
             .query<{readonly count: number}, []>('SELECT COUNT(*) AS count FROM cache_write_audit')
             .get();
-          expect(stored?.count).toBe(indexed.snapshot.symbolCount);
-          expect(changedFiles?.count).toBe(indexed.snapshot.fileCount);
+          expect(stored?.count).toBeLessThan(indexed.snapshot.symbolCount);
+          expect(changedFiles?.count).toBe(materialization?.stagedFiles);
           expect(cacheWrites?.count).toBe(1);
         } finally {
           database.close();
@@ -2011,6 +2021,8 @@ describe('native code graph lifecycle', () => {
       expect(indexed.materialization).toEqual({
         fallbackReason: 'resolution-surface-changed',
         mode: 'full',
+        resolutionLookupKeyForm: 'typescript-path-unscoped',
+        resolutionPublicationGate: 'exported',
         stagedFiles: 4,
         totalFiles: 4,
       });
