@@ -1,4 +1,6 @@
 import type {CodeGraphWorkspaceProject} from './languages/types.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact_budget.js';
+import {CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES} from './incremental_work.js';
 import {compareCodeUnits} from './ordering.js';
 import {
   hasSameCodeGraphReexportResolutionSurface,
@@ -16,7 +18,7 @@ import type {
 
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_FILES = 128;
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES = 16 * 1_048_576;
-export const PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES = 8 * 1_048_576;
+export const PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES = CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES;
 
 export type ProjectIncrementalClosureFallbackReason =
   'cache-incomplete' | 'project-closure-incomplete' | 'project-closure-unbounded';
@@ -253,6 +255,15 @@ export function planProjectIncrementalClosure(input: ProjectIncrementalClosureIn
     if (factBytes === undefined || !Number.isSafeInteger(factBytes) || factBytes < 0) {
       return {mode: 'fallback', reason: 'cache-incomplete'};
     }
+    if (factBytes > CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM) {
+      return unboundedPlan({
+        changedFiles: new Set(input.modifiedPaths).size,
+        metric: 'cached-fact-bytes',
+        limit: CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+        observedAtDecision: factBytes,
+        stage: 'project-closure-selection',
+      });
+    }
     cachedFactBytes = saturatingAdd(cachedFactBytes, factBytes);
     if (cachedFactBytes > maxCachedFactBytes) {
       return unboundedPlan({
@@ -270,7 +281,7 @@ export function planProjectIncrementalClosure(input: ProjectIncrementalClosureIn
 /**
  * Plans the smallest project-local resolution closure that contains every seed.
  * The planner consumes metadata only: parser facts are decoded after this result
- * has proven the existing single-batch materialization bounds.
+ * has proven the bounded two-batch materialization envelope.
  */
 export function selectProjectIncrementalClosure(
   input: ProjectIncrementalClosureSelectionInput,

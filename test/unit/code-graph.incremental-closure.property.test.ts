@@ -555,6 +555,41 @@ describe('project incremental closure', () => {
       mode: 'fallback',
       reason: 'project-closure-unbounded',
     });
+    const aggregateBudgetFiles = [
+      inventory('packages/a/one.ts', 1),
+      inventory('packages/a/two.ts', 1),
+      inventory('packages/a/three.ts', 1),
+    ];
+    expect(
+      planProjectIncrementalClosure({
+        ...common,
+        cachedFactBytesByPath: new Map(aggregateBudgetFiles.slice(0, 2).map(value => [value.path, 8 * 1_048_576])),
+        files: aggregateBudgetFiles.slice(0, 2),
+        modifiedPaths: [aggregateBudgetFiles[0]!.path],
+        projects: [base],
+      }),
+    ).toMatchObject({cachedFactBytes: 16 * 1_048_576, mode: 'eligible'});
+    expect(
+      planProjectIncrementalClosure({
+        ...common,
+        cachedFactBytesByPath: new Map(
+          aggregateBudgetFiles.map((value, index) => [value.path, index === 2 ? 1 : 8 * 1_048_576]),
+        ),
+        files: aggregateBudgetFiles,
+        modifiedPaths: [aggregateBudgetFiles[0]!.path],
+        projects: [base],
+      }),
+    ).toEqual({
+      fallbackBoundary: {
+        changedFiles: 1,
+        limit: 16 * 1_048_576,
+        metric: 'cached-fact-bytes',
+        observedAtDecision: 16 * 1_048_576 + 1,
+        stage: 'project-closure-selection',
+      },
+      mode: 'fallback',
+      reason: 'project-closure-unbounded',
+    });
     expect(
       planProjectIncrementalClosure({
         ...common,

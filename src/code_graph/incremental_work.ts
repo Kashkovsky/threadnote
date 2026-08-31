@@ -1,10 +1,12 @@
 import {codeGraphUtf8ByteLength} from './disk_capacity.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM, type MeasuredCodeGraphFact} from './fact_budget.js';
 import {symbolTerms} from './store_utilities.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from './types.js';
 
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES = 128;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES = 16 * 1_048_576;
-export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES = 8 * 1_048_576;
+export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES = 16 * 1_048_576;
+export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES = 2;
 export const CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS = 250_000;
 /** Persisted rows may be carried without decoding, but remain independently bounded. */
 export const CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES = 256;
@@ -14,6 +16,77 @@ export const CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS = CODE_GRAPH_INCREMENT
 export interface CodeGraphIncrementalFoldForwardPathPlan {
   readonly carriedPaths: readonly string[];
   readonly cumulativePaths: readonly string[];
+}
+
+export type CodeGraphIncrementalFactBytesAssessment =
+  | {readonly mode: 'eligible'}
+  | {readonly mode: 'invalid'}
+  | {
+      readonly limit: number;
+      readonly mode: 'exceeded';
+      readonly observedAtDecision: number;
+    };
+
+/**
+ * Keeps the persisted per-file fact fence independent from the larger aggregate
+ * incremental rewrite envelope. Metadata callers use the same exact assessment
+ * as final fact-batch admission, so a corrupt oversized cache row still fails
+ * closed even when the overall rewrite would fit.
+ */
+export function assessCodeGraphIncrementalFactBytes(input: {
+  readonly aggregateBytes: number;
+  readonly factBytes: Iterable<number>;
+}): CodeGraphIncrementalFactBytesAssessment {
+  let measuredAggregateBytes = 0;
+  for (const bytes of input.factBytes) {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) return {mode: 'invalid'};
+    if (bytes > CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM) {
+      return {
+        limit: CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+        mode: 'exceeded',
+        observedAtDecision: bytes,
+      };
+    }
+    if (bytes > Number.MAX_SAFE_INTEGER - measuredAggregateBytes) return {mode: 'invalid'};
+    measuredAggregateBytes += bytes;
+  }
+  if (
+    !Number.isSafeInteger(input.aggregateBytes) ||
+    input.aggregateBytes < 0 ||
+    input.aggregateBytes !== measuredAggregateBytes
+  ) {
+    return {mode: 'invalid'};
+  }
+  return input.aggregateBytes > CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES
+    ? {
+        limit: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
+        mode: 'exceeded',
+        observedAtDecision: input.aggregateBytes,
+      }
+    : {mode: 'eligible'};
+}
+
+/** Exact bounded admission for the default per-file fact batches used by incremental staging. */
+export function codeGraphIncrementalFactBatchesFitBudget(
+  batches: readonly (readonly Pick<MeasuredCodeGraphFact, 'bytes'>[])[],
+): boolean {
+  if (batches.length < 1 || batches.length > CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES) return false;
+  let aggregateBytes = 0;
+  const factBytes: number[] = [];
+  for (const batch of batches) {
+    if (batch.length === 0) return false;
+    let batchBytes = 0;
+    for (const fact of batch) {
+      if (!Number.isSafeInteger(fact.bytes) || fact.bytes <= 0) return false;
+      if (fact.bytes > Number.MAX_SAFE_INTEGER - batchBytes) return false;
+      batchBytes += fact.bytes;
+      factBytes.push(fact.bytes);
+    }
+    if (batchBytes > CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM) return false;
+    if (batchBytes > Number.MAX_SAFE_INTEGER - aggregateBytes) return false;
+    aggregateBytes += batchBytes;
+  }
+  return assessCodeGraphIncrementalFactBytes({aggregateBytes, factBytes}).mode === 'eligible';
 }
 
 /** Pure bounded set plan shared by admission and truthful materialization reporting. */

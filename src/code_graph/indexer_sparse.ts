@@ -8,9 +8,9 @@ import {
   assessProjectClosureSeeds,
   declaredProjectResolutionClosureProjectIds,
   planProjectIncrementalClosure,
-  PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
   selectProjectIncrementalClosure,
 } from './incremental_closure.js';
+import {assessCodeGraphIncrementalFactBytes, codeGraphIncrementalFactBatchesFitBudget} from './incremental_work.js';
 import type {CodeGraphEmbeddingIndexShape} from './embedding.js';
 import {
   CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
@@ -109,7 +109,11 @@ export const attemptSparseReusableOverlay = Effect.fn('codeGraph.attemptSparseRe
   );
   if (
     changedBaseMetadata.files !== base.files.length ||
-    changedBaseMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES
+    changedBaseMetadata.bytesByPath.size !== base.files.length ||
+    assessCodeGraphIncrementalFactBytes({
+      aggregateBytes: changedBaseMetadata.bytes,
+      factBytes: changedBaseMetadata.bytesByPath.values(),
+    }).mode !== 'eligible'
   ) {
     return Option.none<CodeGraphIndexSummary>();
   }
@@ -475,7 +479,7 @@ export const assessReusableOverlayAdmissionCompatibility = Effect.fn(
       store: input.store,
     });
   }
-  if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
+  if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(currentFacts))) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
   }
   return {
@@ -585,7 +589,7 @@ const assessSparseProjectClosure = Effect.fn('codeGraph.assessSparseProjectClosu
   const attributeRepository = input.repositoryAttribution.attribute(new Set(existingPaths));
   const attributeWorkspace = createWorkspaceAttributor(input.admission.workspace);
   const facts = attributeWorkspace(attributeRepository(rawFacts));
-  if (finalCodeGraphFactBatches(facts).length !== 1) {
+  if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(facts))) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
   }
   return {

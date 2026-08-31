@@ -6,7 +6,6 @@ import {
   assessProjectFileSetClosureSeeds,
   partitionProjectResolutionSurfaceChanges,
   planProjectIncrementalClosure,
-  PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
   PROJECT_INCREMENTAL_CLOSURE_MAX_FILES,
   PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
   selectProjectIncrementalClosure,
@@ -14,6 +13,8 @@ import {
 import {
   CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES,
   CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS,
+  assessCodeGraphIncrementalFactBytes,
+  codeGraphIncrementalFactBatchesFitBudget,
   codeGraphIncrementalWorkFitsBudget,
   measureCodeGraphIncrementalWork,
   planCodeGraphIncrementalFoldForwardPaths,
@@ -175,7 +176,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
     reusableFacts.length === 0 &&
     (preassessment.deletedPaths?.length ?? 0) > 0 &&
     preassessment.resolutionClosure === 'project';
-  if (finalBatches.length !== 1 && preassessment.resolutionClosure !== 'full' && !deletionOnlyProjectClosure) {
+  if (!deletionOnlyProjectClosure && !codeGraphIncrementalFactBatchesFitBudget(finalBatches)) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
   }
   const facts = finalBatches.flatMap(batch => batch.map(value => value.facts));
@@ -319,7 +320,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       effectiveFacts.flatMap(file => file.references ?? []),
     );
     if (!reexportResolutionSurfaceChanged && !resolutionSurfaceChanged && workspaceCompatibility.mode === 'unchanged') {
-      if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
+      if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(effectiveFacts))) {
         return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
       }
       return {
@@ -446,12 +447,11 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     ) {
       return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (
-      extractorTransition &&
-      (baseCache.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES ||
-        currentCache.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES)
-    ) {
-      return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+    if (extractorTransition) {
+      const baseBudget = projectClosureCachedFactBudgetFallback(baseCache, baseFiles.length);
+      if (baseBudget !== undefined) return baseBudget;
+      const currentBudget = projectClosureCachedFactBudgetFallback(currentCache, modifiedFiles.length);
+      if (currentBudget !== undefined) return currentBudget;
     }
     const baseRawFacts = baseFiles.map(file =>
       input.languagePacks.postprocessFile(file, baseCache.facts.get(file.path)!),
@@ -495,7 +495,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
           : closure;
       return resolutionPublicationAssessment ? {...result, resolutionPublicationAssessment} : result;
     }
-    if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
+    if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(currentFacts))) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
     // Incremental facts are attributed from a candidate-specific subset. They
@@ -727,12 +727,11 @@ const assessAddedProjectResolutionSeeds = Effect.fn('codeGraph.assessAddedProjec
     input.addedFiles,
     input.languagePacks,
   );
-  if (metadata.files !== input.addedFiles.length) {
+  if (metadata.files !== input.addedFiles.length || metadata.bytesByPath.size !== input.addedFiles.length) {
     return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
   }
-  if (metadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES) {
-    return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
-  }
+  const metadataBudget = projectClosureCachedFactBudgetFallback(metadata, input.addedFiles.length);
+  if (metadataBudget !== undefined) return metadataBudget;
   const currentCache = yield* loadCachedFacts(
     input.store,
     input.layout.databasePath,
@@ -912,7 +911,7 @@ const assessPlannedProjectIncrementalClosure = Effect.fn('codeGraph.assessPlanne
       input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
     );
     const currentFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, currentRawFacts);
-    if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
+    if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(currentFacts))) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
     return {
@@ -946,18 +945,44 @@ const assessProjectClosureChangedDecodeBudget = Effect.fn('codeGraph.assessProje
       ],
       {concurrency: 1},
     );
-    if (baseMetadata.files !== input.baseFiles.length || currentMetadata.files !== input.currentFiles.length) {
+    if (
+      baseMetadata.files !== input.baseFiles.length ||
+      baseMetadata.bytesByPath.size !== input.baseFiles.length ||
+      currentMetadata.files !== input.currentFiles.length ||
+      currentMetadata.bytesByPath.size !== input.currentFiles.length
+    ) {
       return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (
-      baseMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES ||
-      currentMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES
-    ) {
-      return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
-    }
+    const baseBudget = projectClosureCachedFactBudgetFallback(baseMetadata, input.baseFiles.length);
+    if (baseBudget !== undefined) return baseBudget;
+    const currentBudget = projectClosureCachedFactBudgetFallback(currentMetadata, input.currentFiles.length);
+    if (currentBudget !== undefined) return currentBudget;
     return {mode: 'eligible'} as const;
   },
 );
+
+function projectClosureCachedFactBudgetFallback(
+  metadata: {readonly bytes: number; readonly bytesByPath: ReadonlyMap<string, number>},
+  changedFiles: number,
+): Extract<IncrementalOverlayPreassessment, {readonly mode: 'fallback'}> | undefined {
+  const assessment = assessCodeGraphIncrementalFactBytes({
+    aggregateBytes: metadata.bytes,
+    factBytes: metadata.bytesByPath.values(),
+  });
+  if (assessment.mode === 'eligible') return undefined;
+  if (assessment.mode === 'invalid') return {mode: 'fallback', reason: 'cache-incomplete'};
+  return {
+    fallbackBoundary: {
+      changedFiles,
+      limit: assessment.limit,
+      metric: 'cached-fact-bytes',
+      observedAtDecision: assessment.observedAtDecision,
+      stage: 'project-closure-selection',
+    },
+    mode: 'fallback',
+    reason: 'project-closure-unbounded',
+  };
+}
 
 function projectClosureSourceBudgetFits(files: readonly CodeGraphInventoryFile[]): boolean {
   if (files.length > PROJECT_INCREMENTAL_CLOSURE_MAX_FILES) return false;

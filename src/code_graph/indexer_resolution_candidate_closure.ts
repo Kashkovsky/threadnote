@@ -4,10 +4,10 @@ import {finalCodeGraphFactBatches} from './fact_budget.js';
 import {
   type ProjectResolutionLookupKey,
   type ProjectResolutionReexportCandidate,
-  PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
   PROJECT_INCREMENTAL_CLOSURE_MAX_FILES,
   PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
 } from './incremental_closure.js';
+import {assessCodeGraphIncrementalFactBytes, codeGraphIncrementalFactBatchesFitBudget} from './incremental_work.js';
 import {cachedFactsMetadata, loadCachedFacts} from './indexer_materialization.js';
 import type {IncrementalOverlayPreassessment} from './indexer_types.js';
 import type {CodeGraphLanguagePackRegistryShape} from './languages/registry.js';
@@ -161,12 +161,19 @@ const assessSelectedResolutionCandidateClosure = Effect.fn('codeGraph.assessSele
     if (metadata.files !== input.selectedFiles.length || metadata.bytesByPath.size !== input.selectedFiles.length) {
       return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (metadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES) {
+    const metadataBudget = assessCodeGraphIncrementalFactBytes({
+      aggregateBytes: metadata.bytes,
+      factBytes: metadata.bytesByPath.values(),
+    });
+    if (metadataBudget.mode === 'invalid') {
+      return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+    }
+    if (metadataBudget.mode === 'exceeded') {
       return projectClosureBoundFallback(
         changedFiles,
         {metric: 'cached-fact-bytes', stage: 'resolution-candidate-rewrite'},
-        metadata.bytes,
-        PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
+        metadataBudget.observedAtDecision,
+        metadataBudget.limit,
       );
     }
     const loaded = yield* loadCachedFacts(
@@ -192,7 +199,7 @@ const assessSelectedResolutionCandidateClosure = Effect.fn('codeGraph.assessSele
     if (facts === undefined) {
       return {mode: 'fallback', reason: 'project-closure-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (finalCodeGraphFactBatches(facts).length !== 1) {
+    if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(facts))) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
     return {

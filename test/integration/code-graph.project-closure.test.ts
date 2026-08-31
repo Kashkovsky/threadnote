@@ -10,6 +10,8 @@ import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Path} from 'effect';
 import {CodeGraphIndexer, graphContentIdentity} from '../../src/code_graph/indexer.js';
+import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
@@ -410,6 +412,49 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  it.effect('materializes an exact project closure across two bounded fact batches', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const store = yield* CodeGraphStore;
+          const path = yield* Path.Path;
+          const incrementalHome = join(root, '.threadnote-two-batch-incremental');
+          const fullHome = join(root, '.threadnote-two-batch-full');
+          const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const incrementalLayout = codeGraphLayout(
+            path,
+            incrementalHome,
+            base.identity.checkoutId,
+            base.identity.worktreeId,
+          );
+          const inflatedHashes = ['packages/app/index.ts', 'packages/app/package.json'].map(value =>
+            snapshotFileContentHash(incrementalLayout.databasePath, base.snapshot.id, value),
+          );
+          yield* Effect.sync(() => {
+            inflateCachedFacts(incrementalLayout.databasePath, inflatedHashes, 5 * 1_048_576);
+            redirectBarrel(root);
+          });
+
+          const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+          expect(incremental.materialization).toMatchObject({
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
+          });
+          expect(incremental.incrementalWork?.factBytes).toBeGreaterThan(8 * 1_048_576);
+          expect(incremental.incrementalWork?.factBytes).toBeLessThanOrEqual(16 * 1_048_576);
+          expect(
+            normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
+          ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect('falls back through bounded full materialization for cache and receipt loss or oversized facts', () =>
     Effect.forEach(
       [
@@ -456,6 +501,15 @@ describe('project-closure incremental indexing', () => {
               expect(indexed.materialization).toMatchObject({fallbackReason: reason, mode: 'full'});
               expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
               if (scenario === 'missing') expect(removedAfterPersistence).toBe(true);
+              if (scenario === 'oversized') {
+                expect(indexed.materialization?.fallbackBoundary).toMatchObject({
+                  changedFiles: 1,
+                  limit: 8 * 1_048_576,
+                  metric: 'cached-fact-bytes',
+                  stage: 'project-closure-selection',
+                });
+                expect(indexed.materialization?.fallbackBoundary?.observedAtDecision).toBeGreaterThan(8 * 1_048_576);
+              }
             }),
           root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
         ),
@@ -1358,6 +1412,30 @@ function mutateBarrelCache(databasePath: string, scenario: 'missing' | 'oversize
       ]);
     } else {
       database.run('DELETE FROM snapshot_reuse_receipts');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function inflateCachedFacts(databasePath: string, contentHashes: readonly string[], diagnosticBytes: number): void {
+  const database = new Database(databasePath);
+  try {
+    const read = database.query<{readonly factsJson: string}, [string]>(
+      'SELECT facts_json AS factsJson FROM file_blobs WHERE content_hash = ? LIMIT 1',
+    );
+    for (const contentHash of contentHashes) {
+      const row = read.get(contentHash);
+      if (!row) throw new TestError(`Missing cached facts for ${contentHash}.`);
+      const facts = decodeStoredCodeGraphFact(row.factsJson).facts;
+      const inflated = serializeBoundedCodeGraphFact({
+        ...facts,
+        diagnostics: [...facts.diagnostics, 'x'.repeat(diagnosticBytes)],
+      });
+      database.run('UPDATE file_blobs SET facts_json = ? WHERE content_hash = ?', [
+        encodeStoredCodeGraphFact(inflated).json,
+        contentHash,
+      ]);
     }
   } finally {
     database.close(false);
