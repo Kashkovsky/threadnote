@@ -1697,13 +1697,32 @@ function assertHiddenArmDiscrimination(
   ) {
     throw new Error(`Hidden task ${definition.taskId} anchored arm did not return its exact gold memory relation.`);
   }
-  const empty = CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.structuredContent;
+  assertCodeMemoryLinkCanonicalNoMemoryResponseV1();
+}
+
+export function assertCodeMemoryLinkCanonicalNoMemoryResponseV1(
+  response: {
+    readonly content: readonly {readonly text: string; readonly type: string}[];
+    readonly structuredContent: {
+      readonly evidenceCount: number;
+      readonly state: string;
+      readonly type: string;
+      readonly version: number;
+    };
+  } = CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
+): void {
+  const empty = response.structuredContent;
+  const content = response.content;
   if (
+    empty.type !== 'code-memory-link-context-brief-proxy' ||
+    empty.version !== 1 ||
     empty.state !== 'empty' ||
     empty.evidenceCount !== 0 ||
-    CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.content.length !== 0
+    content.length !== 1 ||
+    content[0]?.type !== 'text' ||
+    content[0]?.text !== JSON.stringify(empty)
   ) {
-    throw new Error('Canonical no-memory arm is not empty.');
+    throw new Error('Canonical no-memory arm is not a content-equivalent empty response.');
   }
 }
 
