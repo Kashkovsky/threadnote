@@ -6565,6 +6565,7 @@ function benchmarkRunnerLabel(
     if (/^github-hosted-ubuntu-[a-z0-9.]+-x64$/.test(normalized)) return 'github-hosted-linux-x64';
     if (/^github-hosted-ubuntu-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-linux-arm64';
     if (/^github-hosted-macos-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-macos-arm64';
+    if (/^github-hosted-windows-[a-z0-9.]+-x64$/.test(normalized)) return 'github-hosted-windows-x64';
     return 'other';
   }
   const digest = new Bun.CryptoHasher('sha256').update(value).digest('hex');

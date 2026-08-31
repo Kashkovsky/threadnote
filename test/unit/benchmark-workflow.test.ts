@@ -60,6 +60,8 @@ describe('platform benchmark workflow', () => {
     const recallCommand = recallJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const worksetJob = workflow.jobs['code-graph-workset']!;
     const worksetCommand = worksetJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
+    const nativeJob = workflow.jobs['code-graph']!;
+    const nativeCapture = nativeJob.steps?.find(step => step.name === 'Capture native graph benchmark');
 
     expect(paths).toEqual(
       expect.arrayContaining([
@@ -110,6 +112,10 @@ describe('platform benchmark workflow', () => {
     expect(worksetCommand).toContain('--samples 25');
     expect(worksetCommand).toContain('--warmups 5');
     expect(worksetCommand).not.toContain('--fail-on-budget');
+    expect(nativeCapture?.env).toEqual({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-${{ matrix.os }}-${{ runner.arch }}',
+      THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
+    });
 
     for (const jobName of [
       'code-graph',

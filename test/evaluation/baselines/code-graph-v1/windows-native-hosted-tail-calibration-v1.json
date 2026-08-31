@@ -1,0 +1,1169 @@
+{
+  "type": "threadnote-windows-native-hosted-tail-calibration",
+  "version": 1,
+  "candidateCommit": "afed2ea9a31f99e3d48d20eb2974f0bd9cbba2ad",
+  "candidateWorkflow": {
+    "runId": 33447480677,
+    "jobId": 99669723176,
+    "jobName": "Code graph · windows-latest",
+    "qualityStep": {
+      "name": "Gate native graph quality",
+      "conclusion": "success"
+    },
+    "captureStep": {
+      "name": "Capture native graph benchmark",
+      "conclusion": "failure"
+    },
+    "artifactStep": {
+      "name": "Run actions/upload-artifact@v7",
+      "conclusion": "success"
+    }
+  },
+  "candidateBudgetArtifact": {
+    "createdAt": "2026-08-31T22:45:13.051Z",
+    "suite": "code-graph-v1",
+    "version": 1,
+    "warmups": 5,
+    "environment": {
+      "architecture": "x64",
+      "commit": "afed2ea9a31f99e3d48d20eb2974f0bd9cbba2ad",
+      "cpu": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
+      "dirty": false,
+      "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+      "memoryBytes": 17174360064,
+      "node": "bun/1.3.14",
+      "operatingSystem": "Windows 10.0.26100",
+      "packageManager": "bun/1.3.14",
+      "runner": "threadnote-code-graph-e2e",
+      "runnerVersion": "1"
+    },
+    "metadata": {
+      "runnerClass": "local-unclassified",
+      "runtimePlatform": "win32",
+      "vectorEnabled": false
+    }
+  },
+  "candidateBudgetMeasurements": [
+    {
+      "maximum": 13508.0338,
+      "mean": 13508.0338,
+      "minimum": 13508.0338,
+      "name": "cold-index",
+      "p50": 13508.0338,
+      "p95": 13508.0338,
+      "p99": 13508.0338,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 7243.0993,
+      "mean": 7243.0993,
+      "minimum": 7243.0993,
+      "name": "cold-materialization",
+      "p50": 7243.0993,
+      "p95": 7243.0993,
+      "p99": 7243.0993,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 3002.074,
+      "mean": 3002.074,
+      "minimum": 3002.074,
+      "name": "one-file-reindex-index",
+      "p50": 3002.074,
+      "p95": 3002.074,
+      "p99": 3002.074,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 63.7501,
+      "mean": 63.7501,
+      "minimum": 63.7501,
+      "name": "one-file-reindex-materialization",
+      "p50": 63.7501,
+      "p95": 63.7501,
+      "p99": 63.7501,
+      "samples": 1,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 475.3199,
+      "mean": 402.82696000000004,
+      "minimum": 307.4787,
+      "name": "hot-exact-lexical-query",
+      "p50": 409.2078,
+      "p95": 470.7183,
+      "p99": 475.3199,
+      "samples": 25,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 234,
+      "mean": 168.12,
+      "minimum": 93,
+      "name": "hot-query-process-cpu",
+      "p50": 171,
+      "p95": 234,
+      "p99": 234,
+      "samples": 25,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 177.8653,
+      "mean": 118.94633333333333,
+      "minimum": 86.2319,
+      "name": "whole-graph-structural-analysis",
+      "p50": 92.7418,
+      "p95": 177.8653,
+      "p99": 177.8653,
+      "samples": 3,
+      "unit": "milliseconds"
+    },
+    {
+      "maximum": 313466880,
+      "mean": 313466880,
+      "minimum": 313466880,
+      "name": "incremental-process-peak-rss",
+      "p50": 313466880,
+      "p95": 313466880,
+      "p99": 313466880,
+      "samples": 1,
+      "unit": "bytes"
+    },
+    {
+      "maximum": 1140608,
+      "mean": 1140608,
+      "minimum": 1140608,
+      "name": "derived-index-disk",
+      "p50": 1140608,
+      "p95": 1140608,
+      "p99": 1140608,
+      "samples": 1,
+      "unit": "bytes"
+    }
+  ],
+  "observationOrder": "reverse-chronological; observations[0] is the candidate failure",
+  "governedInputs": {
+    "coldIndexPriorMaximumMilliseconds": 10000,
+    "coldMaterializationPriorMaximumMilliseconds": 5000,
+    "headroomRatio": 0.1,
+    "roundingQuantumMilliseconds": 1000
+  },
+  "derivation": {
+    "priorObservationCount": 31,
+    "priorColdIndex": {
+      "minimum": 4354.2168,
+      "p50": 6774.4962,
+      "p95": 8520.9234,
+      "maximum": 8841.8433,
+      "breaches": 0
+    },
+    "priorColdMaterialization": {
+      "minimum": 443.4754,
+      "p50": 1753.6932,
+      "p95": 2878.488,
+      "maximum": 3296.4708,
+      "breaches": 0
+    },
+    "candidateColdIndexMilliseconds": 13508.0338,
+    "candidateColdMaterializationMilliseconds": 7243.0993,
+    "prospectiveColdIndexMaximumMilliseconds": 15000,
+    "prospectiveColdMaterializationMaximumMilliseconds": 8000
+  },
+  "observations": [
+    {
+      "artifactId": 9778600223,
+      "runId": 33447480677,
+      "createdAt": "2026-08-31T22:45:14Z",
+      "headSha": "afed2ea9a31f99e3d48d20eb2974f0bd9cbba2ad",
+      "archiveDigest": "sha256:92e156151b63baf59a17c576e3b42677d618121ae76c8f36d8cd26370cfb264b",
+      "rawJsonSha256": "b00b2e24b5d647e613cdd91c5521afef1bb79351556a86c456c39ce670cc6e86",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 13508.0338,
+        "coldMaterializationMilliseconds": 7243.0993,
+        "coldProcessCpuMilliseconds": 4157,
+        "coldMaterializationProcessCpuMilliseconds": 1625,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 5251.6984,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 1239.1353,
+        "coldActivationLongestTransactionMilliseconds": 1023.6223999999984
+      },
+      "digests": {
+        "cold": "ebb74dd5b2fdb381b230136254ffba44a1e258f89178572a88fd27952f278a07",
+        "incremental": "0626b778ff75ccfcdb20603d86680cc22c9b1465242a98f2c9afe543d8460cf9",
+        "sameOverlayReference": "0626b778ff75ccfcdb20603d86680cc22c9b1465242a98f2c9afe543d8460cf9"
+      }
+    },
+    {
+      "artifactId": 9775302142,
+      "runId": 33438134814,
+      "createdAt": "2026-08-31T20:53:57Z",
+      "headSha": "4cf4c966cf272a3cb066db29750a415766ec5954",
+      "archiveDigest": "sha256:6041940057bc2017ea41584d545eb403bbb2d95239bb9270771759cfbccd2971",
+      "rawJsonSha256": "2acea1b7d07ca663f76eb8746308964ccdd5eccdb8dbee99ecc098be2157931f",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 7211.0128,
+        "coldMaterializationMilliseconds": 1920.8067,
+        "coldProcessCpuMilliseconds": 4687,
+        "coldMaterializationProcessCpuMilliseconds": 1532,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1167.9472,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 97.495,
+        "coldActivationLongestTransactionMilliseconds": 18.693600000000515
+      },
+      "digests": {
+        "cold": "d074a02db15adb969944c52635a85d54ac9b688b6285573ad1ede0b5620143cb",
+        "incremental": "2068b2b77dd8f70e580a0bcf76b515cb04f490f0f3d329fb87f11a620e645ca1",
+        "sameOverlayReference": "2068b2b77dd8f70e580a0bcf76b515cb04f490f0f3d329fb87f11a620e645ca1"
+      }
+    },
+    {
+      "artifactId": 9767919055,
+      "runId": 33418005779,
+      "createdAt": "2026-08-31T17:13:56Z",
+      "headSha": "5bf330cfa976de9d18e47c52e17e5bff3363e950",
+      "archiveDigest": "sha256:dd1ac92009872be470c939859bc7ddf8782f8565610ca975a29ba08b675ca41f",
+      "rawJsonSha256": "5a7f11ed93bb32e17f0359b8e22ad314db9a8c4fb900630653021e1a3bc80516",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17178693632,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6774.4962,
+        "coldMaterializationMilliseconds": 1766.2547,
+        "coldProcessCpuMilliseconds": 4265,
+        "coldMaterializationProcessCpuMilliseconds": 1687,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1031.1935,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 102.3097,
+        "coldActivationLongestTransactionMilliseconds": 19.878899999999703
+      },
+      "digests": {
+        "cold": "81907d662e428ecb0fb07fe4d97053367d6d8bbc87cc03afb621eb241e0a003d",
+        "incremental": "5b24bd6dbd0a45ead1d3ff7a91e414e661ee40fca6adc4d9823a67ff388c4394",
+        "sameOverlayReference": "5b24bd6dbd0a45ead1d3ff7a91e414e661ee40fca6adc4d9823a67ff388c4394"
+      }
+    },
+    {
+      "artifactId": 9763409844,
+      "runId": 33406214662,
+      "createdAt": "2026-08-31T15:08:09Z",
+      "headSha": "905d10fb02d964c9d191ada47291b4400fe2578d",
+      "archiveDigest": "sha256:c53a201c51043023528b8341cf9303ad9b914fea6ec52ddbf8ed7194a9efd3d6",
+      "rawJsonSha256": "17c29891e5963aa3b93b49525de0a05cf98e56635473cc8f5840bdb8797c113b",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6996.9848,
+        "coldMaterializationMilliseconds": 1772.3139,
+        "coldProcessCpuMilliseconds": 4953,
+        "coldMaterializationProcessCpuMilliseconds": 1890,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1048.7237,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 107.0562,
+        "coldActivationLongestTransactionMilliseconds": 19.41519999999946
+      },
+      "digests": {
+        "cold": "1e18f202e58c2d60c1dfabf2b0d860aa38f87bb2269cf4eab63293c175a7635a",
+        "incremental": "f21a44efae74324f1ee61734b726dd7a0e690f37ad97aee70f9c34de4c8a66ce",
+        "sameOverlayReference": "f21a44efae74324f1ee61734b726dd7a0e690f37ad97aee70f9c34de4c8a66ce"
+      }
+    },
+    {
+      "artifactId": 9759429033,
+      "runId": 33395986972,
+      "createdAt": "2026-08-31T13:18:54Z",
+      "headSha": "172c4d45e2cbc5dedb8f5fd088a8d5b93ca005d3",
+      "archiveDigest": "sha256:0538289e8588e9c4a44e361e00901f508d0f41cf534fe5eec0f1b5a3b6d27180",
+      "rawJsonSha256": "4c0c825a82fdba890a5a016a58db940696285874e2eec87098c852150a4f1030",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 8202.219,
+        "coldMaterializationMilliseconds": 2292.0076,
+        "coldProcessCpuMilliseconds": 5063,
+        "coldMaterializationProcessCpuMilliseconds": 1890,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1475.6915,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 120.7444,
+        "coldActivationLongestTransactionMilliseconds": 19.624299999999494
+      },
+      "digests": {
+        "cold": "6f71c3a5eddd4215aa0dcecdceb8fbf73d753cc436ae4ab5af44e70a46bf1266",
+        "incremental": "3f5cba6296ee5c85b04e05aade88af3a7fce33fe89946ce2411eb1294e103716",
+        "sameOverlayReference": "3f5cba6296ee5c85b04e05aade88af3a7fce33fe89946ce2411eb1294e103716"
+      }
+    },
+    {
+      "artifactId": 9753442544,
+      "runId": 33379946079,
+      "createdAt": "2026-08-31T09:58:07Z",
+      "headSha": "396978315d810b69b442a3b98ed1e992e8741eb6",
+      "archiveDigest": "sha256:b5ff197c805fb07bb980681fd31d076b4488b3b47439afde865f4c6aa28966c7",
+      "rawJsonSha256": "1d6e4e72557cfac413b0e0e9210a2dfc6a6de39e5eaeeb1d19a7004b1acdabff",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 8509.9724,
+        "coldMaterializationMilliseconds": 3296.4708,
+        "coldProcessCpuMilliseconds": 4328,
+        "coldMaterializationProcessCpuMilliseconds": 1500,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 2372.1583,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 105.8341,
+        "coldActivationLongestTransactionMilliseconds": 20.439900000001217
+      },
+      "digests": {
+        "cold": "f4600d2f89c0399a70344c5554ba2855cd5cdcfffe8f43048bf1e9150c27bd9e",
+        "incremental": "b8cb8ecbb2047071eff08a989c2ccc615c7fcb401e2e6bbbd754e4859e154e71",
+        "sameOverlayReference": "b8cb8ecbb2047071eff08a989c2ccc615c7fcb401e2e6bbbd754e4859e154e71"
+      }
+    },
+    {
+      "artifactId": 9752986149,
+      "runId": 33378781778,
+      "createdAt": "2026-08-31T09:42:49Z",
+      "headSha": "396978315d810b69b442a3b98ed1e992e8741eb6",
+      "archiveDigest": "sha256:ca50342151bbf51f4a85b248550f089191524c315ed326b9a1aeb05ab481d46c",
+      "rawJsonSha256": "088b236c8742d52167281a2bbd0dff61633f042d98b2cb798d9d6bcc6bf1ac06",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17178693632,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6721.6435,
+        "coldMaterializationMilliseconds": 1753.6932,
+        "coldProcessCpuMilliseconds": 4218,
+        "coldMaterializationProcessCpuMilliseconds": 1484,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1060.6543,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 97.9574,
+        "coldActivationLongestTransactionMilliseconds": 19.81710000000021
+      },
+      "digests": {
+        "cold": "de04096db9a959616bbd50b201002a8fd12018e96f5cbbc91045ece8e01090e5",
+        "incremental": "5e5eccef5a513363a5292443f4a21bb774668f3b44d4f9499ef33bd0c85164e3",
+        "sameOverlayReference": "5e5eccef5a513363a5292443f4a21bb774668f3b44d4f9499ef33bd0c85164e3"
+      }
+    },
+    {
+      "artifactId": 9712310306,
+      "runId": 33244091083,
+      "createdAt": "2026-08-29T08:54:25Z",
+      "headSha": "513c448bb5a3ab01cfd7513b037149cc618ad368",
+      "archiveDigest": "sha256:58b00c1c051a0e26932121fc28cdfb9048096fabd42ff21ef94c84cf6f41595f",
+      "rawJsonSha256": "9b78c24103f3401f7b95b864068c1917a69ede02aaffbfbce1292405151562a8",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 8387.8289,
+        "coldMaterializationMilliseconds": 2641.5497,
+        "coldProcessCpuMilliseconds": 4672,
+        "coldMaterializationProcessCpuMilliseconds": 1501,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1756.1438,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 127.7508,
+        "coldActivationLongestTransactionMilliseconds": 25.44800000000032
+      },
+      "digests": {
+        "cold": "4af860782a69d196e08f5de40169b5086721f652b87fe6df28b5e80025ed6717",
+        "incremental": "36922b2ee8aa544ec667a035dcf1083cb529d53cbcf790fa984f5a60e89f0fea",
+        "sameOverlayReference": "36922b2ee8aa544ec667a035dcf1083cb529d53cbcf790fa984f5a60e89f0fea"
+      }
+    },
+    {
+      "artifactId": 9710100933,
+      "runId": 33236483098,
+      "createdAt": "2026-08-29T05:37:48Z",
+      "headSha": "01d583fc11f92671d02a9f35611e20be743fc532",
+      "archiveDigest": "sha256:a01928ee74ecaaf89a5b4a35c1bb354d089b51f21bc8c4cbb36e70e3f703a7bf",
+      "rawJsonSha256": "01dd567e4f78c1d8c9efc0367652af80c00d65cfe6d650a7e4f4a58b8a2cd662",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6816.966,
+        "coldMaterializationMilliseconds": 1668.1989,
+        "coldProcessCpuMilliseconds": 4735,
+        "coldMaterializationProcessCpuMilliseconds": 1672,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 953.3579,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 100.5018,
+        "coldActivationLongestTransactionMilliseconds": 16.91530000000057
+      },
+      "digests": {
+        "cold": "26cdc02ab7084d6beda5ead5aae9a73df1ec2d37b7fffbb424d20d878cdd1fa1",
+        "incremental": "5a62a52cd3d5589b46545d77fe5091e387cbb26d17cae025c5e1bbaaa0c1a5f3",
+        "sameOverlayReference": "5a62a52cd3d5589b46545d77fe5091e387cbb26d17cae025c5e1bbaaa0c1a5f3"
+      }
+    },
+    {
+      "artifactId": 9709596732,
+      "runId": 33234733286,
+      "createdAt": "2026-08-29T04:53:07Z",
+      "headSha": "ca2d469fc785743cf3bd7f2455caa27cf5f583a5",
+      "archiveDigest": "sha256:36a033ef794bc24d508e1885830343130eb2a6f32e7e315c26d872aa40bda368",
+      "rawJsonSha256": "63bcf53675a0abbf2fe3cb60cb18b91b6eab5d266751f8f29ceb7f11689dab88",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6515.2918,
+        "coldMaterializationMilliseconds": 1594.1394,
+        "coldProcessCpuMilliseconds": 4485,
+        "coldMaterializationProcessCpuMilliseconds": 1781,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 941.3053,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 104.7098,
+        "coldActivationLongestTransactionMilliseconds": 24.046699999999873
+      },
+      "digests": {
+        "cold": "1b76ab2eec715461b99a0fd0297d0b70321a54dfad264e5119c27d8a4a1f9727",
+        "incremental": "7407fe19350b3d4f8ebbea0e044d972a0d1c87c6541c1bea3cc8cecf2772b084",
+        "sameOverlayReference": "7407fe19350b3d4f8ebbea0e044d972a0d1c87c6541c1bea3cc8cecf2772b084"
+      }
+    },
+    {
+      "artifactId": 9709156448,
+      "runId": 33233207963,
+      "createdAt": "2026-08-29T04:14:33Z",
+      "headSha": "80e6d822361f9181f6b2154449d92a4911fe339a",
+      "archiveDigest": "sha256:c6e38a98ef2c8c4cc6b087bfaa2c97eec058e1a4ab38476f9f07e07b2a2ac257",
+      "rawJsonSha256": "0174d27bfd32334a2e293f793bba153b2c66070786121369dca1723168b2f798",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6600.4852,
+        "coldMaterializationMilliseconds": 1611.3536,
+        "coldProcessCpuMilliseconds": 4703,
+        "coldMaterializationProcessCpuMilliseconds": 1781,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 952.7468,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 100.6869,
+        "coldActivationLongestTransactionMilliseconds": 16.796000000000276
+      },
+      "digests": {
+        "cold": "0011a1f6277f8bda16b9c30bf742daf8d5d34feacf6550de0084a02cd84ec7b6",
+        "incremental": "9774e76c3ec60cfc8a73758a18f1eafe3ddfec815ad520789e2e1ab9ee4505d2",
+        "sameOverlayReference": "9774e76c3ec60cfc8a73758a18f1eafe3ddfec815ad520789e2e1ab9ee4505d2"
+      }
+    },
+    {
+      "artifactId": 9695423925,
+      "runId": 33194943037,
+      "createdAt": "2026-08-28T17:32:55Z",
+      "headSha": "56d1d0e4529e18476f91ac250e41a88c4811c77f",
+      "archiveDigest": "sha256:f3d83af04de17cd25d9233cd5fd6a8ea51783fb1fbecb4518bc15584e5c79325",
+      "rawJsonSha256": "ac4d71f825a1518ec8feca39fbb3ac0e1c88f87e8a6973e6e30015f4030d9516",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 8197.8652,
+        "coldMaterializationMilliseconds": 2732.6068,
+        "coldProcessCpuMilliseconds": 4500,
+        "coldMaterializationProcessCpuMilliseconds": 1813,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1839.9054,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 114.0877,
+        "coldActivationLongestTransactionMilliseconds": 20.9984000000004
+      },
+      "digests": {
+        "cold": "0bae444d6dc66ec79fcc9bed69338e51afbe076805699e257dca7749fa10f3ea",
+        "incremental": "7ac999bf9358c91870875aa3a010cb9986c02777196b3196b3eef9be2845e536",
+        "sameOverlayReference": "7ac999bf9358c91870875aa3a010cb9986c02777196b3196b3eef9be2845e536"
+      }
+    },
+    {
+      "artifactId": 9671057027,
+      "runId": 33133091115,
+      "createdAt": "2026-08-28T01:34:45Z",
+      "headSha": "f8d69272986a19a468639d81d7764c6c74df9d7f",
+      "archiveDigest": "sha256:23365b45d649a6e91106effed82ede0bcdd4e5715a5f81426eb6ea5ed0132fc2",
+      "rawJsonSha256": "4e43ea2bbbc1994219e316739163b9c39d0614dfa81acaf87e84537cebffb84a",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6719.7179,
+        "coldMaterializationMilliseconds": 1876.2409,
+        "coldProcessCpuMilliseconds": 3923,
+        "coldMaterializationProcessCpuMilliseconds": 1500,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1220.5673,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 126.912,
+        "coldActivationLongestTransactionMilliseconds": 56.690200000000004
+      },
+      "digests": {
+        "cold": "995b038874e6bd9c8ca733eb5b4a43f200defba653422ba1908d27f5799e7f1d",
+        "incremental": "1b5dfa65377c3208d30ca6b625b7f8c14df44aecdda1c7a2c0891960a0719c8c",
+        "sameOverlayReference": "1b5dfa65377c3208d30ca6b625b7f8c14df44aecdda1c7a2c0891960a0719c8c"
+      }
+    },
+    {
+      "artifactId": 9664775104,
+      "runId": 33116457764,
+      "createdAt": "2026-08-27T21:08:21Z",
+      "headSha": "44deff33cbb9f526c449373c914f38d27c11e510",
+      "archiveDigest": "sha256:b0f7ce3aaff752f850487bfa2d86d060271edee4ecb3f9d59590a28d979e11d1",
+      "rawJsonSha256": "a452896aca84856806f545cae9011d18ef1e29adda9d954f891b58a7388ee05c",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6822.5493,
+        "coldMaterializationMilliseconds": 1731.0198,
+        "coldProcessCpuMilliseconds": 4314,
+        "coldMaterializationProcessCpuMilliseconds": 1531,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1038.1046,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 111.4592,
+        "coldActivationLongestTransactionMilliseconds": 24.32220000000052
+      },
+      "digests": {
+        "cold": "558076446e0f1c20741648e6597c9434022796402371c88c75eda056967a7416",
+        "incremental": "f7d456ed20d1749a41c7d9943ca093382ba95194c87cc722aeaf479615d7e57e",
+        "sameOverlayReference": "f7d456ed20d1749a41c7d9943ca093382ba95194c87cc722aeaf479615d7e57e"
+      }
+    },
+    {
+      "artifactId": 9664631227,
+      "runId": 33116031590,
+      "createdAt": "2026-08-27T21:03:44Z",
+      "headSha": "44deff33cbb9f526c449373c914f38d27c11e510",
+      "archiveDigest": "sha256:7fe8a29e35349fde7ff3b9c9572e54c2d090ac855fc9713c3fd2bb4e0bb89873",
+      "rawJsonSha256": "5944991b2dd18ef9446593fbf4c263c2c85b27b87fe40aa07ca5cad39501c92c",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6898.3444,
+        "coldMaterializationMilliseconds": 1936.4088,
+        "coldProcessCpuMilliseconds": 4157,
+        "coldMaterializationProcessCpuMilliseconds": 1516,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1225.6378,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 120.157,
+        "coldActivationLongestTransactionMilliseconds": 29.497600000000602
+      },
+      "digests": {
+        "cold": "5a4a45cab03c25e5111057baf6e17f825dc096d5e9b3a26cb7a243a673a0f5cc",
+        "incremental": "4bb57475ff51b7d8fbd6874f8da6a3d977496f56962ccbbb62f5f08eb76bf057",
+        "sameOverlayReference": "4bb57475ff51b7d8fbd6874f8da6a3d977496f56962ccbbb62f5f08eb76bf057"
+      }
+    },
+    {
+      "artifactId": 9663668497,
+      "runId": 33113530992,
+      "createdAt": "2026-08-27T20:33:39Z",
+      "headSha": "e30dd3dc0e49031bb304bc5c262967f28e6b09d1",
+      "archiveDigest": "sha256:4b981720e0aa380baaa0caffd24aa80bdd95af94c77e40b17c79ec9077284cf1",
+      "rawJsonSha256": "9475e765065b4b5b93c7e4803c0e7d45cadd539653007d2667ace26d00fa1e12",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6839.5825,
+        "coldMaterializationMilliseconds": 1888.3543,
+        "coldProcessCpuMilliseconds": 4453,
+        "coldMaterializationProcessCpuMilliseconds": 1530,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1183.5735,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 95.5197,
+        "coldActivationLongestTransactionMilliseconds": 20.391200000000026
+      },
+      "digests": {
+        "cold": "404e28336c8095678225be57494cae5cea85f22d0cc789708d92ede6fd26b959",
+        "incremental": "86611461f957e899a5d6b674b01e18cdff907e5be32f019bf516ffd5f5fec72c",
+        "sameOverlayReference": "86611461f957e899a5d6b674b01e18cdff907e5be32f019bf516ffd5f5fec72c"
+      }
+    },
+    {
+      "artifactId": 9660066661,
+      "runId": 33104817859,
+      "createdAt": "2026-08-27T18:45:09Z",
+      "headSha": "3b1b169aa4ef9d51296a576a4457a583a9353e74",
+      "archiveDigest": "sha256:78fd14d870eddee32c6dce7246315eb262a73a4204d67be9cd31dd731a395211",
+      "rawJsonSha256": "06138718e11d76a41c5e363d276d5ca485bb4c4c8e90d38f1fccffa0d6898350",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "Intel64 Family 6 Model 106 Stepping 6, GenuineIntel",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6406.6857,
+        "coldMaterializationMilliseconds": 1602.3916,
+        "coldProcessCpuMilliseconds": 3813,
+        "coldMaterializationProcessCpuMilliseconds": 1203,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 948.6551,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 112.4377,
+        "coldActivationLongestTransactionMilliseconds": 18.39130000000023
+      },
+      "digests": {
+        "cold": "c0e5112249fe64fd2458b2a4eae54130f56be55d01dec1dab31bb2e7a58c1f1d",
+        "incremental": "5e843295dd3d95e6f707d8479b612ba7082487a49cd622f864610a8129cc65dd",
+        "sameOverlayReference": "5e843295dd3d95e6f707d8479b612ba7082487a49cd622f864610a8129cc65dd"
+      }
+    },
+    {
+      "artifactId": 9655764841,
+      "runId": 33094168047,
+      "createdAt": "2026-08-27T16:41:03Z",
+      "headSha": "156cf305a6518ddda42b7cb74d2a2b60844065f4",
+      "archiveDigest": "sha256:2ea6d42aaf480970d67f7183a6c39904de2ed7623dfb92220e28643b7a4b5c99",
+      "rawJsonSha256": "08989967db1db2a34cd6f7a5925832b45a9c89f3c4e297148af51140b560018f",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6198.409,
+        "coldMaterializationMilliseconds": 1517.1772,
+        "coldProcessCpuMilliseconds": 4125,
+        "coldMaterializationProcessCpuMilliseconds": 1469,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 917.8832,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 92.2212,
+        "coldActivationLongestTransactionMilliseconds": 16.65769999999975
+      },
+      "digests": {
+        "cold": "f6df6c3996a136486d2521bb669cb0ff718322605d644b0b4e11f1cc614402cd",
+        "incremental": "7c0cb1dbf816401a75c7076153c42480c5030eef2a47990ce5db710e323b2b27",
+        "sameOverlayReference": "7c0cb1dbf816401a75c7076153c42480c5030eef2a47990ce5db710e323b2b27"
+      }
+    },
+    {
+      "artifactId": 9638320616,
+      "runId": 33052592862,
+      "createdAt": "2026-08-27T08:10:14Z",
+      "headSha": "25269a6ce5d42d21bb6509daf7499662a61a49b4",
+      "archiveDigest": "sha256:1c4efd24d55b5dbf9d6567c92bf3a33564f815627c5985068aa00337d94f63cd",
+      "rawJsonSha256": "d3683b07fecac3f7be479cad872e96648f48d14abe2d4333b921e900731cad2a",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 8520.9234,
+        "coldMaterializationMilliseconds": 2577.457,
+        "coldProcessCpuMilliseconds": 5017,
+        "coldMaterializationProcessCpuMilliseconds": 1812,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1688.1524,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 147.6089,
+        "coldActivationLongestTransactionMilliseconds": 32.65569999999934
+      },
+      "digests": {
+        "cold": "4002d50a10cd49fbcfb35a1a99cf49e3f36b614b0f8d5eb33e8635646046f8f3",
+        "incremental": "553af97f2bfd61f2897de7411b17ca0083e52a34557788b1fc8143503bb4fdbf",
+        "sameOverlayReference": "553af97f2bfd61f2897de7411b17ca0083e52a34557788b1fc8143503bb4fdbf"
+      }
+    },
+    {
+      "artifactId": 9638043625,
+      "runId": 33051924306,
+      "createdAt": "2026-08-27T08:00:44Z",
+      "headSha": "25269a6ce5d42d21bb6509daf7499662a61a49b4",
+      "archiveDigest": "sha256:bd72482bbed9511c68d2921c0bb6aa8f5efd5909e32a8e1a2a6b8ec6babfa070",
+      "rawJsonSha256": "d8627c118e4707c06ded6e66a2b56147cc6317c695f3b0671cf16ceaaaf4975a",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6945.1195,
+        "coldMaterializationMilliseconds": 1938.0753,
+        "coldProcessCpuMilliseconds": 4453,
+        "coldMaterializationProcessCpuMilliseconds": 1500,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1178.6445,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 94.4557,
+        "coldActivationLongestTransactionMilliseconds": 20.17410000000018
+      },
+      "digests": {
+        "cold": "a14c7d08aa05f6565225ae07d206352aa810b370db0941c1c414eee5580b20db",
+        "incremental": "fc69ca61fa63bc4b377eda18b6c2ea10855604224c6e915587f788ad51c6d167",
+        "sameOverlayReference": "fc69ca61fa63bc4b377eda18b6c2ea10855604224c6e915587f788ad51c6d167"
+      }
+    },
+    {
+      "artifactId": 9637263596,
+      "runId": 33049901617,
+      "createdAt": "2026-08-27T07:33:52Z",
+      "headSha": "8cae7f82e469f3516d91bb4a1acf4c58982f2345",
+      "archiveDigest": "sha256:9ee26acc7a50b525ad5f1cea14a90e2187a60b40e71b607ace67bb3d3fd6bcc6",
+      "rawJsonSha256": "90d8d45c3c7849e3ac9e80bf8935c33c4e77189d139fc1aa9be668b63e367c7e",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 8841.8433,
+        "coldMaterializationMilliseconds": 2878.488,
+        "coldProcessCpuMilliseconds": 4609,
+        "coldMaterializationProcessCpuMilliseconds": 1782,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1841.5156,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 119.4138,
+        "coldActivationLongestTransactionMilliseconds": 29.469700000001467
+      },
+      "digests": {
+        "cold": "c715b87c193b1be1ab7ae71fdb0687d2a508b7270c1b58336a15b89de1591faf",
+        "incremental": "b673848c0d17529f8d39df00c9525f611f2ac9dc8572c8179ee337519e400193",
+        "sameOverlayReference": "b673848c0d17529f8d39df00c9525f611f2ac9dc8572c8179ee337519e400193"
+      }
+    },
+    {
+      "artifactId": 9636095554,
+      "runId": 33046911377,
+      "createdAt": "2026-08-27T06:47:54Z",
+      "headSha": "f44cd3e46692df1fd637c62d2dbc5707e7dc776b",
+      "archiveDigest": "sha256:c63552543d760daea5684001334dfc61e18f723cea24abc69e4652e4d90481c8",
+      "rawJsonSha256": "b6aa21ea932d33f5d7e8ac89e853e177a4aad93a45e0ed402c951b52e9783109",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6439.2169,
+        "coldMaterializationMilliseconds": 1553.5066,
+        "coldProcessCpuMilliseconds": 4485,
+        "coldMaterializationProcessCpuMilliseconds": 1500,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 922.6731,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 89.2071,
+        "coldActivationLongestTransactionMilliseconds": 16.59429999999975
+      },
+      "digests": {
+        "cold": "0d38a8f2cdc60c67817fd17ccb25cfc73594fd8ed2d464d534d16c6e68c6d4c7",
+        "incremental": "e5fd54a94e8eb4aff946d334b947fea3bcd6b978c64674f741d32b2d04701497",
+        "sameOverlayReference": "e5fd54a94e8eb4aff946d334b947fea3bcd6b978c64674f741d32b2d04701497"
+      }
+    },
+    {
+      "artifactId": 9634820944,
+      "runId": 33043595943,
+      "createdAt": "2026-08-27T05:49:44Z",
+      "headSha": "d8f29bf66af35e856f86174836092f74cc6e736e",
+      "archiveDigest": "sha256:b7fd39dd0d8e980129bc4090a440f289486cf7faa481d1912eb02fcb43621da3",
+      "rawJsonSha256": "92ef9568c55cbd63e4342f5ba074e9ac6dac2394c169bc6971946c68a7f545b5",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 6492.4159,
+        "coldMaterializationMilliseconds": 1644.0381,
+        "coldProcessCpuMilliseconds": 4359,
+        "coldMaterializationProcessCpuMilliseconds": 1500,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 966.1915,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 93.9316,
+        "coldActivationLongestTransactionMilliseconds": 17.570299999999406
+      },
+      "digests": {
+        "cold": "d5455a2c4613e62c3c21645e4aa266042856be5406198a592a058f6f1774918e",
+        "incremental": "eebe860164d3c2c256c9dab04099b5d57163c42b47b55a821cdd3fe2cb319983",
+        "sameOverlayReference": "eebe860164d3c2c256c9dab04099b5d57163c42b47b55a821cdd3fe2cb319983"
+      }
+    },
+    {
+      "artifactId": 9634545498,
+      "runId": 33042681505,
+      "createdAt": "2026-08-27T05:35:12Z",
+      "headSha": "3b5bfc9afe9c1619d238da5bd5e24015b2e9671c",
+      "archiveDigest": "sha256:64e23ed7cd6243bbdc0f3fb0401010fc3400f1e5f9cd2133dbbad58e53d61c5b",
+      "rawJsonSha256": "b03f31922cc0f42fea764d70d2d199749d8213b7f9ed1edf995b3613609bddfd",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 7736.2604,
+        "coldMaterializationMilliseconds": 2191.422,
+        "coldProcessCpuMilliseconds": 4141,
+        "coldMaterializationProcessCpuMilliseconds": 1422,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1064.9569,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 106.6089,
+        "coldActivationLongestTransactionMilliseconds": 20.498900000000503
+      },
+      "digests": {
+        "cold": "d936e49abab5f38d9491c589772f5d7ea210fdc2161cba4459815a2563fb9848",
+        "incremental": "cd22939abadeee7f96996221d7fb3f867d73c0aca0841526fb364d8bdfc28ea6",
+        "sameOverlayReference": "cd22939abadeee7f96996221d7fb3f867d73c0aca0841526fb364d8bdfc28ea6"
+      }
+    },
+    {
+      "artifactId": 9633006036,
+      "runId": 33038547182,
+      "createdAt": "2026-08-27T04:12:41Z",
+      "headSha": "a386fdfecf494055eba680715f6fed24986c9c33",
+      "archiveDigest": "sha256:14e59594e693e3838ddad1a582506e68ca7d690f3ed28837679d60beec962fac",
+      "rawJsonSha256": "7cd2f42a07546815d50972de35b755ec018631056d72f3564c76ea286d080035",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 7292.1046,
+        "coldMaterializationMilliseconds": 1938.7057,
+        "coldProcessCpuMilliseconds": 4704,
+        "coldMaterializationProcessCpuMilliseconds": 1905,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1167.0776,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 106.1127,
+        "coldActivationLongestTransactionMilliseconds": 19.83309999999983
+      },
+      "digests": {
+        "cold": "f1ce72ff19d84023ef1b8855fed0dbb39e76d1d0f82592089fe0c460ac2bf067",
+        "incremental": "f208112c8ebc0dab4e78e7b2f266e6e20cc78b84f6f5d7478a9c2fa2eba2f1fc",
+        "sameOverlayReference": "f208112c8ebc0dab4e78e7b2f266e6e20cc78b84f6f5d7478a9c2fa2eba2f1fc"
+      }
+    },
+    {
+      "artifactId": 9628239088,
+      "runId": 33025306502,
+      "createdAt": "2026-08-27T00:04:28Z",
+      "headSha": "c21eb4de105acac085516558de379983f66ea44a",
+      "archiveDigest": "sha256:5efbb44d0c38759d6ed9a3ed6ccdd0a4baba77070f87ea8cad0301e56a88fd81",
+      "rawJsonSha256": "379034144edeee065b4c1a1749101910c64321bb4575936176bad314e90fea77",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 5926.0302,
+        "coldMaterializationMilliseconds": 1726.8071,
+        "coldProcessCpuMilliseconds": 3265,
+        "coldMaterializationProcessCpuMilliseconds": 1062,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1172.1718,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 88.3045,
+        "coldActivationLongestTransactionMilliseconds": 19.535499999999956
+      },
+      "digests": {
+        "cold": "3b570a9aeb525c7f733516bc7ced5c9ba906fe89353de5154bae279882524562",
+        "incremental": "d95fa2f925d23b90c8806a88aed369a01d0ead489f14363f583c8020b9dbf2fd",
+        "sameOverlayReference": "d95fa2f925d23b90c8806a88aed369a01d0ead489f14363f583c8020b9dbf2fd"
+      }
+    },
+    {
+      "artifactId": 9506662579,
+      "runId": 32689022443,
+      "createdAt": "2026-08-24T04:13:24Z",
+      "headSha": "2b70cd5871caed7f1f6926d786836a4e4bfe99ce",
+      "archiveDigest": "sha256:e1e5a915559a06b16bf89c30b0b68b499a622cf5b39cc0b9fdbe894b878b1e5f",
+      "rawJsonSha256": "96b6937ef1a1809726739e15141e7477ffa7ce30351d92fc59234505ff34f342",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 4445.5383,
+        "coldMaterializationMilliseconds": 479.3663,
+        "coldProcessCpuMilliseconds": 2969,
+        "coldMaterializationProcessCpuMilliseconds": 579,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 719.8151,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 76.6992,
+        "coldActivationLongestTransactionMilliseconds": 18.959399999999732
+      },
+      "digests": {
+        "cold": "c873867a49ad01aa145ff30286bd0164f90772d4947838cc542be2578f7578f5",
+        "incremental": "97699fe81976374f48f464bb1454302fd6a51c39d555e67f4879358b7f953b8e",
+        "sameOverlayReference": "97699fe81976374f48f464bb1454302fd6a51c39d555e67f4879358b7f953b8e"
+      }
+    },
+    {
+      "artifactId": 9427015349,
+      "runId": 32424499911,
+      "createdAt": "2026-08-20T22:33:58Z",
+      "headSha": "5ebd2c643f9df2d88b4783b4f6e10236b75e42ee",
+      "archiveDigest": "sha256:9fc308bf643342b261f9eb461c3838239a3eb7e3a921e2f06db96ec35d5dfb7c",
+      "rawJsonSha256": "40b0bb90c14745922df9ff820e45c8ce7e42f108cb1d2733f0d2e44ff5ac0bde",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 26 Model 2 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 4821.2732,
+        "coldMaterializationMilliseconds": 520.4455,
+        "coldProcessCpuMilliseconds": 2672,
+        "coldMaterializationProcessCpuMilliseconds": 516,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1369.9432,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 155.1625,
+        "coldActivationLongestTransactionMilliseconds": 9.686400000000503
+      },
+      "digests": {
+        "cold": "7add374e4e32d6dcbbf37a677a1f7db40a9986cbb657c69a07f83bcddd4bbc81",
+        "incremental": "cf43a482a50e7afcf7b91cab21d07849d8775b8ecc07dcff55c4a885d21317c3",
+        "sameOverlayReference": "cf43a482a50e7afcf7b91cab21d07849d8775b8ecc07dcff55c4a885d21317c3"
+      }
+    },
+    {
+      "artifactId": 9276077349,
+      "runId": 31993349715,
+      "createdAt": "2026-08-17T04:10:05Z",
+      "headSha": "7709b52491e82b40a464b0f1b87cb4f9d69c6283",
+      "archiveDigest": "sha256:e00826ae77fd29d9361db97cafcc16f4f59389cc2ee0b8a207804d1a83a7a33f",
+      "rawJsonSha256": "4bd0699ae71207c96b8dc04995d60af8c96f6b209e9a1ec6cac9335fb2079938",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 5856.9818,
+        "coldMaterializationMilliseconds": 664.3537,
+        "coldProcessCpuMilliseconds": 3938,
+        "coldMaterializationProcessCpuMilliseconds": 765,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1208.3841,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 123.3694,
+        "coldActivationLongestTransactionMilliseconds": 25.642499999999927
+      },
+      "digests": {
+        "cold": "499886b0cef5f8da5bc7b7a3eca5daa0126e6b2fe35a6f5799eb9021b10df770",
+        "incremental": "0ceb69e5ac1b30812159adec98feef5ff7aaec14c06dd31198db79cd4fea07a8",
+        "sameOverlayReference": "0ceb69e5ac1b30812159adec98feef5ff7aaec14c06dd31198db79cd4fea07a8"
+      }
+    },
+    {
+      "artifactId": 9051084487,
+      "runId": 31357199291,
+      "createdAt": "2026-08-10T05:01:46Z",
+      "headSha": "b4760987fa74d74259f8bb408b108e37a3736ebf",
+      "archiveDigest": "sha256:0cfa05c2059e93859e9b78e078e5fe10cd1b4802e46ae7ea155966db20187b79",
+      "rawJsonSha256": "5d085ca907feec4bca215b4e26ec87c53bd99e8b61ffda4d84191fdd3939145c",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 4354.2168,
+        "coldMaterializationMilliseconds": 473.837,
+        "coldProcessCpuMilliseconds": 2266,
+        "coldMaterializationProcessCpuMilliseconds": 328,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 889.0159,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 261.968,
+        "coldActivationLongestTransactionMilliseconds": 16.830400000000736
+      },
+      "digests": {
+        "cold": "6d168deeff7df2643f306c7f3673b67c6aec133a414caa8160342a701e868393",
+        "incremental": "02ac796cf1e7171104aa4bde1d5569508d3ea1feec24029c3eef88bb6b8bd797",
+        "sameOverlayReference": "02ac796cf1e7171104aa4bde1d5569508d3ea1feec24029c3eef88bb6b8bd797"
+      }
+    },
+    {
+      "artifactId": 9050857670,
+      "runId": 31356429641,
+      "createdAt": "2026-08-10T04:48:25Z",
+      "headSha": "630db98fe3304312e354dc7d90746539cfc98082",
+      "archiveDigest": "sha256:f9033286af61439304ae43a15631b627812f6ae99583f40ef311ce96a4ef14d4",
+      "rawJsonSha256": "1dee4ef4a0f3262717e95c44cd67b9cfd0148052a3685bf1388658d7ac618b56",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 5814.8887,
+        "coldMaterializationMilliseconds": 591.0469,
+        "coldProcessCpuMilliseconds": 2953,
+        "coldMaterializationProcessCpuMilliseconds": 485,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 1415.9706,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 351.002,
+        "coldActivationLongestTransactionMilliseconds": 20.871100000000297
+      },
+      "digests": {
+        "cold": "6ca84cba19eb3365afaae724ab48d8657ee6733044d384f089bfb7b9325b341c",
+        "incremental": "f560f1a27854a6ddb4503d2488c62d6fa98e5a6d203945cd1e955591729e86b6",
+        "sameOverlayReference": "f560f1a27854a6ddb4503d2488c62d6fa98e5a6d203945cd1e955591729e86b6"
+      }
+    },
+    {
+      "artifactId": 9050682762,
+      "runId": 31356003461,
+      "createdAt": "2026-08-10T04:38:45Z",
+      "headSha": "fcf441c8cf36db65d97393b980fcbca8f0779496",
+      "archiveDigest": "sha256:efa2c7f4d267243bcc7e61011c67e4b19b3b902859a5f91ed61e01b15c46b979",
+      "rawJsonSha256": "df4b39fb1a30b8b43e306f8837c5d0a841926589d649966d98eb4924de496a1c",
+      "environment": {
+        "operatingSystem": "Windows 10.0.26100",
+        "architecture": "x64",
+        "cpu": "Intel64 Family 6 Model 173 Stepping 1, GenuineIntel",
+        "memoryBytes": 17174360064,
+        "runtime": "bun/1.3.14",
+        "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+        "runnerClass": "local-unclassified"
+      },
+      "measurements": {
+        "coldIndexMilliseconds": 5472.7578,
+        "coldMaterializationMilliseconds": 443.4754,
+        "coldProcessCpuMilliseconds": 2797,
+        "coldMaterializationProcessCpuMilliseconds": 421,
+        "coldMaximumProgressHeartbeatGapMilliseconds": 954.2586,
+        "coldSnapshotWriteAndCheckpointMilliseconds": 287.3903,
+        "coldActivationLongestTransactionMilliseconds": 15.75669999999991
+      },
+      "digests": {
+        "cold": "10c8d261ffd967a88a5973070aaafc243af0124c7ecc3eb3c30748df3ec77466",
+        "incremental": "01e6f617438ebf10358eed7775d5af984428a62ef32a53237b960551461803cc",
+        "sameOverlayReference": "01e6f617438ebf10358eed7775d5af984428a62ef32a53237b960551461803cc"
+      }
+    }
+  ]
+}

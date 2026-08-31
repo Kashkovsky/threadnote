@@ -190,6 +190,9 @@ jobs:
         run: bun run eval:code-graph
 
       - name: Capture native graph benchmark
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-${{ matrix.os }}-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
         run: >-
           bun run bench:code-graph --
           --samples 25

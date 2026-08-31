@@ -935,6 +935,15 @@ describe('code graph external benchmark harness', () => {
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-macos-arm64',
       THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
     });
+    expect(
+      sanitizedBenchmarkEnvironmentProvenance({
+        THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-windows-latest-X64',
+        THREADNOTE_BENCHMARK_RUNNER_ID: 'windows-x64-runner',
+      }),
+    ).toMatchObject({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-windows-x64',
+      THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
+    });
   });
 
   effectIt.effect('applies and restores the overlay byte-for-byte while preserving concurrent edits', () =>
