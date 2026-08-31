@@ -18,7 +18,7 @@ const shareMocks = vi.hoisted(() => ({
   unused: vi.fn(),
 }));
 
-vi.mock('../../src/share.js', () => ({
+vi.mock('../../src/share/index.js', () => ({
   installSharedAgentArtifacts: shareMocks.unused,
   listShareConflicts: shareMocks.unused,
   listSharedAgentArtifacts: shareMocks.unused,

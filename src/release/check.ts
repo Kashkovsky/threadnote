@@ -1,7 +1,7 @@
 import {Effect, FileSystem, Path, Result} from 'effect';
 import {SystemInfo} from '../effect/system.js';
 import {selectUpdateChannel, type UpdateChannel} from './channel.js';
-import {fetchLatestVersion, releaseSource} from '../update.js';
+import {fetchLatestVersion, releaseSource} from './index.js';
 import {compareVersions} from '../utils.js';
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;

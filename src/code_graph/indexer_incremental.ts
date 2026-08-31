@@ -4,13 +4,21 @@ import {finalCodeGraphFactBatches} from './fact_budget.js';
 import {
   assessProjectClosureSeeds,
   assessProjectFileSetClosureSeeds,
+  partitionProjectResolutionSurfaceChanges,
   planProjectIncrementalClosure,
-  PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES,
   PROJECT_INCREMENTAL_CLOSURE_MAX_FILES,
   PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES,
   selectProjectIncrementalClosure,
 } from './incremental_closure.js';
-import {codeGraphIncrementalWorkFitsBudget, measureCodeGraphIncrementalWork} from './incremental_work.js';
+import {
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES,
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS,
+  assessCodeGraphIncrementalFactBytes,
+  codeGraphIncrementalFactBatchesFitBudget,
+  codeGraphIncrementalWorkFitsBudget,
+  measureCodeGraphIncrementalWork,
+  planCodeGraphIncrementalFoldForwardPaths,
+} from './incremental_work.js';
 import {
   cachedFactsMetadata,
   extractorSetIdentity,
@@ -44,20 +52,23 @@ import {
   type CodeGraphReusableBaseReceipt,
   type CodeGraphReusableBaseReceiptInput,
   type CodeGraphReusableCleanBase,
-  type CodeGraphReusableReexport,
-  type CodeGraphReusableReexportSeed,
   type CodeGraphStoreShape,
 } from './store.js';
 import {
-  type CodeGraphEdge,
+  assessResolutionCandidateIncrementalClosure,
+  enrichPersistedTypeScriptReexports,
+  reusableReexportSeeds,
+} from './indexer_resolution_candidate_closure.js';
+import {
   type CodeGraphFileFacts,
   type CodeGraphInventoryFile,
   type CodeGraphOverlayFallbackReason,
-  type CodeGraphReference,
   type CodeGraphSnapshot,
 } from './types.js';
 import {createWorkspaceAttributor} from './workspace.js';
 import {assessCodeGraphWorkspaceCompatibility} from './workspace_compatibility.js';
+
+export {resolvePersistedReexportTerminals} from './indexer_resolution_candidate_closure.js';
 
 export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOverlay')(function* (
   input: {
@@ -138,7 +149,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
         input.layout.databasePath,
         input.committedBase.snapshot.id,
         seeds,
-        {maxRows: 10_000},
+        {allowDirtyRoot: input.committedBase.snapshot.dirty, maxRows: 10_000},
       );
       if (reexports === undefined) {
         return {mode: 'fallback', reason: 'staging-unavailable'} satisfies IncrementalOverlayAssessment;
@@ -165,7 +176,7 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
     reusableFacts.length === 0 &&
     (preassessment.deletedPaths?.length ?? 0) > 0 &&
     preassessment.resolutionClosure === 'project';
-  if (finalBatches.length !== 1 && preassessment.resolutionClosure !== 'full' && !deletionOnlyProjectClosure) {
+  if (!deletionOnlyProjectClosure && !codeGraphIncrementalFactBatchesFitBudget(finalBatches)) {
     return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayAssessment;
   }
   const facts = finalBatches.flatMap(batch => batch.map(value => value.facts));
@@ -178,6 +189,21 @@ export const assessIncrementalOverlay = Effect.fn('codeGraph.assessIncrementalOv
   });
   if (!codeGraphIncrementalWorkFitsBudget(work)) {
     return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
+  }
+  if (input.committedBase.foldForward) {
+    const foldForwardPathPlan = planCodeGraphIncrementalFoldForwardPaths(
+      input.committedBase.foldForward.priorDeltaPaths,
+      [...preassessment.files.map(file => file.path), ...(preassessment.deletedPaths ?? [])],
+    );
+    if (
+      !foldForwardPathPlan ||
+      input.committedBase.foldForward.priorStagedRows + work.plannedRows >
+        CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS ||
+      input.committedBase.foldForward.priorStagedPayloadBytes + work.factBytes >
+        CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES
+    ) {
+      return {mode: 'fallback', reason: 'incremental-rewrite-unbounded'} satisfies IncrementalOverlayAssessment;
+    }
   }
   return {
     closureProjects: preassessment.closureProjects,
@@ -232,6 +258,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
     }
     if (deletedPaths.length > 0 || modifiedFiles.some(file => !committedByPath.has(file.path))) {
       return yield* assessProjectFileSetIncrementalClosureCompatibility({
+        baseFiles: input.inventory.committedFiles,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.committedFiles),
         baseWorkspace: committedWorkspace,
         currentChangedFiles: modifiedFiles,
@@ -293,7 +320,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       effectiveFacts.flatMap(file => file.references ?? []),
     );
     if (!reexportResolutionSurfaceChanged && !resolutionSurfaceChanged && workspaceCompatibility.mode === 'unchanged') {
-      if (finalCodeGraphFactBatches(effectiveFacts).length !== 1) {
+      if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(effectiveFacts))) {
         return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
       }
       return {
@@ -306,6 +333,7 @@ export const assessIncrementalOverlayCompatibility = Effect.fn('codeGraph.assess
       } satisfies IncrementalOverlayPreassessment;
     }
     const closure = yield* assessProjectIncrementalClosureCompatibility({
+      baseFiles: input.inventory.committedFiles,
       baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.inventory.committedFiles),
       baseWorkspace: committedWorkspace,
       changedBaseFacts: committedFacts,
@@ -366,6 +394,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
         return {mode: 'fallback', reason: 'extractor-context-changed'} satisfies IncrementalOverlayPreassessment;
       }
       return yield* assessProjectFileSetIncrementalClosureCompatibility({
+        baseFiles: input.candidate.files,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
         baseWorkspace: workspace,
         currentChangedFiles: modifiedFiles,
@@ -418,12 +447,11 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     ) {
       return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (
-      extractorTransition &&
-      (baseCache.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES ||
-        currentCache.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES)
-    ) {
-      return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+    if (extractorTransition) {
+      const baseBudget = projectClosureCachedFactBudgetFallback(baseCache, baseFiles.length);
+      if (baseBudget !== undefined) return baseBudget;
+      const currentBudget = projectClosureCachedFactBudgetFallback(currentCache, modifiedFiles.length);
+      if (currentBudget !== undefined) return currentBudget;
     }
     const baseRawFacts = baseFiles.map(file =>
       input.languagePacks.postprocessFile(file, baseCache.facts.get(file.path)!),
@@ -448,6 +476,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
     );
     if (reexportResolutionSurfaceChanged || resolutionSurfaceChanged) {
       const closure = yield* assessProjectIncrementalClosureCompatibility({
+        baseFiles: input.candidate.files,
         baseFileSetFingerprint: reusableBaseFileSetFingerprint(input.candidate.files),
         baseWorkspace: workspace,
         changedBaseFacts: baseFacts,
@@ -466,7 +495,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
           : closure;
       return resolutionPublicationAssessment ? {...result, resolutionPublicationAssessment} : result;
     }
-    if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
+    if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(currentFacts))) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
     // Incremental facts are attributed from a candidate-specific subset. They
@@ -487,6 +516,7 @@ export const assessReusableCleanBaseCompatibility = Effect.fn('codeGraph.assessR
 const assessProjectIncrementalClosureCompatibility = Effect.fn(
   'codeGraph.assessProjectIncrementalClosureCompatibility',
 )(function* (input: {
+  readonly baseFiles: readonly CodeGraphInventoryFile[];
   readonly baseFileSetFingerprint: string;
   readonly baseWorkspace: CodeGraphWorkspace;
   readonly changedBaseFacts: readonly CodeGraphFileFacts[];
@@ -507,10 +537,29 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
   if (seeds.mode === 'fallback') {
     return seeds satisfies IncrementalOverlayPreassessment;
   }
+  if (seeds.candidateScanRequired) {
+    if (input.workspaceSeedProjectIds.length > 0 || (seeds.candidateLookupKeys?.length ?? 0) === 0) {
+      return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+    }
+    return yield* assessResolutionCandidateIncrementalClosure({
+      baseFileSetFingerprint: input.baseFileSetFingerprint,
+      baseFiles: input.baseFiles,
+      candidateReexports: seeds.candidateReexports ?? [],
+      committedWorkspace: input.baseWorkspace,
+      currentChangedFiles: input.currentChangedFiles,
+      currentFiles: input.currentFiles,
+      currentWorkspace: input.currentWorkspace,
+      initialLookupKeys: seeds.candidateLookupKeys!,
+      languagePacks: input.languagePacks,
+      layout: input.layout,
+      projectCount: seeds.seedProjectIds.length,
+      store: input.store,
+    });
+  }
   const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
     compareCodeUnits,
   );
-  return yield* assessPlannedProjectIncrementalClosure({
+  const planned = yield* assessPlannedProjectIncrementalClosure({
     baseFileSetFingerprint: input.baseFileSetFingerprint,
     committedWorkspace: input.baseWorkspace,
     currentChangedFiles: input.currentChangedFiles,
@@ -521,11 +570,34 @@ const assessProjectIncrementalClosureCompatibility = Effect.fn(
     seedProjectIds,
     store: input.store,
   });
+  if (
+    planned.mode !== 'fallback' ||
+    planned.reason !== 'project-closure-unbounded' ||
+    (seeds.candidateLookupKeys?.length ?? 0) === 0 ||
+    input.workspaceSeedProjectIds.length > 0
+  ) {
+    return planned;
+  }
+  return yield* assessResolutionCandidateIncrementalClosure({
+    baseFileSetFingerprint: input.baseFileSetFingerprint,
+    baseFiles: input.baseFiles,
+    committedWorkspace: input.baseWorkspace,
+    currentChangedFiles: input.currentChangedFiles,
+    currentFiles: input.currentFiles,
+    currentWorkspace: input.currentWorkspace,
+    initialLookupKeys: seeds.candidateLookupKeys!,
+    candidateReexports: seeds.candidateReexports ?? [],
+    languagePacks: input.languagePacks,
+    layout: input.layout,
+    projectCount: seedProjectIds.length,
+    store: input.store,
+  });
 });
 
 const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
   'codeGraph.assessProjectFileSetIncrementalClosureCompatibility',
 )(function* (input: {
+  readonly baseFiles: readonly CodeGraphInventoryFile[];
   readonly baseFileSetFingerprint: string;
   readonly baseWorkspace: CodeGraphWorkspace;
   readonly currentChangedFiles: readonly CodeGraphInventoryFile[];
@@ -540,19 +612,56 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
   if (input.baseWorkspace.projects.length === 0 || input.currentWorkspace.projects.length === 0) {
     return {mode: 'fallback', reason: 'file-set-changed'} satisfies IncrementalOverlayPreassessment;
   }
+  const baseByPath = new Map(input.baseFiles.map(file => [file.path, file]));
+  const addedFiles = input.currentChangedFiles.filter(file => !baseByPath.has(file.path));
+  const existingModifiedFiles = input.currentChangedFiles.filter(file => baseByPath.has(file.path));
   const seeds = assessProjectFileSetClosureSeeds({
     baseProjects: input.baseWorkspace.projects,
-    currentChangedPaths: input.currentChangedFiles.map(file => file.path),
+    currentChangedPaths: addedFiles.map(file => file.path),
     currentProjects: input.currentWorkspace.projects,
-    currentResolutionDomainByPath: projectClosureResolutionDomainByPath(input.currentChangedFiles, input.languagePacks),
+    currentResolutionDomainByPath: projectClosureResolutionDomainByPath(addedFiles, input.languagePacks),
     deletedPaths: input.deletedFiles.map(file => file.path),
     deletedResolutionDomainByPath: projectClosureResolutionDomainByPath(input.deletedFiles, input.languagePacks),
   });
-  if (seeds.mode === 'fallback') return seeds satisfies IncrementalOverlayPreassessment;
-  const seedProjectIds = [...new Set([...seeds.seedProjectIds, ...input.workspaceSeedProjectIds])].sort(
-    compareCodeUnits,
-  );
-  return yield* assessPlannedProjectIncrementalClosure({
+  if (seeds.mode === 'fallback') {
+    return {
+      ...(seeds.fallbackDetail === undefined
+        ? {}
+        : {
+            fallbackAssessment: {
+              addedFiles: addedFiles.length,
+              changedFiles: input.currentChangedFiles.length,
+              deletedFiles: input.deletedFiles.length,
+              detail: seeds.fallbackDetail,
+              stage: 'file-set-seed-assessment' as const,
+            },
+          }),
+      mode: 'fallback',
+      reason: seeds.reason,
+    } satisfies IncrementalOverlayPreassessment;
+  }
+  const modificationSeeds = yield* assessExistingProjectModificationSeeds({
+    baseFiles: input.baseFiles,
+    baseWorkspace: input.baseWorkspace,
+    currentFiles: input.currentFiles,
+    currentModifiedFiles: existingModifiedFiles,
+    currentWorkspace: input.currentWorkspace,
+    languagePacks: input.languagePacks,
+    layout: input.layout,
+    store: input.store,
+  });
+  if (modificationSeeds.mode === 'fallback') return modificationSeeds;
+  // A non-project publication can be scanned safely only while the repository
+  // file set is unchanged. Additions and deletions can introduce endpoints
+  // that have no complete cached-base candidate surface, so this mixed case
+  // retains the existing full-materialization safety gate.
+  if (modificationSeeds.candidateScanRequired) {
+    return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+  }
+  const seedProjectIds = [
+    ...new Set([...seeds.seedProjectIds, ...modificationSeeds.seedProjectIds, ...input.workspaceSeedProjectIds]),
+  ].sort(compareCodeUnits);
+  const planned = yield* assessPlannedProjectIncrementalClosure({
     baseFileSetFingerprint: input.baseFileSetFingerprint,
     committedWorkspace: input.baseWorkspace,
     currentChangedFiles: input.currentChangedFiles,
@@ -564,7 +673,173 @@ const assessProjectFileSetIncrementalClosureCompatibility = Effect.fn(
     seedProjectIds,
     store: input.store,
   });
+  if (
+    planned.mode !== 'fallback' ||
+    planned.reason !== 'project-closure-unbounded' ||
+    input.deletedFiles.length > 0 ||
+    input.workspaceSeedProjectIds.length > 0
+  ) {
+    return planned;
+  }
+  const additionSeeds = yield* assessAddedProjectResolutionSeeds({
+    addedFiles,
+    currentFiles: input.currentFiles,
+    currentWorkspace: input.currentWorkspace,
+    languagePacks: input.languagePacks,
+    layout: input.layout,
+    store: input.store,
+  });
+  if (additionSeeds.mode === 'fallback') return planned;
+  return yield* assessResolutionCandidateIncrementalClosure({
+    // Added modules can make previously unresolved base references
+    // resolvable. Re-attribute cached base facts against the current bounded
+    // file context so the candidate projection selects those consumers.
+    baseAttributionContext: {files: input.currentFiles, workspace: input.currentWorkspace},
+    baseFileSetFingerprint: input.baseFileSetFingerprint,
+    baseFiles: input.baseFiles,
+    candidateReexports: [...(modificationSeeds.candidateReexports ?? []), ...(additionSeeds.candidateReexports ?? [])],
+    committedWorkspace: input.baseWorkspace,
+    currentChangedFiles: input.currentChangedFiles,
+    currentFiles: input.currentFiles,
+    currentWorkspace: input.currentWorkspace,
+    initialLookupKeys: [...(modificationSeeds.candidateLookupKeys ?? []), ...(additionSeeds.candidateLookupKeys ?? [])],
+    languagePacks: input.languagePacks,
+    layout: input.layout,
+    projectCount: seedProjectIds.length,
+    store: input.store,
+  });
 });
+
+const assessAddedProjectResolutionSeeds = Effect.fn('codeGraph.assessAddedProjectResolutionSeeds')(function* (input: {
+  readonly addedFiles: readonly CodeGraphInventoryFile[];
+  readonly currentFiles: readonly CodeGraphInventoryFile[];
+  readonly currentWorkspace: CodeGraphWorkspace;
+  readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+  readonly layout: CodeGraphLayout;
+  readonly store: CodeGraphStoreShape;
+}) {
+  if (!projectClosureSourceBudgetFits(input.addedFiles)) {
+    return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
+  }
+  const metadata = yield* cachedFactsMetadata(
+    input.store,
+    input.layout.databasePath,
+    input.addedFiles,
+    input.languagePacks,
+  );
+  if (metadata.files !== input.addedFiles.length || metadata.bytesByPath.size !== input.addedFiles.length) {
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const metadataBudget = projectClosureCachedFactBudgetFallback(metadata, input.addedFiles.length);
+  if (metadataBudget !== undefined) return metadataBudget;
+  const currentCache = yield* loadCachedFacts(
+    input.store,
+    input.layout.databasePath,
+    input.addedFiles,
+    input.languagePacks,
+  );
+  if (input.addedFiles.some(file => !currentCache.facts.has(file.path))) {
+    return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+  }
+  const currentRawFacts = input.addedFiles.map(file =>
+    input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
+  );
+  const currentFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, currentRawFacts);
+  const emptyCommittedFacts = currentFacts.map((facts): CodeGraphFileFacts => ({
+    diagnostics: [],
+    edges: [],
+    path: facts.path,
+    references: [],
+    symbols: [],
+  }));
+  return assessProjectClosureSeeds({
+    committedFacts: emptyCommittedFacts,
+    effectiveFacts: currentFacts,
+    projects: input.currentWorkspace.projects,
+  });
+});
+
+const assessExistingProjectModificationSeeds = Effect.fn('codeGraph.assessExistingProjectModificationSeeds')(
+  function* (input: {
+    readonly baseFiles: readonly CodeGraphInventoryFile[];
+    readonly baseWorkspace: CodeGraphWorkspace;
+    readonly currentFiles: readonly CodeGraphInventoryFile[];
+    readonly currentModifiedFiles: readonly CodeGraphInventoryFile[];
+    readonly currentWorkspace: CodeGraphWorkspace;
+    readonly languagePacks: CodeGraphLanguagePackRegistryShape;
+    readonly layout: CodeGraphLayout;
+    readonly store: CodeGraphStoreShape;
+  }) {
+    if (input.currentModifiedFiles.length === 0) {
+      return {
+        candidateLookupKeys: [],
+        candidateReexports: [],
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 0, pathIndexProjects: 0},
+        seedProjectIds: [],
+      } as const;
+    }
+    const baseModifiedFiles = inventoryFilesForPaths(
+      input.baseFiles,
+      input.currentModifiedFiles.map(file => file.path),
+    );
+    if (!baseModifiedFiles) {
+      return {mode: 'fallback', reason: 'file-set-changed'} satisfies IncrementalOverlayPreassessment;
+    }
+    const budget = yield* assessProjectClosureChangedDecodeBudget({
+      baseFiles: baseModifiedFiles,
+      currentFiles: input.currentModifiedFiles,
+      databasePath: input.layout.databasePath,
+      languagePacks: input.languagePacks,
+      store: input.store,
+    });
+    if (budget.mode === 'fallback') return budget;
+    const [baseCache, currentCache] = yield* Effect.all(
+      [
+        loadCachedFacts(input.store, input.layout.databasePath, baseModifiedFiles, input.languagePacks),
+        loadCachedFacts(input.store, input.layout.databasePath, input.currentModifiedFiles, input.languagePacks),
+      ],
+      {concurrency: 1},
+    );
+    if (
+      baseModifiedFiles.some(file => !baseCache.facts.has(file.path)) ||
+      input.currentModifiedFiles.some(file => !currentCache.facts.has(file.path))
+    ) {
+      return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
+    }
+    const baseRawFacts = baseModifiedFiles.map(file =>
+      input.languagePacks.postprocessFile(file, baseCache.facts.get(file.path)!),
+    );
+    const currentRawFacts = input.currentModifiedFiles.map(file =>
+      input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
+    );
+    // Compare both sides in the current repository file context. Persisted
+    // clean-base inventory rows intentionally omit manifest bodies, so using
+    // them as an attribution context would erase otherwise-stable package
+    // names. File-set additions/deletions and workspace changes are already
+    // admitted separately and seed the resolver closure.
+    const baseFacts = attributeInventoryFacts(input.currentFiles, input.baseWorkspace, baseRawFacts);
+    const currentFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, currentRawFacts);
+    const partition = partitionProjectResolutionSurfaceChanges(baseFacts, currentFacts);
+    if (partition === undefined) {
+      return {mode: 'fallback', reason: 'resolution-surface-changed'} satisfies IncrementalOverlayPreassessment;
+    }
+    if (partition.changedEffectiveFacts.length === 0) {
+      return {
+        candidateLookupKeys: [],
+        candidateReexports: [],
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 0, pathIndexProjects: 0},
+        seedProjectIds: [],
+      } as const;
+    }
+    return assessProjectClosureSeeds({
+      committedFacts: partition.changedCommittedFacts,
+      effectiveFacts: partition.changedEffectiveFacts,
+      projects: input.currentWorkspace.projects,
+    });
+  },
+);
 
 function projectClosureResolutionDomainByPath(
   files: readonly CodeGraphInventoryFile[],
@@ -636,7 +911,7 @@ const assessPlannedProjectIncrementalClosure = Effect.fn('codeGraph.assessPlanne
       input.languagePacks.postprocessFile(file, currentCache.facts.get(file.path)!),
     );
     const currentFacts = attributeInventoryFacts(input.currentFiles, input.currentWorkspace, currentRawFacts);
-    if (finalCodeGraphFactBatches(currentFacts).length !== 1) {
+    if (!codeGraphIncrementalFactBatchesFitBudget(finalCodeGraphFactBatches(currentFacts))) {
       return {mode: 'fallback', reason: 'fact-budget-expanded'} satisfies IncrementalOverlayPreassessment;
     }
     return {
@@ -670,18 +945,44 @@ const assessProjectClosureChangedDecodeBudget = Effect.fn('codeGraph.assessProje
       ],
       {concurrency: 1},
     );
-    if (baseMetadata.files !== input.baseFiles.length || currentMetadata.files !== input.currentFiles.length) {
+    if (
+      baseMetadata.files !== input.baseFiles.length ||
+      baseMetadata.bytesByPath.size !== input.baseFiles.length ||
+      currentMetadata.files !== input.currentFiles.length ||
+      currentMetadata.bytesByPath.size !== input.currentFiles.length
+    ) {
       return {mode: 'fallback', reason: 'cache-incomplete'} satisfies IncrementalOverlayPreassessment;
     }
-    if (
-      baseMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES ||
-      currentMetadata.bytes > PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES
-    ) {
-      return {mode: 'fallback', reason: 'project-closure-unbounded'} satisfies IncrementalOverlayPreassessment;
-    }
+    const baseBudget = projectClosureCachedFactBudgetFallback(baseMetadata, input.baseFiles.length);
+    if (baseBudget !== undefined) return baseBudget;
+    const currentBudget = projectClosureCachedFactBudgetFallback(currentMetadata, input.currentFiles.length);
+    if (currentBudget !== undefined) return currentBudget;
     return {mode: 'eligible'} as const;
   },
 );
+
+function projectClosureCachedFactBudgetFallback(
+  metadata: {readonly bytes: number; readonly bytesByPath: ReadonlyMap<string, number>},
+  changedFiles: number,
+): Extract<IncrementalOverlayPreassessment, {readonly mode: 'fallback'}> | undefined {
+  const assessment = assessCodeGraphIncrementalFactBytes({
+    aggregateBytes: metadata.bytes,
+    factBytes: metadata.bytesByPath.values(),
+  });
+  if (assessment.mode === 'eligible') return undefined;
+  if (assessment.mode === 'invalid') return {mode: 'fallback', reason: 'cache-incomplete'};
+  return {
+    fallbackBoundary: {
+      changedFiles,
+      limit: assessment.limit,
+      metric: 'cached-fact-bytes',
+      observedAtDecision: assessment.observedAtDecision,
+      stage: 'project-closure-selection',
+    },
+    mode: 'fallback',
+    reason: 'project-closure-unbounded',
+  };
+}
 
 function projectClosureSourceBudgetFits(files: readonly CodeGraphInventoryFile[]): boolean {
   if (files.length > PROJECT_INCREMENTAL_CLOSURE_MAX_FILES) return false;
@@ -692,227 +993,6 @@ function projectClosureSourceBudgetFits(files: readonly CodeGraphInventoryFile[]
     sourceBytes += file.size;
   }
   return true;
-}
-
-function reusableReexportSeeds(facts: readonly CodeGraphFileFacts[]): readonly CodeGraphReusableReexportSeed[] {
-  const seeds = facts.flatMap(file =>
-    (file.references ?? []).flatMap(reference =>
-      reference.resolutionDomain === 'typescript' && isPersistedReexportEnrichableRelation(reference.relation)
-        ? reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupKey))
-        : [],
-    ),
-  );
-  return uniqueByKey(seeds, seed => `${seed.path}\0${seed.name}`);
-}
-
-function enrichPersistedTypeScriptReexports(
-  facts: readonly CodeGraphFileFacts[],
-  reexports: readonly CodeGraphReusableReexport[],
-): readonly CodeGraphFileFacts[] | undefined {
-  if (reexports.length === 0) return facts;
-  const provenance = new Map<string, CodeGraphReusableReexport[]>();
-  for (const reexport of reexports) {
-    const key = `${reexport.sourcePath}\0${reexport.localName}`;
-    const values = provenance.get(key) ?? [];
-    values.push(reexport);
-    provenance.set(key, values);
-  }
-  const terminalResolver = createPersistedReexportTerminalResolver(provenance);
-  const enriched = facts.map(file => {
-    if (!file.references) return file;
-    return {
-      ...file,
-      references: file.references.map(reference =>
-        enrichPersistedTypeScriptReference(reference, provenance, terminalResolver),
-      ),
-    };
-  });
-  return terminalResolver.exhausted() ? undefined : enriched;
-}
-
-function enrichPersistedTypeScriptReference(
-  reference: CodeGraphReference,
-  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-  terminalResolver: PersistedReexportTerminalResolver,
-): CodeGraphReference {
-  if (reference.resolutionDomain !== 'typescript' || !isPersistedReexportEnrichableRelation(reference.relation)) {
-    return reference;
-  }
-  const parsedTargets = reference.lookupTiers.flatMap(tier => tier.flatMap(parseTypeScriptPathNameLookupTarget));
-  if (!parsedTargets.some(target => provenance.has(`${target.path}\0${target.name}`))) return reference;
-  return {
-    ...reference,
-    lookupTiers: reference.lookupTiers
-      .map(tier =>
-        uniqueStrings(
-          tier.flatMap(key => {
-            const parsed = parseTypeScriptPathNameLookupTarget(key);
-            if (parsed.length === 0) return [key];
-            return parsed.flatMap(target =>
-              (terminalResolver.resolve(target) ?? []).map(
-                terminal =>
-                  `${target.lookupPrefix}path:${encodeURIComponent(terminal.path)}:name:${encodeURIComponent(terminal.name)}${target.lookupSuffix}`,
-              ),
-            );
-          }),
-        ),
-      )
-      .filter(tier => tier.length > 0),
-  };
-}
-
-function isPersistedReexportEnrichableRelation(relation: CodeGraphEdge['relation']): boolean {
-  return ['calls', 'constructs', 'exports', 'extends', 'implements', 'overrides', 'references'].includes(relation);
-}
-
-const PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS = 40_000;
-const PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS = 10_000;
-
-type PersistedReexportTerminalTraversal =
-  | {
-      readonly mode: 'complete';
-      readonly operations: number;
-      readonly targets: readonly CodeGraphReusableReexportSeed[];
-    }
-  | {
-      readonly mode: 'fallback';
-      readonly reason: 'reexport-closure-unbounded';
-    };
-
-interface PersistedReexportTerminalResolver {
-  readonly exhausted: () => boolean;
-  readonly resolve: (target: CodeGraphReusableReexportSeed) => readonly CodeGraphReusableReexportSeed[] | undefined;
-}
-
-function createPersistedReexportTerminalResolver(
-  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-): PersistedReexportTerminalResolver {
-  const cache = new Map<string, readonly CodeGraphReusableReexportSeed[]>();
-  let operationsRemaining = PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS;
-  let traversalExhausted = false;
-  return {
-    exhausted: () => traversalExhausted,
-    resolve: target => {
-      const key = reusableReexportSeedKey(target);
-      const cached = cache.get(key);
-      if (cached) return cached;
-      if (traversalExhausted) return undefined;
-      const traversal = resolvePersistedReexportTerminals(target, provenance, {
-        maxOperations: operationsRemaining,
-        maxTerminals: PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS,
-      });
-      if (traversal.mode === 'fallback') {
-        traversalExhausted = true;
-        return undefined;
-      }
-      operationsRemaining -= traversal.operations;
-      cache.set(key, traversal.targets);
-      return traversal.targets;
-    },
-  };
-}
-
-export function resolvePersistedReexportTerminals(
-  target: CodeGraphReusableReexportSeed,
-  provenance: ReadonlyMap<string, readonly CodeGraphReusableReexport[]>,
-  options: {readonly maxOperations?: number; readonly maxTerminals?: number} = {},
-): PersistedReexportTerminalTraversal {
-  const maxOperations = options.maxOperations ?? PERSISTED_REEXPORT_ENRICHMENT_MAX_OPERATIONS;
-  const maxTerminals = options.maxTerminals ?? PERSISTED_REEXPORT_ENRICHMENT_MAX_TERMINALS;
-  if (
-    !Number.isSafeInteger(maxOperations) ||
-    maxOperations < 0 ||
-    !Number.isSafeInteger(maxTerminals) ||
-    maxTerminals < 0
-  ) {
-    return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-  }
-  const discovered = new Set([reusableReexportSeedKey(target)]);
-  const pending = [target];
-  const terminals = new Map<string, CodeGraphReusableReexportSeed>();
-  let operations = 0;
-  const consumeOperation = (): boolean => {
-    if (operations >= maxOperations) return false;
-    operations += 1;
-    return true;
-  };
-  while (pending.length > 0) {
-    if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-    const current = pending.pop()!;
-    const next = [...(provenance.get(reusableReexportSeedKey(current)) ?? [])].sort((left, right) =>
-      compareCodeUnits(reusableReexportKey(left), reusableReexportKey(right)),
-    );
-    if (next.length === 0) {
-      terminals.set(reusableReexportSeedKey(current), current);
-      if (terminals.size > maxTerminals) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-      continue;
-    }
-    for (let index = next.length - 1; index >= 0; index -= 1) {
-      if (!consumeOperation()) return {mode: 'fallback', reason: 'reexport-closure-unbounded'};
-      const reexport = next[index]!;
-      const candidate = {name: reexport.importedName, path: reexport.targetPath};
-      const key = reusableReexportSeedKey(candidate);
-      if (discovered.has(key)) continue;
-      discovered.add(key);
-      pending.push(candidate);
-    }
-  }
-  if (terminals.size === 0) terminals.set(reusableReexportSeedKey(target), target);
-  return {
-    mode: 'complete',
-    operations,
-    targets: [...terminals.values()].sort((left, right) =>
-      compareCodeUnits(reusableReexportSeedKey(left), reusableReexportSeedKey(right)),
-    ),
-  };
-}
-
-function reusableReexportSeedKey(value: CodeGraphReusableReexportSeed): string {
-  return `${value.path}\0${value.name}`;
-}
-
-function reusableReexportKey(value: CodeGraphReusableReexport): string {
-  return `${value.sourcePath}\0${value.localName}\0${value.targetPath}\0${value.importedName}`;
-}
-
-function parseTypeScriptPathNameLookupKey(value: string): readonly CodeGraphReusableReexportSeed[] {
-  return parseTypeScriptPathNameLookupTarget(value).map(({name, path}) => ({name, path}));
-}
-
-interface TypeScriptPathNameLookupTarget extends CodeGraphReusableReexportSeed {
-  readonly lookupPrefix: string;
-  readonly lookupSuffix: string;
-}
-
-function parseTypeScriptPathNameLookupTarget(value: string): readonly TypeScriptPathNameLookupTarget[] {
-  const match =
-    /^typescript:((?:[^:]+:)?)path:([^:]+):name:([^:]+)(:(?:arity:\d+|implementation|merge-canonical))?$/.exec(value);
-  if (!match) return [];
-  try {
-    return [
-      {
-        lookupPrefix: `typescript:${match[1]!}`,
-        lookupSuffix: match[4] ?? '',
-        name: decodeURIComponent(match[3]!),
-        path: decodeURIComponent(match[2]!),
-      },
-    ];
-  } catch {
-    return [];
-  }
-}
-
-function uniqueByKey<A>(values: readonly A[], keyOf: (value: A) => string): readonly A[] {
-  const output = new Map<string, A>();
-  for (const value of values) {
-    const key = keyOf(value);
-    if (!output.has(key)) output.set(key, value);
-  }
-  return [...output.values()];
-}
-
-function uniqueStrings(values: readonly string[]): readonly string[] {
-  return [...new Set(values)];
 }
 
 export function reusableBaseFileSetFingerprint(files: readonly CodeGraphInventoryFile[]): string {
@@ -1021,7 +1101,7 @@ export function overlayFallbackDescription(reason: CodeGraphOverlayFallbackReaso
     case 'project-closure-incomplete':
       return 'the declared project dependency closure was incomplete or ambiguous';
     case 'project-closure-unbounded':
-      return 'the project dependency closure exceeded one bounded materialization batch';
+      return 'the project dependency closure exceeded the bounded four-batch materialization envelope';
     case 'reexport-closure-unbounded':
       return 'persisted reexport provenance exceeded the bounded project-closure lookup';
     case 'resolution-surface-changed':

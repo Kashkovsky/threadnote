@@ -1,7 +1,7 @@
 import {Console, Effect, Result} from 'effect';
 import {heading, info, keyValue, success, warning, withSpinnerEffect} from '../cli_ui.js';
 import type {RuntimeConfig, VersionOptions} from '../types.js';
-import {currentPackageVersion, fetchLatestVersion, latestUpdateVersionLabel, resolveReleaseSource} from '../update.js';
+import {currentPackageVersion, fetchLatestVersion, latestUpdateVersionLabel, resolveReleaseSource} from './index.js';
 import {selectUpdateChannel} from './channel.js';
 import {compareVersions, errorMessage} from '../utils.js';
 import {whatsNewLinesForVersion, whatsNewLinesForVersionRange} from './notes.js';

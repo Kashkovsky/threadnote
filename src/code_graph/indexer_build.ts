@@ -4,7 +4,6 @@ import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {withThreadnoteProcessActivity} from '../process/diagnostics.js';
 import type {CodeGraphBuildOwnerIdentity} from './build_owner.js';
-import {readCodeGraphBuildStatuses} from './build_status.js';
 import {canonicalCodeGraphMonikers} from './cross_repository/monikers.js';
 import {isCodeGraphCapacityPause} from './disk_capacity.js';
 import type {CodeGraphEmbeddingIndexShape, CodeGraphEmbeddingStatus} from './embedding.js';
@@ -61,11 +60,25 @@ import {
 import {type PendingMaterializationBatch, secondaryIndexRestorationReporter} from './indexer_materialization_batch.js';
 import {verifyCommittedIndexInput} from './indexer_input_verification.js';
 import {
+  acquireFoldForwardBaseLeases,
+  foldForwardCommittedBase,
+  foldForwardLogicalCandidate,
+  foldForwardMaterializationCounts,
+  foldForwardPreparationOptions,
+  persistedBaseCommittedBase,
+} from './indexer_fold_forward.js';
+import {
   CachedCodeGraphFactUnavailableDuringIndex,
   CodeGraphIndexOperationError,
   codeGraphInventoryFileChanged,
   sameInventoryPaths,
 } from './indexer_shared.js';
+import {
+  attemptCommittedDirtyRootAlias,
+  prepareReadyAnalysisSummary,
+  reuseReadySnapshot,
+  type ReusableCleanSnapshotInput,
+} from './indexer_snapshot_reuse.js';
 import type {
   CodeGraphIndexOptions,
   CommittedBaseResult,
@@ -185,155 +198,7 @@ export function withSharedCleanRequestGate<A, E, R>(input: {
   );
 }
 
-export const completedConcurrentSnapshot = Effect.fn('codeGraph.completedConcurrentSnapshot')(function* (
-  store: CodeGraphStoreShape,
-  layout: CodeGraphLayout,
-  identity: RepositoryIdentity,
-  overlay: {readonly dirty: boolean; readonly fingerprint?: string},
-  requestKey: string,
-  requireDirectFull: boolean,
-) {
-  const statuses = yield* readCodeGraphBuildStatuses(layout);
-  const completed = statuses.find(
-    status => status.state === 'completed' && status.request?.key === requestKey && status.result?.snapshotId,
-  );
-  if (!completed?.result?.snapshotId) return undefined;
-  const ready = yield* store.currentLexicalReadySnapshotById(layout.databasePath, completed.result.snapshotId);
-  if (
-    !ready ||
-    ready.commit !== identity.headCommit ||
-    ready.dirty !== overlay.dirty ||
-    (overlay.dirty && requireDirectFull && (ready.baseSnapshotId !== undefined || !ready.id.endsWith('-direct')))
-  ) {
-    return undefined;
-  }
-  return ready;
-});
-
-export const prepareReadyAnalysisSummary = Effect.fn('codeGraph.prepareReadyAnalysisSummary')(function* (input: {
-  readonly databasePath: string;
-  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly snapshotId: string;
-  readonly store: CodeGraphStoreShape;
-}) {
-  yield* input.onProgress?.({
-    phase: 'activating',
-    snapshotId: input.snapshotId,
-    subphase: 'summarizing-analysis',
-  }) ?? Effect.void;
-  return yield* (
-    typeof input.store.ensureAnalysisSummary === 'function'
-      ? input.store.ensureAnalysisSummary(input.databasePath, input.snapshotId)
-      : Effect.succeed(false)
-  ).pipe(
-    Effect.ensuring(
-      (
-        input.onProgress?.({phase: 'activating', snapshotId: input.snapshotId, subphase: 'complete'}) ?? Effect.void
-      ).pipe(Effect.catch(() => Effect.void)),
-    ),
-  );
-});
-
-export const reuseReadySnapshot = Effect.fn('codeGraph.reuseReadySnapshot')(function* (input: {
-  readonly embedding: CodeGraphEmbeddingIndexShape;
-  readonly ensureVectors: boolean;
-  readonly identity: RepositoryIdentity;
-  readonly layout: CodeGraphLayout;
-  readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-  readonly reusedFiles: number;
-  readonly skippedFiles: number;
-  readonly snapshot: CodeGraphSnapshot;
-  readonly startedAt: number;
-  readonly store: CodeGraphStoreShape;
-  readonly threadnoteHome: string;
-  readonly totalFiles: number;
-}) {
-  yield* input.onProgress?.({phase: 'activating', snapshotId: input.snapshot.id, subphase: 'structural-ready'}) ??
-    Effect.void;
-  let analysisSummaryFailure: string | undefined;
-  const analysisSummaryBackfilled = input.snapshot.dirty
-    ? yield* (
-        input.onProgress?.({phase: 'activating', snapshotId: input.snapshot.id, subphase: 'complete'}) ?? Effect.void
-      ).pipe(Effect.as(false))
-    : yield* prepareReadyAnalysisSummary({
-        databasePath: input.layout.databasePath,
-        onProgress: input.onProgress,
-        snapshotId: input.snapshot.id,
-        store: input.store,
-      }).pipe(
-        Effect.catch(cause =>
-          Effect.sync(() => {
-            analysisSummaryFailure = messageOf(cause);
-            return false;
-          }),
-        ),
-      );
-  const diagnostics: string[] = analysisSummaryBackfilled
-    ? ['Built the persisted whole-graph analysis summary for this reused snapshot.']
-    : analysisSummaryFailure
-      ? [`Whole-graph analysis summary will be retried lazily: ${analysisSummaryFailure}`]
-      : [];
-  if (!input.ensureVectors) {
-    const vectorCheck = yield* input.embedding
-      .check(input.threadnoteHome, input.layout, input.snapshot.id)
-      .pipe(Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)));
-    if (vectorCheck.state !== 'ready') {
-      diagnostics.push(
-        `Vector graph retrieval unavailable: ${vectorCheck.reason ?? 'deferred until an explicit vector refresh'}`,
-      );
-    }
-    return {
-      diagnostics,
-      durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
-      identity: input.identity,
-      materialization: {
-        mode: 'reused-snapshot',
-        stagedFiles: 0,
-        totalFiles: input.totalFiles,
-      },
-      reusedFiles: input.reusedFiles,
-      skippedFiles: input.skippedFiles,
-      snapshot: input.snapshot,
-    } satisfies CodeGraphIndexSummary;
-  }
-  const vectorCheck = yield* input.embedding
-    .check(input.threadnoteHome, input.layout, input.snapshot.id)
-    .pipe(Effect.catch(cause => Effect.succeed({reason: messageOf(cause), state: 'unavailable'} as const)));
-  const symbols =
-    vectorCheck.state === 'ready'
-      ? []
-      : embeddingSymbolSource(input.store, input.layout.databasePath, input.snapshot.id);
-  const repaired = yield* input.embedding
-    .ensure(input.threadnoteHome, input.layout, input.snapshot, symbols, {
-      onProgress: input.onProgress,
-    })
-    .pipe(
-      Effect.catch(cause =>
-        Effect.succeed({
-          embedded: 0,
-          ready: false,
-          reason: messageOf(cause),
-          reused: 0,
-        } satisfies CodeGraphEmbeddingStatus),
-      ),
-    );
-  if (!repaired.ready) {
-    diagnostics.push(`Vector graph retrieval unavailable: ${repaired.reason ?? 'unknown reason'}`);
-  }
-  return {
-    diagnostics,
-    durationMs: (yield* Clock.currentTimeMillis) - input.startedAt,
-    identity: input.identity,
-    materialization: {
-      mode: 'reused-snapshot',
-      stagedFiles: 0,
-      totalFiles: input.totalFiles,
-    },
-    reusedFiles: input.reusedFiles,
-    skippedFiles: input.skippedFiles,
-    snapshot: input.snapshot,
-  } satisfies CodeGraphIndexSummary;
-});
+export {prepareReadyAnalysisSummary, reuseReadySnapshot};
 
 export function codeGraphBuildRequestKey(
   identity: Pick<RepositoryIdentity, 'checkoutId' | 'headCommit' | 'repositoryId' | 'worktreeId'>,
@@ -459,7 +324,7 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
         const reused = yield* attemptReusableCleanSnapshot(input, workspace);
         if (Option.isSome(reused)) {
           if (reused.value.mode === 'complete') return reused.value.summary;
-          cleanFallbackAssessment = {mode: 'fallback', reason: reused.value.reason};
+          cleanFallbackAssessment = reused.value;
         }
       }
       const resumed = input.force
@@ -520,29 +385,15 @@ export const buildOwnedCleanSnapshot = Effect.fn('codeGraph.buildOwnedCleanSnaps
 });
 
 const attemptReusableCleanSnapshot = Effect.fn('codeGraph.attemptReusableCleanSnapshot')(function* (
-  input: {
-    readonly capacityProtection: DirectPersistentCapacityProtection;
-    readonly embedding: CodeGraphEmbeddingIndexShape;
-    readonly ensureVectors: boolean;
-    readonly existing: CodeGraphSnapshot | undefined;
-    readonly fs: FileSystem.FileSystem;
-    readonly identity: RepositoryIdentity;
-    readonly inventory: CodeGraphInventory;
-    readonly languagePacks: CodeGraphLanguagePackRegistryShape;
-    readonly layout: CodeGraphLayout;
-    readonly logicalSnapshotId: string;
-    readonly onProgress?: (progress: CodeGraphProgress) => Effect.Effect<void, unknown>;
-    readonly persistentMaterializationTransactionBatchLimit?: 1 | 4;
-    readonly requestedOverlay?: {readonly dirty: boolean; readonly fingerprint?: string};
-    readonly startedAt: number;
-    readonly store: CodeGraphStoreShape;
-    readonly threadnoteHome: string;
-  },
+  input: ReusableCleanSnapshotInput,
   workspace: CodeGraphWorkspace,
 ) {
-  if (!input.store.reusableCleanBase || !input.store.activateCleanSnapshotAlias) {
+  if (!input.store.activateCleanSnapshotAlias) {
     return Option.none<ReusableCleanSnapshotAttempt>();
   }
+  const committedDirtyRoot = yield* attemptCommittedDirtyRootAlias(input, workspace);
+  if (Option.isSome(committedDirtyRoot)) return committedDirtyRoot;
+  if (!input.store.reusableCleanBase) return Option.none<ReusableCleanSnapshotAttempt>();
   const extractorSet = extractorSetIdentity(input.inventory.files, input.languagePacks);
   const preferredCommitGroups = yield* preferredIncrementalBaseCommitGroups(
     input.identity.repoRoot,
@@ -821,9 +672,6 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
           input.inventory.overlayFingerprint,
         )
       : undefined;
-  // Prefer the exact committed snapshot path below when it is itself a root
-  // reusable base. A clean incremental snapshot is already layered, so another
-  // overlay must instead reuse its root and include the cumulative changed set.
   const committedExtractorSet = extractorSetIdentity(input.inventory.committedFiles, input.languagePacks);
   const exactCommittedSnapshotId = snapshotIdentity(
     input.identity,
@@ -835,11 +683,49 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     input.layout.databasePath,
     exactCommittedSnapshotId,
   );
-  if (!retainedOverlayCandidate && exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined) {
+  if (!retainedOverlayCandidate && exactCommittedSnapshot && exactCommittedSnapshot.baseSnapshotId === undefined)
     return Option.none();
-  }
   const committedFileSetFingerprint = reusableBaseFileSetFingerprint(input.inventory.committedFiles);
   const committedGraphContentId = graphContentIdentity(committedExtractorSet, input.inventory.committedFiles);
+  const exactCommittedDirtyRoot = exactCommittedSnapshot?.baseSnapshotId
+    ? yield* input.store.currentLexicalReadySnapshotById(
+        input.layout.databasePath,
+        exactCommittedSnapshot.baseSnapshotId,
+      )
+    : undefined;
+  const exactCommittedDirtyRootReceipt =
+    exactCommittedDirtyRoot?.dirty && exactCommittedDirtyRoot.baseSnapshotId === undefined
+      ? yield* input.store.reusableBaseReceipt(input.layout.databasePath, exactCommittedDirtyRoot.id, {
+          allowDirtyRoot: true,
+        })
+      : undefined;
+  const exactCommittedDirtyAlias =
+    exactCommittedSnapshot &&
+    exactCommittedDirtyRoot &&
+    exactCommittedDirtyRootReceipt &&
+    exactCommittedSnapshot.baseSnapshotId === exactCommittedDirtyRoot.id &&
+    exactCommittedSnapshot.repositoryId === input.identity.repositoryId &&
+    exactCommittedSnapshot.extractorSet === committedExtractorSet &&
+    exactCommittedSnapshot.graphContentId === committedGraphContentId &&
+    exactCommittedSnapshot.fileCount === input.inventory.committedFiles.length &&
+    exactCommittedSnapshot.fileCount === exactCommittedDirtyRoot.fileCount &&
+    exactCommittedSnapshot.symbolCount === exactCommittedDirtyRoot.symbolCount &&
+    exactCommittedSnapshot.edgeCount === exactCommittedDirtyRoot.edgeCount &&
+    exactCommittedDirtyRootReceipt.fileSetFingerprint === committedFileSetFingerprint &&
+    exactCommittedDirtyRootReceipt.workspaceFingerprint === workspace.fingerprint
+      ? {
+          logicalSnapshot: exactCommittedSnapshot,
+          rootReceipt: exactCommittedDirtyRootReceipt,
+          rootSnapshot: exactCommittedDirtyRoot,
+        }
+      : undefined;
+  const foldForwardBase =
+    !retainedOverlayCandidate &&
+    !exactCommittedDirtyAlias &&
+    exactCommittedSnapshot?.baseSnapshotId &&
+    input.store.reusableFoldForwardBase
+      ? yield* input.store.reusableFoldForwardBase(input.layout.databasePath, exactCommittedSnapshot.id)
+      : undefined;
   const commitReady = yield* input.store.readySnapshotForCommit(
     input.layout.databasePath,
     input.identity.repositoryId,
@@ -850,7 +736,15 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     ? yield* input.store.reusableBaseReceipt(input.layout.databasePath, commitReady.id)
     : undefined;
   let candidate: CodeGraphReusableCleanBase | undefined =
+    (exactCommittedDirtyAlias
+      ? {
+          files: input.inventory.committedFiles,
+          receipt: exactCommittedDirtyAlias.rootReceipt,
+          snapshot: exactCommittedDirtyAlias.logicalSnapshot,
+        }
+      : undefined) ??
     retainedOverlayCandidate ??
+    (foldForwardBase ? foldForwardLogicalCandidate(foldForwardBase) : undefined) ??
     (commitReady &&
     commitReceipt &&
     commitReady.graphContentId === committedGraphContentId &&
@@ -875,13 +769,16 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
     );
   }
   if (!candidate) return Option.none();
-  const lease = yield* input.store
-    .acquireSnapshotLease(input.layout.databasePath, candidate.snapshot.id, CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS)
-    .pipe(Effect.option);
-  if (Option.isNone(lease)) return Option.none();
-  const leaseToken = yield* Effect.acquireRelease(Effect.succeed(lease.value), token =>
-    input.store.releaseSnapshotLease(input.layout.databasePath, token).pipe(Effect.catch(() => Effect.void)),
+  const physicalSnapshot =
+    exactCommittedDirtyAlias?.rootSnapshot ?? foldForwardBase?.rootSnapshot ?? candidate.snapshot;
+  const leaseTokens = yield* acquireFoldForwardBaseLeases(
+    input.store,
+    input.layout.databasePath,
+    physicalSnapshot.id,
+    CODE_GRAPH_ACTIVATION_LEASE_MILLISECONDS,
+    foldForwardBase?.logicalSnapshot.id,
   );
+  if (Option.isNone(leaseTokens)) return Option.none();
   const packDelta =
     candidate.snapshot.extractorSet === input.extractorSet
       ? ({changedPackIds: [], mode: 'compatible'} as const)
@@ -919,18 +816,12 @@ export const attemptReusableDirtyBase = Effect.fn('codeGraph.attemptReusableDirt
   if (boundedAssessment.mode === 'fallback') return Option.none();
   const preassessment = boundedAssessment;
   return Option.some({
-    committedBase: {
-      diagnostics: [
-        `Dirty snapshot reused compatible persisted base ${candidate.snapshot.id} without first building commit ${input.identity.headCommit}.`,
-      ],
-      leaseToken: Option.some(leaseToken),
-      snapshot: candidate.snapshot,
-      stagingReusable: false,
-    },
+    committedBase: foldForwardBase
+      ? foldForwardCommittedBase(foldForwardBase, leaseTokens.value)
+      : persistedBaseCommittedBase(candidate, physicalSnapshot, leaseTokens.value.physical, input.identity.headCommit),
     preassessment,
   });
 });
-
 export const ensureCommittedBase = Effect.fn('codeGraph.ensureCommittedBase')(function* (input: {
   readonly buildOwner: CodeGraphBuildOwnerIdentity;
   readonly capacityProtection: DirectPersistentCapacityProtection;
@@ -1124,6 +1015,10 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
   const incrementalAssessment =
     input.incrementalAssessment ??
     (input.inventory.dirty ? yield* assessIncrementalOverlay(input, workspace) : undefined);
+  const fallbackAssessment =
+    incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.fallbackAssessment : undefined;
+  const fallbackBoundary =
+    incrementalAssessment?.mode === 'fallback' ? incrementalAssessment.fallbackBoundary : undefined;
   let fallbackReason: CodeGraphOverlayFallbackReason | undefined =
     incrementalAssessment?.mode === 'fallback'
       ? incrementalAssessment.reason
@@ -1150,6 +1045,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       baseSnapshotId: input.committedBase!.snapshot.id,
       databasePath: input.layout.databasePath,
       fs: input.fs,
+      ...foldForwardPreparationOptions(input.committedBase?.foldForward),
       persistentCapacityProtector: protectDirectPersistentWrite,
       prepared: input.incrementalPrepared === true,
       storage: incrementalStorageTelemetry,
@@ -1278,6 +1174,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       cachedFactBytesTotal,
       ...replayMetrics,
       ...(changedFactBytesCompleted === undefined ? {} : {changedFactBytesCompleted}),
+      ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
+      ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
       ...(fallbackReason === undefined ? {} : {fallbackReason}),
       factsBytesCompleted,
       ...(finalFactsBytesTotal === undefined ? {} : {factsBytesTotal: finalFactsBytesTotal}),
@@ -1880,6 +1778,9 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
     if (input.committedBase && Option.isSome(input.committedBase.leaseToken)) {
       yield* input.store.releaseSnapshotLease(input.layout.databasePath, input.committedBase.leaseToken.value);
     }
+    for (const token of input.committedBase?.additionalLeaseTokens ?? []) {
+      yield* input.store.releaseSnapshotLease(input.layout.databasePath, token);
+    }
     yield* input.onProgress?.({
       phase: 'activating',
       snapshotId: activated.id,
@@ -1933,6 +1834,14 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           ),
         )
     : ({embedded: 0, ready: true, reused: 0} satisfies CodeGraphEmbeddingStatus);
+  const foldForwardMaterialization =
+    incrementalApplied && incrementalAssessment?.mode === 'eligible' && input.committedBase?.foldForward
+      ? foldForwardMaterializationCounts(
+          input.committedBase.foldForward.priorDeltaPaths,
+          incrementalAssessment.files,
+          incrementalAssessment.deletedPaths,
+        )
+      : undefined;
   if (input.activatePointer) {
     yield* input.fs.remove(input.layout.staleMarkerPath, {force: true}).pipe(Effect.catch(() => Effect.void));
   }
@@ -1972,6 +1881,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       ? {incrementalWork: incrementalAssessment.work}
       : {}),
     materialization: {
+      ...(foldForwardMaterialization ?? {}),
       ...(incrementalApplied && incrementalAssessment?.mode === 'eligible'
         ? {
             ...(incrementalAssessment.closureProjects === undefined
@@ -1983,6 +1893,8 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           }
         : {}),
       ...(fallbackReason ? {fallbackReason} : {}),
+      ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
+      ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
       ...(incrementalAssessment?.resolutionPublicationAssessment
         ? {
             resolutionLookupKeyForm: incrementalAssessment.resolutionPublicationAssessment.lookupKeyForm,
@@ -1990,7 +1902,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
           }
         : {}),
       mode: incrementalApplied ? (input.inventory.dirty ? 'incremental-overlay' : 'incremental-clean') : 'full',
-      stagedFiles: materializedFiles,
+      stagedFiles: foldForwardMaterialization?.stagedFiles ?? materializedFiles,
       totalFiles,
     },
     reusedFiles,

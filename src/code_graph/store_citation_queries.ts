@@ -239,9 +239,10 @@ export const selectEffectiveSnapshotFilesByPaths = Effect.fn('codeGraph.selectEf
     const sql = yield* SqlClient.SqlClient;
     yield* configureConnection(sql);
     const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+    const logicalSource = yield* selectLogicalSnapshotFileSource(sql, snapshotId);
     const statement = codeGraphEffectiveFilesByPathsQueryStatement(snapshotId, baseSnapshotId, paths);
     const rows = yield* sql.unsafe<EffectiveFilePathRow>(statement.text, statement.parameters);
-    return filePathObservationsFromRows(rows);
+    return filePathObservationsFromRows(rows, logicalSource);
   },
 );
 
@@ -254,6 +255,7 @@ export const selectEffectiveSnapshotFilesByContentHashes = Effect.fn(
   const sql = yield* SqlClient.SqlClient;
   yield* configureConnection(sql);
   const baseSnapshotId = yield* selectBaseSnapshotId(sql, snapshotId);
+  const logicalSource = yield* selectLogicalSnapshotFileSource(sql, snapshotId);
   const statement = codeGraphEffectiveFilesByContentHashesQueryStatement(
     snapshotId,
     baseSnapshotId,
@@ -261,7 +263,7 @@ export const selectEffectiveSnapshotFilesByContentHashes = Effect.fn(
     limitPerHash,
   );
   const rows = yield* sql.unsafe<EffectiveFileRow>(statement.text, statement.parameters);
-  return fileHashMatchesFromRows(contentHashes, rows, limitPerHash);
+  return fileHashMatchesFromRows(contentHashes, rows, limitPerHash, logicalSource);
 });
 
 export const selectEffectiveSnapshotSymbolsBySemanticLocators = Effect.fn(
@@ -321,6 +323,8 @@ export const selectEffectiveSnapshotCitationEvidence = Effect.fn('codeGraph.sele
       LIMIT 1
     `;
     const coverageRow = coverageRows[0];
+    const logicalSource =
+      coverageRow !== undefined && Number(coverageRow.dirty) === 0 ? ('commit' as const) : undefined;
     const inventoryReceipt = decodeCodeGraphInventoryReuseReceipt(coverageRow?.inventory_receipt_json ?? null);
     const fileInventoryCoverage =
       coverageRow !== undefined &&
@@ -371,8 +375,8 @@ export const selectEffectiveSnapshotCitationEvidence = Effect.fn('codeGraph.sele
 
     return {
       fileInventoryCoverage,
-      filesByContentHashes: fileHashMatchesFromRows(contentHashes, hashRows, limitPerContentHash),
-      filesByPaths: filePathObservationsFromRows(pathRows),
+      filesByContentHashes: fileHashMatchesFromRows(contentHashes, hashRows, limitPerContentHash, logicalSource),
+      filesByPaths: filePathObservationsFromRows(pathRows, logicalSource),
       symbolsByIds: symbolRows.map(symbolFromRow),
       symbolsBySemanticLocators: symbolLocatorMatchesFromRows(semanticLocators, semanticRows, limitPerSemanticLocator),
     } satisfies CodeGraphEffectiveSnapshotCitationEvidence;
@@ -381,9 +385,10 @@ export const selectEffectiveSnapshotCitationEvidence = Effect.fn('codeGraph.sele
 
 function filePathObservationsFromRows(
   rows: readonly EffectiveFilePathRow[],
+  logicalSource?: CodeGraphInventoryFile['source'],
 ): readonly CodeGraphEffectiveFilePathObservation[] {
   return rows.map(row => ({
-    ...(row.path === null ? {} : {file: inventoryFileFromRow(row as EffectiveFileRow)}),
+    ...(row.path === null ? {} : {file: inventoryFileFromRow(row as EffectiveFileRow, logicalSource)}),
     path: row.requested_path,
   }));
 }
@@ -392,6 +397,7 @@ function fileHashMatchesFromRows(
   contentHashes: readonly string[],
   rows: readonly EffectiveFileRow[],
   limitPerHash: number,
+  logicalSource?: CodeGraphInventoryFile['source'],
 ): readonly CodeGraphEffectiveFileHashMatches[] {
   const pages = contentHashes.map(contentHash => ({
     contentHash,
@@ -402,7 +408,7 @@ function fileHashMatchesFromRows(
     const page = pages[row.request_index];
     if (page === undefined) continue;
     if ((row.match_rank ?? 0) > limitPerHash) page.truncated = true;
-    else page.files.push(inventoryFileFromRow(row));
+    else page.files.push(inventoryFileFromRow(row, logicalSource));
   }
   return pages;
 }
@@ -430,7 +436,10 @@ function executeStatement<A extends object>(sql: SqlClient.SqlClient, statement:
   return sql.unsafe<A>(statement.text, statement.parameters);
 }
 
-function inventoryFileFromRow(row: EffectiveFileRow): CodeGraphInventoryFile {
+function inventoryFileFromRow(
+  row: EffectiveFileRow,
+  logicalSource: CodeGraphInventoryFile['source'] = row.source,
+): CodeGraphInventoryFile {
   return {
     blobId: `snapshot:${row.content_hash}`,
     contentHash: row.content_hash,
@@ -439,9 +448,20 @@ function inventoryFileFromRow(row: EffectiveFileRow): CodeGraphInventoryFile {
     path: row.path,
     ...(row.raw_content_hash === null ? {} : {rawContentHash: row.raw_content_hash}),
     size: Number(row.size),
-    source: row.source,
+    source: logicalSource,
   };
 }
+
+/** A clean logical alias makes physically reused overlay bytes commit-authoritative. */
+const selectLogicalSnapshotFileSource = Effect.fn('codeGraph.selectLogicalSnapshotFileSource')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+) {
+  const rows = yield* sql<{readonly dirty: number}>`
+    SELECT dirty FROM snapshots WHERE id = ${snapshotId} AND state = 'ready' LIMIT 1
+  `;
+  return rows[0] !== undefined && Number(rows[0].dirty) === 0 ? ('commit' as const) : undefined;
+});
 
 function validateCitationPaths(paths: readonly string[]) {
   return validateUniqueTargets(paths, path => path, validCitationPath, 'repository-relative code graph path');

@@ -1,8 +1,8 @@
 import {Console, Effect, FileSystem, Path} from 'effect';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import type {RuntimeConfig, ShareTeamConfig, ShareTeamsFile} from '../types.js';
-import {runShareInit, runShareSync} from '../share.js';
-import {normalizeTeamName, readTeamsFile, shareTeamAccess} from '../share.js';
+import {runShareInit, runShareSync} from '../share/index.js';
+import {normalizeTeamName, readTeamsFile, shareTeamAccess} from '../share/index.js';
 import {withSharedRepositoryLock} from '../effect/share_lock.js';
 import {SystemInfo} from '../effect/system.js';
 import {canonicalResourceUri} from '../storage/resource-id.js';

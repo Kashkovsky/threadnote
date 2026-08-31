@@ -16,7 +16,7 @@ import {
   recallCrossScopeLaneBudgets,
 } from '../src/recall/runtime.js';
 import {recallIndexPreselectionLimit} from '../src/utils.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const FIXED_NOW = new Date('2026-08-20T00:00:00.000Z');

@@ -3,6 +3,7 @@ import {Console, Effect, FileSystem, Option, Result} from 'effect';
 import {uriSegment} from '../manifest.js';
 
 import {ResourceStore} from '../effect/resource-store.js';
+import {recordMemoryRelocation} from '../memory/relocation.js';
 
 import type {
   ShareInitOptions,
@@ -224,6 +225,12 @@ export const runShareUnpublish = Effect.fn('share.runShareUnpublish')(function* 
         `Shared source ${sourceUri} changed during unpublish; shared canonical source preserved.`,
       );
     }
+    yield* recordMemoryRelocation(config, {
+      fromContent: currentSource,
+      fromUri: sourceUri,
+      toContent: currentTarget,
+      toUri: targetUri,
+    });
   }
   const removeResult = yield* Effect.result(removeMemoryUri(config, ov, sourceUri, dryRun));
   if (Result.isFailure(removeResult)) {

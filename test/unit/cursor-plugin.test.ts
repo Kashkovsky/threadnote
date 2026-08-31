@@ -38,7 +38,7 @@ describe('Cursor plugin package', () => {
       readFile(join(root, 'CURSOR_PLUGIN_LICENSE.md'), 'utf8'),
       readFile(join(root, 'package.json'), 'utf8'),
       readFile(join(root, 'src', 'lifecycle.ts'), 'utf8'),
-      readFile(join(root, 'src', 'update.ts'), 'utf8'),
+      readFile(join(root, 'src', 'release', 'update.ts'), 'utf8'),
       readFile(join(pluginRoot, 'assets', 'logo.svg'), 'utf8'),
       readFile(join(root, 'assets', 'brand', 'threadnote-logo.svg'), 'utf8'),
       readFile(join(pluginRoot, 'CHANGELOG.md'), 'utf8'),

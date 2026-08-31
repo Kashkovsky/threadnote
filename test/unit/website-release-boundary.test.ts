@@ -634,7 +634,7 @@ describe('website and standalone release boundary', () => {
   });
 
   it('packages the agent instruction template outside the public docs tree', async () => {
-    const agentIntegrations = await readFile(join(root, 'src', 'agent-integrations.ts'), 'utf8');
+    const agentIntegrations = await readFile(join(root, 'src', 'agent_integration', 'index.ts'), 'utf8');
     const template = await stat(join(root, 'config', 'agent-instructions.md'));
 
     expect(agentIntegrations).toContain("'config', 'agent-instructions.md'");

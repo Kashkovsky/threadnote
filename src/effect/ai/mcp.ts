@@ -14,6 +14,7 @@ import {
   copyAnonymousTelemetryMetadata,
   readAnonymousTelemetryReportedOutcome,
 } from '../../telemetry/diagnostic.js';
+import {isMemoryReadRecoveryV1, type MemoryReadRecoveryV1} from '../../mcp/memory_read_recovery.js';
 import {omitAnonymousTelemetryRecorder, withAnonymousTelemetry} from '../telemetry.js';
 
 // Windows antivirus and filesystem scheduling can make an otherwise healthy
@@ -22,6 +23,7 @@ import {omitAnonymousTelemetryRecorder, withAnonymousTelemetry} from '../telemet
 const MCP_PRODUCTION_LOG_WRITE_TIMEOUT_MILLISECONDS = 500;
 const EFFECT_RPC_CAUSE_MARKER = new TextEncoder().encode('"_tag":"Cause"');
 const MCP_RESOURCE_ERROR_BRAND_KEY = 'threadnote.io/resource-read-error';
+const MCP_RESOURCE_MEMORY_RECOVERY_KEY = 'threadnote.io/memory-read-recovery';
 export const MCP_RESOURCE_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 1});
 export const MCP_RESOURCE_NOT_FOUND_ERROR_DATA = Object.freeze({[MCP_RESOURCE_ERROR_BRAND_KEY]: 2});
 export const MCP_PROGRESS_HEARTBEAT_MILLISECONDS = 10_000;
@@ -43,6 +45,16 @@ const MCP_PROGRESS_GENERATION_METADATA_KEY = 'threadnote.io/private/progress-gen
 const MCP_INVALID_BATCH_METHOD = 'invalid/json-rpc-batch';
 const MCP_HTTP_CANCELLATION_UNSUPPORTED_MESSAGE =
   'Streamable HTTP cancellation is not supported until requests can be interrupted across POSTs.';
+
+export function mcpResourceNotFoundRecoveryErrorData(
+  recovery: MemoryReadRecoveryV1,
+): Readonly<Record<string, unknown>> {
+  if (!isMemoryReadRecoveryV1(recovery)) throw new TypeError('Invalid memory-read recovery payload.');
+  return Object.freeze({
+    [MCP_RESOURCE_ERROR_BRAND_KEY]: 2,
+    [MCP_RESOURCE_MEMORY_RECOVERY_KEY]: recovery,
+  });
+}
 
 export function mcpProgressHeartbeatMilliseconds(environment: NodeJS.ProcessEnv): number {
   if (environment.NODE_ENV !== 'test') return MCP_PROGRESS_HEARTBEAT_MILLISECONDS;
@@ -1364,10 +1376,12 @@ function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string
     return parsed;
   }
   if (error.code !== 0 && error.code !== typed.code) return parsed;
+  const memoryRecovery = mcpResourceMemoryRecovery(typed);
   return {
     ...parsed,
     error: {
       code: hasMcpResourceNotFoundErrorBrand(typed) ? -32_002 : typed.code,
+      ...(memoryRecovery === undefined ? {} : {data: memoryRecovery}),
       message: typed.message,
     },
   };
@@ -1376,27 +1390,35 @@ function unwrapEffectRpcMcpError(parsed: Record<string, unknown>): Record<string
 function hasMcpResourceErrorBrand(error: unknown): boolean {
   if (typeof error !== 'object' || error === null || !('data' in error)) return false;
   const data = error.data;
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return false;
+  const record = data as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(record);
+  const brand = record[MCP_RESOURCE_ERROR_BRAND_KEY];
+  if (brand === 1) return keys.length === 1;
+  if (brand !== 2) return false;
+  if (keys.length === 1) return true;
   return (
-    typeof data === 'object' &&
-    data !== null &&
-    !Array.isArray(data) &&
-    Object.keys(data).length === 1 &&
-    MCP_RESOURCE_ERROR_BRAND_KEY in data &&
-    (data[MCP_RESOURCE_ERROR_BRAND_KEY] === 1 || data[MCP_RESOURCE_ERROR_BRAND_KEY] === 2)
+    keys.length === 2 &&
+    MCP_RESOURCE_MEMORY_RECOVERY_KEY in record &&
+    isMemoryReadRecoveryV1(record[MCP_RESOURCE_MEMORY_RECOVERY_KEY])
   );
 }
 
 function hasMcpResourceNotFoundErrorBrand(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null || !('data' in error)) return false;
-  const data = error.data;
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    !Array.isArray(data) &&
-    Object.keys(data).length === 1 &&
-    MCP_RESOURCE_ERROR_BRAND_KEY in data &&
-    data[MCP_RESOURCE_ERROR_BRAND_KEY] === 2
-  );
+  if (!hasMcpResourceErrorBrand(error) || typeof error !== 'object' || error === null || !('data' in error)) {
+    return false;
+  }
+  const data = error.data as Readonly<Record<string, unknown>>;
+  return data[MCP_RESOURCE_ERROR_BRAND_KEY] === 2;
+}
+
+function mcpResourceMemoryRecovery(error: unknown): MemoryReadRecoveryV1 | undefined {
+  if (!hasMcpResourceNotFoundErrorBrand(error) || typeof error !== 'object' || error === null || !('data' in error)) {
+    return undefined;
+  }
+  const data = error.data as Readonly<Record<string, unknown>>;
+  const recovery = data[MCP_RESOURCE_MEMORY_RECOVERY_KEY];
+  return isMemoryReadRecoveryV1(recovery) ? recovery : undefined;
 }
 
 function isRecognizedMcpError(error: {readonly code: number} & Record<PropertyKey, unknown>): boolean {

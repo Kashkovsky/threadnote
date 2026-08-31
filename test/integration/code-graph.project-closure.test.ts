@@ -10,6 +10,8 @@ import {TestClock} from 'effect/testing';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect, Path} from 'effect';
 import {CodeGraphIndexer, graphContentIdentity} from '../../src/code_graph/indexer.js';
+import {serializeBoundedCodeGraphFact} from '../../src/code_graph/fact_budget.js';
+import {decodeStoredCodeGraphFact, encodeStoredCodeGraphFact} from '../../src/code_graph/fact_storage.js';
 import {inventoryRepository} from '../../src/code_graph/inventory.js';
 import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
@@ -410,6 +412,51 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
+  it.effect('materializes an exact project closure beyond the former aggregate fact ceiling', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const store = yield* CodeGraphStore;
+          const path = yield* Path.Path;
+          const incrementalHome = join(root, '.threadnote-expanded-facts-incremental');
+          const fullHome = join(root, '.threadnote-expanded-facts-full');
+          const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const incrementalLayout = codeGraphLayout(
+            path,
+            incrementalHome,
+            base.identity.checkoutId,
+            base.identity.worktreeId,
+          );
+          const inflatedHashes = [
+            'packages/app/index.ts',
+            'packages/app/package.json',
+            'packages/barrel/package.json',
+          ].map(value => snapshotFileContentHash(incrementalLayout.databasePath, base.snapshot.id, value));
+          yield* Effect.sync(() => {
+            inflateCachedFacts(incrementalLayout.databasePath, inflatedHashes, 7 * 1_048_576);
+            redirectBarrel(root);
+          });
+
+          const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+          expect(incremental.materialization).toMatchObject({
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
+          });
+          expect(incremental.incrementalWork?.factBytes).toBeGreaterThan(16 * 1_048_576);
+          expect(incremental.incrementalWork?.factBytes).toBeLessThanOrEqual(32 * 1_048_576);
+          expect(
+            normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id)),
+          ).toEqual(normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)));
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
   it.effect('falls back through bounded full materialization for cache and receipt loss or oversized facts', () =>
     Effect.forEach(
       [
@@ -456,6 +503,15 @@ describe('project-closure incremental indexing', () => {
               expect(indexed.materialization).toMatchObject({fallbackReason: reason, mode: 'full'});
               expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
               if (scenario === 'missing') expect(removedAfterPersistence).toBe(true);
+              if (scenario === 'oversized') {
+                expect(indexed.materialization?.fallbackBoundary).toMatchObject({
+                  changedFiles: 1,
+                  limit: 8 * 1_048_576,
+                  metric: 'cached-fact-bytes',
+                  stage: 'project-closure-selection',
+                });
+                expect(indexed.materialization?.fallbackBoundary?.observedAtDecision).toBeGreaterThan(8 * 1_048_576);
+              }
             }),
           root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
         ),
@@ -615,15 +671,9 @@ describe('project-closure incremental indexing', () => {
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
 
-  it.effect('fails closed for global-surface and unreconciled-workspace changes', () =>
+  it.effect('fails closed for unreconciled workspace changes', () =>
     Effect.forEach(
       [
-        {
-          create: () => createProjectClosureRepository(),
-          mutate: (root: string) =>
-            writeFile(root, 'packages/core/index.ts', 'export function renamed() { return "renamed"; }\n'),
-          reason: 'resolution-surface-changed' as const,
-        },
         {
           create: () => createProjectClosureRepository({orphanProjectBoundary: true}),
           mutate: redirectBarrel,
@@ -651,6 +701,289 @@ describe('project-closure incremental indexing', () => {
   );
 
   it.effect(
+    'candidate-scans existing Markdown heading additions, removals, renames, and ambiguity transitions',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(createLargeRootProjectRepository),
+        root =>
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            const path = yield* Path.Path;
+            const store = yield* CodeGraphStore;
+            const incrementalHome = join(root, '.threadnote-document-candidate-incremental');
+            const fullHome = join(root, '.threadnote-document-candidate-full');
+            yield* Effect.sync(() => {
+              writeFile(root, 'docs/surface.md', '# Retiring\n\n# Renaming\n');
+              writeFile(root, 'docs/existing.md', '# Collision\n');
+              writeFile(root, 'docs/consumer-retiring.md', '`Retiring`\n');
+              writeFile(root, 'docs/consumer-added.md', '`Added`\n');
+              writeFile(root, 'docs/consumer-renaming-old.md', '`Renaming`\n');
+              writeFile(root, 'docs/consumer-renaming-new.md', '`Renamed`\n');
+              writeFile(root, 'docs/consumer-collision.md', '`Collision`\n');
+              git(root, ['add', 'docs']);
+              git(root, ['commit', '-qm', 'add documentation resolution fixture']);
+            });
+            const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const incrementalLayout = codeGraphLayout(
+              path,
+              incrementalHome,
+              base.identity.checkoutId,
+              base.identity.worktreeId,
+            );
+            const baseGraph = yield* store.loadGraph(incrementalLayout.databasePath, base.snapshot.id);
+            expect(documentEdge(baseGraph, 'docs/consumer-retiring.md', 'Retiring')?.targetId).toBeDefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-added.md', 'Added')?.targetId).toBeUndefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-renaming-old.md', 'Renaming')?.targetId).toBeDefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-renaming-new.md', 'Renamed')?.targetId).toBeUndefined();
+            expect(documentEdge(baseGraph, 'docs/consumer-collision.md', 'Collision')?.targetId).toBeDefined();
+
+            yield* Effect.sync(() => {
+              writeFile(root, 'docs/surface.md', '# Added\n\n# Renamed\n\n# Collision\n');
+              git(root, ['add', 'docs/surface.md']);
+              git(root, ['commit', '-qm', 'change documentation publication surface']);
+            });
+            const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+            const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+            const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+            const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+            expect(base.materialization?.totalFiles).toBeGreaterThan(128);
+            expect(incremental.materialization).toMatchObject({
+              closureProjects: 0,
+              mode: 'incremental-clean',
+              resolutionClosure: 'project',
+              resolutionLookupKeyForm: 'non-typescript',
+              resolutionPublicationGate: 'exported',
+              stagedFiles: 6,
+            });
+            expect(incremental.materialization?.stagedFiles).toBeLessThan(incremental.materialization?.totalFiles ?? 0);
+            expect(incremental.incrementalWork).toMatchObject({baseFactsLoaded: 6, changedFiles: 6});
+            expect(incremental.incrementalWork?.attributionContextFiles).toBe(base.materialization?.totalFiles ?? 0);
+            expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+            expect(documentEdge(incrementalGraph, 'docs/consumer-retiring.md', 'Retiring')?.targetId).toBeUndefined();
+            expect(documentEdge(incrementalGraph, 'docs/consumer-added.md', 'Added')?.targetId).toBeDefined();
+            expect(
+              documentEdge(incrementalGraph, 'docs/consumer-renaming-old.md', 'Renaming')?.targetId,
+            ).toBeUndefined();
+            expect(documentEdge(incrementalGraph, 'docs/consumer-renaming-new.md', 'Renamed')?.targetId).toBeDefined();
+            expect(documentEdge(incrementalGraph, 'docs/consumer-collision.md', 'Collision')?.targetId).toBeUndefined();
+            expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
+              'docs/consumer-added.md',
+              'docs/consumer-collision.md',
+              'docs/consumer-renaming-new.md',
+              'docs/consumer-renaming-old.md',
+              'docs/consumer-retiring.md',
+              'docs/surface.md',
+            ]);
+            expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+              foreignKeyViolations: 0,
+              integrity: 'ok',
+            });
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
+  );
+
+  it.effect('keeps a stable unowned-domain modification local during an owned file-set closure', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const path = yield* Path.Path;
+          const store = yield* CodeGraphStore;
+          const home = join(root, '.threadnote-file-set-hybrid');
+          const fullHome = join(root, '.threadnote-file-set-hybrid-full');
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Fixture\n');
+            git(root, ['add', 'README.md']);
+            git(root, ['commit', '-qm', 'add documentation']);
+          });
+          yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Fixture\n\nUpdated local documentation body.\n');
+            writeFile(root, 'packages/core/added.ts', 'export function added() { return "added"; }\n');
+          });
+          yield* Effect.sync(() => {
+            git(root, ['add', 'README.md', 'packages/core/added.ts']);
+            git(root, ['commit', '-qm', 'mixed file-set transition']);
+          });
+          const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+          const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+          const incrementalLayout = codeGraphLayout(
+            path,
+            home,
+            indexed.identity.checkoutId,
+            indexed.identity.worktreeId,
+          );
+          const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+
+          expect(indexed.materialization).toEqual({
+            closureProjects: 3,
+            mode: 'incremental-clean',
+            resolutionClosure: 'project',
+            stagedFiles: 8,
+            totalFiles: 13,
+          });
+          expect(indexed.reusedFiles).toBe(11);
+          expect(normalizeGraph(yield* store.loadGraph(incrementalLayout.databasePath, indexed.snapshot.id))).toEqual(
+            normalizeGraph(yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id)),
+          );
+          expect(normalizeCatalog(yield* store.loadVisualizationCatalog(incrementalLayout.databasePath))).toEqual(
+            normalizeCatalog(yield* store.loadVisualizationCatalog(fullLayout.databasePath)),
+          );
+          expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+            foreignKeyViolations: 0,
+            integrity: 'ok',
+          });
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect('fails closed when an existing unowned-domain publication changes beside an owned addition', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const home = join(root, '.threadnote-file-set-changed-publication');
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Fixture\n');
+            git(root, ['add', 'README.md']);
+            git(root, ['commit', '-qm', 'add documentation']);
+          });
+          yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Renamed fixture\n');
+            writeFile(root, 'packages/core/added.ts', 'export function added() { return "added"; }\n');
+          });
+          const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          expect(indexed.materialization).toMatchObject({
+            fallbackReason: 'resolution-surface-changed',
+            mode: 'full',
+          });
+          expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect(
+    'uses a bounded candidate scan for an owned addition beside stable documentation in a large project',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(createLargeRootProjectRepository),
+        root =>
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            const path = yield* Path.Path;
+            const store = yield* CodeGraphStore;
+            const incrementalHome = join(root, '.threadnote-file-set-candidate');
+            const fullHome = join(root, '.threadnote-file-set-candidate-full');
+            yield* Effect.sync(() => {
+              writeFile(root, 'README.md', '# Fixture\n');
+              writeFile(
+                root,
+                'src/pending.ts',
+                'import {added} from "./added.js";\nexport function pending() { return added(); }\n',
+              );
+              git(root, ['add', 'README.md', 'src/pending.ts']);
+              git(root, ['commit', '-qm', 'add unresolved consumer']);
+            });
+            const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+
+            yield* Effect.sync(() => {
+              writeFile(root, 'README.md', '# Fixture\n\nUpdated local documentation body.\n');
+              writeFile(root, 'src/added.ts', 'export function added() { return 1; }\n');
+              git(root, ['add', 'README.md', 'src/added.ts']);
+              git(root, ['commit', '-qm', 'add resolved source']);
+            });
+            const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+            const incrementalLayout = codeGraphLayout(
+              path,
+              incrementalHome,
+              incremental.identity.checkoutId,
+              incremental.identity.worktreeId,
+            );
+            const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+            const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+            const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+            expect(base.materialization?.totalFiles).toBeGreaterThan(128);
+            expect(incremental.materialization).toMatchObject({
+              closureProjects: 1,
+              mode: 'incremental-clean',
+              resolutionClosure: 'project',
+            });
+            expect(incremental.materialization?.stagedFiles).toBeLessThan(incremental.materialization?.totalFiles ?? 0);
+            expect(incremental.incrementalWork?.baseFactsLoaded).toBe(incremental.materialization?.stagedFiles);
+            expect(incremental.incrementalWork?.changedFiles).toBe(incremental.materialization?.stagedFiles);
+            expect(incremental.incrementalWork?.attributionContextFiles).toBe(base.materialization?.totalFiles ?? 0);
+            expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+            const added = incrementalGraph.symbols.find(symbol => symbol.name === 'added');
+            expect(added).toBeDefined();
+            expect(
+              incrementalGraph.edges.some(
+                edge => edge.sourceName === 'pending' && edge.relation === 'calls' && edge.targetId === added?.id,
+              ),
+            ).toBe(true);
+            expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual(
+              expect.arrayContaining(['README.md', 'src/added.ts', 'src/pending.ts']),
+            );
+            expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+              foreignKeyViolations: 0,
+              integrity: 'ok',
+            });
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
+  );
+
+  it.effect('reports an unowned-domain fallback for a newly added document', () =>
+    Effect.acquireUseRelease(
+      Effect.sync(createProjectClosureRepository),
+      root =>
+        Effect.gen(function* () {
+          const indexer = yield* CodeGraphIndexer;
+          const home = join(root, '.threadnote-file-set-fallback-detail');
+          yield* Effect.sync(() => {
+            writeFile(root, 'README.md', '# Existing documentation\n');
+            git(root, ['add', 'README.md']);
+            git(root, ['commit', '-qm', 'add existing documentation']);
+          });
+          yield* indexer.index({cwd: root, threadnoteHome: home});
+          yield* Effect.sync(() => {
+            writeFile(root, 'NEW.md', '# Added documentation\n');
+            writeFile(root, 'packages/core/added.ts', 'export function added() { return "added"; }\n');
+          });
+          const indexed = yield* indexer.index({cwd: root, threadnoteHome: home});
+
+          expect(indexed.materialization).toMatchObject({
+            fallbackAssessment: {
+              addedFiles: 2,
+              changedFiles: 2,
+              deletedFiles: 0,
+              detail: 'resolution-domain-unowned',
+              stage: 'file-set-seed-assessment',
+            },
+            fallbackReason: 'project-closure-incomplete',
+            mode: 'full',
+          });
+          expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
+        }),
+      root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+    ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+  );
+
+  it.effect(
     'reports an exact typed fallback when outside-closure base provenance exceeds 10,000 rows',
     () =>
       Effect.acquireUseRelease(
@@ -673,6 +1006,104 @@ describe('project-closure incremental indexing', () => {
               mode: 'full',
             });
             expect(indexed.materialization?.stagedFiles).toBe(indexed.materialization?.totalFiles);
+          }),
+        root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
+      ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    {timeout: 120_000},
+  );
+
+  it.effect(
+    'selects resolved and unresolved consumers through transitive aliases when an export is renamed',
+    () =>
+      Effect.acquireUseRelease(
+        Effect.sync(createLargeRootProjectRepository),
+        root =>
+          Effect.gen(function* () {
+            const indexer = yield* CodeGraphIndexer;
+            const store = yield* CodeGraphStore;
+            const path = yield* Path.Path;
+            const incrementalHome = join(root, '.threadnote-incremental');
+            const fullHome = join(root, '.threadnote-full');
+            yield* Effect.sync(() => {
+              writeFile(
+                root,
+                'src/core.ts',
+                'export const stable = 1;\nexport function retiring() { return stable; }\n',
+              );
+              writeFile(root, 'src/barrel-a.ts', 'export {discovered, retiring} from "./core.js";\n');
+              writeFile(root, 'src/barrel-b.ts', 'export {discovered, retiring} from "./barrel-a.js";\n');
+              writeFile(
+                root,
+                'src/consumer.ts',
+                'import {discovered, retiring} from "./barrel-b.js";\nexport function consume() { return discovered() + retiring(); }\n',
+              );
+              git(root, ['add', 'src/core.ts', 'src/barrel-a.ts', 'src/barrel-b.ts', 'src/consumer.ts']);
+              git(root, ['commit', '-qm', 'add retiring export']);
+            });
+            const base = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+
+            yield* Effect.sync(() => {
+              writeFile(
+                root,
+                'src/core.ts',
+                'export const stable = 1;\nexport function discovered() { return stable; }\n',
+              );
+            });
+            const incremental = yield* indexer.index({cwd: root, threadnoteHome: incrementalHome});
+            const full = yield* indexer.index({
+              cwd: root,
+              incrementalOverlay: false,
+              threadnoteHome: fullHome,
+            });
+            const incrementalLayout = codeGraphLayout(
+              path,
+              incrementalHome,
+              incremental.identity.checkoutId,
+              incremental.identity.worktreeId,
+            );
+            const fullLayout = codeGraphLayout(path, fullHome, full.identity.checkoutId, full.identity.worktreeId);
+            const incrementalGraph = yield* store.loadGraph(incrementalLayout.databasePath, incremental.snapshot.id);
+            const fullGraph = yield* store.loadGraph(fullLayout.databasePath, full.snapshot.id);
+
+            expect(base.materialization?.totalFiles).toBeGreaterThan(128);
+            expect(incremental.materialization).toMatchObject({
+              mode: 'incremental-overlay',
+              resolutionClosure: 'project',
+              stagedFiles: 4,
+            });
+            expect(incremental.incrementalWork).toMatchObject({
+              baseFactsLoaded: 4,
+              changedFiles: 4,
+            });
+            expect(incremental.incrementalWork?.attributionContextFiles).toBe(base.materialization?.totalFiles ?? 0);
+            expect(normalizeGraph(incrementalGraph)).toEqual(normalizeGraph(fullGraph));
+            const discovered = incrementalGraph.symbols.find(symbol => symbol.name === 'discovered');
+            expect(discovered).toBeDefined();
+            expect(
+              incrementalGraph.edges.some(
+                edge => edge.sourceName === 'consume' && edge.relation === 'calls' && edge.targetId === discovered?.id,
+              ),
+            ).toBe(true);
+            expect(incrementalGraph.symbols.some(symbol => symbol.name === 'retiring')).toBe(false);
+            expect(
+              incrementalGraph.edges.some(
+                edge =>
+                  edge.sourceName === 'consume' &&
+                  edge.targetName === 'retiring' &&
+                  edge.provenance === 'resolved' &&
+                  edge.targetId !== undefined,
+              ),
+            ).toBe(false);
+            expect(deltaPaths(incrementalLayout.databasePath, incremental.snapshot.id)).toEqual([
+              'src/barrel-a.ts',
+              'src/barrel-b.ts',
+              'src/consumer.ts',
+              'src/core.ts',
+            ]);
+            expect(yield* store.diagnose(incrementalLayout.databasePath)).toMatchObject({
+              foreignKeyViolations: 0,
+              integrity: 'ok',
+            });
           }),
         root => Effect.sync(() => rmSync(root, {force: true, recursive: true})),
       ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
@@ -815,6 +1246,30 @@ function createProjectClosureRepository(
   return root;
 }
 
+function createLargeRootProjectRepository(): string {
+  const root = mkdtempSync(join(tmpdir(), 'threadnote-large-root-closure-'));
+  writeFile(root, '.gitignore', '/.threadnote-*/\n');
+  write(root, 'package.json', {name: '@fixture/large-root', private: true, type: 'module'});
+  write(root, 'tsconfig.json', {include: ['src/**/*.ts']});
+  writeFile(root, 'src/core.ts', 'export const stable = 1;\n');
+  writeFile(root, 'src/barrel-a.ts', 'export {discovered} from "./core.js";\n');
+  writeFile(root, 'src/barrel-b.ts', 'export {discovered} from "./barrel-a.js";\n');
+  writeFile(
+    root,
+    'src/consumer.ts',
+    'import {discovered} from "./barrel-b.js";\nexport function consume() { return discovered(); }\n',
+  );
+  for (let index = 0; index < 139; index += 1) {
+    writeFile(root, `src/filler-${String(index).padStart(3, '0')}.ts`, `export const filler${index} = ${index};\n`);
+  }
+  git(root, ['init', '-q']);
+  git(root, ['config', 'user.name', 'Threadnote Test']);
+  git(root, ['config', 'user.email', 'test@threadnote.local']);
+  git(root, ['add', '.']);
+  git(root, ['commit', '-qm', 'fixture']);
+  return root;
+}
+
 function redirectBarrel(root: string): void {
   writeFile(root, 'packages/barrel/index.ts', 'export {other as foo} from "../other/index.js";\n');
 }
@@ -902,6 +1357,12 @@ function normalizeGraph(graph: StoredCodeGraph): unknown {
   };
 }
 
+function documentEdge(graph: StoredCodeGraph, path: string, targetName: string) {
+  return graph.edges.find(
+    edge => edge.evidencePath === path && edge.relation === 'documents' && edge.targetName === targetName,
+  );
+}
+
 function normalizeCatalog(catalog: CodeGraphVisualizationCatalog | undefined): unknown {
   if (!catalog) return catalog;
   const {activatedAt: _activatedAt, snapshot, ...rest} = catalog;
@@ -953,6 +1414,30 @@ function mutateBarrelCache(databasePath: string, scenario: 'missing' | 'oversize
       ]);
     } else {
       database.run('DELETE FROM snapshot_reuse_receipts');
+    }
+  } finally {
+    database.close(false);
+  }
+}
+
+function inflateCachedFacts(databasePath: string, contentHashes: readonly string[], diagnosticBytes: number): void {
+  const database = new Database(databasePath);
+  try {
+    const read = database.query<{readonly factsJson: string}, [string]>(
+      'SELECT facts_json AS factsJson FROM file_blobs WHERE content_hash = ? LIMIT 1',
+    );
+    for (const contentHash of contentHashes) {
+      const row = read.get(contentHash);
+      if (!row) throw new TestError(`Missing cached facts for ${contentHash}.`);
+      const facts = decodeStoredCodeGraphFact(row.factsJson).facts;
+      const inflated = serializeBoundedCodeGraphFact({
+        ...facts,
+        diagnostics: [...facts.diagnostics, 'x'.repeat(diagnosticBytes)],
+      });
+      database.run('UPDATE file_blobs SET facts_json = ? WHERE content_hash = ?', [
+        encodeStoredCodeGraphFact(inflated).json,
+        contentHash,
+      ]);
     }
   } finally {
     database.close(false);

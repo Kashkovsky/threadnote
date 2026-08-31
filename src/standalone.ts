@@ -285,7 +285,7 @@ async function applicationProgram(arguments_: readonly string[], isMcpServer: bo
     );
   }
   if (isMcpServer) {
-    const {mcpServerEffect} = await import('./mcp_server.js');
+    const {mcpServerEffect} = await import('./mcp/server/index.js');
     const processHome = normalizedProcessHome(arguments_, processDiagnostics.threadnoteHomeForProcess);
     return processHome.pipe(
       Effect.flatMap(home =>

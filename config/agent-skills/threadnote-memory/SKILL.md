@@ -13,9 +13,27 @@ creating timestamped duplicates. Use `review_session_context` only for additiona
 approval.
 
 For consequential source claims, attach graph-indexed repository paths or returned `cgs_` and `cgr_` handles as code
-references. Capture requires a ready exact-current graph. These anchors power the code-brief round trip: future agents
-can move from memory back to verified current code and from graph evidence to the memories that cite it. Prefer a few
-consequential anchors over broad file lists. Never store secrets, credentials, customer data, or raw production logs.
-Confirm with the user before publishing durable memory; never publish handoffs or preferences, overwrite conflicting
-changes, or force synchronization without explicit approval.
+references. Threadnote first attempts capture from a ready exact-current graph and never starts indexing during the
+write. For active personal memory with explicit code references, a retryable graph-readiness failure stores the memory
+and queues a private pending anchor by default. Shared and inactive writes remain strict. Use MCP
+`citationPolicy: "require-current"` or CLI `--require-current-code-refs` only when the memory must fail before writing.
+
+Pending locators are not citations or graph-to-memory backlinks and cannot be shared. Prepare the graph explicitly;
+Threadnote then retries matching intents automatically after graph/Workset preparation and during the next local
+code-linked Context Brief. If an intent remains pending, call `finalize_code_refs`, run
+`threadnote finalize-code-refs`, or replace the stored memory using the receipt URI. These anchors power the code-brief
+round trip: future agents can move from memory back to verified current code and from graph evidence to the memories
+that cite it. Prefer a few consequential anchors over broad file lists.
+
+Finalization receipts distinguish retryable graph readiness from a locator absent in an exact-current graph. For
+`code-reference-unresolved` with `recoveryAction: replace-memory-code-refs`, replace the same memory using corrected
+graph-indexed refs; the private locator is intentionally not echoed and its pending intent remains until correction.
+
+When a memory moves during replacement, publication, or unpublication, old `threadnote://` pointers may resolve through
+a private identity-fenced relocation receipt. Follow the `canonicalUri` returned by `read_context`; a relocation is
+pointer continuity, not evidence that the memory's claims are still current.
+
+Never store secrets, credentials, customer data, or raw production logs. Confirm with the user before publishing
+durable memory; never publish handoffs or preferences, overwrite conflicting changes, or force synchronization without
+explicit approval.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

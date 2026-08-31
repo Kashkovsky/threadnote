@@ -55,6 +55,7 @@ export function createCodeMemoryLinkRetainedResultV1(input: {
     dogfood: {
       artifactHash: dogfood.artifactHash,
       candidate: dogfood.candidate,
+      deferredAnchorLifecycle: dogfood.deferredAnchorLifecycle,
       harnessCommit: dogfood.harnessCommit,
       observations: dogfood.observations,
       qualityGate: {

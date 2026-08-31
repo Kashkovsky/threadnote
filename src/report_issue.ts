@@ -1,11 +1,11 @@
 import {Console, Effect, FileSystem, Schema} from 'effect';
-import {applyScrubber, type ScrubberResult} from './scrubber.js';
+import {applyScrubber, type ScrubberResult} from './share/scrubber.js';
 import type {RuntimeConfig} from './types.js';
 import {CommandFailed, CommandSpawnFailed, runCommandEffect} from './effect/command.js';
 import {sha256Hex} from './effect/digest.js';
 import {productionLogSupportExcerpt, type ProductionLogSupportExcerpt} from './effect/production_log.js';
 import {SystemInfo} from './effect/system.js';
-import {getThreadnoteVersion} from './version.js';
+import {getThreadnoteVersion} from './release/runtime_version.js';
 
 const THREADNOTE_GITHUB_REPOSITORY = 'Kashkovsky/threadnote';
 const THREADNOTE_GITHUB_ISSUES_ENDPOINT = `repos/${THREADNOTE_GITHUB_REPOSITORY}/issues`;

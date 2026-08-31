@@ -1,12 +1,18 @@
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
 import {
+  CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION,
   CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
   type CodeGraphActivationProgressCallback,
   type CodeGraphLanguagePackProvenance,
   type CodeGraphReusableBaseReceiptInput,
 } from './store_models.js';
+import {
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES,
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES,
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS,
+} from './incremental_work.js';
 import {encodeCodeGraphInventoryReuseReceipt} from './inventory_reuse.js';
 import {configureConnection} from './store_session.js';
 import {type CodeGraphSnapshot, type RepositoryIdentity, CodeGraphStoreError} from './types.js';
@@ -37,6 +43,7 @@ import {recordSnapshotPackProvenance} from './store_pack_provenance.js';
 import {
   persistedIncrementalEdgeDeletionsStatement,
   persistedIncrementalFileDeletionsStatement,
+  persistedIncrementalReexportMismatchStatement,
   persistedIncrementalSymbolDeletionsStatement,
 } from './store_incremental_plan.js';
 
@@ -57,6 +64,175 @@ const recordLayeredSnapshotInventoryReceipt = Effect.fn('codeGraph.recordLayered
         ${encodeCodeGraphInventoryReuseReceipt(receipt.inventory)}, ${createdAt}
       )
     `;
+});
+
+const recordFoldForwardReceipt = Effect.fn('codeGraph.recordFoldForwardReceipt')(function* (
+  sql: SqlClient.SqlClient,
+  snapshot: CodeGraphSnapshot,
+  rootSnapshotId: string,
+  rootReceipt: import('./store_models.js').CodeGraphReusableBaseReceipt,
+  receipt: CodeGraphReusableBaseReceiptInput,
+  createdAt: string,
+) {
+  if (
+    snapshot.dirty ||
+    receipt.inventory === undefined ||
+    receipt.fileSetFingerprint !== rootReceipt.fileSetFingerprint ||
+    receipt.workspaceFingerprint !== rootReceipt.workspaceFingerprint
+  ) {
+    return;
+  }
+  const pathCounts = yield* sql<{
+    readonly base_files: number;
+    readonly current_files: number;
+    readonly paths: number;
+  }>`
+    SELECT
+      (SELECT COUNT(*) FROM activation_incremental_paths) AS paths,
+      (SELECT COUNT(*) FROM activation_incremental_paths AS path
+       JOIN activation_files AS file ON file.path = path.path) AS current_files,
+      (SELECT COUNT(*) FROM activation_incremental_paths AS path
+       JOIN snapshot_files AS file
+         ON file.snapshot_id = ${rootSnapshotId} AND file.path = path.path) AS base_files
+  `;
+  const pathCount = Number(pathCounts[0]?.paths ?? 0);
+  if (
+    pathCount <= 0 ||
+    pathCount > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES ||
+    Number(pathCounts[0]?.current_files ?? -1) !== pathCount ||
+    Number(pathCounts[0]?.base_files ?? -1) !== pathCount
+  ) {
+    return;
+  }
+  const mismatchStatement = persistedIncrementalReexportMismatchStatement(rootSnapshotId);
+  const mismatch = yield* sql.unsafe<{readonly mismatch: number}>(mismatchStatement.text, mismatchStatement.parameters);
+  if (Number(mismatch[0]?.mismatch ?? 1) !== 0) return;
+  const surfaceCounts = yield* sql<{
+    readonly lookup_count: number;
+    readonly reexport_count: number;
+    readonly staged_rows: number;
+  }>`
+    SELECT
+      (SELECT COUNT(*) FROM activation_symbol_lookup AS lookup
+       WHERE lookup.evidence_path IN (SELECT path FROM activation_incremental_paths)) AS lookup_count,
+      (SELECT COUNT(*) FROM activation_reexport_provenance) AS reexport_count,
+      (SELECT COUNT(*) FROM activation_incremental_paths)
+        + (SELECT COUNT(*) FROM activation_files)
+        + (SELECT COUNT(*) FROM activation_symbols)
+        + (SELECT COUNT(*) FROM activation_symbol_lookup AS lookup
+           WHERE lookup.evidence_path IN (SELECT path FROM activation_incremental_paths))
+        + (SELECT COUNT(*) FROM activation_symbol_terms)
+        + (SELECT COUNT(*) FROM activation_edges)
+        + (SELECT COUNT(*) FROM activation_reexport_provenance)
+        + (SELECT COUNT(*) FROM activation_monikers
+           WHERE scheme <> 'package'
+             AND evidence_path IN (SELECT path FROM activation_incremental_paths)) AS staged_rows
+  `;
+  const stagedRows = Number(surfaceCounts[0]?.staged_rows ?? Number.NaN);
+  const lookupCount = Number(surfaceCounts[0]?.lookup_count ?? Number.NaN);
+  const reexportCount = Number(surfaceCounts[0]?.reexport_count ?? Number.NaN);
+  if (
+    !Number.isSafeInteger(stagedRows) ||
+    stagedRows <= 0 ||
+    stagedRows > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_ROWS ||
+    !Number.isSafeInteger(lookupCount) ||
+    lookupCount < 0 ||
+    !Number.isSafeInteger(reexportCount) ||
+    reexportCount < 0
+  ) {
+    return;
+  }
+  const payloadRows = yield* sql<{readonly bytes: number}>`
+    SELECT
+      COALESCE((SELECT SUM(length(CAST(path AS BLOB))) FROM activation_incremental_paths), 0)
+      + COALESCE((SELECT SUM(
+          length(CAST(path AS BLOB)) + length(CAST(content_hash AS BLOB))
+          + length(CAST(COALESCE(raw_content_hash, '') AS BLOB)) + length(CAST(language AS BLOB))
+          + length(CAST(mode AS BLOB)) + length(CAST(source AS BLOB)) + 8
+        ) FROM activation_files), 0)
+      + COALESCE((SELECT SUM(
+          length(CAST(id AS BLOB)) + length(CAST(content_hash AS BLOB)) + length(CAST(kind AS BLOB))
+          + length(CAST(name AS BLOB)) + length(CAST(qualified_name AS BLOB)) + length(CAST(path AS BLOB))
+          + length(CAST(language AS BLOB)) + length(CAST(lookup_keys_json AS BLOB))
+          + length(CAST(COALESCE(resolution_domain, '') AS BLOB))
+          + length(CAST(COALESCE(resolution_scope_id, '') AS BLOB))
+          + length(CAST(COALESCE(package_name, '') AS BLOB)) + length(CAST(COALESCE(signature, '') AS BLOB))
+          + length(CAST(COALESCE(documentation, '') AS BLOB)) + length(CAST(span_json AS BLOB)) + 16
+        ) FROM activation_symbols), 0)
+      + COALESCE((SELECT SUM(
+          length(CAST(lookup_key AS BLOB)) + length(CAST(symbol_id AS BLOB))
+          + length(CAST(resolution_domain AS BLOB)) + length(CAST(provenance AS BLOB))
+          + length(CAST(COALESCE(evidence_edge_id, '') AS BLOB)) + length(CAST(evidence_path AS BLOB)) + 8
+        ) FROM activation_symbol_lookup
+        WHERE evidence_path IN (SELECT path FROM activation_incremental_paths)), 0)
+      + COALESCE((SELECT SUM(length(CAST(term AS BLOB)) + length(CAST(symbol_id AS BLOB)) + 8)
+        FROM activation_symbol_terms), 0)
+      + COALESCE((SELECT SUM(
+          length(CAST(id AS BLOB)) + length(CAST(COALESCE(source_id, '') AS BLOB))
+          + length(CAST(source_name AS BLOB)) + length(CAST(relation AS BLOB))
+          + length(CAST(COALESCE(target_id, '') AS BLOB)) + length(CAST(target_name AS BLOB))
+          + length(CAST(provenance AS BLOB)) + length(CAST(evidence_path AS BLOB))
+          + length(CAST(evidence_span_json AS BLOB)) + 8
+        ) FROM activation_edges), 0)
+      + COALESCE((SELECT SUM(
+          length(CAST(source_path AS BLOB)) + length(CAST(local_name AS BLOB))
+          + length(CAST(target_path AS BLOB)) + length(CAST(imported_name AS BLOB))
+        ) FROM activation_reexport_provenance), 0)
+      + COALESCE((SELECT SUM(
+          length(CAST(id AS BLOB)) + length(CAST(scheme AS BLOB)) + length(CAST(role AS BLOB))
+          + length(CAST(kind AS BLOB)) + length(CAST(resolution_domain AS BLOB))
+          + length(CAST(identity AS BLOB)) + length(CAST(COALESCE(package_name, '') AS BLOB))
+          + length(CAST(COALESCE(package_version, '') AS BLOB))
+          + length(CAST(COALESCE(import_path, '') AS BLOB))
+          + length(CAST(COALESCE(qualified_name, '') AS BLOB))
+          + length(CAST(COALESCE(component_id, '') AS BLOB))
+          + length(CAST(COALESCE(symbol_id, '') AS BLOB))
+          + length(CAST(COALESCE(dependency_kind, '') AS BLOB)) + length(CAST(evidence_path AS BLOB))
+          + length(CAST(evidence_span_json AS BLOB)) + 8
+        ) FROM activation_monikers
+        WHERE scheme <> 'package'
+          AND evidence_path IN (SELECT path FROM activation_incremental_paths)), 0)
+      + (${stagedRows} * 64) AS bytes
+  `;
+  const stagedPayloadBytes = Number(payloadRows[0]?.bytes ?? Number.NaN);
+  if (
+    !Number.isSafeInteger(stagedPayloadBytes) ||
+    stagedPayloadBytes < 0 ||
+    stagedPayloadBytes > CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_PAYLOAD_BYTES
+  ) {
+    return;
+  }
+  yield* sql`DELETE FROM snapshot_fold_forward_receipts WHERE snapshot_id = ${snapshot.id}`;
+  yield* sql`
+    INSERT INTO snapshot_fold_forward_receipts (
+      snapshot_id, root_snapshot_id, format_version, delta_path_count, staged_row_count,
+      staged_payload_bytes, lookup_count, reexport_count, created_at
+    ) VALUES (
+      ${snapshot.id}, ${rootSnapshotId}, ${CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION}, ${pathCount},
+      ${stagedRows}, ${stagedPayloadBytes}, ${lookupCount}, ${reexportCount}, ${createdAt}
+    )
+  `;
+  yield* sql`
+    INSERT INTO snapshot_fold_forward_paths (snapshot_id, path)
+    SELECT ${snapshot.id}, path FROM activation_incremental_paths ORDER BY path
+  `;
+  yield* sql`
+    INSERT INTO snapshot_fold_forward_symbol_lookup (
+      snapshot_id, lookup_key, symbol_id, resolution_domain, exported,
+      provenance, evidence_edge_id, evidence_path
+    )
+    SELECT ${snapshot.id}, lookup_key, symbol_id, resolution_domain, exported,
+      provenance, evidence_edge_id, evidence_path
+    FROM activation_symbol_lookup
+    WHERE evidence_path IN (SELECT path FROM activation_incremental_paths)
+  `;
+  yield* sql`
+    INSERT INTO snapshot_reexport_provenance (
+      snapshot_id, source_path, local_name, target_path, imported_name
+    )
+    SELECT ${snapshot.id}, source_path, local_name, target_path, imported_name
+    FROM activation_reexport_provenance
+  `;
 });
 
 /** Exact read-only admission shared by cleanup writers and both health paths. */
@@ -510,7 +686,8 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
   }
   yield* sql.withTransaction(
     Effect.gen(function* () {
-      if (!(yield* selectReusableBaseReceipt(baseSnapshotId, true))) {
+      const rootReceipt = yield* selectReusableBaseReceipt(baseSnapshotId, true);
+      if (!rootReceipt) {
         return yield* Effect.fail(
           new CodeGraphStoreError(`Reusable base receipt ${baseSnapshotId} is unavailable or incomplete.`),
         );
@@ -744,6 +921,7 @@ const activatePersistedIncrementalSnapshot = Effect.fn('codeGraph.activatePersis
       }
       if (existing[0]?.state !== 'ready' && !snapshot.dirty && reusableBaseReceipt) {
         yield* recordLayeredSnapshotInventoryReceipt(sql, snapshot, reusableBaseReceipt, completedAt);
+        yield* recordFoldForwardReceipt(sql, snapshot, baseSnapshotId, rootReceipt, reusableBaseReceipt, completedAt);
       }
       yield* insertActivationLease(sql, snapshot.id, promotionLease);
       if (existing[0]?.state !== 'ready') {

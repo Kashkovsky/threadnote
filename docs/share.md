@@ -31,6 +31,14 @@ Publish is transactional:
 A failed canonical write, verification, commit, or push preserves the personal source. Artifact and pack publishing
 uses an undo journal so partial companion trees are removed and replaced content is restored.
 
+Successful memory publication records a private, identity-fenced relocation before removing the personal copy, so an
+old `threadnote://` pointer continues to read the shared canonical memory. Memories published by older Threadnote
+versions may predate those receipts. On such a miss, `read_context` returns the requested URI plus a machine-usable
+`recall-canonical-uri` recovery: recall globally by the stable topic, then read the canonical URI it returns. The
+recovery intentionally omits a project filter because older pointers contain a path slug, while the canonical memory
+may retain a human-readable project name. Threadnote does not guess a destination across namespaces when it cannot
+prove the memory identity.
+
 ## Read-only shared teams
 
 Use a persistent read-only team when Threadnote should fetch, ingest, recall, report status, and install artifacts but

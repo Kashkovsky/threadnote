@@ -171,7 +171,7 @@
       }
     },
     {
-      "files": ["src/manager_ui.tsx"],
+      "files": ["src/manager/ui.tsx"],
       "env": {
         "browser": true
       }

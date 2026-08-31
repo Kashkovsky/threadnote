@@ -7,7 +7,7 @@ import {
   sharedTeamNameForUri,
   sharedUriFor,
   resourceUriToWorktreeRelative,
-} from '../../src/share.js';
+} from '../../src/share/index.js';
 import type {ShareRuntime} from '../../src/types.js';
 
 const runtime: ShareRuntime = {

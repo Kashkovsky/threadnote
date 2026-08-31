@@ -207,7 +207,11 @@ export function assertCodeMemoryLinkGraphStatusPreflight(
   expected: {readonly commit: string; readonly origin: string; readonly repositoryRoot: string},
 ): {readonly graphContentId: string; readonly snapshotId: string} {
   const status = object(value, 'graph status');
-  if (status.type !== 'code-graph-status' || status.version !== 2 || status.stale !== false) {
+  if (
+    status.type !== 'code-graph-status' ||
+    (status.version !== 2 && status.version !== 3 && status.version !== 4 && status.version !== 5) ||
+    status.stale !== false
+  ) {
     throw new Error('Candidate graph preflight did not publish an exact-current graph.');
   }
   const identity = object(status.identity, 'graph repository identity');

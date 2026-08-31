@@ -17,13 +17,14 @@ import {
 } from '../telemetry/diagnostic.js';
 import {safeAnonymousTelemetryOperation} from '../telemetry/operations.js';
 
-const TELEMETRY_SCHEMA_VERSION = 5;
+const TELEMETRY_SCHEMA_VERSION = 6;
 const TELEMETRY_VERSION_MAX_BYTES = 96;
 const FIRST_CHECKPOINT_DELAY = '30 seconds';
 const CHECKPOINT_INTERVAL = '60 seconds';
 
 export const ANONYMOUS_TELEMETRY_PHASES = [
   'context.brief.citation-validation',
+  'context.brief.code-linked-memory',
   'context.brief.graph',
   'context.brief.memory',
   'context.brief.projection',
@@ -44,6 +45,7 @@ export const ANONYMOUS_TELEMETRY_PHASES = [
   'model.inference',
   'model.loading',
   'model.reranking',
+  'memory.code-anchor-finalization',
   'recall.lexical-ranking',
   'recall.obsidian-sync',
   'recall.semantic-retrieval',
@@ -172,6 +174,17 @@ const ANONYMOUS_TELEMETRY_GRAPH_REQUEST_SCOPES = ['local', 'workset'] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS = ['current', 'deferred', 'stale'] as const;
 const ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS = ['active', 'borrowed', 'none', 'promoted'] as const;
 export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES = ['local', 'workset'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS = ['code-anchored-v3', 'task-only-v2'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES = ['brief', 'explain', 'impact', 'locate', 'trace'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES = ['complete', 'partial', 'unavailable'] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES = [
+  'mixed',
+  'none',
+  'truncated',
+  'unavailable',
+  'unresolved',
+] as const;
+export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES = ['graph', 'memory', 'mixed', 'none'] as const;
 export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES = [
   'complete',
   'none',
@@ -197,6 +210,21 @@ export const ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS = [
   'store-failure',
   'unsupported',
 ] as const;
+export const ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS = [
+  'context-brief',
+  'explicit',
+  'graph-index',
+  'workset-prepare',
+] as const;
+export const ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS = [
+  'conflict',
+  'contended',
+  'failed',
+  'finalized',
+  'mixed',
+  'no-work',
+  'pending',
+] as const;
 
 type AnonymousTelemetryGraphBuildKind = (typeof ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS)[number];
 type AnonymousTelemetryAutoUpdateResult = (typeof ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS)[number];
@@ -209,12 +237,23 @@ export type AnonymousTelemetryGraphRequestScope = (typeof ANONYMOUS_TELEMETRY_GR
 export type AnonymousTelemetryGraphSnapshotFreshness = (typeof ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS)[number];
 export type AnonymousTelemetryGraphSnapshotSelection = (typeof ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS)[number];
 export type AnonymousTelemetryContextBriefScope = (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES)[number];
+export type AnonymousTelemetryContextBriefContract = (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS)[number];
+export type AnonymousTelemetryContextBriefMode = (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES)[number];
+export type AnonymousTelemetryContextBriefCodeAnchorCoverage =
+  (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES)[number];
+export type AnonymousTelemetryContextBriefGapClass = (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES)[number];
+export type AnonymousTelemetryContextBriefReturnedLane =
+  (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES)[number];
 export type AnonymousTelemetryContextBriefCitationCoverage =
   (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES)[number];
 export type AnonymousTelemetryContextBriefCitationResult =
   (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS)[number];
 export type AnonymousTelemetryContextBriefCitationUnknownReason =
   (typeof ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS)[number];
+export type AnonymousTelemetryCodeAnchorFinalizationTrigger =
+  (typeof ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS)[number];
+export type AnonymousTelemetryCodeAnchorFinalizationResult =
+  (typeof ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS)[number];
 export type AnonymousTelemetryQuantityBucket = '0' | `2^${number}`;
 
 export interface AnonymousTelemetryFields {
@@ -228,6 +267,13 @@ export interface AnonymousTelemetryFields {
   readonly changedFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly completed?: number;
   readonly contextBriefCacheHitsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefCodeAnchorCoverage?: AnonymousTelemetryContextBriefCodeAnchorCoverage;
+  readonly contextBriefCodeAnchorGap?: boolean;
+  readonly contextBriefCodeAnchorsMatchedMemoriesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefCodeAnchorsRequestedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefCodeAnchorsResolvedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly contextBriefContract?: AnonymousTelemetryContextBriefContract;
+  readonly contextBriefGapClass?: AnonymousTelemetryContextBriefGapClass;
   readonly contextBriefCitationCoverage?: AnonymousTelemetryContextBriefCitationCoverage;
   readonly contextBriefCitationResult?: AnonymousTelemetryContextBriefCitationResult;
   readonly contextBriefCitationUnknownReason?: AnonymousTelemetryContextBriefCitationUnknownReason;
@@ -235,12 +281,24 @@ export interface AnonymousTelemetryFields {
   readonly contextBriefCitedMemoriesBucket?: AnonymousTelemetryQuantityBucket;
   readonly contextBriefExactCitationsBucket?: AnonymousTelemetryQuantityBucket;
   readonly contextBriefOutputTruncated?: boolean;
+  readonly contextBriefMode?: AnonymousTelemetryContextBriefMode;
+  readonly contextBriefRecoveryPresent?: boolean;
+  readonly contextBriefReturnedLane?: AnonymousTelemetryContextBriefReturnedLane;
   readonly contextBriefRelocatedCitationsBucket?: AnonymousTelemetryQuantityBucket;
   readonly contextBriefRepositoriesValidatedBucket?: AnonymousTelemetryQuantityBucket;
   readonly contextBriefScope?: AnonymousTelemetryContextBriefScope;
   readonly contextBriefStaleCitationsBucket?: AnonymousTelemetryQuantityBucket;
   readonly contextBriefUnknownCitationsBucket?: AnonymousTelemetryQuantityBucket;
   readonly deletedFilesBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationConflictBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationFailedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationFinalizedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationLatencyMillisecondsBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationMatchedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationPendingBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationResult?: AnonymousTelemetryCodeAnchorFinalizationResult;
+  readonly codeAnchorFinalizationScannedBucket?: AnonymousTelemetryQuantityBucket;
+  readonly codeAnchorFinalizationTrigger?: AnonymousTelemetryCodeAnchorFinalizationTrigger;
   readonly deltaFilesBucket?: AnonymousTelemetryQuantityBucket;
   readonly degradedFiles?: number;
   readonly degradationReason?:
@@ -829,6 +887,36 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     attributes['threadnote.context_brief.scope'] = fields.contextBriefScope;
   }
   if (
+    fields.contextBriefContract !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS.includes(fields.contextBriefContract)
+  ) {
+    attributes['threadnote.context_brief.contract'] = fields.contextBriefContract;
+  }
+  if (
+    fields.contextBriefMode !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES.includes(fields.contextBriefMode)
+  ) {
+    attributes['threadnote.context_brief.mode'] = fields.contextBriefMode;
+  }
+  if (
+    fields.contextBriefGapClass !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES.includes(fields.contextBriefGapClass)
+  ) {
+    attributes['threadnote.context_brief.gap_class'] = fields.contextBriefGapClass;
+  }
+  if (
+    fields.contextBriefReturnedLane !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES.includes(fields.contextBriefReturnedLane)
+  ) {
+    attributes['threadnote.context_brief.returned_lane'] = fields.contextBriefReturnedLane;
+  }
+  if (
+    fields.contextBriefCodeAnchorCoverage !== undefined &&
+    ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES.includes(fields.contextBriefCodeAnchorCoverage)
+  ) {
+    attributes['threadnote.context_brief.code_anchor_coverage'] = fields.contextBriefCodeAnchorCoverage;
+  }
+  if (
     fields.contextBriefCitationCoverage !== undefined &&
     ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES.includes(fields.contextBriefCitationCoverage)
   ) {
@@ -848,6 +936,24 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
   }
   if (typeof fields.contextBriefOutputTruncated === 'boolean') {
     attributes['threadnote.context_brief.output_truncated'] = fields.contextBriefOutputTruncated;
+  }
+  if (typeof fields.contextBriefCodeAnchorGap === 'boolean') {
+    attributes['threadnote.context_brief.code_anchor_gap'] = fields.contextBriefCodeAnchorGap;
+  }
+  if (typeof fields.contextBriefRecoveryPresent === 'boolean') {
+    attributes['threadnote.context_brief.recovery_present'] = fields.contextBriefRecoveryPresent;
+  }
+  if (
+    fields.codeAnchorFinalizationTrigger !== undefined &&
+    ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS.includes(fields.codeAnchorFinalizationTrigger)
+  ) {
+    attributes['threadnote.code_anchor_finalization.trigger'] = fields.codeAnchorFinalizationTrigger;
+  }
+  if (
+    fields.codeAnchorFinalizationResult !== undefined &&
+    ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS.includes(fields.codeAnchorFinalizationResult)
+  ) {
+    attributes['threadnote.code_anchor_finalization.result'] = fields.codeAnchorFinalizationResult;
   }
   if (
     fields.phaseOutcome !== undefined &&
@@ -914,6 +1020,10 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
     const value = fields[key as ContextBriefQuantityBucketField];
     if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
   }
+  for (const [key, attribute] of Object.entries(CODE_ANCHOR_FINALIZATION_QUANTITY_BUCKET_ATTRIBUTE_KEYS)) {
+    const value = fields[key as CodeAnchorFinalizationQuantityBucketField];
+    if (value !== undefined && isQuantityBucket(value)) attributes[attribute] = value;
+  }
   for (const [key, value] of Object.entries(fields)) {
     if (
       key === 'phase' ||
@@ -937,15 +1047,25 @@ function telemetryFieldAttributes(fields: AnonymousTelemetryFields | undefined):
 
 type NumericTelemetryField = Exclude<
   keyof AnonymousTelemetryFields,
+  | CodeAnchorFinalizationQuantityBucketField
   | ContextBriefQuantityBucketField
   | GraphQuantityBucketField
   | 'autoUpdateRepairRequired'
   | 'autoUpdateResult'
   | 'buildKind'
+  | 'codeAnchorFinalizationResult'
+  | 'codeAnchorFinalizationTrigger'
+  | 'contextBriefCodeAnchorCoverage'
+  | 'contextBriefCodeAnchorGap'
+  | 'contextBriefContract'
+  | 'contextBriefGapClass'
   | 'contextBriefCitationCoverage'
   | 'contextBriefCitationResult'
   | 'contextBriefCitationUnknownReason'
   | 'contextBriefOutputTruncated'
+  | 'contextBriefMode'
+  | 'contextBriefRecoveryPresent'
+  | 'contextBriefReturnedLane'
   | 'contextBriefScope'
   | 'degradationReason'
   | 'efficiencyClass'
@@ -962,6 +1082,15 @@ type NumericTelemetryField = Exclude<
   | 'subphase'
   | 'waitingReason'
 >;
+
+type CodeAnchorFinalizationQuantityBucketField =
+  | 'codeAnchorFinalizationConflictBucket'
+  | 'codeAnchorFinalizationFailedBucket'
+  | 'codeAnchorFinalizationFinalizedBucket'
+  | 'codeAnchorFinalizationLatencyMillisecondsBucket'
+  | 'codeAnchorFinalizationMatchedBucket'
+  | 'codeAnchorFinalizationPendingBucket'
+  | 'codeAnchorFinalizationScannedBucket';
 
 type GraphQuantityBucketField =
   | 'cachedFactReplayBytesBucket'
@@ -982,6 +1111,9 @@ type GraphQuantityBucketField =
 
 type ContextBriefQuantityBucketField =
   | 'contextBriefCacheHitsBucket'
+  | 'contextBriefCodeAnchorsMatchedMemoriesBucket'
+  | 'contextBriefCodeAnchorsRequestedBucket'
+  | 'contextBriefCodeAnchorsResolvedBucket'
   | 'contextBriefCitationsBucket'
   | 'contextBriefCitedMemoriesBucket'
   | 'contextBriefExactCitationsBucket'
@@ -992,6 +1124,9 @@ type ContextBriefQuantityBucketField =
 
 const CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<ContextBriefQuantityBucketField, string>> = {
   contextBriefCacheHitsBucket: 'threadnote.context_brief.cache_hits_bucket',
+  contextBriefCodeAnchorsMatchedMemoriesBucket: 'threadnote.context_brief.code_anchors_matched_memories_bucket',
+  contextBriefCodeAnchorsRequestedBucket: 'threadnote.context_brief.code_anchors_requested_bucket',
+  contextBriefCodeAnchorsResolvedBucket: 'threadnote.context_brief.code_anchors_resolved_bucket',
   contextBriefCitationsBucket: 'threadnote.context_brief.citations_bucket',
   contextBriefCitedMemoriesBucket: 'threadnote.context_brief.cited_memories_bucket',
   contextBriefExactCitationsBucket: 'threadnote.context_brief.exact_citations_bucket',
@@ -999,6 +1134,18 @@ const CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<ContextBrief
   contextBriefRepositoriesValidatedBucket: 'threadnote.context_brief.repositories_validated_bucket',
   contextBriefStaleCitationsBucket: 'threadnote.context_brief.stale_citations_bucket',
   contextBriefUnknownCitationsBucket: 'threadnote.context_brief.unknown_citations_bucket',
+};
+
+const CODE_ANCHOR_FINALIZATION_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<
+  Record<CodeAnchorFinalizationQuantityBucketField, string>
+> = {
+  codeAnchorFinalizationConflictBucket: 'threadnote.code_anchor_finalization.conflict_bucket',
+  codeAnchorFinalizationFailedBucket: 'threadnote.code_anchor_finalization.failed_bucket',
+  codeAnchorFinalizationFinalizedBucket: 'threadnote.code_anchor_finalization.finalized_bucket',
+  codeAnchorFinalizationLatencyMillisecondsBucket: 'threadnote.code_anchor_finalization.latency_ms_bucket',
+  codeAnchorFinalizationMatchedBucket: 'threadnote.code_anchor_finalization.matched_bucket',
+  codeAnchorFinalizationPendingBucket: 'threadnote.code_anchor_finalization.pending_bucket',
+  codeAnchorFinalizationScannedBucket: 'threadnote.code_anchor_finalization.scanned_bucket',
 };
 
 const GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS: Readonly<Record<GraphQuantityBucketField, string>> = {
@@ -1088,7 +1235,31 @@ function mergeTelemetryFields(
       (key === 'autoUpdateRepairRequired' && typeof value === 'boolean') ||
       (key === 'autoUpdateResult' &&
         ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS.includes(value as AnonymousTelemetryAutoUpdateResult)) ||
+      (key === 'codeAnchorFinalizationTrigger' &&
+        ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS.includes(
+          value as AnonymousTelemetryCodeAnchorFinalizationTrigger,
+        )) ||
+      (key === 'codeAnchorFinalizationResult' &&
+        ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS.includes(
+          value as AnonymousTelemetryCodeAnchorFinalizationResult,
+        )) ||
+      (key === 'contextBriefCodeAnchorGap' && typeof value === 'boolean') ||
+      (key === 'contextBriefRecoveryPresent' && typeof value === 'boolean') ||
       (key === 'contextBriefOutputTruncated' && typeof value === 'boolean') ||
+      (key === 'contextBriefContract' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS.includes(value as AnonymousTelemetryContextBriefContract)) ||
+      (key === 'contextBriefMode' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES.includes(value as AnonymousTelemetryContextBriefMode)) ||
+      (key === 'contextBriefGapClass' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES.includes(value as AnonymousTelemetryContextBriefGapClass)) ||
+      (key === 'contextBriefReturnedLane' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES.includes(
+          value as AnonymousTelemetryContextBriefReturnedLane,
+        )) ||
+      (key === 'contextBriefCodeAnchorCoverage' &&
+        ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES.includes(
+          value as AnonymousTelemetryContextBriefCodeAnchorCoverage,
+        )) ||
       (key === 'contextBriefScope' &&
         ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES.includes(value as AnonymousTelemetryContextBriefScope)) ||
       (key === 'contextBriefCitationCoverage' &&
@@ -1119,7 +1290,9 @@ function mergeTelemetryFields(
         ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_FRESHNESS.includes(value as AnonymousTelemetryGraphSnapshotFreshness)) ||
       (key === 'snapshotSelection' &&
         ANONYMOUS_TELEMETRY_GRAPH_SNAPSHOT_SELECTIONS.includes(value as AnonymousTelemetryGraphSnapshotSelection)) ||
-      ((key in GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS || key in CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS) &&
+      ((key in GRAPH_QUANTITY_BUCKET_ATTRIBUTE_KEYS ||
+        key in CONTEXT_BRIEF_QUANTITY_BUCKET_ATTRIBUTE_KEYS ||
+        key in CODE_ANCHOR_FINALIZATION_QUANTITY_BUCKET_ATTRIBUTE_KEYS) &&
         isQuantityBucket(value as string))
     ) {
       merged[key] = value;
@@ -1136,6 +1309,12 @@ function completionTelemetryFields(
   if (outcome === 'success') return fields;
   const {
     contextBriefCacheHitsBucket: _cacheHits,
+    contextBriefCodeAnchorCoverage: _codeAnchorCoverage,
+    contextBriefCodeAnchorGap: _codeAnchorGap,
+    contextBriefCodeAnchorsMatchedMemoriesBucket: _codeAnchorMatchedMemories,
+    contextBriefCodeAnchorsRequestedBucket: _codeAnchorsRequested,
+    contextBriefCodeAnchorsResolvedBucket: _codeAnchorsResolved,
+    contextBriefGapClass: _gapClass,
     contextBriefCitationCoverage: _coverage,
     contextBriefCitationResult: _result,
     contextBriefCitationUnknownReason: _unknownReason,
@@ -1143,6 +1322,8 @@ function completionTelemetryFields(
     contextBriefCitedMemoriesBucket: _citedMemories,
     contextBriefExactCitationsBucket: _exact,
     contextBriefOutputTruncated: _truncated,
+    contextBriefRecoveryPresent: _recoveryPresent,
+    contextBriefReturnedLane: _returnedLane,
     contextBriefRelocatedCitationsBucket: _relocated,
     contextBriefRepositoriesValidatedBucket: _repositories,
     contextBriefStaleCitationsBucket: _stale,

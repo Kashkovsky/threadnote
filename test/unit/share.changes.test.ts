@@ -2,8 +2,8 @@ import {mkdir, mkdtemp, rm, symlink, writeFile} from '../helpers/node-fs-promise
 import {tmpdir} from '../helpers/node-os.js';
 import {dirname, join} from '../helpers/node-path.js';
 import {describe, expect, it} from 'vitest';
-import {listChangedFiles, mergeChanges} from '../../src/share.js';
-import type {ChangedFile} from '../../src/share.js';
+import {listChangedFiles, mergeChanges} from '../../src/share/index.js';
+import type {ChangedFile} from '../../src/share/index.js';
 import {runCommand as runCommandEffect} from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
 

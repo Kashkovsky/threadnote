@@ -7,16 +7,16 @@ import {
   THREADNOTE_HOOK_MARKER,
   THREADNOTE_HOOK_MARKER_VALUE,
 } from './constants.js';
-import {parseAgentClient} from './mcp.js';
+import {parseAgentClient} from './mcp/index.js';
 import {captureConsole} from './effect/console.js';
 import {SystemInfo} from './effect/system.js';
-import {runHandoff, runRecall} from './memory.js';
-import {applyScrubber} from './share.js';
+import {runHandoff, runRecall} from './memory/index.js';
+import {applyScrubber} from './share/index.js';
 import {distillTrace} from './trace.js';
 import type {AgentClient, HookRunnerOptions, HooksInstallOptions, JsonObject, RuntimeConfig} from './types.js';
 import {checkForThreadnoteUpdate} from './release/check.js';
 import {expandPath, exists, isJsonObject, parseJsonConfigObject, resolveRepoName} from './utils.js';
-import {getThreadnoteVersion} from './version.js';
+import {getThreadnoteVersion} from './release/runtime_version.js';
 import {readAutoUpdateStatus, triggerAutoUpdateIfEnabled} from './release/auto_update.js';
 
 type HookEvent = 'PreCompact' | 'SessionStart';

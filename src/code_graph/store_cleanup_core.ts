@@ -700,6 +700,24 @@ const RETIRED_SNAPSHOT_CLEANUP_SPECS = [
     table: 'snapshot_reuse_receipts',
   },
   {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'lookup_key', 'symbol_id'],
+    maximumBatchRows: 20_000,
+    table: 'snapshot_fold_forward_symbol_lookup',
+  },
+  {
+    batchRows: 5_000,
+    keyColumns: ['snapshot_id', 'path'],
+    maximumBatchRows: 20_000,
+    table: 'snapshot_fold_forward_paths',
+  },
+  {
+    batchRows: 1_000,
+    keyColumns: ['snapshot_id'],
+    maximumBatchRows: 1_000,
+    table: 'snapshot_fold_forward_receipts',
+  },
+  {
     batchRows: 1_000,
     keyColumns: ['snapshot_id', 'pack_id'],
     maximumBatchRows: 1_000,

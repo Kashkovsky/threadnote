@@ -10,8 +10,8 @@ import {
   readAgentIntegrationRegistry,
   removeAgentIntegrations,
   repairAgentIntegrations,
-} from '../../src/agent-integrations.js';
-import {repairableAgentClients} from '../../src/agent-integration-registry.js';
+} from '../../src/agent_integration/index.js';
+import {repairableAgentClients} from '../../src/agent_integration/registry.js';
 import {USER_INSTRUCTIONS_END_MARKER, USER_INSTRUCTIONS_START_MARKER} from '../../src/constants.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';

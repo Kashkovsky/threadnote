@@ -1,6 +1,6 @@
 import {Clock, Crypto, Effect, Exit, FileSystem, Option, Path} from 'effect';
 import {SystemInfo, type SystemInfoShape} from '../effect/system.js';
-import {compareVersions} from '../version_compare.js';
+import {compareVersions} from '../release/version_compare.js';
 
 class StandaloneProcessLeaseError extends Error {
   readonly _tag = 'StandaloneProcessLeaseError' as const;

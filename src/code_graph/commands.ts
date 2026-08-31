@@ -2,6 +2,7 @@ import {Console, Crypto, Effect, FileSystem, Option, Path} from 'effect';
 import {startProgress} from '../cli_ui.js';
 import {writeFinalCliOutput} from '../effect/cli_output.js';
 import {SystemInfo} from '../effect/system.js';
+import {healAnchorsAfterGraphIndex, healAnchorsAfterWorksetPrepare} from '../memory/deferred_code_anchor_recovery.js';
 import type {RuntimeConfig} from '../types.js';
 import {CodeGraphIndexer, materializationStorageShortfalls} from './indexer.js';
 import {makeCodeGraphJsonProgressReporter} from './json_progress.js';
@@ -24,6 +25,8 @@ import type {
   CodeGraphProgress,
   CodeGraphQueryOptions,
   CodeGraphStatus,
+  CodeGraphOverlayFallbackBoundary,
+  CodeGraphOverlayFallbackAssessment,
   RepositoryIdentityExpectation,
 } from './types.js';
 import {CodeGraphWatcher} from './watcher.js';
@@ -67,12 +70,15 @@ import {
   type CodeGraphCliReadPlan,
 } from './cli_freshness.js';
 import {exportCodeGraph, type CodeGraphExportFormat, type CodeGraphExportLimit} from './export.js';
-import {
-  readCodeGraphBuildStatuses,
-  selectCodeGraphBuildStatuses,
-  type ObservedCodeGraphBuildStatus,
-} from './build_status.js';
+import {readCodeGraphBuildStatuses, selectCodeGraphBuildStatuses} from './build_status.js';
 import {compactCodeGraphStorage, inspectCodeGraphStorage, type CodeGraphStorage} from './storage.js';
+import {resolveCodeGraphStatusOptions, serializeCodeGraphStatusV5} from './status_projection.js';
+import {
+  codeGraphEtaBasisLabel as etaBasisLabel,
+  formatCodeGraphStatusDuration as formatStatusDuration,
+  renderCodeGraphBuildCounters as renderBuildCounters,
+  renderCodeGraphReadySnapshotStatus as renderReadySnapshotStatus,
+} from './status_render.js';
 import {inspectAllCodeGraphsLocal, renderCodeGraphDiagnostics} from './diagnostics.js';
 import {previewCodeGraphInventory, type CodeGraphInventoryPreview} from './inventory.js';
 import {
@@ -91,7 +97,6 @@ import {
 interface CwdOption {
   readonly cwd?: string;
 }
-
 export {CODE_GRAPH_CLI_READ_TIMEOUT_MILLISECONDS, codeGraphCliReadPlan};
 export type {CodeGraphCliFreshnessPolicy, CodeGraphCliReadPlan};
 
@@ -294,8 +299,12 @@ interface CodeGraphExportTemporaryIdentity {
 
 export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function* (
   config: RuntimeConfig,
-  options: CwdOption & {readonly json?: boolean},
+  options: CwdOption & {readonly buildLimit?: number; readonly json?: boolean; readonly languagePackLimit?: number},
 ) {
+  const statusOptions = resolveCodeGraphStatusOptions(options);
+  if (statusOptions.error !== undefined) {
+    return yield* Effect.fail(new CodeGraphCommandError(statusOptions.error));
+  }
   const cwd = yield* commandCwd(options.cwd);
   const path = yield* Path.Path;
   const query = yield* CodeGraphQueryService;
@@ -312,22 +321,21 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
   const queuedWorktreeIds = [...new Set(selection.waiters.map(status => status.identity.worktreeId))];
   if (options.json) {
     yield* writeFinalCliOutput(
-      JSON.stringify({
-        build: current ?? null,
-        builds: buildStatuses,
-        databasePath: layout.databasePath,
-        identity,
-        languagePacks: ready.languagePacks,
-        obsoleteStores,
-        queuedWorktreeIds,
-        readySnapshot: ready.readySnapshot ?? null,
-        stale: ready.stale,
-        storage,
-        type: 'code-graph-status',
-        version: 2,
-        waiterCount: selection.waiters.length,
-        waiters: selection.waiters,
-      }),
+      serializeCodeGraphStatusV5(
+        selection,
+        identity.worktreeId,
+        statusOptions.buildLimit,
+        statusOptions.languagePackLimit,
+        {
+          databasePath: layout.databasePath,
+          identity,
+          languagePacks: ready.languagePacks,
+          obsoleteStores,
+          readySnapshot: ready.readySnapshot ?? null,
+          stale: ready.stale,
+          storage,
+        },
+      ),
     );
     return;
   }
@@ -423,6 +431,8 @@ export const runCodeGraphStatus = Effect.fn('codeGraph.command.status')(function
         metrics.fallbackReason === undefined
           ? undefined
           : `incremental fallback: ${metrics.fallbackReason.replaceAll('-', ' ')}`,
+        renderFallbackAssessment(metrics.fallbackAssessment),
+        renderFallbackBoundary(metrics.fallbackBoundary),
         `${metrics.batchesCompleted}/${metrics.batchesTotal} batches committed`,
         `${formatBytes(metrics.sourceBytesCompleted)}/${formatBytes(metrics.sourceBytesTotal)} source`,
         metrics.cachedFactBytesCompleted === undefined
@@ -638,24 +648,6 @@ function renderCodeGraphInventoryPreview(preview: CodeGraphInventoryPreview): st
   return `${lines.join('\n')}\n`;
 }
 
-function renderReadySnapshotStatus(status: {
-  readonly readySnapshot?: {
-    readonly edgeCount: number;
-    readonly fileCount: number;
-    readonly id: string;
-    readonly symbolCount: number;
-  };
-  readonly stale: boolean;
-}): Effect.Effect<void> {
-  return status.readySnapshot
-    ? Console.log(
-        `Current-worktree ready snapshot: ${status.readySnapshot.id} · ${status.readySnapshot.fileCount} files · ` +
-          `${status.readySnapshot.symbolCount} symbols · ${status.readySnapshot.edgeCount} edges · ` +
-          `${status.stale ? 'stale' : 'current'}`,
-      )
-    : Console.log('Current-worktree ready snapshot: none');
-}
-
 function renderObsoleteStoreStatus(inventory: ObsoleteCodeGraphStoreInventory): Effect.Effect<void> {
   if (inventory.fileCount === 0 && inventory.unsafeEntryCount === 0) return Effect.void;
   const versions = inventory.checkouts.flatMap(checkout => checkout.versions);
@@ -735,35 +727,6 @@ function formatPercent(ratio: number): string {
   return `${(Math.max(0, Math.min(1, ratio)) * 100).toFixed(1)}%`;
 }
 
-function renderBuildCounters(status: ObservedCodeGraphBuildStatus): string | undefined {
-  const counters = status.counters;
-  const measured =
-    counters.completed === undefined || counters.total === undefined
-      ? undefined
-      : `${counters.completed}/${counters.total} ${counters.unit ?? 'items'}`;
-  const details = [
-    counters.accepted === undefined ? undefined : `${counters.accepted} accepted`,
-    counters.reused === undefined ? undefined : `${counters.reused} reused`,
-    counters.resolved === undefined ? undefined : `${counters.resolved} references linked`,
-    counters.skipped === undefined ? undefined : `${counters.skipped} skipped`,
-    counters.excluded === undefined ? undefined : `${counters.excluded} excluded`,
-    counters.pagesCompleted === undefined ? undefined : `${counters.pagesCompleted} cleanup pages`,
-    counters.rowsDeleted === undefined ? undefined : `${counters.rowsDeleted} rows reclaimed`,
-    counters.symbols === undefined ? undefined : `${counters.symbols} symbols`,
-    counters.edges === undefined ? undefined : `${counters.edges} edges`,
-  ].filter((value): value is string => value !== undefined);
-  return [measured, ...details].filter((value): value is string => value !== undefined).join(' · ') || undefined;
-}
-
-function formatStatusDuration(milliseconds: number): string {
-  if (!Number.isFinite(milliseconds)) return 'unknown';
-  const seconds = Math.max(0, Math.ceil(milliseconds / 1_000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.ceil(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.ceil(minutes / 60)}h`;
-}
-
 export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* (
   config: RuntimeConfig,
   options: CwdOption &
@@ -791,11 +754,12 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
       onProgress: reportProgress,
       threadnoteHome: config.agentContextHome,
     });
+    yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
     yield* writeFinalCliOutput(JSON.stringify({type: 'code-graph-index', version: 1, ...summary}));
     return;
   }
   yield* Console.log(`Indexing code graph: ${identity.displayName}`);
-  yield* Effect.acquireUseRelease(
+  const summary = yield* Effect.acquireUseRelease(
     startProgress('Scanning repository source from Git.'),
     progress =>
       indexer
@@ -818,14 +782,12 @@ export const runCodeGraphIndex = Effect.fn('codeGraph.command.index')(function* 
           ),
         ),
     progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
-  ).pipe(
-    Effect.flatMap(summary =>
-      Console.log(
-        `Code graph ready for ${summary.identity.displayName}: ${summary.snapshot.fileCount} file(s), ` +
-          `${summary.snapshot.symbolCount} symbol(s), ${summary.snapshot.edgeCount} relationship(s); ` +
-          `${summary.reusedFiles} file(s) reused.`,
-      ),
-    ),
+  );
+  yield* healAnchorsAfterGraphIndex(config, cwd, summary.identity);
+  yield* Console.log(
+    `Code graph ready for ${summary.identity.displayName}: ${summary.snapshot.fileCount} file(s), ` +
+      `${summary.snapshot.symbolCount} symbol(s), ${summary.snapshot.edgeCount} relationship(s); ` +
+      `${summary.reusedFiles} file(s) reused.`,
   );
 });
 
@@ -851,6 +813,9 @@ export const runCodeGraphWorksetPrepare = Effect.fn('codeGraph.command.worksetPr
           }),
         progress => progress.stop.pipe(Effect.catch(() => Effect.void)),
       );
+  if (result.state === 'ready') {
+    yield* healAnchorsAfterWorksetPrepare(config, result.workset);
+  }
   yield* writeFinalCliOutput(
     options.json ? JSON.stringify(result) : renderCodeGraphWorksetPrepareResult(result).trimEnd(),
   );
@@ -1851,6 +1816,8 @@ function materializationProgressMessage(
     progress.metrics?.fallbackReason === undefined
       ? undefined
       : `incremental fallback: ${progress.metrics.fallbackReason.replaceAll('-', ' ')}`,
+    renderFallbackAssessment(progress.metrics?.fallbackAssessment),
+    renderFallbackBoundary(progress.metrics?.fallbackBoundary),
   ]
     .filter((value): value is string => value !== undefined)
     .join(' · ');
@@ -1872,6 +1839,20 @@ function materializationProgressMessage(
       : `transaction ${formatMilliseconds(activity.transactionMilliseconds)}`,
   ].filter((value): value is string => value !== undefined);
   return `${summary} · ${details.join(' · ')}${diskWarning ? ` · ${diskWarning}` : ''}`;
+}
+
+function renderFallbackAssessment(assessment: CodeGraphOverlayFallbackAssessment | undefined): string | undefined {
+  if (assessment === undefined) return undefined;
+  return `assessment: ${assessment.detail.replaceAll('-', ' ')} (${assessment.changedFiles.toLocaleString()} changed)`;
+}
+
+function renderFallbackBoundary(boundary: CodeGraphOverlayFallbackBoundary | undefined): string | undefined {
+  if (boundary === undefined) return undefined;
+  return (
+    `boundary: ${boundary.metric.replaceAll('-', ' ')} ` +
+    `${boundary.observedAtDecision.toLocaleString()} > ${boundary.limit.toLocaleString()} ` +
+    `(${boundary.changedFiles.toLocaleString()} changed)`
+  );
 }
 
 function materializationDiskWarning(
@@ -1971,23 +1952,6 @@ function renderMaterializationRows(
       : `${rows.deduplicatedReferences.toLocaleString()} repeated resolution records collapsed`,
   ].filter((value): value is string => value !== undefined);
   return values.length > 0 ? values.join(', ') : undefined;
-}
-
-function etaBasisLabel(
-  basis: 'cached-fact-bytes' | 'extraction-work' | 'files' | 'final-fact-bytes' | 'source-bytes',
-): string {
-  switch (basis) {
-    case 'cached-fact-bytes':
-      return 'cached-fact bytes';
-    case 'final-fact-bytes':
-      return 'final attributed fact bytes';
-    case 'source-bytes':
-      return 'source bytes';
-    case 'extraction-work':
-      return 'class-weighted extraction work';
-    case 'files':
-      return 'files';
-  }
 }
 
 function formatMilliseconds(milliseconds: number): string {

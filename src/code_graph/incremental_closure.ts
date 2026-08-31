@@ -1,11 +1,24 @@
 import type {CodeGraphWorkspaceProject} from './languages/types.js';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from './fact_budget.js';
+import {CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES} from './incremental_work.js';
 import {compareCodeUnits} from './ordering.js';
-import {isPublishedCodeGraphResolutionSymbol} from './resolution_surface.js';
-import type {CodeGraphFileFacts, CodeGraphInventoryFile, CodeGraphSymbol} from './types.js';
+import {
+  hasSameCodeGraphReexportResolutionSurface,
+  hasSameCodeGraphResolutionSurface,
+  isPublishedCodeGraphResolutionSymbol,
+} from './resolution_surface.js';
+import type {
+  CodeGraphFileFacts,
+  CodeGraphInventoryFile,
+  CodeGraphOverlayFallbackBoundary,
+  CodeGraphProjectFileSetFallbackDetail,
+  CodeGraphReference,
+  CodeGraphSymbol,
+} from './types.js';
 
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_FILES = 128;
 export const PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES = 16 * 1_048_576;
-export const PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES = 8 * 1_048_576;
+export const PROJECT_INCREMENTAL_CLOSURE_MAX_CACHED_FACT_BYTES = CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES;
 
 export type ProjectIncrementalClosureFallbackReason =
   'cache-incomplete' | 'project-closure-incomplete' | 'project-closure-unbounded';
@@ -23,6 +36,7 @@ export type ProjectIncrementalClosurePlan =
       readonly sourceBytes: number;
     }
   | {
+      readonly fallbackBoundary?: CodeGraphOverlayFallbackBoundary;
       readonly mode: 'fallback';
       readonly reason: ProjectIncrementalClosureFallbackReason;
     };
@@ -50,6 +64,10 @@ export type ProjectIncrementalClosureSelection =
 
 export type ProjectClosureSeedAssessment =
   | {
+      readonly candidateLookupKeys?: readonly ProjectResolutionLookupKey[];
+      readonly candidateReexports?: readonly ProjectResolutionReexportCandidate[];
+      /** The changed surface has no declared project owner and must use the bounded repository candidate scan. */
+      readonly candidateScanRequired?: true;
       readonly mode: 'eligible';
       readonly planningOperations: {
         readonly ownershipChecks: number;
@@ -58,9 +76,67 @@ export type ProjectClosureSeedAssessment =
       readonly seedProjectIds: readonly string[];
     }
   | {
+      readonly fallbackDetail?: CodeGraphProjectFileSetFallbackDetail;
       readonly mode: 'fallback';
       readonly reason: 'dynamic-aliases' | 'project-closure-incomplete' | 'resolution-surface-changed';
     };
+
+export interface ProjectResolutionLookupKey {
+  readonly key: string;
+  readonly resolutionDomain: string;
+}
+
+export interface ProjectResolutionReexportCandidate {
+  readonly aliases: readonly ProjectResolutionLookupKey[];
+  readonly candidates: readonly ProjectResolutionLookupKey[];
+  readonly sourcePath: string;
+}
+
+export interface ProjectResolutionSurfacePartition {
+  readonly changedCommittedFacts: readonly CodeGraphFileFacts[];
+  readonly changedEffectiveFacts: readonly CodeGraphFileFacts[];
+  readonly stablePaths: readonly string[];
+}
+
+/**
+ * Separates existing file modifications that can be rewritten locally from
+ * modifications that may change resolution in other files. Outgoing edges are
+ * local to the changed file; published symbols and static re-export aliases are
+ * the cross-file surface that must seed a resolver closure.
+ */
+export function partitionProjectResolutionSurfaceChanges(
+  committedFacts: readonly CodeGraphFileFacts[],
+  effectiveFacts: readonly CodeGraphFileFacts[],
+): ProjectResolutionSurfacePartition | undefined {
+  const committedByPath = uniqueFactsByPath(committedFacts);
+  const effectiveByPath = uniqueFactsByPath(effectiveFacts);
+  if (
+    committedByPath === undefined ||
+    effectiveByPath === undefined ||
+    committedByPath.size !== effectiveByPath.size ||
+    [...committedByPath.keys()].some(path => !effectiveByPath.has(path))
+  ) {
+    return undefined;
+  }
+
+  const changedCommittedFacts: CodeGraphFileFacts[] = [];
+  const changedEffectiveFacts: CodeGraphFileFacts[] = [];
+  const stablePaths: string[] = [];
+  for (const path of [...committedByPath.keys()].sort(compareCodeUnits)) {
+    const committed = committedByPath.get(path)!;
+    const effective = effectiveByPath.get(path)!;
+    if (
+      hasSameCodeGraphResolutionSurface(committed.symbols, effective.symbols) &&
+      hasSameCodeGraphReexportResolutionSurface(committed.references ?? [], effective.references ?? [])
+    ) {
+      stablePaths.push(path);
+      continue;
+    }
+    changedCommittedFacts.push(committed);
+    changedEffectiveFacts.push(effective);
+  }
+  return {changedCommittedFacts, changedEffectiveFacts, stablePaths};
+}
 
 /**
  * File additions and deletions have no before/after fact pair to compare. They
@@ -80,7 +156,7 @@ export function assessProjectFileSetClosureSeeds(input: {
   const baseProjectsById = uniqueProjectsById(input.baseProjects);
   const currentProjectsById = uniqueProjectsById(input.currentProjects);
   if (baseProjectsById === undefined || currentProjectsById === undefined) {
-    return incompleteSeeds();
+    return incompleteSeeds('duplicate-project-identity');
   }
   const seeds = new Set<string>();
   let ownershipChecks = 0;
@@ -89,7 +165,7 @@ export function assessProjectFileSetClosureSeeds(input: {
     projects: readonly CodeGraphWorkspaceProject[],
     projectsById: ReadonlyMap<string, CodeGraphWorkspaceProject>,
     resolutionDomainByPath: ReadonlyMap<string, string> | undefined,
-  ): boolean => {
+  ): CodeGraphProjectFileSetFallbackDetail | undefined => {
     const indexesByDomain = projectPathIndexesByDomain(projects);
     for (const path of uniqueSorted(paths)) {
       let owned = false;
@@ -99,6 +175,7 @@ export function assessProjectFileSetClosureSeeds(input: {
       // ambiguity in another domain cannot affect these facts.
       const resolutionDomain = resolutionDomainByPath?.get(path);
       const domainIndexes = resolutionDomain === undefined ? undefined : indexesByDomain.get(resolutionDomain);
+      if (resolutionDomain !== undefined && domainIndexes === undefined) return 'resolution-domain-unowned';
       const indexesForPath =
         resolutionDomain === undefined
           ? indexesByDomain
@@ -108,13 +185,12 @@ export function assessProjectFileSetClosureSeeds(input: {
       for (const [domain, indexes] of indexesForPath) {
         ownershipChecks += 1;
         const owner = nearestProject(indexes, path);
-        if (owner.mode !== 'unique') return false;
+        if (owner.mode !== 'unique') return 'path-owner-ambiguous';
         if (owner.projectId === undefined) continue;
         const project = projectsById.get(owner.projectId);
         const currentProject = currentProjectsById.get(owner.projectId);
+        if (!project || !currentProject) return 'project-not-stable';
         if (
-          !project ||
-          !currentProject ||
           project.resolutionDomain !== domain ||
           currentProject.resolutionDomain !== domain ||
           project.provenance !== 'declared' ||
@@ -124,29 +200,32 @@ export function assessProjectFileSetClosureSeeds(input: {
           project.diagnostics.length > 0 ||
           currentProject.diagnostics.length > 0
         ) {
-          return false;
+          return 'project-model-incomplete';
         }
         seeds.add(owner.projectId);
         owned = true;
       }
-      if (!owned) return false;
+      if (!owned) return 'path-unowned';
     }
-    return true;
+    return undefined;
   };
-  if (
-    !collect(
-      input.currentChangedPaths,
-      input.currentProjects,
-      currentProjectsById,
-      input.currentResolutionDomainByPath,
-    ) ||
-    !collect(input.deletedPaths, input.baseProjects, baseProjectsById, input.deletedResolutionDomainByPath) ||
-    seeds.size === 0
-  ) {
-    return incompleteSeeds();
-  }
+  const currentFailure = collect(
+    input.currentChangedPaths,
+    input.currentProjects,
+    currentProjectsById,
+    input.currentResolutionDomainByPath,
+  );
+  if (currentFailure !== undefined) return incompleteSeeds(currentFailure);
+  const deletedFailure = collect(
+    input.deletedPaths,
+    input.baseProjects,
+    baseProjectsById,
+    input.deletedResolutionDomainByPath,
+  );
+  if (deletedFailure !== undefined) return incompleteSeeds(deletedFailure);
+  if (seeds.size === 0) return incompleteSeeds('no-project-seeds');
   if ([...seeds].some(id => !baseProjectsById.has(id) || !currentProjectsById.has(id))) {
-    return incompleteSeeds();
+    return incompleteSeeds('project-not-stable');
   }
   const baseResolutionDomains = new Set([...seeds].map(id => baseProjectsById.get(id)!.resolutionDomain));
   const currentResolutionDomains = new Set([...seeds].map(id => currentProjectsById.get(id)!.resolutionDomain));
@@ -154,7 +233,7 @@ export function assessProjectFileSetClosureSeeds(input: {
     !hasCompleteDeclaredDependencyModel(input.baseProjects, baseProjectsById, baseResolutionDomains) ||
     !hasCompleteDeclaredDependencyModel(input.currentProjects, currentProjectsById, currentResolutionDomains)
   ) {
-    return incompleteSeeds();
+    return incompleteSeeds('dependency-model-incomplete');
   }
   return {
     mode: 'eligible',
@@ -176,8 +255,25 @@ export function planProjectIncrementalClosure(input: ProjectIncrementalClosureIn
     if (factBytes === undefined || !Number.isSafeInteger(factBytes) || factBytes < 0) {
       return {mode: 'fallback', reason: 'cache-incomplete'};
     }
+    if (factBytes > CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM) {
+      return unboundedPlan({
+        changedFiles: new Set(input.modifiedPaths).size,
+        metric: 'cached-fact-bytes',
+        limit: CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM,
+        observedAtDecision: factBytes,
+        stage: 'project-closure-selection',
+      });
+    }
     cachedFactBytes = saturatingAdd(cachedFactBytes, factBytes);
-    if (cachedFactBytes > maxCachedFactBytes) return unboundedPlan();
+    if (cachedFactBytes > maxCachedFactBytes) {
+      return unboundedPlan({
+        changedFiles: new Set(input.modifiedPaths).size,
+        metric: 'cached-fact-bytes',
+        limit: maxCachedFactBytes,
+        observedAtDecision: cachedFactBytes,
+        stage: 'project-closure-selection',
+      });
+    }
   }
   return {...selection, cachedFactBytes};
 }
@@ -185,7 +281,7 @@ export function planProjectIncrementalClosure(input: ProjectIncrementalClosureIn
 /**
  * Plans the smallest project-local resolution closure that contains every seed.
  * The planner consumes metadata only: parser facts are decoded after this result
- * has proven the existing single-batch materialization bounds.
+ * has proven the bounded four-batch materialization envelope.
  */
 export function selectProjectIncrementalClosure(
   input: ProjectIncrementalClosureSelectionInput,
@@ -230,14 +326,30 @@ export function selectProjectIncrementalClosure(
   if (affectedPaths.some(path => !filesByPath.has(path))) return incompletePlan();
   const maxFiles = input.maxFiles ?? PROJECT_INCREMENTAL_CLOSURE_MAX_FILES;
   const maxSourceBytes = input.maxSourceBytes ?? PROJECT_INCREMENTAL_CLOSURE_MAX_SOURCE_BYTES;
-  if (affectedPaths.length > maxFiles) return unboundedPlan();
+  if (affectedPaths.length > maxFiles) {
+    return unboundedPlan({
+      changedFiles: new Set(input.modifiedPaths).size,
+      metric: 'affected-files',
+      limit: maxFiles,
+      observedAtDecision: affectedPaths.length,
+      stage: 'project-closure-selection',
+    });
+  }
 
   let sourceBytes = 0;
   for (const path of affectedPaths) {
     const size = filesByPath.get(path)!.size;
     if (!Number.isSafeInteger(size) || size < 0) return incompletePlan();
     sourceBytes = saturatingAdd(sourceBytes, size);
-    if (sourceBytes > maxSourceBytes) return unboundedPlan();
+    if (sourceBytes > maxSourceBytes) {
+      return unboundedPlan({
+        changedFiles: new Set(input.modifiedPaths).size,
+        metric: 'source-bytes',
+        limit: maxSourceBytes,
+        observedAtDecision: sourceBytes,
+        stage: 'project-closure-selection',
+      });
+    }
   }
   return {
     affectedPaths,
@@ -250,9 +362,11 @@ export function selectProjectIncrementalClosure(
 
 /**
  * Determines whether changed facts may expand from the changed-file resolver to
- * project closure. Committed published symbol identity is immutable; a newly
- * exported symbol may seed its unique declared resolver project when every
- * lookup key is owned by that project. Unexported symbols whose
+ * project closure. Committed published symbol identity is immutable while
+ * present; a newly exported or removed symbol may seed its unique declared
+ * resolver project when every current or prior lookup key is owned by that
+ * project. A bounded candidate scan can then find consumers of removed keys
+ * without rebuilding an oversized project. Unexported symbols whose
  * lookup keys are all local to their own TypeScript path are rewritten with
  * the changed file. Only arity and lookup keys owned by one declared project
  * may differ for existing published symbols. Static reexports seed their
@@ -269,6 +383,8 @@ export function assessProjectClosureSeeds(input: {
     projectsById.set(project.id, project);
   }
   const indexesByDomain = projectPathIndexesByDomain(input.projects);
+  const candidateLookupKeys = new Map<string, ProjectResolutionLookupKey>();
+  let candidateScanRequired = false;
   let ownershipChecks = 0;
 
   const committedByPath = uniqueFactsByPath(input.committedFacts);
@@ -306,6 +422,22 @@ export function assessProjectClosureSeeds(input: {
       seeds.add(project.project.id);
     }
   }
+  const changedReexports = changedReexportReferences(input.committedFacts, input.effectiveFacts);
+  const candidateReexports: ProjectResolutionReexportCandidate[] = [];
+  for (const reference of changedReexports) {
+    const aliases = (reference.aliasLookupKeys ?? []).map(key => ({
+      key,
+      resolutionDomain: lookupKeyDomain(key, reference.resolutionDomain),
+    }));
+    const candidates = reference.lookupTiers.flat().map(key => ({key, resolutionDomain: reference.resolutionDomain}));
+    for (const key of reference.aliasLookupKeys ?? []) {
+      addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, reference.resolutionDomain), key);
+    }
+    for (const key of reference.lookupTiers.flat()) {
+      addResolutionLookupKey(candidateLookupKeys, reference.resolutionDomain, key);
+    }
+    candidateReexports.push({aliases, candidates, sourcePath: reference.evidencePath});
+  }
 
   const committedSymbols = uniqueSymbols(input.committedFacts.flatMap(file => file.symbols));
   const effectiveSymbols = uniqueSymbols(input.effectiveFacts.flatMap(file => file.symbols));
@@ -316,13 +448,56 @@ export function assessProjectClosureSeeds(input: {
   const effectivePublishedSymbols = publishedSymbols(effectiveSymbols);
   for (const [id, left] of committedPublishedSymbols) {
     const right = effectivePublishedSymbols.get(id);
-    if (right === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
-    if (!hasSameGlobalSymbolSurface(left, right)) {
+    if (right === undefined) {
+      if (isCandidateScannableDocumentationSymbol(left)) {
+        for (const key of left.lookupKeys ?? []) {
+          addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+        }
+        candidateScanRequired = true;
+        continue;
+      }
+      const project = declaredProjectForPath(projectsById, indexesByDomain, left.path, left.resolutionDomain);
+      if (project.mode !== 'unique') return {mode: 'fallback', reason: 'resolution-surface-changed'};
+      if (left.resolutionScopeId !== project.project.id) {
+        return {mode: 'fallback', reason: 'project-closure-incomplete'};
+      }
+      if ((left.lookupKeys ?? []).some(key => !isOwnedLookupKey(key, project.project))) {
+        return {mode: 'fallback', reason: 'resolution-surface-changed'};
+      }
+      for (const key of left.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+      }
+      ownershipChecks += 1;
+      seeds.add(project.project.id);
+      continue;
+    }
+    const candidateScannableDocumentationPair =
+      isCandidateScannableDocumentationSymbol(left) &&
+      isCandidateScannableDocumentationSymbol(right) &&
+      hasSameCandidateScannableDocumentationSurface(left, right);
+    if (!hasSameGlobalSymbolSurface(left, right) && !candidateScannableDocumentationPair) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
     const arityChanged = left.arity !== right.arity;
     const lookupChanged = !sameStrings(left.lookupKeys ?? [], right.lookupKeys ?? []);
     if (!arityChanged && !lookupChanged) continue;
+    if (candidateScannableDocumentationPair) {
+      for (const key of left.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+      }
+      for (const key of right.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
+      }
+      candidateScanRequired = true;
+      continue;
+    }
+    if (right.resolutionDomain === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
+    for (const key of left.lookupKeys ?? []) {
+      addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, left.resolutionDomain), key);
+    }
+    for (const key of right.lookupKeys ?? []) {
+      addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
+    }
     ownershipChecks += 1;
     const project = declaredProjectForPath(projectsById, indexesByDomain, right.path, right.resolutionDomain);
     if (
@@ -346,6 +521,17 @@ export function assessProjectClosureSeeds(input: {
     if (committedSymbols.has(id) || !right.exported) {
       return {mode: 'fallback', reason: 'resolution-surface-changed'};
     }
+    if (isCandidateScannableDocumentationSymbol(right)) {
+      for (const key of right.lookupKeys ?? []) {
+        addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
+      }
+      candidateScanRequired = true;
+      continue;
+    }
+    if (right.resolutionDomain === undefined) return {mode: 'fallback', reason: 'resolution-surface-changed'};
+    for (const key of right.lookupKeys ?? []) {
+      addResolutionLookupKey(candidateLookupKeys, lookupKeyDomain(key, right.resolutionDomain), key);
+    }
     ownershipChecks += 1;
     const project = declaredProjectForPath(projectsById, indexesByDomain, right.path, right.resolutionDomain);
     if (project.mode !== 'unique') {
@@ -364,10 +550,112 @@ export function assessProjectClosureSeeds(input: {
     return incompleteSeeds();
   }
   return {
+    candidateLookupKeys: [...candidateLookupKeys.values()].sort(compareResolutionLookupKeys),
+    candidateReexports,
+    ...(candidateScanRequired ? {candidateScanRequired: true as const} : {}),
     mode: 'eligible',
     planningOperations: {ownershipChecks, pathIndexProjects: input.projects.length},
     seedProjectIds: [...seeds].sort(compareCodeUnits),
   };
+}
+
+/**
+ * Markdown document resolution is the one non-project surface whose complete
+ * cross-file lookup contract is explicit in persisted facts: the documentation
+ * extractor publishes only these canonical global keys, and every consumer
+ * carries the same keys in its reference lookup tiers. Restrict candidate-scan
+ * admission to that exact contract; other non-TypeScript domains remain
+ * fail-closed until they can prove equivalent exhaustive coverage.
+ */
+function isCandidateScannableDocumentationSymbol(symbol: CodeGraphSymbol): boolean {
+  if (
+    symbol.language !== 'markdown' ||
+    !['document', 'heading'].includes(symbol.kind) ||
+    symbol.exported !== true ||
+    symbol.resolutionDomain !== 'documentation' ||
+    symbol.resolutionScopeId !== undefined
+  ) {
+    return false;
+  }
+  const expected = [
+    `global:qualified:${encodeURIComponent(symbol.qualifiedName)}`,
+    `global:name:${encodeURIComponent(symbol.name)}`,
+    ...(symbol.kind === 'document' ? [`global:path:${encodeURIComponent(symbol.path)}`] : []),
+  ];
+  return sameStrings(symbol.lookupKeys ?? [], expected);
+}
+
+function hasSameCandidateScannableDocumentationSurface(left: CodeGraphSymbol, right: CodeGraphSymbol): boolean {
+  // Persisted clean inventory deliberately omits manifest bodies, so an old
+  // documentation fact can lack the current package presentation label. That
+  // label is not consulted by global document resolution; every resolver input
+  // remains compared here or in the lookup-key/arity checks above.
+  return (
+    left.id === right.id &&
+    left.exported === right.exported &&
+    left.kind === right.kind &&
+    left.language === right.language &&
+    left.name === right.name &&
+    left.path === right.path &&
+    left.qualifiedName === right.qualifiedName &&
+    left.resolutionDomain === right.resolutionDomain &&
+    left.resolutionScopeId === right.resolutionScopeId
+  );
+}
+
+function addResolutionLookupKey(
+  output: Map<string, ProjectResolutionLookupKey>,
+  resolutionDomain: string,
+  key: string,
+): void {
+  output.set(`${resolutionDomain}\0${key}`, {key, resolutionDomain});
+}
+
+function lookupKeyDomain(key: string, fallback: string | undefined): string {
+  const separator = key.indexOf(':');
+  return separator > 0 ? key.slice(0, separator) : (fallback ?? 'generic');
+}
+
+function compareResolutionLookupKeys(left: ProjectResolutionLookupKey, right: ProjectResolutionLookupKey): number {
+  return compareCodeUnits(left.resolutionDomain, right.resolutionDomain) || compareCodeUnits(left.key, right.key);
+}
+
+function changedReexportReferences(
+  committedFacts: readonly CodeGraphFileFacts[],
+  effectiveFacts: readonly CodeGraphFileFacts[],
+): readonly CodeGraphReference[] {
+  const committed = reexportReferenceMultiset(committedFacts);
+  const effective = reexportReferenceMultiset(effectiveFacts);
+  const changed: CodeGraphReference[] = [];
+  for (const [signature, values] of committed) {
+    changed.push(...values.slice(effective.get(signature)?.length ?? 0));
+  }
+  for (const [signature, values] of effective) {
+    changed.push(...values.slice(committed.get(signature)?.length ?? 0));
+  }
+  return changed;
+}
+
+function reexportReferenceMultiset(
+  facts: readonly CodeGraphFileFacts[],
+): ReadonlyMap<string, readonly CodeGraphReference[]> {
+  const output = new Map<string, CodeGraphReference[]>();
+  for (const reference of facts.flatMap(file => file.references ?? [])) {
+    if (reference.relation !== 'reexports' || (reference.aliasLookupKeys?.length ?? 0) === 0) continue;
+    const signature = JSON.stringify([
+      reference.evidencePath,
+      reference.resolutionDomain,
+      reference.relation,
+      reference.exportedOnly ?? false,
+      reference.arity ?? null,
+      [...(reference.aliasLookupKeys ?? [])].sort(compareCodeUnits),
+      reference.lookupTiers.map(tier => [...tier].sort(compareCodeUnits)),
+    ]);
+    const values = output.get(signature) ?? [];
+    values.push(reference);
+    output.set(signature, values);
+  }
+  return output;
 }
 
 interface ProjectPathIndexes {
@@ -608,10 +896,22 @@ function incompletePlan(): Extract<ProjectIncrementalClosurePlan, {readonly mode
   return {mode: 'fallback', reason: 'project-closure-incomplete'};
 }
 
-function unboundedPlan(): Extract<ProjectIncrementalClosurePlan, {readonly mode: 'fallback'}> {
-  return {mode: 'fallback', reason: 'project-closure-unbounded'};
+function unboundedPlan(
+  fallbackBoundary?: CodeGraphOverlayFallbackBoundary,
+): Extract<ProjectIncrementalClosurePlan, {readonly mode: 'fallback'}> {
+  return {
+    ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
+    mode: 'fallback',
+    reason: 'project-closure-unbounded',
+  };
 }
 
-function incompleteSeeds(): Extract<ProjectClosureSeedAssessment, {readonly mode: 'fallback'}> {
-  return {mode: 'fallback', reason: 'project-closure-incomplete'};
+function incompleteSeeds(
+  fallbackDetail?: CodeGraphProjectFileSetFallbackDetail,
+): Extract<ProjectClosureSeedAssessment, {readonly mode: 'fallback'}> {
+  return {
+    ...(fallbackDetail === undefined ? {} : {fallbackDetail}),
+    mode: 'fallback',
+    reason: 'project-closure-incomplete',
+  };
 }

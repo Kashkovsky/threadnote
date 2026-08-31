@@ -197,9 +197,12 @@ bun run eval:code-memory-link-agent-trial -- \
 ```
 
 The scorer requires a source-reviewed manifest, complete X/Y/Z blocks, at least 12 hidden-constraint tasks, 16
-negative controls, and two distinct agent clients. The manifest binds a clean candidate commit and build identity,
-opaque client IDs and reviewed client-implementation descriptors, evaluator and judge versions, the adjudication
-artifact, a common hidden-task budget, and the frozen `sha256-counterbalanced-v1` seeded schedule with per-run nonces.
+negative controls, and two distinct reviewed client roster entries. The current preregistration uses two model
+configurations through the same Codex app-server client implementation, so it supports per-configuration checks but
+not a claim of replication across independent client implementations. The manifest binds a clean candidate commit and
+build identity, opaque client IDs and reviewed client-implementation descriptors, evaluator and judge versions, the
+adjudication artifact, a common hidden-task budget, and the frozen `sha256-counterbalanced-v1` seeded schedule with
+per-run nonces.
 The scorer re-derives the randomized block order and blind-arm order from the seed and balances positions separately for
 hidden and negative-control tasks. External trials must match that schedule and carry provider-reported token
 accounting plus unique provider-usage and adjudication hashes. The trial harness resolves the canonical managed
@@ -258,13 +261,13 @@ must have zero regression events in every family. The aggregate 90% and per-clie
 corpus checks. A task cluster passes only if every rostered client passes it, and zero stale/harmful acceptance still
 applies. Adding token-renamed tasks can add finite-corpus coverage, but it never creates or strengthens a nominal
 population-confidence claim. Thus equal all-fail rates and improvements confined to one structural family cannot pass.
-The
-preregistered manifest hash
-and the deterministic, outcome-sensitive post-run evidence-bundle hash have separate source allowlists. Both are
-intentionally empty until a real protocol and its completed evidence are reviewed, so current evidence can only be
-`insufficient` or `failed`. The command also verifies that the manifest commit and build identity are the source commit
-and executable SHA-256 of the active managed development runtime. Mock receipts test only the importer/scorer and are
-never evidence that an agent benefits.
+The preregistered manifest hash and the deterministic, outcome-sensitive post-run evidence-bundle hash have separate
+source allowlists. The manifest allowlist may retain reviewed hashes for historical candidates; a new candidate remains
+`insufficient` until its exact manifest hash is added by the immediate governance-only A commit. Outcome, dogfood, and
+retained-bundle allowlists remain empty until the completed evidence is independently reviewed and added by G. The
+command also verifies that the manifest commit and build identity are the source commit and executable SHA-256 of the
+active managed development runtime. Mock receipts test only the importer/scorer and are never evidence that an agent
+benefits.
 
 Practical exact-build dogfood uses a separate canonical artifact with six required observations: task-only memory,
 file backlink, symbol backlink, multi-anchor deduplication, no-backlink behavior, and stale-graph abstention. Every
@@ -332,12 +335,13 @@ Git history, and approvals together remains outside the claim. Independent revie
 the trust boundary. The practical-dogfood and retained-bundle allowlists stay empty until a completed matrix is
 independently reviewed.
 
-Anonymous Tempo telemetry is corroborative monitoring, not release proof. Schema v5 reports overall Context Brief
-outcome/latency, phase timings, coarse citation status buckets, and truncation without task, memory, code, path, or user
-data. It cannot distinguish task-only v2 from anchored v3, time the inverse lane, or establish that an agent accepted a
-direct result. The dashboard intentionally queries both CLI `context.brief` and MCP `context_brief` aliases and includes
-an unscoped early-failure cohort. Any future variant/direct-lane fields require a consent-reviewed telemetry schema
-revision and matching privacy properties before collection.
+Anonymous Tempo telemetry is corroborative monitoring, not release proof. Consent schema v6 reports the
+`task-only-v2` versus `code-anchored-v3` contract, graph/memory/code-linked-memory phase timing, returned lane, bounded
+code-anchor coverage/gap/recovery classifications and power-of-two work buckets, plus deferred-finalization outcomes.
+It still exports no task, memory, code, path, selector, repository, or user identity and cannot establish that an agent
+accepted or correctly used a direct result. The dashboard intentionally queries both CLI `context.brief` and MCP
+`context_brief` aliases and includes an unscoped early-failure cohort. Any additional fields require another
+consent-reviewed schema revision and matching privacy properties before collection.
 
 ## Memory-code citation runtime contract
 

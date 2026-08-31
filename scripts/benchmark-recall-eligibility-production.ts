@@ -14,7 +14,7 @@ import {LocalModelStore, type LocalModelStoreShape} from '../src/models/store.js
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../src/recall/eligibility.js';
 import {loadRecallIndexData, type RecallIndexQueryDiagnostics} from '../src/recall/index.js';
 import {rebuildVectorIndex, selectedSemanticScores, vectorIndexDatabaseFilename} from '../src/search/vector-index.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {atomicWrite, printJson, scriptArguments} from './effect/script.js';
 

@@ -18,7 +18,7 @@ import {
 } from '../src/evaluation/recall-monorepo-stress.js';
 import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
 import {recallCrossScopeLaneBudgets} from '../src/recall/runtime.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;

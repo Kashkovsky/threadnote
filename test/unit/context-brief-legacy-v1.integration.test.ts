@@ -18,86 +18,64 @@ describe('Context Brief schema-v1 memory compatibility', () => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-context-brief-v1-'});
-      const memoryRoot = path.join(
-        home,
-        'data',
-        'local',
-        'user',
-        'legacy-user',
-        'memories',
-        'durable',
-        'projects',
-        'threadnote',
-      );
-      yield* fs.makeDirectory(memoryRoot, {recursive: true});
-      yield* fs.writeFileString(
-        path.join(memoryRoot, 'without-commit.md'),
-        legacyMemory(
-          'without-commit',
-          'Legacy compatibility sentinel without commit remains recallable after the schema-v4 upgrade.',
-        ),
-      );
-      yield* fs.writeFileString(
-        path.join(memoryRoot, 'matching-commit.md'),
-        legacyMemory(
-          'matching-commit',
-          'Legacy compatibility sentinel with matching commit remains recallable after the schema-v4 upgrade.',
-          COMMIT,
-        ),
-      );
-      yield* fs.writeFileString(
-        path.join(memoryRoot, 'crlf.md'),
-        withLineEnding(
-          legacyMemory(
-            'crlf',
-            'Legacy compatibility sentinel with CRLF remains recallable after the schema-v4 upgrade.',
-            COMMIT,
-          ),
-          '\r\n',
-        ),
-      );
-      yield* fs.writeFileString(
-        path.join(memoryRoot, 'cr.md'),
-        withLineEnding(
-          legacyMemory(
-            'cr',
-            'Legacy compatibility sentinel with CR remains recallable after the schema-v4 upgrade.',
-            COMMIT,
-          ),
-          '\r',
-        ),
-      );
-      const config: RuntimeConfig = {
-        account: 'local',
-        agentContextHome: home,
-        agentId: 'test-agent',
-        manifestPath: path.join(home, 'manifest.yaml'),
-        user: 'legacy-user',
-      };
+      // Isolate each encoding so the bounded projector cannot legitimately omit one case in favor of another.
+      yield* Effect.forEach(
+        [
+          {expectedFreshness: 'unknown', lineEnding: '\n', sourceCommit: undefined, topic: 'without-commit'},
+          {expectedFreshness: 'fresh', lineEnding: '\n', sourceCommit: COMMIT, topic: 'matching-commit'},
+          {expectedFreshness: 'fresh', lineEnding: '\r\n', sourceCommit: COMMIT, topic: 'crlf'},
+          {expectedFreshness: 'fresh', lineEnding: '\r', sourceCommit: COMMIT, topic: 'cr'},
+        ] as const,
+        testCase =>
+          Effect.gen(function* () {
+            const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-context-brief-v1-'});
+            const memoryRoot = path.join(
+              home,
+              'data',
+              'local',
+              'user',
+              'legacy-user',
+              'memories',
+              'durable',
+              'projects',
+              'threadnote',
+            );
+            yield* fs.makeDirectory(memoryRoot, {recursive: true});
+            const body = `Legacy compatibility sentinel ${testCase.topic} remains recallable after the schema-v4 upgrade.`;
+            const memory = legacyMemory(testCase.topic, body, testCase.sourceCommit);
+            yield* fs.writeFileString(
+              path.join(memoryRoot, `${testCase.topic}.md`),
+              testCase.lineEnding === '\n' ? memory : withLineEnding(memory, testCase.lineEnding),
+            );
+            const config: RuntimeConfig = {
+              account: 'local',
+              agentContextHome: home,
+              agentId: 'test-agent',
+              manifestPath: path.join(home, 'manifest.yaml'),
+              user: 'legacy-user',
+            };
 
-      const result = yield* compileContextBriefWith(
-        {
-          graphEvidence: () => Effect.succeed(graphEvidence()),
-          memoryEvidence: plan => retrieveContextBriefMemoryEvidence(config, plan),
-        },
-        {
-          budgetTokens: 1_500,
-          mode: 'brief',
-          scope: {callerCwd: home, kind: 'repository', project: 'threadnote'},
-          task: 'Recall the legacy compatibility sentinel after the schema-v4 upgrade.',
-        },
-      );
+            const result = yield* compileContextBriefWith(
+              {
+                graphEvidence: () => Effect.succeed(graphEvidence()),
+                memoryEvidence: plan => retrieveContextBriefMemoryEvidence(config, plan),
+              },
+              {
+                budgetTokens: 1_500,
+                mode: 'brief',
+                scope: {callerCwd: home, kind: 'repository', project: 'threadnote'},
+                task: 'Recall the legacy compatibility sentinel after the schema-v4 upgrade.',
+              },
+            );
 
-      const byTopic = new Map(result.structuredContent.durableDecisions.map(memory => [memory.topic, memory]));
-      expect(byTopic.get('without-commit')).toMatchObject({freshness: 'unknown'});
-      expect(byTopic.get('matching-commit')).toMatchObject({freshness: 'fresh'});
-      expect(byTopic.get('crlf')).toMatchObject({freshness: 'fresh'});
-      expect(byTopic.get('cr')).toMatchObject({freshness: 'fresh'});
-      for (const topic of ['without-commit', 'matching-commit', 'crlf', 'cr']) {
-        expect(byTopic.get(topic)?.excerpt).toContain('Legacy compatibility sentinel');
-      }
-      expect([...byTopic.keys()]).toEqual(expect.arrayContaining(['without-commit', 'matching-commit', 'crlf', 'cr']));
+            const projected = result.structuredContent.durableDecisions.find(
+              candidate => candidate.topic === testCase.topic,
+            );
+            expect(projected).toMatchObject({freshness: testCase.expectedFreshness});
+            expect(projected?.excerpt).toContain('Legacy compatibility sentinel');
+          }),
+        {concurrency: 1, discard: true},
+      );
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 });

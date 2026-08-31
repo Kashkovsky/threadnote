@@ -1,20 +1,22 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {withSharedRepositoryLock} from '../effect/share_lock.js';
-import {readMemoryRecordsByUri, storeMemory} from '../memory.js';
+import {readMemoryRecordsByUri, storeMemory} from '../memory/index.js';
 import {assertMemoryRecordArchivable, formatMemoryDocument, type MemoryMetadata} from '../memory/document.js';
 import type {MemoryRecord} from '../memory/hygiene.js';
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../memory/code_citation_policy.js';
+import {hasDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
+import {recordMemoryRelocation} from '../memory/relocation.js';
 import {
   localMemoryPathForUri,
   MemoryOperationError,
   NATIVE_RESOURCE_BACKEND,
   readTextIfExists,
 } from '../memory/migrations.js';
-import {applyScrubber} from '../scrubber.js';
+import {applyScrubber} from '../share/scrubber.js';
 import {
   assertSharedWorktreeFileReady,
   ensureSharedDirectoryChain,
@@ -29,7 +31,7 @@ import {
   sharedUriFor,
   writeMemoryFile,
   writeSharedWorktreeFile,
-} from '../share.js';
+} from '../share/index.js';
 import type {MemoryKind, MemoryStatus, RuntimeConfig} from '../types.js';
 import {runCommand} from '../utils.js';
 
@@ -144,7 +146,18 @@ export const moveManagerSharedMemoryWithinTeam = Effect.fn('manager.moveSharedMe
         sourceTracked ? [sourceRelativePath, targetRelativePath] : targetRelativePath,
         `share: move ${sourceRelativePath} to ${targetRelativePath}`,
       );
-      yield* readExactMoveSource(config, sourceUri, expectedSourceContent, 'during its move; it was preserved');
+      const sourceBeforeRemoval = yield* readExactMoveSource(
+        config,
+        sourceUri,
+        expectedSourceContent,
+        'during its move; it was preserved',
+      );
+      yield* recordMemoryRelocation(config, {
+        fromContent: sourceBeforeRemoval.content,
+        fromUri: sourceUri,
+        toContent: content,
+        toUri: targetUri,
+      });
       yield* removeMemoryUri(config, NATIVE_RESOURCE_BACKEND, sourceUri, false);
     }),
   );
@@ -155,6 +168,8 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
   config: RuntimeConfig,
   sourceUri: string,
   expectedSourceContent: string,
+  targetUri: string,
+  expectedTargetContent: string,
 ) {
   const teamName = sharedTeamNameForUri(config, sourceUri);
   if (!teamName) return yield* Effect.fail(new MemoryOperationError(`${sourceUri} is not a shared memory.`));
@@ -162,7 +177,7 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
   return yield* withMemoryUriLocks(
     fs,
     config.agentContextHome,
-    [sourceUri],
+    [sourceUri, targetUri],
     Effect.gen(function* () {
       const source = yield* readExactMoveSource(
         config,
@@ -171,6 +186,12 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
         'during its move; it was preserved',
       );
       yield* validateArchivable(source);
+      yield* readExactMoveSource(
+        config,
+        targetUri,
+        expectedTargetContent,
+        'before shared source removal; the shared source was preserved',
+      );
       const team = yield* resolveTeam(config, teamName);
       const relativePath = resourceUriToWorktreeRelative(config, sourceUri, team.name);
       yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, expectedSourceContent);
@@ -180,6 +201,18 @@ export const removeManagerSharedMemorySource = Effect.fn('manager.removeSharedMe
         );
       }
       yield* publishShareGitChange(team.config.worktree, relativePath, `share: remove ${relativePath}`, {verb: 'rm'});
+      const target = yield* readExactMoveSource(
+        config,
+        targetUri,
+        expectedTargetContent,
+        'during its move; the shared source was preserved',
+      );
+      yield* recordMemoryRelocation(config, {
+        fromContent: source.content,
+        fromUri: sourceUri,
+        toContent: target.content,
+        toUri: targetUri,
+      });
       yield* removeMemoryUri(config, NATIVE_RESOURCE_BACKEND, sourceUri, false);
     }),
   );
@@ -230,10 +263,34 @@ export const publishStagedManagerPersonalMemoryMove = Effect.fn('manager.publish
       config.agentContextHome,
       [sourceUri, stagedUri, sharedTargetUri],
       Effect.gen(function* () {
+        if (yield* hasDeferredCodeAnchorIntent(config, sourceUri)) {
+          return yield* Effect.fail(
+            new MemoryOperationError(
+              `Refusing to publish moved memory ${sourceUri}: code citations are still pending. Finalize or explicitly replace the source without code references before moving it into shared memory.`,
+            ),
+          );
+        }
         yield* readExactMoveSource(config, sourceUri, expectedSourceContent, 'before publication; it was preserved');
         yield* readExactMoveSource(config, stagedUri, expectedStagedContent, 'before publication');
         yield* runSharePublishUnlocked(config, stagedUri, {team: teamName});
-        yield* readExactMoveSource(config, sourceUri, expectedSourceContent, 'during publication; it was preserved');
+        const sourceBeforeRemoval = yield* readExactMoveSource(
+          config,
+          sourceUri,
+          expectedSourceContent,
+          'during publication; it was preserved',
+        );
+        const sharedTargetContent = yield* readRawMemoryContent(config, sharedTargetUri);
+        if (sharedTargetContent === undefined) {
+          return yield* Effect.fail(
+            new MemoryOperationError(`Published move target ${sharedTargetUri} is missing; source was preserved.`),
+          );
+        }
+        yield* recordMemoryRelocation(config, {
+          fromContent: sourceBeforeRemoval.content,
+          fromUri: sourceUri,
+          toContent: sharedTargetContent,
+          toUri: sharedTargetUri,
+        });
         yield* removeMemoryUri(config, NATIVE_RESOURCE_BACKEND, sourceUri, false);
       }),
     ),

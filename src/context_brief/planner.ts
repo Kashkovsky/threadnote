@@ -13,6 +13,7 @@ import {
   type ContextBriefCitationSummaryV2,
   type ContextBriefContextIssueV1,
   type ContextBriefCitationValidationReceiptV2,
+  type ContextBriefCodeAnchorCoverageV3,
   type ContextBriefFollowUpV1,
   type ContextBriefFreshness,
   type ContextBriefGraphEvidenceV1,
@@ -46,7 +47,9 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
     },
     graph: {
       ...modeShape,
+      codeRefs: request.codeRefs ?? [],
       maximumEstimatedTokens: CONTEXT_BRIEF_DEFAULT_ESTIMATED_TOKENS,
+      mode: request.mode,
       query: request.task,
       scope: request.scope,
     },
@@ -54,6 +57,7 @@ export function planContextBrief(input: ContextBriefRequestV1 | unknown): Contex
       candidateLimit: 24,
       ...(request.scope.project === undefined ? {} : {project: request.scope.project}),
       query: request.task,
+      requireResolvableMemoryIdentity: (request.codeRefs?.length ?? 0) > 0,
     },
     mode: request.mode,
     outputBudgetTokens: request.budgetTokens,
@@ -116,6 +120,7 @@ export function assembleContextBriefLogicalResult(input: {
   const issues = contextIssues(memories);
   const gaps = stableUnique([
     ...input.graph.gaps,
+    ...contextBriefGraphWarningGaps(input.graph.warnings),
     ...input.memory.gaps,
     ...(input.graph.cards.length === 0 ? ['no-graph-evidence'] : []),
     ...(memories.length === 0 ? ['no-relevant-active-memory'] : []),
@@ -151,7 +156,7 @@ export function assembleContextBriefLogicalResult(input: {
       },
     },
     durableDecisions,
-    recommendedFollowUps: exactFollowUps(input.graph, memories, input.plan),
+    recommendedFollowUps: exactFollowUps(input.graph, memories, input.plan, input.memory.codeAnchorCoverage),
     graph: input.graph,
     activeHandoffs: handoffs,
     stalenessAndConflicts: issues,
@@ -172,6 +177,30 @@ export function assembleContextBriefLogicalResult(input: {
     type: 'context-brief',
     version: input.plan.codeAnchors.codeRefs.length === 0 ? CONTEXT_BRIEF_LEGACY_VERSION : CONTEXT_BRIEF_VERSION,
   };
+}
+
+/**
+ * Graph warnings may contain repository-derived text, so Context Brief exposes
+ * bounded stable coverage codes instead of copying warning prose into either
+ * agent channel. Every warning produces a generic signal; known partiality
+ * classes add a more actionable code without claiming more than the source.
+ */
+export function contextBriefGraphWarningGaps(warnings: readonly string[]): readonly string[] {
+  if (warnings.length === 0) return [];
+  const normalized = warnings.map(warning => warning.normalize('NFKC').toLowerCase());
+  return stableUnique([
+    'graph-query-warning',
+    ...(normalized.some(warning => /bridge|cross[- ]repository/u.test(warning))
+      ? ['graph-bridge-evidence-incomplete']
+      : []),
+    ...(normalized.some(warning => /partial|limit|budget|elapsed|timed out|unavailable|withheld/u.test(warning))
+      ? ['graph-evidence-partial']
+      : []),
+    ...(normalized.some(warning => /not found|did not resolve|unresolved/u.test(warning))
+      ? ['graph-selector-unresolved']
+      : []),
+    ...(normalized.some(warning => /semantic|vector/u.test(warning)) ? ['graph-semantic-evidence-incomplete'] : []),
+  ]);
 }
 
 function stableMemories(memories: readonly ContextBriefMemoryEvidenceV1[]): readonly ContextBriefMemoryEvidenceV1[] {
@@ -261,8 +290,27 @@ function exactFollowUps(
   graph: ContextBriefGraphEvidenceV1,
   memories: readonly ContextBriefMemoryEvidenceV1[],
   plan: ContextBriefPlanV1,
+  codeAnchorCoverage?: ContextBriefCodeAnchorCoverageV3,
 ): readonly ContextBriefFollowUpV1[] {
   const followUps: ContextBriefFollowUpV1[] = [];
+  const staleRepositoryAnchors =
+    plan.scope.kind === 'repository' &&
+    plan.codeAnchors.codeRefs.length > 0 &&
+    graph.coverage.readyRepositories > 0 &&
+    scopeFreshness(graph) === 'stale' &&
+    codeAnchorCoverage?.complete === false;
+  const graphStatusRequired =
+    graph.coverage.readyRepositories === 0 ||
+    graph.gaps.includes('graph-repository-read-failed') ||
+    staleRepositoryAnchors;
+  if (graphStatusRequired) {
+    followUps.push({
+      id: followUpId('graph-status', plan.scope.kind),
+      operation: 'graph-status',
+      rank: followUps.length,
+      scope: plan.scope.kind,
+    });
+  }
   for (const card of [...graph.cards].sort((left, right) => left.rank - right.rank || compareText(left.id, right.id))) {
     followUps.push({
       id: followUpId('inspect-node', card.ref),
@@ -310,14 +358,6 @@ function exactFollowUps(
       operation: 'prepare-workset',
       rank: followUps.length,
       workset: plan.scope.name,
-    });
-  }
-  if (graph.coverage.readyRepositories === 0) {
-    followUps.push({
-      id: followUpId('graph-status', plan.scope.kind),
-      operation: 'graph-status',
-      rank: followUps.length,
-      scope: plan.scope.kind,
     });
   }
   return followUps.slice(0, MAXIMUM_FOLLOW_UPS).map((followUp, rank) => ({...followUp, rank}));

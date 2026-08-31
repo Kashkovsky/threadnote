@@ -1,6 +1,9 @@
-import {Effect} from 'effect';
+import * as BunServices from '@effect/platform-bun/BunServices';
+import {it as effectIt} from '@effect/vitest';
+import {Effect, FileSystem, Layer, Path} from 'effect';
+import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
-import {describe, expect, it} from 'vitest';
+import {describe, expect} from 'vitest';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {
   CodeGraphEdge,
@@ -10,9 +13,13 @@ import type {
   CodeGraphSymbol,
   RepositoryIdentity,
 } from '../../src/code_graph/types.js';
+import {SystemInfo} from '../../src/effect/system.js';
 import {claimPersistentBuildForTest} from '../helpers/code-graph-build.js';
-import {join, mkdtemp, rm} from '../helpers/effect-filesystem.js';
-import {runEffect} from '../helpers/effect-runtime.js';
+
+const ResolutionSummaryTestLayer = CodeGraphStore.layer.pipe(
+  Layer.provideMerge(SystemInfo.layer),
+  Layer.provideMerge(BunServices.layer),
+);
 
 const lookupKeys = ['typescript:name:alpha', 'typescript:name:beta', 'typescript:name:gamma'] as const;
 
@@ -56,23 +63,28 @@ const resolutionCaseArbitrary: fc.Arbitrary<ResolutionCase> = fc
   );
 
 describe('persistent reference lookup summaries', () => {
-  it('are equivalent to raw candidate-union resolution across tiers, exports, duplicates, and overrides', async () => {
-    await fc.assert(
-      fc.asyncProperty(resolutionCaseArbitrary, async testCase => {
-        const root = await mkdtemp('threadnote-resolution-summary-property-');
-        try {
-          const fixture = resolutionFacts(root, testCase);
-          const raw = await resolveWithTemporaryActivation(join(root, 'raw.sqlite'), fixture);
-          const summarized = await resolveWithPersistentActivation(join(root, 'summarized.sqlite'), fixture);
+  effectIt.layer(ResolutionSummaryTestLayer)(layerIt => {
+    layerIt.effect.prop(
+      'are equivalent to raw candidate-union resolution across tiers, exports, duplicates, and overrides',
+      {testCase: resolutionCaseArbitrary},
+      ({testCase}) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const fileSystem = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const root = yield* fileSystem.makeTempDirectoryScoped({
+              prefix: 'threadnote-resolution-summary-property-',
+            });
+            const fixture = resolutionFacts(root, testCase);
+            const raw = yield* resolveWithTemporaryActivation(path.join(root, 'raw.sqlite'), fixture);
+            const summarized = yield* resolveWithPersistentActivation(path.join(root, 'summarized.sqlite'), fixture);
 
-          expect(summarized).toEqual(raw);
-        } finally {
-          await rm(root, {force: true, recursive: true});
-        }
-      }),
-      {numRuns: 40},
+            expect(summarized).toEqual(raw);
+          }),
+        ).pipe(TestClock.withLive),
+      {fastCheck: {numRuns: 40}},
     );
-  }, 30_000);
+  });
 });
 
 function resolutionFacts(root: string, testCase: ResolutionCase) {
@@ -157,53 +169,49 @@ function resolutionFacts(root: string, testCase: ResolutionCase) {
 
 type ResolutionFixture = ReturnType<typeof resolutionFacts>;
 
-async function resolveWithTemporaryActivation(databasePath: string, fixture: ResolutionFixture) {
-  return runEffect(
-    Effect.gen(function* () {
-      const store = yield* CodeGraphStore;
-      return yield* store.withSession(
-        databasePath,
-        Effect.gen(function* () {
-          yield* store.prepareActivation(databasePath, [fixture.file]);
-          yield* store.stageActivationFacts(databasePath, fixture.symbols, fixture.edges, fixture.references);
-          const summary = yield* store.resolveStagedReferences(databasePath);
-          yield* store.activateStaged(databasePath, fixture.identity, fixture.snapshot);
-          const graph = yield* store.loadGraph(databasePath, fixture.snapshot.id);
-          return normalizedResolution(summary.resolved, graph.edges);
-        }),
-      );
-    }),
-  );
+function resolveWithTemporaryActivation(databasePath: string, fixture: ResolutionFixture) {
+  return Effect.gen(function* () {
+    const store = yield* CodeGraphStore;
+    return yield* store.withSession(
+      databasePath,
+      Effect.gen(function* () {
+        yield* store.prepareActivation(databasePath, [fixture.file]);
+        yield* store.stageActivationFacts(databasePath, fixture.symbols, fixture.edges, fixture.references);
+        const summary = yield* store.resolveStagedReferences(databasePath);
+        yield* store.activateStaged(databasePath, fixture.identity, fixture.snapshot);
+        const graph = yield* store.loadGraph(databasePath, fixture.snapshot.id);
+        return normalizedResolution(summary.resolved, graph.edges);
+      }),
+    );
+  });
 }
 
-async function resolveWithPersistentActivation(databasePath: string, fixture: ResolutionFixture) {
-  return runEffect(
-    Effect.gen(function* () {
-      const store = yield* CodeGraphStore;
-      return yield* store.withSession(
-        databasePath,
-        Effect.gen(function* () {
-          const ownerToken = yield* claimPersistentBuildForTest(store, databasePath, fixture.identity, {
-            ...fixture.snapshot,
-            state: 'building',
-          });
-          yield* store.prepareActivation(databasePath, [fixture.file], fixture.snapshot.id, 1, ownerToken);
-          yield* store.stageActivationFacts(
-            databasePath,
-            fixture.symbols,
-            fixture.edges,
-            fixture.references,
-            undefined,
-            0,
-          );
-          const summary = yield* store.resolveStagedReferences(databasePath);
-          yield* store.activateStaged(databasePath, fixture.identity, fixture.snapshot);
-          const graph = yield* store.loadGraph(databasePath, fixture.snapshot.id);
-          return normalizedResolution(summary.resolved, graph.edges);
-        }),
-      );
-    }),
-  );
+function resolveWithPersistentActivation(databasePath: string, fixture: ResolutionFixture) {
+  return Effect.gen(function* () {
+    const store = yield* CodeGraphStore;
+    return yield* store.withSession(
+      databasePath,
+      Effect.gen(function* () {
+        const ownerToken = yield* claimPersistentBuildForTest(store, databasePath, fixture.identity, {
+          ...fixture.snapshot,
+          state: 'building',
+        });
+        yield* store.prepareActivation(databasePath, [fixture.file], fixture.snapshot.id, 1, ownerToken);
+        yield* store.stageActivationFacts(
+          databasePath,
+          fixture.symbols,
+          fixture.edges,
+          fixture.references,
+          undefined,
+          0,
+        );
+        const summary = yield* store.resolveStagedReferences(databasePath);
+        yield* store.activateStaged(databasePath, fixture.identity, fixture.snapshot);
+        const graph = yield* store.loadGraph(databasePath, fixture.snapshot.id);
+        return normalizedResolution(summary.resolved, graph.edges);
+      }),
+    );
+  });
 }
 
 function normalizedResolution(resolved: number, edges: ReadonlyArray<CodeGraphEdge>) {

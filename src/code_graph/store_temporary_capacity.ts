@@ -96,6 +96,7 @@ export function temporaryIncrementalActivationCapacity(
   files: readonly CodeGraphInventoryFile[],
   facts: readonly CodeGraphFileFacts[],
   deletedPaths: readonly string[] = [],
+  carried?: {readonly stagedPayloadBytes: number; readonly stagedRows: number},
 ): CodeGraphDirectPersistentCapacityBoundary {
   const factsCapacity = temporaryActivationFactsCapacity(
     facts.flatMap(fact => fact.symbols),
@@ -109,6 +110,7 @@ export function temporaryIncrementalActivationCapacity(
       files.length,
       deletedPaths.length,
       factsCapacity.rowCount,
+      carried?.stagedRows ?? 0,
       // Replacement deletes and reinserts each staged row; reserve a second
       // copy so the preflight cannot rely on SQLite freeing pages immediately.
       factsCapacity.rowCount,
@@ -117,6 +119,7 @@ export function temporaryIncrementalActivationCapacity(
       encodedBytes([files, deletedPaths]),
       maximumRetainedRawAliasBytes(files),
       factsCapacity.finalFactBytes,
+      carried?.stagedPayloadBytes ?? 0,
     ),
   );
 }

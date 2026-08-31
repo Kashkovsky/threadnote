@@ -97,7 +97,7 @@ export function instrumentContextBriefCompilerDependencies<
         ),
     graphEvidence: graphPlan =>
       reporter
-        .graph(sources.graphEvidence(graphPlan))
+        .graph(sources.graphEvidence(graphPlan), contextBriefGraphPhaseOutcome)
         .pipe(
           Effect.catch(() =>
             Effect.succeed(unavailableContextBriefGraphEvidence('graph-query-unavailable', requestedRepositories)),
@@ -107,11 +107,18 @@ export function instrumentContextBriefCompilerDependencies<
       ? {}
       : {
           codeLinkedMemoryEvidence: (codePlan: ContextBriefPlanV1['codeAnchors']) =>
-            sources.codeLinkedMemoryEvidence!(codePlan).pipe(
-              Effect.catch(() =>
-                Effect.succeed(unavailableContextBriefCodeLinkedMemoryEvidence(codePlan.codeRefs.length)),
+            reporter
+              .codeLinkedMemory(sources.codeLinkedMemoryEvidence!(codePlan), contextBriefCodeLinkedMemoryPhaseOutcome)
+              .pipe(
+                Effect.catch(() =>
+                  Effect.succeed(
+                    unavailableContextBriefCodeLinkedMemoryEvidence(
+                      codePlan.codeRefs.length,
+                      'code-anchor-resolution-unavailable',
+                    ),
+                  ),
+                ),
               ),
-            ),
         }),
     memoryEvidence: memoryPlan =>
       reporter
@@ -121,8 +128,60 @@ export function instrumentContextBriefCompilerDependencies<
       reporter.projection(
         sources.projection(logical, maximumEstimatedTokens),
         projected => projected.structuredContent.output.truncated,
+        logical.coverage.memory.codeAnchors === undefined
+          ? undefined
+          : projected => ({
+              ...logical.coverage.memory.codeAnchors!,
+              gaps: logical.coverage.gaps,
+              recoveryPresent: projected.structuredContent.recommendedFollowUps.length > 0,
+            }),
+        projected => {
+          const graphReturned =
+            projected.structuredContent.graph.cards.length + projected.structuredContent.graph.contracts.length > 0;
+          const memoryReturned =
+            projected.structuredContent.durableDecisions.length + projected.structuredContent.activeHandoffs.length > 0;
+          return graphReturned && memoryReturned
+            ? 'mixed'
+            : graphReturned
+              ? 'graph'
+              : memoryReturned
+                ? 'memory'
+                : 'none';
+        },
       ),
   };
+}
+
+function contextBriefGraphPhaseOutcome(evidence: ContextBriefGraphEvidenceV1): 'success' | 'unavailable' {
+  return !evidence.coverage.complete ||
+    evidence.gaps.some(gap =>
+      [
+        'graph-coverage-incomplete',
+        'graph-query-unavailable',
+        'graph-ready-snapshot-missing',
+        'graph-repository-read-failed',
+        'graph-snapshots-missing',
+      ].includes(gap),
+    )
+    ? 'unavailable'
+    : 'success';
+}
+
+function contextBriefCodeLinkedMemoryPhaseOutcome(evidence: ContextBriefMemoryRetrievalV1): 'success' | 'unavailable' {
+  const anchors = evidence.codeAnchorCoverage;
+  return anchors === undefined ||
+    anchors.resolved === 0 ||
+    evidence.gaps.some(gap =>
+      [
+        'code-anchor-recall-unavailable',
+        'code-anchor-ref-unsupported',
+        'code-anchor-resolution-unavailable',
+        'code-anchor-scope-unsupported',
+        'code-anchor-selector-matches-unvalidated',
+      ].includes(gap),
+    )
+    ? 'unavailable'
+    : 'success';
 }
 
 /** Deterministic compiler core with injected read boundaries for focused tests and alternate clients. */
@@ -177,7 +236,10 @@ export const compileContextBrief = Effect.fn('contextBrief.compile')(function* (
 ) {
   const request = planContextBrief(input);
   const requestedRepositories = request.scope.kind === 'repository' ? 1 : 0;
-  const reporter = makeContextBriefAnonymousTelemetryReporter(request.scope.kind === 'workset' ? 'workset' : 'local');
+  const reporter = makeContextBriefAnonymousTelemetryReporter(request.scope.kind === 'workset' ? 'workset' : 'local', {
+    contract: request.codeAnchors.codeRefs.length === 0 ? 'task-only-v2' : 'code-anchored-v3',
+    mode: request.mode,
+  });
   yield* reporter.annotate;
   return yield* compileContextBriefWith(
     instrumentContextBriefCompilerDependencies(
@@ -341,6 +403,7 @@ function telemetryUnknownReason(
 }
 
 export * from './graph_evidence.js';
+export * from './graph_anchor_evidence.js';
 export * from './citation_validation.js';
 export * from './memory_evidence.js';
 export * from './planner.js';

@@ -17,16 +17,17 @@ import {
   readManagedMemory,
   resourcesTree,
   runManage,
-} from '../../src/manager.js';
+} from '../../src/manager/index.js';
+import {removeManagerSharedMemorySource, storeManagerPersonalMemoryMove} from '../../src/manager/memory_move.js';
 import {
   managerProjectOptions,
   pruneSelectedMemoryUris,
   selectableMemoryUris,
   type TreeNode,
-} from '../../src/manager_ui.js';
+} from '../../src/manager/ui.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import * as lifecycle from '../../src/lifecycle.js';
-import * as memory from '../../src/memory.js';
+import * as memory from '../../src/memory/index.js';
 import * as seeding from '../../src/seeding.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {withMemoryUriLocks} from '../../src/effect/memory_lock.js';
@@ -57,6 +58,7 @@ import {
 import {runEffect} from '../helpers/effect-runtime.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
+import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
 import {sha256HexSync} from '../../src/crypto/sha256.js';
 
 const MANAGER_GRAPH_SNAPSHOT_ID = `cgsn_${'1'.repeat(40)}`;
@@ -70,8 +72,8 @@ vi.mock('../../src/lifecycle.js', async importOriginal => {
   };
 });
 
-vi.mock('../../src/memory.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../../src/memory.js')>();
+vi.mock('../../src/memory/index.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/memory/index.js')>();
   return {
     ...actual,
     runArchive: vi.fn(() => Effect.void),
@@ -216,7 +218,7 @@ function managerCitedMemory(body: string, sourceDirty: boolean, repositoryIdenti
   const citation = createMemoryCodeCitation({
     extractorSet: 'native-code-graph-13',
     fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
-    path: 'src/manager.ts',
+    path: 'src/manager/index.ts',
     repositoryId: 'b'.repeat(64),
     repositoryIdentityKind,
     sourceCommit: 'c'.repeat(40),
@@ -230,6 +232,7 @@ function managerCitedMemory(body: string, sourceDirty: boolean, repositoryIdenti
     {
       codeCitations: [citation],
       kind: 'durable',
+      memoryId: 'tn_manager_cited',
       project: 'threadnote',
       schemaVersion: MEMORY_SCHEMA_VERSION,
       sourceAgentClient: 'manager',
@@ -525,7 +528,11 @@ describe('manager catalog', () => {
     vi.mocked(memory.runForget).mockReset();
     vi.mocked(memory.runRecall)
       .mockReset()
-      .mockImplementation((_config, options) => Console.log(`recall result: ${options.query}`));
+      .mockImplementation((_config, options) =>
+        Console.log(`recall result: ${options.query}`).pipe(
+          Effect.as({queryExpansions: [], ranked: [], totalRanked: 0, warnings: []}),
+        ),
+      );
   });
 
   it('refuses to start while native graph repair or maintenance is active', async () => {
@@ -968,6 +975,10 @@ describe('manager http API', () => {
       expect(movedRecord?.body).toBe('Personal cited memory.');
       expect(movedRecord?.metadata.codeCitations).toEqual(originalRecord?.metadata.codeCitations);
       expect(movedRecord?.metadata.schemaVersion).toBe(MEMORY_SCHEMA_VERSION);
+      expect(await runEffect(readMemoryWithRelocations(config, sourceUri))).toMatchObject({
+        canonicalUri: targetUri,
+        requestedUri: sourceUri,
+      });
     } finally {
       await server.close();
     }
@@ -1034,10 +1045,73 @@ describe('manager http API', () => {
       expect(parseMemoryDocument(targetUri, moved)?.metadata.codeCitations).toEqual(
         parseMemoryDocument(fixture.uri, sourceContent)?.metadata.codeCitations,
       );
+      expect(await runEffect(readMemoryWithRelocations(fixture.config, fixture.uri))).toMatchObject({
+        canonicalUri: targetUri,
+        requestedUri: fixture.uri,
+      });
     } finally {
       await server.close();
     }
   });
+
+  effectIt.effect('preserves a shared source when its staged personal target changes before cleanup', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* Effect.promise(makeSharedManagerRuntime);
+          homes.push(fixture.config.agentContextHome);
+          const fs = yield* FileSystem.FileSystem;
+          const targetUri = 'threadnote://user/denys/memories/durable/projects/threadnote/shared-to-personal-race.md';
+          const targetPath = join(
+            fixture.config.agentContextHome,
+            'data',
+            'local',
+            'user',
+            'denys',
+            'memories',
+            'durable',
+            'projects',
+            'threadnote',
+            'shared-to-personal-race.md',
+          );
+          const remote = join(fixture.config.agentContextHome, 'share', 'remote.git');
+          const storedUri = yield* storeManagerPersonalMemoryMove(
+            fixture.config,
+            fixture.uri,
+            fixture.content,
+            {
+              kind: 'durable',
+              project: 'threadnote',
+              sourceAgentClient: 'manager',
+              status: 'active',
+              topic: 'shared-to-personal-race',
+            },
+            false,
+          );
+          expect(storedUri).toBe(targetUri);
+          const staged = yield* readManagedMemory(fixture.config, targetUri);
+          const concurrentTarget = staged.content.replace('Shared Manager original.', 'Concurrent target edit.');
+          yield* fs.writeFileString(targetPath, concurrentTarget);
+
+          const failure = yield* withSharedRepositoryLock(
+            fixture.config,
+            removeManagerSharedMemorySource(fixture.config, fixture.uri, fixture.content, targetUri, staged.content),
+          ).pipe(Effect.flip);
+
+          expect(String(failure)).toContain('changed before shared source removal');
+          expect(yield* fs.readFileString(fixture.canonicalPath)).toBe(fixture.content);
+          expect(yield* fs.readFileString(fixture.worktreePath)).toBe(fixture.content);
+          expect(yield* fs.readFileString(targetPath)).toBe(concurrentTarget);
+          const remoteSource = yield* Effect.sync(() =>
+            execFileSync('git', ['--git-dir', remote, 'show', 'HEAD:durable/projects/threadnote/shared-manager.md'], {
+              encoding: 'utf8',
+            }),
+          );
+          expect(remoteSource).toBe(fixture.content);
+        }),
+      ),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it('preserves immutable code citations when Manager relocates shared memory within a team', async () => {
     const fixture = await makeSharedManagerRuntime();
@@ -1192,6 +1266,10 @@ describe('manager http API', () => {
       expect(existsSync(fixture.canonicalPath)).toBe(false);
       expect(await readFile(targetCanonicalPath, 'utf8')).toBe(targetContent);
       expect(await readFile(targetWorktreePath, 'utf8')).toBe(targetContent);
+      expect(await runEffect(readMemoryWithRelocations(fixture.config, fixture.uri))).toMatchObject({
+        canonicalUri: targetUri,
+        requestedUri: fixture.uri,
+      });
     } finally {
       await server.close();
     }
@@ -1248,6 +1326,91 @@ describe('manager http API', () => {
       expect(await response.json()).toMatchObject({error: expect.stringContaining(candidate.blocker)});
       expect(await readFile(sourcePath, 'utf8')).toBe(original);
       expect(existsSync(personalTargetPath)).toBe(false);
+      expect(existsSync(sharedTargetPath)).toBe(false);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('blocks a changed-target Manager share while the original memory has pending code citations', async () => {
+    const fixture = await makeSharedManagerRuntime();
+    homes.push(fixture.config.agentContextHome);
+    const sourceUri = 'threadnote://user/denys/memories/durable/projects/threadnote/pending-source.md';
+    const personalRoot = join(
+      fixture.config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'memories',
+      'durable',
+      'projects',
+      'threadnote',
+    );
+    const sourcePath = join(personalRoot, 'pending-source.md');
+    const stagedPath = join(personalRoot, 'pending-target.md');
+    const sharedTargetPath = join(
+      fixture.config.agentContextHome,
+      'share',
+      'worktrees',
+      'default',
+      'durable',
+      'projects',
+      'threadnote',
+      'pending-target.md',
+    );
+    const original = formatMemoryDocument(
+      'MEMORY',
+      {
+        kind: 'durable',
+        memoryId: 'tn_manager_pending_source',
+        project: 'threadnote',
+        schemaVersion: MEMORY_SCHEMA_VERSION,
+        sourceAgentClient: 'test',
+        status: 'active',
+        timestamp: '2026-08-30T00:00:00.000Z',
+        topic: 'pending-source',
+        visibility: 'personal',
+      },
+      'Pending citations must remain private.',
+    );
+    await writeFile(sourcePath, original);
+    const pendingRoot = join(
+      fixture.config.agentContextHome,
+      'data',
+      'local',
+      'user',
+      'denys',
+      'private',
+      'deferred-code-anchors',
+      'v1',
+    );
+    const pendingPath = join(pendingRoot, `${sha256HexSync(sourceUri)}.json`);
+    await mkdir(pendingRoot, {recursive: true, mode: 0o700});
+    await writeFile(pendingPath, '{}\n', {mode: 0o600});
+
+    const server = await startServer(fixture.config, 'secret');
+    try {
+      const response = await fetch(`${server.url}/api/memory/move`, {
+        body: JSON.stringify({
+          confirm: true,
+          kind: 'durable',
+          project: 'threadnote',
+          status: 'active',
+          team: 'default',
+          topic: 'pending-target',
+          uri: sourceUri,
+        }),
+        headers: {authorization: 'Bearer secret', 'content-type': 'application/json'},
+        method: 'POST',
+      });
+
+      const responseBody = await response.text();
+      expect(response.status, responseBody).toBe(500);
+      expect(responseBody).toContain('code citations are still pending');
+      expect(await readFile(sourcePath, 'utf8')).toBe(original);
+      expect(existsSync(pendingPath)).toBe(true);
+      expect(existsSync(stagedPath)).toBe(false);
       expect(existsSync(sharedTargetPath)).toBe(false);
     } finally {
       await server.close();
@@ -1493,7 +1656,11 @@ describe('manager http API', () => {
         },
         {
           reason: 'possible macOS home path',
-          text: managerCitedMemory('Local evidence: /Users/alice/work/threadnote/src/manager.ts', false, 'remote'),
+          text: managerCitedMemory(
+            'Local evidence: /Users/alice/work/threadnote/src/manager/index.ts',
+            false,
+            'remote',
+          ),
         },
         {
           reason: 'metadata must match its canonical shared URI',
@@ -1918,6 +2085,77 @@ describe('manager http API', () => {
       expect(analysisResponse.status).toBe(200);
       expect(analysis.statistics).toMatchObject({analyzedEdgeCount: 1_602, analyzedNodeCount: 523});
       expect(analysis.trust.classification).toBe('untrusted-repository-data');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('isolated-indexes an explicit Context recovery workspace only after the authenticated action', async () => {
+    const config = await makeRuntime();
+    homes.push(config.agentContextHome);
+    const repositoryRoot = join(config.agentContextHome, 'context-recovery-project');
+    initializeGitRepository(repositoryRoot);
+    const identity = await runEffect(resolveRepositoryIdentity(repositoryRoot));
+    const snapshot: CodeGraphSnapshot = {
+      commit: identity.headCommit,
+      completedAt: '2026-08-31T00:00:00.000Z',
+      dirty: false,
+      edgeCount: 21,
+      extractorSet: CODE_GRAPH_EXTRACTOR_SET_VERSION,
+      fileCount: 12,
+      id: `cgsn_${'7'.repeat(40)}-context-recovery`,
+      repositoryId: identity.repositoryId,
+      state: 'ready',
+      symbolCount: 40,
+      worktreeId: identity.worktreeId,
+    };
+    vi.mocked(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).mockReturnValueOnce(
+      Effect.succeed({durationMs: 1, identity, snapshot}),
+    );
+    const server = await startServer(config, 'secret');
+    try {
+      const headers = {authorization: 'Bearer secret', 'content-type': 'application/json'};
+      const response = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index-cwd', cwd: repositoryRoot}),
+        headers,
+        method: 'POST',
+      });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        output: 'Ready in an isolated process · 12 files · 40 symbols · 21 edges',
+      });
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledWith({
+        cwd: identity.repoRoot,
+        expectedIdentity: {
+          checkoutId: identity.checkoutId,
+          repositoryId: identity.repositoryId,
+          worktreeId: identity.worktreeId,
+        },
+        force: false,
+        threadnoteHome: config.agentContextHome,
+      });
+
+      const rejected = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index-cwd', cwd: 'relative/project'}),
+        headers,
+        method: 'POST',
+      });
+      expect(rejected.status).toBe(500);
+      expect(await rejected.json()).toEqual({error: 'Supply cwd as an absolute local worktree path.'});
+
+      const unavailable = await fetch(`${server.url}/api/graphs/action`, {
+        body: JSON.stringify({action: 'index-cwd', cwd: config.agentContextHome}),
+        headers,
+        method: 'POST',
+      });
+      expect(unavailable.status).toBe(500);
+      const unavailableBody = await unavailable.json();
+      expect(unavailableBody).toEqual({
+        error: 'The selected workspace is not an available local Git repository. Check its path and retry.',
+      });
+      expect(JSON.stringify(unavailableBody)).not.toContain(config.agentContextHome);
+      expect(isolatedIndex.runIsolatedCodeGraphIndexSnapshot).toHaveBeenCalledTimes(1);
     } finally {
       await server.close();
     }

@@ -51,7 +51,7 @@ import {
   runRead,
   runRecall,
   runRemember,
-} from '../memory.js';
+} from '../memory/index.js';
 import {
   moveManagerSharedMemoryWithinTeam,
   publishStagedManagerPersonalMemoryMove,
@@ -64,6 +64,7 @@ import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../memory/code_citation_policy.js';
+import {discardDeferredCodeAnchorIntent} from '../memory/deferred_code_anchor.js';
 import {parseMemoryDocument, type MemoryRecord} from '../memory/hygiene.js';
 import {
   ensureSharedDirectoryChain,
@@ -77,11 +78,12 @@ import {
   resourceUriToWorktreeRelative,
   writeMemoryFile,
   writeSharedWorktreeFile,
-} from '../share.js';
+} from '../share/index.js';
 import {collectDoctorChecks, runRepair, runStart} from '../lifecycle.js';
 import {runSeed, runSeedSkills} from '../seeding.js';
 import {readManagerRuntimeState} from './state.js';
 import {handleManagerProcessRequest} from './processes.js';
+import {handleManagerContextRequest} from './context.js';
 import {emptyManagerTree, readManagerTreeRoot} from './tree.js';
 import {
   handleManagerWorksetRequest,
@@ -89,6 +91,7 @@ import {
   managerWorksetRequestAllowedDuringMaintenance,
 } from './worksets.js';
 import * as graphProjects from './graph_projects.js';
+import * as graphActions from './graph_actions.js';
 import {
   cleanupMode,
   consolidationAgent,
@@ -558,6 +561,16 @@ const handleRequestLegacy = Effect.fn('manager.handleRequestLegacy')(function* (
   });
   if (processResponse) {
     writeJson(response, processResponse.status, processResponse.body);
+    return;
+  }
+  const contextResponse = yield* handleManagerContextRequest({
+    body: request.body,
+    config: context.config,
+    method: request.method,
+    url,
+  });
+  if (contextResponse) {
+    writeJson(response, contextResponse.status, contextResponse.body);
     return;
   }
   if (
@@ -1121,6 +1134,7 @@ const writeRawMemory = Effect.fn('manager.writeRawMemory')(function* (
     });
     yield* ensurePersonalDirectoryChain(config, ov, parentUri(canonicalUri));
     yield* writeMemoryFile(config, ov, canonicalUri, content, 'replace', false);
+    yield* discardDeferredCodeAnchorIntent(config, canonicalUri);
   });
   if (!resourceIdIsManagedMemoryNamespace(canonicalUri)) {
     return yield* write;
@@ -1222,8 +1236,13 @@ const moveMemory = Effect.fn('manager.moveMemory')(function* (
       () => storeManagerPersonalMemoryMove(config, sourceUri, source.content, metadata, false),
       runEffect,
     );
+    const personalTarget = yield* readManagedMemory(config, personalTargetUri);
     const removed = yield* runCaptured(
-      () => withSharedRepositoryLock(config, removeManagerSharedMemorySource(config, sourceUri, source.content)),
+      () =>
+        withSharedRepositoryLock(
+          config,
+          removeManagerSharedMemorySource(config, sourceUri, source.content, personalTargetUri, personalTarget.content),
+        ),
       runEffect,
     );
     return {output: [saved.output, removed.output].filter(Boolean).join('\n'), targetUri: personalTargetUri};
@@ -1598,6 +1617,7 @@ const runManagerGraphAction = Effect.fn('manager.runGraphAction')(function* (
     return yield* runCaptured(() => runCodeGraphPurge(config, {all: true, dryRun}), runEffect);
   }
   if (action === 'index-project') return yield* graphProjects.runManagerManifestProjectGraphIndex(config, body);
+  if (action === 'index-cwd') return yield* graphActions.runManagerExplicitCwdGraphIndex(config, body);
   const checkoutId = yield* Effect.try({
     try: () => requireGraphIdentity(body.checkoutId, 'checkoutId'),
     catch: managerOperationError,

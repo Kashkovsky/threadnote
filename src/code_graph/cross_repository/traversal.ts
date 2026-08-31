@@ -292,6 +292,7 @@ function readAdjacency(
     let bridgeDone = false;
     while ((!localDone || !bridgeDone) && edges.length < remaining) {
       const limit = Math.min(READ_PAGE_MAXIMUM, Math.max(1, remaining - edges.length));
+      const bridgePageRequested = !bridgeDone;
       const pages: readonly [
         CodeGraphCrossRepositoryLocalPageV1 | undefined,
         CodeGraphCrossRepositoryBridgePageV1 | undefined,
@@ -347,7 +348,9 @@ function readAdjacency(
         edges.push(...bridgePage.bridges.map(bridge => bridgeTraversalEdge(input.generationId, bridge)));
         bridgeAfter = bridgePage.next;
         bridgeDone = bridgeAfter === undefined;
-      } else throw new Error('The fenced bridge set became unavailable during traversal.');
+      } else if (bridgePageRequested) {
+        throw new Error('The fenced bridge set became unavailable during traversal.');
+      }
       if (localPage === undefined) localDone = true;
     }
     return edges.sort(compareTraversalEdges).slice(0, remaining);

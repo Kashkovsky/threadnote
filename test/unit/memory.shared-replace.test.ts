@@ -7,7 +7,7 @@ import {Cause, Effect, Exit} from 'effect';
 import {afterEach, beforeEach, describe, expect, vi} from 'vitest';
 import * as aiEnrichment from '../../src/effect/ai/enrichment.js';
 import {captureConsole} from '../../src/effect/console.js';
-import {runRemember} from '../../src/memory.js';
+import {runRemember} from '../../src/memory/index.js';
 import type {MemoryMetadata} from '../../src/memory/document.js';
 import type {CommandResult, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';

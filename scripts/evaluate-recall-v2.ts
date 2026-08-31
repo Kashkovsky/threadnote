@@ -16,7 +16,7 @@ import {
 } from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallNonInferiority} from '../src/evaluation/recall-gate.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {atomicWrite, fixtureHash, markFailure, printJson, readJsonFile, scriptArguments} from './effect/script.js';
 
 const evaluateRecall = Effect.gen(function* () {

@@ -1,4 +1,4 @@
-import {Console, Effect, Option, Schema} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import {Argument, CliError, Command, Flag} from 'effect/unstable/cli';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {runHooksInstall, runPreCompactHook, runSessionStartHook} from '../hooks.js';
@@ -29,6 +29,7 @@ import {
   runEnrichMemories,
   runExportPack,
   runForget,
+  runFinalizeCodeRefs,
   runHandoff,
   runImportPack,
   runList,
@@ -40,8 +41,8 @@ import {
   runRead,
   runRecall,
   runRemember,
-} from '../memory.js';
-import {runMcpInstall} from '../mcp.js';
+} from '../memory/index.js';
+import {runMcpInstall} from '../mcp/index.js';
 import {runObsidianInboxScan} from '../obsidian/inbox.js';
 import {runObsidianOpen} from '../obsidian/open.js';
 import {
@@ -81,10 +82,10 @@ import {
   runShareUnpublish,
 } from './share.js';
 import type {RuntimeConfig} from '../types.js';
-import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../update.js';
+import {maybeNotifyUpdate, maybeRunPostUpdateAfterRepair, runPostUpdate} from '../release/index.js';
 import {errorMessage} from '../utils.js';
 import {runVersion} from '../release/version_command.js';
-import {runManage} from '../manager.js';
+import {runManage} from '../manager/index.js';
 import {applicationError} from './errors.js';
 import {runHomeMigration} from '../migration/home.js';
 import {
@@ -129,6 +130,10 @@ import {
 } from '../code_graph/workset_evidence.js';
 import {runProcessDiagnostics} from '../process/diagnostics.js';
 import {runContextBrief} from '../context_brief/commands.js';
+import {
+  CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+  CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+} from '../context_brief/types.js';
 import {runTelemetryDisable, runTelemetryEnable, runTelemetryStatus} from '../telemetry/commands.js';
 import {initializeAutoUpdatePolicy, runAutoUpdateWorker, runThreadnoteUpdateCommand} from '../release/auto_update.js';
 import {
@@ -144,85 +149,33 @@ import {
   makeCursorCloudModeFlag,
 } from './cursor_cloud_cli.js';
 import {
-  decodeCliStringFlagValue,
   makeCliInvocationInspector,
   normalizeCliArguments,
-  registerCliBooleanFlag,
-  registerCliValueFlag,
   type CliInvocationInspection,
   type ProductionLogMode,
 } from './cli_invocation.js';
-
-const describeFlag = <A>(flag: Flag.Flag<A>, description: string): Flag.Flag<A> =>
-  flag.pipe(Flag.withDescription(description));
-
-const valueFlag = <A>(name: string, flag: Flag.Flag<A>, kind: 'other' | 'string'): Flag.Flag<A> => {
-  registerCliValueFlag(`--${name}`, kind);
-  return flag;
-};
-
-const stringFlag = (name: string): Flag.Flag<string> =>
-  valueFlag(name, Flag.string(name), 'string').pipe(Flag.map(decodeCliStringFlagValue));
-
-const integerFlag = (name: string): Flag.Flag<number> => valueFlag(name, Flag.integer(name), 'other');
-
-const withValueAlias = <A>(flag: Flag.Flag<A>, alias: string, kind: 'other' | 'string'): Flag.Flag<A> => {
-  registerCliValueFlag(alias.length === 1 ? `-${alias}` : `--${alias}`, kind);
-  return flag.pipe(Flag.withAlias(alias));
-};
-
-const optional = <A>(flag: Flag.Flag<A>): Flag.Flag<A | undefined> =>
-  flag.pipe(Flag.optional, Flag.map(Option.getOrUndefined));
-
-const optionalString = (name: string, description: string): Flag.Flag<string | undefined> =>
-  optional(describeFlag(stringFlag(name), description));
-
-const requiredString = (name: string, description: string): Flag.Flag<string> =>
-  describeFlag(stringFlag(name), description);
-
-const defaultString = (name: string, description: string, value: string): Flag.Flag<string> =>
-  describeFlag(stringFlag(name), description).pipe(Flag.withDefault(value));
-
-const boolean = (name: string, description: string): Flag.Flag<boolean> => {
-  registerCliBooleanFlag(`--${name}`);
-  return describeFlag(Flag.boolean(name), description).pipe(Flag.withDefault(false));
-};
-
-const negatedBoolean = (name: string, description: string): Flag.Flag<boolean> => {
-  registerCliBooleanFlag(`--no-${name}`);
-  return describeFlag(Flag.boolean(`no-${name}`), description).pipe(
-    Flag.withDefault(false),
-    Flag.map(value => !value),
-  );
-};
-
-const optionalChoice = <const Choices extends readonly string[]>(
-  name: string,
-  choices: Choices,
-  description: string,
-): Flag.Flag<Choices[number] | undefined> =>
-  optional(describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description));
-
-const requiredChoice = <const Choices extends readonly string[]>(
-  name: string,
-  choices: Choices,
-  description: string,
-): Flag.Flag<Choices[number]> => describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description);
-
-const defaultChoice = <const Choices extends readonly string[], const Value extends Choices[number]>(
-  name: string,
-  choices: Choices,
-  description: string,
-  value: Value,
-): Flag.Flag<Choices[number]> =>
-  describeFlag(valueFlag(name, Flag.choice(name, choices), 'other'), description).pipe(Flag.withDefault(value));
-
-const repeatedString = (name: string, description: string, maximum = 1000): Flag.Flag<ReadonlyArray<string>> =>
-  describeFlag(stringFlag(name), description).pipe(Flag.atMost(maximum));
-const argument = (name: string, description: string): Argument.Argument<string> =>
-  Argument.string(name).pipe(Argument.withDescription(description));
-const optionalArgument = (name: string, description: string, fallback: string): Argument.Argument<string> =>
-  argument(name, description).pipe(Argument.withDefault(fallback));
+import {
+  argument,
+  boolean,
+  defaultChoice,
+  defaultString,
+  describeFlag,
+  integerFlag,
+  negatedBoolean,
+  optional,
+  optionalArgument,
+  optionalChoice,
+  optionalString,
+  repeatedString,
+  requiredChoice,
+  requiredString,
+  withValueAlias,
+} from './cli_flags.js';
+import {
+  codeGraphCliBounds as graphBounds,
+  codeGraphFreshnessFlag as graphFreshness,
+  codeGraphStatusFlags,
+} from './code_graph_cli_flags.js';
 
 const root = Command.make('threadnote').pipe(
   Command.withSharedFlags({
@@ -643,58 +596,8 @@ const indexCommand = Command.make('index').pipe(
   Command.withSubcommands([indexRebuild, indexStatus, indexVerify, indexPurge]),
 );
 
-const graphBounds = {
-  cwd: optionalString('cwd', 'Repository or worktree directory; defaults to the current directory'),
-  depth: optional(
-    describeFlag(
-      integerFlag('depth').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 0, maximum: 8})))),
-      'Maximum relationship traversal depth',
-    ),
-  ),
-  edgeLimit: optional(
-    describeFlag(
-      integerFlag('edge-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 500})))),
-      'Maximum returned relationships',
-    ),
-  ),
-  includeHeuristic: boolean('include-heuristic', 'Include lower-confidence heuristic relationships'),
-  includeModelAssociations: boolean('include-model-associations', 'Include model-derived semantic associations'),
-  json: boolean('json', 'Emit versioned machine-readable JSON'),
-  nodeLimit: withValueAlias(
-    optional(
-      describeFlag(
-        integerFlag('node-limit').pipe(Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 200})))),
-        'Maximum returned nodes',
-      ),
-    ),
-    'limit',
-    'other',
-  ),
-  readTimeoutMilliseconds: optional(
-    describeFlag(
-      integerFlag('read-timeout-ms').pipe(
-        Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 600_000}))),
-      ),
-      'Foreground read/refresh budget in milliseconds; defaults to 25000',
-    ),
-  ),
-} as const;
-
-const graphFreshness = (value: 'current' | 'ready') =>
-  defaultChoice(
-    'freshness',
-    ['ready', 'current', 'allow-stale'],
-    'Ready uses an existing snapshot, current performs a bounded refresh, and allow-stale never starts indexing',
-    value,
-  );
-
-const graphStatus = Command.make(
-  'status',
-  {
-    cwd: graphBounds.cwd,
-    json: graphBounds.json,
-  },
-  options => withRuntimeEffect(config => runCodeGraphStatus(config, options)),
+const graphStatus = Command.make('status', codeGraphStatusFlags, options =>
+  withRuntimeEffect(config => runCodeGraphStatus(config, options)),
 ).pipe(Command.withDescription('Show native code graph snapshot and freshness state'));
 
 const graphInventory = Command.make(
@@ -1308,6 +1211,10 @@ const remember = Command.make(
       'code-ref',
       'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
     ),
+    deferCodeRefs: boolean(
+      'defer-code-refs',
+      'Explicitly use the default private store-now/anchor-later citation policy',
+    ),
     dryRun: boolean('dry-run', 'Print memory and native operation without storing'),
     kind: defaultChoice(
       'kind',
@@ -1316,6 +1223,10 @@ const remember = Command.make(
       'durable',
     ),
     project: optionalString('project', 'Project/repo/topic namespace for lifecycle-aware storage'),
+    requireCurrentCodeRefs: boolean(
+      'require-current-code-refs',
+      'Fail before writing unless every code reference has exact-current graph evidence',
+    ),
     replace: withValueAlias(
       optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
       'replace-uri',
@@ -1467,18 +1378,29 @@ const contextBrief = Command.make(
     budgetTokens: optional(
       describeFlag(
         integerFlag('budget-tokens').pipe(
-          Flag.withSchema(Schema.Int.check(Schema.isBetween({minimum: 1, maximum: 1_500}))),
+          Flag.withSchema(
+            Schema.Int.check(
+              Schema.isBetween({
+                minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
+                maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
+              }),
+            ),
+          ),
         ),
-        'Maximum estimated tokens for the combined structured and text response',
+        `Maximum estimated tokens for the combined structured and text response (${CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS}-${CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS})`,
       ),
     ),
-    codeRefs: repeatedString('code-ref', 'File/cgs_ backlink; repeat up to eight times', 8),
-    cwd: optionalString('cwd', 'Absolute repository path; defaults to the current directory'),
+    codeRefs: repeatedString(
+      'code-ref',
+      'Canonical graph-indexed repository-relative path (no ./ or ..) or exact cgs_<32 lowercase hex>; cgr_ unsupported; repeat up to eight times',
+      8,
+    ),
+    cwd: optionalString('cwd', 'Absolute repository path, at most 4096 UTF-8 bytes; defaults to the current directory'),
     json: boolean('json', 'Print the structured Context Brief projection'),
     mode: defaultChoice('mode', ['brief', 'locate', 'explain', 'trace', 'impact'], 'Evidence-planning mode', 'brief'),
-    project: optionalString('project', 'Optional memory project scope'),
-    task: requiredString('task', 'Engineering task or question to orient'),
-    workset: optionalString('workset', 'Prepared workset scope instead of the current repository'),
+    project: optionalString('project', 'Optional memory project scope, at most 256 UTF-8 bytes'),
+    task: requiredString('task', 'Engineering task or question, 1-4096 UTF-8 bytes without control characters'),
+    workset: optionalString('workset', 'Prepared workset scope, at most 256 UTF-8 bytes, instead of the repository'),
   },
   options => withRuntimeEffect(config => runContextBrief(config, options)),
 ).pipe(Command.withDescription('Compile bounded graph, decision, handoff, and freshness evidence for an agent task'));
@@ -1504,10 +1426,10 @@ const read = Command.make(
   'read',
   {
     dryRun: boolean('dry-run', 'Print the native read without running it'),
-    uri: argument('uri', 'threadnote:// URI to read'),
+    uri: argument('uri', 'Canonical threadnote:// URI or threadnote://memory/tn_ stable selector'),
   },
   ({uri, ...options}) => withRuntimeEffect(config => runRead(config, uri, options)),
-).pipe(Command.withDescription('Read a threadnote:// URI returned by recall or list'));
+).pipe(Command.withDescription('Read a canonical or stable-identity threadnote:// pointer'));
 
 const list = Command.make(
   'list',
@@ -1535,6 +1457,10 @@ const handoff = Command.make(
       'code-ref',
       'Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to cite; repeat for multiple',
     ),
+    deferCodeRefs: boolean(
+      'defer-code-refs',
+      'Explicitly use the default private store-now/anchor-later citation policy',
+    ),
     dryRun: boolean('dry-run', 'Print handoff without storing'),
     issue: optionalString('issue', 'Related issue reference'),
     nextStep: optionalString('next-step', 'Suggested next step'),
@@ -1545,6 +1471,10 @@ const handoff = Command.make(
       optionalString('replace', 'Supersede an existing memory after storing the handoff'),
       'replace-uri',
       'string',
+    ),
+    requireCurrentCodeRefs: boolean(
+      'require-current-code-refs',
+      'Fail before writing unless every code reference has exact-current graph evidence',
     ),
     sourceAgentClient: defaultString('source-agent-client', 'Originating agent client name', 'codex'),
     task: optionalString('task', 'Current task summary'),
@@ -1575,6 +1505,15 @@ const forget = Command.make(
   },
   ({uri, ...options}) => withRuntimeEffect(config => runForget(config, uri, options)),
 ).pipe(Command.withDescription('Remove a threadnote:// URI from local Threadnote context'));
+
+const finalizeCodeRefs = Command.make(
+  'finalize-code-refs',
+  {
+    limit: optionalString('limit', 'Maximum pending memories to inspect; defaults to 25, maximum 100'),
+    uris: repeatedString('uri', 'Pending personal memory URI to finalize; repeat for multiple'),
+  },
+  options => withRuntimeEffect(config => runFinalizeCodeRefs(config, options)),
+).pipe(Command.withDescription('Finalize private pending memory code citations from exact-current ready graphs'));
 
 const cursorCloudIdentityFlags = makeCursorCloudIdentityFlags(defaultString);
 const cursorCloudMode = makeCursorCloudModeFlag(defaultChoice);
@@ -1741,7 +1680,14 @@ const publishFlags = {
 
 const sharePublish = Command.make(
   'publish',
-  {...publishFlags, uri: argument('resource-uri', 'Personal threadnote:// memory URI')},
+  {
+    ...publishFlags,
+    allowUncitedPendingCodeRefs: boolean(
+      'allow-uncited-pending-code-refs',
+      'Publish without pending code citations and discard the private pending intent',
+    ),
+    uri: argument('resource-uri', 'Personal threadnote:// memory URI'),
+  },
   ({uri, ...options}) => withRuntimeEffect(config => runSharePublish(config, uri, options)),
 ).pipe(Command.withDescription('Move a personal memory into the shared team namespace, commit and push'));
 
@@ -1946,6 +1892,7 @@ const topLevelCommandRegistrations = [
   registerTopLevelCommand('pre-compact-hook', preCompactHook),
   registerTopLevelCommand('session-start-hook', sessionStartHook),
   registerTopLevelCommand('remember', remember),
+  registerTopLevelCommand('finalize-code-refs', finalizeCodeRefs),
   registerTopLevelCommand('migrate', migrateHome, {productionLog: {mode: 'requires-apply'}}),
   registerTopLevelCommand('migrate-memories', migrateMemories),
   registerTopLevelCommand('migrate-lifecycle', migrateLifecycle, {

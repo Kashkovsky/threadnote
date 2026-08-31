@@ -5,6 +5,7 @@ import {SystemInfo} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 
 import {canonicalMemoryDocumentContent} from '../memory/document.js';
+import {discardMemoryRelocation} from '../memory/relocation.js';
 import {
   memoryCodeCitationContentSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
@@ -15,7 +16,7 @@ import {ResourceStore} from '../effect/resource-store.js';
 
 import {parseResourceId} from '../storage/resource-id.js';
 
-import {applyScrubber} from '../scrubber.js';
+import {applyScrubber} from './scrubber.js';
 
 import type {
   ShareAgentArtifactAgent,
@@ -967,6 +968,10 @@ export const writeMemoryFile = Effect.fn('share.writeMemoryFile')(function* (
   yield* store.write(resourceStoreLocation(config), uri, content, {
     mode: initialMode === 'replace' ? 'upsert' : 'create',
   });
+  // A live memory always wins over an older relocation from the same URI.
+  // Clear that receipt now so deleting a later, unrelated reuse cannot revive
+  // the stale destination.
+  yield* discardMemoryRelocation(config, uri);
 });
 
 function resourceStoreLocation(config: ShareRuntime) {

@@ -150,8 +150,9 @@ threadnote context brief \
 
 The response did get more honest. Context Brief v2 keeps freshness beside each selected durable decision or handoff and
 can include its precise status, bounded per-citation receipts, and stale-link or stale-evidence issues. A projector
-cannot keep the memory excerpt while quietly dropping its safety status. Plain text remains a terse agent-log receipt;
-JSON and MCP `structuredContent` carry the bounded evidence.
+cannot keep the memory excerpt while quietly dropping its safety status. MCP content and plain CLI now carry
+parseable `context-brief-agent-view` JSON for clients that hide structured
+results, while JSON and MCP `structuredContent` retain the full bounded audit evidence.
 
 Repository and Workset behavior follows the same rule: validate only an exact-current snapshot already available in
 scope. Workset queries never fan out cold graph builds. If a member is missing or stale, prepare the Workset explicitly

@@ -1,4 +1,5 @@
 import {TestError} from '../helpers/test-error.js';
+import {it as effectIt} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Effect} from 'effect';
 import {describe, expect, it} from 'vitest';
@@ -176,6 +177,68 @@ describe('cross-repository graph traversal', () => {
       {numRuns: 30},
     );
   });
+
+  effectIt.effect.prop(
+    'continues arbitrary local pagination after the bridge lane reaches its terminal page',
+    {pageCount: FC.integer({max: 6, min: 2})},
+    ({pageCount}) =>
+      Effect.gen(function* () {
+        const fixture = traversalFixture();
+        const pagedEdges = Array.from({length: pageCount}, (_, index) =>
+          localEdge(`paged-${index}`, fixture.start, {
+            ...fixture.start,
+            reference: {kind: 'qualified-ref', ref: qualifiedRef(`paged-target-${index}`)},
+          }),
+        );
+        let bridgeReads = 0;
+        const result = yield* findCodeGraphCrossRepositoryPath(
+          {
+            monotonicMilliseconds: () => 0,
+            readBridgePage: () => {
+              bridgeReads += 1;
+              return Effect.succeed({
+                bridgeSetDigest: bridgeSet.digest,
+                bridges: [],
+                coverage: {
+                  diagnostics: [],
+                  failedRepositoryCount: 0,
+                  rejectionCount: 0,
+                  repositoriesRead: 3,
+                  repositoryCount: 3,
+                  state: 'complete' as const,
+                },
+                generationId,
+                resolverVersion: 1,
+                totalBridges: bridgeSet.totalBridges,
+                worksetName: 'engineering',
+              });
+            },
+            readLocalPage: request => {
+              const index = request.after === undefined ? 0 : Number(request.after.slice('page:'.length));
+              return Effect.succeed({
+                edges: [pagedEdges[index]!],
+                ...(index + 1 < pagedEdges.length ? {next: `page:${index + 1}`} : {}),
+              });
+            },
+            validateEndpointAccess: () => Effect.succeed({leased: true, ready: true}),
+          },
+          {
+            bridgeSet,
+            generationId,
+            maxDepth: 1,
+            maxEdges: pageCount + 1,
+            start: fixture.start,
+            target: fixture.end,
+          },
+        );
+
+        expect(bridgeReads).toBe(1);
+        expect(result.coverage).toMatchObject({bridgePagesRead: 1, localPagesRead: pageCount});
+        expect(result.edges).toHaveLength(pageCount);
+        expect(result.stop).toEqual({complete: false, reason: 'depth'});
+      }),
+    {fastCheck: {numRuns: 20}},
+  );
 });
 
 interface TraversalFixture {

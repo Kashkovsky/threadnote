@@ -3,8 +3,8 @@ import {
   memoryCodeCitationSharingBlockerMessage,
 } from '../memory/code_citation_policy.js';
 import {assertMemoryDocumentSchemaWritable, parseMemoryDocument} from '../memory/document.js';
-import {sharedMemoryUriParts} from '../share.js';
-import {applyScrubber} from '../scrubber.js';
+import {sharedMemoryUriParts} from '../share/index.js';
+import {applyScrubber} from '../share/scrubber.js';
 import type {RuntimeConfig} from '../types.js';
 
 /** Fail-closed validation for Manager's exact raw shared-memory editor. */

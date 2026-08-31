@@ -1,5 +1,5 @@
 import {Schema} from 'effect';
-import {credentialScrubberBlocker} from '../scrubber.js';
+import {credentialScrubberBlocker} from '../share/scrubber.js';
 
 export const REMOTE_MEMORY_RECEIPT_VERSION = 1 as const;
 export const REMOTE_MEMORY_CONSISTENCY_VALUES = ['current', 'recent-write-overlay', 'stale-index'] as const;

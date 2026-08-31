@@ -3,6 +3,7 @@ import {Database} from 'bun:sqlite';
 import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Option, Path, Ref} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
+import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
 import {EmbeddingFailed} from '../../src/effect/ai/errors.js';
 import {LocalModelRuntime, type LocalEmbeddingError} from '../../src/effect/ai/local-model-runtime.js';
@@ -12,6 +13,7 @@ import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {expireRecallIndexValidation, loadRecallIndexData, recallIndexStatus} from '../../src/recall/index.js';
+import {refreshRecallDerivedIndexesFromSelection} from '../../src/recall/mcp_refresh.js';
 import {loadMcpRecallSemanticScoresResult} from '../../src/recall/runtime.js';
 import {
   ensureVectorIndex,
@@ -24,6 +26,116 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 const manifest = BUILTIN_MODEL_MANIFESTS.find(model => model.id === 'bge-small-en-v1.5-q8')!;
 
 describe('MCP recall background vector refresh', () => {
+  effectIt.effect('restores lexical and selected installed vector indexes after a trusted mutation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-trusted-recall-refresh-'});
+        const config = {account: 'local', agentContextHome: home, user: 'tester'};
+        const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'trusted.md');
+        const uri = 'threadnote://resources/repos/threadnote/trusted.md';
+        yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
+        yield* fs.writeFileString(resource, '# Trusted mutation\n\nOriginal semantic content.\n');
+        const runtime = fakeRuntime((inputs, dimensions) => Effect.succeed(inputs.map(() => unitVector(dimensions))));
+
+        yield* Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const initial = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
+
+          yield* fs.writeFileString(resource, '# Trusted mutation\n\nChanged semantic content.\n');
+          expect((yield* recallIndexStatus(config)).ready).toBe(true);
+
+          yield* refreshRecallDerivedIndexesFromSelection(config, [uri]);
+
+          const refreshed = yield* recallIndexStatus(config);
+          expect(refreshed.ready).toBe(true);
+          expect(refreshed.generation).not.toBe(initial.generation);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, refreshed.generation!)).toBe('current');
+        }).pipe(
+          Effect.provideService(LocalModelRuntime, runtime),
+          Effect.provideService(LocalModelStore, installedModelStore(home)),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('does not construct an absent vector index while healing lexical mutation readiness', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-trusted-lexical-only-refresh-'});
+        const config = {account: 'local', agentContextHome: home, user: 'tester'};
+        const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'lexical-only.md');
+        const uri = 'threadnote://resources/repos/threadnote/lexical-only.md';
+        yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
+        yield* fs.writeFileString(resource, '# Lexical only\n\nOriginal content.\n');
+
+        yield* Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* fs.writeFileString(resource, '# Lexical only\n\nChanged content.\n');
+
+          yield* refreshRecallDerivedIndexesFromSelection(config, [uri]);
+
+          expect((yield* recallIndexStatus(config)).ready).toBe(true);
+          expect(yield* vectorIndexStatus(home, manifest)).toMatchObject({ready: false, reason: 'not built'});
+        }).pipe(Effect.provideService(LocalModelStore, installedModelStore(home)));
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('bounds an existing vector refresh after restoring lexical readiness', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-trusted-vector-timeout-'});
+        const config = {account: 'local', agentContextHome: home, user: 'tester'};
+        const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'bounded.md');
+        const uri = 'threadnote://resources/repos/threadnote/bounded.md';
+        yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
+        yield* fs.writeFileString(resource, '# Bounded\n\nOriginal content.\n');
+        const calls = yield* Ref.make(0);
+        const blocked = yield* Deferred.make<void>();
+        const runtime = fakeRuntime((inputs, dimensions) =>
+          Ref.updateAndGet(calls, count => count + 1).pipe(
+            Effect.flatMap(call =>
+              call === 1
+                ? Effect.succeed(inputs.map(() => unitVector(dimensions)))
+                : Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Effect.never)),
+            ),
+          ),
+        );
+
+        yield* Effect.gen(function* () {
+          const catalog = yield* LocalModelCatalog;
+          yield* selectLocalModel(home, catalog, 'embedding', manifest.id);
+          const initial = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
+          yield* fs.writeFileString(resource, '# Bounded\n\nChanged content.\n');
+
+          const refresh = yield* refreshRecallDerivedIndexesFromSelection(config, [uri]).pipe(Effect.forkScoped);
+          yield* Deferred.await(blocked);
+          yield* TestClock.adjust('1 second');
+          yield* Fiber.join(refresh);
+
+          const lexical = yield* recallIndexStatus(config);
+          expect(lexical.ready).toBe(true);
+          expect(lexical.generation).not.toBe(initial.generation);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, lexical.generation!)).not.toBe('current');
+        }).pipe(
+          Effect.provideService(LocalModelRuntime, runtime),
+          Effect.provideService(LocalModelStore, installedModelStore(home)),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   effectIt.effect.prop(
     'returns promptly and single-flights every bounded number of concurrent refreshes for one canonical home',
     {callers: FC.integer({max: 24, min: 2})},

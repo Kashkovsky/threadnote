@@ -12,7 +12,7 @@ import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {scanFilesWithinBoundary} from '../effect/safe_scan.js';
 import {readObsidianConfiguration, requireObsidianSource} from './config.js';
-import {scrubberBlocker} from '../scrubber.js';
+import {scrubberBlocker} from '../share/scrubber.js';
 import type {MemoryKind, RuntimeConfig} from '../types.js';
 import {isJsonObject, toPosixPath} from '../utils.js';
 

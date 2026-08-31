@@ -2,9 +2,16 @@ import ts from 'typescript-compiler';
 import {describe, expect, it} from 'vitest';
 import {
   ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
+  ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS,
+  ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS,
+  ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES,
   ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES,
   ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS,
   ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS,
+  ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS,
+  ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES,
+  ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES,
+  ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES,
   ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES,
   ANONYMOUS_TELEMETRY_PHASES,
   ANONYMOUS_TELEMETRY_STAGES,
@@ -53,8 +60,11 @@ const schemaV3 = JSON.parse(
 const schemaV4 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v4.json'), 'utf8'),
 ) as TelemetrySchema;
-const schema = JSON.parse(
+const schemaV5 = JSON.parse(
   readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v5.json'), 'utf8'),
+) as TelemetrySchema;
+const schema = JSON.parse(
+  readFileSync(join(root, 'infra', 'telemetry-gateway', 'telemetry-schema-v6.json'), 'utf8'),
 ) as TelemetrySchema;
 
 describe('telemetry producer and production gateway schema', () => {
@@ -97,16 +107,18 @@ describe('telemetry producer and production gateway schema', () => {
     ]);
   });
 
-  it('retains frozen v1 through v4 while v5 adds only the closed Context Brief surface', () => {
+  it('retains frozen v1 through v5 while v6 adds only the closed Context Brief and finalization surface', () => {
     expect(schemaV1.schemaVersion).toBe(1);
     expect(schemaV2.schemaVersion).toBe(2);
     expect(schemaV3.schemaVersion).toBe(3);
     expect(schemaV4.schemaVersion).toBe(4);
-    expect(schema.schemaVersion).toBe(5);
+    expect(schemaV5.schemaVersion).toBe(5);
+    expect(schema.schemaVersion).toBe(6);
     expect(schemaV1.attributeContract.resource).toEqual(schemaV2.attributeContract.resource);
     expect(schemaV2.attributeContract.resource).toEqual(schemaV3.attributeContract.resource);
     expect(schemaV3.attributeContract.resource).toEqual(schemaV4.attributeContract.resource);
-    expect(schemaV4.attributeContract.resource).toEqual(schema.attributeContract.resource);
+    expect(schemaV4.attributeContract.resource).toEqual(schemaV5.attributeContract.resource);
+    expect(schemaV5.attributeContract.resource).toEqual(schema.attributeContract.resource);
     expect(
       schemaV1.attributeContract.span.some(
         key => key.startsWith('threadnote.graph.') && key !== 'threadnote.graph.degradation_reason',
@@ -167,10 +179,10 @@ describe('telemetry producer and production gateway schema', () => {
       schemaV4.attributeContract.booleanSpan.filter(key => !schemaV3.attributeContract.booleanSpan.includes(key)),
     ).toEqual([]);
 
-    const contextBriefAttributes = schema.attributeContract.span.filter(
+    const contextBriefV5Attributes = schemaV5.attributeContract.span.filter(
       key => !schemaV4.attributeContract.span.includes(key),
     );
-    expect(contextBriefAttributes).toEqual([
+    expect(contextBriefV5Attributes).toEqual([
       'threadnote.context_brief.cache_hits_bucket',
       'threadnote.context_brief.citation_coverage',
       'threadnote.context_brief.citation_result',
@@ -186,13 +198,44 @@ describe('telemetry producer and production gateway schema', () => {
       'threadnote.context_brief.unknown_citations_bucket',
     ]);
     expect(
-      contextBriefAttributes.some(key =>
+      contextBriefV5Attributes.some(key =>
         /(?:path|repository_id|workset_id|commit|hash|task|query|memory_id|citation_id)/u.test(key),
       ),
     ).toBe(false);
     expect(
-      schema.attributeContract.booleanSpan.filter(key => !schemaV4.attributeContract.booleanSpan.includes(key)),
+      schemaV5.attributeContract.booleanSpan.filter(key => !schemaV4.attributeContract.booleanSpan.includes(key)),
     ).toEqual(['threadnote.context_brief.output_truncated']);
+
+    const v6Attributes = schema.attributeContract.span.filter(key => !schemaV5.attributeContract.span.includes(key));
+    expect(v6Attributes).toEqual([
+      'threadnote.code_anchor_finalization.conflict_bucket',
+      'threadnote.code_anchor_finalization.failed_bucket',
+      'threadnote.code_anchor_finalization.finalized_bucket',
+      'threadnote.code_anchor_finalization.latency_ms_bucket',
+      'threadnote.code_anchor_finalization.matched_bucket',
+      'threadnote.code_anchor_finalization.pending_bucket',
+      'threadnote.code_anchor_finalization.result',
+      'threadnote.code_anchor_finalization.scanned_bucket',
+      'threadnote.code_anchor_finalization.trigger',
+      'threadnote.context_brief.code_anchor_coverage',
+      'threadnote.context_brief.code_anchor_gap',
+      'threadnote.context_brief.code_anchors_matched_memories_bucket',
+      'threadnote.context_brief.code_anchors_requested_bucket',
+      'threadnote.context_brief.code_anchors_resolved_bucket',
+      'threadnote.context_brief.contract',
+      'threadnote.context_brief.gap_class',
+      'threadnote.context_brief.mode',
+      'threadnote.context_brief.recovery_present',
+      'threadnote.context_brief.returned_lane',
+    ]);
+    expect(
+      v6Attributes.some(key =>
+        /(?:path|repository_id|workset_id|commit|hash|task|query|memory_id|citation_id|uri|user)/u.test(key),
+      ),
+    ).toBe(false);
+    expect(
+      schema.attributeContract.booleanSpan.filter(key => !schemaV5.attributeContract.booleanSpan.includes(key)),
+    ).toEqual(['threadnote.context_brief.code_anchor_gap', 'threadnote.context_brief.recovery_present']);
     const collector = readFileSync(join(root, 'infra', 'telemetry-gateway', 'collector.yaml'), 'utf8');
     const canarySource = readFileSync(join(root, 'infra', 'telemetry-gateway', 'cmd', 'canary', 'main.go'), 'utf8');
     expect(collector).toContain(
@@ -202,7 +245,8 @@ describe('telemetry producer and production gateway schema', () => {
       ...graphAttributes,
       ...autoUpdateAttributes,
       ...graphQueryAttributes,
-      ...contextBriefAttributes,
+      ...contextBriefV5Attributes,
+      ...v6Attributes,
     ]) {
       expect(collector).toContain(`"${attribute}"`);
       expect(canarySource).toContain(`"${attribute}"`);
@@ -263,6 +307,7 @@ describe('telemetry producer and production gateway schema', () => {
       'telemetry-schema-v3.json',
       'telemetry-schema-v4.json',
       'telemetry-schema-v5.json',
+      'telemetry-schema-v6.json',
     ]) {
       expect(dockerfile).toContain(`infra/telemetry-gateway/${file}`);
       expect(dockerignore).toContain(`!infra/telemetry-gateway/${file}`);
@@ -315,6 +360,9 @@ describe('telemetry producer and production gateway schema', () => {
     expect(canarySource).toContain('{schemaVersion: 5, kind: canaryTraceContextCitationCheckpoint}');
     expect(canarySource).toContain('{schemaVersion: 5, kind: canaryTraceContextProjectionCheckpoint}');
     expect(canarySource).toContain('{schemaVersion: 5, kind: canaryTraceContextCompletion}');
+    expect(canarySource).toContain('{schemaVersion: 6, kind: canaryTraceContextCodeLinkedMemoryCheckpoint}');
+    expect(canarySource).toContain('{schemaVersion: 6, kind: canaryTraceContextCompletion}');
+    expect(canarySource).toContain('{schemaVersion: 6, kind: canaryTraceCodeAnchorFinalizationCheckpoint}');
     expect(canarySource).toContain('{"threadnote.stage", "query-worktree-observation"}');
     expect(canarySource).toContain('{"threadnote.subphase", "skipped"}');
     expect(canarySource).toContain('{"threadnote.auto_update.result", "updated"}');
@@ -356,8 +404,8 @@ describe('telemetry producer and production gateway schema', () => {
     expect(runbook).toContain('THREADNOTE_TELEMETRY_PUBLIC_INGESTION=disabled');
     expect(runbook).toContain('THREADNOTE_TELEMETRY_CANARY_GATEWAY_URL');
     expect(runbook).toContain('deployment order is a hard compatibility gate');
-    expect(runbook).toContain('Only after the gateway, thirteen-trace/five-version canary, and dashboard gates');
-    expect(runbook).toContain('Keep v1/v2/v3/v4 ingress and canary coverage');
+    expect(runbook).toContain('Only after the gateway, sixteen-trace/six-version canary, and dashboard gates');
+    expect(runbook).toContain('Keep v1/v2/v3/v4/v5 ingress and canary coverage');
   });
 });
 
@@ -370,10 +418,17 @@ function producerRegistries(): Readonly<Record<string, readonly string[]>> {
   return {
     autoUpdateResult: ANONYMOUS_TELEMETRY_AUTO_UPDATE_RESULTS,
     buildKind: literalRegistry(effectTelemetrySource, 'ANONYMOUS_TELEMETRY_GRAPH_BUILD_KINDS'),
+    codeAnchorFinalizationResult: ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_RESULTS,
+    codeAnchorFinalizationTrigger: ANONYMOUS_TELEMETRY_CODE_ANCHOR_FINALIZATION_TRIGGERS,
     component: interfacePropertyStrings(effectTelemetrySource, 'AnonymousTelemetryInvocationOptions', 'component'),
+    contextBriefCodeAnchorCoverage: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CODE_ANCHOR_COVERAGES,
     contextBriefCitationCoverage: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_COVERAGES,
     contextBriefCitationResult: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_RESULTS,
     contextBriefCitationUnknownReason: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CITATION_UNKNOWN_REASONS,
+    contextBriefContract: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_CONTRACTS,
+    contextBriefGapClass: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_GAP_CLASSES,
+    contextBriefMode: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_MODES,
+    contextBriefReturnedLane: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_RETURNED_LANES,
     contextBriefScope: ANONYMOUS_TELEMETRY_CONTEXT_BRIEF_SCOPES,
     correlationScope: interfacePropertyStrings(
       effectTelemetrySource,

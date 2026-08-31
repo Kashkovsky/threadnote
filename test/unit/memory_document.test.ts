@@ -127,7 +127,7 @@ describe('memory document contract', () => {
   });
 
   it('round-trips canonical schema-v4 file and symbol citations without persisting validation state', () => {
-    const file = createMemoryCodeCitation(citationInput('src/memory.ts'));
+    const file = createMemoryCodeCitation(citationInput('src/memory/index.ts'));
     const symbol = createMemoryCodeCitation({
       ...citationInput('src/context_brief/memory_evidence.ts'),
       target: {
@@ -158,7 +158,7 @@ describe('memory document contract', () => {
     const parsed = parseMemoryDocument('threadnote://user/me/memory.md', document);
     const fileWire = JSON.parse(formatMemoryCodeCitation(file)) as Record<string, unknown>;
 
-    expect(file.id).toBe('tncc_c442bcab5e3fa96c9a1ea24d3223d2dfc07f4aa7');
+    expect(file.id).toBe('tncc_dd36944e2b21b9a734a23369538c1d9027ba5778');
     expect(Object.keys(fileWire)).toEqual([
       'version',
       'id',

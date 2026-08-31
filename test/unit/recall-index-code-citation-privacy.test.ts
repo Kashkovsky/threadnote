@@ -2,7 +2,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
-import {runArchive} from '../../src/memory.js';
+import {runArchive} from '../../src/memory/index.js';
 import {createMemoryCodeCitation, MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument} from '../../src/memory/document.js';
 import {loadRecallExactMatches, loadRecallIndexData} from '../../src/recall/index.js';

@@ -36,6 +36,12 @@ import {
   type CodeMemoryLinkTaskKind,
   type CodeMemoryLinkTaskPacketV1,
 } from '../../src/evaluation/code-memory-link-agent-protocol.js';
+import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
+import {
+  parseContextBriefAgentViewText,
+  parseContextBriefV1,
+  renderContextBriefText,
+} from '../../src/context_brief/projector.js';
 
 const HASH_A = 'a'.repeat(64);
 const GOLD_CITATION_ID = `tncc_${'1'.repeat(40)}`;
@@ -363,6 +369,38 @@ describe('Code Memory Link real-agent protocol', () => {
       {anchorOrdinal: 1, citationId: GOLD_CITATION_ID, kind: 'file', status: 'changed'},
     ];
     expect(() => canonicalizeCodeMemoryLinkContextBriefResultV1(conflictingRelations)).toThrow(/inconsistent/u);
+  });
+
+  it('canonicalizes complete v2/v3 and empty results into nonempty client-compatible text', () => {
+    for (const version of [2, 3] as const) {
+      const structured = contextBriefStructuredContent();
+      structured.version = version;
+      (structured.output as Record<string, unknown>).projectorVersion = version;
+      const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0]!;
+      memory.excerpt = `Unicode evidence survives: Łódź → 東京 (${version}).`;
+      if (version === 2) {
+        delete memory.codeRelations;
+        delete memory.selectionBasis;
+      }
+      const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(structured, {requireAgentView: true});
+      const expectedText = renderContextBriefText(parseContextBriefV1(canonical.structuredContent));
+      expect(canonical.content).toEqual([{text: expectedText, type: 'text'}]);
+      expect(parseContextBriefAgentViewText(expectedText)).toMatchObject({
+        briefVersion: version,
+        durableDecisions: [expect.objectContaining({excerpt: memory.excerpt})],
+        type: 'context-brief-agent-view',
+        version: 1,
+      });
+      expect(
+        measureAgentToolResponse({structuredContent: canonical.structuredContent, text: expectedText}).totalBytes,
+      ).toBeLessThanOrEqual(1_250 * 3);
+    }
+
+    const empty = canonicalizeCodeMemoryLinkContextBriefResultV1(
+      CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.structuredContent,
+    );
+    expect(empty.content).toHaveLength(1);
+    expect(JSON.parse(empty.content[0]!.text)).toEqual(empty.structuredContent);
   });
 
   it('treats unrelated claims as non-interfering and rejects same-citation contradictions across the response', () => {
@@ -949,14 +987,87 @@ function contextBriefResult(events: readonly unknown[]): Record<string, unknown>
 function contextBriefStructuredContent(): Record<string, unknown> {
   return {
     activeHandoffs: [],
+    coverage: {
+      gaps: [],
+      graph: {
+        complete: true,
+        consideredRepositories: 1,
+        readyRepositories: 1,
+        requestedRepositories: 1,
+        states: {current: 1},
+      },
+      memory: {
+        codeAnchors: {complete: true, matchedMemories: 1, requested: 1, resolved: 1},
+        consideredCandidates: 1,
+        durableCandidates: 1,
+        fresh: 1,
+        handoffCandidates: 0,
+        stale: 0,
+        unknown: 0,
+      },
+      omissions: {
+        activeHandoffs: 0,
+        coverageGaps: 0,
+        durableDecisions: 0,
+        graphCards: 0,
+        graphContracts: 0,
+        recommendedFollowUps: 0,
+        stalenessAndConflicts: 0,
+      },
+    },
     durableDecisions: [
       {
+        authority: 'canonical_repo',
         codeRelations: [{anchorOrdinal: 0, citationId: GOLD_CITATION_ID, kind: 'file', status: 'exact'}],
         excerpt: 'Memory says the hidden constraint.',
+        freshness: 'fresh',
+        freshnessBasis: 'code-citations',
+        preciseStatus: 'exact',
         selectionBasis: 'code-citation',
+        trust: 'approved',
         uri: 'threadnote://user/test/memories/hidden-constraint.md',
       },
     ],
+    graph: {
+      cards: [
+        {
+          id: 'cbgc_test',
+          rank: 0,
+          reason: 'Indexed symbol match.',
+          ref: `cgs_${'2'.repeat(32)}`,
+          repositoryKey: 'threadnote',
+          symbol: {
+            kind: 'function',
+            language: 'typescript',
+            line: 42,
+            name: 'compileContextBrief',
+            path: 'src/context_brief/index.ts',
+            qualifiedName: 'compileContextBrief',
+          },
+        },
+      ],
+      continuation: {cursor: `cgwc_${'3'.repeat(32)}`, remainingEstimate: 2, state: 'available'},
+      contracts: [],
+    },
+    mode: 'brief',
+    output: {omittedItems: 0, projectorVersion: 3, returnedItems: 2, truncated: false},
+    recommendedFollowUps: [
+      {id: 'cbfu_test', operation: 'read-memory', rank: 0, uri: 'threadnote://user/test/memories/hidden-constraint.md'},
+    ],
+    scope: {
+      freshness: 'fresh',
+      kind: 'repository',
+      name: 'current-repository',
+      readyRepositories: 1,
+      requestedRepositories: 1,
+    },
+    stalenessAndConflicts: [],
+    task: {summary: 'Implement the hidden constraint.', truncated: false},
+    trust: {
+      compiler: {modelsRequired: false, queryPlanExposed: false},
+      graph: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
+      memory: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+    },
     type: 'context-brief',
     version: 3,
   };

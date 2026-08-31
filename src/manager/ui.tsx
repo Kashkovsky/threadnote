@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type {CodeGraphLocalDiagnosticsReport} from '../code_graph/diagnostics.js';
+import {ContextPanel} from './context_view.js';
 import {ManagerAutocompleteInput, ManagerDialogProvider, useManagerDialogs} from './dialog.js';
 import {WorksetsPanel} from './worksets_view.js';
 import {ProcessesPanel} from './processes_view.js';
@@ -69,7 +70,7 @@ export {
   selectableMemoryUris,
 } from './ui_support.js';
 
-export type PanelName = 'doctor' | 'graph' | 'memory' | 'processes' | 'shares' | 'tools' | 'worksets';
+export type PanelName = 'context' | 'doctor' | 'graph' | 'memory' | 'processes' | 'shares' | 'tools' | 'worksets';
 type NavTreeTab = 'memories' | 'resources';
 type CheckStatus = 'fail' | 'ok' | 'warn';
 type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
@@ -1181,7 +1182,7 @@ function App(): React.ReactElement {
         </div>
         <p className="sidebar-label">Workspace</p>
         <nav className="primary-nav" aria-label="Manager sections">
-          {(['graph', 'worksets', 'memory', 'shares', 'processes', 'doctor', 'tools'] as const).map(name => (
+          {(['graph', 'context', 'worksets', 'memory', 'shares', 'processes', 'doctor', 'tools'] as const).map(name => (
             <button
               aria-current={panel === name ? 'page' : undefined}
               className={panel === name ? 'is-active' : undefined}
@@ -1380,6 +1381,12 @@ function App(): React.ReactElement {
               onDiagnostics={options => void refreshGraphDiagnostics(options)}
               onRefresh={() => void refreshGraphCatalog(true)}
             />
+          </section>
+        ) : null}
+
+        {panel === 'context' ? (
+          <section className="panel context-panel is-active">
+            <ContextPanel />
           </section>
         ) : null}
 

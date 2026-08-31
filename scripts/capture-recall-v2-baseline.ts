@@ -14,7 +14,7 @@ import {
 } from '../src/evaluation/recall-fixture.js';
 import {evaluateRecallRunV2, runLexicalRecallEvaluationV2} from '../src/evaluation/recall.js';
 import {RECALL_RANKER_VERSION} from '../src/recall/rank.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const captureBaseline = Effect.gen(function* () {

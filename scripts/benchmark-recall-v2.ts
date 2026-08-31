@@ -17,7 +17,7 @@ import {
 } from '../src/evaluation/recall-fixture.js';
 import {deriveRecallEligibilityPolicy} from '../src/recall/eligibility.js';
 import {rankRecallCandidates, RECALL_RANKER_VERSION} from '../src/recall/rank.js';
-import {getThreadnoteVersion} from '../src/version.js';
+import {getThreadnoteVersion} from '../src/release/runtime_version.js';
 import {atomicWrite, fixtureHash, printJson, scriptArguments} from './effect/script.js';
 
 const NANOSECONDS_PER_MILLISECOND = 1_000_000;

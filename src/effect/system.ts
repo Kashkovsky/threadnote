@@ -130,6 +130,11 @@ export function platformPathFor(platform: NodeJS.Platform): PlatformPathShape {
   return platform === 'win32' ? nativePathModule.win32 : nativePathModule.posix;
 }
 
+/** Windows stat modes are synthetic; retain structural checks there and enforce POSIX privacy bits elsewhere. */
+export function fileSystemModeIsPrivate(platform: NodeJS.Platform, mode: number): boolean {
+  return platform === 'win32' || (mode & 0o077) === 0;
+}
+
 /** Exact host facts retained by same-machine benchmark provenance. */
 export function runtimeHostHardwareInfo(): {
   readonly cpuModel: string;

@@ -1,5 +1,5 @@
 import {Effect, FileSystem, Result, Stream} from 'effect';
-import {applyScrubber} from './share.js';
+import {applyScrubber} from './share/index.js';
 
 const MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024;
 const MAX_INTENTS = 5;

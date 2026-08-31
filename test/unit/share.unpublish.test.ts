@@ -8,7 +8,8 @@ import * as FC from 'effect/testing/FastCheck';
 import {afterEach, beforeEach, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
 import {runShareUnpublish as runShareUnpublishEffect} from '../../src/effect/share.js';
-import {setMemoryVisibility, shareUnpublishTargetDisposition} from '../../src/share.js';
+import {readMemoryWithRelocations} from '../../src/memory/relocation.js';
+import {setMemoryVisibility, shareUnpublishTargetDisposition} from '../../src/share/index.js';
 import type {CommandResult, ShareRuntime} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -26,7 +27,7 @@ const SOURCE_URI = 'threadnote://user/test-user/memories/shared/default/durable/
 const TARGET_URI = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
 const RELATIVE_PATH = 'durable/projects/foo/bar.md';
 const SHARED_CONTENT =
-  'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: foo\ntopic: bar\n\nShared body\n';
+  'MEMORY\nkind: durable\nstatus: active\nvisibility: shared\nproject: foo\ntopic: bar\nmemory_id: tn_share_unpublish\n\nShared body\n';
 const PERSONAL_CONTENT = setMemoryVisibility(SHARED_CONTENT, 'personal');
 
 interface UnpublishFixture {
@@ -194,6 +195,10 @@ describe('runShareUnpublish preflight and resume', () => {
     expect(result.output).toContain(`Unpublished ${SOURCE_URI} -> ${TARGET_URI} --mode resume`);
     expect(existsSync(fixture.sourcePath)).toBe(false);
     expect(await readFile(fixture.targetPath, 'utf8')).toBe(PERSONAL_CONTENT);
+    expect(await runEffect(readMemoryWithRelocations(fixture.config, SOURCE_URI))).toMatchObject({
+      canonicalUri: TARGET_URI,
+      requestedUri: SOURCE_URI,
+    });
     expect(existsSync(fixture.worktreePath)).toBe(false);
     expect(vi.mocked(utils.runCommand).mock.calls).toContainEqual([
       'git',

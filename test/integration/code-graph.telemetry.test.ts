@@ -179,7 +179,7 @@ describe('code graph terminal telemetry wiring', () => {
     ).pipe(TestClock.withLive, provideTestLayer(layer));
   });
 
-  effectIt.effect('reports the effective two-file delta for a dirty full fallback exactly once', () => {
+  effectIt.effect('reports the effective two-file delta for a dirty project-closure overlay exactly once', () => {
     const capture = capturingTracer();
     const layer = Layer.mergeAll(
       ApplicationLayer,
@@ -205,8 +205,9 @@ describe('code graph terminal telemetry wiring', () => {
           const summary = yield* indexer.index({cwd: fixture.root, threadnoteHome: fixture.home});
 
           expect(summary.materialization).toMatchObject({
-            fallbackReason: 'resolution-surface-changed',
-            mode: 'full',
+            closureProjects: 1,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
           });
           const lifecycle = capture.spans
             .map(span => Object.fromEntries(span.attributes))
@@ -218,9 +219,9 @@ describe('code graph terminal telemetry wiring', () => {
             'threadnote.graph.changed_files_bucket': '2^1',
             'threadnote.graph.deleted_files_bucket': '0',
             'threadnote.graph.extracted_files_bucket': '2^1',
-            'threadnote.graph.fallback_reason': 'resolution-surface-changed',
-            'threadnote.graph.materialization_mode': 'full',
-            'threadnote.graph.resolution_closure': 'full',
+            'threadnote.graph.fallback_reason': 'none',
+            'threadnote.graph.materialization_mode': 'incremental-overlay',
+            'threadnote.graph.resolution_closure': 'project',
             'threadnote.operation': 'graph-build',
             'threadnote.outcome': 'success',
           });
@@ -230,7 +231,7 @@ describe('code graph terminal telemetry wiring', () => {
     ).pipe(TestClock.withLive, provideTestLayer(layer));
   });
 
-  effectIt.effect('retains changed-fact bytes when a dirty full fallback is satisfied from cache', () => {
+  effectIt.effect('retains changed-fact bytes when a dirty project-closure overlay reuses cached extraction', () => {
     const capture = capturingTracer();
     const layer = Layer.mergeAll(
       ApplicationLayer,
@@ -247,8 +248,9 @@ describe('code graph terminal telemetry wiring', () => {
           yield* Effect.sync(() => writeFileSync(join(fixture.root, 'src', 'value.ts'), dirtyContent));
           const firstDirty = yield* indexer.index({cwd: fixture.root, threadnoteHome: fixture.home});
           expect(firstDirty.materialization).toMatchObject({
-            fallbackReason: 'resolution-surface-changed',
-            mode: 'full',
+            closureProjects: 1,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
           });
 
           yield* Effect.sync(() => {
@@ -260,8 +262,9 @@ describe('code graph terminal telemetry wiring', () => {
           const cachedDirty = yield* indexer.index({cwd: fixture.root, threadnoteHome: fixture.home});
 
           expect(cachedDirty.materialization).toMatchObject({
-            fallbackReason: 'resolution-surface-changed',
-            mode: 'full',
+            closureProjects: 1,
+            mode: 'incremental-overlay',
+            resolutionClosure: 'project',
           });
           expect(cachedDirty.reusedFiles).toBe(cachedDirty.materialization?.totalFiles);
           const lifecycle = capture.spans
@@ -269,12 +272,13 @@ describe('code graph terminal telemetry wiring', () => {
             .filter(attributes => attributes['threadnote.event'] === 'lifecycle');
           expect(lifecycle).toHaveLength(4);
           expect(lifecycle.at(-1)).toMatchObject({
-            'threadnote.graph.cached_fact_replay_bytes_bucket': expect.not.stringMatching(/^0$/u),
+            'threadnote.graph.cached_fact_replay_bytes_bucket': '0',
             'threadnote.graph.changed_fact_bytes_bucket': expect.not.stringMatching(/^0$/u),
             'threadnote.graph.changed_files_bucket': '2^0',
             'threadnote.graph.extracted_files_bucket': '0',
-            'threadnote.graph.fallback_reason': 'resolution-surface-changed',
-            'threadnote.graph.materialization_mode': 'full',
+            'threadnote.graph.fallback_reason': 'none',
+            'threadnote.graph.materialization_mode': 'incremental-overlay',
+            'threadnote.graph.resolution_closure': 'project',
             'threadnote.outcome': 'success',
           });
           expect(JSON.stringify(lifecycle.at(-1))).not.toContain(fixture.root);

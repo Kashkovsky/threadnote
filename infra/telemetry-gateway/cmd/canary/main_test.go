@@ -17,7 +17,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestCanaryPostsAndProvesFrozenV1ThroughV4AndCurrentV5(t *testing.T) {
+func TestCanaryPostsAndProvesFrozenV1ThroughV5AndCurrentV6(t *testing.T) {
 	started := time.Unix(1_700_000_000, 0)
 	traces := canaryTestTraces()
 	byTraceID := make(map[string]canaryTrace, len(traces))
@@ -160,6 +160,64 @@ func TestV5CanaryEnvelopesCarryEveryContextBriefPhaseAndCompleteResultSurface(t 
 				}
 			}
 		})
+	}
+}
+
+func TestV6CanaryEnvelopesCarryAnchoredContextAndFinalizationSurfaces(t *testing.T) {
+	contextTraces := []canaryTrace{
+		fixedTrace(6, canaryTraceContextCodeLinkedMemoryCheckpoint),
+		fixedTrace(6, canaryTraceContextCompletion),
+	}
+	for _, trace := range contextTraces {
+		t.Run(trace.label(), func(t *testing.T) {
+			request := decodeCanaryEnvelope(t, trace)
+			span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+			for _, attribute := range []canaryStringAttribute{
+				{"threadnote.context_brief.contract", "code-anchored-v3"},
+				{"threadnote.context_brief.mode", "impact"},
+				{"threadnote.context_brief.scope", "workset"},
+			} {
+				if !hasStringAttribute(span.Attributes, attribute.key, attribute.value) {
+					t.Fatalf("v6 context canary is missing %s=%s", attribute.key, attribute.value)
+				}
+			}
+			if trace.kind == canaryTraceContextCompletion {
+				for _, key := range []string{
+					"threadnote.context_brief.code_anchor_coverage",
+					"threadnote.context_brief.code_anchors_matched_memories_bucket",
+					"threadnote.context_brief.code_anchors_requested_bucket",
+					"threadnote.context_brief.code_anchors_resolved_bucket",
+					"threadnote.context_brief.gap_class",
+					"threadnote.context_brief.returned_lane",
+				} {
+					if !hasAttribute(span.Attributes, key) {
+						t.Fatalf("v6 context completion canary is missing %s", key)
+					}
+				}
+				if !hasBoolAttribute(span.Attributes, "threadnote.context_brief.code_anchor_gap", false) ||
+					!hasBoolAttribute(span.Attributes, "threadnote.context_brief.recovery_present", true) {
+					t.Fatal("v6 context completion canary is missing its boolean projection surface")
+				}
+			}
+		})
+	}
+
+	finalization := decodeCanaryEnvelope(t, fixedTrace(6, canaryTraceCodeAnchorFinalizationCheckpoint))
+	span := finalization.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	for _, key := range []string{
+		"threadnote.code_anchor_finalization.conflict_bucket",
+		"threadnote.code_anchor_finalization.failed_bucket",
+		"threadnote.code_anchor_finalization.finalized_bucket",
+		"threadnote.code_anchor_finalization.latency_ms_bucket",
+		"threadnote.code_anchor_finalization.matched_bucket",
+		"threadnote.code_anchor_finalization.pending_bucket",
+		"threadnote.code_anchor_finalization.result",
+		"threadnote.code_anchor_finalization.scanned_bucket",
+		"threadnote.code_anchor_finalization.trigger",
+	} {
+		if !hasAttribute(span.Attributes, key) {
+			t.Fatalf("v6 finalization canary is missing %s", key)
+		}
 	}
 }
 
@@ -355,6 +413,15 @@ func fixedTrace(schemaVersion uint64, kind canaryTraceKind) canaryTrace {
 	marker := byte(1)
 	sessionID := "tns_000102030405060708090a0b0c0d0e0f"
 	switch {
+	case schemaVersion == 6 && kind == canaryTraceContextCodeLinkedMemoryCheckpoint:
+		marker = 14
+		sessionID = "tns_d0d1d2d3d4d5d6d7d8d9dadbdcdddedf"
+	case schemaVersion == 6 && kind == canaryTraceContextCompletion:
+		marker = 15
+		sessionID = "tns_e0e1e2e3e4e5e6e7e8e9eaebecedeeef"
+	case schemaVersion == 6 && kind == canaryTraceCodeAnchorFinalizationCheckpoint:
+		marker = 16
+		sessionID = "tns_f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"
 	case schemaVersion == 2:
 		marker = 2
 		sessionID = "tns_101112131415161718191a1b1c1d1e1f"
@@ -418,6 +485,9 @@ func canaryTestTraces() []canaryTrace {
 		fixedTrace(5, canaryTraceContextCitationCheckpoint),
 		fixedTrace(5, canaryTraceContextProjectionCheckpoint),
 		fixedTrace(5, canaryTraceContextCompletion),
+		fixedTrace(6, canaryTraceContextCodeLinkedMemoryCheckpoint),
+		fixedTrace(6, canaryTraceContextCompletion),
+		fixedTrace(6, canaryTraceCodeAnchorFinalizationCheckpoint),
 	}
 }
 

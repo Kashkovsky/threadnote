@@ -2,7 +2,7 @@ import {mkdtemp, mkdir, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
-import {hasProjectNameMigrationCandidates, runMigrateProjectNames} from '../../src/memory.js';
+import {hasProjectNameMigrationCandidates, runMigrateProjectNames} from '../../src/memory/index.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {runCommand} from '../../src/utils.js';
 import {runEffect} from '../helpers/effect-runtime.js';

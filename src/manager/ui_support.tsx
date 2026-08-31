@@ -10,7 +10,7 @@ import type {
   GraphViewPage,
 } from './graph.js';
 import type {ManagerGraphVisualizationLimits} from './graph_limits.js';
-import type {BulkItemResult, PanelName, ShareSummary, TreeNode} from '../manager_ui.js';
+import type {BulkItemResult, PanelName, ShareSummary, TreeNode} from './ui.js';
 
 const token = typeof window === 'undefined' ? '' : (new URLSearchParams(window.location.search).get('token') ?? '');
 export const GRAPH_CATALOG_REQUEST_TIMEOUT_MILLISECONDS = 10_000;
@@ -209,6 +209,8 @@ export function graphAdministrationActionLabel(action: GraphAdministrationAction
       return action.dryRun ? 'Compaction preview' : 'Graph compaction';
     case 'index':
       return action.full ? 'Graph reindex' : 'Graph index';
+    case 'index-cwd':
+      return action.full ? 'Workspace graph reindex' : 'Workspace graph index';
     case 'index-project':
       return action.full ? 'Configured project reindex' : 'Configured project index';
     case 'purge':
@@ -467,6 +469,8 @@ function actionProgressLabel(action: 'archive' | 'forget' | 'publish'): string {
 
 function tabTitle(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return 'Context';
     case 'doctor':
       return 'Health';
     case 'graph':
@@ -486,6 +490,8 @@ function tabTitle(name: PanelName): string {
 
 function panelIcon(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return '◎';
     case 'doctor':
       return '✓';
     case 'graph':
@@ -505,6 +511,8 @@ function panelIcon(name: PanelName): string {
 
 function panelNavDescription(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return 'Briefs and recall';
     case 'doctor':
       return 'Runtime diagnostics';
     case 'graph':
@@ -524,6 +532,8 @@ function panelNavDescription(name: PanelName): string {
 
 function panelDescription(name: PanelName): string {
   switch (name) {
+    case 'context':
+      return 'Compose Context Briefs and read ranked memory';
     case 'doctor':
       return 'Diagnostics and runtime repair';
     case 'graph':

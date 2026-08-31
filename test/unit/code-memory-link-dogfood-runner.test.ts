@@ -3,7 +3,11 @@ import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect, it} from 'vitest';
 import {
+  codeGraphStatusHasIndexingActivity,
   codeMemoryLinkDogfoodEnvironment,
+  countDeferredAnchorIntentNames,
+  projectAutomaticDeferredAnchorTransition,
+  projectDeferredAnchorFinalization,
   projectCodeMemoryLinkDogfoodGraphStatusV1,
   verifyDogfoodRunnerCheckout,
 } from '../../scripts/run-code-memory-link-dogfood.js';
@@ -66,7 +70,215 @@ describe('Code Memory Link dogfood runner checkout binding', () => {
       readySnapshotId: `cgsn_${'b'.repeat(40)}`,
       stale: true,
     });
-    expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/expected v2 status/);
+    expect(
+      projectCodeMemoryLinkDogfoodGraphStatusV1({
+        readySnapshot: {commit: 'a'.repeat(40), dirty: false, id: `cgsn_${'b'.repeat(40)}`},
+        stale: true,
+        type: 'code-graph-status',
+        version: 3,
+      }),
+    ).toMatchObject({stale: true});
+    expect(
+      projectCodeMemoryLinkDogfoodGraphStatusV1({
+        readySnapshot: {commit: 'a'.repeat(40), dirty: false, id: `cgsn_${'b'.repeat(40)}`},
+        stale: true,
+        type: 'code-graph-status',
+        version: 5,
+      }),
+    ).toMatchObject({stale: true});
+    expect(
+      projectCodeMemoryLinkDogfoodGraphStatusV1({
+        readySnapshot: {commit: 'a'.repeat(40), dirty: false, id: `cgsn_${'b'.repeat(40)}`},
+        stale: true,
+        type: 'code-graph-status',
+        version: 4,
+      }),
+    ).toMatchObject({stale: true});
+    expect(() => projectCodeMemoryLinkDogfoodGraphStatusV1({stale: true})).toThrow(/supported status/);
+  });
+
+  it('derives indexing activity from the independent graph-status process receipt', () => {
+    const idle = {
+      build: null,
+      builds: [],
+      type: 'code-graph-status',
+      version: 2,
+      waiterCount: 0,
+      waiters: [],
+    };
+    expect(codeGraphStatusHasIndexingActivity(idle)).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, version: 3})).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, version: 4})).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, version: 5})).toBe(false);
+    expect(codeGraphStatusHasIndexingActivity({...idle, build: {state: 'running'}, builds: [{state: 'running'}]})).toBe(
+      true,
+    );
+    expect(() => codeGraphStatusHasIndexingActivity({build: null})).toThrow(/activity contract/);
+  });
+
+  it('projects finalization counts from matching per-item receipts', () => {
+    expect(
+      projectDeferredAnchorFinalization({
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 1,
+        items: [{citationCount: 2, memoryUri: 'redacted', state: 'finalized'}],
+        pendingCount: 0,
+        scannedCount: 1,
+        type: 'threadnote-deferred-code-anchor-finalization',
+        version: 1,
+      }),
+    ).toEqual({
+      citationCount: 2,
+      conflictCount: 0,
+      failedCount: 0,
+      finalizedCount: 1,
+      pendingCount: 0,
+      scannedCount: 1,
+    });
+    expect(() =>
+      projectDeferredAnchorFinalization({
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 0,
+        items: [{citationCount: 1, state: 'finalized'}],
+        pendingCount: 0,
+        scannedCount: 1,
+        type: 'threadnote-deferred-code-anchor-finalization',
+        version: 1,
+      }),
+    ).toThrow(/aggregate counts/);
+  });
+
+  it('counts current routed and legacy deferred-anchor intent filenames through the production classifier', () => {
+    const legacy = `${'a'.repeat(64)}-tnca_${'b'.repeat(32)}.json`;
+    const routed =
+      `${'c'.repeat(32)}-tnca_${'d'.repeat(32)}-r${'e'.repeat(32)}` + `-w${'f'.repeat(32)}-q-b${'0'.repeat(32)}.json`;
+
+    for (const name of [legacy, routed]) {
+      const pendingIntentCountBefore = countDeferredAnchorIntentNames([name]);
+      const pendingIntentCountAfter = countDeferredAnchorIntentNames([]);
+      expect(pendingIntentCountBefore).toBe(1);
+      expect(pendingIntentCountAfter).toBe(0);
+      expect(
+        projectAutomaticDeferredAnchorTransition({
+          citationCountAfter: 1,
+          citationCountBefore: 0,
+          pendingIntentCountAfter,
+          pendingIntentCountBefore,
+        }),
+      ).toMatchObject({citationCount: 1, failedCount: 0, finalizedCount: 1, pendingCount: 0, scannedCount: 1});
+    }
+    expect(
+      countDeferredAnchorIntentNames([
+        legacy,
+        routed,
+        '.0123456789abcdef01234567.tmp',
+        `${'a'.repeat(32)}-tnca_${'b'.repeat(32)}-rnot-a-route.json`,
+        'unrelated.json',
+      ]),
+    ).toBe(2);
+  });
+
+  it.each([
+    {
+      expected: {
+        citationCount: 1,
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 1,
+        pendingCount: 0,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 1,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 0,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'one pending intent becomes one citation',
+    },
+    {
+      expected: {
+        citationCount: 0,
+        conflictCount: 0,
+        failedCount: 0,
+        finalizedCount: 0,
+        pendingCount: 1,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 0,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 1,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'a contended or unready intent remains pending',
+    },
+    {
+      expected: {
+        citationCount: 0,
+        conflictCount: 0,
+        failedCount: 1,
+        finalizedCount: 0,
+        pendingCount: 0,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 0,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 0,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'an intent disappears without adding a citation',
+    },
+    {
+      expected: {
+        citationCount: 1,
+        conflictCount: 0,
+        failedCount: 1,
+        finalizedCount: 0,
+        pendingCount: 1,
+        scannedCount: 1,
+      },
+      input: {
+        citationCountAfter: 1,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 1,
+        pendingIntentCountBefore: 1,
+      },
+      label: 'a citation appears while its intent remains',
+    },
+    {
+      expected: {
+        citationCount: 0,
+        conflictCount: 0,
+        failedCount: 1,
+        finalizedCount: 0,
+        pendingCount: 0,
+        scannedCount: 0,
+      },
+      input: {
+        citationCountAfter: 0,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: 0,
+        pendingIntentCountBefore: 0,
+      },
+      label: 'the isolated staged intent was never observed',
+    },
+  ])('projects the automatic transition when $label', ({expected, input}) => {
+    expect(projectAutomaticDeferredAnchorTransition(input)).toEqual(expected);
+  });
+
+  it('rejects invalid automatic transition counters', () => {
+    expect(() =>
+      projectAutomaticDeferredAnchorTransition({
+        citationCountAfter: 1,
+        citationCountBefore: 0,
+        pendingIntentCountAfter: -1,
+        pendingIntentCountBefore: 1,
+      }),
+    ).toThrow(/non-negative integers/);
   });
 
   effectIt.effect('accepts the exact clean checkout that supplied the reviewed runner', () =>

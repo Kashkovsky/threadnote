@@ -1,16 +1,126 @@
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
+import {CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM} from '../../src/code_graph/fact_budget.js';
 import {
+  CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES,
+  CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FILES,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_ROWS,
   CODE_GRAPH_INCREMENTAL_REWRITE_MAX_SOURCE_BYTES,
+  assessCodeGraphIncrementalFactBytes,
+  codeGraphIncrementalFactBatchesFitBudget,
   codeGraphIncrementalWorkFitsBudget,
   measureCodeGraphIncrementalWork,
+  planCodeGraphIncrementalFoldForwardPaths,
 } from '../../src/code_graph/incremental_work.js';
+import {overlayFallbackDescription} from '../../src/code_graph/indexer_incremental.js';
+import {PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES} from '../../src/code_graph/indexer_materialization.js';
 import type {CodeGraphFileFacts, CodeGraphInventoryFile} from '../../src/code_graph/types.js';
 
 describe('incremental rewrite work', () => {
+  it('matches one governed persistent materialization transaction', () => {
+    expect(CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES).toBe(PERSISTENT_MATERIALIZATION_TRANSACTION_FACT_BYTES);
+    expect(CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES * CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM).toBe(
+      CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
+    );
+  });
+
+  it('describes the current four-batch project closure envelope', () => {
+    expect(overlayFallbackDescription('project-closure-unbounded')).toBe(
+      'the project dependency closure exceeded the bounded four-batch materialization envelope',
+    );
+  });
+
+  it('admits at most four per-file-bounded fact batches under the aggregate rewrite envelope', () => {
+    const maximumBatchBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
+    const batches = fc.array(
+      fc.array(fc.record({bytes: fc.integer({max: maximumBatchBytes + 1, min: -1})}), {
+        maxLength: 4,
+        minLength: 0,
+      }),
+      {maxLength: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES + 1, minLength: 0},
+    );
+    fc.assert(
+      fc.property(batches, value => {
+        const batchBytes = value.map(batch => batch.reduce((total, fact) => total + fact.bytes, 0));
+        const factBytes = value.flatMap(batch => batch.map(fact => fact.bytes));
+        const expected =
+          value.length >= 1 &&
+          value.length <= CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES &&
+          value.every((batch, index) => batch.length > 0 && batchBytes[index]! <= maximumBatchBytes) &&
+          factBytes.every(bytes => Number.isSafeInteger(bytes) && bytes > 0 && bytes <= maximumBatchBytes) &&
+          batchBytes.reduce((total, bytes) => total + bytes, 0) <= CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES;
+        expect(codeGraphIncrementalFactBatchesFitBudget(value)).toBe(expected);
+      }),
+      {numRuns: 250},
+    );
+
+    expect(
+      codeGraphIncrementalFactBatchesFitBudget(
+        Array.from({length: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES}, () => [{bytes: maximumBatchBytes}]),
+      ),
+    ).toBe(true);
+    expect(
+      codeGraphIncrementalFactBatchesFitBudget(
+        Array.from({length: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES + 1}, () => [{bytes: 1}]),
+      ),
+    ).toBe(false);
+  });
+
+  it('distinguishes corrupt per-file facts from aggregate incremental overflow', () => {
+    const maximumFileBytes = CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM;
+    expect(
+      assessCodeGraphIncrementalFactBytes({
+        aggregateBytes: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
+        factBytes: Array.from({length: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES}, () => maximumFileBytes),
+      }),
+    ).toEqual({mode: 'eligible'});
+    expect(
+      assessCodeGraphIncrementalFactBytes({
+        aggregateBytes: maximumFileBytes + 1,
+        factBytes: [maximumFileBytes + 1],
+      }),
+    ).toEqual({limit: maximumFileBytes, mode: 'exceeded', observedAtDecision: maximumFileBytes + 1});
+    expect(
+      assessCodeGraphIncrementalFactBytes({
+        aggregateBytes: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES + 1,
+        factBytes: [
+          ...Array.from({length: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES}, () => maximumFileBytes),
+          1,
+        ],
+      }),
+    ).toEqual({
+      limit: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES,
+      mode: 'exceeded',
+      observedAtDecision: CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES + 1,
+    });
+    expect(assessCodeGraphIncrementalFactBytes({aggregateBytes: 2, factBytes: [1]})).toEqual({mode: 'invalid'});
+  });
+
+  it('plans carried and cumulative paths as a deterministic bounded set union', () => {
+    const paths = fc
+      .uniqueArray(fc.integer({max: 400, min: 0}), {maxLength: 80})
+      .map(values => values.map(value => `src/file-${value}.ts`));
+    fc.assert(
+      fc.property(paths, paths, (prior, fresh) => {
+        const plan = planCodeGraphIncrementalFoldForwardPaths(prior, fresh);
+        const expectedCumulative = [...new Set([...prior, ...fresh])].sort();
+        expect(plan?.cumulativePaths).toEqual(expectedCumulative);
+        expect(plan?.carriedPaths).toEqual(prior.filter(path => !fresh.includes(path)).sort());
+        expect(plan?.carriedPaths.every(path => !fresh.includes(path))).toBe(true);
+        expect(planCodeGraphIncrementalFoldForwardPaths(prior, fresh)).toEqual(plan);
+      }),
+      {numRuns: 250},
+    );
+    expect(
+      planCodeGraphIncrementalFoldForwardPaths(
+        Array.from({length: CODE_GRAPH_INCREMENTAL_FOLD_FORWARD_MAX_FILES}, (_, index) => `src/p-${index}.ts`),
+        ['src/overflow.ts'],
+      ),
+    ).toBeUndefined();
+  });
+
   it('measures final fact bytes and every row presented to incremental staging', () => {
     const file: CodeGraphInventoryFile = {
       blobId: 'a'.repeat(40),

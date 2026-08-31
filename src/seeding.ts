@@ -11,7 +11,7 @@ import {ResourceStore, type ResourceStoreMutation, type ResourceStoreShape} from
 import {SystemInfo} from './effect/system.js';
 import {readSeedManifest, uriSegment} from './manifest.js';
 import {validateProjectSeedPattern, validateProjectSeedPatterns} from './seed_pattern.js';
-import {applyScrubber} from './scrubber.js';
+import {applyScrubber} from './share/scrubber.js';
 import type {
   InitManifestOptions,
   ProjectManifest,

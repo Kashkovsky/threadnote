@@ -52,8 +52,8 @@ import {
   registerReadTool,
   registerRecallFeedbackTool,
   registerSearchTool,
-  registerStoreTool,
 } from './recall.js';
+import {registerFinalizeCodeRefsTool, registerStoreTool} from './store.js';
 import {
   registerCompactTool,
   runNativeAddResourceTool,
@@ -146,7 +146,7 @@ function registerResources(
   server.registerResourceTemplate(
     {
       description:
-        'Read one Threadnote URI already returned by recall_context or list_context. This template does not enumerate private memories; resources/read and read_context are bounded.',
+        'Read one canonical Threadnote URI or bounded threadnote://memory/tn_ identity selector already returned by Threadnote. This template does not enumerate private memories; resources/read and read_context are bounded.',
       meta: {'threadnote.io/max-resource-bytes': MCP_RESOURCE_READ_MAX_BYTES},
       mimeType: MCP_RESOURCE_MIME_TYPE,
       name: 'Threadnote canonical resource',
@@ -299,6 +299,7 @@ function registerTools(
   }
   if (toolset === 'full') {
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');
+    registerFinalizeCodeRefsTool(server, config);
   }
 
   if (capabilities.memoryReview) registerCandidateMemoryTools(server, config);
@@ -388,7 +389,7 @@ function registerTools(
       {
         annotations: {readOnlyHint: false, destructiveHint: true},
         description:
-          'Publish a personal durable memory to the team shared repo. Scans for sensitive data, optionally redacts soft leaks, writes and pushes the shared copy first, then removes the original. Confirm with the user; never publish handoffs or preferences. Use preview to inspect without writing.',
+          'Publish a personal durable memory to the team repo after sensitive-data scanning; removes the source after push. Confirm with the user; never publish handoffs or preferences. Preview is read-only.',
         inputSchema: {
           message: McpInput.string('Commit message override; defaults to "share: publish <path>"'),
           preview: McpInput.boolean(
@@ -411,7 +412,13 @@ function registerTools(
         if (!checkedUri.ok) {
           return checkedUri.error;
         }
-        return runSharePublishTool(config, checkedUri.value, {message, preview, push, redact, team});
+        return runSharePublishTool(config, checkedUri.value, {
+          message,
+          preview,
+          push,
+          redact,
+          team,
+        });
       },
     );
 

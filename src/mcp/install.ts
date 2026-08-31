@@ -5,8 +5,8 @@ import {
   migrateLegacyAgentIntegrationsInTransaction,
   readAgentIntegrationRegistry,
   registeredAgentClients,
-} from '../agent-integrations.js';
-import {type AgentIntegrationMcpReceipt, withAgentIntegrationLock} from '../agent-integration-registry.js';
+} from '../agent_integration/index.js';
+import {type AgentIntegrationMcpReceipt, withAgentIntegrationLock} from '../agent_integration/registry.js';
 import {commandLauncherPath} from '../command-shim.js';
 import {THREADNOTE_MCP_NAME} from '../constants.js';
 import {maybeRunEffect, runCommandEffect} from '../effect/command.js';

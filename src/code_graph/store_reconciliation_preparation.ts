@@ -5,13 +5,17 @@ import {
   removedViewCleanupRecordedRevision,
   removedViewCleanupSchemaState,
 } from './store_removed_view_schema_inspection.js';
-import {codeGraphPersistentExtensionSchemaCompatible} from './store_schema_inspection.js';
+import {
+  codeGraphPersistentExtensionSchemaCompatible,
+  inspectPersistentExtensionTables,
+} from './store_schema_inspection.js';
 import {CodeGraphStoreError} from './types.js';
 import {
   CODE_GRAPH_PERSISTENT_SCHEMA_CURRENT_REVISION,
   codeGraphPersistentSchemaIsCurrent,
   codeGraphPersistentSchemaMigrationPending,
   codeGraphPersistentSchemaSupports,
+  planCodeGraphPersistentSchemaUpgrade,
 } from './store/schema_revision.js';
 import {
   codeGraphRemovedViewCleanupSchemaAdmission,
@@ -101,13 +105,28 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
   }
   if (citationPreparation.state === 'prepared') return citationPreparation;
   const snapshotFileCitationSchema = citationPreparation.citationSchema;
+  const citationMigrationPreservesSnapshots = codeGraphSchemaMigrationPreservesIncompleteSnapshots(
+    recordedRevision,
+    snapshotFileCitationSchema,
+    citationPreparation.state === 'ready' ? 'current' : 'missing',
+  );
+  const extensionInspections = yield* inspectPersistentExtensionTables(sql);
   const snapshotPreservingSchemaMigration =
-    codeGraphSchemaMigrationPreservesIncompleteSnapshots(
-      recordedRevision,
-      snapshotFileCitationSchema,
-      citationPreparation.state === 'ready' ? 'current' : 'missing',
-    ) && (yield* codeGraphPersistentExtensionSchemaCompatible(sql));
-  if (!(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false)) && !snapshotPreservingSchemaMigration) {
+    citationMigrationPreservesSnapshots &&
+    extensionInspections.every(inspection => inspection.exists && inspection.compatible);
+  const revisionPlan = planCodeGraphPersistentSchemaUpgrade(recordedRevision);
+  const checkpointExtensionMigration =
+    citationMigrationPreservesSnapshots &&
+    revisionPlan.state === 'upgrade' &&
+    revisionPlan.route === 'extend-checkpoint-import' &&
+    extensionInspections.every(inspection =>
+      inspection.group === 'checkpoint' ? !inspection.exists || inspection.compatible : inspection.compatible,
+    );
+  if (
+    !(yield* codeGraphWorktreeReconciliationSchemaCompatible(sql, false)) &&
+    !snapshotPreservingSchemaMigration &&
+    !checkpointExtensionMigration
+  ) {
     const cleanupState = yield* removedViewCleanupSchemaState(sql);
     if (cleanupState !== 'absent') return {reason: 'incompatible-schema', state: 'deferred'} as const;
   }
@@ -127,7 +146,7 @@ const prepareWorktreeReconciliationIndex = Effect.fn('codeGraph.prepareWorktreeR
     }
     return {index: missing.index.name, state: 'prepared'} as const;
   }
-  if (snapshotPreservingSchemaMigration) return {state: 'migration-ready'} as const;
+  if (snapshotPreservingSchemaMigration || checkpointExtensionMigration) return {state: 'migration-ready'} as const;
   if (codeGraphPersistentSchemaMigrationPending(recordedRevision)) {
     return {state: 'migration-ready'} as const;
   }

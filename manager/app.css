@@ -3436,7 +3436,637 @@ dd {
   width: 1px;
 }
 
+.context-panel.panel.is-active {
+  padding: 0;
+}
+
+.context-workspace {
+  align-content: start;
+  display: grid;
+  gap: 14px;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px;
+}
+
+.context-header > div:first-child {
+  min-width: 0;
+}
+
+.context-header > div:first-child > p:last-child {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 9px 0 0;
+  max-width: 780px;
+}
+
+.context-header .segmented-control {
+  flex: 0 0 auto;
+}
+
+.context-scope-card,
+.context-compose-form,
+.context-recall-form {
+  background: rgba(16, 21, 29, 0.88);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.context-scope-card {
+  align-items: end;
+  grid-template-columns: auto minmax(240px, 1.5fr) minmax(180px, 0.8fr);
+}
+
+.context-scope-card label,
+.context-compose-form label,
+.context-recall-form label {
+  color: var(--muted);
+  display: grid;
+  font-size: 10px;
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: 0.04em;
+  min-width: 0;
+}
+
+.context-scope-kind {
+  display: grid;
+  gap: 6px;
+}
+
+.context-scope-kind > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.context-compose,
+.context-recall {
+  align-content: start;
+  display: grid;
+  gap: 14px;
+}
+
+.context-compose-form {
+  align-items: end;
+  grid-template-columns: minmax(280px, 1.7fr) minmax(110px, 0.45fr) minmax(110px, 0.45fr);
+}
+
+.context-task-field,
+.context-code-refs,
+.context-form-actions {
+  grid-column: 1 / -1;
+}
+
+.context-code-refs {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.context-code-refs textarea,
+.context-code-refs small {
+  grid-column: 1 / -1;
+}
+
+.context-code-refs small,
+.context-code-refs .is-warning {
+  color: var(--warn);
+}
+
+.context-form-actions,
+.context-page-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.context-form-actions button:first-child,
+.context-recall-form > button {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.context-recall-form {
+  align-items: end;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
+}
+
+.context-check {
+  align-items: center;
+  display: flex !important;
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.context-check input {
+  min-height: auto;
+  width: auto;
+}
+
+.context-status {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  color: var(--accent);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.context-status.is-error {
+  background: var(--danger-soft);
+  border-color: rgba(255, 122, 122, 0.34);
+  color: var(--danger);
+}
+
+.context-empty {
+  align-items: center;
+  background: rgba(16, 21, 29, 0.52);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  display: grid;
+  justify-items: center;
+  min-height: 190px;
+  padding: 26px;
+  text-align: center;
+}
+
+.context-empty > span {
+  align-items: center;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: 50%;
+  color: var(--accent);
+  display: flex;
+  font-size: 19px;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.context-empty h3 {
+  color: var(--text);
+  margin: 12px 0 0;
+}
+
+.context-empty p {
+  line-height: 1.5;
+  margin: 6px 0 0;
+  max-width: 560px;
+}
+
+.context-brief-result {
+  display: grid;
+  gap: 14px;
+}
+
+.context-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+}
+
+.context-metrics > div {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.context-metrics > div.is-ok {
+  border-color: rgba(110, 231, 183, 0.3);
+}
+
+.context-metrics > div.is-warn {
+  border-color: rgba(255, 184, 107, 0.34);
+}
+
+.context-metrics span {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.context-metrics strong {
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.context-notices {
+  background: rgba(103, 232, 199, 0.06);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 7px;
+  padding: 12px 14px;
+}
+
+.context-notices.is-warning {
+  background: var(--warn-soft);
+  border-color: rgba(255, 184, 107, 0.34);
+}
+
+.context-notices h3,
+.context-notices p,
+.context-notices article {
+  margin: 0;
+}
+
+.context-notices h3 {
+  font-size: 12px;
+}
+
+.context-notices p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.context-notices article {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 6px;
+  padding-top: 9px;
+}
+
+.context-notices article button {
+  justify-self: start;
+}
+
+.context-evidence-grid {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.context-evidence-column,
+.context-contracts,
+.context-followups {
+  background: rgba(16, 21, 29, 0.64);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.context-section-heading {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.context-section-heading h3 {
+  font-size: 13px;
+  margin: 0;
+}
+
+.context-section-heading > span {
+  align-items: center;
+  background: var(--panel-alt);
+  border-radius: 999px;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 9px;
+  justify-content: center;
+  min-height: 20px;
+  min-width: 20px;
+  padding: 2px 6px;
+}
+
+.context-graph-card,
+.context-memory-card,
+.context-contracts article {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 11px;
+}
+
+.context-graph-card header,
+.context-memory-card header,
+.context-graph-card footer,
+.context-memory-card footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.context-graph-card header span,
+.context-memory-card header span,
+.context-memory-card header em {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  padding: 2px 6px;
+}
+
+.context-memory-card header em.is-fresh {
+  border-color: rgba(110, 231, 183, 0.3);
+  color: var(--ok);
+}
+
+.context-memory-card header em.is-stale,
+.context-memory-card header em.is-unknown {
+  border-color: rgba(255, 184, 107, 0.34);
+  color: var(--warn);
+}
+
+.context-graph-card strong,
+.context-memory-card strong {
+  flex: 1 1 160px;
+  overflow-wrap: anywhere;
+}
+
+.context-graph-card code,
+.context-memory-card code,
+.context-contracts code,
+.context-reader code,
+.context-recall-card code {
+  color: #a8b8cb;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.context-graph-card p,
+.context-memory-card p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.context-graph-card footer > span {
+  color: var(--dim);
+  font-size: 9px;
+}
+
+.context-memory-card footer code {
+  flex: 1 1 240px;
+}
+
+.context-memory-metadata,
+.context-memory-relations,
+.context-reader-metadata,
+.context-query-expansions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.context-memory-metadata span,
+.context-memory-relations span,
+.context-reader-metadata span,
+.context-query-expansions span {
+  background: var(--panel-alt);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  padding: 3px 6px;
+}
+
+.context-small-empty {
+  color: var(--muted);
+  font-size: 11px;
+  margin: 6px 0;
+}
+
+.context-continuation {
+  align-items: center;
+  background: var(--warn-soft);
+  border: 1px solid rgba(255, 184, 107, 0.32);
+  border-radius: 9px;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px;
+}
+
+.context-continuation strong,
+.context-continuation span {
+  grid-column: 1;
+}
+
+.context-continuation span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.context-continuation button {
+  grid-column: 2;
+  grid-row: 1 / 3;
+}
+
+.context-contracts > div {
+  display: grid;
+  gap: 7px;
+}
+
+.context-contracts article {
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
+.context-contracts article small {
+  color: var(--muted);
+  font-size: 9px;
+  grid-column: 1 / -1;
+}
+
+.context-followups {
+  grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
+}
+
+.context-followups .context-section-heading {
+  grid-column: 1 / -1;
+}
+
+.context-recall-results {
+  display: grid;
+  gap: 11px;
+}
+
+.context-recall-results > header {
+  align-items: start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.context-recall-results h3,
+.context-recall-results p {
+  margin: 0;
+}
+
+.context-recall-results p,
+.context-recall-results > header > span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.context-recall-list {
+  display: grid;
+  gap: 7px;
+}
+
+.context-recall-card {
+  min-width: 0;
+}
+
+.context-recall-card > button {
+  align-items: center;
+  background: var(--panel);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 11px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.context-rank {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.context-recall-card-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.context-recall-card-main small,
+.context-recall-card-main > span {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.context-recall-card-main em {
+  color: var(--accent);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.context-recall-card-main em.is-warning {
+  color: var(--warn);
+}
+
+.context-query-expansions {
+  align-items: center;
+}
+
+.context-query-expansions strong {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.context-reader {
+  background: rgba(16, 21, 29, 0.98);
+  border: 1px solid var(--accent-line);
+  border-radius: 14px 0 0 14px;
+  bottom: 12px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 12px;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  max-width: min(620px, calc(100vw - 24px));
+  min-width: min(520px, calc(100vw - 24px));
+  padding: 15px;
+  position: fixed;
+  right: 0;
+  top: 12px;
+  z-index: 25;
+}
+
+.context-reader > header,
+.context-reader > footer {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.context-reader > header > div {
+  min-width: 0;
+}
+
+.context-reader h3 {
+  margin: 0 0 4px;
+  overflow-wrap: anywhere;
+}
+
+.context-reader .eyebrow {
+  margin-left: 0;
+}
+
+.context-reader-relocation {
+  background: var(--accent-soft);
+  border-radius: 7px;
+  color: var(--accent);
+  font-size: 10px;
+  margin: 0;
+  padding: 7px 9px;
+}
+
+.context-reader > pre {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: #d8e0ea;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.context-reader > footer span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
 @media (max-width: 1180px) {
+  .context-metrics {
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+  }
+
   .worksets-workspace {
     grid-template-columns: 230px minmax(0, 1fr);
   }
@@ -3494,7 +4124,7 @@ dd {
   }
 
   .primary-nav {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(8, minmax(0, 1fr));
   }
 
   .primary-nav > button {
@@ -3519,6 +4149,22 @@ dd {
 
   .main {
     min-height: 760px;
+  }
+
+  .context-scope-card,
+  .context-compose-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .context-scope-kind,
+  .context-task-field,
+  .context-code-refs,
+  .context-form-actions {
+    grid-column: 1 / -1;
+  }
+
+  .context-evidence-grid {
+    grid-template-columns: 1fr;
   }
 
   .worksets-workspace {
@@ -3725,6 +4371,52 @@ dd {
 
   .primary-nav {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .context-workspace {
+    padding: 12px;
+  }
+
+  .context-scope-card,
+  .context-compose-form,
+  .context-recall-form,
+  .context-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .context-scope-kind,
+  .context-task-field,
+  .context-code-refs,
+  .context-form-actions {
+    grid-column: 1;
+  }
+
+  .context-header .segmented-control,
+  .context-header .segmented-control button,
+  .context-form-actions button,
+  .context-recall-form > button {
+    width: 100%;
+  }
+
+  .context-continuation {
+    grid-template-columns: 1fr;
+  }
+
+  .context-continuation button,
+  .context-continuation strong,
+  .context-continuation span {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .context-reader {
+    border-radius: 14px;
+    bottom: 8px;
+    left: 8px;
+    max-width: none;
+    min-width: 0;
+    right: 8px;
+    top: 8px;
   }
 
   .worksets-main,

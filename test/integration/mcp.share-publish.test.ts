@@ -153,6 +153,28 @@ describe('Threadnote MCP share_publish', () => {
     const client = new Client({name: 'threadnote-test', version: '0.0.0'});
     try {
       await client.connect(transport);
+      const aliasPublish = await client.callTool(
+        {
+          arguments: {preview: true, uri: 'threadnote://memory/tn_foo_bar'},
+          name: 'share_publish',
+        },
+        undefined,
+        {timeout: 5000},
+      );
+      expect(aliasPublish.isError).toBe(true);
+      expect((aliasPublish.content as TextContent[]).map(item => item.text).join('\n')).toContain(
+        'threadnote://memory/tn_foo_bar',
+      );
+      expect(
+        await readFile(
+          join(home, 'data', 'local', 'user', 'test-user', 'memories', 'durable', 'projects', 'foo', 'bar.md'),
+          'utf8',
+        ),
+      ).toContain('Body');
+      await expect(
+        readFile(join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md'), 'utf8'),
+      ).rejects.toBeDefined();
+
       const preview = await client.callTool(
         {
           arguments: {preview: true, uri: sourceUri},

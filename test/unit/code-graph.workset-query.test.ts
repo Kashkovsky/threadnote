@@ -1,7 +1,7 @@
 import {expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {describe} from 'vitest';
-import {codeGraphWorksetMcpResponse} from '../../src/mcp_server.js';
+import {codeGraphWorksetMcpResponse} from '../../src/mcp/server/index.js';
 import {
   allocateCodeGraphWorksetBudget,
   renderCodeGraphWorksetResult,

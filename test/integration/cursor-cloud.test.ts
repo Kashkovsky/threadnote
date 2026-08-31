@@ -1,5 +1,6 @@
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+import {createHash} from '../helpers/node-crypto.js';
 import {execFile} from '../helpers/node-child-process.js';
 import {access, mkdir, mkdtemp, readFile, rm, writeFile} from '../helpers/node-fs-promises.js';
 import {tmpdir} from '../helpers/node-os.js';
@@ -265,6 +266,66 @@ describe('Cursor Cloud integration', () => {
     const fixture = await cloudFixture();
     await bootstrap(fixture);
     try {
+      const privateSentinel = 'CURSOR_CLOUD_RELOCATION_PRIVATE_SENTINEL';
+      const privateUri =
+        'threadnote://user/cloud-user/memories/durable/projects/threadnote/relocation-private-target.md';
+      const formerSharedUri =
+        'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/relocation-former-shared.md';
+      await runCli(
+        [
+          'remember',
+          '--home',
+          fixture.home,
+          '--kind',
+          'durable',
+          '--project',
+          'threadnote',
+          '--topic',
+          'relocation-private-target',
+          '--text',
+          privateSentinel,
+        ],
+        {THREADNOTE_USER: 'cloud-user'},
+      );
+      const privatePath = join(
+        fixture.home,
+        'data',
+        'local',
+        'user',
+        'cloud-user',
+        'memories',
+        'durable',
+        'projects',
+        'threadnote',
+        'relocation-private-target.md',
+      );
+      const privateContent = await readFile(privatePath, 'utf8');
+      const memoryId = /^memory_id: (tn_[A-Za-z0-9_-]+)$/mu.exec(privateContent)?.[1];
+      expect(memoryId).toBeDefined();
+      const receiptRoot = join(
+        fixture.home,
+        'data',
+        'local',
+        'user',
+        'cloud-user',
+        'private',
+        'memory-relocations',
+        'v1',
+      );
+      await mkdir(receiptRoot, {recursive: true, mode: 0o700});
+      await writeFile(
+        join(receiptRoot, `${createHash('sha256').update(formerSharedUri).digest('hex')}.json`),
+        `${JSON.stringify({
+          fromUri: formerSharedUri,
+          memoryId,
+          toUri: privateUri,
+          type: 'threadnote-memory-relocation',
+          version: 1,
+          visibility: 'private-local',
+        })}\n`,
+        {mode: 0o600},
+      );
+
       await withCloudMcp(fixture, async client => {
         const tools = await client.listTools();
         expect(tools.tools.map(tool => tool.name)).toEqual(CLOUD_TOOL_NAMES);
@@ -274,6 +335,19 @@ describe('Cursor Cloud integration', () => {
             uri: 'threadnote://user/cloud-user/memories/durable/projects/threadnote/private.md',
           }),
         ).resolves.toContain('must stay within');
+        const privateAlias = `threadnote://memory/${memoryId}`;
+        const aliasReadError = await callError(client, 'read_context', {uri: privateAlias});
+        expect(aliasReadError).toContain('does not resolve inside the authorized active corpus');
+        expect(aliasReadError).not.toContain(privateSentinel);
+        await expect(client.readResource({uri: privateAlias})).rejects.toThrow(
+          'does not resolve inside the authorized active corpus',
+        );
+        const relocatedReadError = await callError(client, 'read_context', {uri: formerSharedUri});
+        expect(relocatedReadError).toContain('relocated uri must stay within');
+        expect(relocatedReadError).not.toContain(privateSentinel);
+        await expect(client.readResource({uri: formerSharedUri})).rejects.toThrow(
+          'relocated resource is outside the active Cursor Cloud memory scope',
+        );
         await expect(
           callError(client, 'inspect_code_graph', {
             callerCwd: process.cwd(),
@@ -298,6 +372,47 @@ describe('Cursor Cloud integration', () => {
         expect(handoff).toContain(
           'Stored memory: threadnote://user/cloud-user/memories/handoffs/active/threadnote/cursor-cloud-transient.md',
         );
+
+        const sharedCitationWithoutReadyGraph = await client.callTool({
+          arguments: {
+            callerCwd: process.cwd(),
+            codeRefs: ['src/types.ts'],
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'Shared memory must not publish before its requested citation is current.',
+            topic: 'cursor-cloud-strict-citation',
+          },
+          name: 'remember_context',
+        });
+        expect(sharedCitationWithoutReadyGraph.isError).toBe(true);
+        expect(sharedCitationWithoutReadyGraph.structuredContent).toMatchObject({
+          retryable: true,
+          state: 'blocked',
+          type: 'memory-code-citation-write-recovery',
+          writeApplied: false,
+        });
+        expect(JSON.stringify(sharedCitationWithoutReadyGraph)).toContain('No memory was written');
+        await expect(
+          access(
+            join(
+              fixture.home,
+              'data',
+              'local',
+              'user',
+              'cloud-user',
+              'memories',
+              'shared',
+              'engineering',
+              'durable',
+              'projects',
+              'threadnote',
+              'cursor-cloud-strict-citation.md',
+            ),
+          ),
+        ).rejects.toMatchObject({code: 'ENOENT'});
+        await expect(
+          access(join(fixture.home, 'data', 'local', 'user', 'cloud-user', 'private', 'deferred-code-anchors', 'v1')),
+        ).rejects.toMatchObject({code: 'ENOENT'});
 
         const durable = await client.callTool({
           arguments: {

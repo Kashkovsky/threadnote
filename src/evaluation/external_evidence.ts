@@ -1,4 +1,4 @@
-import {credentialScrubberBlocker} from '../scrubber.js';
+import {credentialScrubberBlocker} from '../share/scrubber.js';
 import type {BenchmarkArtifactV1, BenchmarkMeasurementV1} from './benchmark.js';
 import {privacySafeExternalControlPath, privacySafeExternalControlQuery} from './public_controls.js';
 

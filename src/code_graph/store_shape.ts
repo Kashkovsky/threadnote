@@ -27,6 +27,7 @@ import type {
   CodeGraphCheckpointImportReceiptRecordResult,
   CodeGraphCheckpointImportRecordPage,
   CodeGraphCheckpointImportRecordPageResult,
+  CodeGraphCleanSnapshotAliasOptions,
   CodeGraphDatabaseHealth,
   CodeGraphDatabaseRepair,
   CodeGraphDirectPersistentCapacityProtector,
@@ -50,6 +51,7 @@ import type {
   CodeGraphReusableBaseReceiptInput,
   CodeGraphReusableCleanBase,
   CodeGraphReusableCleanBaseSlice,
+  CodeGraphReusableFoldForwardBase,
   CodeGraphReusableReexport,
   CodeGraphReusableReexportSeed,
   CodeGraphSecondaryIndexRestorationProgressCallback,
@@ -170,6 +172,7 @@ export interface CodeGraphStoreShape {
     snapshot: CodeGraphSnapshot,
     baseSnapshotId: string,
     currentSnapshotReceipt: CodeGraphReusableBaseReceiptInput,
+    options?: CodeGraphCleanSnapshotAliasOptions,
   ) => Effect.Effect<void, CodeGraphStoreError>;
   readonly cacheFacts: (
     databasePath: string,
@@ -310,6 +313,11 @@ export interface CodeGraphStoreShape {
     facts: readonly CodeGraphFileFacts[],
     options?: {
       readonly deletedPaths?: readonly string[];
+      readonly foldForward?: {
+        readonly snapshotId: string;
+        readonly stagedPayloadBytes: number;
+        readonly stagedRows: number;
+      };
       readonly resolutionClosure?: 'changed' | 'full' | 'project';
     },
     persistentCapacityProtector?: CodeGraphDirectPersistentCapacityProtector,
@@ -522,6 +530,11 @@ export interface CodeGraphStoreShape {
     snapshotId: string,
     options?: {readonly allowDirtyRoot?: boolean},
   ) => Effect.Effect<CodeGraphReusableBaseReceipt | undefined, CodeGraphStoreError>;
+  /** Exact clean layered snapshot admitted only as a logical fold-forward comparator. */
+  readonly reusableFoldForwardBase?: (
+    databasePath: string,
+    snapshotId: string,
+  ) => Effect.Effect<CodeGraphReusableFoldForwardBase | undefined, CodeGraphStoreError>;
   readonly snapshotPackProvenance: (
     databasePath: string,
     snapshotId: string,
@@ -597,7 +610,7 @@ export interface CodeGraphStoreShape {
     databasePath: string,
     snapshotId: string,
     seeds: readonly CodeGraphReusableReexportSeed[],
-    options?: {readonly maxRows?: number},
+    options?: {readonly allowDirtyRoot?: boolean; readonly maxRows?: number},
   ) => Effect.Effect<readonly CodeGraphReusableReexport[] | undefined, CodeGraphStoreError>;
   readonly pruneCachedFacts: (
     databasePath: string,

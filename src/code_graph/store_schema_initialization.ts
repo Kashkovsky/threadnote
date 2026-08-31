@@ -409,6 +409,45 @@ const initializeSchemaFully = Effect.fn('codeGraph.initializeSchemaFully')(funct
       PRIMARY KEY (snapshot_id, source_path, local_name, target_path, imported_name)
     ) WITHOUT ROWID
   `);
+  // A layered clean snapshot remains a one-level physical delta over its root.
+  // These receipts prove that the delta can be folded into a later sibling
+  // without ever making the layered snapshot a physical base. The dedicated
+  // lookup table intentionally has no symbol foreign key: a resolved alias
+  // owned by the delta may target an unchanged symbol physically owned by the
+  // root snapshot.
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_fold_forward_receipts (
+      snapshot_id TEXT PRIMARY KEY NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      root_snapshot_id TEXT NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+      format_version INTEGER NOT NULL CHECK (format_version = 1),
+      delta_path_count INTEGER NOT NULL CHECK (delta_path_count > 0),
+      staged_row_count INTEGER NOT NULL CHECK (staged_row_count > 0),
+      staged_payload_bytes INTEGER NOT NULL CHECK (staged_payload_bytes >= 0),
+      lookup_count INTEGER NOT NULL CHECK (lookup_count >= 0),
+      reexport_count INTEGER NOT NULL CHECK (reexport_count >= 0),
+      created_at TEXT NOT NULL
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_fold_forward_paths (
+      snapshot_id TEXT NOT NULL REFERENCES snapshot_fold_forward_receipts(snapshot_id) ON DELETE CASCADE,
+      path TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, path)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS snapshot_fold_forward_symbol_lookup (
+      snapshot_id TEXT NOT NULL REFERENCES snapshot_fold_forward_receipts(snapshot_id) ON DELETE CASCADE,
+      lookup_key TEXT NOT NULL,
+      symbol_id TEXT NOT NULL,
+      resolution_domain TEXT NOT NULL,
+      exported INTEGER NOT NULL CHECK (exported IN (0, 1)),
+      provenance TEXT NOT NULL CHECK (provenance IN ('alias', 'symbol')),
+      evidence_edge_id TEXT,
+      evidence_path TEXT NOT NULL,
+      PRIMARY KEY (snapshot_id, lookup_key, symbol_id)
+    ) WITHOUT ROWID
+  `);
   // Clean full builds write symbols and already-final edges directly while the
   // snapshot remains `building`. Each unresolved edge and its compact lookup
   // tiers share one build-only primary-key row until resolution publishes the

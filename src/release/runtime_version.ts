@@ -17,7 +17,7 @@ export const getThreadnoteVersion = Effect.fn('version.getThreadnoteVersion')(fu
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
   const modulePath = yield* pathService.fromFileUrl(new URL(import.meta.url));
-  const packageJsonPath = pathService.join(pathService.dirname(modulePath), '..', 'package.json');
+  const packageJsonPath = pathService.join(pathService.dirname(modulePath), '..', '..', 'package.json');
   cachedVersion = yield* fs.readFileString(packageJsonPath).pipe(
     Effect.flatMap(content =>
       Effect.try({

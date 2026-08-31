@@ -19,6 +19,8 @@ import {codeGraphLayout} from '../../src/code_graph/layout.js';
 import {runCodeGraphStatus} from '../../src/code_graph/commands.js';
 import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {resolveRepositoryIdentity} from '../../src/code_graph/repository.js';
+import {BUILTIN_LANGUAGE_PACK_REGISTRY} from '../../src/code_graph/languages/registry.js';
+import {codeGraphLanguagePackStatuses} from '../../src/code_graph/query_status_helpers.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {withExclusiveFileLock} from '../../src/effect/file_lock.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
@@ -34,6 +36,7 @@ import {runEffect} from '../helpers/effect-runtime.js';
 
 describe('code graph cross-process build status', () => {
   const homes: string[] = [];
+  const languagePackTotal = codeGraphLanguagePackStatuses(BUILTIN_LANGUAGE_PACK_REGISTRY).length;
 
   afterEach(async () => {
     await Promise.all(homes.splice(0).map(home => rm(home, {force: true, recursive: true})));
@@ -63,6 +66,109 @@ describe('code graph cross-process build status', () => {
       calibratedCodeGraphEtaConfidence({...stable, rateSamples: stable.rateSamples.slice(0, 2), sampleCount: 2}),
     ).toBeUndefined();
   });
+
+  effectIt.effect('round-trips additive project-closure boundary evidence without changing legacy assessment', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectory({prefix: 'threadnote-graph-fallback-boundary-'});
+      homes.push(home);
+      const identity = fixtureIdentity(home);
+      const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
+      const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
+      yield* reporter.progress({
+        completed: 0,
+        metrics: {
+          batchesCompleted: 0,
+          batchesTotal: 1,
+          fallbackBoundary: {
+            changedFiles: 3,
+            limit: 128,
+            metric: 'affected-files',
+            observedAtDecision: 1_404,
+            stage: 'project-closure-selection',
+          },
+          fallbackReason: 'project-closure-unbounded',
+          mode: 'full',
+          sourceBytesCompleted: 0,
+          sourceBytesTotal: 1,
+        },
+        phase: 'materializing',
+        reused: 0,
+        total: 1,
+        unit: 'files',
+      });
+
+      expect((yield* readCodeGraphBuildStatuses(layout))[0]).toMatchObject({
+        materialization: {
+          metrics: {
+            fallbackBoundary: {
+              changedFiles: 3,
+              limit: 128,
+              metric: 'affected-files',
+              observedAtDecision: 1_404,
+              stage: 'project-closure-selection',
+            },
+            fallbackReason: 'project-closure-unbounded',
+          },
+        },
+      });
+
+      const directory = path.join(layout.repositoryRoot, 'build-status', identity.worktreeId);
+      const statusFile = (yield* fs.readDirectory(directory)).find(name => name.endsWith('.json'))!;
+      const statusPath = path.join(directory, statusFile);
+      const status = JSON.parse(yield* fs.readFileString(statusPath)) as {
+        materialization: {metrics: {fallbackBoundary: Record<string, unknown>}};
+      };
+      yield* fs.writeFileString(
+        statusPath,
+        `${JSON.stringify({
+          ...status,
+          materialization: {
+            ...status.materialization,
+            metrics: {
+              ...status.materialization.metrics,
+              fallbackBoundary: {
+                ...status.materialization.metrics.fallbackBoundary,
+                metric: 'candidate-projection-observations',
+                stage: 'resolution-candidate-scan',
+              },
+            },
+          },
+        })}\n`,
+      );
+      expect((yield* readCodeGraphBuildStatuses(layout))[0]).toMatchObject({
+        materialization: {
+          metrics: {
+            fallbackBoundary: {
+              metric: 'candidate-projection-observations',
+              stage: 'resolution-candidate-scan',
+            },
+          },
+        },
+      });
+      for (const [stage, metric] of [
+        ['project-closure-selection', 'candidate-reexports'],
+        ['resolution-candidate-scan', 'affected-files'],
+        ['resolution-candidate-rewrite', 'candidate-lookup-keys'],
+      ] as const) {
+        yield* fs.writeFileString(
+          statusPath,
+          `${JSON.stringify({
+            ...status,
+            materialization: {
+              ...status.materialization,
+              metrics: {
+                ...status.materialization.metrics,
+                fallbackBoundary: {...status.materialization.metrics.fallbackBoundary, metric, stage},
+              },
+            },
+          })}\n`,
+        );
+        expect(yield* readCodeGraphBuildStatuses(layout)).toEqual([]);
+      }
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   effectIt.effect('publishes a reporter ETA only after stable phase-local throughput', () =>
     Effect.gen(function* () {
@@ -823,7 +929,14 @@ describe('code graph cross-process build status', () => {
           metrics: {
             batchesCompleted: 3,
             batchesTotal: 10,
-            fallbackReason: 'file-set-changed',
+            fallbackAssessment: {
+              addedFiles: 1,
+              changedFiles: 2,
+              deletedFiles: 0,
+              detail: 'resolution-domain-unowned',
+              stage: 'file-set-seed-assessment',
+            },
+            fallbackReason: 'project-closure-incomplete',
             mode: 'full',
             rows: {edges: 90, symbols: 60},
             sourceBytesCompleted: 12_000,
@@ -886,21 +999,27 @@ describe('code graph cross-process build status', () => {
     expect(result.elapsedMilliseconds).toBeLessThan(2_000);
     const status = JSON.parse(result.output) as Record<string, unknown>;
     expect(status).toMatchObject({
-      build: {
-        counters: {completed: 3, reused: 2, total: 10},
-        materialization: {metrics: {fallbackReason: 'file-set-changed', mode: 'full'}},
-        state: 'running',
-      },
+      build: {index: 0},
+      builds: [{counters: {completed: 3, reused: 2, total: 10}, state: 'running'}],
       obsoleteStores: {bytes: 15, fileCount: 1, unsafeEntryCount: 0},
+      projection: {
+        builds: {limit: 4, omitted: 0, returned: 1, total: 1},
+        languagePacks: {limit: 4, omitted: languagePackTotal - 4, returned: 4, total: languagePackTotal},
+        queuedWorktreeIds: {limit: 4, omitted: 0, returned: 0, total: 0},
+        waiters: {limit: 4, omitted: 0, returned: 0, total: 0},
+      },
       type: 'code-graph-status',
-      version: 2,
+      version: 5,
     });
+    expect(JSON.stringify(status)).not.toContain('fallbackAssessment');
+    expect(JSON.stringify(status)).not.toContain('temporaryDatabaseHighWaterBytes');
+    expect(Buffer.byteLength(result.output)).toBeLessThan(9_000);
     const idleStatus = JSON.parse(result.idleOutput) as Record<string, unknown>;
-    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 2});
+    expect(idleStatus).toMatchObject({build: null, builds: [], type: 'code-graph-status', version: 5});
     expect(Object.keys(idleStatus).sort()).toEqual(Object.keys(status).sort());
     expect(result.human).toContain('Current activity: writing graph facts');
     expect(result.human).toContain('full materialization');
-    expect(result.human).toContain('incremental fallback: file set changed');
+    expect(result.human).toContain('incremental fallback: project closure incomplete');
     expect(result.human).toContain('23.4 KiB current TEMP database');
     expect(result.human).toContain('31.3 KiB TEMP database high-water');
     expect(result.human).toContain('46.9 KiB allocated durable pages');
@@ -972,6 +1091,112 @@ describe('code graph cross-process build status', () => {
     expect(status.readySnapshot?.id).toMatch(/^cgsn_/);
     expect(status.stale).toBe(false);
     expect(output.human).toContain('Ready snapshot: cgsn_');
+  });
+
+  it('bounds graph status JSON and pins the exact current worktree build', async () => {
+    const home = await mkdtemp('threadnote-graph-status-bounded-');
+    homes.push(home);
+    const repository = join(home, 'repository');
+    await mkdir(repository, {recursive: true});
+    await writeFile(join(repository, 'source.ts'), 'export const bounded = true;\n');
+    runGit(repository, ['init', '--quiet']);
+    runGit(repository, ['config', 'user.email', 'test@example.invalid']);
+    runGit(repository, ['config', 'user.name', 'Threadnote Test']);
+    runGit(repository, ['add', 'source.ts']);
+    runGit(repository, ['commit', '--quiet', '-m', 'fixture']);
+    const config: RuntimeConfig = {
+      account: 'local',
+      agentContextHome: home,
+      agentId: 'threadnote',
+      manifestPath: join(home, 'manifest.yaml'),
+      user: 'tester',
+    };
+
+    const result = await runEffect(
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const identity = yield* resolveRepositoryIdentity(repository);
+        const identities = [identity];
+        for (let index = 1; index <= 12; index += 1) {
+          identities.push({...identity, worktreeId: index.toString(16).repeat(64)});
+        }
+        for (const candidate of identities) {
+          const reporter = yield* makeCodeGraphBuildReporter(
+            candidate,
+            codeGraphLayout(path, home, candidate.checkoutId, candidate.worktreeId),
+          );
+          yield* reporter.completeSnapshot(fixtureSnapshot(candidate));
+        }
+        const json = yield* captureConsole(
+          runCodeGraphStatus(config, {buildLimit: 2, cwd: repository, json: true, languagePackLimit: 2}),
+        );
+        const human = yield* captureConsole(runCodeGraphStatus(config, {cwd: repository}));
+        const humanLimitError = yield* runCodeGraphStatus(config, {buildLimit: 2, cwd: repository}).pipe(
+          Effect.match({
+            onFailure: error => (error instanceof Error ? error.message : String(error)),
+            onSuccess: () => undefined,
+          }),
+        );
+        const humanLanguagePackLimitError = yield* runCodeGraphStatus(config, {
+          cwd: repository,
+          languagePackLimit: 2,
+        }).pipe(
+          Effect.match({
+            onFailure: error => (error instanceof Error ? error.message : String(error)),
+            onSuccess: () => undefined,
+          }),
+        );
+        return {
+          human: human.output,
+          humanLanguagePackLimitError,
+          humanLimitError,
+          json: json.output.trim(),
+          worktreeId: identity.worktreeId,
+        };
+      }),
+    );
+    const status = JSON.parse(result.json) as {
+      readonly build: {readonly index: number; readonly worktreeId: string} | null;
+      readonly builds: readonly {
+        readonly buildId: string;
+        readonly identity: {readonly worktreeId: string};
+      }[];
+      readonly projection: {
+        readonly builds: {
+          readonly limit: number;
+          readonly omitted: number;
+          readonly returned: number;
+          readonly total: number;
+        };
+        readonly languagePacks: {
+          readonly limit: number;
+          readonly omitted: number;
+          readonly returned: number;
+          readonly total: number;
+        };
+      };
+      readonly languagePacks: readonly unknown[];
+      readonly version: number;
+    };
+
+    expect(status.version).toBe(5);
+    expect(status.build?.worktreeId).toBe(result.worktreeId);
+    expect(status.builds).toHaveLength(2);
+    expect(status.builds.map(build => build.identity.worktreeId)).toContain(result.worktreeId);
+    expect(status.builds[status.build!.index]?.buildId).toBe(
+      status.builds.find(build => build.identity.worktreeId === result.worktreeId)?.buildId,
+    );
+    expect(status.projection.builds).toEqual({limit: 2, omitted: 11, returned: 2, total: 13});
+    expect(status.languagePacks).toHaveLength(2);
+    expect(status.projection.languagePacks).toEqual({
+      limit: 2,
+      omitted: languagePackTotal - status.languagePacks.length,
+      returned: status.languagePacks.length,
+      total: languagePackTotal,
+    });
+    expect(result.human).toContain('Build: completed');
+    expect(result.humanLimitError).toBe('Use --build-limit only with --json.');
+    expect(result.humanLanguagePackLimitError).toBe('Use --language-pack-limit only with --json.');
   });
 });
 

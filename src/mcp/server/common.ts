@@ -119,7 +119,7 @@ export function exactMemoryScopes(
 
 export const MAX_WORKSET_PASSES = 12;
 
-/** Durable + seeded recall scopes for every member of a workset (see src/memory.ts:worksetScopeUris). */
+/** Durable + seeded recall scopes for every member of a workset (see src/memory/index.ts:worksetScopeUris). */
 export function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): readonly string[] {
   const scopes: string[] = [];
   for (const member of workset.projects) {

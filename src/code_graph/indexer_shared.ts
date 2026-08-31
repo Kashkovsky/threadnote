@@ -20,6 +20,37 @@ export function sameInventoryPaths(
   return left.length === right.length && left.every((file, index) => file.path === right[index]?.path);
 }
 
+/**
+ * Committing an already-indexed worktree changes provenance from `worktree` to
+ * `commit`, but not the effective source graph. Keep that transition exact:
+ * every graph-relevant file field must still match in canonical path order.
+ */
+export function sameEffectiveCodeGraphInventory(
+  left: readonly CodeGraphInventoryFile[],
+  right: readonly CodeGraphInventoryFile[],
+): boolean {
+  if (
+    new Set(left.map(file => file.path)).size !== left.length ||
+    new Set(right.map(file => file.path)).size !== right.length
+  ) {
+    return false;
+  }
+  return (
+    left.length === right.length &&
+    left.every((file, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        file.contentHash === other.contentHash &&
+        file.language === other.language &&
+        file.mode === other.mode &&
+        file.path === other.path &&
+        file.size === other.size
+      );
+    })
+  );
+}
+
 export function codeGraphInventoryFileChanged(
   base: CodeGraphInventoryFile | undefined,
   current: CodeGraphInventoryFile,

@@ -7,7 +7,7 @@ import {codeGraphCitationSourceKey, readCodeGraphCitationSources} from '../code_
 import {decodeUtf8} from '../code_graph/inventory_content.js';
 import {CodeGraphQueryService} from '../code_graph/query.js';
 import {CodeGraphStore} from '../code_graph/store.js';
-import type {CodeGraphStatus, CodeGraphSymbol} from '../code_graph/types.js';
+import {CodeGraphStoreError, type CodeGraphStatus, type CodeGraphSymbol} from '../code_graph/types.js';
 import {
   resolveCodeGraphQualifiedRefTargets,
   type ResolvedCodeGraphQualifiedRefTargetV1,
@@ -29,6 +29,7 @@ export const MEMORY_CODE_CITATION_GRAPH_PREPARATION_COMMAND = 'threadnote graph 
 export const MEMORY_CODE_CITATION_WORKSET_PREPARATION_COMMAND = 'threadnote workset prepare' as const;
 
 export type MemoryCodeCitationCaptureRecoveryCode = 'exact-current-evidence-unavailable' | 'ready-graph-unavailable';
+export type MemoryCodeCitationCaptureFailureCode = 'code-reference-unresolved';
 
 export type MemoryCodeCitationGraphPreparationV1 =
   | {
@@ -60,13 +61,28 @@ export interface MemoryCodeCitationCaptureRecoveryV1 {
   readonly version: 1;
 }
 
+export interface ExpectedMemoryCodeCitationCallerIdentity {
+  readonly repositoryId: string;
+  readonly worktreeId: string;
+}
+
 export class MemoryCodeCitationCaptureError extends Error {
   override readonly name = 'MemoryCodeCitationCaptureError';
+  readonly failureCode?: MemoryCodeCitationCaptureFailureCode;
   readonly recovery?: MemoryCodeCitationCaptureRecoveryV1;
+  /** Immediate retry eligibility preserved from a classified graph-store failure. */
+  readonly retryable: boolean;
 
-  constructor(message: string, recovery?: MemoryCodeCitationCaptureRecoveryV1) {
+  constructor(
+    message: string,
+    recovery?: MemoryCodeCitationCaptureRecoveryV1,
+    failureCode?: MemoryCodeCitationCaptureFailureCode,
+    retryable = false,
+  ) {
     super(message);
     this.recovery = recovery;
+    this.failureCode = failureCode;
+    this.retryable = retryable;
   }
 }
 
@@ -84,16 +100,31 @@ interface CaptureTarget {
  */
 export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture')(function* (
   config: RuntimeConfig,
-  input: {readonly callerCwd: string; readonly refs?: readonly string[]},
+  input: {
+    readonly callerCwd: string;
+    readonly expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity;
+    readonly refs?: readonly string[];
+  },
 ) {
   const refs = yield* Effect.try({
-    try: () => normalizeCodeRefs(input.refs ?? []),
+    try: () => normalizeMemoryCodeRefs(input.refs ?? []),
     catch: cause => captureError('code references', cause),
   });
   if (refs.length === 0) return [] as readonly MemoryCodeCitationV1[];
   const path = yield* Path.Path;
   if (!path.isAbsolute(input.callerCwd)) {
     return yield* Effect.fail(new MemoryCodeCitationCaptureError('Code citation callerCwd must be absolute.'));
+  }
+
+  const query = yield* CodeGraphQueryService;
+  if (input.expectedCallerIdentity) {
+    const callerBefore = yield* query
+      .status(config.agentContextHome, input.callerCwd, {
+        observeWorktree: true,
+        requestMaintenance: false,
+      })
+      .pipe(Effect.mapError(error => captureError('caller repository identity', error)));
+    yield* requireExpectedCallerIdentity(callerBefore, input.expectedCallerIdentity);
   }
 
   const invalidQualifiedRef = refs.find(ref => ref.startsWith('cgr_') && !QUALIFIED_SYMBOL_REF.test(ref));
@@ -118,9 +149,19 @@ export const captureMemoryCodeCitations = Effect.fn('memoryCodeCitation.capture'
   }
   const capturedGroups = yield* Effect.forEach(
     [...groups.entries()],
-    ([cwd, group]) => captureRepositoryGroup(config, cwd, group),
+    ([cwd, group]) =>
+      captureRepositoryGroup(config, cwd, group, cwd === input.callerCwd ? input.expectedCallerIdentity : undefined),
     {concurrency: 4},
   );
+  if (input.expectedCallerIdentity) {
+    const callerAfter = yield* query
+      .status(config.agentContextHome, input.callerCwd, {
+        observeWorktree: true,
+        requestMaintenance: false,
+      })
+      .pipe(Effect.mapError(error => captureError('caller repository identity', error)));
+    yield* requireExpectedCallerIdentity(callerAfter, input.expectedCallerIdentity);
+  }
   const ordered = capturedGroups.flat().sort((left, right) => left.index - right.index);
   const seen = new Set<string>();
   const citations: MemoryCodeCitationV1[] = [];
@@ -143,7 +184,11 @@ function resolveCaptureTarget(
       const target = qualifiedByRef.get(ref);
       if (target === undefined) {
         return yield* Effect.fail(
-          new MemoryCodeCitationCaptureError(`Qualified code graph reference is unresolved: ${ref}.`),
+          new MemoryCodeCitationCaptureError(
+            `Qualified code graph reference is unresolved: ${ref}.`,
+            undefined,
+            'code-reference-unresolved',
+          ),
         );
       }
       return {
@@ -181,6 +226,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
   config: RuntimeConfig,
   cwd: string,
   targets: readonly CaptureTarget[],
+  expectedCallerIdentity?: ExpectedMemoryCodeCitationCallerIdentity,
 ) {
   const query = yield* CodeGraphQueryService;
   const store = yield* CodeGraphStore;
@@ -191,6 +237,7 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
       requestMaintenance: false,
     })
     .pipe(Effect.mapError(error => captureError(cwd, error)));
+  if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(before, expectedCallerIdentity);
   const snapshot = yield* Effect.try({
     try: () => requireExactCurrentSnapshot(before, captureGroupPreparation(targets)),
     catch: cause => captureError(cwd, cause),
@@ -309,6 +356,8 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
                 return yield* Effect.fail(
                   new MemoryCodeCitationCaptureError(
                     `Code citation path is not present in the exact current graph: ${target.target.path}. Use a graph-indexed repository-relative path.`,
+                    undefined,
+                    'code-reference-unresolved',
                   ),
                 );
               }
@@ -319,6 +368,8 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
               return yield* Effect.fail(
                 new MemoryCodeCitationCaptureError(
                   `Code graph symbol is absent from the exact current graph: ${target.target.nodeId}.`,
+                  undefined,
+                  'code-reference-unresolved',
                 ),
               );
             }
@@ -343,9 +394,21 @@ const captureRepositoryGroup = Effect.fn('memoryCodeCitation.captureRepositoryGr
           ),
         );
       }
+      if (expectedCallerIdentity) yield* requireExpectedCallerIdentity(after, expectedCallerIdentity);
       return results;
     }),
   );
+});
+
+const requireExpectedCallerIdentity = Effect.fn('memoryCodeCitation.requireExpectedCallerIdentity')(function* (
+  status: CodeGraphStatus,
+  expected: ExpectedMemoryCodeCitationCallerIdentity,
+) {
+  if (status.identity.repositoryId !== expected.repositoryId || status.identity.worktreeId !== expected.worktreeId) {
+    return yield* Effect.fail(
+      new MemoryCodeCitationCaptureError('Code citation caller repository identity changed during capture.'),
+    );
+  }
 });
 
 function isFileRootSymbol(symbol: CodeGraphSymbol): boolean {
@@ -409,7 +472,7 @@ const captureSymbolCitation = Effect.fn('memoryCodeCitation.captureSymbol')(func
   };
 });
 
-function normalizeCodeRefs(refs: readonly string[]): readonly string[] {
+export function normalizeMemoryCodeRefs(refs: readonly string[]): readonly string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
   for (const raw of refs) {
@@ -527,5 +590,8 @@ function captureError(target: string, cause: unknown): MemoryCodeCitationCapture
     ? cause
     : new MemoryCodeCitationCaptureError(
         `Could not capture code citation ${target}: ${cause instanceof Error ? cause.message : String(cause)}`,
+        undefined,
+        undefined,
+        cause instanceof CodeGraphStoreError && cause.retryable,
       );
 }

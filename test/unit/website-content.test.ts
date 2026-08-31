@@ -112,6 +112,7 @@ const toolKeys = {
   ]),
   remember_context: new Set([
     'callerCwd',
+    'citationPolicy',
     'codeRefs',
     'kind',
     'project',
@@ -938,7 +939,8 @@ The body remains ordinary **Markdown**.
     expect(faqSource).toContain('Will my existing memories disappear after upgrading to 4.4?');
     expect(faqSource).toContain('v1 and other uncited memories stay recallable');
     expect(faqSource).toContain('Can an agent start with code and find related memory?');
-    expect(faqSource).toContain('up to eight repository-scoped files or cgs_ symbols');
+    expect(faqSource).toContain('up to eight canonical graph-indexed repository-relative paths');
+    expect(faqSource).toContain('cgr_ handles are argument errors');
     expect(faqSource).toContain('Do I need a Workset to use code citations or Context Brief?');
     expect(faqSource).toContain('That warning is about the link, not the memory');
     expect(faqSource).toContain('Citation writes never start indexing implicitly');
@@ -1097,7 +1099,10 @@ The body remains ordinary **Markdown**.
     expect(content).toContain('context_brief');
     expect(content).toContain('codeRefs');
     expect(content).toContain('Context Brief v3');
-    expect(content).toContain('at most eight code references');
+    expect(content).toContain('at most eight exact local anchors');
+    expect(content).toContain('accepts 800 through 1,500');
+    expect(content).toContain('retains the same exact inspect-node follow-up in both MCP channels');
+    expect(content).toContain('coverage.omissions.coverageGaps counts the rest');
     expect(content).toContain('coverage.memory.codeAnchors');
     expect(content).toContain('selectionBasis code-citation');
     expect(content).toContain('currently buffer the compact projection');

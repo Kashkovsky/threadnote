@@ -111,6 +111,8 @@ const SAFE_TELEMETRY_ERROR_TYPES = new Set([
   'McpServerOperationError',
   'McpToolError',
   'MemoryOperationError',
+  'MemoryPointerNotFound',
+  'MemoryRelocationError',
   'ModelChecksumMismatch',
   'ModelCommandError',
   'ModelDownloadFailed',

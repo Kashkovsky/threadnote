@@ -44,9 +44,223 @@ describe('Effect CLI', () => {
   it('describes citation paths as exact-current graph locators', async () => {
     const remember = await runCli(['remember', '--help']);
     const handoff = await runCli(['handoff', '--help']);
+    const contextBrief = await runCli(['context', 'brief', '--help']);
 
     expect(remember.stdout).toContain('Graph-indexed repository-relative path');
+    expect(remember.stdout).toContain('--require-current-code-refs');
+    expect(remember.stdout).toContain('default private store-now/anchor-later');
     expect(handoff.stdout).toContain('Graph-indexed repository-relative path');
+    expect(handoff.stdout).toContain('--require-current-code-refs');
+    expect(contextBrief.stdout).toContain('1-4096 UTF-8 bytes');
+    expect(contextBrief.stdout).toContain('at most 256 UTF-8 bytes');
+  });
+
+  it('rejects deferred citation policy without a requested code reference', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-deferred-policy-'));
+    try {
+      const failure = await runCli(
+        ['remember', '--dry-run', '--defer-code-refs', '--text', 'No locator was supplied.'],
+        {THREADNOTE_HOME: root},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+      expect(failure).toMatchObject({code: 1});
+      expect(String(failure.stderr)).toContain('--defer-code-refs requires at least one --code-ref');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('keeps deferred citation dry runs out of the private outbox', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-deferred-preview-'));
+    try {
+      const result = await runCli(
+        [
+          'remember',
+          '--dry-run',
+          '--code-ref',
+          'src/types.ts',
+          '--project',
+          'threadnote',
+          '--topic',
+          'deferred-preview',
+          '--text',
+          'Preview only.',
+        ],
+        {THREADNOTE_HOME: root},
+      );
+      expect(result.stdout).toContain('Would stage 1 code reference(s)');
+      expect(result.stdout).not.toContain('Stored memory without finalized code citations');
+      await expect(
+        access(join(root, 'data', 'local', 'user', 'local', 'private', 'deferred-code-anchors')),
+      ).rejects.toMatchObject({code: 'ENOENT'});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('defaults a private handoff to deferred capture with the stable identity required for finalization', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-deferred-handoff-'));
+    try {
+      const result = await runCli(
+        [
+          'handoff',
+          '--code-ref',
+          'src/types.ts',
+          '--project',
+          'threadnote',
+          '--topic',
+          'deferred-handoff',
+          '--task',
+          'Verify deferred handoff persistence.',
+        ],
+        {THREADNOTE_HOME: root},
+      );
+
+      expect(result.stdout).toContain('Stored memory without finalized code citations');
+      expect(result.stdout).toContain('retries automatically after graph indexing');
+      expect(result.stdout).toContain('finalize-code-refs` as a repair fallback');
+      const memoryUri = /Stored memory: (threadnote:\/\/\S+)/u.exec(result.stdout)?.[1];
+      expect(memoryUri).toBeDefined();
+      const stored = await runCli(['read', memoryUri!], {THREADNOTE_HOME: root});
+      expect(stored.stdout).toMatch(/^memory_id: tn_[a-f0-9]{32}$/mu);
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('keeps exact-current citation capture available as an explicit fail-before-write policy', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-require-current-'));
+    try {
+      const failure = await runCli(
+        [
+          'remember',
+          '--require-current-code-refs',
+          '--code-ref',
+          'src/types.ts',
+          '--project',
+          'threadnote',
+          '--topic',
+          'require-current',
+          '--text',
+          'Do not write without exact-current evidence.',
+        ],
+        {THREADNOTE_HOME: root},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+
+      expect(failure).toMatchObject({code: 1});
+      expect(String(failure.stderr)).toContain('already-published ready graph');
+      expect(String(failure.stderr)).toContain('No indexing was started');
+      await expect(
+        access(
+          join(
+            root,
+            'data',
+            'local',
+            'user',
+            'local',
+            'memories',
+            'durable',
+            'projects',
+            'threadnote',
+            'require-current.md',
+          ),
+        ),
+      ).rejects.toMatchObject({code: 'ENOENT'});
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('autoheals a deferred citation on the first cold graph publication', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-first-cold-anchor-'));
+    const home = join(root, 'home');
+    const repository = join(root, 'repository');
+    const environment = {THREADNOTE_HOME: home};
+    try {
+      await mkdir(join(repository, 'src'), {recursive: true});
+      await writeFile(join(repository, 'package.json'), '{"name":"first-cold-anchor"}\n');
+      await writeFile(join(repository, 'src', 'value.ts'), 'export const value = 1;\n');
+      await execFilePromise('git', ['init', '--quiet'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.email', 'threadnote@example.test'], {cwd: repository});
+      await execFilePromise('git', ['config', 'user.name', 'Threadnote Test'], {cwd: repository});
+      await execFilePromise('git', ['add', '.'], {cwd: repository});
+      await execFilePromise('git', ['commit', '--quiet', '--message', 'fixture'], {cwd: repository});
+
+      const remembered = await runCli(
+        [
+          'remember',
+          '--code-ref',
+          'src/value.ts',
+          '--project',
+          'threadnote',
+          '--topic',
+          'first-cold-anchor',
+          '--text',
+          'The first cold publication must finalize this citation.',
+        ],
+        environment,
+        repository,
+      );
+      const memoryUri = /Stored memory: (threadnote:\/\/\S+)/u.exec(remembered.stdout)?.[1];
+      expect(memoryUri).toBeDefined();
+      expect((await runCli(['read', memoryUri!], environment)).stdout).not.toContain('code_citation:');
+
+      await runCli(['graph', 'index', '--cwd', repository, '--no-vectors', '--json'], environment);
+
+      expect((await runCli(['read', memoryUri!], environment)).stdout).toContain('code_citation:');
+      const diagnosis = await runCli(['doctor', '--dry-run'], environment).catch(
+        cause => cause as NodeJS.ErrnoException & {stdout?: string},
+      );
+      expect(String(diagnosis.stdout)).toContain('OK   lexical recall index:');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('rejects contradictory citation policies before capture', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-citation-policy-conflict-'));
+    try {
+      const failure = await runCli(
+        [
+          'remember',
+          '--defer-code-refs',
+          '--require-current-code-refs',
+          '--code-ref',
+          'src/types.ts',
+          '--text',
+          'Contradictory policy.',
+        ],
+        {THREADNOTE_HOME: root},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+
+      expect(failure).toMatchObject({code: 1});
+      expect(String(failure.stderr)).toContain('Choose only one of --defer-code-refs or --require-current-code-refs');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
+  });
+
+  it('rejects explicit deferred anchors for an inactive memory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-inactive-defer-'));
+    try {
+      const failure = await runCli(
+        [
+          'remember',
+          '--defer-code-refs',
+          '--status',
+          'archived',
+          '--code-ref',
+          'src/types.ts',
+          '--text',
+          'Inactive memories cannot own pending anchors.',
+        ],
+        {THREADNOTE_HOME: root},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+
+      expect(failure).toMatchObject({code: 1});
+      expect(String(failure.stderr)).toContain('--defer-code-refs can be used only when storing an active memory');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 
   it('keeps regular and negated boolean flags optional with their historical defaults', async () => {
@@ -234,7 +448,10 @@ describe('Effect CLI', () => {
     expect(topology.stdout).toContain('--node-limit, --limit integer');
     expect(contextBrief.stdout).toContain('--task string');
     expect(contextBrief.stdout).toContain('--budget-tokens integer');
+    expect(contextBrief.stdout).toContain('(800-1500)');
     expect(contextBrief.stdout).toContain('--code-ref string');
+    expect(contextBrief.stdout).toContain('Canonical graph-indexed repository-relative path (no ./ or ..)');
+    expect(contextBrief.stdout).toContain('cgr_ unsupported');
     expect(contextBrief.stdout).toContain('repeat up to eight times');
     expect(contextBrief.stdout).toContain('--workset string');
     expect(contextBrief.stdout).toContain('choices: brief, locate, explain, trace, impact');
@@ -282,6 +499,33 @@ describe('Effect CLI', () => {
 
     expect(error).toMatchObject({code: 1});
     expect(String(error.stderr)).toContain('--code-ref');
+  });
+
+  it('rejects below-minimum Context Brief budgets and noncanonical code references actionably', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-context-contract-'));
+    try {
+      const budgetError = await runCli(
+        ['context', 'brief', '--budget-tokens', '799', '--task', 'Find the current contract.'],
+        {THREADNOTE_HOME: home},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+      expect(budgetError).toMatchObject({code: 1});
+      expect(String(budgetError.stderr)).toContain('800');
+
+      for (const [codeRef, expectedMessage] of [
+        ['./src/index.ts', 'canonical'],
+        [`cgs_${'a'.repeat(31)}`, 'cgs_<32 lowercase hex>'],
+        [`cgr_${'a'.repeat(40)}`, 'cgr_ handle, which Context Brief does not support'],
+      ] as const) {
+        const refError = await runCli(
+          ['context', 'brief', '--cwd', process.cwd(), '--code-ref', codeRef, '--task', 'Find the current contract.'],
+          {THREADNOTE_HOME: home},
+        ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+        expect(refError, codeRef).toMatchObject({code: 1});
+        expect(String(refError.stderr), codeRef).toContain(expectedMessage);
+      }
+    } finally {
+      await rm(home, {force: true, recursive: true});
+    }
   });
 
   it('documents graph query paging scope and token bounds before execution', async () => {
@@ -1282,9 +1526,9 @@ describe('Effect CLI', () => {
   });
 });
 
-function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
-  return execFilePromise(process.execPath, ['src/standalone.ts', ...args], {
-    cwd: process.cwd(),
+function runCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}, cwd = process.cwd()) {
+  return execFilePromise(process.execPath, [join(process.cwd(), 'src', 'standalone.ts'), ...args], {
+    cwd,
     env: {...process.env, ...environment, NO_COLOR: '1'},
   });
 }

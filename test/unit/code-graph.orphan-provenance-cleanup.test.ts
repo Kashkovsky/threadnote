@@ -257,11 +257,16 @@ describe('automatic orphan provenance cleanup', () => {
   effectIt.effect.prop(
     'recovers every bounded noncanonical cursor without changing candidate membership',
     {
-      malformedCursor: fc
-        .string({maxLength: 32})
-        .filter(value => new TextEncoder().encode(value).byteLength <= 64 && !/^[0-9a-f]{64}$/u.test(value)),
+      // Keep 24 independently generated cursor values while amortizing schema setup
+      // across three values whose cursor row is explicitly reset before each check.
+      malformedCursors: fc.array(
+        fc
+          .string({maxLength: 64})
+          .filter(value => new TextEncoder().encode(value).byteLength <= 64 && !/^[0-9a-f]{64}$/u.test(value)),
+        {maxLength: 3, minLength: 3},
+      ),
     },
-    ({malformedCursor}) =>
+    ({malformedCursors}) =>
       TestClock.withLive(
         Effect.scoped(
           Effect.gen(function* () {
@@ -271,27 +276,27 @@ describe('automatic orphan provenance cleanup', () => {
             const store = yield* CodeGraphStore;
             yield* store.initialize(databasePath);
             const worktreeIds = Array.from({length: 4}, (_, index) => index.toString(16).padStart(64, '0'));
-            yield* Effect.sync(() => {
-              seedActiveView(databasePath, worktreeIds[3]!);
-              writeOrphanCursor(databasePath, malformedCursor);
-            });
+            yield* Effect.sync(() => seedActiveView(databasePath, worktreeIds[3]!));
 
-            const recovered = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
-            expect(recovered).toEqual({
-              cursorRecovery: 'invalid-format',
-              worktreeIds: [worktreeIds[0]!, worktreeIds[1]!],
-            });
-            expect(readOrphanCursor(databasePath)).toBe(worktreeIds[1]);
+            for (const malformedCursor of malformedCursors) {
+              yield* Effect.sync(() => writeOrphanCursor(databasePath, malformedCursor));
+              const recovered = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
+              expect(recovered).toEqual({
+                cursorRecovery: 'invalid-format',
+                worktreeIds: [worktreeIds[0]!, worktreeIds[1]!],
+              });
+              expect(readOrphanCursor(databasePath)).toBe(worktreeIds[1]);
 
-            const resumed = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
-            expect(resumed).toEqual({worktreeIds: [worktreeIds[2]!, worktreeIds[0]!]});
-            expect(new Set([...recovered.worktreeIds, ...resumed.worktreeIds])).toEqual(
-              new Set(worktreeIds.slice(0, 3)),
-            );
+              const resumed = yield* store.claimOrphanProvenanceCandidates(databasePath, worktreeIds, 2);
+              expect(resumed).toEqual({worktreeIds: [worktreeIds[2]!, worktreeIds[0]!]});
+              expect(new Set([...recovered.worktreeIds, ...resumed.worktreeIds])).toEqual(
+                new Set(worktreeIds.slice(0, 3)),
+              );
+            }
           }),
         ).pipe(provideTestLayer(storeLayer)),
       ),
-    {fastCheck: {numRuns: 24}},
+    {fastCheck: {numRuns: 8}},
   );
 
   effectIt.effect('fails closed before a missing cursor can exceed bounded metadata capacity', () =>

@@ -12,7 +12,7 @@ import {
   parseMemoryDocument,
   type MemoryRelation,
 } from '../memory/document.js';
-import {redactSensitiveText} from '../scrubber.js';
+import {redactSensitiveText} from '../share/scrubber.js';
 import type {ProjectManifest} from '../types.js';
 import {errorMessage, expandPath, globToRegExp} from '../utils.js';
 import {
@@ -63,6 +63,7 @@ import {
   recallQuerySelectionIsExhaustive,
   recallSelectionHasDocuments,
   selectRecallDocumentRows,
+  selectRecallDocumentRowsByMemoryIds,
   selectRecallDocumentSample,
   selectRecallQueryTermStatistics,
   selectRecallRecentTopicalDocuments,
@@ -207,6 +208,7 @@ interface LoadRecallIndexOptions {
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
   readonly limit?: number;
+  readonly memoryIds?: readonly string[];
   readonly onQueryDiagnostics?: (diagnostics: RecallIndexQueryDiagnostics) => Effect.Effect<void, unknown>;
   readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
   readonly project?: string;
@@ -402,6 +404,21 @@ export const loadRecallIndex = Effect.fn('recall.loadIndex')(function* (
   return (yield* loadRecallIndexData(config, options)).candidates;
 });
 
+export const loadRecallMemoryIdentities = Effect.fn('recall.loadMemoryIdentities')(function* (
+  config: RecallIndexConfig,
+  options: {
+    readonly allowedUriScopes: readonly string[];
+    readonly memoryIds: readonly string[];
+  },
+) {
+  const data = yield* loadRecallIndexData(config, {
+    allowedUriScopes: options.allowedUriScopes,
+    includeInactive: false,
+    memoryIds: options.memoryIds,
+  });
+  return data.candidates;
+});
+
 export const loadRecallExactMatches = Effect.fn('recall.loadExactMatches')(function* (
   config: RecallIndexConfig,
   options: LoadRecallExactMatchesOptions,
@@ -576,13 +593,20 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
 ) {
   if (options.query === undefined) {
     const rows =
-      options.allowedUriScopes?.length ||
-      recallEligibilityPolicyRestrictsCandidates(options.eligibility) ||
-      options.limit !== undefined ||
-      options.project !== undefined ||
-      options.workspaceScope !== undefined
-        ? yield* selectRecallDocumentSample(sql, options)
-        : yield* sql<RecallDocumentRow>`SELECT id, uri, candidate_json FROM documents ORDER BY uri`;
+      options.memoryIds !== undefined
+        ? yield* selectRecallDocumentRowsByMemoryIds(
+            sql,
+            [...new Set(options.memoryIds)].sort(),
+            options.allowedUriScopes,
+            options.eligibility,
+          )
+        : options.allowedUriScopes?.length ||
+            recallEligibilityPolicyRestrictsCandidates(options.eligibility) ||
+            options.limit !== undefined ||
+            options.project !== undefined ||
+            options.workspaceScope !== undefined
+          ? yield* selectRecallDocumentSample(sql, options)
+          : yield* sql<RecallDocumentRow>`SELECT id, uri, candidate_json FROM documents ORDER BY uri`;
     const logicalCandidates = deduplicateLogicalRecallCandidates(rows.map(decodeCandidateRow));
     const candidates = options.limit === undefined ? logicalCandidates : logicalCandidates.slice(0, options.limit);
     const identityConflicts = yield* loadIdentityConflicts(
@@ -594,7 +618,7 @@ const selectRecallIndexData = Effect.fn('recall.selectIndexData')(function* (
       candidates: RecallIndexIdentity.markRecallIdentityConflicts(candidates, identityConflicts),
       corpusStatistics,
       generation,
-      queryExhaustive: options.limit === undefined,
+      queryExhaustive: options.memoryIds !== undefined || options.limit === undefined,
     } satisfies RecallIndexData;
   }
   const selected: RecallCandidate[] = [];

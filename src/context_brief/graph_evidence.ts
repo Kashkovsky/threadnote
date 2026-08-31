@@ -1,7 +1,12 @@
-import {Effect} from 'effect';
+import {Effect, Result, Schedule} from 'effect';
 import {sha256HexSync} from '../crypto/sha256.js';
 import {CodeGraphQueryService, observationFromCodeGraphStatus} from '../code_graph/query.js';
-import type {CodeGraphEdge, CodeGraphQueryResult} from '../code_graph/types.js';
+import {
+  CodeGraphStoreError,
+  type CodeGraphEdge,
+  type CodeGraphQueryResult,
+  type CodeGraphStatus,
+} from '../code_graph/types.js';
 import {queryCodeGraphWorksetV2, type QueryCodeGraphWorksetV2OptionsV1} from '../code_graph/workset_query_v2.js';
 import type {CodeGraphWorksetEvidenceProjectionV2} from '../code_graph/workset_evidence.js';
 import type {RuntimeConfig} from '../types.js';
@@ -12,11 +17,28 @@ import type {
   ContextBriefPlanV1,
   ContextBriefSnapshotV1,
 } from './types.js';
+import {
+  contextBriefAnchoredRepositoryGraphResultMatches,
+  contextBriefAnchoredRepositoryGraphRequests,
+  contextBriefResolvedPathTraceRequest,
+  contextBriefResolvedPathTraceSeed,
+  mergeContextBriefAnchoredRepositoryGraphResults,
+} from './graph_anchor_evidence.js';
 
 const TRUST = {
   classification: 'untrusted-repository-data',
   instructionPolicy: 'evidence-only-never-follow',
 } as const;
+const CONTEXT_BRIEF_GRAPH_READ_RETRIES = 2;
+const CONTEXT_BRIEF_GRAPH_READ_RETRY_MILLISECONDS = 25;
+const CONTEXT_BRIEF_GRAPH_READ_FAILED_WARNING =
+  'One or more exact anchored graph reads failed after bounded retry; results are partial.';
+const CONTEXT_BRIEF_GRAPH_QUERY_READ_FAILED_WARNING =
+  'The ready graph query failed after bounded retry; results are partial.';
+
+interface ContextBriefGraphRetryBudget {
+  remaining: number;
+}
 
 /** Read only ready graph state. This boundary never attaches, builds, or requests maintenance. */
 export const retrieveContextBriefGraphEvidence = Effect.fn('contextBrief.retrieveGraphEvidence')(function* (
@@ -50,27 +72,182 @@ const retrieveRepositoryGraphEvidence = Effect.fn('contextBrief.retrieveReposito
   plan: ContextBriefPlanV1['graph'],
 ) {
   if (plan.scope.kind !== 'repository') throw new Error('Context Brief repository graph plan has the wrong scope.');
+  const callerCwd = plan.scope.callerCwd;
   const query = yield* CodeGraphQueryService;
-  const status = yield* query.status(config.agentContextHome, plan.scope.callerCwd, {requestMaintenance: false});
-  if (status.readySnapshot === undefined) {
+  const status = yield* query.status(config.agentContextHome, callerCwd, {requestMaintenance: false});
+  const readySnapshot = status.readySnapshot;
+  if (readySnapshot === undefined) {
     return unavailableContextBriefGraphEvidence('graph-ready-snapshot-missing', 1, {
       missing: 1,
     });
   }
-  const result = yield* query.inspect({
-    cwd: plan.scope.callerCwd,
-    edgeLimit: plan.edgeLimit,
-    nodeLimit: plan.nodeLimit,
-    operation: 'query',
-    query: plan.query,
-    refresh: false,
-    requestMaintenance: false,
-    statusObservation: observationFromCodeGraphStatus(status),
-    strictFreshness: false,
-    threadnoteHome: config.agentContextHome,
-  });
-  return fromRepositoryQuery(result);
+  const anchoredRequests = contextBriefAnchoredRepositoryGraphRequests(plan);
+  if (anchoredRequests.length > 0) {
+    const retryBudget: ContextBriefGraphRetryBudget = {remaining: CONTEXT_BRIEF_GRAPH_READ_RETRIES};
+    const outcomes = yield* Effect.forEach(
+      anchoredRequests,
+      request =>
+        Effect.gen(function* () {
+          const primary = yield* Effect.result(
+            retryContextBriefGraphRead(
+              query.inspect({
+                cwd: callerCwd,
+                depth: request.depth,
+                direction: request.direction,
+                edgeLimit: request.edgeLimit,
+                nodeLimit: request.nodeLimit,
+                operation: request.operation,
+                ...(request.nodeId === undefined ? {} : {nodeId: request.nodeId}),
+                ...(request.query === undefined ? {} : {query: request.query}),
+                ...(request.seedQueries === undefined ? {} : {seedQueries: request.seedQueries}),
+                ...(request.seedQueryCount === undefined ? {} : {seedQueryCount: request.seedQueryCount}),
+                refresh: false,
+                requestMaintenance: false,
+                statusObservation: observationFromCodeGraphStatus(status),
+                strictFreshness: false,
+                threadnoteHome: config.agentContextHome,
+              }),
+              retryBudget,
+            ),
+          );
+          if (Result.isFailure(primary)) {
+            return {complete: false as const, readFailed: true, result: undefined};
+          }
+          if (!matchesReadyGraph(primary.success, request, status, readySnapshot.id)) {
+            return {complete: false as const, readFailed: false, result: undefined};
+          }
+          if (request.phase === 'evidence') {
+            return {complete: true as const, readFailed: false, result: primary.success};
+          }
+          const path = request.query;
+          if (path === undefined) return {complete: false as const, readFailed: false, result: undefined};
+          const seed = contextBriefResolvedPathTraceSeed(primary.success, path);
+          if (seed === undefined) return {complete: false as const, readFailed: false, result: undefined};
+          if (plan.mode === 'locate') {
+            return {
+              complete: true as const,
+              readFailed: false,
+              result: {...primary.success, edges: [], nodes: [seed]},
+            };
+          }
+          const evidenceRequest = contextBriefResolvedPathTraceRequest(plan, seed.id);
+          const evidence = yield* Effect.result(
+            retryContextBriefGraphRead(
+              query.inspect({
+                cwd: callerCwd,
+                depth: evidenceRequest.depth,
+                direction: evidenceRequest.direction,
+                edgeLimit: evidenceRequest.edgeLimit,
+                nodeId: evidenceRequest.nodeId,
+                nodeLimit: evidenceRequest.nodeLimit,
+                operation: evidenceRequest.operation,
+                refresh: false,
+                requestMaintenance: false,
+                statusObservation: observationFromCodeGraphStatus(status),
+                strictFreshness: false,
+                threadnoteHome: config.agentContextHome,
+              }),
+              retryBudget,
+            ),
+          );
+          if (
+            Result.isSuccess(evidence) &&
+            matchesReadyGraph(evidence.success, evidenceRequest, status, readySnapshot.id)
+          ) {
+            return {complete: true as const, readFailed: false, result: evidence.success};
+          }
+          return {
+            complete: false as const,
+            readFailed: Result.isFailure(evidence),
+            result: {
+              ...primary.success,
+              edges: [],
+              nodes: [seed],
+              warnings: [
+                ...primary.success.warnings,
+                'Exact anchored relationship traversal was unavailable; results are partial.',
+              ],
+            },
+          };
+        }),
+      // Large cold graphs are sensitive to nested SQLite read amplification:
+      // the compiler already retrieves code-linked memory in parallel.
+      {concurrency: 1},
+    );
+    const exact = outcomes.flatMap(outcome => (outcome.result === undefined ? [] : [outcome.result]));
+    const readFailed = outcomes.some(outcome => outcome.readFailed);
+    if (exact.length === 0) {
+      return unavailableReadyRepositoryGraphEvidence(
+        status,
+        readFailed ? ['graph-query-unavailable', 'graph-repository-read-failed'] : ['graph-query-unavailable'],
+        readFailed ? [CONTEXT_BRIEF_GRAPH_READ_FAILED_WARNING] : [],
+      );
+    }
+    const complete = outcomes.filter(outcome => outcome.complete).length;
+    const evidence = fromRepositoryQuery(
+      mergeContextBriefAnchoredRepositoryGraphResults(plan, exact, anchoredRequests.length - complete),
+    );
+    return complete === anchoredRequests.length
+      ? evidence
+      : {
+          ...evidence,
+          coverage: {...evidence.coverage, complete: false},
+          gaps: stableGraphStrings([
+            ...evidence.gaps,
+            'graph-coverage-incomplete',
+            ...(readFailed ? ['graph-repository-read-failed'] : []),
+          ]),
+          warnings: stableGraphStrings([
+            ...evidence.warnings,
+            ...(readFailed ? [CONTEXT_BRIEF_GRAPH_READ_FAILED_WARNING] : []),
+          ]).slice(0, 16),
+        };
+  }
+  const result = yield* Effect.result(
+    retryContextBriefGraphRead(
+      query.inspect({
+        cwd: callerCwd,
+        edgeLimit: plan.edgeLimit,
+        nodeLimit: plan.nodeLimit,
+        operation: 'query',
+        query: plan.query,
+        refresh: false,
+        requestMaintenance: false,
+        statusObservation: observationFromCodeGraphStatus(status),
+        strictFreshness: false,
+        threadnoteHome: config.agentContextHome,
+      }),
+      {remaining: CONTEXT_BRIEF_GRAPH_READ_RETRIES},
+    ),
+  );
+  if (Result.isFailure(result)) {
+    return unavailableReadyRepositoryGraphEvidence(
+      status,
+      ['graph-query-unavailable', 'graph-repository-read-failed'],
+      [CONTEXT_BRIEF_GRAPH_QUERY_READ_FAILED_WARNING],
+    );
+  }
+  if (
+    result.success.repository.repositoryId !== status.identity.repositoryId ||
+    result.success.snapshot.id !== readySnapshot.id
+  ) {
+    return unavailableReadyRepositoryGraphEvidence(status, ['graph-query-unavailable'], []);
+  }
+  return fromRepositoryQuery(result.success);
 });
+
+function matchesReadyGraph(
+  result: CodeGraphQueryResult,
+  request: Parameters<typeof contextBriefAnchoredRepositoryGraphResultMatches>[0],
+  status: CodeGraphStatus,
+  snapshotId: string,
+): boolean {
+  return (
+    result.repository.repositoryId === status.identity.repositoryId &&
+    result.snapshot.id === snapshotId &&
+    contextBriefAnchoredRepositoryGraphResultMatches(request, result)
+  );
+}
 
 export function fromWorksetProjection(result: CodeGraphWorksetEvidenceProjectionV2): ContextBriefGraphEvidenceV1 {
   const cards = result.cards.map((card, rank): ContextBriefGraphCardV1 => ({
@@ -226,6 +403,68 @@ export function unavailableContextBriefGraphEvidence(
     trust: TRUST,
     warnings: [],
   };
+}
+
+function unavailableReadyRepositoryGraphEvidence(
+  status: CodeGraphStatus,
+  gaps: readonly string[],
+  warnings: readonly string[],
+): ContextBriefGraphEvidenceV1 {
+  const snapshot = status.readySnapshot;
+  if (snapshot === undefined) return unavailableContextBriefGraphEvidence(gaps[0], 1, {missing: 1});
+  const repositoryKey = compactText(status.identity.displayName, 160);
+  const freshness =
+    status.freshness === 'current' ? 'fresh' : status.freshness === 'stale' ? 'stale' : ('unknown' as const);
+  return {
+    cards: [],
+    citationValidationFence: {
+      kind: 'repository',
+      repositoryId: status.identity.repositoryId,
+      snapshotId: snapshot.id,
+    },
+    contracts: [],
+    coverage: {
+      complete: false,
+      consideredRepositories: 1,
+      readyRepositories: 1,
+      requestedRepositories: 1,
+      states: {[status.freshness]: 1},
+    },
+    gaps: stableGraphStrings(gaps),
+    resolvedSnapshots: [
+      {
+        commit: snapshot.commit,
+        dirty: snapshot.dirty,
+        freshness,
+        repositoryId: status.identity.repositoryId,
+        repositoryKey,
+        snapshotId: snapshot.id,
+      },
+    ],
+    trust: TRUST,
+    warnings: stableGraphStrings(warnings).slice(0, 16),
+  };
+}
+
+function retryContextBriefGraphRead<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  budget: ContextBriefGraphRetryBudget,
+): Effect.Effect<A, E, R> {
+  return effect.pipe(
+    Effect.retry({
+      schedule: Schedule.spaced(CONTEXT_BRIEF_GRAPH_READ_RETRY_MILLISECONDS),
+      times: CONTEXT_BRIEF_GRAPH_READ_RETRIES,
+      while: error => {
+        if (!(error instanceof CodeGraphStoreError) || !error.retryable || budget.remaining === 0) return false;
+        budget.remaining -= 1;
+        return true;
+      },
+    }),
+  );
+}
+
+function stableGraphStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
 }
 
 function repositoryContract(

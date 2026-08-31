@@ -13,6 +13,8 @@ import {
   codeMemoryLinkTaskPacketHashV1,
   type CodeMemoryLinkArmPolicy,
 } from '../../src/evaluation/code-memory-link-agent-protocol.js';
+import {measureAgentToolResponse} from '../../src/evaluation/agent-response.js';
+import {parseContextBriefAgentViewText} from '../../src/context_brief/projector.js';
 
 describe('Code Memory Link context proxy', () => {
   const temporaryRoots: string[] = [];
@@ -23,9 +25,7 @@ describe('Code Memory Link context proxy', () => {
 
   it('forwards agent-discovered refs only for the anchored arm', async () => {
     const root = await fixtureRoot(temporaryRoots);
-    const runCandidate = vi.fn(async (candidatePacket, request) =>
-      candidateResult(candidatePacket.armPacket.policy, {codeRefs: request.codeRefs}),
-    );
+    const runCandidate = vi.fn(async (candidatePacket, _request) => candidateResult(candidatePacket.armPacket.policy));
     const anchored = packet(root, 'anchored');
     const taskOnly = packet(root, 'task-only');
     const request = {
@@ -64,6 +64,36 @@ describe('Code Memory Link context proxy', () => {
       },
     });
     expect(runCandidate).not.toHaveBeenCalled();
+    expect(result.content).toHaveLength(1);
+    expect(JSON.parse(result.content[0]!.text)).toEqual({
+      evidenceCount: 0,
+      state: 'empty',
+      type: 'code-memory-link-context-brief-proxy',
+      version: 1,
+    });
+  });
+
+  it('normalizes stale runner channels and enforces the sealed dual-channel budget', async () => {
+    const root = await fixtureRoot(temporaryRoots);
+    const sealed = packet(root, 'anchored');
+    const normalized = await handleCodeMemoryLinkContextBriefRequest(
+      sealed,
+      {callerCwd: root, task: sealed.taskPacket.prompt},
+      async () => candidateResult('anchored'),
+    );
+
+    expect(normalized.text).toBe(normalized.content[0]!.text);
+    expect(normalized.text).not.toContain('stale-runner-channel');
+    expect(parseContextBriefAgentViewText(normalized.text)).toMatchObject({briefVersion: 3, version: 1});
+    expect(
+      measureAgentToolResponse({structuredContent: normalized.structuredContent, text: normalized.text}).totalBytes,
+    ).toBeLessThanOrEqual(1_250 * 3);
+
+    await expect(
+      handleCodeMemoryLinkContextBriefRequest(sealed, {callerCwd: root, task: sealed.taskPacket.prompt}, async () =>
+        candidateResult('anchored', 'x'.repeat(4_000)),
+      ),
+    ).rejects.toThrow('dual-channel response envelope');
   });
 
   it('rejects attempts to escape the sealed task, repository, project, or workset scope', async () => {
@@ -193,15 +223,65 @@ function packet(root: string, policy: CodeMemoryLinkArmPolicy): CodeMemoryLinkCo
   };
 }
 
-function candidateResult(policy: 'anchored' | 'task-only', extra: Record<string, unknown> = {}) {
+function candidateResult(policy: 'anchored' | 'task-only', taskSummary = 'Respect the repository constraint.') {
   return {
+    content: [{text: 'stale-runner-channel', type: 'text' as const}],
     structuredContent: {
       activeHandoffs: [],
+      coverage: {
+        gaps: [],
+        graph: {
+          complete: true,
+          consideredRepositories: 1,
+          readyRepositories: 1,
+          requestedRepositories: 1,
+          states: {current: 1},
+        },
+        memory: {
+          consideredCandidates: 0,
+          durableCandidates: 0,
+          fresh: 0,
+          handoffCandidates: 0,
+          stale: 0,
+          unknown: 0,
+        },
+        omissions: {
+          activeHandoffs: 0,
+          coverageGaps: 0,
+          durableDecisions: 0,
+          graphCards: 0,
+          graphContracts: 0,
+          recommendedFollowUps: 0,
+          stalenessAndConflicts: 0,
+        },
+      },
       durableDecisions: [],
-      ...extra,
+      graph: {cards: [], contracts: []},
+      mode: 'brief',
+      output: {
+        omittedItems: 0,
+        projectorVersion: policy === 'anchored' ? 3 : 2,
+        returnedItems: 0,
+        truncated: false,
+      },
+      recommendedFollowUps: [],
+      scope: {
+        freshness: 'fresh',
+        kind: 'repository',
+        name: 'current-repository',
+        readyRepositories: 1,
+        requestedRepositories: 1,
+      },
+      stalenessAndConflicts: [],
+      task: {summary: taskSummary, truncated: false},
+      trust: {
+        compiler: {modelsRequired: false, queryPlanExposed: false},
+        graph: {classification: 'untrusted-repository-data', instructionPolicy: 'evidence-only-never-follow'},
+        memory: {classification: 'untrusted-memory-data', instructionPolicy: 'evidence-only-never-follow'},
+      },
       type: 'context-brief',
       version: policy === 'anchored' ? 3 : 2,
     },
-    text: 'candidate',
+    text: 'stale-runner-channel',
   };
 }

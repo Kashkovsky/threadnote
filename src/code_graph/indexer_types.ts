@@ -12,6 +12,7 @@ import type {
   CodeGraphFileFacts,
   CodeGraphIndexSummary,
   CodeGraphInventoryFile,
+  CodeGraphOverlayFallbackAssessment,
   CodeGraphOverlayFallbackReason,
   CodeGraphSnapshot,
   RepositoryIdentityExpectation,
@@ -60,7 +61,14 @@ export function codeGraphIndexEnsuresVectors(options: {readonly ensureVectors?: 
 }
 
 export interface CommittedBaseResult {
+  readonly additionalLeaseTokens?: readonly string[];
   readonly diagnostics: readonly string[];
+  readonly foldForward?: {
+    readonly logicalSnapshotId: string;
+    readonly priorDeltaPaths: readonly string[];
+    readonly priorStagedPayloadBytes: number;
+    readonly priorStagedRows: number;
+  };
   readonly leaseToken: Option.Option<string>;
   readonly snapshot: CodeGraphSnapshot;
   readonly stagingReusable: boolean;
@@ -82,6 +90,8 @@ export type IncrementalOverlayAssessment =
       readonly work: CodeGraphIncrementalWork;
     }
   | {
+      readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+      readonly fallbackBoundary?: import('./types.js').CodeGraphOverlayFallbackBoundary;
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
@@ -102,6 +112,8 @@ export type IncrementalOverlayPreassessment =
       readonly extractorTransition?: true;
     }
   | {
+      readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+      readonly fallbackBoundary?: import('./types.js').CodeGraphOverlayFallbackBoundary;
       readonly mode: 'fallback';
       readonly reason: CodeGraphOverlayFallbackReason;
       readonly resolutionPublicationAssessment?: CodeGraphResolutionPublicationAssessment;
@@ -112,10 +124,7 @@ export type ReusableCleanSnapshotAttempt =
       readonly mode: 'complete';
       readonly summary: CodeGraphIndexSummary;
     }
-  | {
-      readonly mode: 'fallback';
-      readonly reason: CodeGraphOverlayFallbackReason;
-    };
+  | Extract<IncrementalOverlayAssessment, {readonly mode: 'fallback'}>;
 
 export interface CodeGraphCommitLease {
   readonly leaseToken: string;

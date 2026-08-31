@@ -1,10 +1,12 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
 import {graphCheckpointsDocsArticle} from './docsGraphCheckpoints.js';
 import {
+  contextBriefMcpTool,
+  finalizeCodeRefsMcpTool,
   handoffMemoryCitationCliExamples,
-  rememberContextMemoryCitationInputs,
+  rememberContextMcpTool,
   rememberMemoryCitationCliExamples,
-  reviewSessionMemoryCitationInputs,
+  reviewSessionContextMcpTool,
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
@@ -239,12 +241,7 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Browse a canonical threadnote:// directory without loading unrelated records.',
     keyInputs: ['uri', 'recursive', 'all', 'nodeLimit'],
   },
-  {
-    name: 'remember_context',
-    toolset: 'core',
-    summary: 'Store or replace normal durable knowledge, handoffs, incidents, or preferences.',
-    keyInputs: rememberContextMemoryCitationInputs,
-  },
+  rememberContextMcpTool,
   {
     name: 'inspect_code_graph',
     toolset: 'core',
@@ -263,13 +260,7 @@ export const mcpTools: McpToolReference[] = [
       'edgeLimit',
     ],
   },
-  {
-    name: 'context_brief',
-    toolset: 'core',
-    summary:
-      'Compile a token-bounded task brief from current graph evidence, durable decisions, active handoffs, freshness signals, and optional explicit code-citation backlinks.',
-    keyInputs: ['task', 'callerCwd', 'codeRefs (max 8 file/cgs_)', 'workset', 'project', 'mode', 'budgetTokens'],
-  },
+  contextBriefMcpTool,
   {
     name: 'analyze_code_graph',
     toolset: 'core',
@@ -281,12 +272,7 @@ export const mcpTools: McpToolReference[] = [
       'communityId and memberLimit for community drill-down',
     ],
   },
-  {
-    name: 'review_session_context',
-    toolset: 'core',
-    summary: 'Create up to three additional review candidates; this never silently creates active memory.',
-    keyInputs: reviewSessionMemoryCitationInputs,
-  },
+  reviewSessionContextMcpTool,
   {
     name: 'apply_memory_candidates',
     toolset: 'core',
@@ -312,6 +298,7 @@ export const mcpTools: McpToolReference[] = [
     summary: 'Plan or apply lifecycle hygiene and read-only cross-share merge review.',
     keyInputs: ['project', 'topic', 'kind', 'apply'],
   },
+  finalizeCodeRefsMcpTool,
   {
     name: 'recall_feedback',
     toolset: 'full',
@@ -701,7 +688,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'MCP clients can read one canonical threadnote:// URI through the standard resources/read protocol without enumerating private memories. Protocol reads are UTF-8 text capped at 4,500 bytes and authorize the active account and user; use paged read_context for larger evidence.',
+            text: 'MCP clients can read one canonical threadnote:// URI or bounded threadnote://memory/tn_ identity selector through the standard resources/read protocol without enumerating private memories. Identity selectors resolve only inside the authorized active corpus and are checked against the live document memory_id. Protocol reads are UTF-8 text capped at 4,500 bytes; use paged read_context for larger evidence.',
           },
           {
             type: 'table',
@@ -780,7 +767,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. One-way references can link prior context without copying its full body into the new record. For cited memory, provide codeRefs or --code-ref again to recapture evidence for the edited prose; omitting them deliberately clears the old citations and reports how many were removed.',
+            text: 'A personal replacement stores the new record safely before removing the previous one. Shared-memory replacement updates the shared record in place through the team workflow. Replacement and publication record an identity-fenced relocation so an old pointer resolves to its canonical URI. A pointer moved by an older version may predate that receipt; read_context then returns a machine-usable recall-canonical-uri recovery instead of guessing across namespaces: recall globally by stable topic and read the canonical URI returned. The recovery omits a project filter because an older path slug may differ from the canonical memory’s human-readable project name. One-way references can link prior context without copying its full body into the new record. For cited memory, provide codeRefs or --code-ref again to recapture evidence for the edited prose; omitting them deliberately clears the old citations and reports how many were removed.',
           },
         ],
       },
@@ -869,7 +856,7 @@ threadnote index status`,
           },
           {
             type: 'paragraph',
-            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. Use recall and the graph together when a task needs historical rationale and current source evidence.',
+            text: 'The tools are deliberately separate. Graph indexing never runs as a side effect of memory recall, and graph evidence cannot convert a memory no-answer into an answer. A memory may carry immutable file or symbol citations, but Context Brief validates those citations only against an already-ready exact-current graph and never starts a cold build. For large repositories, store-now/anchor-later can persist personal memory before graph preparation; a later successful graph/Workset preparation or local code-linked Context Brief automatically retries a bounded matching batch. Pending anchors are never evidence, and explicit finalization remains the repair fallback. Use recall and the graph together when a task needs historical rationale and current source evidence.',
           },
         ],
       },
@@ -1590,7 +1577,7 @@ worksets:
               ],
               ['Names', '1–256 UTF-8 bytes, normalized, unique case-insensitively, and free of control characters'],
               ['Descriptions, tasks, query text, and graph selectors', 'At most 4,096 UTF-8 bytes'],
-              ['Response budget', '1–1,500 estimated tokens'],
+              ['Response budget', 'Workset query: 1–1,500; Context Brief: 800–1,500 estimated tokens'],
               ['Prepare concurrency', 'Manager uses 2; the authenticated API accepts 1–8'],
               [
                 'Branch labels',

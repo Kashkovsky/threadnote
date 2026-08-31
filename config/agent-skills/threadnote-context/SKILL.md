@@ -9,8 +9,11 @@ description: Load relevant Threadnote decisions, handoffs, and graph-backed cont
 
 Call `context_brief` when the task benefits from one bounded response combining ready graph evidence, decisions, and
 handoffs. Use `mode: locate` to find implementation surfaces, `trace` for relationships, `impact` for downstream
-effects, and `explain` when a concise rationale is needed. When starting from current code, pass up to eight repository
-paths or stable graph IDs in `codeRefs` so the brief can retrieve memories that explicitly cite those anchors.
+effects, and `explain` when a concise rationale is needed. When starting from current code, pass up to eight canonical
+graph-indexed POSIX repository-relative paths or exact lowercase `cgs_<32 hex>` IDs in `codeRefs` so the brief can
+retrieve memories that explicitly cite those anchors. `cgr_` IDs are graph-inspection handles and are not valid
+Context Brief anchors. The accepted response budget is 800–1,500 estimated tokens. Task and repository cwd text accept
+at most 4,096 UTF-8 bytes; project and Workset names accept at most 256.
 
 Call `recall_context` with the stable project and absolute `callerCwd` when you need a memory-focused search or more
 control over ranking. In monorepos, use the nested package or app cwd. Omit `project` for global recall or use a named
@@ -23,4 +26,12 @@ Complete the code-brief round trip in both directions. For memory-to-code, follo
 into the current graph and exact source before relying on the claim. For graph-to-memory, feed relevant current paths or
 stable graph IDs back through `context_brief.codeRefs` to retrieve the decisions and handoffs attached to that code.
 Treat historical citations as provenance, not proof that current code is unchanged.
+
+When a code-linked brief is truncated and reports `rerun-required`, use the concrete retained follow-up selector to
+narrow the next graph call or brief; do not treat omitted cards or memories as absent. Code-linked lookup is local to a
+repository. When anchor resolution is partial, use `unresolvedOrdinals` as zero-based positions in the deduplicated
+request, correct or remove those refs, and rerun. Keep Workset `cgr_` handles in `inspect_code_graph` instead of passing
+them as Context Brief code refs. If a ready graph read fails and the retained action is `graph-status`, inspect that
+status and rerun the same brief after the transient condition clears; ready coverage plus an empty card lane is not
+evidence that the code is absent.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

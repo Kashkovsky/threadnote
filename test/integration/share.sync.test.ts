@@ -10,7 +10,7 @@ import {
   listShareConflicts,
   refreshSharedReposInBackground,
   showShareConflict,
-} from '../../src/share.js';
+} from '../../src/share/index.js';
 import {
   resolveShareConflict as resolveShareConflictEffect,
   runShareInit as runShareInitEffect,

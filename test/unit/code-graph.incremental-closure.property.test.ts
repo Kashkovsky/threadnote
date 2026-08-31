@@ -4,6 +4,7 @@ import {
   assessProjectClosureSeeds,
   assessProjectFileSetClosureSeeds,
   declaredProjectResolutionClosureProjectIds,
+  partitionProjectResolutionSurfaceChanges,
   planProjectIncrementalClosure,
 } from '../../src/code_graph/incremental_closure.js';
 import {resolvePersistedReexportTerminals} from '../../src/code_graph/indexer.js';
@@ -92,6 +93,11 @@ describe('project incremental closure', () => {
     const right = facts('packages/barrel/index.ts', [symbol('barrel', 2, ['typescript:barrel:path:b:name:foo'])], true);
 
     expect(assessProjectClosureSeeds({committedFacts: [left], effectiveFacts: [right], projects})).toEqual({
+      candidateLookupKeys: [
+        {key: 'typescript:barrel:path:a:name:foo', resolutionDomain: 'typescript'},
+        {key: 'typescript:barrel:path:b:name:foo', resolutionDomain: 'typescript'},
+      ],
+      candidateReexports: [],
       mode: 'eligible',
       planningOperations: {ownershipChecks: 3, pathIndexProjects: 2},
       seedProjectIds: ['barrel'],
@@ -113,7 +119,7 @@ describe('project incremental closure', () => {
   });
 
   it.prop(
-    'admits only effective-only exports whose lookup keys belong to one declared project',
+    'admits added, removed, and renamed exports only when every lookup key belongs to one declared project',
     {
       reverseKeys: FC.boolean(),
       suffix: FC.integer({max: 100_000, min: 0}),
@@ -141,36 +147,49 @@ describe('project incremental closure', () => {
       const committed = facts(path, [], false);
       const effective = facts(path, [added], false);
 
-      expect(assessProjectClosureSeeds({committedFacts: [committed], effectiveFacts: [effective], projects})).toEqual({
+      const assessment = assessProjectClosureSeeds({
+        committedFacts: [committed],
+        effectiveFacts: [effective],
+        projects,
+      });
+      expect(assessment).toMatchObject({
         mode: 'eligible',
         planningOperations: {ownershipChecks: 1, pathIndexProjects: 1},
         seedProjectIds: [scopeId],
       });
+      expect(assessment.mode === 'eligible' ? assessment.candidateLookupKeys : undefined).toEqual(
+        [...ownedKeys].sort().map(key => ({key, resolutionDomain: 'typescript'})),
+      );
+      expect(assessment.mode === 'eligible' ? assessment.candidateReexports : undefined).toEqual([]);
       expect(assessProjectClosureSeeds({committedFacts: [effective], effectiveFacts: [committed], projects})).toEqual({
-        mode: 'fallback',
-        reason: 'resolution-surface-changed',
+        candidateLookupKeys: [...ownedKeys].sort().map(key => ({key, resolutionDomain: 'typescript'})),
+        candidateReexports: [],
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 1, pathIndexProjects: 1},
+        seedProjectIds: [scopeId],
       });
-      expect(
-        assessProjectClosureSeeds({
-          committedFacts: [effective],
-          effectiveFacts: [
-            facts(
-              path,
-              [
-                {
-                  ...added,
-                  id: `renamed-symbol-${suffix}`,
-                  lookupKeys: keys.map(key => key.replaceAll(name, `renamed${suffix}`)),
-                  name: `renamed${suffix}`,
-                  qualifiedName: `renamed${suffix}`,
-                },
-              ],
-              false,
-            ),
-          ],
-          projects,
-        }),
-      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      const renamedName = `renamed${suffix}`;
+      const renamedKeys = keys.map(key => key.replaceAll(name, renamedName));
+      const renamed = {
+        ...added,
+        id: `renamed-symbol-${suffix}`,
+        lookupKeys: renamedKeys,
+        name: renamedName,
+        qualifiedName: renamedName,
+      };
+      const renameAssessment = assessProjectClosureSeeds({
+        committedFacts: [effective],
+        effectiveFacts: [facts(path, [renamed], false)],
+        projects,
+      });
+      expect(renameAssessment).toMatchObject({
+        mode: 'eligible',
+        planningOperations: {ownershipChecks: 2, pathIndexProjects: 1},
+        seedProjectIds: [scopeId],
+      });
+      expect(renameAssessment.mode === 'eligible' ? renameAssessment.candidateLookupKeys : undefined).toEqual(
+        [...ownedKeys, ...renamedKeys].sort().map(key => ({key, resolutionDomain: 'typescript'})),
+      );
       expect(
         assessProjectClosureSeeds({
           committedFacts: [facts(path, [{...added, exported: false}], false)],
@@ -185,12 +204,94 @@ describe('project incremental closure', () => {
           projects,
         }),
       ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [facts(path, [{...added, lookupKeys: [...keys, `global:name:${name}`]}], false)],
+          effectiveFacts: [committed],
+          projects,
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [effective],
+          effectiveFacts: [committed],
+          projects: [
+            project(scopeId),
+            {
+              ...project(`ambiguous-${scopeId}`),
+              root: `packages/${scopeId}`,
+              sourceRoots: [`packages/${scopeId}`],
+            },
+          ],
+        }),
+      ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
     },
     {fastCheck: {numRuns: 100}},
   );
 
   it.prop(
-    'selects file-set closure seeds deterministically from added, modified, and deleted project paths',
+    'candidate-scans only the canonical global lookup surface of existing Markdown headings',
+    {
+      reverseKeys: FC.boolean(),
+      suffix: FC.integer({max: 100_000, min: 0}),
+    },
+    ({reverseKeys, suffix}) => {
+      const path = `docs/surface-${suffix}.md`;
+      const oldName = `Old${suffix}`;
+      const newName = `New${suffix}`;
+      const oldHeading = markdownHeading(path, oldName, reverseKeys, undefined);
+      const newHeading = markdownHeading(path, newName, !reverseKeys, '@fixture/current');
+      const oldFacts = facts(path, [oldHeading], false);
+      const newFacts = facts(path, [newHeading], false);
+      const expectedKeys = [...(oldHeading.lookupKeys ?? []), ...(newHeading.lookupKeys ?? [])]
+        .sort()
+        .map(key => ({key, resolutionDomain: 'global'}));
+
+      expect(assessProjectClosureSeeds({committedFacts: [oldFacts], effectiveFacts: [newFacts], projects: []})).toEqual(
+        {
+          candidateLookupKeys: expectedKeys,
+          candidateReexports: [],
+          candidateScanRequired: true,
+          mode: 'eligible',
+          planningOperations: {ownershipChecks: 0, pathIndexProjects: 0},
+          seedProjectIds: [],
+        },
+      );
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [facts(path, [], false)],
+          effectiveFacts: [newFacts],
+          projects: [],
+        }),
+      ).toMatchObject({candidateScanRequired: true, mode: 'eligible', seedProjectIds: []});
+      expect(
+        assessProjectClosureSeeds({
+          committedFacts: [oldFacts],
+          effectiveFacts: [facts(path, [], false)],
+          projects: [],
+        }),
+      ).toMatchObject({candidateScanRequired: true, mode: 'eligible', seedProjectIds: []});
+
+      for (const invalid of [
+        {...oldHeading, kind: 'section'},
+        {...oldHeading, lookupKeys: [...(oldHeading.lookupKeys ?? []), `global:alias:${oldName}`]},
+        {...oldHeading, resolutionDomain: 'generic'},
+        {...oldHeading, resolutionScopeId: 'unexpected-scope'},
+      ]) {
+        expect(
+          assessProjectClosureSeeds({
+            committedFacts: [facts(path, [invalid], false)],
+            effectiveFacts: [facts(path, [], false)],
+            projects: [],
+          }),
+        ).toEqual({mode: 'fallback', reason: 'resolution-surface-changed'});
+      }
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it.prop(
+    'selects file-set closure seeds deterministically from added and deleted project paths',
     {
       currentMask: FC.integer({max: 65_535, min: 0}),
       deletedMask: FC.integer({max: 65_535, min: 0}),
@@ -222,6 +323,61 @@ describe('project incremental closure', () => {
       expect(first).toMatchObject({mode: 'eligible', seedProjectIds: expected});
     },
     {fastCheck: {numRuns: 200}},
+  );
+
+  it.prop(
+    'partitions local-only modifications from changed cross-file resolution surfaces deterministically',
+    {
+      changedMask: FC.integer({max: 65_535, min: 0}),
+      fileCount: FC.integer({max: 16, min: 1}),
+      reverse: FC.boolean(),
+    },
+    ({changedMask, fileCount, reverse}) => {
+      const entries = Array.from({length: fileCount}, (_, index) => {
+        const path = `packages/p${index}/index.ts`;
+        const baselineSymbol = {
+          ...symbol(`p${index}`, 1, [`typescript:p${index}:path:${encodeURIComponent(path)}:name:value${index}`]),
+          id: `symbol-${index}`,
+          name: `value${index}`,
+          path,
+          qualifiedName: `value${index}`,
+        };
+        const changed = (changedMask & (1 << index)) !== 0;
+        return {
+          changed,
+          committed: facts(path, [baselineSymbol], false),
+          effective: {
+            ...facts(path, [{...baselineSymbol, arity: changed ? 2 : 1, contentHash: `current-${index}`}], false),
+            diagnostics: [`diagnostic-${index}`],
+          },
+          path,
+        };
+      });
+      const ordered = reverse ? [...entries].reverse() : entries;
+      const partition = partitionProjectResolutionSurfaceChanges(
+        ordered.map(entry => entry.committed),
+        ordered.map(entry => entry.effective),
+      );
+      const changedPaths = entries
+        .filter(entry => entry.changed)
+        .map(entry => entry.path)
+        .sort();
+      const stablePaths = entries
+        .filter(entry => !entry.changed)
+        .map(entry => entry.path)
+        .sort();
+
+      expect(partition?.changedCommittedFacts.map(value => value.path)).toEqual(changedPaths);
+      expect(partition?.changedEffectiveFacts.map(value => value.path)).toEqual(changedPaths);
+      expect(partition?.stablePaths).toEqual(stablePaths);
+      expect(
+        partitionProjectResolutionSurfaceChanges(
+          ordered.map(entry => entry.committed),
+          ordered.slice(1).map(entry => entry.effective),
+        ),
+      ).toBeUndefined();
+    },
+    {fastCheck: {numRuns: 100}},
   );
 
   it.prop(
@@ -279,6 +435,43 @@ describe('project incremental closure', () => {
     {fastCheck: {numRuns: 100}},
   );
 
+  it.prop(
+    'classifies an unowned resolver domain deterministically without exposing changed paths',
+    {
+      pathCount: FC.integer({max: 16, min: 1}),
+      reverse: FC.boolean(),
+    },
+    ({pathCount, reverse}) => {
+      const runtime = project('runtime');
+      const paths = Array.from({length: pathCount}, (_, index) => `docs/private-${index}.md`);
+      const orderedPaths = reverse ? [...paths].reverse() : paths;
+      const result = assessProjectFileSetClosureSeeds({
+        baseProjects: [runtime],
+        currentChangedPaths: orderedPaths,
+        currentProjects: [runtime],
+        currentResolutionDomainByPath: new Map(paths.map(path => [path, 'documentation'])),
+        deletedPaths: [],
+      });
+
+      expect(result).toEqual({
+        fallbackDetail: 'resolution-domain-unowned',
+        mode: 'fallback',
+        reason: 'project-closure-incomplete',
+      });
+      expect(
+        assessProjectFileSetClosureSeeds({
+          baseProjects: [runtime],
+          currentChangedPaths: [],
+          currentProjects: [runtime],
+          deletedPaths: orderedPaths,
+          deletedResolutionDomainByPath: new Map(paths.map(path => [path, 'documentation'])),
+        }),
+      ).toEqual(result);
+      expect(JSON.stringify(result)).not.toContain('private-');
+    },
+    {fastCheck: {numRuns: 100}},
+  );
+
   it('fails closed when a file-set change lacks stable declared ownership in both workspace models', () => {
     const declared = project('a');
     const input = {
@@ -289,6 +482,7 @@ describe('project incremental closure', () => {
     };
 
     expect(assessProjectFileSetClosureSeeds({...input, currentChangedPaths: ['unowned.ts']})).toEqual({
+      fallbackDetail: 'path-unowned',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
@@ -297,16 +491,19 @@ describe('project incremental closure', () => {
         ...input,
         currentProjects: [{...declared, provenance: 'inferred'}],
       }),
-    ).toEqual({mode: 'fallback', reason: 'project-closure-incomplete'});
+    ).toEqual({fallbackDetail: 'project-model-incomplete', mode: 'fallback', reason: 'project-closure-incomplete'});
     expect(assessProjectFileSetClosureSeeds({...input, currentProjects: []})).toEqual({
+      fallbackDetail: 'path-unowned',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
     expect(assessProjectFileSetClosureSeeds({...input, baseProjects: []})).toEqual({
+      fallbackDetail: 'project-not-stable',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
     expect(assessProjectFileSetClosureSeeds({...input, currentProjects: [declared, declared]})).toEqual({
+      fallbackDetail: 'duplicate-project-identity',
       mode: 'fallback',
       reason: 'project-closure-incomplete',
     });
@@ -347,14 +544,71 @@ describe('project incremental closure', () => {
         cachedFactBytesByPath: new Map([[file.path, 8 * 1_048_576 + 1]]),
         projects: [base],
       }),
-    ).toEqual({mode: 'fallback', reason: 'project-closure-unbounded'});
+    ).toEqual({
+      fallbackBoundary: {
+        changedFiles: 1,
+        limit: 8 * 1_048_576,
+        metric: 'cached-fact-bytes',
+        observedAtDecision: 8 * 1_048_576 + 1,
+        stage: 'project-closure-selection',
+      },
+      mode: 'fallback',
+      reason: 'project-closure-unbounded',
+    });
+    const aggregateBudgetFiles = [
+      inventory('packages/a/one.ts', 1),
+      inventory('packages/a/two.ts', 1),
+      inventory('packages/a/three.ts', 1),
+      inventory('packages/a/four.ts', 1),
+      inventory('packages/a/five.ts', 1),
+    ];
+    expect(
+      planProjectIncrementalClosure({
+        ...common,
+        cachedFactBytesByPath: new Map(aggregateBudgetFiles.slice(0, 4).map(value => [value.path, 8 * 1_048_576])),
+        files: aggregateBudgetFiles.slice(0, 4),
+        modifiedPaths: [aggregateBudgetFiles[0]!.path],
+        projects: [base],
+      }),
+    ).toMatchObject({cachedFactBytes: 32 * 1_048_576, mode: 'eligible'});
+    expect(
+      planProjectIncrementalClosure({
+        ...common,
+        cachedFactBytesByPath: new Map(
+          aggregateBudgetFiles.map((value, index) => [value.path, index === 4 ? 1 : 8 * 1_048_576]),
+        ),
+        files: aggregateBudgetFiles,
+        modifiedPaths: [aggregateBudgetFiles[0]!.path],
+        projects: [base],
+      }),
+    ).toEqual({
+      fallbackBoundary: {
+        changedFiles: 1,
+        limit: 32 * 1_048_576,
+        metric: 'cached-fact-bytes',
+        observedAtDecision: 32 * 1_048_576 + 1,
+        stage: 'project-closure-selection',
+      },
+      mode: 'fallback',
+      reason: 'project-closure-unbounded',
+    });
     expect(
       planProjectIncrementalClosure({
         ...common,
         files: [inventory(file.path, 16 * 1_048_576 + 1)],
         projects: [base],
       }),
-    ).toEqual({mode: 'fallback', reason: 'project-closure-unbounded'});
+    ).toEqual({
+      fallbackBoundary: {
+        changedFiles: 1,
+        limit: 16 * 1_048_576,
+        metric: 'source-bytes',
+        observedAtDecision: 16 * 1_048_576 + 1,
+        stage: 'project-closure-selection',
+      },
+      mode: 'fallback',
+      reason: 'project-closure-unbounded',
+    });
     expect(
       planProjectIncrementalClosure({
         ...common,
@@ -365,7 +619,17 @@ describe('project incremental closure', () => {
         modifiedPaths: ['packages/a/file-0.ts'],
         projects: [base],
       }),
-    ).toEqual({mode: 'fallback', reason: 'project-closure-unbounded'});
+    ).toEqual({
+      fallbackBoundary: {
+        changedFiles: 1,
+        limit: 128,
+        metric: 'affected-files',
+        observedAtDecision: 129,
+        stage: 'project-closure-selection',
+      },
+      mode: 'fallback',
+      reason: 'project-closure-unbounded',
+    });
     expect(planProjectIncrementalClosure({...common, projects: [{...base, diagnostics: ['unreconciled']}]})).toEqual({
       mode: 'fallback',
       reason: 'project-closure-incomplete',
@@ -653,10 +917,41 @@ describe('project incremental closure', () => {
     });
 
     expect(assessment).toEqual({
+      candidateLookupKeys: [],
+      candidateReexports: [],
       mode: 'eligible',
       planningOperations: {ownershipChecks: 4_096, pathIndexProjects: 5_000},
       seedProjectIds: ['p4999'],
     });
+  });
+
+  it('seeds only the symmetric-diff entry of a large otherwise-unchanged barrel', () => {
+    const path = 'packages/barrel/index.ts';
+    const reference = (index: number) => ({
+      ...facts(path, [], true).references![0]!,
+      aliasLookupKeys: [`typescript:barrel:path:${encodeURIComponent(path)}:name:alias${index}`],
+      edgeId: `edge-${index}`,
+      lookupTiers: [[`typescript:barrel:path:${encodeURIComponent(`packages/core/value-${index}.ts`)}:name:value`]],
+    });
+    const stable = Array.from({length: 500}, (_, index) => reference(index));
+    const committed: CodeGraphFileFacts = {...facts(path, [], false), references: stable};
+    const effective: CodeGraphFileFacts = {...facts(path, [], false), references: [...stable, reference(500)]};
+    const assessment = assessProjectClosureSeeds({
+      committedFacts: [committed],
+      effectiveFacts: [effective],
+      projects: [project('barrel')],
+    });
+
+    expect(assessment).toMatchObject({
+      candidateReexports: [
+        {
+          sourcePath: path,
+        },
+      ],
+      mode: 'eligible',
+      seedProjectIds: ['barrel'],
+    });
+    expect(assessment.mode === 'eligible' ? assessment.candidateLookupKeys : []).toHaveLength(2);
   });
 
   it('resolves a 10,000-hop persisted reexport chain iteratively within a structural operation cap', () => {
@@ -750,6 +1045,33 @@ function symbol(scopeId: string, arity: number, lookupKeys: readonly string[]): 
     qualifiedName: 'foo',
     resolutionDomain: 'typescript',
     resolutionScopeId: scopeId,
+    span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+  };
+}
+
+function markdownHeading(
+  path: string,
+  name: string,
+  reverseKeys: boolean,
+  packageName: string | undefined,
+): CodeGraphSymbol {
+  const qualifiedName = `${path}#${name.toLowerCase()}`;
+  const lookupKeys = [
+    `global:qualified:${encodeURIComponent(qualifiedName)}`,
+    `global:name:${encodeURIComponent(name)}`,
+  ];
+  return {
+    contentHash: 'hash',
+    exported: true,
+    id: `heading-${qualifiedName}`,
+    kind: 'heading',
+    language: 'markdown',
+    lookupKeys: reverseKeys ? lookupKeys.reverse() : lookupKeys,
+    name,
+    packageName,
+    path,
+    qualifiedName,
+    resolutionDomain: 'documentation',
     span: {column: 1, endColumn: 2, endLine: 1, line: 1},
   };
 }

@@ -10,7 +10,6 @@ import {
   buildAndActivate,
   buildOwnedCleanSnapshot,
   codeGraphBuildRequestKey,
-  completedConcurrentSnapshot,
   ensureCommittedBase,
   retiredSnapshotCleanupReporter,
   reuseReadySnapshot,
@@ -18,6 +17,7 @@ import {
   withSharedCleanRequestGate,
   writerSessionOptions,
 } from './indexer_build.js';
+import {completedConcurrentSnapshot} from './indexer_concurrent_snapshot.js';
 import {assessIncrementalOverlay, assessIncrementalOverlayCompatibility} from './indexer_incremental.js';
 import {attemptSparseReusableOverlay} from './indexer_sparse.js';
 import {
@@ -742,6 +742,15 @@ export class CodeGraphIndexer extends Context.Service<CodeGraphIndexer, CodeGrap
                                   incrementalAssessment.facts,
                                   {
                                     deletedPaths: incrementalAssessment.deletedPaths,
+                                    ...(committedBase.foldForward
+                                      ? {
+                                          foldForward: {
+                                            snapshotId: committedBase.foldForward.logicalSnapshotId,
+                                            stagedPayloadBytes: committedBase.foldForward.priorStagedPayloadBytes,
+                                            stagedRows: committedBase.foldForward.priorStagedRows,
+                                          },
+                                        }
+                                      : {}),
                                     resolutionClosure: incrementalAssessment.resolutionClosure,
                                   },
                                   incrementalCapacityProtector,

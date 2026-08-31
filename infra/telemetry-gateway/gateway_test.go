@@ -499,7 +499,117 @@ func removeContextBriefCitationSurface(request *collectortracepb.ExportTraceServ
 	}
 }
 
-func TestCanonicalTelemetryPayloadAcceptsFrozenV1ThroughV4AndClosedV5(t *testing.T) {
+func validTelemetryV6AnchoredContextBriefRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := telemetryRequestWithSchema(validTelemetryV5ContextBriefRequest(), 6)
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.context_brief.contract", "code-anchored-v3"),
+		stringKeyValue("threadnote.context_brief.mode", "impact"),
+		stringKeyValue("threadnote.context_brief.code_anchor_coverage", "partial"),
+		boolKeyValue("threadnote.context_brief.code_anchor_gap", true),
+		stringKeyValue("threadnote.context_brief.code_anchors_matched_memories_bucket", "2^3"),
+		stringKeyValue("threadnote.context_brief.code_anchors_requested_bucket", "2^2"),
+		stringKeyValue("threadnote.context_brief.code_anchors_resolved_bucket", "2^1"),
+		stringKeyValue("threadnote.context_brief.gap_class", "unresolved"),
+		boolKeyValue("threadnote.context_brief.recovery_present", true),
+		stringKeyValue("threadnote.context_brief.returned_lane", "mixed"),
+	)
+	return request
+}
+
+func validTelemetryV6TaskOnlyContextBriefRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := telemetryRequestWithSchema(validTelemetryV5ContextBriefRequest(), 6)
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.context_brief.contract", "task-only-v2"),
+		stringKeyValue("threadnote.context_brief.mode", "brief"),
+		stringKeyValue("threadnote.context_brief.returned_lane", "memory"),
+	)
+	return request
+}
+
+func validTelemetryV6CompleteAnchorsRecallUnavailableRequest() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV6AnchoredContextBriefRequest()
+	spanAttribute(request, "threadnote.context_brief.code_anchor_coverage").Value = stringAnyValue("complete")
+	spanAttribute(request, "threadnote.context_brief.code_anchors_resolved_bucket").Value = stringAnyValue("2^2")
+	spanAttribute(request, "threadnote.context_brief.gap_class").Value = stringAnyValue("unavailable")
+	return request
+}
+
+func removeContextBriefV6ProjectionSurface(request *collectortracepb.ExportTraceServiceRequest) {
+	for _, key := range append([]string{
+		"threadnote.context_brief.code_anchor_coverage",
+		"threadnote.context_brief.code_anchor_gap",
+		"threadnote.context_brief.gap_class",
+		"threadnote.context_brief.output_truncated",
+		"threadnote.context_brief.recovery_present",
+		"threadnote.context_brief.returned_lane",
+	}, contextBriefCodeAnchorBucketAttributes...) {
+		removeSpanAttribute(request, key)
+	}
+}
+
+func validTelemetryV6ContextBriefCheckpoint(phase string) *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV6AnchoredContextBriefRequest()
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+	spanAttribute(request, "threadnote.phase").Value = stringAnyValue(phase)
+	switch phase {
+	case "context.brief.citation-validation":
+		removeContextBriefV6ProjectionSurface(request)
+	case "context.brief.projection":
+		removeContextBriefCitationSurface(request)
+	default:
+		removeContextBriefCitationSurface(request)
+		removeContextBriefV6ProjectionSurface(request)
+	}
+	return request
+}
+
+func validTelemetryV6FinalizationCheckpoint(trigger string) *collectortracepb.ExportTraceServiceRequest {
+	request := telemetryRequestWithSchema(validTelemetryRequest(), 6)
+	operation := "graph.index"
+	if trigger == "explicit" {
+		operation = "finalize_code_refs"
+	}
+	spanAttribute(request, "threadnote.operation").Value = stringAnyValue(operation)
+	spanAttribute(request, "threadnote.event").Value = stringAnyValue("checkpoint")
+	span := request.ResourceSpans[0].ScopeSpans[0].Spans[0]
+	span.Attributes = append(span.Attributes,
+		stringKeyValue("threadnote.phase", "memory.code-anchor-finalization"),
+		stringKeyValue("threadnote.phase.outcome", "success"),
+		&commonpb.KeyValue{Key: "threadnote.phase.elapsed_ms", Value: intAnyValue(12)},
+		stringKeyValue("threadnote.code_anchor_finalization.trigger", trigger),
+		stringKeyValue("threadnote.code_anchor_finalization.result", "finalized"),
+		stringKeyValue("threadnote.code_anchor_finalization.conflict_bucket", "0"),
+		stringKeyValue("threadnote.code_anchor_finalization.failed_bucket", "0"),
+		stringKeyValue("threadnote.code_anchor_finalization.finalized_bucket", "2^1"),
+		stringKeyValue("threadnote.code_anchor_finalization.latency_ms_bucket", "2^3"),
+		stringKeyValue("threadnote.code_anchor_finalization.pending_bucket", "0"),
+		stringKeyValue("threadnote.code_anchor_finalization.scanned_bucket", "2^1"),
+	)
+	if trigger != "explicit" {
+		span.Attributes = append(span.Attributes, stringKeyValue("threadnote.code_anchor_finalization.matched_bucket", "2^1"))
+	}
+	return request
+}
+
+func validTelemetryV6FailedBeforeScanFinalizationCheckpoint() *collectortracepb.ExportTraceServiceRequest {
+	request := validTelemetryV6FinalizationCheckpoint("graph-index")
+	spanAttribute(request, "threadnote.code_anchor_finalization.result").Value = stringAnyValue("failed")
+	for _, key := range []string{
+		"threadnote.code_anchor_finalization.conflict_bucket",
+		"threadnote.code_anchor_finalization.failed_bucket",
+		"threadnote.code_anchor_finalization.finalized_bucket",
+		"threadnote.code_anchor_finalization.pending_bucket",
+		"threadnote.code_anchor_finalization.scanned_bucket",
+	} {
+		spanAttribute(request, key).Value = stringAnyValue("0")
+	}
+	spanAttribute(request, "threadnote.code_anchor_finalization.matched_bucket").Value = stringAnyValue("0")
+	return request
+}
+
+func TestCanonicalTelemetryPayloadAcceptsFrozenV1ThroughV5AndClosedV6(t *testing.T) {
 	schemas, err := loadTelemetrySchemas()
 	if err != nil {
 		t.Fatal(err)
@@ -545,6 +655,19 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1ThroughV4AndClosedV5(t *testing
 		validTelemetryV5ContextBriefCheckpoint("context.brief.projection"),
 		validTelemetryV5ContextBriefLivenessCheckpoint(),
 		validTelemetryV5FailedContextBriefRequest(),
+		telemetryRequestWithSchema(validTelemetryV2Request(), 6),
+		telemetryRequestWithSchema(validTelemetryV4QueryRequest(), 6),
+		validTelemetryV6TaskOnlyContextBriefRequest(),
+		validTelemetryV6AnchoredContextBriefRequest(),
+		validTelemetryV6CompleteAnchorsRecallUnavailableRequest(),
+		validTelemetryV6ContextBriefCheckpoint("context.brief.graph"),
+		validTelemetryV6ContextBriefCheckpoint("context.brief.memory"),
+		validTelemetryV6ContextBriefCheckpoint("context.brief.code-linked-memory"),
+		validTelemetryV6ContextBriefCheckpoint("context.brief.citation-validation"),
+		validTelemetryV6ContextBriefCheckpoint("context.brief.projection"),
+		validTelemetryV6FinalizationCheckpoint("explicit"),
+		validTelemetryV6FinalizationCheckpoint("graph-index"),
+		validTelemetryV6FailedBeforeScanFinalizationCheckpoint(),
 	} {
 		payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
 		if marshalError != nil {
@@ -558,7 +681,7 @@ func TestCanonicalTelemetryPayloadAcceptsFrozenV1ThroughV4AndClosedV5(t *testing
 			t.Fatal("valid canonical telemetry was changed")
 		}
 	}
-	for _, schemaVersion := range []int64{3, 4, 5} {
+	for _, schemaVersion := range []int64{3, 4, 5, 6} {
 		for _, result := range []string{"busy", "current", "disabled", "failed"} {
 			request := validTelemetryAutoUpdateResultRequest(schemaVersion, result)
 			payload, marshalError := (proto.MarshalOptions{Deterministic: true}).Marshal(request)
@@ -701,7 +824,7 @@ func TestCanonicalTelemetryPayloadRejectsSchemaMixingAndInvalidV2Shapes(t *testi
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(1)
 		}},
 		{name: "unknown schema version", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
-			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(6)
+			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = intAnyValue(7)
 		}},
 		{name: "wrong schema version type", mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
 			resourceAttribute(request, "threadnote.telemetry.schema_version").Value = stringAnyValue("2")
@@ -1240,6 +1363,143 @@ func TestCanonicalTelemetryPayloadRejectsArbitraryPrivateV5ContextBriefClassific
 			"threadnote.context_brief.citation_unknown_reason",
 		} {
 			request := validTelemetryV5ContextBriefRequest()
+			spanAttribute(request, key).Value = stringAnyValue(private)
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				return false
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				return false
+			}
+		}
+		return true
+	}
+	if propertyError := quick.Check(property, &quick.Config{MaxCount: 32}); propertyError != nil {
+		t.Fatal(propertyError)
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsInvalidV6ContextBriefAndFinalizationShapes(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name    string
+		request func() *collectortracepb.ExportTraceServiceRequest
+		mutate  func(*collectortracepb.ExportTraceServiceRequest)
+	}{
+		{name: "task-only with anchor results", request: validTelemetryV6TaskOnlyContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.context_brief.code_anchor_coverage", "complete"),
+			)
+		}},
+		{name: "anchored projection missing gap class", request: validTelemetryV6AnchoredContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.context_brief.gap_class")
+		}},
+		{name: "gap class inconsistent with gap boolean", request: validTelemetryV6AnchoredContextBriefRequest, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.gap_class").Value = stringAnyValue("none")
+		}},
+		{name: "task-only code-linked-memory phase", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6ContextBriefCheckpoint("context.brief.code-linked-memory")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.context_brief.contract").Value = stringAnyValue("task-only-v2")
+		}},
+		{name: "projection checkpoint carries citation result", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6ContextBriefCheckpoint("context.brief.projection")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.context_brief.citation_coverage", "complete"),
+			)
+		}},
+		{name: "explicit operation with automatic trigger", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("explicit")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.code_anchor_finalization.trigger").Value = stringAnyValue("graph-index")
+		}},
+		{name: "missing finalization bucket", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("explicit")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.code_anchor_finalization.pending_bucket")
+		}},
+		{name: "automatic finalization without matched bucket", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("graph-index")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			removeSpanAttribute(request, "threadnote.code_anchor_finalization.matched_bucket")
+		}},
+		{name: "explicit finalization with matched bucket", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("explicit")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes = append(request.ResourceSpans[0].ScopeSpans[0].Spans[0].Attributes,
+				stringKeyValue("threadnote.code_anchor_finalization.matched_bucket", "2^1"),
+			)
+		}},
+		{name: "finalization result inconsistent with buckets", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("explicit")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.code_anchor_finalization.result").Value = stringAnyValue("pending")
+		}},
+		{name: "explicit finalization reports contention", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("explicit")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.code_anchor_finalization.result").Value = stringAnyValue("contended")
+		}},
+		{name: "explicit finalization fails before scanning", request: validTelemetryV6FailedBeforeScanFinalizationCheckpoint, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.code_anchor_finalization.trigger").Value = stringAnyValue("explicit")
+			spanAttribute(request, "threadnote.operation").Value = stringAnyValue("finalize_code_refs")
+			removeSpanAttribute(request, "threadnote.code_anchor_finalization.matched_bucket")
+		}},
+		{name: "failed phase carries successful result", request: func() *collectortracepb.ExportTraceServiceRequest {
+			return validTelemetryV6FinalizationCheckpoint("explicit")
+		}, mutate: func(request *collectortracepb.ExportTraceServiceRequest) {
+			spanAttribute(request, "threadnote.phase.outcome").Value = stringAnyValue("failure")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := test.request()
+			test.mutate(request)
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				t.Fatal(marshalError)
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				t.Fatal("invalid schema v6 telemetry was accepted")
+			}
+		})
+	}
+}
+
+func TestCanonicalTelemetryPayloadRejectsArbitraryPrivateV6Classifications(t *testing.T) {
+	schemas, err := loadTelemetrySchemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	property := func(value string) bool {
+		digest := sha256.Sum256([]byte(value))
+		private := "private-" + hex.EncodeToString(digest[:])
+		for _, key := range []string{
+			"threadnote.context_brief.code_anchor_coverage",
+			"threadnote.context_brief.contract",
+			"threadnote.context_brief.gap_class",
+			"threadnote.context_brief.mode",
+			"threadnote.context_brief.returned_lane",
+		} {
+			request := validTelemetryV6AnchoredContextBriefRequest()
+			spanAttribute(request, key).Value = stringAnyValue(private)
+			payload, marshalError := proto.Marshal(request)
+			if marshalError != nil {
+				return false
+			}
+			if _, validationError := canonicalTelemetryPayload(payload, schemas); validationError == nil {
+				return false
+			}
+		}
+		for _, key := range []string{
+			"threadnote.code_anchor_finalization.result",
+			"threadnote.code_anchor_finalization.trigger",
+		} {
+			request := validTelemetryV6FinalizationCheckpoint("explicit")
 			spanAttribute(request, key).Value = stringAnyValue(private)
 			payload, marshalError := proto.Marshal(request)
 			if marshalError != nil {

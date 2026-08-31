@@ -453,7 +453,10 @@ describe('cross-session code graph increments', () => {
         writeUseFile(root, 'temporary dirty revision');
         const dirty = yield* indexAndLoadEffect(root, home);
         expect(dirty.summary.materialization?.mode).toBe('incremental-overlay');
-        expect(persistedSnapshotState(committed.databasePath, committed.summary.snapshot.id)).toBe('ready');
+        expect(
+          persistedSnapshotState(committed.databasePath, committed.summary.snapshot.id),
+          JSON.stringify(persistedSnapshotStates(committed.databasePath)),
+        ).toBe('ready');
 
         git(root, ['checkout', '--', 'src/use.ts']);
         const restored = yield* indexAndLoadEffect(root, home);
@@ -471,6 +474,323 @@ describe('cross-session code graph increments', () => {
         ),
         provideTestLayer(ApplicationLayer),
         TestClock.withLive,
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'keeps an imported-symbol body edit incremental immediately after dirty-root alias promotion',
+    () => {
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(3);
+        const home = join(root, '.threadnote-dirty-root-fresh-indexers');
+        yield* indexWithFreshIndexerEffect(root, home);
+
+        writeUseFile(root, 'dirty root committed verbatim');
+        const dirtyRoot = yield* indexWithFreshIndexerEffect(root, home, {incrementalOverlay: false});
+        expect(dirtyRoot.materialization).toMatchObject({fallbackReason: 'disabled', mode: 'full'});
+        expect(dirtyRoot.snapshot).toMatchObject({baseSnapshotId: undefined, dirty: true});
+        git(root, ['add', 'src/use.ts']);
+        git(root, ['commit', '-qm', 'commit the indexed dirty root']);
+
+        const committed = yield* indexWithFreshIndexerEffect(root, home);
+        expect(committed.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: false});
+        expect(committed.materialization).toEqual({mode: 'reused-snapshot', stagedFiles: 0, totalFiles: 5});
+        expect(projectGraph(yield* loadGraphEffect(root, home, committed))).toEqual(
+          projectGraph(yield* loadGraphEffect(root, home, dirtyRoot)),
+        );
+
+        // Keep the import/re-export evidence stable while changing only the
+        // function body. This exercises persisted re-export lookup against the
+        // leased dirty physical root behind the clean logical alias.
+        writeUseFile(root, 'post-alias dirty revision');
+        const next = yield* indexWithFreshIndexerEffect(root, home);
+        expect(next.snapshot).toMatchObject({baseSnapshotId: dirtyRoot.snapshot.id, dirty: true});
+        expect(next.materialization).toEqual({
+          mode: 'incremental-overlay',
+          resolutionLookupKeyForm: 'typescript-path-unscoped',
+          resolutionPublicationGate: 'own-path-local',
+          stagedFiles: 1,
+          totalFiles: 5,
+        });
+        const nextGraph = yield* loadGraphEffect(root, home, next);
+        const forced = yield* indexWithFreshIndexerEffect(root, home, {force: true});
+        expect(projectGraph(nextGraph)).toEqual(projectGraph(yield* loadGraphEffect(root, home, forced)));
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root])),
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'keeps disjoint sequential increments one-layered and graph-equivalent',
+    () => {
+      let fullHome: string | undefined;
+      let incrementalHome: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(4);
+        incrementalHome = mkdtempSync(join(tmpdir(), 'threadnote-sequential-incremental-home-'));
+        fullHome = mkdtempSync(join(tmpdir(), 'threadnote-sequential-full-home-'));
+        const indexer = yield* CodeGraphIndexer;
+        const initial = yield* indexAndLoadEffect(root, incrementalHome);
+        expect(initial.summary.materialization?.mode).toBe('full');
+
+        writeUseFile(root, 'committed sequential revision');
+        git(root, ['add', 'src/use.ts']);
+        git(root, ['commit', '-qm', 'clean sequential increment']);
+        const clean = yield* indexAndLoadEffect(root, incrementalHome);
+        expect(clean.summary.materialization).toMatchObject({
+          mode: 'incremental-clean',
+          stagedFiles: 1,
+        });
+        expect(clean.summary.snapshot.baseSnapshotId).toBe(initial.summary.snapshot.id);
+        expect(foldForwardProofStats(clean.databasePath, clean.summary.snapshot.id)).toMatchObject({
+          paths: ['src/use.ts'],
+          rootSnapshotId: initial.summary.snapshot.id,
+        });
+
+        writeFileSync(
+          join(root, 'src/passive-0.ts'),
+          'import {useHelper} from "./use.js";\nexport function passive0(): number { return useHelper().length + 100; }\n',
+        );
+        const dirty = yield* indexAndLoadEffect(root, incrementalHome);
+        expect(dirty.summary.materialization).toMatchObject({
+          carriedFiles: 1,
+          freshStagedFiles: 1,
+          mode: 'incremental-overlay',
+          stagedFiles: 2,
+        });
+        expect(dirty.summary.incrementalWork).toMatchObject({
+          changedFiles: 1,
+          totalFiles: 6,
+        });
+        expect(dirty.summary.snapshot.baseSnapshotId).toBe(initial.summary.snapshot.id);
+        expect(dirty.summary.snapshot.baseSnapshotId).not.toBe(clean.summary.snapshot.id);
+        expect(persistedDeltaStats(dirty.databasePath, dirty.summary.snapshot.id)).toMatchObject({
+          edgePaths: ['src/passive-0.ts', 'src/use.ts'],
+          filePaths: ['src/passive-0.ts', 'src/use.ts'],
+          symbolPaths: ['src/passive-0.ts', 'src/use.ts'],
+        });
+
+        const full = yield* indexer.index({
+          cwd: root,
+          incrementalOverlay: false,
+          threadnoteHome: fullHome,
+        });
+        const rebuilt = yield* loadGraphEffect(root, fullHome, full);
+        expect(projectGraph(dirty.graph)).toEqual(projectGraph(rebuilt));
+        expect(yield* analysisDigestEffect(incrementalHome, dirty.summary)).toBe(
+          yield* analysisDigestEffect(fullHome, full),
+        );
+        expect(normalizeCatalog(dirty.catalog)).toEqual(
+          normalizeCatalog(yield* loadVisualizationCatalogEffect(fullHome, full)),
+        );
+        expect(dirty.health).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, incrementalHome, fullHome])),
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'replaces an overlapping prior delta without carrying stale rows',
+    () => {
+      let fullHome: string | undefined;
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(1);
+        home = mkdtempSync(join(tmpdir(), 'threadnote-fold-forward-overlap-home-'));
+        fullHome = mkdtempSync(join(tmpdir(), 'threadnote-fold-forward-overlap-full-home-'));
+        const indexer = yield* CodeGraphIndexer;
+        const initial = yield* indexAndLoadEffect(root, home);
+        writeUseFile(root, 'committed overlapping revision');
+        git(root, ['add', 'src/use.ts']);
+        git(root, ['commit', '-qm', 'clean overlapping increment']);
+        const clean = yield* indexAndLoadEffect(root, home);
+        expect(foldForwardProofStats(clean.databasePath, clean.summary.snapshot.id)?.paths).toEqual(['src/use.ts']);
+
+        writeUseFile(root, 'dirty overlapping revision');
+        const overlapping = yield* indexAndLoadEffect(root, home);
+        expect(overlapping.summary.materialization).toMatchObject({
+          carriedFiles: 0,
+          freshStagedFiles: 1,
+          mode: 'incremental-overlay',
+          stagedFiles: 1,
+        });
+        expect(overlapping.summary.incrementalWork).toMatchObject({changedFiles: 1, totalFiles: 3});
+        expect(overlapping.summary.snapshot.baseSnapshotId).toBe(initial.summary.snapshot.id);
+        expect(persistedDeltaStats(overlapping.databasePath, overlapping.summary.snapshot.id)).toMatchObject({
+          edgePaths: ['src/use.ts'],
+          filePaths: ['src/use.ts'],
+          symbolPaths: ['src/use.ts'],
+        });
+        const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+        expect(projectGraph(overlapping.graph)).toEqual(projectGraph(yield* loadGraphEffect(root, fullHome, full)));
+        expect(overlapping.health).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home, fullHome])),
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'retains cumulative-root fallback when the layered fold proof is unavailable',
+    () => {
+      let fullHome: string | undefined;
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(1);
+        home = mkdtempSync(join(tmpdir(), 'threadnote-fold-forward-proof-fallback-home-'));
+        fullHome = mkdtempSync(join(tmpdir(), 'threadnote-fold-forward-proof-fallback-full-home-'));
+        const indexer = yield* CodeGraphIndexer;
+        const initial = yield* indexAndLoadEffect(root, home);
+        writeUseFile(root, 'committed proof fallback revision');
+        git(root, ['add', 'src/use.ts']);
+        git(root, ['commit', '-qm', 'clean proof fallback increment']);
+        const clean = yield* indexAndLoadEffect(root, home);
+        expect(foldForwardProofStats(clean.databasePath, clean.summary.snapshot.id)).toBeDefined();
+        deleteFoldForwardProof(clean.databasePath, clean.summary.snapshot.id);
+
+        writeFileSync(join(root, 'src/passive-0.ts'), 'export function passive0(): number { return 200; }\n');
+        const fallback = yield* indexAndLoadEffect(root, home);
+        expect(fallback.summary.materialization).toMatchObject({mode: 'incremental-overlay', stagedFiles: 2});
+        expect(fallback.summary.materialization).not.toHaveProperty('carriedFiles');
+        expect(fallback.summary.incrementalWork).toMatchObject({changedFiles: 2, totalFiles: 3});
+        expect(fallback.summary.snapshot.baseSnapshotId).toBe(initial.summary.snapshot.id);
+        const full = yield* indexer.index({cwd: root, incrementalOverlay: false, threadnoteHome: fullHome});
+        expect(projectGraph(fallback.graph)).toEqual(projectGraph(yield* loadGraphEffect(root, fullHome, full)));
+        expect(fallback.health).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home, fullHome])),
+      );
+    },
+    60_000,
+  );
+
+  it.effect(
+    'fails closed and preserves full-build equivalence for corrupt-but-present fold proofs',
+    () => {
+      const temporaryPaths: string[] = [];
+      return Effect.gen(function* () {
+        const indexer = yield* CodeGraphIndexer;
+        for (const scenario of FOLD_FORWARD_PROOF_CORRUPTIONS) {
+          const root = scenario.barrel ? createBarrelRepository() : createRepository(1);
+          temporaryPaths.push(root);
+          const incrementalHome = mkdtempSync(join(tmpdir(), `threadnote-fold-forward-${scenario.corruption}-home-`));
+          temporaryPaths.push(incrementalHome);
+          const fullHome = mkdtempSync(join(tmpdir(), `threadnote-fold-forward-${scenario.corruption}-full-home-`));
+          temporaryPaths.push(fullHome);
+
+          const initial = yield* indexAndLoadEffect(root, incrementalHome);
+          if (scenario.barrel) {
+            writeFileSync(
+              join(root, 'src/index.ts'),
+              '// Preserve the export surface while moving its evidence span.\nexport {decode, helper} from "./helper.js";\n',
+            );
+          } else {
+            writeUseFile(root, `committed ${scenario.corruption} proof revision`);
+          }
+          git(root, ['add', '.']);
+          git(root, ['commit', '-qm', `clean ${scenario.corruption} proof increment`]);
+          const clean = yield* indexAndLoadEffect(root, incrementalHome);
+          const proof = foldForwardProofIntegrityStats(clean.databasePath, clean.summary.snapshot.id);
+          expect(proof, scenario.corruption).toMatchObject({paths: 1});
+          expect(proof?.lookups, scenario.corruption).toBeGreaterThan(0);
+          if (scenario.barrel) expect(proof?.reexports, scenario.corruption).toBeGreaterThan(0);
+
+          corruptFoldForwardProof(clean.databasePath, clean.summary.snapshot.id, scenario.corruption);
+          if (scenario.barrel) {
+            writeBarrelConsumer(root, `dirty ${scenario.corruption} proof revision`);
+          } else {
+            writeFileSync(join(root, 'src/passive-0.ts'), 'export function passive0(): number { return 200; }\n');
+          }
+          const fallback = yield* indexAndLoadEffect(root, incrementalHome);
+          if (scenario.corruption === 'staged-row-count') {
+            expect(fallback.summary.materialization, scenario.corruption).toMatchObject({
+              fallbackReason: 'staging-identity-mismatch',
+              mode: 'full',
+              stagedFiles: 3,
+              totalFiles: 3,
+            });
+            expect(fallback.summary.snapshot.baseSnapshotId, scenario.corruption).toBeUndefined();
+          } else {
+            expect(fallback.summary.materialization, scenario.corruption).toMatchObject({
+              mode: 'incremental-overlay',
+              stagedFiles: 2,
+            });
+            expect(fallback.summary.incrementalWork, scenario.corruption).toMatchObject({
+              changedFiles: 2,
+              totalFiles: 3,
+            });
+            expect(fallback.summary.snapshot.baseSnapshotId, scenario.corruption).toBe(initial.summary.snapshot.id);
+          }
+          expect(fallback.summary.materialization, scenario.corruption).not.toHaveProperty('carriedFiles');
+
+          const fullSummary = yield* indexer.index({
+            cwd: root,
+            incrementalOverlay: false,
+            threadnoteHome: fullHome,
+          });
+          const rebuilt = yield* loadGraphEffect(root, fullHome, fullSummary);
+          expect(projectGraph(fallback.graph), scenario.corruption).toEqual(projectGraph(rebuilt));
+          expect(fallback.health, scenario.corruption).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+        }
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => temporaryPaths)),
+      );
+    },
+    120_000,
+  );
+
+  it.effect(
+    'fails closed to full materialization for deletion and reintroduction',
+    () => {
+      let home: string | undefined;
+      let root: string | undefined;
+      return Effect.gen(function* () {
+        root = createRepository(1);
+        home = mkdtempSync(join(tmpdir(), 'threadnote-fold-forward-file-set-home-'));
+        const initial = yield* indexAndLoadEffect(root, home);
+        rmSync(join(root, 'src/passive-0.ts'));
+        git(root, ['add', '-A']);
+        git(root, ['commit', '-qm', 'delete passive file']);
+        const deletion = yield* indexAndLoadEffect(root, home);
+        expect(deletion.summary.materialization?.mode).toBe('full');
+        expect(deletion.summary.snapshot.baseSnapshotId).toBeUndefined();
+        expect(foldForwardProofStats(deletion.databasePath, deletion.summary.snapshot.id)).toBeUndefined();
+
+        writeFileSync(join(root, 'src/passive-0.ts'), 'export function passive0(): number { return 0; }\n');
+        const reintroduced = yield* indexAndLoadEffect(root, home);
+        expect(reintroduced.summary.materialization).toMatchObject({
+          fallbackReason: 'file-set-changed',
+          mode: 'full',
+        });
+        expect(reintroduced.summary.snapshot.baseSnapshotId).toBeUndefined();
+        expect(reintroduced.summary.materialization).not.toHaveProperty('carriedFiles');
+        expect(projectGraph(reintroduced.graph)).toEqual(projectGraph(initial.graph));
+        expect(reintroduced.health).toMatchObject({foreignKeyViolations: 0, integrity: 'ok'});
+      }).pipe(
+        provideTestLayer(ApplicationLayer),
+        TestClock.withLive,
+        Effect.ensuring(removeTemporaryPaths(() => [root, home])),
       );
     },
     60_000,
@@ -1078,6 +1398,24 @@ const indexAndLoadEffect = Effect.fn('test.indexAndLoad')(function* (root: strin
   };
 });
 
+const indexWithFreshIndexerEffect = Effect.fn('test.indexWithFreshIndexer')(function* (
+  root: string,
+  home: string,
+  options: {readonly force?: boolean; readonly incrementalOverlay?: boolean} = {},
+) {
+  const layer = Layer.fresh(CodeGraphIndexer.layer).pipe(Layer.provide(ApplicationLayer));
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(layer);
+      return yield* Context.get(context, CodeGraphIndexer).index({
+        cwd: root,
+        threadnoteHome: home,
+        ...options,
+      });
+    }),
+  );
+});
+
 const loadGraphEffect = Effect.fn('test.loadGraph')(function* (
   root: string,
   home: string,
@@ -1131,6 +1469,19 @@ function persistedSnapshotState(databasePath: string, snapshotId: string): strin
   try {
     return (database.query('SELECT state FROM snapshots WHERE id = ?').get(snapshotId) as {state?: string} | null)
       ?.state;
+  } finally {
+    database.close(false);
+  }
+}
+
+function persistedSnapshotStates(databasePath: string): readonly unknown[] {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    return database
+      .query(
+        'SELECT id, state, dirty, base_snapshot_id, commit_id, graph_content_id, completed_at FROM snapshots ORDER BY completed_at, id',
+      )
+      .all();
   } finally {
     database.close(false);
   }
@@ -1312,6 +1663,138 @@ function persistedDeltaStats(databasePath: string, snapshotId: string) {
     };
   } finally {
     database.close();
+  }
+}
+
+function foldForwardProofStats(
+  databasePath: string,
+  snapshotId: string,
+): {readonly paths: readonly string[]; readonly rootSnapshotId: string} | undefined {
+  const database = new Database(databasePath, {readonly: true});
+  try {
+    const receipt = database
+      .query<{readonly rootSnapshotId: string}, [string]>(
+        `SELECT root_snapshot_id AS rootSnapshotId
+         FROM snapshot_fold_forward_receipts WHERE snapshot_id = ?`,
+      )
+      .get(snapshotId);
+    if (!receipt) return undefined;
+    return {
+      paths: database
+        .query<{readonly path: string}, [string]>(
+          'SELECT path FROM snapshot_fold_forward_paths WHERE snapshot_id = ? ORDER BY path',
+        )
+        .all(snapshotId)
+        .map(row => row.path),
+      rootSnapshotId: receipt.rootSnapshotId,
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function deleteFoldForwardProof(databasePath: string, snapshotId: string): void {
+  const database = new Database(databasePath);
+  try {
+    database.exec('PRAGMA foreign_keys = ON');
+    database.query('DELETE FROM snapshot_fold_forward_receipts WHERE snapshot_id = ?').run(snapshotId);
+  } finally {
+    database.close();
+  }
+}
+
+const FOLD_FORWARD_PROOF_CORRUPTIONS = [
+  {barrel: false, corruption: 'lookup-count'},
+  {barrel: false, corruption: 'path-count'},
+  {barrel: false, corruption: 'lookup-evidence-path'},
+  {barrel: true, corruption: 'reexport-divergence'},
+  {barrel: false, corruption: 'staged-row-count'},
+] as const;
+
+type FoldForwardProofCorruption = (typeof FOLD_FORWARD_PROOF_CORRUPTIONS)[number]['corruption'];
+
+function foldForwardProofIntegrityStats(
+  databasePath: string,
+  snapshotId: string,
+): {readonly lookups: number; readonly paths: number; readonly reexports: number} | undefined {
+  const database = new Database(databasePath, {readonly: true, strict: true});
+  try {
+    const receipt = database
+      .query<{readonly lookupCount: number; readonly reexportCount: number}, [string]>(
+        `SELECT lookup_count AS lookupCount, reexport_count AS reexportCount
+         FROM snapshot_fold_forward_receipts WHERE snapshot_id = ?`,
+      )
+      .get(snapshotId);
+    if (!receipt) return undefined;
+    const paths = database
+      .query<{readonly count: number}, [string]>(
+        'SELECT COUNT(*) AS count FROM snapshot_fold_forward_paths WHERE snapshot_id = ?',
+      )
+      .get(snapshotId);
+    return {
+      lookups: Number(receipt.lookupCount),
+      paths: Number(paths?.count ?? 0),
+      reexports: Number(receipt.reexportCount),
+    };
+  } finally {
+    database.close(false);
+  }
+}
+
+function corruptFoldForwardProof(
+  databasePath: string,
+  snapshotId: string,
+  corruption: FoldForwardProofCorruption,
+): void {
+  const database = new Database(databasePath, {strict: true});
+  try {
+    const result = (() => {
+      switch (corruption) {
+        case 'lookup-count':
+          return database
+            .query('UPDATE snapshot_fold_forward_receipts SET lookup_count = lookup_count + 1 WHERE snapshot_id = ?')
+            .run(snapshotId);
+        case 'path-count':
+          return database
+            .query('INSERT INTO snapshot_fold_forward_paths (snapshot_id, path) VALUES (?, ?)')
+            .run(snapshotId, 'src/corrupt-extra-path.ts');
+        case 'lookup-evidence-path':
+          return database
+            .query(
+              `UPDATE snapshot_fold_forward_symbol_lookup
+               SET evidence_path = 'src/corrupt-lookup-path.ts'
+               WHERE (snapshot_id, lookup_key, symbol_id) = (
+                 SELECT snapshot_id, lookup_key, symbol_id
+                 FROM snapshot_fold_forward_symbol_lookup
+                 WHERE snapshot_id = ? ORDER BY lookup_key, symbol_id LIMIT 1
+               )`,
+            )
+            .run(snapshotId);
+        case 'reexport-divergence':
+          return database
+            .query(
+              `UPDATE snapshot_reexport_provenance
+               SET target_path = 'src/corrupt-reexport-target.ts'
+               WHERE (snapshot_id, source_path, local_name, target_path, imported_name) = (
+                 SELECT snapshot_id, source_path, local_name, target_path, imported_name
+                 FROM snapshot_reexport_provenance
+                 WHERE snapshot_id = ? ORDER BY source_path, local_name, target_path, imported_name LIMIT 1
+               )`,
+            )
+            .run(snapshotId);
+        case 'staged-row-count':
+          return database
+            .query(
+              'UPDATE snapshot_fold_forward_receipts SET staged_row_count = staged_row_count + 1 WHERE snapshot_id = ?',
+            )
+            .run(snapshotId);
+      }
+    })();
+    if (result.changes !== 1) {
+      throw new Error(`Fold-forward ${corruption} corruption did not mutate exactly one proof row.`);
+    }
+  } finally {
+    database.close(false);
   }
 }
 

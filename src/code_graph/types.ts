@@ -265,6 +265,10 @@ export interface CodeGraphMaterializationMetrics {
   readonly exactGenerationShardFilesCompleted?: number;
   /** Exact bounded reason a repository-wide rewrite was selected, when known. */
   readonly fallbackReason?: CodeGraphOverlayFallbackReason;
+  /** Closed, path-free evidence for the assessment that selected the fallback. */
+  readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+  /** Closed, path-free evidence for the resource boundary that selected the fallback. */
+  readonly fallbackBoundary?: CodeGraphOverlayFallbackBoundary;
   /** Exact UTF-8 JSON bytes of final postprocessed and attributed facts. */
   readonly factsBytesCompleted?: number;
   readonly factsBytesTotal?: number;
@@ -509,9 +513,15 @@ export interface CodeGraphIndexSummary {
   readonly identity: RepositoryIdentity;
   readonly incrementalWork?: import('./incremental_work.js').CodeGraphIncrementalWork;
   readonly materialization?: {
+    /** Prior logical-delta files copied from persisted rows without fact decoding. */
+    readonly carriedFiles?: number;
     readonly closureProjects?: number;
+    readonly fallbackAssessment?: CodeGraphOverlayFallbackAssessment;
+    readonly fallbackBoundary?: CodeGraphOverlayFallbackBoundary;
     readonly fallbackReason?: CodeGraphOverlayFallbackReason;
     readonly mode: 'full' | 'incremental-clean' | 'incremental-overlay' | 'reused-snapshot';
+    /** Files freshly decoded/attributed for this build; `stagedFiles` remains the physical delta size. */
+    readonly freshStagedFiles?: number;
     readonly resolutionClosure?: 'changed' | 'full' | 'project';
     readonly resolutionLookupKeyForm?: import('./resolution_surface.js').CodeGraphResolutionLookupKeyForm;
     readonly resolutionPublicationGate?: import('./resolution_surface.js').CodeGraphResolutionPublicationGate;
@@ -540,6 +550,76 @@ export type CodeGraphOverlayFallbackReason =
   | 'staging-identity-mismatch'
   | 'staging-unavailable'
   | 'workspace-changed';
+
+export type CodeGraphProjectFileSetFallbackDetail =
+  | 'dependency-model-incomplete'
+  | 'duplicate-project-identity'
+  | 'no-project-seeds'
+  | 'path-owner-ambiguous'
+  | 'path-unowned'
+  | 'project-model-incomplete'
+  | 'project-not-stable'
+  | 'resolution-domain-unowned';
+
+export type CodeGraphProjectClosureFallbackMetric =
+  | 'affected-files'
+  | 'cached-fact-bytes'
+  | 'candidate-lookup-keys'
+  | 'candidate-projection-associations'
+  | 'candidate-projection-file-associations'
+  | 'candidate-projection-observations'
+  | 'candidate-projection-observed-key-bytes'
+  | 'candidate-reexport-key-bytes'
+  | 'candidate-reexport-lookup-keys'
+  | 'candidate-reexports'
+  | 'candidate-scan-fact-bytes'
+  | 'candidate-scan-files'
+  | 'candidate-selected-files'
+  | 'source-bytes';
+
+export interface CodeGraphOverlayFallbackAssessment {
+  /** Current files whose identity differs from the reusable base, including additions. */
+  readonly changedFiles: number;
+  readonly addedFiles: number;
+  readonly deletedFiles: number;
+  readonly detail: CodeGraphProjectFileSetFallbackDetail;
+  readonly stage: 'file-set-seed-assessment';
+}
+
+/** Additive path-free evidence, kept separate from the stable fallback-assessment wire contract. */
+interface CodeGraphOverlayFallbackBoundaryBase {
+  readonly changedFiles: number;
+  readonly limit: number;
+  /** Counter value at the exact point the closed limit was exceeded; not an estimated final total. */
+  readonly observedAtDecision: number;
+}
+
+export type CodeGraphOverlayFallbackBoundary = CodeGraphOverlayFallbackBoundaryBase &
+  (
+    | {
+        readonly metric: 'affected-files' | 'cached-fact-bytes' | 'source-bytes';
+        readonly stage: 'project-closure-selection';
+      }
+    | {
+        readonly metric:
+          | 'candidate-lookup-keys'
+          | 'candidate-projection-associations'
+          | 'candidate-projection-file-associations'
+          | 'candidate-projection-observations'
+          | 'candidate-projection-observed-key-bytes'
+          | 'candidate-reexport-key-bytes'
+          | 'candidate-reexport-lookup-keys'
+          | 'candidate-reexports'
+          | 'candidate-scan-fact-bytes'
+          | 'candidate-scan-files'
+          | 'candidate-selected-files';
+        readonly stage: 'resolution-candidate-scan';
+      }
+    | {
+        readonly metric: 'cached-fact-bytes' | 'candidate-selected-files' | 'source-bytes';
+        readonly stage: 'resolution-candidate-rewrite';
+      }
+  );
 
 export interface CodeGraphQueryNode extends CodeGraphSymbol {
   readonly score: number;

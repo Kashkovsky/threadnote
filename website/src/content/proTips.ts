@@ -448,6 +448,7 @@ export const proTips: ProTip[] = [
       'Add codeRefs only to consequential source-backed claims; uncited memory remains valid and recallable.',
       'For one repository, pass callerCwd. Use a prepared Workset only when the evidence really spans repositories.',
       'Treat relocated evidence as fresh: stale-link warns about the locator, not the memory. Changed or deleted evidence is stale, and unknown means Threadnote abstained.',
+      'Private writes defer anchors automatically when graph readiness would block closeout; finalize them after the graph is exact-current, or explicitly require current evidence when the write must be atomic with citation capture.',
       'When replacing cited memory, pass codeRefs again to recapture it. Omitting them deliberately clears the old citations.',
     ],
     scenario: {

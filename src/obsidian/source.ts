@@ -14,7 +14,7 @@ import {
   validateObsidianIdentifier,
   writeObsidianConfiguration,
 } from './config.js';
-import {applyScrubber} from '../scrubber.js';
+import {applyScrubber} from '../share/scrubber.js';
 import {canonicalResourceUri} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
 import {expandPath, globToRegExp, isDirectory, toPosixPath} from '../utils.js';

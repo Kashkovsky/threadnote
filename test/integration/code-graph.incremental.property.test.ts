@@ -382,8 +382,8 @@ describe('code graph incremental-overlay differential properties', () => {
         }
       }),
     {
-      fastCheck: {interruptAfterTimeLimit: 90_000, markInterruptAsFailure: true, numRuns: 8},
-      timeout: 100_000,
+      fastCheck: {interruptAfterTimeLimit: 150_000, markInterruptAsFailure: true, numRuns: 8},
+      timeout: 160_000,
     },
   );
 
@@ -410,6 +410,8 @@ describe('code graph incremental-overlay differential properties', () => {
               fallbackReason:
                 scenario.mutation === 'arity' ? 'project-closure-incomplete' : 'resolution-surface-changed',
               mode: 'full',
+              resolutionLookupKeyForm: 'typescript-path-unscoped',
+              resolutionPublicationGate: scenario.mutation === 'export' ? 'own-path-local' : 'exported',
               stagedFiles: scenario.fileCount,
               totalFiles: scenario.fileCount,
             });

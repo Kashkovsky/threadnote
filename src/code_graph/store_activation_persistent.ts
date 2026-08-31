@@ -1,5 +1,6 @@
 import {Effect, Option} from 'effect';
 import * as SqlClient from 'effect/unstable/sql/SqlClient';
+import {codeGraphContentIdentity} from './graph_identity.js';
 import {
   saturatingCapacityAdd,
   saturatingCapacityMultiply,
@@ -8,6 +9,7 @@ import {
 import {
   CODE_GRAPH_RESOLUTION_SURFACE_VERSION,
   CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION,
+  type CodeGraphCleanSnapshotAliasOptions,
   type CodeGraphActivationProgressCallback,
   type CodeGraphDirectPersistentCapacityProtector,
   type CodeGraphCheckpointImportReceiptInput,
@@ -805,12 +807,58 @@ const activatePersistedFullSnapshot = Effect.fn('codeGraph.activatePersistedFull
   yield* dropPersistedFullResolutionViews(sql).pipe(Effect.ignore);
 });
 
+const exactSnapshotFilesMatch = Effect.fn('codeGraph.exactSnapshotFilesMatch')(function* (
+  sql: SqlClient.SqlClient,
+  snapshotId: string,
+  files: NonNullable<CodeGraphCleanSnapshotAliasOptions['exactBaseFiles']>,
+) {
+  const paths = new Set(files.map(file => file.path));
+  if (paths.size !== files.length) return false;
+  for (let offset = 0; offset < files.length; offset += 256) {
+    const batch = files.slice(offset, offset + 256);
+    const expected = JSON.stringify(batch);
+    const rows = yield* sql<{readonly matched: number}>`
+      SELECT COUNT(*) AS matched
+      FROM json_each(${expected}) AS requested
+      JOIN snapshot_files AS file
+        ON file.snapshot_id = ${snapshotId}
+       AND file.path = json_extract(requested.value, '$.path')
+       AND file.content_hash = json_extract(requested.value, '$.contentHash')
+       AND file.language = json_extract(requested.value, '$.language')
+       AND file.mode = json_extract(requested.value, '$.mode')
+       AND file.size = CAST(json_extract(requested.value, '$.size') AS INTEGER)
+    `;
+    if (Number(rows[0]?.matched) !== batch.length) return false;
+  }
+  return true;
+});
+
+function sameCodeGraphPackProvenance(
+  left: readonly CodeGraphLanguagePackProvenance[],
+  right: readonly CodeGraphLanguagePackProvenance[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const rightById = new Map(right.map(pack => [pack.id, pack]));
+  if (rightById.size !== right.length) return false;
+  return left.every(pack => {
+    const other = rightById.get(pack.id);
+    return (
+      other !== undefined &&
+      pack.cacheIdentity === other.cacheIdentity &&
+      pack.derivationIdentity === other.derivationIdentity &&
+      pack.resolutionDomain === other.resolutionDomain &&
+      pack.resolutionVersion === other.resolutionVersion
+    );
+  });
+}
+
 const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAlias')(function* (
   sql: SqlClient.SqlClient,
   identity: RepositoryIdentity,
   snapshot: CodeGraphSnapshot,
   baseSnapshotId: string,
   currentSnapshotReceipt: CodeGraphReusableBaseReceiptInput,
+  options: CodeGraphCleanSnapshotAliasOptions = {},
 ) {
   yield* configureConnection(sql);
   if (snapshot.dirty || snapshot.baseSnapshotId !== baseSnapshotId) {
@@ -820,21 +868,42 @@ const activateCleanSnapshotAlias = Effect.fn('codeGraph.activateCleanSnapshotAli
     SELECT * FROM snapshots
     WHERE id = ${baseSnapshotId} AND repository_id = ${snapshot.repositoryId}
       AND extractor_set = ${snapshot.extractorSet} AND state = 'ready'
-      AND dirty = 0 AND base_snapshot_id IS NULL
+      AND base_snapshot_id IS NULL
     LIMIT 1
   `;
   const base = baseRows[0];
+  const baseSnapshot = base ? snapshotFromRow(base) : undefined;
+  const exactDirtyBaseFiles = options.exactBaseFiles;
+  const dirtyBase = baseSnapshot?.dirty === true;
+  const baseReceipt = baseSnapshot ? yield* selectReusableBaseReceipt(baseSnapshotId, dirtyBase) : undefined;
   if (
     !base ||
+    !baseSnapshot ||
     Number(base.file_count) !== snapshot.fileCount ||
     Number(base.symbol_count) !== snapshot.symbolCount ||
     Number(base.edge_count) !== snapshot.edgeCount ||
-    !(yield* selectReusableBaseReceipt(baseSnapshotId))
+    !baseReceipt
   ) {
     return yield* Effect.fail(new CodeGraphStoreError(`Reusable clean base ${baseSnapshotId} is unavailable.`));
   }
   const baseGraphContentId = Option.getOrUndefined(sqlTextOption(base.graph_content_id)) ?? base.id;
-  if (snapshot.graphContentId !== undefined && snapshot.graphContentId !== baseGraphContentId) {
+  if (dirtyBase) {
+    if (
+      exactDirtyBaseFiles === undefined ||
+      options.expectedBaseGraphContentId === undefined ||
+      options.expectedBaseGraphContentId !== baseGraphContentId ||
+      snapshot.graphContentId !== codeGraphContentIdentity(snapshot.extractorSet, exactDirtyBaseFiles) ||
+      exactDirtyBaseFiles.length !== snapshot.fileCount ||
+      baseReceipt.fileSetFingerprint !== currentSnapshotReceipt.fileSetFingerprint ||
+      baseReceipt.workspaceFingerprint !== currentSnapshotReceipt.workspaceFingerprint ||
+      !sameCodeGraphPackProvenance(baseReceipt.packProvenance, currentSnapshotReceipt.packProvenance) ||
+      !(yield* exactSnapshotFilesMatch(sql, baseSnapshotId, exactDirtyBaseFiles))
+    ) {
+      return yield* Effect.fail(
+        new CodeGraphStoreError('Committed dirty graph does not exactly match the clean snapshot alias.'),
+      );
+    }
+  } else if (snapshot.graphContentId !== undefined && snapshot.graphContentId !== baseGraphContentId) {
     return yield* Effect.fail(new CodeGraphStoreError('Clean snapshot alias has different graph content.'));
   }
   const prior = yield* sql<SnapshotRow>`SELECT * FROM snapshots WHERE id = ${snapshot.id} LIMIT 1`;

@@ -10,7 +10,7 @@ import {
   type ContextBriefGraphEvidenceV1,
   type ContextBriefScopeV1,
 } from '../context_brief/index.js';
-import {getThreadnoteVersion} from '../version.js';
+import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {
   contextBriefCitationScaleGate,
   contextBriefCitationScaleRetainedRootRssGrowthBytes,

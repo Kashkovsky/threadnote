@@ -406,6 +406,12 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
   ) {
     return undefined;
   }
+  const fallbackAssessment = parseOverlayFallbackAssessment(value.fallbackAssessment);
+  if (value.fallbackAssessment !== undefined && fallbackAssessment === undefined) return undefined;
+  if (fallbackAssessment !== undefined && value.fallbackReason !== 'project-closure-incomplete') return undefined;
+  const fallbackBoundary = parseOverlayFallbackBoundary(value.fallbackBoundary);
+  if (value.fallbackBoundary !== undefined && fallbackBoundary === undefined) return undefined;
+  if (fallbackBoundary !== undefined && value.fallbackReason !== 'project-closure-unbounded') return undefined;
   if (value.mode !== undefined && !['full', 'incremental-clean', 'incremental-overlay'].includes(String(value.mode))) {
     return undefined;
   }
@@ -510,6 +516,8 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.fallbackReason === undefined
       ? {}
       : {fallbackReason: value.fallbackReason as CodeGraphMaterializationMetrics['fallbackReason']}),
+    ...(fallbackAssessment === undefined ? {} : {fallbackAssessment}),
+    ...(fallbackBoundary === undefined ? {} : {fallbackBoundary}),
     ...(value.resolutionLookupKeyForm === undefined
       ? {}
       : {
@@ -572,6 +580,135 @@ function parseMaterializationMetrics(value: unknown): CodeGraphMaterializationMe
     ...(value.transactionMilliseconds === undefined
       ? {}
       : {transactionMilliseconds: Number(value.transactionMilliseconds)}),
+  };
+}
+
+function parseOverlayFallbackAssessment(
+  value: unknown,
+): CodeGraphMaterializationMetrics['fallbackAssessment'] | undefined {
+  if (
+    !isRecord(value) ||
+    value.stage !== 'file-set-seed-assessment' ||
+    ![
+      'dependency-model-incomplete',
+      'duplicate-project-identity',
+      'no-project-seeds',
+      'path-owner-ambiguous',
+      'path-unowned',
+      'project-model-incomplete',
+      'project-not-stable',
+      'resolution-domain-unowned',
+    ].includes(String(value.detail)) ||
+    !isNonNegativeSafeInteger(value.changedFiles) ||
+    !isNonNegativeSafeInteger(value.addedFiles) ||
+    !isNonNegativeSafeInteger(value.deletedFiles) ||
+    Number(value.addedFiles) > Number(value.changedFiles)
+  ) {
+    return undefined;
+  }
+  return {
+    addedFiles: Number(value.addedFiles),
+    changedFiles: Number(value.changedFiles),
+    deletedFiles: Number(value.deletedFiles),
+    detail: value.detail as NonNullable<CodeGraphMaterializationMetrics['fallbackAssessment']>['detail'],
+    stage: 'file-set-seed-assessment',
+  };
+}
+
+function parseOverlayFallbackBoundary(value: unknown): CodeGraphMaterializationMetrics['fallbackBoundary'] | undefined {
+  if (!isRecord(value)) return undefined;
+  const pair = parseOverlayFallbackBoundaryPair(value.stage, value.metric);
+  if (
+    pair === undefined ||
+    !isNonNegativeSafeInteger(value.changedFiles) ||
+    !isNonNegativeSafeInteger(value.limit) ||
+    !isNonNegativeSafeInteger(value.observedAtDecision) ||
+    Number(value.observedAtDecision) <= Number(value.limit)
+  ) {
+    return undefined;
+  }
+  return {
+    changedFiles: Number(value.changedFiles),
+    limit: Number(value.limit),
+    observedAtDecision: Number(value.observedAtDecision),
+    ...pair,
+  };
+}
+
+type OverlayFallbackBoundaryPair =
+  | {
+      readonly metric: 'affected-files' | 'cached-fact-bytes' | 'source-bytes';
+      readonly stage: 'project-closure-selection';
+    }
+  | {
+      readonly metric:
+        | 'candidate-lookup-keys'
+        | 'candidate-projection-associations'
+        | 'candidate-projection-file-associations'
+        | 'candidate-projection-observations'
+        | 'candidate-projection-observed-key-bytes'
+        | 'candidate-reexport-key-bytes'
+        | 'candidate-reexport-lookup-keys'
+        | 'candidate-reexports'
+        | 'candidate-scan-fact-bytes'
+        | 'candidate-scan-files'
+        | 'candidate-selected-files';
+      readonly stage: 'resolution-candidate-scan';
+    }
+  | {
+      readonly metric: 'cached-fact-bytes' | 'candidate-selected-files' | 'source-bytes';
+      readonly stage: 'resolution-candidate-rewrite';
+    };
+
+function parseOverlayFallbackBoundaryPair(stage: unknown, metric: unknown): OverlayFallbackBoundaryPair | undefined {
+  if (typeof stage !== 'string' || typeof metric !== 'string') return undefined;
+  if (stage === 'project-closure-selection') {
+    if (!['affected-files', 'cached-fact-bytes', 'source-bytes'].includes(metric)) return undefined;
+    return {metric: metric as 'affected-files' | 'cached-fact-bytes' | 'source-bytes', stage};
+  }
+  if (stage === 'resolution-candidate-scan') {
+    if (
+      ![
+        'candidate-lookup-keys',
+        'candidate-projection-associations',
+        'candidate-projection-file-associations',
+        'candidate-projection-observations',
+        'candidate-projection-observed-key-bytes',
+        'candidate-reexport-key-bytes',
+        'candidate-reexport-lookup-keys',
+        'candidate-reexports',
+        'candidate-scan-fact-bytes',
+        'candidate-scan-files',
+        'candidate-selected-files',
+      ].includes(metric)
+    ) {
+      return undefined;
+    }
+    return {
+      metric: metric as
+        | 'candidate-lookup-keys'
+        | 'candidate-projection-associations'
+        | 'candidate-projection-file-associations'
+        | 'candidate-projection-observations'
+        | 'candidate-projection-observed-key-bytes'
+        | 'candidate-reexport-key-bytes'
+        | 'candidate-reexport-lookup-keys'
+        | 'candidate-reexports'
+        | 'candidate-scan-fact-bytes'
+        | 'candidate-scan-files'
+        | 'candidate-selected-files',
+      stage,
+    };
+  }
+  if (
+    stage !== 'resolution-candidate-rewrite' ||
+    !['cached-fact-bytes', 'candidate-selected-files', 'source-bytes'].includes(metric)
+  ) {
+    return undefined;
+  }
+  return {
+    metric: metric as 'cached-fact-bytes' | 'candidate-selected-files' | 'source-bytes',
+    stage,
   };
 }
 

@@ -33,6 +33,9 @@ var telemetrySchemaV4JSON []byte
 //go:embed telemetry-schema-v5.json
 var telemetrySchemaV5JSON []byte
 
+//go:embed telemetry-schema-v6.json
+var telemetrySchemaV6JSON []byte
+
 type telemetrySchema struct {
 	SchemaVersion int `json:"schemaVersion"`
 	Limits        struct {
@@ -92,10 +95,20 @@ var graphQueryRegistrySpanAttributes = map[string]string{
 }
 
 var contextBriefRegistrySpanAttributes = map[string]string{
+	"threadnote.context_brief.code_anchor_coverage":    "contextBriefCodeAnchorCoverage",
 	"threadnote.context_brief.citation_coverage":       "contextBriefCitationCoverage",
 	"threadnote.context_brief.citation_result":         "contextBriefCitationResult",
 	"threadnote.context_brief.citation_unknown_reason": "contextBriefCitationUnknownReason",
+	"threadnote.context_brief.contract":                "contextBriefContract",
+	"threadnote.context_brief.gap_class":               "contextBriefGapClass",
+	"threadnote.context_brief.mode":                    "contextBriefMode",
+	"threadnote.context_brief.returned_lane":           "contextBriefReturnedLane",
 	"threadnote.context_brief.scope":                   "contextBriefScope",
+}
+
+var codeAnchorFinalizationRegistrySpanAttributes = map[string]string{
+	"threadnote.code_anchor_finalization.result":  "codeAnchorFinalizationResult",
+	"threadnote.code_anchor_finalization.trigger": "codeAnchorFinalizationTrigger",
 }
 
 var contextBriefCitationBucketAttributes = []string{
@@ -107,6 +120,22 @@ var contextBriefCitationBucketAttributes = []string{
 	"threadnote.context_brief.repositories_validated_bucket",
 	"threadnote.context_brief.stale_citations_bucket",
 	"threadnote.context_brief.unknown_citations_bucket",
+}
+
+var contextBriefCodeAnchorBucketAttributes = []string{
+	"threadnote.context_brief.code_anchors_matched_memories_bucket",
+	"threadnote.context_brief.code_anchors_requested_bucket",
+	"threadnote.context_brief.code_anchors_resolved_bucket",
+}
+
+var codeAnchorFinalizationBucketAttributes = []string{
+	"threadnote.code_anchor_finalization.conflict_bucket",
+	"threadnote.code_anchor_finalization.failed_bucket",
+	"threadnote.code_anchor_finalization.finalized_bucket",
+	"threadnote.code_anchor_finalization.latency_ms_bucket",
+	"threadnote.code_anchor_finalization.matched_bucket",
+	"threadnote.code_anchor_finalization.pending_bucket",
+	"threadnote.code_anchor_finalization.scanned_bucket",
 }
 
 var graphQuerySnapshotBucketAttributes = []string{
@@ -136,8 +165,8 @@ var terminalGraphSpanAttributes = []string{
 }
 
 func loadTelemetrySchemas() (*compiledTelemetrySchemas, error) {
-	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 5)}
-	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON, 4: telemetrySchemaV4JSON, 5: telemetrySchemaV5JSON} {
+	result := &compiledTelemetrySchemas{byVersion: make(map[int]*compiledTelemetrySchema, 6)}
+	for version, data := range map[int][]byte{1: telemetrySchemaV1JSON, 2: telemetrySchemaV2JSON, 3: telemetrySchemaV3JSON, 4: telemetrySchemaV4JSON, 5: telemetrySchemaV5JSON, 6: telemetrySchemaV6JSON} {
 		compiled, err := compileTelemetrySchema(data, version)
 		if err != nil {
 			return nil, err
@@ -202,6 +231,17 @@ func compileTelemetrySchema(data []byte, expectedVersion int) (*compiledTelemetr
 			"contextBriefCitationResult",
 			"contextBriefCitationUnknownReason",
 			"contextBriefScope",
+		)
+	}
+	if expectedVersion >= 6 {
+		requiredRegistries = append(requiredRegistries,
+			"codeAnchorFinalizationResult",
+			"codeAnchorFinalizationTrigger",
+			"contextBriefCodeAnchorCoverage",
+			"contextBriefContract",
+			"contextBriefGapClass",
+			"contextBriefMode",
+			"contextBriefReturnedLane",
 		)
 	}
 	for _, registry := range requiredRegistries {
@@ -613,6 +653,10 @@ func validateSpanAttributeValues(attributes map[string]*commonpb.AnyValue, schem
 			if !valueStringIn(value, schema.registries[contextBriefRegistrySpanAttributes[key]]) {
 				return errors.New("invalid telemetry context brief classification")
 			}
+		case codeAnchorFinalizationRegistrySpanAttributes[key] != "":
+			if !valueStringIn(value, schema.registries[codeAnchorFinalizationRegistrySpanAttributes[key]]) {
+				return errors.New("invalid telemetry code anchor finalization classification")
+			}
 		case contains(schema.booleanSpan, key):
 			if _, ok := value.Value.(*commonpb.AnyValue_BoolValue); !ok {
 				return errors.New("invalid telemetry boolean attribute")
@@ -754,10 +798,16 @@ func validateSpanAttributeShape(attributes map[string]*commonpb.AnyValue, schema
 	if err := validateGraphQueryAttributeShape(attributes, schema, event, operation); err != nil {
 		return err
 	}
-	return validateContextBriefAttributeShape(attributes, schema, event, operation)
+	if err := validateContextBriefAttributeShape(attributes, schema, event, operation); err != nil {
+		return err
+	}
+	return validateCodeAnchorFinalizationAttributeShape(attributes, schema, event, operation)
 }
 
 func validateContextBriefAttributeShape(attributes map[string]*commonpb.AnyValue, schema *compiledTelemetrySchema, event, operation string) error {
+	if schema.SchemaVersion >= 6 {
+		return validateContextBriefV6AttributeShape(attributes, event, operation)
+	}
 	phase, hasPhase := anyString(attributes["threadnote.phase"])
 	contextPhase := strings.HasPrefix(phase, "context.brief.")
 	contextOperation := operation == "context_brief" || operation == "context.brief"
@@ -848,6 +898,343 @@ func validateContextBriefAttributeShape(attributes map[string]*commonpb.AnyValue
 		return errors.New("successful instrumented context brief completion requires the complete result surface")
 	}
 	return validateContextBriefCitationResultShape(attributes)
+}
+
+func validateContextBriefV6AttributeShape(attributes map[string]*commonpb.AnyValue, event, operation string) error {
+	phase, hasPhase := anyString(attributes["threadnote.phase"])
+	contextPhase := strings.HasPrefix(phase, "context.brief.")
+	contextOperation := operation == "context_brief" || operation == "context.brief"
+	contextAttributeCount := contextBriefV6AttributeCount(attributes)
+	if !contextOperation {
+		if contextPhase || contextAttributeCount != 0 {
+			return errors.New("context brief attributes require a context brief operation")
+		}
+		return nil
+	}
+	if !contextPhase {
+		if contextAttributeCount == 0 {
+			return nil
+		}
+		if !hasExactContextBriefRequestSurface(attributes) || contextBriefV6ResultFieldCount(attributes) != 0 {
+			return errors.New("context brief telemetry without a phase requires only the request surface")
+		}
+		_, hasOperationElapsed := anyInt(attributes["threadnote.operation.elapsed_ms"])
+		if event == "completion" || (event == "checkpoint" && hasOperationElapsed) {
+			return nil
+		}
+		return errors.New("context brief telemetry requires a closed context brief phase")
+	}
+	if !hasPhase || !hasExactContextBriefRequestSurface(attributes) {
+		return errors.New("context brief telemetry requires scope, contract, and mode")
+	}
+	contract, _ := anyString(attributes["threadnote.context_brief.contract"])
+	resultFieldCount := contextBriefV6ResultFieldCount(attributes)
+	if event == "checkpoint" {
+		outcome, hasOutcome := anyString(attributes["threadnote.phase.outcome"])
+		if !hasOutcome {
+			return errors.New("context brief checkpoint requires phase outcome")
+		}
+		if outcome != "success" {
+			if resultFieldCount != 0 {
+				return errors.New("non-successful context brief checkpoint cannot include result fields")
+			}
+			return nil
+		}
+		switch phase {
+		case "context.brief.citation-validation":
+			if resultFieldCount != contextBriefCitationValidationFieldCount(attributes) || !hasCompleteContextBriefCitationSurface(attributes) {
+				return errors.New("successful citation validation requires only the complete citation surface")
+			}
+			return validateContextBriefCitationResultShape(attributes)
+		case "context.brief.projection":
+			expectedProjectionFields := 2
+			if contract == "code-anchored-v3" {
+				expectedProjectionFields = 9
+			}
+			if resultFieldCount != expectedProjectionFields {
+				return errors.New("successful context brief projection requires only the complete projection surface")
+			}
+			return validateContextBriefV6ProjectionShape(attributes, contract)
+		case "context.brief.code-linked-memory":
+			if contract != "code-anchored-v3" || resultFieldCount != 0 {
+				return errors.New("code-linked memory phase requires the anchored contract and no result fields")
+			}
+			return nil
+		case "context.brief.graph", "context.brief.memory":
+			if resultFieldCount != 0 {
+				return errors.New("graph and memory context brief phases cannot include result fields")
+			}
+			return nil
+		default:
+			return errors.New("invalid context brief phase")
+		}
+	}
+	if event != "completion" {
+		return errors.New("context brief telemetry requires a checkpoint or completion event")
+	}
+	outcome, _ := anyString(attributes["threadnote.outcome"])
+	if outcome != "success" {
+		if resultFieldCount != 0 {
+			return errors.New("non-successful context brief completion cannot include result fields")
+		}
+		return nil
+	}
+	if phase != "context.brief.projection" || !hasCompleteContextBriefCitationSurface(attributes) {
+		return errors.New("successful instrumented context brief completion requires citation and projection results")
+	}
+	if err := validateContextBriefCitationResultShape(attributes); err != nil {
+		return err
+	}
+	return validateContextBriefV6ProjectionShape(attributes, contract)
+}
+
+func contextBriefV6AttributeCount(attributes map[string]*commonpb.AnyValue) int {
+	count := 0
+	for key := range contextBriefRegistrySpanAttributes {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	for _, key := range append(append([]string{}, contextBriefCitationBucketAttributes...), contextBriefCodeAnchorBucketAttributes...) {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	for _, key := range []string{
+		"threadnote.context_brief.code_anchor_gap",
+		"threadnote.context_brief.output_truncated",
+		"threadnote.context_brief.recovery_present",
+	} {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	return count
+}
+
+func contextBriefV6ResultFieldCount(attributes map[string]*commonpb.AnyValue) int {
+	count := contextBriefCitationValidationFieldCount(attributes)
+	for _, key := range []string{
+		"threadnote.context_brief.code_anchor_coverage",
+		"threadnote.context_brief.code_anchor_gap",
+		"threadnote.context_brief.code_anchors_matched_memories_bucket",
+		"threadnote.context_brief.code_anchors_requested_bucket",
+		"threadnote.context_brief.code_anchors_resolved_bucket",
+		"threadnote.context_brief.gap_class",
+		"threadnote.context_brief.output_truncated",
+		"threadnote.context_brief.recovery_present",
+		"threadnote.context_brief.returned_lane",
+	} {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	return count
+}
+
+func hasExactContextBriefRequestSurface(attributes map[string]*commonpb.AnyValue) bool {
+	for _, key := range []string{
+		"threadnote.context_brief.contract",
+		"threadnote.context_brief.mode",
+		"threadnote.context_brief.scope",
+	} {
+		if _, exists := attributes[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func validateContextBriefV6ProjectionShape(attributes map[string]*commonpb.AnyValue, contract string) error {
+	_, hasOutputTruncated := attributes["threadnote.context_brief.output_truncated"]
+	_, hasReturnedLane := attributes["threadnote.context_brief.returned_lane"]
+	if !hasOutputTruncated || !hasReturnedLane {
+		return errors.New("successful context brief projection requires truncation and returned-lane results")
+	}
+	anchorFields := contextBriefCodeAnchorFieldCount(attributes)
+	if contract == "task-only-v2" {
+		if anchorFields != 0 {
+			return errors.New("task-only context brief cannot include code-anchor results")
+		}
+		return nil
+	}
+	if contract != "code-anchored-v3" || anchorFields != 7 {
+		return errors.New("anchored context brief requires the complete code-anchor result surface")
+	}
+	return validateContextBriefCodeAnchorResultShape(attributes)
+}
+
+func contextBriefCodeAnchorFieldCount(attributes map[string]*commonpb.AnyValue) int {
+	count := 0
+	for _, key := range []string{
+		"threadnote.context_brief.code_anchor_coverage",
+		"threadnote.context_brief.code_anchor_gap",
+		"threadnote.context_brief.code_anchors_matched_memories_bucket",
+		"threadnote.context_brief.code_anchors_requested_bucket",
+		"threadnote.context_brief.code_anchors_resolved_bucket",
+		"threadnote.context_brief.gap_class",
+		"threadnote.context_brief.recovery_present",
+	} {
+		if _, exists := attributes[key]; exists {
+			count++
+		}
+	}
+	return count
+}
+
+func validateContextBriefCodeAnchorResultShape(attributes map[string]*commonpb.AnyValue) error {
+	coverage, _ := anyString(attributes["threadnote.context_brief.code_anchor_coverage"])
+	gapClass, _ := anyString(attributes["threadnote.context_brief.gap_class"])
+	gap, hasGap := anyBool(attributes["threadnote.context_brief.code_anchor_gap"])
+	truncated, hasTruncated := anyBool(attributes["threadnote.context_brief.output_truncated"])
+	requested := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.code_anchors_requested_bucket")
+	resolved := contextBriefBucketOrdinal(attributes, "threadnote.context_brief.code_anchors_resolved_bucket")
+	if !hasGap || !hasTruncated || requested < 0 || resolved > requested {
+		return errors.New("invalid context brief code-anchor counts or booleans")
+	}
+	if gap != (gapClass != "none") {
+		return errors.New("context brief gap boolean must match the gap class")
+	}
+	switch coverage {
+	case "complete":
+		if resolved != requested || gapClass == "unresolved" {
+			return errors.New("invalid complete code-anchor coverage")
+		}
+	case "partial":
+		if !gap || (gapClass != "unresolved" && gapClass != "mixed") {
+			return errors.New("invalid partial code-anchor coverage")
+		}
+	case "unavailable":
+		if !gap || resolved >= 0 || (gapClass != "unavailable" && gapClass != "mixed") {
+			return errors.New("invalid unavailable code-anchor coverage")
+		}
+	}
+	if truncated && gapClass != "truncated" && gapClass != "mixed" {
+		return errors.New("context brief gap class must match output truncation")
+	}
+	return nil
+}
+
+func validateCodeAnchorFinalizationAttributeShape(attributes map[string]*commonpb.AnyValue, schema *compiledTelemetrySchema, event, operation string) error {
+	phase, _ := anyString(attributes["threadnote.phase"])
+	attributeCount := 0
+	for key := range codeAnchorFinalizationRegistrySpanAttributes {
+		if _, exists := attributes[key]; exists {
+			attributeCount++
+		}
+	}
+	for _, key := range codeAnchorFinalizationBucketAttributes {
+		if _, exists := attributes[key]; exists {
+			attributeCount++
+		}
+	}
+	if phase != "memory.code-anchor-finalization" {
+		if attributeCount != 0 {
+			return errors.New("code anchor finalization attributes require the finalization phase")
+		}
+		return nil
+	}
+	if schema.SchemaVersion < 6 || event != "checkpoint" {
+		return errors.New("code anchor finalization telemetry requires a schema-v6 checkpoint")
+	}
+	trigger, hasTrigger := anyString(attributes["threadnote.code_anchor_finalization.trigger"])
+	if !hasTrigger {
+		return errors.New("code anchor finalization checkpoint requires a trigger")
+	}
+	explicitOperation := operation == "finalize-code-refs" || operation == "finalize_code_refs"
+	if (trigger == "explicit") != explicitOperation {
+		return errors.New("code anchor finalization trigger does not match the operation")
+	}
+	phaseOutcome, hasPhaseOutcome := anyString(attributes["threadnote.phase.outcome"])
+	if !hasPhaseOutcome {
+		return errors.New("code anchor finalization checkpoint requires phase outcome")
+	}
+	resultFieldCount := attributeCount - 1
+	if phaseOutcome != "success" {
+		if resultFieldCount != 0 {
+			return errors.New("non-successful code anchor finalization cannot include result fields")
+		}
+		return nil
+	}
+	_, hasResult := attributes["threadnote.code_anchor_finalization.result"]
+	requiredBuckets := []string{
+		"threadnote.code_anchor_finalization.conflict_bucket",
+		"threadnote.code_anchor_finalization.failed_bucket",
+		"threadnote.code_anchor_finalization.finalized_bucket",
+		"threadnote.code_anchor_finalization.latency_ms_bucket",
+		"threadnote.code_anchor_finalization.pending_bucket",
+		"threadnote.code_anchor_finalization.scanned_bucket",
+	}
+	for _, key := range requiredBuckets {
+		if _, exists := attributes[key]; !exists {
+			return errors.New("successful code anchor finalization requires the complete result surface")
+		}
+	}
+	_, hasMatched := attributes["threadnote.code_anchor_finalization.matched_bucket"]
+	if !hasResult || hasMatched != (trigger != "explicit") {
+		return errors.New("code anchor finalization matched bucket must follow the trigger class")
+	}
+	if hasMatched && contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.matched_bucket") <
+		contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.scanned_bucket") {
+		return errors.New("code anchor finalization matched bucket cannot be smaller than scanned")
+	}
+	return validateCodeAnchorFinalizationResultShape(attributes, trigger)
+}
+
+func validateCodeAnchorFinalizationResultShape(attributes map[string]*commonpb.AnyValue, trigger string) error {
+	result, _ := anyString(attributes["threadnote.code_anchor_finalization.result"])
+	scanned := contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.scanned_bucket")
+	finalized := contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.finalized_bucket")
+	pending := contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.pending_bucket")
+	conflict := contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.conflict_bucket")
+	failed := contextBriefBucketOrdinal(attributes, "threadnote.code_anchor_finalization.failed_bucket")
+	for _, value := range []int{finalized, pending, conflict, failed} {
+		if value > scanned {
+			return errors.New("code anchor finalization result bucket cannot exceed scanned")
+		}
+	}
+	nonzero := 0
+	for _, value := range []int{finalized, pending, conflict, failed} {
+		if value >= 0 {
+			nonzero++
+		}
+	}
+	switch result {
+	case "no-work":
+		if scanned >= 0 || nonzero != 0 {
+			return errors.New("no-work finalization requires zero work buckets")
+		}
+	case "finalized":
+		if finalized < 0 || nonzero != 1 {
+			return errors.New("finalized result requires only finalized work")
+		}
+	case "pending":
+		if pending < 0 || nonzero != 1 {
+			return errors.New("pending result requires only pending work")
+		}
+	case "conflict":
+		if conflict < 0 || nonzero != 1 {
+			return errors.New("conflict result requires only conflict work")
+		}
+	case "failed":
+		operationFailedBeforeScanning := scanned < 0 && nonzero == 0
+		if operationFailedBeforeScanning && trigger == "explicit" {
+			return errors.New("explicit finalization cannot report a failed result before scanning")
+		}
+		if !operationFailedBeforeScanning && (failed < 0 || nonzero != 1) {
+			return errors.New("failed result requires only failed work")
+		}
+	case "mixed":
+		if nonzero < 2 {
+			return errors.New("mixed result requires multiple work classes")
+		}
+	case "contended":
+		if trigger == "explicit" {
+			return errors.New("explicit finalization cannot report contention")
+		}
+		return nil
+	}
+	return nil
 }
 
 func contextBriefCitationValidationFieldCount(attributes map[string]*commonpb.AnyValue) int {
@@ -1162,6 +1549,16 @@ func anyString(value *commonpb.AnyValue) (string, bool) {
 		return "", false
 	}
 	return typed.StringValue, true
+}
+func anyBool(value *commonpb.AnyValue) (bool, bool) {
+	if value == nil {
+		return false, false
+	}
+	typed, ok := value.Value.(*commonpb.AnyValue_BoolValue)
+	if !ok {
+		return false, false
+	}
+	return typed.BoolValue, true
 }
 func anyInt(value *commonpb.AnyValue) (int64, bool) {
 	if value == nil {

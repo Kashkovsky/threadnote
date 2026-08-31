@@ -20,7 +20,13 @@ import type {
   CodeGraphEffectiveSnapshotCitationEvidence,
   CodeGraphEffectiveSnapshotCitationEvidenceRequest,
 } from '../../src/code_graph/citation_primitives.js';
-import type {CodeGraphInventoryFile, CodeGraphStatus, CodeGraphSymbol} from '../../src/code_graph/types.js';
+import {
+  CodeGraphStoreBusyError,
+  type CodeGraphInventoryFile,
+  type CodeGraphStatus,
+  type CodeGraphStoreError,
+  type CodeGraphSymbol,
+} from '../../src/code_graph/types.js';
 import {validateContextBriefMemoryCitations} from '../../src/context_brief/citation_validation.js';
 import {StandaloneBrokerLayer} from '../../src/effect/runtime.js';
 import {
@@ -130,7 +136,75 @@ describe('memory code citation capture and validation', () => {
       );
       expect(failure.message).not.toContain(root);
       expect(failure.recovery).toBeUndefined();
+      expect(failure.failureCode).toBe('code-reference-unresolved');
       expect(fixture.leases()).toEqual({acquired: 1, released: 1});
+    }).pipe(provideTestLayer(StandaloneBrokerLayer)),
+  );
+
+  effectIt.effect('preserves classified graph-store retryability across the citation capture boundary', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-retryable-store-'});
+      const fixture = citationFixture(root, {
+        evidenceFailure: new CodeGraphStoreBusyError('fixture reader is busy'),
+      });
+
+      const failure = yield* captureMemoryCodeCitations(CONFIG, {
+        callerCwd: root,
+        refs: ['src/value.ts'],
+      }).pipe(provideTestLayer(fixture.layer), Effect.flip);
+
+      expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
+      if (!(failure instanceof MemoryCodeCitationCaptureError)) return;
+      expect(failure.retryable).toBe(true);
+      expect(failure.failureCode).toBeUndefined();
+      expect(failure.recovery).toBeUndefined();
+      expect(fixture.leases()).toEqual({acquired: 1, released: 1});
+    }).pipe(provideTestLayer(StandaloneBrokerLayer)),
+  );
+
+  effectIt.effect('rejects a caller checkout swap at the post-capture identity fence', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-citation-identity-fence-'});
+      yield* fs.makeDirectory(path.join(root, 'src'), {recursive: true});
+      yield* fs.writeFileString(path.join(root, 'src', 'value.ts'), SOURCE);
+      let statusCalls = 0;
+      function statusFor() {
+        statusCalls += 1;
+        const expectedStatus = fixture.status;
+        if (statusCalls !== 3) return expectedStatus;
+        const repositoryId = 'b'.repeat(64);
+        return {
+          ...expectedStatus,
+          identity: {
+            ...expectedStatus.identity,
+            repositoryId,
+            worktreeId: 'swapped-worktree',
+          },
+          readySnapshot: {
+            ...expectedStatus.readySnapshot!,
+            repositoryId,
+            worktreeId: 'swapped-worktree',
+          },
+        };
+      }
+      const fixture = citationFixture(root, {statusFor});
+
+      const failure = yield* captureMemoryCodeCitations(CONFIG, {
+        callerCwd: root,
+        expectedCallerIdentity: {
+          repositoryId: REPOSITORY_ID,
+          worktreeId: fixture.status.identity.worktreeId,
+        },
+        refs: ['src/value.ts'],
+      }).pipe(provideTestLayer(fixture.layer), Effect.flip);
+
+      expect(failure).toBeInstanceOf(MemoryCodeCitationCaptureError);
+      expect(String(failure)).toContain('Repository graph or worktree changed while code citations were captured');
+      expect(fixture.evidenceCalls()).toBe(1);
+      expect(statusCalls).toBe(3);
     }).pipe(provideTestLayer(StandaloneBrokerLayer)),
   );
 
@@ -276,6 +350,7 @@ describe('memory code citation capture and validation', () => {
 function citationFixture(
   root: string,
   statusOptions: {
+    readonly evidenceFailure?: CodeGraphStoreError;
     readonly freshness?: CodeGraphStatus['freshness'];
     readonly stale?: boolean;
     readonly statusFor?: (cwd: string, observeWorktree: boolean | undefined) => CodeGraphStatus;
@@ -390,7 +465,10 @@ function citationFixture(
       _databasePath: string,
       _snapshotId: string,
       request: CodeGraphEffectiveSnapshotCitationEvidenceRequest,
-    ) => Effect.sync(() => evidence(request)),
+    ) =>
+      statusOptions.evidenceFailure === undefined
+        ? Effect.sync(() => evidence(request))
+        : Effect.fail(statusOptions.evidenceFailure),
     releaseSnapshotLease: () => Effect.sync(() => void ++released),
   } as unknown as CodeGraphStoreShape);
   const withStatusSession: NonNullable<Parameters<typeof CodeGraphQueryService.of>[0]['withStatusSession']> = (

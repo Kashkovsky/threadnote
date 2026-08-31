@@ -50,9 +50,9 @@ type Dashboard = Readonly<{
 const basePredicates = ['resource.service.name = "threadnote"', 'span:name = "threadnote.anonymous-diagnostic"'];
 const canaryExclusionPredicate = 'resource.service.version != "0.0.0-canary"';
 const graphSchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5)';
+  '(resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5 || resource.threadnote.telemetry.schema_version = 6)';
 const boundedGraphSchemaPredicate =
-  'resource.threadnote.telemetry.schema_version >= 2 && resource.threadnote.telemetry.schema_version <= 5';
+  'resource.threadnote.telemetry.schema_version >= 2 && resource.threadnote.telemetry.schema_version <= 6';
 
 const graphLifecyclePredicates = [
   canaryExclusionPredicate,
@@ -63,14 +63,17 @@ const graphLifecyclePredicates = [
 ];
 
 const genericSchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5)';
+  '(resource.threadnote.telemetry.schema_version = 1 || resource.threadnote.telemetry.schema_version = 2 || resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5 || resource.threadnote.telemetry.schema_version = 6)';
 const autoUpdateSchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5)';
+  '(resource.threadnote.telemetry.schema_version = 3 || resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5 || resource.threadnote.telemetry.schema_version = 6)';
 const querySchemaPredicate =
-  '(resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5)';
-const contextBriefSchemaPredicate = 'resource.threadnote.telemetry.schema_version = 5';
+  '(resource.threadnote.telemetry.schema_version = 4 || resource.threadnote.telemetry.schema_version = 5 || resource.threadnote.telemetry.schema_version = 6)';
+const contextBriefSchemaPredicate =
+  '(resource.threadnote.telemetry.schema_version = 5 || resource.threadnote.telemetry.schema_version = 6)';
+const schemaV6Predicate = 'resource.threadnote.telemetry.schema_version = 6';
 const contextBriefOperationPredicate =
   '(span.threadnote.operation = "context_brief" || span.threadnote.operation = "context.brief")';
+const finalizationPhasePredicate = 'span.threadnote.phase = "memory.code-anchor-finalization"';
 
 const tempoQueryLengthLimit = 1024;
 const inefficientGraphBuildPredicate = 'span.threadnote.graph.efficiency_class =~ "(small|high|critical).*full"';
@@ -229,6 +232,15 @@ describe('Threadnote Grafana dashboard', () => {
       for (const query of queries) {
         const isGraphQueryTelemetry = query.includes('span.threadnote.graph.request_kind');
         const isContextBriefTelemetry = query.includes(contextBriefOperationPredicate);
+        const isV6ContextBriefTelemetry =
+          isContextBriefTelemetry &&
+          [
+            'span.threadnote.context_brief.contract',
+            'span.threadnote.context_brief.mode',
+            'span.threadnote.context_brief.code_anchor_coverage',
+            'span.threadnote.context_brief.returned_lane',
+          ].some(attribute => query.includes(attribute));
+        const isCodeAnchorFinalizationTelemetry = query.includes(finalizationPhasePredicate);
         expect(query.length).toBeLessThanOrEqual(tempoQueryLengthLimit);
         expect(query.split(canaryExclusionPredicate)).toHaveLength(2);
         if (query.includes(inefficientGraphBuildPredicate)) {
@@ -250,8 +262,10 @@ describe('Threadnote Grafana dashboard', () => {
           expect(query).toContain(autoUpdateSchemaPredicate);
           expect(query).toContain(canaryExclusionPredicate);
         } else if (isContextBriefTelemetry) {
-          expect(query).toContain(contextBriefSchemaPredicate);
+          expect(query).toContain(isV6ContextBriefTelemetry ? schemaV6Predicate : contextBriefSchemaPredicate);
           expect(query).not.toContain('resource.threadnote.telemetry.schema_version = 4');
+        } else if (isCodeAnchorFinalizationTelemetry) {
+          expect(query).toContain(schemaV6Predicate);
         } else if (!query.includes(inefficientGraphBuildPredicate)) {
           expect(query).toContain(genericSchemaPredicate);
         }
@@ -300,7 +314,7 @@ describe('Threadnote Grafana dashboard', () => {
         'Graph snapshot selection and freshness',
       ]);
       for (const panel of queryPanels) {
-        expect(panel.description?.toLowerCase()).toContain('schemas v4 and v5 only');
+        expect(panel.description?.toLowerCase()).toContain('schemas v4, v5, and v6 only');
         expect(panel.description?.toLowerCase()).not.toContain('schema v3 only');
       }
       const graphRequestDuration = panels.find(panel => panel.id === 22);
@@ -365,7 +379,7 @@ describe('Threadnote Grafana dashboard', () => {
         expect(queryTelemetryText).not.toContain(excludedField);
       }
 
-      const contextBriefPanels = panels.filter(panel => panel.id >= 26 && panel.id <= 34);
+      const contextBriefPanels = panels.filter(panel => panel.id >= 26 && panel.id <= 38);
       expect(contextBriefPanels.map(panel => panel.title)).toEqual([
         'Context Brief outcomes',
         'Context Brief duration quantiles',
@@ -376,10 +390,15 @@ describe('Threadnote Grafana dashboard', () => {
         'Context Brief output truncation',
         'Context Brief version cohorts',
         'Recent Context Brief failures',
+        'Context Brief contract and mode',
+        'Code-anchor coverage and recovery',
+        'Context Brief returned lanes',
+        'Code-anchor work buckets',
       ]);
-      for (const panel of contextBriefPanels) {
-        expect(panel.description?.toLowerCase()).toContain('schema v5 only');
-      }
+      for (const panel of contextBriefPanels.filter(candidate => candidate.id <= 34))
+        expect(panel.description?.toLowerCase()).toContain('schemas v5 and v6 only');
+      for (const panel of contextBriefPanels.filter(candidate => candidate.id >= 35))
+        expect(panel.description?.toLowerCase()).toContain('schema v6 only');
       const contextBriefQueries = contextBriefPanels.flatMap(panel => panel.targets).map(target => target.query!);
       const contextBriefQueryText = contextBriefQueries.join('\n');
       for (const query of contextBriefQueries) expect(query).toContain(contextBriefOperationPredicate);
@@ -399,6 +418,16 @@ describe('Threadnote Grafana dashboard', () => {
         'span.threadnote.context_brief.repositories_validated_bucket',
         'span.threadnote.context_brief.cache_hits_bucket',
         'span.threadnote.context_brief.output_truncated',
+        'span.threadnote.context_brief.contract',
+        'span.threadnote.context_brief.mode',
+        'span.threadnote.context_brief.code_anchor_coverage',
+        'span.threadnote.context_brief.code_anchor_gap',
+        'span.threadnote.context_brief.gap_class',
+        'span.threadnote.context_brief.recovery_present',
+        'span.threadnote.context_brief.returned_lane',
+        'span.threadnote.context_brief.code_anchors_requested_bucket',
+        'span.threadnote.context_brief.code_anchors_resolved_bucket',
+        'span.threadnote.context_brief.code_anchors_matched_memories_bucket',
       ]) {
         expect(contextBriefQueryText).toContain(attribute);
       }
@@ -432,6 +461,14 @@ describe('Threadnote Grafana dashboard', () => {
         'repositories_validated_bucket',
         'cache_hits_bucket',
         'output_truncated',
+        'code_anchor_coverage',
+        'code_anchor_gap',
+        'gap_class',
+        'recovery_present',
+        'returned_lane',
+        'code_anchors_requested_bucket',
+        'code_anchors_resolved_bucket',
+        'code_anchors_matched_memories_bucket',
       ];
       for (const query of contextBriefQueries.filter(candidate =>
         contextBriefResultAttributes.some(attribute => candidate.includes(attribute)),
@@ -446,6 +483,47 @@ describe('Threadnote Grafana dashboard', () => {
       expect(contextBriefFailures?.targets[0]?.query).not.toContain('with (most_recent=true)');
       expect(contextBriefFailures?.targets[0]?.query).toContain('span.threadnote.context_brief.scope != nil');
       expect(contextBriefFailures?.targets[1]?.query).toContain('span.threadnote.context_brief.scope = nil');
+
+      const codeAnchorCoverage = panels.find(panel => panel.id === 36);
+      expect(codeAnchorCoverage?.targets[0]?.query).toContain('span.threadnote.context_brief.code_anchor_gap');
+      expect(codeAnchorCoverage?.targets[0]?.query).toContain('span.threadnote.context_brief.recovery_present');
+      const returnedLanes = panels.find(panel => panel.id === 37);
+      expect(returnedLanes?.targets[0]?.query).toContain('span.threadnote.context_brief.returned_lane');
+
+      const finalizationPanels = panels.filter(panel => panel.id >= 39 && panel.id <= 40);
+      expect(finalizationPanels.map(panel => panel.title)).toEqual([
+        'Code-anchor finalization outcomes',
+        'Code-anchor finalization work buckets',
+      ]);
+      for (const panel of finalizationPanels) {
+        expect(panel.description?.toLowerCase()).toContain('schema v6 only');
+        for (const query of panel.targets.map(target => target.query!)) {
+          expect(query).toContain(finalizationPhasePredicate);
+          expect(query).toContain(schemaV6Predicate);
+          expect(query).not.toContain('session.id');
+          expect(query).not.toContain('invocation.id');
+          for (const privateAttribute of ['memory_uri', 'repository', 'path', 'citation', 'pending_intent', 'uri']) {
+            expect(query).not.toContain(privateAttribute);
+          }
+        }
+      }
+      const finalizationQueryText = finalizationPanels
+        .flatMap(panel => panel.targets)
+        .map(target => target.query)
+        .join('\n');
+      for (const attribute of [
+        'span.threadnote.code_anchor_finalization.trigger',
+        'span.threadnote.code_anchor_finalization.result',
+        'span.threadnote.code_anchor_finalization.scanned_bucket',
+        'span.threadnote.code_anchor_finalization.matched_bucket',
+        'span.threadnote.code_anchor_finalization.finalized_bucket',
+        'span.threadnote.code_anchor_finalization.pending_bucket',
+        'span.threadnote.code_anchor_finalization.conflict_bucket',
+        'span.threadnote.code_anchor_finalization.failed_bucket',
+        'span.threadnote.code_anchor_finalization.latency_ms_bucket',
+      ]) {
+        expect(finalizationQueryText).toContain(attribute);
+      }
 
       for (const panel of panels.filter(candidate => candidate.type !== 'table')) {
         const metricQueries = panel.targets.map(target => target.query).join('\n');
@@ -693,18 +771,18 @@ describe('Threadnote Grafana dashboard', () => {
       }
       for (const source of [commands, telemetryDocs, websiteDocs]) expect(source).toContain('delta');
       expect(telemetryDocs).toContain('https://telemetry.threadnote.io/v1/traces');
-      expect(telemetryDocs).toContain('requires consent version 5');
-      expect(telemetryDocs).toContain('version 1, version 2, version 3, or version 4 opt-in fails closed');
+      expect(telemetryDocs).toContain('requires consent version 6');
+      expect(telemetryDocs).toMatch(/version 1, version 2, version 3, version 4, or version 5\s+opt-in fails closed/u);
       for (const excludedQueryDetail of ['query text', 'symbol names', 'exact file/symbol/edge counts']) {
         expect(telemetryDocs).toContain(excludedQueryDetail);
       }
-      expect(gatewayReadme).toContain('Existing operation panels admit schema versions 1, 2, 3, 4, and 5');
-      expect(gatewayReadme).toContain('Graph-build panels admit versions 2, 3, 4, and 5');
-      expect(gatewayReadme).toContain('Graph-query panels admit versions 4 and 5');
-      expect(gatewayReadme).toContain('before sending thirteen traces');
-      expect(productionRunbook).toContain('gateway, thirteen-trace/five-version canary, and dashboard gates');
-      expect(productionRunbook).toContain('until all thirteen stored protobufs');
-      expect(productionRunbook).toMatch(/consent-v1\/v2\/v3\/v4 configurations\s+must fail closed/u);
+      expect(gatewayReadme).toContain('Existing operation panels admit schema versions 1, 2, 3, 4, 5, and 6');
+      expect(gatewayReadme).toContain('Graph-build panels admit versions 2, 3, 4, 5, and 6');
+      expect(gatewayReadme).toContain('Graph-query panels admit versions 4, 5, and 6');
+      expect(gatewayReadme).toContain('before sending sixteen traces');
+      expect(productionRunbook).toContain('gateway, sixteen-trace/six-version canary, and dashboard gates');
+      expect(productionRunbook).toContain('until all sixteen stored protobufs');
+      expect(productionRunbook).toMatch(/consent-v1\/v2\/v3\/v4\/v5 configurations\s+must fail closed/u);
       expect(commands).toContain('endpoint === DEFAULT_TELEMETRY_ENDPOINT');
     }).pipe(provideTestLayer(BunFileSystem.layer)),
   );

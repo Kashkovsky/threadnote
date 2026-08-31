@@ -1,7 +1,7 @@
 import {BunHttpServer} from '@effect/platform-bun';
 import {Effect, Fiber, Scope} from 'effect';
 import {HttpServer} from 'effect/unstable/http';
-import {createManagerServer} from '../../src/manager.js';
+import {createManagerServer} from '../../src/manager/index.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from './effect-layer.js';

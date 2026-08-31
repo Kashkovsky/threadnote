@@ -25,7 +25,7 @@ import {
   sharedUriFor,
   writeMemoryFile,
   writeSharedWorktreeFile,
-} from '../../share.js';
+} from '../../share/index.js';
 import {currentPackageVersion, errorMessage, safeTimestamp, sha256} from '../../utils.js';
 import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
 import {sha256Hex} from '../../effect/digest.js';
@@ -46,6 +46,15 @@ import {
 } from '../../memory/code_citation_policy.js';
 import {MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
 import {
+  discardDeferredCodeAnchorIntent,
+  discardDeferredCodeAnchorIntentsWithin,
+  discardOtherDeferredCodeAnchorIntents,
+  stageDeferredCodeAnchorIntent,
+  type DeferredCodeAnchorWriteRequest,
+  withDeferredCodeAnchorMutationLocks,
+} from '../../memory/deferred_code_anchor.js';
+import {isMemoryRelocationUri, readMemoryWithRelocations, recordMemoryRelocation} from '../../memory/relocation.js';
+import {
   canonicalResourceUri,
   parseResourceId,
   resourceIdIsManagedMemoryNamespace,
@@ -64,6 +73,8 @@ import {
   requiredText,
   uriSegment,
 } from './common.js';
+import {memoryReadErrorResult} from './memory_read_recovery.js';
+import {resolveMemoryIdentityAliases, verifyResolvedMemoryIdentity} from '../../recall/memory_identity.js';
 export function registerCompactTool(server: EffectMcpServerAdapter, config: RuntimeConfig): void {
   server.registerTool(
     'compact_context',
@@ -435,6 +446,7 @@ const readTextIfExists = Effect.fn('mcpServer.readTextIfExists')(function* (path
 
 export interface WriteDurableMemoryParams {
   readonly bodyText: string;
+  readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
   readonly expectedReplaceContentHash?: string;
   readonly expectedSourceContent?: readonly {readonly content: string; readonly uri: string}[];
   readonly metadata: MemoryMetadata;
@@ -455,109 +467,142 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
   const write = Effect.gen(function* () {
     const prepared = params.prepared ?? (yield* preparePersonalMemoryWrite(config, params));
     const fs = yield* FileSystem.FileSystem;
-    return yield* withMemoryUriLocks(
-      fs,
-      config.agentContextHome,
-      [params.replaceUri, prepared.memoryUri, ...(params.expectedSourceContent ?? []).map(source => source.uri)],
-      Effect.gen(function* () {
-        const ov = 'threadnote-native';
-        if (params.operation === 'replace' && !params.replaceUri) {
-          return argumentError('A replace write requires replaceUri.');
+    const uris = [
+      params.replaceUri,
+      prepared.memoryUri,
+      ...(params.expectedSourceContent ?? []).map(source => source.uri),
+    ];
+    const mutation = Effect.gen(function* () {
+      const ov = 'threadnote-native';
+      if (params.operation === 'replace' && !params.replaceUri) {
+        return argumentError('A replace write requires replaceUri.');
+      }
+      const [currentReplaceTarget] = params.replaceUri
+        ? yield* readMemoryRecordsByUri(config, [params.replaceUri])
+        : [];
+      if (params.replaceUri) {
+        if (!currentReplaceTarget) {
+          return argumentError(`Memory ${params.replaceUri} no longer exists.`);
         }
-        const [currentReplaceTarget] = params.replaceUri
-          ? yield* readMemoryRecordsByUri(config, [params.replaceUri])
-          : [];
-        if (params.replaceUri) {
-          if (!currentReplaceTarget) {
-            return argumentError(`Memory ${params.replaceUri} no longer exists.`);
-          }
-          const schemaRewriteError = memorySchemaRewriteError(currentReplaceTarget.content);
-          if (schemaRewriteError) return argumentError(schemaRewriteError.message);
-          if (
-            prepared.expectedReplaceContent !== undefined &&
-            currentReplaceTarget.content !== prepared.expectedReplaceContent
-          ) {
-            return argumentError(
-              `Memory ${params.replaceUri} changed while its replacement was being prepared. Retry the update.`,
-            );
-          }
-        }
-        if (params.replaceUri && params.expectedReplaceContentHash) {
-          if (
-            !currentReplaceTarget ||
-            (yield* sha256Hex(canonicalMemoryDocumentContent(currentReplaceTarget.content))) !==
-              params.expectedReplaceContentHash
-          ) {
-            return argumentError(
-              `Candidate replacement is stale because ${params.replaceUri} changed after review. Run review_session_context again before replacing it.`,
-            );
-          }
-        }
-        for (const source of params.expectedSourceContent ?? []) {
-          const [currentSource] = yield* readMemoryRecordsByUri(config, [source.uri]);
-          if (!currentSource || currentSource.content !== source.content) {
-            return argumentError(
-              `Memory ${source.uri} changed after this mutation was planned. Re-run the operation before writing.`,
-            );
-          }
-        }
-        if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
-          return yield* writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string);
-        }
-        const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
-        const destinationExists = yield* resourceExists(ov, config, memoryUri);
-        const [destinationRecord] = destinationExists ? yield* readMemoryRecordsByUri(config, [memoryUri]) : [];
-        if (destinationExists && !destinationRecord) {
-          return argumentError(`Existing destination ${memoryUri} is not a readable canonical memory.`);
-        }
-        if (destinationRecord) {
-          const schemaRewriteError = memorySchemaRewriteError(destinationRecord.content);
-          if (schemaRewriteError) return argumentError(schemaRewriteError.message);
-        }
-        if (destinationExists && !params.replaceUri) {
+        const schemaRewriteError = memorySchemaRewriteError(currentReplaceTarget.content);
+        if (schemaRewriteError) return argumentError(schemaRewriteError.message);
+        if (
+          prepared.expectedReplaceContent !== undefined &&
+          currentReplaceTarget.content !== prepared.expectedReplaceContent
+        ) {
           return argumentError(
-            `Memory ${memoryUri} already exists. Pass replaceUri: "${memoryUri}" to update it explicitly.`,
+            `Memory ${params.replaceUri} changed while its replacement was being prepared. Retry the update.`,
           );
         }
-        if (destinationExists && params.replaceUri !== memoryUri) {
-          const sameReviewedCandidate =
-            params.operation === 'replace' &&
-            params.metadata.candidateId !== undefined &&
-            destinationRecord?.metadata.candidateId === params.metadata.candidateId;
-          if (!sameReviewedCandidate) {
-            return argumentError(`Replacement destination already contains another memory: ${memoryUri}.`);
-          }
-        }
-        const directoryUri = memoryDirectoryUri(config, finalMetadata);
-        yield* ensureMemoryDirectory(ov, config, directoryUri);
-        const writeMode =
-          params.operation === 'create'
-            ? 'create'
-            : params.operation === 'replace'
-              ? destinationExists
-                ? 'replace'
-                : 'create'
-              : yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
-        yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
-        const messages = [`Stored memory: ${memoryUri}`];
-        let replacementCleanupPending = false;
-        if (params.replaceUri && !isInPlaceUpdate) {
-          const removedReplacedMemory = yield* removeResourceWithRetry(ov, config, params.replaceUri);
-          replacementCleanupPending = !removedReplacedMemory;
-          messages.push(
-            removedReplacedMemory
-              ? `Forgot replaced memory: ${params.replaceUri}`
-              : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${params.replaceUri}`,
+      }
+      if (params.replaceUri && params.expectedReplaceContentHash) {
+        if (
+          !currentReplaceTarget ||
+          (yield* sha256Hex(canonicalMemoryDocumentContent(currentReplaceTarget.content))) !==
+            params.expectedReplaceContentHash
+        ) {
+          return argumentError(
+            `Candidate replacement is stale because ${params.replaceUri} changed after review. Run review_session_context again before replacing it.`,
           );
-        } else if (isInPlaceUpdate) {
-          messages.push(`Updated existing memory in place: ${memoryUri}`);
         }
-        return {
-          content: [{type: 'text' as const, text: messages.join('\n')}],
-          structuredContent: {memoryUri, replacementCleanupPending},
-        };
-      }),
-    );
+      }
+      for (const source of params.expectedSourceContent ?? []) {
+        const [currentSource] = yield* readMemoryRecordsByUri(config, [source.uri]);
+        if (!currentSource || currentSource.content !== source.content) {
+          return argumentError(
+            `Memory ${source.uri} changed after this mutation was planned. Re-run the operation before writing.`,
+          );
+        }
+      }
+      if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
+        if (params.deferredCodeAnchor) {
+          return argumentError('Deferred code anchors are private-local and cannot update shared memory.');
+        }
+        return yield* writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string);
+      }
+      const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
+      const destinationExists = yield* resourceExists(ov, config, memoryUri);
+      const [destinationRecord] = destinationExists ? yield* readMemoryRecordsByUri(config, [memoryUri]) : [];
+      if (destinationExists && !destinationRecord) {
+        return argumentError(`Existing destination ${memoryUri} is not a readable canonical memory.`);
+      }
+      if (destinationRecord) {
+        const schemaRewriteError = memorySchemaRewriteError(destinationRecord.content);
+        if (schemaRewriteError) return argumentError(schemaRewriteError.message);
+      }
+      if (destinationExists && !params.replaceUri) {
+        return argumentError(
+          `Memory ${memoryUri} already exists. Pass replaceUri: "${memoryUri}" to update it explicitly.`,
+        );
+      }
+      if (destinationExists && params.replaceUri !== memoryUri) {
+        const sameReviewedCandidate =
+          params.operation === 'replace' &&
+          params.metadata.candidateId !== undefined &&
+          destinationRecord?.metadata.candidateId === params.metadata.candidateId;
+        if (!sameReviewedCandidate) {
+          return argumentError(`Replacement destination already contains another memory: ${memoryUri}.`);
+        }
+      }
+      const directoryUri = memoryDirectoryUri(config, finalMetadata);
+      yield* ensureMemoryDirectory(ov, config, directoryUri);
+      const writeMode =
+        params.operation === 'create'
+          ? 'create'
+          : params.operation === 'replace'
+            ? destinationExists
+              ? 'replace'
+              : 'create'
+            : yield* memoryWriteMode(ov, config, memoryUri, finalMetadata);
+      const stagedDeferredCodeAnchor = params.deferredCodeAnchor
+        ? yield* stageDeferredCodeAnchorIntent(config, {
+            memoryContent: memory,
+            memoryMetadata: finalMetadata,
+            memoryUri,
+            request: params.deferredCodeAnchor,
+          })
+        : undefined;
+      yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
+      if (params.replaceUri && !isInPlaceUpdate && currentReplaceTarget) {
+        yield* recordMemoryRelocation(config, {
+          fromContent: currentReplaceTarget.content,
+          fromUri: params.replaceUri,
+          toContent: memory,
+          toUri: memoryUri,
+        });
+      }
+      if (stagedDeferredCodeAnchor) {
+        yield* discardOtherDeferredCodeAnchorIntents(config, memoryUri, stagedDeferredCodeAnchor.intentId);
+        if (params.replaceUri && params.replaceUri !== memoryUri) {
+          yield* discardDeferredCodeAnchorIntent(config, params.replaceUri);
+        }
+      } else {
+        yield* discardDeferredCodeAnchorIntent(config, memoryUri);
+        if (params.replaceUri && params.replaceUri !== memoryUri) {
+          yield* discardDeferredCodeAnchorIntent(config, params.replaceUri);
+        }
+      }
+      const messages = [`Stored memory: ${memoryUri}`];
+      let replacementCleanupPending = false;
+      if (params.replaceUri && !isInPlaceUpdate) {
+        const removedReplacedMemory = yield* removeResourceWithRetry(ov, config, params.replaceUri);
+        replacementCleanupPending = !removedReplacedMemory;
+        messages.push(
+          removedReplacedMemory
+            ? `Forgot replaced memory: ${params.replaceUri}`
+            : `Replacement stored, but superseded memory is still processing. Retry later with forget: ${params.replaceUri}`,
+        );
+      } else if (isInPlaceUpdate) {
+        messages.push(`Updated existing memory in place: ${memoryUri}`);
+      }
+      return {
+        content: [{type: 'text' as const, text: messages.join('\n')}],
+        structuredContent: {memoryUri, replacementCleanupPending},
+      };
+    });
+    return yield* params.deferredCodeAnchor
+      ? withDeferredCodeAnchorMutationLocks(fs, config, uris, mutation)
+      : withMemoryUriLocks(fs, config.agentContextHome, uris, mutation);
   });
   const serializedWrite =
     params.replaceUri && isInSharedNamespace(config, params.replaceUri)
@@ -579,6 +624,9 @@ export function writeCursorCloudSharedMemory(
     Effect.gen(function* () {
       if (params.metadata.kind !== 'durable') {
         return argumentError('Cursor Cloud shared memory writes support durable memories only.');
+      }
+      if (params.deferredCodeAnchor) {
+        return argumentError('Deferred code anchors are private-local and cannot write shared memory.');
       }
       const prepared = yield* preparePersonalMemoryWrite(config, params);
       const targetUri = params.replaceUri ?? sharedUriFor(config, prepared.memoryUri, scope.team);
@@ -707,7 +755,7 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
     updatedAt: params.metadata.updatedAt ?? params.metadata.timestamp,
     visibility: 'personal',
   };
-  // Two-pass formatting: see src/memory.ts:storeMemory for the rationale.
+  // Two-pass formatting: see src/memory/index.ts:storeMemory for the rationale.
   // Drops the supersedes line when replaceUri points at the URI we're about
   // to write to (in-place update).
   const candidateMetadata: MemoryMetadata = {...metadata, supersedes: params.replaceUri};
@@ -1139,7 +1187,12 @@ export const runNativeHealthTool = Effect.fn('mcp_server.runNativeHealthTool')(f
 export function runNativeReadTool(
   config: RuntimeConfig,
   uris: readonly string[],
-): Effect.Effect<CallToolResult, never, ResourceStore> {
+  options: {
+    readonly allowedUriScopes?: readonly string[];
+    readonly followRelocations?: boolean;
+    readonly resolveIdentityAliases?: boolean;
+  } = {},
+) {
   // Canonical memory reads are intentionally complete. Context budgets belong
   // to derived graph/search evidence, never to user-authored memory content.
   // Keep the canonical bytes in MCP content only: repeating them in
@@ -1150,20 +1203,51 @@ export function runNativeReadTool(
   // protocol-reserved _meta field instead of a model-facing result field.
   return Effect.gen(function* () {
     const store = yield* ResourceStore;
+    const resolvedInputs =
+      options.resolveIdentityAliases === true
+        ? yield* resolveMemoryIdentityAliases(
+            config,
+            uris,
+            options.allowedUriScopes ?? [`threadnote://user/${uriSegment(config.user)}/memories`],
+          )
+        : uris.map(requestedUri => ({canonicalUri: requestedUri, requestedUri}));
     const content: Array<{readonly text: string; readonly type: 'text'}> = [];
-    const resources: Array<{readonly contentIndex: number; readonly uri: string}> = [];
-    for (const uri of uris) {
-      const text = yield* store.read(resourceStoreLocation(config), uri);
-      resources.push({contentIndex: content.length, uri});
-      content.push({text, type: 'text'});
+    const resources: Array<{
+      readonly canonicalUri: string;
+      readonly contentIndex: number;
+      readonly relocationDepth: number;
+      readonly requestedUri: string;
+      /** Compatibility field retained for canonical-read v1 consumers. */
+      readonly uri: string;
+    }> = [];
+    for (const input of resolvedInputs) {
+      const uri = input.canonicalUri;
+      const resolved =
+        options.followRelocations !== false && isMemoryRelocationUri(config, uri)
+          ? yield* readMemoryWithRelocations(config, uri)
+          : {
+              canonicalUri: parseResourceId(uri).canonicalUri,
+              content: yield* store.read(resourceStoreLocation(config), uri),
+              relocationDepth: 0,
+              requestedUri: parseResourceId(uri).canonicalUri,
+            };
+      yield* verifyResolvedMemoryIdentity(input, resolved.canonicalUri, resolved.content);
+      resources.push({
+        canonicalUri: resolved.canonicalUri,
+        contentIndex: content.length,
+        relocationDepth: resolved.relocationDepth,
+        requestedUri: input.requestedUri,
+        uri: input.requestedUri,
+      });
+      content.push({text: resolved.content, type: 'text'});
     }
     return {
       _meta: {
         'threadnote.io/canonical-read': {resources, type: 'threadnote-canonical-read', version: 1},
       },
       content,
-    } satisfies CallToolResult;
-  }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
+    } as CallToolResult;
+  }).pipe(Effect.catch(error => Effect.succeed(memoryReadErrorResult(config, error))));
 }
 
 export function textFromCallToolResult(result: CallToolResult): string {
@@ -1192,6 +1276,7 @@ export function writeMemoryContentWithExpectedHash(
           return argumentError(`Memory ${uri} changed after compact_context planned its update. Re-run the plan.`);
         }
         yield* writeMemoryFile(config, ov, uri, content, 'replace', false, {quiet: true});
+        yield* discardDeferredCodeAnchorIntent(config, uri);
         return {content: [{type: 'text' as const, text: `Updated memory: ${uri}`}]};
       }),
     );
@@ -1214,13 +1299,15 @@ export function forgetResourceWithRetry(
         );
       }
     }
-    return yield* removeResourceWithRetry('threadnote-native', config, uri, recursive);
+    const removed = yield* removeResourceWithRetry('threadnote-native', config, uri, recursive);
+    if (removed) yield* discardDeferredCodeAnchorIntentsWithin(config, uri);
+    return removed;
   });
   if (alreadyLocked) {
     return remove;
   }
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    return yield* withMemoryUriLocks(fs, config.agentContextHome, [uri], remove);
+    return yield* withDeferredCodeAnchorMutationLocks(fs, config, [uri], remove);
   });
 }

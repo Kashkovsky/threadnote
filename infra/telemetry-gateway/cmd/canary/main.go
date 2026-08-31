@@ -1,4 +1,4 @@
-// Command canary proves that frozen-v1 through frozen-v4 and current-v5
+// Command canary proves that frozen-v1 through frozen-v5 and current-v6
 // privacy-safe synthetic traces traverse the public gateway and become
 // queryable in Tempo.
 package main
@@ -63,9 +63,11 @@ const (
 	canaryTraceQueryCompletion
 	canaryTraceContextGraphCheckpoint
 	canaryTraceContextMemoryCheckpoint
+	canaryTraceContextCodeLinkedMemoryCheckpoint
 	canaryTraceContextCitationCheckpoint
 	canaryTraceContextProjectionCheckpoint
 	canaryTraceContextCompletion
+	canaryTraceCodeAnchorFinalizationCheckpoint
 )
 
 type canaryStringAttribute struct {
@@ -87,7 +89,7 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "threadnote-telemetry-canary:", err)
 		os.Exit(1)
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1, v2, v3, v4, and v5 traces stored")
+	_, _ = fmt.Fprintln(os.Stdout, "threadnote-telemetry-canary: v1, v2, v3, v4, v5, and v6 traces stored")
 }
 
 func configFromEnvironment() (config, error) {
@@ -171,6 +173,9 @@ func run(
 		{schemaVersion: 5, kind: canaryTraceContextCitationCheckpoint},
 		{schemaVersion: 5, kind: canaryTraceContextProjectionCheckpoint},
 		{schemaVersion: 5, kind: canaryTraceContextCompletion},
+		{schemaVersion: 6, kind: canaryTraceContextCodeLinkedMemoryCheckpoint},
+		{schemaVersion: 6, kind: canaryTraceContextCompletion},
+		{schemaVersion: 6, kind: canaryTraceCodeAnchorFinalizationCheckpoint},
 	}
 	traces := make([]canaryTrace, 0, len(plans))
 	for _, trace := range plans {
@@ -228,12 +233,16 @@ func (trace canaryTrace) label() string {
 		return fmt.Sprintf("schema v%d context graph checkpoint", trace.schemaVersion)
 	case canaryTraceContextMemoryCheckpoint:
 		return fmt.Sprintf("schema v%d context memory checkpoint", trace.schemaVersion)
+	case canaryTraceContextCodeLinkedMemoryCheckpoint:
+		return fmt.Sprintf("schema v%d context code-linked memory checkpoint", trace.schemaVersion)
 	case canaryTraceContextCitationCheckpoint:
 		return fmt.Sprintf("schema v%d context citation checkpoint", trace.schemaVersion)
 	case canaryTraceContextProjectionCheckpoint:
 		return fmt.Sprintf("schema v%d context projection checkpoint", trace.schemaVersion)
 	case canaryTraceContextCompletion:
 		return fmt.Sprintf("schema v%d context completion", trace.schemaVersion)
+	case canaryTraceCodeAnchorFinalizationCheckpoint:
+		return fmt.Sprintf("schema v%d code anchor finalization checkpoint", trace.schemaVersion)
 	default:
 		return fmt.Sprintf("schema v%d completion", trace.schemaVersion)
 	}
@@ -472,7 +481,12 @@ func storedSpanMatchesTrace(span *tracepb.Span, trace canaryTrace) bool {
 		!hasBoolAttribute(span.Attributes, "threadnote.context_brief.output_truncated", false) {
 		return false
 	}
-	return trace.schemaVersion >= 1 && trace.schemaVersion <= 5
+	if trace.schemaVersion == 6 && trace.kind == canaryTraceContextCompletion &&
+		(!hasBoolAttribute(span.Attributes, "threadnote.context_brief.code_anchor_gap", false) ||
+			!hasBoolAttribute(span.Attributes, "threadnote.context_brief.recovery_present", true)) {
+		return false
+	}
+	return trace.schemaVersion >= 1 && trace.schemaVersion <= 6
 }
 
 func randomIDs() (canaryIDs, error) {
@@ -528,7 +542,11 @@ func buildEnvelope(canary canaryTrace, timestamp time.Time) []byte {
 	if canary.kind == canaryTraceContextProjectionCheckpoint || canary.kind == canaryTraceContextCompletion {
 		span = append(span, message(9, keyValue("threadnote.context_brief.output_truncated", boolValue(false)))...)
 	}
-	if isQueryTrace(canary) || isContextBriefTrace(canary) {
+	if canary.schemaVersion == 6 && canary.kind == canaryTraceContextCompletion {
+		span = append(span, message(9, keyValue("threadnote.context_brief.code_anchor_gap", boolValue(false)))...)
+		span = append(span, message(9, keyValue("threadnote.context_brief.recovery_present", boolValue(true)))...)
+	}
+	if isQueryTrace(canary) || isContextBriefTrace(canary) || canary.kind == canaryTraceCodeAnchorFinalizationCheckpoint {
 		span = append(span, message(9, keyValue("threadnote.phase.elapsed_ms", intValue(1)))...)
 	}
 	span = append(span, message(9, keyValue("threadnote.duration_ms", intValue(1)))...)
@@ -610,14 +628,16 @@ func canaryStringAttributes(canary canaryTrace) []canaryStringAttribute {
 			canaryStringAttribute{"threadnote.graph.snapshot_edges_bucket", "2^13"},
 		)
 	case canaryTraceContextGraphCheckpoint:
-		attributes = append(attributes, contextBriefCheckpointAttributes("context.brief.graph")...)
+		attributes = append(attributes, contextBriefCheckpointAttributes(canary, "context.brief.graph")...)
 	case canaryTraceContextMemoryCheckpoint:
-		attributes = append(attributes, contextBriefCheckpointAttributes("context.brief.memory")...)
+		attributes = append(attributes, contextBriefCheckpointAttributes(canary, "context.brief.memory")...)
+	case canaryTraceContextCodeLinkedMemoryCheckpoint:
+		attributes = append(attributes, contextBriefCheckpointAttributes(canary, "context.brief.code-linked-memory")...)
 	case canaryTraceContextCitationCheckpoint:
-		attributes = append(attributes, contextBriefCheckpointAttributes("context.brief.citation-validation")...)
+		attributes = append(attributes, contextBriefCheckpointAttributes(canary, "context.brief.citation-validation")...)
 		attributes = append(attributes, contextBriefCitationAttributes()...)
 	case canaryTraceContextProjectionCheckpoint:
-		attributes = append(attributes, contextBriefCheckpointAttributes("context.brief.projection")...)
+		attributes = append(attributes, contextBriefCheckpointAttributes(canary, "context.brief.projection")...)
 	case canaryTraceContextCompletion:
 		attributes = append(attributes,
 			canaryStringAttribute{"threadnote.event", "completion"},
@@ -626,18 +646,60 @@ func canaryStringAttributes(canary canaryTrace) []canaryStringAttribute {
 			canaryStringAttribute{"threadnote.phase.outcome", "success"},
 			canaryStringAttribute{"threadnote.context_brief.scope", "workset"},
 		)
+		if canary.schemaVersion >= 6 {
+			attributes = append(attributes, contextBriefV6RequestAttributes()...)
+			attributes = append(attributes, contextBriefV6ProjectionAttributes()...)
+		}
 		attributes = append(attributes, contextBriefCitationAttributes()...)
+	case canaryTraceCodeAnchorFinalizationCheckpoint:
+		attributes = append(attributes,
+			canaryStringAttribute{"threadnote.event", "checkpoint"},
+			canaryStringAttribute{"threadnote.operation", "graph.index"},
+			canaryStringAttribute{"threadnote.phase", "memory.code-anchor-finalization"},
+			canaryStringAttribute{"threadnote.phase.outcome", "success"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.trigger", "graph-index"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.result", "finalized"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.conflict_bucket", "0"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.failed_bucket", "0"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.finalized_bucket", "2^1"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.latency_ms_bucket", "2^3"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.matched_bucket", "2^1"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.pending_bucket", "0"},
+			canaryStringAttribute{"threadnote.code_anchor_finalization.scanned_bucket", "2^1"},
+		)
 	}
 	return attributes
 }
 
-func contextBriefCheckpointAttributes(phase string) []canaryStringAttribute {
-	return []canaryStringAttribute{
+func contextBriefCheckpointAttributes(canary canaryTrace, phase string) []canaryStringAttribute {
+	attributes := []canaryStringAttribute{
 		{"threadnote.event", "checkpoint"},
 		{"threadnote.operation", "context_brief"},
 		{"threadnote.phase", phase},
 		{"threadnote.phase.outcome", "success"},
 		{"threadnote.context_brief.scope", "workset"},
+	}
+	if canary.schemaVersion >= 6 {
+		attributes = append(attributes, contextBriefV6RequestAttributes()...)
+	}
+	return attributes
+}
+
+func contextBriefV6RequestAttributes() []canaryStringAttribute {
+	return []canaryStringAttribute{
+		{"threadnote.context_brief.contract", "code-anchored-v3"},
+		{"threadnote.context_brief.mode", "impact"},
+	}
+}
+
+func contextBriefV6ProjectionAttributes() []canaryStringAttribute {
+	return []canaryStringAttribute{
+		{"threadnote.context_brief.code_anchor_coverage", "complete"},
+		{"threadnote.context_brief.code_anchors_matched_memories_bucket", "2^3"},
+		{"threadnote.context_brief.code_anchors_requested_bucket", "2^2"},
+		{"threadnote.context_brief.code_anchors_resolved_bucket", "2^2"},
+		{"threadnote.context_brief.gap_class", "none"},
+		{"threadnote.context_brief.returned_lane", "mixed"},
 	}
 }
 

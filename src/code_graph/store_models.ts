@@ -161,6 +161,15 @@ export interface CodeGraphReusableBaseReceiptInput {
   readonly workspaceFingerprint: string;
 }
 
+/** Exact physical-root evidence required when a clean commit aliases its just-committed dirty graph. */
+export interface CodeGraphCleanSnapshotAliasOptions {
+  readonly exactBaseFiles?: readonly Pick<
+    CodeGraphInventoryFile,
+    'contentHash' | 'language' | 'mode' | 'path' | 'size'
+  >[];
+  readonly expectedBaseGraphContentId?: string;
+}
+
 export interface CodeGraphLanguagePackProvenance {
   readonly cacheIdentity: string;
   readonly derivationIdentity: string;
@@ -196,6 +205,22 @@ export interface CodeGraphReusableCleanBase {
   readonly files: readonly CodeGraphInventoryFile[];
   readonly receipt: CodeGraphReusableBaseReceipt;
   readonly snapshot: CodeGraphSnapshot;
+}
+
+export const CODE_GRAPH_FOLD_FORWARD_RECEIPT_VERSION = 1;
+
+/**
+ * A clean one-level delta admitted only as a logical comparison point. Its
+ * root remains the sole physical base for every later incremental snapshot.
+ */
+export interface CodeGraphReusableFoldForwardBase {
+  readonly logicalFiles: readonly CodeGraphInventoryFile[];
+  readonly logicalSnapshot: CodeGraphSnapshot;
+  readonly priorDeltaPaths: readonly string[];
+  readonly priorStagedPayloadBytes: number;
+  readonly priorStagedRows: number;
+  readonly rootReceipt: CodeGraphReusableBaseReceipt;
+  readonly rootSnapshot: CodeGraphSnapshot;
 }
 
 /**
