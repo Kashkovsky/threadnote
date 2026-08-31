@@ -75,8 +75,10 @@ scripts, installer/updater behavior, MCP behavior, storage, indexing, plugin lif
    task handoff.
 
 The development installer records an opaque checkout identity and refuses to replace a global development runtime
-owned by another worktree. Do not bypass that guard while its task is active. After confirming the other task has
-finished, an intentional handoff can use `bun run dev:install-global -- --take-over-global-runtime`.
+owned by another worktree. When another agent holds it, resolve the owning worktree to that agent's active thread and
+ask the agent explicitly whether you may take over the global installation. Do not bypass the guard until the owning
+agent confirms release; if the thread cannot be found or reached, ask the user to coordinate. After that confirmation,
+an intentional handoff can use `bun run dev:install-global -- --take-over-global-runtime`.
 
 This development machine has a single Threadnote user. After installing exact HEAD, terminate any superseded
 Threadnote processes with `bun run dev:install-global -- --terminate-superseded`; no separate process-owner approval is
