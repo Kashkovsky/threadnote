@@ -10,6 +10,11 @@ export class CanonicalMutationGenerationInvalid extends Schema.TaggedError<Canon
   {message: Schema.String},
 ) {}
 
+export interface CanonicalMutationGenerationTransition {
+  readonly currentGeneration: string;
+  readonly previousGeneration: string;
+}
+
 /**
  * Read the durable, account-scoped canonical mutation generation. Absence is
  * the initial generation; a malformed marker fails closed instead of allowing
@@ -54,6 +59,7 @@ export const advanceCanonicalMutationGeneration = Effect.fn('resourceMutationGen
   account: string,
 ) {
   const crypto = yield* Crypto.Crypto;
+  const previousGeneration = yield* readCanonicalMutationGeneration(fs, path, home, account);
   const generationPath = resourceAccountMutationGenerationPath(path, home, account);
   const directory = path.dirname(generationPath);
   const generation = `v1:${yield* crypto.randomUUIDv4}`;
@@ -70,7 +76,10 @@ export const advanceCanonicalMutationGeneration = Effect.fn('resourceMutationGen
     Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))),
   );
   yield* syncMutationGenerationDirectory(fs, directory);
-  return generation;
+  return {
+    currentGeneration: generation,
+    previousGeneration,
+  } satisfies CanonicalMutationGenerationTransition;
 });
 
 function syncMutationGenerationDirectory(fs: FileSystem.FileSystem, directory: string): Effect.Effect<void, never> {

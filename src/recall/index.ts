@@ -5,7 +5,10 @@ import {SEED_STATE_FILE} from '../constants.js';
 import {sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {resourceAccountMutationLockPath} from '../effect/resource_lock.js';
-import {readCanonicalMutationGeneration} from '../effect/resource_mutation_generation.js';
+import {
+  readCanonicalMutationGeneration,
+  type CanonicalMutationGenerationTransition,
+} from '../effect/resource_mutation_generation.js';
 import {SystemInfo} from '../effect/system.js';
 import {parseSeedManifest} from '../manifest.js';
 import {
@@ -53,7 +56,16 @@ import {
   type RecallCodeLinkQueryOptions,
 } from './code_links.js';
 import * as RecallIndexIdentity from './index_identity.js';
-import {recallIndexForegroundRefreshRequired} from './index_freshness.js';
+import {
+  recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh,
+  recallIndexForegroundRefreshRequired,
+} from './index_freshness.js';
+import {
+  clearRecallStaleMarkerInvalidations as clearStaleMarkerInvalidations,
+  readRecallStaleMarker as readStaleMarker,
+  type RecallStaleMarker,
+  writeRecallStaleGeneration as writeStaleGeneration,
+} from './index_stale_marker.js';
 import {
   combineRecallSqlPredicates,
   recallUriMatchesScopes,
@@ -174,10 +186,8 @@ interface RecallTermStatisticRow {
 
 const RECALL_INDEX_DATABASE_VERSION = 11;
 const RECALL_INDEX_POINTER_VERSION = 1;
-const RECALL_STALE_MARKER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const INACTIVE_DATABASE_FILENAME = `with-inactive-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
-const MAX_RECALL_INVALIDATED_URIS = 1_024;
 const DEFAULT_QUERY_RESULT_LIMIT = 100;
 const QUERY_POSTING_POOL_MULTIPLIER = 5;
 const MINIMUM_QUERY_POSTING_POOL = 500;
@@ -187,14 +197,6 @@ let staleGenerationCounter = 0;
 interface RecallIndexPointer {
   readonly database: string;
   readonly version: typeof RECALL_INDEX_POINTER_VERSION;
-}
-
-interface RecallStaleMarker {
-  readonly canonicalMutationGeneration?: string;
-  readonly forceRefresh: boolean;
-  readonly generation: string;
-  readonly invalidatedUris: readonly string[];
-  readonly version: typeof RECALL_STALE_MARKER_VERSION;
 }
 
 class RecallIndexCorrupt extends Error {
@@ -594,7 +596,7 @@ export const expireRecallIndexValidation = Effect.fn('recall.expireValidation')(
   agentContextHome: string,
   includeInactive: boolean,
   invalidatedUris?: readonly string[],
-  canonicalMutationGeneration?: string,
+  canonicalMutationGeneration?: CanonicalMutationGenerationTransition,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -1159,6 +1161,17 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   const markerChanged = previousMetadata.get('stale_generation') !== (staleGeneration ?? '');
   const canonicalMutationGenerationChanged =
     (previousMetadata.get('canonical_mutation_generation') ?? '') !== canonicalMutationGeneration;
+  const canonicalMutationContinuityAllowsIncrementalRefresh =
+    recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh({
+      ...(staleMarker?.canonicalMutationGeneration === undefined
+        ? {}
+        : {markerCurrentGeneration: staleMarker.canonicalMutationGeneration}),
+      ...(staleMarker?.previousCanonicalMutationGeneration === undefined
+        ? {}
+        : {markerPreviousGeneration: staleMarker.previousCanonicalMutationGeneration}),
+      observedGeneration: canonicalMutationGeneration,
+      persistedGeneration: previousMetadata.get('canonical_mutation_generation') ?? '',
+    });
   const invalidatedUris = markerChanged ? new Set(staleMarker?.invalidatedUris ?? []) : new Set<string>();
   const forceFromMarker = markerChanged && staleMarker?.forceRefresh === true;
   const sourceScan = yield* scanRecallSources(
@@ -1173,8 +1186,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
   const forceAllSources =
     forceRefresh ||
     forceFromMarker ||
-    (canonicalMutationGenerationChanged &&
-      (staleMarker?.canonicalMutationGeneration ?? '') !== canonicalMutationGeneration);
+    (canonicalMutationGenerationChanged && !canonicalMutationContinuityAllowsIncrementalRefresh);
   const refreshCounts = yield* countRecallSourceChanges(sql, forceAllSources);
   yield* onProgress?.({
     completed: 0,
@@ -1603,122 +1615,6 @@ function uriTopic(uri: string): string {
 function uriBasename(uri: string): string {
   return uri.slice(uri.lastIndexOf('/') + 1);
 }
-
-function readStaleMarker(fs: FileSystem.FileSystem, path: string): Effect.Effect<RecallStaleMarker | undefined, never> {
-  return Effect.gen(function* () {
-    const stalePath = `${path}.stale`;
-    if (!(yield* fs.exists(stalePath).pipe(Effect.catch(() => Effect.succeed(false))))) {
-      return undefined;
-    }
-    const raw = yield* fs.readFileString(stalePath).pipe(Effect.catch(() => Effect.succeed('present')));
-    const legacyGeneration = raw.trim() || 'present';
-    const value = Option.getOrUndefined(Option.liftThrowable((content: string): unknown => JSON.parse(content))(raw));
-    if (
-      typeof value === 'object' &&
-      value !== null &&
-      (value as {readonly version?: unknown}).version === RECALL_STALE_MARKER_VERSION &&
-      typeof (value as {readonly generation?: unknown}).generation === 'string' &&
-      (value as {readonly generation: string}).generation.length > 0 &&
-      typeof (value as {readonly forceRefresh?: unknown}).forceRefresh === 'boolean' &&
-      (!('canonicalMutationGeneration' in value) ||
-        typeof (value as {readonly canonicalMutationGeneration?: unknown}).canonicalMutationGeneration === 'string') &&
-      Array.isArray((value as {readonly invalidatedUris?: unknown}).invalidatedUris) &&
-      (value as {readonly invalidatedUris: readonly unknown[]}).invalidatedUris.every(uri => typeof uri === 'string')
-    ) {
-      const marker = value as RecallStaleMarker;
-      return {
-        ...(marker.canonicalMutationGeneration === undefined
-          ? {}
-          : {canonicalMutationGeneration: marker.canonicalMutationGeneration}),
-        forceRefresh: marker.forceRefresh,
-        generation: marker.generation,
-        invalidatedUris: [...new Set(marker.invalidatedUris.map(stripRecallAnchor))],
-        version: RECALL_STALE_MARKER_VERSION,
-      };
-    }
-    return {
-      forceRefresh: true,
-      generation: legacyGeneration,
-      invalidatedUris: [],
-      version: RECALL_STALE_MARKER_VERSION,
-    };
-  });
-}
-
-const writeStaleGeneration = Effect.fn('recall.writeStaleGeneration')(function* (
-  fs: FileSystem.FileSystem,
-  path: string,
-  invalidatedUris?: readonly string[],
-  canonicalMutationGeneration?: string,
-) {
-  const system = yield* SystemInfo;
-  const counter = yield* Effect.sync(() => {
-    staleGenerationCounter += 1;
-    return staleGenerationCounter;
-  });
-  const generation = `${yield* Clock.currentTimeMillis}:${system.processId}:${counter}`;
-  const stalePath = `${path}.stale`;
-  const previous = yield* readStaleMarker(fs, path);
-  const mergedInvalidatedUris = [
-    ...new Set(
-      [...(previous?.invalidatedUris ?? []), ...(invalidatedUris ?? [])]
-        .map(stripRecallAnchor)
-        .map(uri => uri.replace(/\/+$/, ''))
-        .filter(Boolean),
-    ),
-  ];
-  const forceRefresh =
-    invalidatedUris === undefined ||
-    previous?.forceRefresh === true ||
-    mergedInvalidatedUris.length > MAX_RECALL_INVALIDATED_URIS;
-  const linkedCanonicalMutationGeneration = canonicalMutationGeneration ?? previous?.canonicalMutationGeneration;
-  const marker: RecallStaleMarker = {
-    ...(linkedCanonicalMutationGeneration === undefined
-      ? {}
-      : {canonicalMutationGeneration: linkedCanonicalMutationGeneration}),
-    forceRefresh,
-    generation,
-    invalidatedUris: forceRefresh ? [] : mergedInvalidatedUris,
-    version: RECALL_STALE_MARKER_VERSION,
-  };
-  const temporaryPath = `${stalePath}.${system.processId}.${counter}.tmp`;
-  yield* fs.writeFileString(temporaryPath, `${JSON.stringify(marker)}\n`, {mode: 0o600});
-  yield* fs
-    .rename(temporaryPath, stalePath)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
-  return generation;
-});
-
-const clearStaleMarkerInvalidations = Effect.fn('recall.clearStaleMarkerInvalidations')(function* (
-  fs: FileSystem.FileSystem,
-  path: string,
-  observed: RecallStaleMarker,
-) {
-  const current = yield* readStaleMarker(fs, path);
-  if (current?.generation !== observed.generation) {
-    return;
-  }
-  const system = yield* SystemInfo;
-  const counter = yield* Effect.sync(() => {
-    staleGenerationCounter += 1;
-    return staleGenerationCounter;
-  });
-  const stalePath = `${path}.stale`;
-  const temporaryPath = `${stalePath}.${system.processId}.${counter}.tmp`;
-  const cleared: RecallStaleMarker = {
-    ...(observed.canonicalMutationGeneration === undefined
-      ? {}
-      : {canonicalMutationGeneration: observed.canonicalMutationGeneration}),
-    forceRefresh: false,
-    generation: observed.generation,
-    invalidatedUris: [],
-    version: RECALL_STALE_MARKER_VERSION,
-  };
-  yield* fs.writeFileString(temporaryPath, `${JSON.stringify(cleared)}\n`, {mode: 0o600});
-  yield* fs
-    .rename(temporaryPath, stalePath)
-    .pipe(Effect.ensuring(fs.remove(temporaryPath, {force: true}).pipe(Effect.catch(() => Effect.void))));
-});
 
 function loadCanonicalResourcePolicy(
   config: RecallIndexConfig,

@@ -15,7 +15,10 @@ import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
 import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file_lock.js';
 import {resourceAccountMutationLockPath} from './resource_lock.js';
-import {advanceCanonicalMutationGeneration} from './resource_mutation_generation.js';
+import {
+  advanceCanonicalMutationGeneration,
+  type CanonicalMutationGenerationTransition,
+} from './resource_mutation_generation.js';
 import {SystemInfo} from './system.js';
 import {
   canonicalResourceUri,
@@ -226,7 +229,7 @@ function createResourceStoreOperations(
     location: ResourceStoreLocation,
     includeInactive: boolean,
     invalidatedUris: readonly string[],
-    canonicalMutationGeneration: string,
+    canonicalMutationGeneration: CanonicalMutationGenerationTransition,
   ) =>
     provideLockServices(
       expireRecallIndexValidation(location.home, includeInactive, invalidatedUris, canonicalMutationGeneration).pipe(
@@ -236,7 +239,7 @@ function createResourceStoreOperations(
   const invalidateRecallBestEffort = (
     location: ResourceStoreLocation,
     invalidatedUris: readonly string[],
-    canonicalMutationGeneration: string,
+    canonicalMutationGeneration: CanonicalMutationGenerationTransition,
   ) =>
     Effect.forEach(
       [false, true],

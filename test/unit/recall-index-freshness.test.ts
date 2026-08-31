@@ -5,7 +5,11 @@ import * as FC from 'effect/testing/FastCheck';
 import {TestClock} from 'effect/testing';
 import {SystemInfo} from '../../src/effect/system.js';
 import {expireRecallIndexValidation, loadRecallIndexData} from '../../src/recall/index.js';
-import {recallIndexForegroundRefreshRequired} from '../../src/recall/index_freshness.js';
+import {
+  mergeRecallIndexCanonicalMutationContinuity,
+  recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh,
+  recallIndexForegroundRefreshRequired,
+} from '../../src/recall/index_freshness.js';
 
 const RecallIndexTestLayer = Layer.merge(BunServices.layer, SystemInfo.layer);
 
@@ -52,6 +56,98 @@ describe('recall index foreground freshness', () => {
         expect(markerCurrent).toBe(forceRefresh || !initialized || !integrityCurrent);
         expect(changed).toBe(true);
         expect(canonicalChanged).toBe(true);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect.prop(
+    'allows canonical incremental refresh only for an exact end-to-end transition',
+    {
+      markerCurrent: FC.string({maxLength: 48}),
+      markerPrevious: FC.string({maxLength: 48}),
+      observed: FC.string({maxLength: 48}),
+      persisted: FC.string({maxLength: 48}),
+    },
+    ({markerCurrent, markerPrevious, observed, persisted}) =>
+      Effect.sync(() => {
+        expect(
+          recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh({
+            markerCurrentGeneration: markerCurrent,
+            markerPreviousGeneration: markerPrevious,
+            observedGeneration: observed,
+            persistedGeneration: persisted,
+          }),
+        ).toBe(persisted === observed || (markerPrevious === persisted && markerCurrent === observed));
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect.prop(
+    'merges consecutive mutation transitions while preserving their earliest indexed base',
+    {
+      generations: FC.uniqueArray(FC.string({maxLength: 32}), {maxLength: 12, minLength: 2}),
+    },
+    ({generations}) =>
+      Effect.sync(() => {
+        let merged = mergeRecallIndexCanonicalMutationContinuity(undefined, {
+          currentGeneration: generations[1]!,
+          previousGeneration: generations[0]!,
+        });
+        for (let index = 2; index < generations.length; index += 1) {
+          merged = mergeRecallIndexCanonicalMutationContinuity(
+            {
+              ...(merged.currentGeneration === undefined ? {} : {currentGeneration: merged.currentGeneration}),
+              pending: true,
+              ...(merged.previousGeneration === undefined ? {} : {previousGeneration: merged.previousGeneration}),
+            },
+            {
+              currentGeneration: generations[index]!,
+              previousGeneration: generations[index - 1]!,
+            },
+          );
+        }
+
+        expect(merged).toEqual({
+          continuous: true,
+          currentGeneration: generations.at(-1),
+          previousGeneration: generations[0],
+        });
+        expect(
+          mergeRecallIndexCanonicalMutationContinuity(
+            {
+              currentGeneration: merged.currentGeneration!,
+              pending: true,
+              previousGeneration: merged.previousGeneration!,
+            },
+            undefined,
+          ),
+        ).toEqual(merged);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect.prop(
+    'fails continuity closed when an intervening generation was not linked',
+    {generation: FC.string({maxLength: 32})},
+    ({generation}) =>
+      Effect.sync(() => {
+        const base = `${generation}:base`;
+        const missing = `${generation}:missing`;
+        const current = `${generation}:current`;
+        const merged = mergeRecallIndexCanonicalMutationContinuity(
+          {
+            currentGeneration: base,
+            pending: true,
+            previousGeneration: `${generation}:indexed`,
+          },
+          {currentGeneration: current, previousGeneration: missing},
+        );
+
+        expect(merged).toEqual({
+          continuous: false,
+          currentGeneration: current,
+          previousGeneration: missing,
+        });
       }),
     {fastCheck: {numRuns: 100}},
   );

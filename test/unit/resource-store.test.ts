@@ -441,6 +441,48 @@ describe('native ResourceStore', () => {
     ).pipe(provideTestLayer(resourceStoreDependencies)),
   );
 
+  it.effect('does not let a later successful marker hide an earlier failed invalidation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-invalidation-continuity-'});
+        const config = {account: 'local', agentContextHome: home, user: 'test-user'};
+        const firstUri = 'threadnote://resources/repos/threadnote/first.md';
+        const laterUri = 'threadnote://resources/repos/threadnote/later.md';
+        const firstPath = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'first.md');
+        const store = yield* ResourceStore.pipe(provideTestLayer(ResourceStore.layerWith()));
+        yield* store.write(location(home), firstUri, '# First\n\nalpha-42', {mode: 'create'});
+        expect((yield* loadRecallIndex(config, {includeInactive: false}))[0]?.text).toContain('alpha-42');
+        const initialInfo = yield* fs.stat(firstPath);
+        const initialModifiedAt = Option.getOrThrow(initialInfo.mtime);
+
+        const failedDerivedMarkerFileSystem = FileSystem.FileSystem.of({
+          ...fs,
+          writeFileString: (target, content, options) =>
+            String(target).includes('.sqlite.stale.')
+              ? Effect.die(new Error('injected first-mutation marker failure'))
+              : fs.writeFileString(target, content, options),
+        });
+        const markerFailingStore = yield* ResourceStore.pipe(
+          provideTestLayer(ResourceStore.layerWith()),
+          Effect.provideService(FileSystem.FileSystem, failedDerivedMarkerFileSystem),
+        );
+        yield* markerFailingStore.write(location(home), firstUri, '# First\n\nomega-99', {mode: 'replace'});
+        yield* fs.utimes(firstPath, initialModifiedAt, initialModifiedAt);
+
+        yield* store.write(location(home), laterUri, '# Later\n\nlater-anchor', {mode: 'create'});
+        const refreshed = yield* loadRecallIndex(config, {includeInactive: false, query: 'omega-99'});
+
+        expect(refreshed[0]?.text).toContain('omega-99');
+        expect(refreshed[0]?.text).not.toContain('alpha-42');
+        expect((yield* loadRecallIndex(config, {includeInactive: false, query: 'later-anchor'}))[0]?.uri).toBe(
+          laterUri,
+        );
+        expect(yield* recallIndexStatus(config)).toMatchObject({documentCount: 2, ready: true});
+      }),
+    ).pipe(provideTestLayer(resourceStoreDependencies)),
+  );
+
   it('does not reuse a warm candidate after a same-size replacement with preserved timestamps', async () => {
     const home = await mkdtemp('threadnote-resource-index-replacement-');
     try {
