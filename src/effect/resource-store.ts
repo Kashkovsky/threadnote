@@ -190,6 +190,14 @@ export interface ResourceStoreShape {
     content: string,
     options: ResourceStoreWriteOptions,
   ) => Effect.Effect<{readonly fingerprint: string; readonly uri: string}, ResourceStoreError>;
+  /** Run a read-only invariant check under the account mutation lock immediately before writing. */
+  readonly writeChecked: <E, R>(
+    location: ResourceStoreLocation,
+    uri: string,
+    content: string,
+    options: ResourceStoreWriteOptions,
+    check: Effect.Effect<void, E, R>,
+  ) => Effect.Effect<{readonly fingerprint: string; readonly uri: string}, E | ResourceStoreError, R>;
 }
 
 export class ResourceStore extends Context.Service<ResourceStore, ResourceStoreShape>()(
@@ -329,65 +337,77 @@ function createResourceStoreOperations(
         }),
       );
     }).pipe(mapIoError('remove', uri));
+  const writeResourceChecked = <E, R>(
+    location: ResourceStoreLocation,
+    uri: string,
+    content: string,
+    options: ResourceStoreWriteOptions,
+    check: Effect.Effect<void, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const resolved = yield* resolve(location, uri);
+      const fingerprint = yield* provideLockServices(sha256Hex(content)).pipe(mapIoError('write', uri));
+      yield* withLock(
+        location,
+        resolved.id,
+        check.pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              yield* makeSafeDirectoryChain(fs, path, {...resolved, path: path.dirname(resolved.path)});
+              yield* assertCaseCompatible(fs, path.dirname(resolved.path), path.basename(resolved.path), resolved.id);
+              const exists = yield* fs.exists(resolved.path);
+              if (options.mode === 'create' && exists) {
+                return yield* new ResourceAlreadyExists({
+                  message: `Resource already exists: ${resolved.id.canonicalUri}`,
+                  uri: resolved.id.canonicalUri,
+                });
+              }
+              if (options.mode === 'replace' && !exists) {
+                return yield* new ResourceNotFound({
+                  message: `Resource does not exist: ${resolved.id.canonicalUri}`,
+                  uri: resolved.id.canonicalUri,
+                });
+              }
+              if (exists) {
+                yield* verifyExistingPath(fs, path, resolved, 'File');
+                if (options.expectedFingerprint) {
+                  const actualFingerprint = yield* provideLockServices(sha256Hex(yield* fs.readFile(resolved.path)));
+                  if (actualFingerprint !== options.expectedFingerprint) {
+                    return yield* new ResourceConflict({
+                      actualFingerprint,
+                      expectedFingerprint: options.expectedFingerprint,
+                      message: `Resource changed before compare-and-replace: ${resolved.id.canonicalUri}`,
+                      uri: resolved.id.canonicalUri,
+                    });
+                  }
+                }
+              } else if (options.expectedFingerprint) {
+                return yield* new ResourceNotFound({
+                  message: `Resource does not exist for compare-and-replace: ${resolved.id.canonicalUri}`,
+                  uri: resolved.id.canonicalUri,
+                });
+              }
+              const canonicalMutationGeneration = yield* provideLockServices(
+                advanceCanonicalMutationGeneration(fs, path, location.home, location.account),
+              );
+              yield* writeAtomically(fs, path, resolved, content, options.mode === 'create').pipe(
+                Effect.ensuring(
+                  invalidateRecallBestEffort(location, [resolved.id.canonicalUri], canonicalMutationGeneration),
+                ),
+              );
+            }).pipe(mapIoError('write', uri)),
+          ),
+        ),
+      );
+      return {fingerprint, uri: resolved.id.canonicalUri};
+    });
   const writeResource = (
     location: ResourceStoreLocation,
     uri: string,
     content: string,
     options: ResourceStoreWriteOptions,
-  ) =>
-    Effect.gen(function* () {
-      const resolved = yield* resolve(location, uri);
-      const fingerprint = yield* provideLockServices(sha256Hex(content));
-      yield* withLock(
-        location,
-        resolved.id,
-        Effect.gen(function* () {
-          yield* makeSafeDirectoryChain(fs, path, {...resolved, path: path.dirname(resolved.path)});
-          yield* assertCaseCompatible(fs, path.dirname(resolved.path), path.basename(resolved.path), resolved.id);
-          const exists = yield* fs.exists(resolved.path);
-          if (options.mode === 'create' && exists) {
-            return yield* new ResourceAlreadyExists({
-              message: `Resource already exists: ${resolved.id.canonicalUri}`,
-              uri: resolved.id.canonicalUri,
-            });
-          }
-          if (options.mode === 'replace' && !exists) {
-            return yield* new ResourceNotFound({
-              message: `Resource does not exist: ${resolved.id.canonicalUri}`,
-              uri: resolved.id.canonicalUri,
-            });
-          }
-          if (exists) {
-            yield* verifyExistingPath(fs, path, resolved, 'File');
-            if (options.expectedFingerprint) {
-              const actualFingerprint = yield* provideLockServices(sha256Hex(yield* fs.readFile(resolved.path)));
-              if (actualFingerprint !== options.expectedFingerprint) {
-                return yield* new ResourceConflict({
-                  actualFingerprint,
-                  expectedFingerprint: options.expectedFingerprint,
-                  message: `Resource changed before compare-and-replace: ${resolved.id.canonicalUri}`,
-                  uri: resolved.id.canonicalUri,
-                });
-              }
-            }
-          } else if (options.expectedFingerprint) {
-            return yield* new ResourceNotFound({
-              message: `Resource does not exist for compare-and-replace: ${resolved.id.canonicalUri}`,
-              uri: resolved.id.canonicalUri,
-            });
-          }
-          const canonicalMutationGeneration = yield* provideLockServices(
-            advanceCanonicalMutationGeneration(fs, path, location.home, location.account),
-          );
-          yield* writeAtomically(fs, path, resolved, content, options.mode === 'create').pipe(
-            Effect.ensuring(
-              invalidateRecallBestEffort(location, [resolved.id.canonicalUri], canonicalMutationGeneration),
-            ),
-          );
-        }),
-      );
-      return {fingerprint, uri: resolved.id.canonicalUri};
-    }).pipe(mapIoError('write', uri));
+  ): Effect.Effect<{readonly fingerprint: string; readonly uri: string}, ResourceStoreError> =>
+    writeResourceChecked<never, never>(location, uri, content, options, Effect.void);
   const applyMutation = (location: ResourceStoreLocation, mutation: ResourceStoreMutation) => {
     if (mutation.type === 'write') {
       return writeResource(location, mutation.uri, mutation.content, mutation.options).pipe(Effect.asVoid);
@@ -469,6 +489,8 @@ function createResourceStoreOperations(
         return entryForInfo(resolved.id.canonicalUri, info);
       }).pipe(mapIoError('stat', uri)),
     write: (location, uri, content, options) => writeResource(location, uri, content, options),
+    writeChecked: (location, uri, content, options, check) =>
+      writeResourceChecked(location, uri, content, options, check),
   };
 }
 
@@ -902,7 +924,7 @@ function isResourceStoreError(error: unknown): error is ResourceStoreError {
 }
 
 function mapIoError(operation: string, uri: string) {
-  return <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, ResourceStoreError> =>
+  return <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, ResourceStoreError, R> =>
     effect.pipe(
       Effect.mapError(error =>
         isResourceStoreError(error)

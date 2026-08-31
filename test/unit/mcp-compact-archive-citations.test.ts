@@ -20,14 +20,20 @@ describe('MCP compact archive citation persistence', () => {
         const original = formatMemoryDocument(
           'MEMORY',
           {
+            createdAt: '2026-08-25T20:00:00.000Z',
             codeCitations: [citation],
+            evidence: ['threadnote://memory/tn_compact_evidence'],
             kind: 'handoff',
+            memoryId: 'tn_compact_source',
             project: 'threadnote',
+            references: ['threadnote://memory/tn_compact_reference'],
+            relations: [{type: 'evidence_for', uri: 'threadnote://memory/tn_compact_target'}],
             schemaVersion: MEMORY_SCHEMA_VERSION,
             sourceAgentClient: 'codex',
             sourceCommit: citation.sourceCommit,
             sourceObservedAt: '2026-08-26T20:00:00.000Z',
             status: 'active',
+            supersedes: 'threadnote://memory/tn_compact_history',
             timestamp: '2026-08-26T20:00:00.000Z',
             topic: 'valid-citation',
           },
@@ -48,10 +54,17 @@ describe('MCP compact archive citation persistence', () => {
         expect(archived?.metadata).toMatchObject({
           archivedFrom: sourceUri,
           codeCitations: [citation],
+          createdAt: '2026-08-25T20:00:00.000Z',
+          evidence: ['threadnote://memory/tn_compact_evidence'],
+          memoryId: 'tn_compact_source',
+          references: ['threadnote://memory/tn_compact_reference'],
+          relations: [{type: 'evidence_for', uri: 'threadnote://memory/tn_compact_target'}],
           schemaVersion: MEMORY_SCHEMA_VERSION,
           sourceCommit: citation.sourceCommit,
           sourceObservedAt: '2026-08-26T20:00:00.000Z',
           status: 'archived',
+          supersedes: 'threadnote://memory/tn_compact_history',
+          visibility: 'personal',
         });
         expect(archived?.metadata.citationErrors).toBeUndefined();
         expect(archived?.body).toBe(

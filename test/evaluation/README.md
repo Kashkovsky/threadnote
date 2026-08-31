@@ -3,6 +3,20 @@
 This directory is the release-quality contract for Threadnote retrieval. It is intentionally independent of a
 developer home, network access, local canonical data, and model-generated relevance scores.
 
+## MemoryConnectionsBench v1 (A+B)
+
+`fixtures/memory-connections-bench-v1/fixture.json` freezes the typed-authoring and schema-v12 projection contract.
+Its operation traces exercise all five planned knowledge abilities, strict relation normalization and rejection,
+legacy target add/change/delete, stable-identity target moves, source replacement/deletion, and logical clean-rebuild
+parity:
+
+```sh
+bun --bun vitest run test/unit/memory-connections-bench.test.ts
+```
+
+This is deliberately an `authoring-projection` oracle. It does not claim one-hop retrieval, currentness assembly,
+Context Brief integration, agent usefulness, or release-scale latency; those remain Milestone C gates.
+
 ## CodeMemoryLinkBench v1
 
 `fixtures/code-memory-link-bench-v1/fixture.json` freezes the code-to-memory product gate. Unlike the older citation

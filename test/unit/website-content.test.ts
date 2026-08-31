@@ -127,6 +127,7 @@ const toolKeys = {
     'kind',
     'project',
     'references',
+    'relations',
     'replaceUri',
     'sourceAgentClient',
     'status',

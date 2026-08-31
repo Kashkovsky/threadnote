@@ -289,13 +289,7 @@ function registerTools(
   }
 
   if (capabilities.memoryWrite) {
-    registerStoreTool(
-      server,
-      config,
-      'remember_context',
-      'Store a durable Threadnote memory. Required: pass JSON arguments with text.',
-      memoryScope,
-    );
+    registerStoreTool(server, config, 'remember_context', 'Store Threadnote memory; text is required.', memoryScope);
   }
   if (toolset === 'full') {
     registerStoreTool(server, config, 'store', 'Compatibility alias for remember_context.');

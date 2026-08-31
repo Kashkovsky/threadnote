@@ -433,6 +433,46 @@ describe('Cursor Cloud integration', () => {
           uri: 'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/cursor-cloud-persisted.md',
         });
         expect(read).toContain('Cursor Cloud durable memory persisted through the designated share.');
+        const targetMemoryId = /^memory_id: (tn_[A-Za-z0-9_-]+)$/mu.exec(read)?.[1];
+        expect(targetMemoryId).toBeDefined();
+
+        const relationSource = await client.callTool({
+          arguments: {
+            kind: 'durable',
+            project: 'threadnote',
+            relations: [
+              {
+                type: 'depends_on',
+                uri: 'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/cursor-cloud-persisted.md',
+              },
+            ],
+            text: 'This shared workflow explicitly depends on the persisted contract.',
+            topic: 'cursor-cloud-relation-source',
+          },
+          name: 'remember_context',
+        });
+        expect(relationSource.isError, JSON.stringify(relationSource)).not.toBe(true);
+        const relationRead = await callText(client, 'read_context', {
+          uri: 'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/cursor-cloud-relation-source.md',
+        });
+        expect(relationRead).toContain(`relation: depends_on threadnote://memory/${targetMemoryId}`);
+
+        const canonicalOutside = await callError(client, 'remember_context', {
+          kind: 'durable',
+          relations: [{type: 'references', uri: privateUri}],
+          text: 'This cross-scope relation must not be stored.',
+          topic: 'cursor-cloud-canonical-outside',
+        });
+        expect(canonicalOutside).toContain('authorized memory scope');
+        expect(canonicalOutside).not.toContain(privateSentinel);
+        const aliasOutside = await callError(client, 'remember_context', {
+          kind: 'durable',
+          relations: [{type: 'references', uri: privateAlias}],
+          text: 'This cross-scope alias must not be stored.',
+          topic: 'cursor-cloud-alias-outside',
+        });
+        expect(aliasOutside).toContain('does not resolve inside the authorized active corpus');
+        expect(aliasOutside).not.toContain(privateSentinel);
       });
 
       const remoteTree = await execFilePromise(
@@ -441,6 +481,7 @@ describe('Cursor Cloud integration', () => {
         {env: {...process.env, ...gitIdentityEnvironment}},
       );
       expect(remoteTree.stdout).toContain('durable/projects/threadnote/cursor-cloud-persisted.md');
+      expect(remoteTree.stdout).toContain('durable/projects/threadnote/cursor-cloud-relation-source.md');
       expect(remoteTree.stdout).not.toContain('handoffs/');
     } finally {
       await rm(fixture.root, {force: true, recursive: true});

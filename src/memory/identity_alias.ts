@@ -28,3 +28,8 @@ export function memoryIdFromIdentityAlias(input: string): string | undefined {
 export function isMemoryId(value: string): boolean {
   return MEMORY_ID.test(value);
 }
+
+/** Opaque file-lock key shared by writers and relation target fences. */
+export function memoryIdentityLockKey(memoryId: string | undefined): string | undefined {
+  return memoryId !== undefined && isMemoryId(memoryId) ? `threadnote-memory-identity:${memoryId}` : undefined;
+}

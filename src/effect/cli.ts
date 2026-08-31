@@ -1227,6 +1227,7 @@ const remember = Command.make(
       'require-current-code-refs',
       'Fail before writing unless every code reference has exact-current graph evidence',
     ),
+    relations: repeatedString('relation', 'Typed memory relation as <type>=<threadnote://uri>; repeat for multiple'),
     replace: withValueAlias(
       optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
       'replace-uri',

@@ -46,6 +46,7 @@ import {
   assertMemoryDocumentSchemaWritable,
   formatMemoryDocument,
   memoryArchiveBody,
+  memoryArchiveMetadata,
   type MemoryMetadata,
 } from './document.js';
 import {captureMemoryCodeCitations, MemoryCodeCitationCaptureError} from './code_citation_capture.js';
@@ -65,6 +66,12 @@ import {
 } from './destination_guard.js';
 import {MEMORY_SCHEMA_VERSION} from './code_citation.js';
 import {memoryCodeCitationSharingBlocker, memoryCodeCitationSharingBlockerMessage} from './code_citation_policy.js';
+import {
+  memoryIdentityWriteLockKeys,
+  parseMemoryRelationOption,
+  resolveAuthoredMemoryRelations,
+  verifyAuthoredMemoryRelationTargetIdentities,
+} from './relations.js';
 import {
   discardMemoryRelocation,
   isMemoryRelocationUri,
@@ -163,6 +170,7 @@ import {
   stripPersonalProvenance,
   resourceUriToWorktreeRelative,
   writeMemoryFile,
+  writeMemoryFileChecked,
   writeSharedWorktreeFile,
 } from '../share/index.js';
 
@@ -245,6 +253,16 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   const citationSourceCommit = commonMemoryCodeCitationCommit(codeCitations);
   const workspaceComponent = yield* resolveWorkspaceComponentContext({includeProcessCwd: true});
   const crypto = yield* Crypto.Crypto;
+  const memoryId = replaced?.metadata.memoryId ?? `tn_${(yield* crypto.randomUUIDv4).replaceAll('-', '')}`;
+  const sharedTeam = options.replace ? sharedTeamNameForUri(config, options.replace) : undefined;
+  const relationScope = sharedTeam
+    ? `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(sharedTeam)}`
+    : `threadnote://user/${uriSegment(config.user)}/memories`;
+  const relationInputs = yield* attemptSync(() => (options.relations ?? []).map(parseMemoryRelationOption));
+  const authoredRelations = yield* resolveAuthoredMemoryRelations(config, relationInputs, {
+    allowedUriScopes: [relationScope],
+    sourceMemoryId: memoryId,
+  });
   // Projection computes source_hash from canonical content. Keeping the
   // high-entropy digest out of Threadnote's indexed memory preserves semantic
   // retrieval quality while the stable identity and lifecycle fields remain
@@ -253,8 +271,9 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     createdAt: replaced?.metadata.createdAt ?? replaced?.metadata.timestamp ?? timestamp,
     ...(codeCitations.length === 0 ? {} : {codeCitations}),
     kind: options.kind ?? 'durable',
-    memoryId: replaced?.metadata.memoryId ?? `tn_${(yield* crypto.randomUUIDv4).replaceAll('-', '')}`,
+    memoryId,
     project: normalizeOptionalMetadata(options.project),
+    relations: authoredRelations.relations,
     schemaVersion: MEMORY_SCHEMA_VERSION,
     sourceAgentClient: options.sourceAgentClient ?? 'codex',
     ...(citationSourceCommit === undefined ? {} : {sourceCommit: citationSourceCommit, sourceObservedAt: timestamp}),
@@ -283,6 +302,7 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
     deferredCodeAnchor: citationCapture.deferred,
     dryRun: options.dryRun === true,
     expectedReplaceContent: replaced?.content,
+    expectedSourceContent: authoredRelations.targets,
     metadata,
     replaceUri: options.replace,
     title: 'MEMORY',
@@ -293,6 +313,15 @@ export const runRemember = Effect.fn('runRemember')(function* (config: RuntimeCo
   if (replaced?.metadata.codeCitations?.length && codeCitations.length === 0 && !citationCapture.deferred) {
     yield* Console.log(
       `Cleared ${replaced.metadata.codeCitations.length} prior code citation(s); pass --code-ref to recapture them.`,
+    );
+  }
+  if (
+    options.dryRun !== true &&
+    replaced?.metadata.relations?.length &&
+    (authoredRelations.relations?.length ?? 0) === 0
+  ) {
+    yield* Console.log(
+      `Cleared ${replaced.metadata.relations.length} prior memory relation(s); pass --relation to author the replacement edges.`,
     );
   }
 });
@@ -1171,23 +1200,19 @@ export const runArchive = Effect.fn('runArchive')(function* (
           ),
         );
       }
-      const metadata: MemoryMetadata = {
+      const metadata = memoryArchiveMetadata(inferredMetadata, {
         archivedFrom: uri,
-        codeCitations: inferredMetadata.codeCitations,
         kind: options.kind ?? inferredMetadata.kind ?? 'handoff',
-        project: normalizeOptionalMetadata(options.project) ?? inferredMetadata.project,
-        schemaVersion: inferredMetadata.schemaVersion,
+        project: normalizeOptionalMetadata(options.project),
         sourceAgentClient: 'threadnote',
-        sourceCommit: inferredMetadata.sourceCommit,
-        sourceObservedAt: inferredMetadata.sourceObservedAt,
-        status: 'archived',
         timestamp: new Date().toISOString(),
-        topic: normalizeOptionalMetadata(options.topic) ?? inferredMetadata.topic,
-      };
+        topic: normalizeOptionalMetadata(options.topic),
+      });
       const archiveUri = yield* storeMemory(config, {
         bodyText: memoryArchiveBody(sourceRecord.body),
         dryRun: false,
         metadata,
+        skipMemoryIdentityLock: true,
         title: 'MEMORY',
       });
       const currentSource = yield* store.read(resourceStoreLocation(config), uri).pipe(Effect.option);
@@ -1513,13 +1538,22 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
       return options.replaceUri;
     }
     const fs = yield* FileSystem.FileSystem;
+    const sharedWrite = verifyAuthoredMemoryRelationTargetIdentities(config, options.expectedSourceContent ?? []).pipe(
+      Effect.andThen(storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string)),
+    );
     yield* withSharedRepositoryLock(
       config,
       withMemoryUriLocks(
         fs,
         config.agentContextHome,
-        [options.replaceUri],
-        storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string),
+        [
+          options.replaceUri,
+          ...(options.expectedSourceContent ?? []).map(source => source.uri),
+          ...(options.skipMemoryIdentityLock === true
+            ? []
+            : memoryIdentityWriteLockKeys(options.metadata.memoryId, options.expectedSourceContent ?? [])),
+        ],
+        sharedWrite,
       ),
     );
     return options.replaceUri;
@@ -1529,7 +1563,8 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
   // at the URI we are about to write to (an in-place update). Without this,
   // `--replace <self>` would bake a self-supersedes line into the body that
   // also leaks to teammates when the memory is later published.
-  const candidateMetadata: MemoryMetadata = {...options.metadata, supersedes: options.replaceUri};
+  const candidateMetadata: MemoryMetadata =
+    options.replaceUri === undefined ? options.metadata : {...options.metadata, supersedes: options.replaceUri};
   const candidateMemory = formatMemoryDocument(options.title, candidateMetadata, options.bodyText);
   const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = options.replaceUri !== undefined && options.replaceUri === memoryUri;
@@ -1558,6 +1593,7 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
   const write = Effect.gen(function* () {
     const store = yield* ResourceStore;
     const destination = yield* assertPersonalMemoryDestinationWritable(config, memoryUri, options.replaceUri);
+    yield* verifyAuthoredMemoryRelationTargetIdentities(config, options.expectedSourceContent ?? []);
     if (options.replaceUri) {
       if (options.expectedReplaceRawContent !== undefined) {
         yield* assertCurrentReplacementRawContent(config, options.replaceUri, options.expectedReplaceRawContent);
@@ -1583,7 +1619,8 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
           request: options.deferredCodeAnchor,
         })
       : undefined;
-    yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false);
+    const relationCheck = verifyAuthoredMemoryRelationTargetIdentities(config, options.expectedSourceContent ?? []);
+    yield* writeMemoryFileChecked(config, ov, memoryUri, memory, writeMode, false, relationCheck);
     if (options.replaceUri && relocationSourceContent !== undefined && !isInPlaceUpdate) {
       yield* recordMemoryRelocation(config, {
         fromContent: relocationSourceContent,
@@ -1620,8 +1657,32 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
     }
   });
   yield* options.deferredCodeAnchor
-    ? withDeferredCodeAnchorMutationLocks(fs, config, [options.replaceUri, memoryUri], write)
-    : withMemoryUriLocks(fs, config.agentContextHome, [options.replaceUri, memoryUri], write);
+    ? withDeferredCodeAnchorMutationLocks(
+        fs,
+        config,
+        [
+          options.replaceUri,
+          memoryUri,
+          ...(options.expectedSourceContent ?? []).map(source => source.uri),
+          ...(options.skipMemoryIdentityLock === true
+            ? []
+            : memoryIdentityWriteLockKeys(finalMetadata.memoryId, options.expectedSourceContent ?? [])),
+        ],
+        write,
+      )
+    : withMemoryUriLocks(
+        fs,
+        config.agentContextHome,
+        [
+          options.replaceUri,
+          memoryUri,
+          ...(options.expectedSourceContent ?? []).map(source => source.uri),
+          ...(options.skipMemoryIdentityLock === true
+            ? []
+            : memoryIdentityWriteLockKeys(finalMetadata.memoryId, options.expectedSourceContent ?? [])),
+        ],
+        write,
+      );
   return memoryUri;
 });
 
@@ -1682,7 +1743,9 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
       ),
     );
   }
-  const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
+  const scrub = applyScrubber(stripPersonalProvenance(rawMemory, {preserveStableMemoryRelations: true}), {
+    redact: false,
+  });
   if (scrub.blocker) {
     return yield* Effect.fail(
       new MemoryOperationError(
@@ -1707,7 +1770,8 @@ const storeSharedMemoryReplacement = Effect.fn('memory.storeSharedMemoryReplacem
   const previousContent = existingTarget?.content;
   yield* assertSharedWorktreeFileReady(team.config.worktree, relativePath, previousContent, options.dryRun);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, options.dryRun);
-  yield* writeMemoryFile(config, ov, targetUri, memory, 'replace', options.dryRun);
+  const relationCheck = verifyAuthoredMemoryRelationTargetIdentities(config, options.expectedSourceContent ?? []);
+  yield* writeMemoryFileChecked(config, ov, targetUri, memory, 'replace', options.dryRun, relationCheck);
   yield* writeSharedWorktreeFile(team.config.worktree, relativePath, memory, options.dryRun);
 
   const gitMessages = yield* publishShareGitChange(

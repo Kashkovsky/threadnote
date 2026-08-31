@@ -44,7 +44,9 @@ async function makeRuntime(): Promise<RuntimeConfig> {
   await mkdir(join(home, 'share'), {recursive: true});
   await mkdir(worktree, {recursive: true});
   const sharedContent =
-    'MEMORY\nkind: durable\nstatus: active\nproject: orion-worker\ntopic: lease\n\nOriginal shared lease memory.\n';
+    'MEMORY\nkind: durable\nstatus: active\nproject: orion-worker\ntopic: lease\nmemory_id: tn_shared_lease\n\nOriginal shared lease memory.\n';
+  const dependencyContent =
+    'MEMORY\nkind: durable\nstatus: active\nproject: orion-worker\ntopic: dependency\nmemory_id: tn_shared_dependency\n\nShared dependency.\n';
   const canonicalSharedPath = join(
     home,
     'data',
@@ -60,10 +62,27 @@ async function makeRuntime(): Promise<RuntimeConfig> {
     'lease.md',
   );
   const worktreeSharedPath = join(worktree, 'durable', 'projects', 'orion-worker', 'lease.md');
+  const canonicalDependencyPath = join(
+    home,
+    'data',
+    'local',
+    'user',
+    'test-user',
+    'memories',
+    'shared',
+    'default',
+    'durable',
+    'projects',
+    'orion-worker',
+    'dependency.md',
+  );
+  const worktreeDependencyPath = join(worktree, 'durable', 'projects', 'orion-worker', 'dependency.md');
   await mkdir(join(canonicalSharedPath, '..'), {recursive: true});
   await mkdir(join(worktreeSharedPath, '..'), {recursive: true});
   await writeFile(canonicalSharedPath, sharedContent);
   await writeFile(worktreeSharedPath, sharedContent);
+  await writeFile(canonicalDependencyPath, dependencyContent);
+  await writeFile(worktreeDependencyPath, dependencyContent);
   await writeFile(
     join(home, 'share', 'teams.json'),
     `${JSON.stringify(
@@ -164,6 +183,30 @@ describe('remember shared replacement', () => {
       expect(output).not.toContain('project: atlas-cache');
       expect(output).toContain('keeping shared memory project "orion-worker"');
       expect(output).toContain('ignoring requested "atlas-cache"');
+    }),
+  );
+
+  effectIt.effect('normalizes and preserves stable relations on direct shared replacement', () =>
+    Effect.gen(function* () {
+      const config = yield* Effect.promise(makeRuntime);
+      homes.push(config.agentContextHome);
+
+      const sharedUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/lease.md';
+      const targetUri =
+        'threadnote://user/test-user/memories/shared/default/durable/projects/orion-worker/dependency.md';
+      const captured = yield* captureConsole(
+        runRemember(config, {
+          dryRun: true,
+          kind: 'durable',
+          relations: [`depends_on=${targetUri}`],
+          replace: sharedUri,
+          sourceAgentClient: 'codex',
+          text: 'Updated shared lease memory.',
+        }).pipe(provideTestLayer(ApplicationLayer)),
+      );
+
+      expect(captured.output).toContain('relation: depends_on threadnote://memory/tn_shared_dependency');
+      expect(captured.output).not.toContain(`relation: depends_on ${targetUri}`);
     }),
   );
 

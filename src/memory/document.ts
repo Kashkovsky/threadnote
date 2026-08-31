@@ -16,7 +16,11 @@ export type MemoryTrust = 'approved' | 'inferred' | 'untrusted';
 
 export type MemoryVisibility = 'external' | 'personal' | 'shared';
 
-export type MemoryRelationType = 'depends_on' | 'evidence_for' | 'references' | 'related_to' | 'supersedes';
+export const MEMORY_RELATION_TYPES = ['depends_on', 'evidence_for', 'references', 'related_to', 'supersedes'] as const;
+
+export const MAX_MEMORY_RELATIONS = 16;
+
+export type MemoryRelationType = (typeof MEMORY_RELATION_TYPES)[number];
 
 export interface MemoryRelation {
   readonly type: MemoryRelationType;
@@ -197,6 +201,38 @@ export function formatMemoryDocument(title: 'MEMORY' | 'HANDOFF', metadata: Memo
 /** Preserve source prose in an archive without duplicating machine-readable headers into recall text. */
 export function memoryArchiveBody(sourceBody: string): string {
   return ['Archived original Threadnote memory.', '', sourceBody].join('\n');
+}
+
+/**
+ * Archiving changes a memory's lifecycle and storage location, not its identity
+ * or knowledge edges. Keep the source's stable/semantic metadata while making
+ * the archival event and personal destination explicit.
+ */
+export function memoryArchiveMetadata(
+  source: MemoryMetadata,
+  options: {
+    readonly archivedFrom: string;
+    readonly kind?: MemoryKind;
+    readonly project?: string;
+    readonly sourceAgentClient: string;
+    readonly timestamp: string;
+    readonly topic?: string;
+  },
+): MemoryMetadata {
+  return {
+    ...source,
+    archivedFrom: options.archivedFrom,
+    citationErrors: undefined,
+    createdAt: source.createdAt ?? source.timestamp,
+    kind: options.kind ?? source.kind,
+    project: options.project ?? source.project,
+    sourceAgentClient: options.sourceAgentClient,
+    status: 'archived',
+    timestamp: options.timestamp,
+    topic: options.topic ?? source.topic,
+    updatedAt: options.timestamp,
+    visibility: 'personal',
+  };
 }
 
 export function formatMemoryDocumentWithKeywords(content: string, keywords: readonly string[]): string {
@@ -440,20 +476,23 @@ function parseMemoryRelations(values: readonly string[] | undefined): readonly M
     return undefined;
   }
   const relations = values
-    .map(value => {
-      const separator = value.indexOf(' ');
-      if (separator <= 0) {
-        return undefined;
-      }
-      const type = value.slice(0, separator);
-      const uri = canonicalOptionalResourceInput(value.slice(separator + 1).trim());
-      if (!uri || !uri.startsWith('threadnote://') || !isMemoryRelationType(type)) {
-        return undefined;
-      }
-      return {type, uri};
-    })
+    .map(parseMemoryRelationValue)
     .filter((relation): relation is MemoryRelation => relation !== undefined);
   return relations.length > 0 ? relations : undefined;
+}
+
+/** Tolerant legacy decoder; strict authoring validation lives in memory/relations.ts. */
+export function parseMemoryRelationValue(value: string): MemoryRelation | undefined {
+  const separator = value.indexOf(' ');
+  if (separator <= 0) {
+    return undefined;
+  }
+  const type = value.slice(0, separator);
+  const uri = canonicalOptionalResourceInput(value.slice(separator + 1).trim());
+  if (!uri || !uri.startsWith('threadnote://') || !isMemoryRelationType(type)) {
+    return undefined;
+  }
+  return {type, uri};
 }
 
 function canonicalOptionalResourceInput(uri: string | undefined): string | undefined {
@@ -469,14 +508,8 @@ function canonicalResourceInputs(values: readonly string[] | undefined): readonl
   return values?.map(value => canonicalOptionalResourceInput(value) ?? value);
 }
 
-function isMemoryRelationType(value: string): value is MemoryRelationType {
-  return (
-    value === 'depends_on' ||
-    value === 'evidence_for' ||
-    value === 'references' ||
-    value === 'related_to' ||
-    value === 'supersedes'
-  );
+export function isMemoryRelationType(value: string): value is MemoryRelationType {
+  return MEMORY_RELATION_TYPES.some(type => type === value);
 }
 
 function parseSchemaVersion(value: string | undefined): number | undefined {

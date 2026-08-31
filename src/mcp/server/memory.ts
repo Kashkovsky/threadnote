@@ -24,6 +24,7 @@ import {
   setMemoryVisibility,
   sharedUriFor,
   writeMemoryFile,
+  writeMemoryFileChecked,
   writeSharedWorktreeFile,
 } from '../../share/index.js';
 import {currentPackageVersion, errorMessage, safeTimestamp, sha256} from '../../utils.js';
@@ -38,6 +39,7 @@ import {
   canonicalMemoryDocumentContent,
   formatMemoryDocument,
   memoryArchiveBody,
+  memoryArchiveMetadata,
   type MemoryMetadata,
 } from '../../memory/document.js';
 import {
@@ -45,6 +47,8 @@ import {
   memoryCodeCitationSharingBlockerMessage,
 } from '../../memory/code_citation_policy.js';
 import {MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
+import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
+import {memoryIdentityWriteLockKeys, verifyAuthoredMemoryRelationTargetIdentities} from '../../memory/relations.js';
 import {
   discardDeferredCodeAnchorIntent,
   discardDeferredCodeAnchorIntentsWithin,
@@ -205,21 +209,18 @@ export function archiveMemoryForCompact(config: RuntimeConfig, action: ArchiveAc
             `Cannot archive ${action.uri}: malformed code citation metadata (${reasons}) must be repaired or recaptured first.`,
           );
         }
+        const timestamp = new Date().toISOString();
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: memoryArchiveBody(source.body),
-          metadata: {
+          metadata: memoryArchiveMetadata(source.metadata, {
             archivedFrom: action.uri,
-            codeCitations: source.metadata.codeCitations,
             kind: action.kind,
             project: action.project,
-            schemaVersion: source.metadata.schemaVersion,
             sourceAgentClient: 'mcp',
-            sourceCommit: source.metadata.sourceCommit,
-            sourceObservedAt: source.metadata.sourceObservedAt,
-            status: 'archived',
-            timestamp: new Date().toISOString(),
+            timestamp,
             topic: action.topic,
-          },
+          }),
+          skipMemoryIdentityLock: true,
         });
         if (archiveResult.isError === true) {
           return archiveResult;
@@ -448,11 +449,17 @@ export interface WriteDurableMemoryParams {
   readonly bodyText: string;
   readonly deferredCodeAnchor?: DeferredCodeAnchorWriteRequest;
   readonly expectedReplaceContentHash?: string;
-  readonly expectedSourceContent?: readonly {readonly content: string; readonly uri: string}[];
+  readonly expectedSourceContent?: readonly {
+    readonly allowedUriScopes?: readonly string[];
+    readonly content: string;
+    readonly memoryId?: string;
+    readonly uri: string;
+  }[];
   readonly metadata: MemoryMetadata;
   readonly operation?: 'create' | 'replace' | 'upsert';
   readonly prepared?: PreparedPersonalMemoryWrite;
   readonly replaceUri?: string;
+  readonly skipMemoryIdentityLock?: boolean;
 }
 
 interface PreparedPersonalMemoryWrite {
@@ -471,6 +478,9 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
       params.replaceUri,
       prepared.memoryUri,
       ...(params.expectedSourceContent ?? []).map(source => source.uri),
+      ...(params.skipMemoryIdentityLock === true
+        ? []
+        : memoryIdentityWriteLockKeys(prepared.finalMetadata.memoryId, params.expectedSourceContent ?? [])),
     ];
     const mutation = Effect.gen(function* () {
       const ov = 'threadnote-native';
@@ -514,11 +524,17 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
           );
         }
       }
+      yield* verifyAuthoredMemoryRelationTargetIdentities(config, params.expectedSourceContent ?? []);
       if (params.replaceUri && isInSharedNamespace(config, params.replaceUri)) {
         if (params.deferredCodeAnchor) {
           return argumentError('Deferred code anchors are private-local and cannot update shared memory.');
         }
-        return yield* writeSharedMemoryReplacement(config, ov, params, params.replaceUri as string);
+        return yield* writeSharedMemoryReplacement(
+          config,
+          ov,
+          {...params, metadata: prepared.finalMetadata},
+          params.replaceUri as string,
+        );
       }
       const {finalMetadata, isInPlaceUpdate, memory, memoryUri} = prepared;
       const destinationExists = yield* resourceExists(ov, config, memoryUri);
@@ -562,7 +578,18 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
             request: params.deferredCodeAnchor,
           })
         : undefined;
-      yield* writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
+      yield* params.expectedSourceContent?.length
+        ? writeMemoryFileChecked(
+            config,
+            ov,
+            memoryUri,
+            memory,
+            writeMode,
+            false,
+            verifyAuthoredMemoryRelationTargetIdentities(config, params.expectedSourceContent),
+            {quiet: true},
+          )
+        : writeMemoryFile(config, ov, memoryUri, memory, writeMode, false, {quiet: true});
       if (params.replaceUri && !isInPlaceUpdate && currentReplaceTarget) {
         yield* recordMemoryRelocation(config, {
           fromContent: currentReplaceTarget.content,
@@ -639,8 +666,19 @@ export function writeCursorCloudSharedMemory(
       return yield* withMemoryUriLocks(
         fs,
         config.agentContextHome,
-        [targetUri],
+        [
+          targetUri,
+          ...(params.expectedSourceContent ?? []).map(source => source.uri),
+          ...memoryIdentityWriteLockKeys(prepared.finalMetadata.memoryId, params.expectedSourceContent ?? []),
+        ],
         Effect.gen(function* () {
+          for (const source of params.expectedSourceContent ?? []) {
+            const [currentSource] = yield* readMemoryRecordsByUri(config, [source.uri]);
+            if (!currentSource || currentSource.content !== source.content) {
+              return argumentError('A relation target changed during the write; refresh memory and retry.');
+            }
+          }
+          yield* verifyAuthoredMemoryRelationTargetIdentities(config, params.expectedSourceContent ?? []);
           const [existingTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
           if (params.replaceUri && !existingTarget) {
             return argumentError(`Shared memory ${targetUri} no longer exists.`);
@@ -677,15 +715,26 @@ export function writeCursorCloudSharedMemory(
           const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
           yield* assertSharedWorktreeFileReady(resolved.config.worktree, relativePath, existingTarget?.content);
           yield* ensureSharedDirectoryChain(config, 'threadnote-native', targetUri, false, {quiet: true});
-          yield* writeMemoryFile(
-            config,
-            'threadnote-native',
-            targetUri,
-            scrub.cleaned,
-            existingTarget ? 'replace' : 'create',
-            false,
-            {quiet: true},
-          );
+          yield* params.expectedSourceContent?.length
+            ? writeMemoryFileChecked(
+                config,
+                'threadnote-native',
+                targetUri,
+                scrub.cleaned,
+                existingTarget ? 'replace' : 'create',
+                false,
+                verifyAuthoredMemoryRelationTargetIdentities(config, params.expectedSourceContent),
+                {quiet: true},
+              )
+            : writeMemoryFile(
+                config,
+                'threadnote-native',
+                targetUri,
+                scrub.cleaned,
+                existingTarget ? 'replace' : 'create',
+                false,
+                {quiet: true},
+              );
           const [storedTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
           if (
             !storedTarget ||
@@ -755,10 +804,17 @@ export const preparePersonalMemoryWrite = Effect.fn('mcpServer.preparePersonalMe
     updatedAt: params.metadata.updatedAt ?? params.metadata.timestamp,
     visibility: 'personal',
   };
+  if (
+    metadata.memoryId !== undefined &&
+    metadata.relations?.some(relation => memoryIdFromIdentityAlias(relation.uri) === metadata.memoryId)
+  ) {
+    return yield* Effect.fail(new McpServerOperationError('A memory cannot relate to itself.'));
+  }
   // Two-pass formatting: see src/memory/index.ts:storeMemory for the rationale.
   // Drops the supersedes line when replaceUri points at the URI we're about
   // to write to (in-place update).
-  const candidateMetadata: MemoryMetadata = {...metadata, supersedes: params.replaceUri};
+  const candidateMetadata: MemoryMetadata =
+    params.replaceUri === undefined ? metadata : {...metadata, supersedes: params.replaceUri};
   const candidateMemory = formatMemoryDocument('MEMORY', candidateMetadata, params.bodyText);
   const memoryUri = yield* memoryUriFor(config, candidateMemory, candidateMetadata);
   const isInPlaceUpdate = params.replaceUri !== undefined && params.replaceUri === memoryUri;
@@ -799,8 +855,10 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
   const inferred = sharedMemoryUriParts(config, targetUri);
   const metadata: MemoryMetadata = {
     ...params.metadata,
-    project: params.metadata.project ?? inferred?.project,
+    project: inferred?.project ?? params.metadata.project,
+    supersedes: undefined,
     topic: params.metadata.topic ?? inferred?.topic,
+    visibility: 'shared',
   };
   const rawMemory = formatMemoryDocument('MEMORY', metadata, params.bodyText);
   const citationBlocker = memoryCodeCitationSharingBlocker(metadata);
@@ -809,7 +867,9 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
       `Refusing to update shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
     );
   }
-  const scrub = applyScrubber(stripPersonalProvenance(rawMemory), {redact: false});
+  const scrub = applyScrubber(stripPersonalProvenance(rawMemory, {preserveStableMemoryRelations: true}), {
+    redact: false,
+  });
   if (scrub.blocker) {
     return argumentError(
       `Refusing to update shared memory ${targetUri}: possible ${scrub.blocker}. Strip the sensitive value first.`,
@@ -823,7 +883,18 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
   const relativePath = resourceUriToWorktreeRelative(config, targetUri, resolved.name);
   yield* assertSharedWorktreeFileReady(resolved.config.worktree, relativePath, existingTarget.content);
   yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
-  yield* writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
+  yield* params.expectedSourceContent?.length
+    ? writeMemoryFileChecked(
+        config,
+        ov,
+        targetUri,
+        scrub.cleaned,
+        'replace',
+        false,
+        verifyAuthoredMemoryRelationTargetIdentities(config, params.expectedSourceContent),
+        {quiet: true},
+      )
+    : writeMemoryFile(config, ov, targetUri, scrub.cleaned, 'replace', false, {quiet: true});
 
   yield* writeSharedWorktreeFile(resolved.config.worktree, relativePath, scrub.cleaned);
   const messages = [`Updated shared memory: ${targetUri}`];

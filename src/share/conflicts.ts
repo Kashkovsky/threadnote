@@ -478,7 +478,7 @@ const conflictResolutionContent = Effect.fn('share.conflictResolutionContent')(f
       `Cannot resolve ${conflict.id}: local native canonical store content is unavailable.`,
     );
   }
-  const scrub = applyScrubber(stripPersonalProvenance(raw), {redact: false});
+  const scrub = applyScrubber(stripPersonalProvenance(raw, {preserveStableMemoryRelations: true}), {redact: false});
   if (scrub.blocker) {
     throw new ShareOperationError(
       `Refusing to resolve ${conflict.id}: possible ${scrub.blocker}. Strip the sensitive value before writing it to shared memory.`,

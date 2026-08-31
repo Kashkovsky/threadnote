@@ -48,11 +48,113 @@ describe('Effect CLI', () => {
 
     expect(remember.stdout).toContain('Graph-indexed repository-relative path');
     expect(remember.stdout).toContain('--require-current-code-refs');
+    expect(remember.stdout).toContain('--relation string');
     expect(remember.stdout).toContain('default private store-now/anchor-later');
     expect(handoff.stdout).toContain('Graph-indexed repository-relative path');
     expect(handoff.stdout).toContain('--require-current-code-refs');
     expect(contextBrief.stdout).toContain('1-4096 UTF-8 bytes');
     expect(contextBrief.stdout).toContain('at most 256 UTF-8 bytes');
+  });
+
+  it('stores repeatable typed relations as stable memory identities', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-effect-cli-relations-'));
+    const memoryRoot = join(root, 'data', 'local', 'user', 'local', 'memories', 'durable', 'projects', 'threadnote');
+    const targetUri = 'threadnote://user/local/memories/durable/projects/threadnote/relation-target.md';
+    try {
+      await mkdir(memoryRoot, {recursive: true});
+      await writeFile(
+        join(memoryRoot, 'relation-target.md'),
+        [
+          'MEMORY',
+          'kind: durable',
+          'status: active',
+          'project: threadnote',
+          'topic: relation-target',
+          'memory_id: tn_cli_relation_target',
+          'source_agent_client: test',
+          'timestamp: 2026-08-31T00:00:00.000Z',
+          '',
+          'CLI relation target.',
+        ].join('\n'),
+      );
+
+      const stored = await runCli(
+        [
+          'remember',
+          '--project',
+          'threadnote',
+          '--topic',
+          'relation-source',
+          '--relation',
+          `depends_on=${targetUri}`,
+          '--relation',
+          'evidence_for=threadnote://memory/tn_cli_relation_target',
+          '--text',
+          'CLI relation source.',
+        ],
+        {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'},
+      );
+      expect(stored.stdout).toContain('Stored memory:');
+
+      const sourceUri = 'threadnote://user/local/memories/durable/projects/threadnote/relation-source.md';
+      const read = await runCli(['read', sourceUri], {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'});
+      expect(read.stdout).toContain('relation: depends_on threadnote://memory/tn_cli_relation_target');
+      expect(read.stdout).toContain('relation: evidence_for threadnote://memory/tn_cli_relation_target');
+
+      const preview = await runCli(
+        [
+          'remember',
+          '--dry-run',
+          '--project',
+          'threadnote',
+          '--topic',
+          'relation-source',
+          '--replace',
+          sourceUri,
+          '--text',
+          'Preview a replacement without edges.',
+        ],
+        {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'},
+      );
+      expect(preview.stdout).not.toContain('Cleared 2 prior memory relation(s)');
+      const afterPreview = await runCli(['read', sourceUri], {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'});
+      expect(afterPreview.stdout).toContain('relation: depends_on threadnote://memory/tn_cli_relation_target');
+
+      const replaced = await runCli(
+        [
+          'remember',
+          '--project',
+          'threadnote',
+          '--topic',
+          'relation-source',
+          '--replace',
+          sourceUri,
+          '--text',
+          'CLI relation source without replacement edges.',
+        ],
+        {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'},
+      );
+      expect(replaced.stdout).toContain('Cleared 2 prior memory relation(s)');
+      const cleared = await runCli(['read', sourceUri], {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'});
+      expect(cleared.stdout).not.toContain('relation:');
+
+      const tooMany = await runCli(
+        [
+          'remember',
+          '--text',
+          'Too many relations.',
+          ...Array.from({length: 17}, (_, index) => [
+            '--relation',
+            `related_to=threadnote://memory/tn_${index}`,
+          ]).flat(),
+        ],
+        {THREADNOTE_HOME: root, THREADNOTE_USER: 'local'},
+      ).catch(cause => cause as NodeJS.ErrnoException & {stderr?: string});
+      expect(tooMany).toMatchObject({code: 1});
+      expect(String(tooMany.stderr)).toContain('at most 16 relations');
+    } finally {
+      await rm(root, {force: true, recursive: true});
+    }
   });
 
   it('rejects deferred citation policy without a requested code reference', async () => {

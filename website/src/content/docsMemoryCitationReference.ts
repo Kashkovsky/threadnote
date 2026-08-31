@@ -1,8 +1,42 @@
-import type {McpToolReference} from './docsTypes.js';
+import type {DocsArticle, McpToolReference} from './docsTypes.js';
+
+export const typedMemoryRelationsDocsArticle: DocsArticle = {
+  id: 'typed-memory-relations',
+  title: 'Typed memory relations',
+  summary:
+    'Record a small explicit connection to another active memory without turning Threadnote into a general graph editor.',
+  body: [
+    {
+      type: 'paragraph',
+      text: 'In local and Cursor Cloud Git profiles, remember_context accepts relations as up to 16 {type, uri} objects. The CLI uses a repeatable --relation type=uri flag. Types are depends_on, evidence_for, references, related_to, and supersedes. Targets must resolve inside the authorized active memory scope; Threadnote rejects missing, inactive, conflicted, duplicate, cross-scope, and self targets, then stores the target’s stable threadnote://memory/tn_… identity.',
+    },
+    {
+      type: 'code',
+      language: 'json',
+      code: `{
+  "kind": "durable",
+  "project": "mobile",
+  "topic": "auth-rollout",
+  "relations": [
+    {
+      "type": "depends_on",
+      "uri": "threadnote://user/me/memories/durable/projects/mobile/auth-contract.md"
+    }
+  ],
+  "text": "Roll out only after the authentication contract is deployed."
+}`,
+    },
+    {
+      type: 'paragraph',
+      text: 'Relations are canonical metadata and a rebuildable local projection; they do not make ordinary recall recursive or expand Context Brief yet. Shared writes restrict targets to the same share. On replacement, the supplied relation list is the revised set and omission clears prior explicit relations. Manager raw saves preserve existing relation headers but cannot change them until its structured relation editor ships.',
+    },
+  ],
+};
 
 export const rememberMemoryCitationCliExamples = [
   'threadnote remember --kind durable --project mobile --topic auth-contract --text "..."',
   'threadnote remember --kind durable --project mobile --topic auth-contract --code-ref src/auth/session.ts --code-ref cgs_… --text "..."',
+  'threadnote remember --kind durable --project mobile --topic auth-contract --relation depends_on=<threadnote-memory-uri> --text "..."',
   'threadnote remember --kind durable --project mobile --topic auth-contract --replace <threadnote-uri> --text "..."',
 ];
 
@@ -21,6 +55,7 @@ export const rememberContextMemoryCitationInputs = [
   'citationPolicy',
   'replaceUri',
   'references',
+  'relations (local/Git-share; max 16 typed memory targets)',
   'sourceAgentClient',
 ];
 

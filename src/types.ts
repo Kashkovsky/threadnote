@@ -185,6 +185,8 @@ export interface RememberOptions {
   readonly project?: string;
   /** Fail before writing unless every code reference resolves against an exact-current graph. */
   readonly requireCurrentCodeRefs?: boolean;
+  /** Repeatable `<type>=<threadnote://memory>` relation declarations. */
+  readonly relations?: readonly string[];
   readonly replace?: string;
   readonly sourceAgentClient?: string;
   readonly status?: MemoryStatus;

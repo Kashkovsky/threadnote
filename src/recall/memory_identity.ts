@@ -58,6 +58,7 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
   config: MemoryIdentityRuntime,
   inputs: readonly string[],
   allowedUriScopes: readonly string[],
+  options: {readonly validateNow?: boolean} = {},
 ) {
   const memoryIds = [...new Set(inputs.flatMap(input => memoryIdFromIdentityAlias(input) ?? []).filter(isMemoryId))];
   if (memoryIds.length === 0) {
@@ -72,7 +73,11 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
       }),
     );
   }
-  const candidates = yield* loadRecallMemoryIdentities(config, {allowedUriScopes, memoryIds});
+  const candidates = yield* loadRecallMemoryIdentities(config, {
+    allowedUriScopes,
+    memoryIds,
+    validateNow: options.validateNow,
+  });
 
   const resolved: ResolvedMemoryIdentityAlias[] = [];
   for (const input of inputs) {

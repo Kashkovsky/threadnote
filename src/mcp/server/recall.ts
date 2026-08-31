@@ -48,6 +48,7 @@ import {
   canonicalMemoryDocumentContent,
   isSharedMemoryUri,
   memoryArchiveBody,
+  memoryArchiveMetadata,
   type MemoryMetadata,
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
@@ -1859,22 +1860,18 @@ export function registerArchiveTool(
           catch: error => new McpServerOperationError(errorMessage(error)),
           try: () => assertMemoryRecordArchivable(sourceRecord),
         });
+        const timestamp = new Date().toISOString();
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: memoryArchiveBody(sourceRecord.body),
           expectedSourceContent: [{content: sourceContent, uri: checkedUri.value}],
-          metadata: {
+          metadata: memoryArchiveMetadata(sourceRecord.metadata, {
             archivedFrom: checkedUri.value,
-            codeCitations: sourceRecord.metadata.codeCitations,
             kind: kind ?? 'handoff',
             project: normalizeOptionalMetadata(project),
-            schemaVersion: sourceRecord.metadata.schemaVersion,
             sourceAgentClient: 'mcp',
-            sourceCommit: sourceRecord.metadata.sourceCommit,
-            sourceObservedAt: sourceRecord.metadata.sourceObservedAt,
-            status: 'archived',
-            timestamp: new Date().toISOString(),
+            timestamp,
             topic: normalizeOptionalMetadata(topic),
-          },
+          }),
         });
         if (archiveResult.isError === true) {
           return archiveResult;

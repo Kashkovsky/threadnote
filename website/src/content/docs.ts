@@ -7,6 +7,7 @@ import {
   rememberContextMcpTool,
   rememberMemoryCitationCliExamples,
   reviewSessionContextMcpTool,
+  typedMemoryRelationsDocsArticle,
 } from './docsMemoryCitationReference.js';
 import {memoryWorkflowsDocsSection} from './docsMemoryWorkflows.js';
 import {optionalAnonymousTelemetryCliCommand, optionalAnonymousTelemetryDocsArticle} from './docsTelemetry.js';
@@ -771,6 +772,7 @@ threadnote index status`,
           },
         ],
       },
+      typedMemoryRelationsDocsArticle,
       {
         id: 'hybrid-recall',
         title: 'Hybrid recall',
