@@ -1,8 +1,8 @@
 import {Clock, Effect, FileSystem, Option, Path, Result} from 'effect';
 import {CodeGraphQueryService} from '../code_graph/query.js';
+import {sha256Hex} from '../effect/digest.js';
 import {isFileLockTimeout, withExclusiveFileLock} from '../effect/file_lock.js';
 import {withMemoryUriLocks} from '../effect/memory_lock.js';
-import {sha256Hex} from '../effect/digest.js';
 import {ResourceStore} from '../effect/resource-store.js';
 import {fileSystemModeIsPrivate, runtimePlatform, runtimeTextDirectoryNamePage} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
@@ -16,6 +16,14 @@ import {
 import {MEMORY_SCHEMA_VERSION, type MemoryCodeCitationV1} from './code_citation.js';
 import {discardMemoryRelocation} from './relocation.js';
 import {deferredCodeAnchorCaptureFailureItem} from './deferred_code_anchor_failure.js';
+import {
+  deferredCodeAnchorFinalizationVerified,
+  memoryContentHash,
+  readDeferredMemoryObservation,
+  reconcileInterruptedDeferredCodeAnchorCommit,
+  resourceStoreLocation,
+  type DeferredMemoryObservation,
+} from './deferred_code_anchor_memory.js';
 import {
   DeferredCodeAnchorError,
   DEFERRED_CODE_ANCHOR_ITEM_ROOT_NAME,
@@ -38,13 +46,9 @@ import {
   validatePrivateDeferredCodeAnchorDirectories,
   writePrivateDeferredCodeAnchorFile,
 } from './deferred_code_anchor_private_fs.js';
-import {
-  canonicalMemoryDocumentContent,
-  formatMemoryDocument,
-  parseMemoryDocument,
-  type MemoryMetadata,
-  type MemoryRecord,
-} from './document.js';
+import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from './document.js';
+
+export {deferredCodeAnchorFinalizationVerified, type DeferredMemoryObservation} from './deferred_code_anchor_memory.js';
 
 export const DEFERRED_CODE_ANCHOR_INTENT_VERSION = 1 as const;
 export const DEFERRED_CODE_ANCHOR_FINALIZATION_VERSION = 1 as const;
@@ -198,12 +202,6 @@ interface InvalidDeferredCodeAnchorIntent {
 }
 
 type DeferredCodeAnchorIntentEntry = InvalidDeferredCodeAnchorIntent | StoredDeferredCodeAnchorIntent;
-
-export interface DeferredMemoryObservation {
-  readonly content: string;
-  readonly hash: string;
-  readonly record: MemoryRecord;
-}
 
 /**
  * Stage the private intent before the canonical memory write. A crash can leave
@@ -748,46 +746,41 @@ const finalizeDeferredCodeAnchor = Effect.fn('memoryCodeAnchor.finalizeOne')(fun
         record.body,
       );
       const store = yield* ResourceStore;
-      yield* store.write(resourceStoreLocation(config), entry.intent.memoryUri, memory, {mode: 'upsert'});
-      yield* discardMemoryRelocation(config, entry.intent.memoryUri);
-      const verified = yield* store.read(resourceStoreLocation(config), entry.intent.memoryUri);
-      const verifiedRecord = parseMemoryDocument(entry.intent.memoryUri, verified);
-      if (!verifiedRecord || !deferredCodeAnchorFinalizationVerified(memory, verified)) {
-        return yield* Effect.fail(
-          deferredCodeAnchorError(`Deferred code-anchor verification failed for ${entry.intent.memoryUri}.`),
-        );
-      }
-      yield* discardStoredDeferredCodeAnchorIntent(config, entry);
-      return {
-        citationCount: citations.length,
-        memoryUri: entry.intent.memoryUri,
-        state: 'finalized',
-      } satisfies DeferredCodeAnchorFinalizeItemV1;
+      // The private intent is the recovery record for the canonical write. If
+      // the foreground deadline interrupts after that write commits, reconcile
+      // the canonical bytes before releasing the mutation lock. This keeps the
+      // potentially slow write interruptible while closing the commit/cleanup
+      // race; process crashes remain recoverable through the already-cited path.
+      return yield* Effect.gen(function* () {
+        yield* store.write(resourceStoreLocation(config), entry.intent.memoryUri, memory, {mode: 'upsert'});
+        yield* discardMemoryRelocation(config, entry.intent.memoryUri);
+        const verified = yield* store.read(resourceStoreLocation(config), entry.intent.memoryUri);
+        const verifiedRecord = parseMemoryDocument(entry.intent.memoryUri, verified);
+        if (!verifiedRecord || !deferredCodeAnchorFinalizationVerified(memory, verified)) {
+          return yield* Effect.fail(
+            deferredCodeAnchorError(`Deferred code-anchor verification failed for ${entry.intent.memoryUri}.`),
+          );
+        }
+        yield* discardStoredDeferredCodeAnchorIntent(config, entry);
+        return {
+          citationCount: citations.length,
+          memoryUri: entry.intent.memoryUri,
+          state: 'finalized',
+        } satisfies DeferredCodeAnchorFinalizeItemV1;
+      }).pipe(
+        Effect.onInterrupt(() =>
+          reconcileInterruptedDeferredCodeAnchorCommit(
+            config,
+            entry.intent.memoryUri,
+            memory,
+            discardMemoryRelocation(config, entry.intent.memoryUri).pipe(
+              Effect.andThen(discardStoredDeferredCodeAnchorIntent(config, entry)),
+            ),
+          ),
+        ),
+      );
     }),
   );
-});
-
-export function deferredCodeAnchorFinalizationVerified(expected: string, actual: string): boolean {
-  return canonicalMemoryDocumentContent(actual) === canonicalMemoryDocumentContent(expected);
-}
-
-const readDeferredMemoryObservation = Effect.fn('memoryCodeAnchor.readMemory')(function* (
-  config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>,
-  memoryUri: string,
-) {
-  const store = yield* ResourceStore;
-  const content = yield* store.read(resourceStoreLocation(config), memoryUri).pipe(
-    Effect.map(Option.some),
-    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
-  );
-  if (Option.isNone(content)) return undefined;
-  const record = parseMemoryDocument(memoryUri, content.value);
-  if (!record) return undefined;
-  return {
-    content: content.value,
-    hash: yield* memoryContentHash(content.value),
-    record,
-  } satisfies DeferredMemoryObservation;
 });
 
 const writeDeferredCodeAnchorIntent = Effect.fn('memoryCodeAnchor.writeIntent')(function* (
@@ -1988,12 +1981,4 @@ function deferredCodeAnchorRouteReceipt(
 function commonCitationSourceCommit(citations: readonly MemoryCodeCitationV1[]): string | undefined {
   const commits = new Set(citations.map(citation => citation.sourceCommit));
   return commits.size === 1 ? citations[0]?.sourceCommit : undefined;
-}
-
-function memoryContentHash(content: string) {
-  return sha256Hex(canonicalMemoryDocumentContent(content));
-}
-
-function resourceStoreLocation(config: Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>) {
-  return {account: config.account, home: config.agentContextHome, user: config.user} as const;
 }
