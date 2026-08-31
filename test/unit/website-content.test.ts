@@ -22,9 +22,15 @@ import {
 import {
   loadLatestMajorWebsiteReleases,
   parseStableReleaseVersion,
+  releaseHeadlineFromSummary,
   selectLatestMajorReleases,
   summarizeReleaseNote,
 } from '../../scripts/site-release-notes.js';
+import {
+  layoutReleaseSocialHeadline,
+  renderWebsiteReleaseSocialImagePng,
+  renderWebsiteReleaseSocialImageSvg,
+} from '../../scripts/site-release-social-image.js';
 import {assertExternalPerformanceEvidence} from '../../scripts/benchmark-code-graph.js';
 import {docsSections, mcpTools} from '../../website/src/content/docs.js';
 import {
@@ -63,7 +69,10 @@ import {
   type SitePage,
 } from '../../website/src/lib/routes.js';
 import {renderDocsArticleHtml, renderDocsSitemap} from '../../scripts/site-doc-pages.js';
-import {orderWebsiteUpdatesDescending} from '../../website/src/content/websiteArticles.js';
+import {
+  orderWebsiteUpdatesDescending,
+  websiteSocialImageForRelease,
+} from '../../website/src/content/websiteArticles.js';
 import type {BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
 import {proTips} from '../../website/src/content/proTips.js';
 import {EXTERNAL_REPOSITORY_REQUIRED_MEASUREMENTS} from '../../src/evaluation/external_evidence.js';
@@ -479,13 +488,63 @@ describe('Threadnote 4 website content', () => {
       highlights: ['Safer upgrades'],
       summary: 'A concise summary.',
     });
+    expect(
+      releaseHeadlineFromSummary(
+        'Threadnote 4.6 closes the loop between code graphs and memory. The rest belongs in the article summary.',
+      ),
+    ).toBe('Closes the loop between code graphs and memory.');
+    expect(releaseHeadlineFromSummary('Threadnote 4.4.3 is a focused Manager reliability patch.')).toBe(
+      'A focused Manager reliability patch.',
+    );
+    expect(() => releaseHeadlineFromSummary('Threadnote 4.7 has no terminal punctuation')).toThrow(
+      'must contain a complete first sentence',
+    );
+    expect(() => releaseHeadlineFromSummary(`Threadnote 4.7 ${'long '.repeat(60)}.`)).toThrow(
+      'social-card headline of at most 240 characters',
+    );
 
     const releases = loadLatestMajorWebsiteReleases(root);
     expect(releases.length).toBeGreaterThan(1);
     expect(releases.every(release => release.major === releases[0]!.major)).toBe(true);
     expect(releases.every(release => !release.version.includes('-'))).toBe(true);
+    expect(releases.every(release => release.headline.endsWith('.'))).toBe(true);
+    expect(releases.every(release => release.socialImage.startsWith(`whats-new/releases/${release.version}/`))).toBe(
+      true,
+    );
+    expect(releases.every(release => release.socialImageAlt.includes(release.headline))).toBe(true);
     expect(releases.every(release => release.summary.length > 0)).toBe(true);
     expect(releases.every(release => release.releaseUrl.endsWith(`/tag/${release.version}`))).toBe(true);
+  });
+
+  it('renders deterministic release social cards without dropping headline words', () => {
+    const release = loadLatestMajorWebsiteReleases(root)[0]!;
+    const svg = renderWebsiteReleaseSocialImageSvg(release);
+    const png = renderWebsiteReleaseSocialImagePng(root, release);
+    const pngView = new DataView(png.buffer, png.byteOffset, png.byteLength);
+
+    expect(svg).toContain(`>${release.version.slice(1)}<`);
+    expect(svg).toContain('<tspan fill="#f7fafc">Threadnote</tspan><tspan dx="20" fill="#67e8c7">');
+    for (const line of layoutReleaseSocialHeadline(release.headline).lines) expect(svg).toContain(`>${line}<`);
+    expect([...png.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(pngView.getUint32(16)).toBe(1200);
+    expect(pngView.getUint32(20)).toBe(630);
+    expect(renderWebsiteReleaseSocialImageSvg({headline: 'Memory & <graphs>.', version: 'v4.6.0'})).toContain(
+      'Memory &amp; &lt;graphs&gt;.',
+    );
+
+    const word = fc.stringMatching(/^[A-Za-z0-9]{1,12}$/u);
+    fc.assert(
+      fc.property(
+        fc.array(word, {maxLength: 30, minLength: 1}).map(words => `${words.join(' ')}.`),
+        headline => {
+          const layout = layoutReleaseSocialHeadline(headline);
+          expect(layout.lines.join(' ')).toBe(headline);
+          expect(layout.lines.every(line => line.length > 0)).toBe(true);
+          expect(layout.lines.length * layout.lineHeight).toBeLessThanOrEqual(220);
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('keeps latest-major release selection ordered, unique, and non-mutating', () => {
@@ -1379,6 +1438,12 @@ Make the bottleneck observable.
     expect(renderedRelease).toContain(
       `<link rel="canonical" href="https://threadnote.io/whats-new/releases/${release.version}/" />`,
     );
+    const releaseSocialImage = websiteSocialImageForRelease(release);
+    expect(renderedRelease).toContain(`<meta property="og:image" content="${releaseSocialImage.url}" />`);
+    expect(renderedRelease).toContain(`<meta name="twitter:image" content="${releaseSocialImage.url}" />`);
+    expect(renderedRelease).toContain(`<meta property="og:image:alt" content="${releaseSocialImage.alt}" />`);
+    expect(renderedRelease).toContain(`"image":"${releaseSocialImage.url}"`);
+    expect(renderedRelease).not.toContain('whats-new-og.png');
     expect(renderedRelease).toContain('"@type":"TechArticle"');
     expect(renderedSitemap).toContain('<loc>https://threadnote.io/whats-new/articles/evidence-before-rewrites/</loc>');
     expect(renderedSitemap).toContain(`<loc>https://threadnote.io/whats-new/releases/${release.version}/</loc>`);

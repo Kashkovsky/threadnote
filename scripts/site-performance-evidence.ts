@@ -40,6 +40,7 @@ export const performanceSiteOnlyGeneratorPaths = [
   'scripts/site-doc-pages.ts',
   'scripts/site-performance-evidence.ts',
   'scripts/site-release-notes.ts',
+  'scripts/site-release-social-image.ts',
 ] as const;
 
 export const measuredPerformanceSourcePathspecs = [

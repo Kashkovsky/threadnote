@@ -10,6 +10,7 @@ import {
   orderWebsiteUpdatesDescending,
   websiteDefaultPostSocialImage,
   websiteSocialImageForArticle,
+  websiteSocialImageForRelease,
   type WebsiteSocialImage,
 } from '../content/websiteArticles';
 import {whatsNewArticlePath, whatsNewPostForPathname, whatsNewReleasePath} from '../lib/routes';
@@ -62,7 +63,7 @@ function websiteUpdates(): readonly WebsiteUpdate[] {
       href: whatsNewReleaseHref(release.version),
       kind: 'release' as const,
       publishedAt: release.publishedAt,
-      socialImage: websiteDefaultPostSocialImage,
+      socialImage: websiteSocialImageForRelease(release),
       stableId: `release:${release.version}`,
       summary: release.summary,
       title: `Threadnote ${release.version.replace(/^v/, '')}`,

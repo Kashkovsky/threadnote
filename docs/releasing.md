@@ -60,9 +60,11 @@ For a prerelease, use a full SemVer prerelease such as `4.1.0-beta.1` in `packag
 `.github/release-notes/v4.1.0-beta.1.md`, and the `v4.1.0-beta.1` tag. The publisher detects the hyphenated tag and
 creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
 
-1. Add `.github/release-notes/vX.Y.Z.md` for the exact version being released. Begin with `## What's new`, describe
-   user-visible value rather than implementation history, include concrete commands when useful, and do not add a
-   validation/checks section.
+1. Add `.github/release-notes/vX.Y.Z.md` for the exact version being released. Begin with `## What's new`, then open
+   with one sentence (at most 240 characters after the `Threadnote X.Y.Z` prefix) that states the release's main
+   feature; the website uses that sentence to generate the release social card automatically. Describe user-visible
+   value rather than implementation history, include concrete commands when useful, and do not add a validation/checks
+   section.
 2. Merge the release source and ensure ordinary CI is green.
 3. Dispatch `Platform benchmarks` on exact clean candidate **C** with
    `include_context_brief_citations_scale=true` and `include_code_memory_link_scale=true`. Before tagging, require its Context Brief citation artifact to report

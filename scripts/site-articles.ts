@@ -8,12 +8,13 @@ import remarkGfm from 'remark-gfm';
 import {parse as parseYaml} from 'yaml';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {loadLatestMajorWebsiteReleases, type WebsiteRelease} from './site-release-notes.js';
+import {renderWebsiteReleaseSocialImagePng} from './site-release-social-image.js';
 import {
   orderWebsiteUpdatesDescending,
   websiteArticleSocialImageHeight,
   websiteArticleSocialImageWidth,
-  websiteDefaultPostSocialImage,
   websiteSocialImageForArticle,
+  websiteSocialImageForRelease,
   type WebsiteArticle,
   type WebsiteSocialImage,
 } from '../website/src/content/websiteArticles.js';
@@ -328,7 +329,7 @@ function postDetails(post: WebsitePost): {
     canonicalUrl: new URL(whatsNewReleasePath(post.version), publicOrigin).href,
     kindLabel: 'Release',
     pageTitle: `${post.title} — Threadnote`,
-    socialImage: websiteDefaultPostSocialImage,
+    socialImage: websiteSocialImageForRelease(post),
   };
 }
 
@@ -518,6 +519,21 @@ export const generateWebsitePostPages = Effect.fn('siteArticles.generatePostPage
   const [template, sitemap] = yield* Effect.all(
     [fs.readFileString(templatePath), fs.readFileString(path.join(outputRoot, 'sitemap.xml'))],
     {concurrency: 2},
+  );
+
+  yield* Effect.forEach(
+    releases,
+    release =>
+      Effect.gen(function* () {
+        const imagePath = path.join(outputRoot, release.socialImage);
+        const image = yield* Effect.try({
+          try: () => renderWebsiteReleaseSocialImagePng(repositoryRoot, release),
+          catch: error => new ScriptError(`Could not render ${release.version} social image: ${String(error)}`),
+        });
+        yield* fs.makeDirectory(path.dirname(imagePath), {recursive: true});
+        yield* fs.writeFile(imagePath, image);
+      }),
+    {concurrency: 1},
   );
 
   yield* Effect.forEach(

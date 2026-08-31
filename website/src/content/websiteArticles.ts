@@ -51,6 +51,18 @@ export function websiteSocialImageForArticle(
     : websiteDefaultPostSocialImage;
 }
 
+export function websiteSocialImageForRelease(
+  release: Readonly<{socialImage: string; socialImageAlt: string}>,
+): WebsiteSocialImage {
+  return {
+    alt: release.socialImageAlt,
+    height: websiteArticleSocialImageHeight,
+    type: 'image/png',
+    url: new URL(release.socialImage, 'https://threadnote.io/').href,
+    width: websiteArticleSocialImageWidth,
+  };
+}
+
 export interface WebsiteUpdateOrderRef {
   readonly publishedAt: string;
   readonly stableId: string;
