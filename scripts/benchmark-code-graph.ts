@@ -43,7 +43,7 @@ import {sha256FileHex} from '../src/effect/digest.js';
 import {ApplicationLayer, type ApplicationServices} from '../src/effect/runtime.js';
 import {THREADNOTE_EMBEDDING_CONTEXTS_ENV, type EmbeddingContextPoolSize} from '../src/effect/ai/node-llama-cpp.js';
 import {LocalModelRuntime} from '../src/effect/ai/local-model-runtime.js';
-import {SystemInfo} from '../src/effect/system.js';
+import {processResourceUsageMaxRssBytes, SystemInfo, type ProcessResourceUsageRuntime} from '../src/effect/system.js';
 import {CORE_EMBEDDING_MODEL_ID} from '../src/models/builtin.js';
 import {LocalModelCatalog} from '../src/models/catalog.js';
 import {selectLocalModel} from '../src/models/selection.js';
@@ -560,10 +560,9 @@ const benchmarkCodeGraph = Effect.scoped(
     const threadnoteSourceRoot = yield* path.fromFileUrl(new URL('..', import.meta.url));
     const ratchet = options.ratchetPath ? yield* readJsonFile(options.ratchetPath) : undefined;
     if (ratchet !== undefined) validateCodeGraphBenchmarkRatchet(ratchet);
+    const longScaleEvidenceRun = requiresLongScaleBenchmarkEvidence(options.scaleSymbols);
     const runtimeProvenanceRequired =
-      options.profile === 'production-large' ||
-      options.repository !== undefined ||
-      (options.scaleSymbols ?? 0) >= LONG_SCALE_PROVENANCE_THRESHOLD;
+      options.profile === 'production-large' || options.repository !== undefined || longScaleEvidenceRun;
     const runtimeProvenance = runtimeProvenanceRequired
       ? yield* validateBenchmarkRuntimeProvenance(threadnoteSourceRoot)
       : undefined;
@@ -573,7 +572,8 @@ const benchmarkCodeGraph = Effect.scoped(
       process.env.THREADNOTE_BENCHMARK_RELEASE_SHA?.trim() || undefined,
     );
     const largeEvidenceRun = options.profile === 'production-large' || options.repository !== undefined;
-    const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined;
+    const checkpointedEvidenceRun = largeEvidenceRun || longScaleEvidenceRun;
+    const sampleProcessTree = checkpointedEvidenceRun || options.embeddingContexts !== undefined;
     const externalPrepared =
       options.repository !== undefined ? yield* prepareExternalCodeGraphFixture(options) : undefined;
     if (externalPrepared && releaseEvidenceSource) {
@@ -623,7 +623,7 @@ const benchmarkCodeGraph = Effect.scoped(
         Effect.fail(new ScriptError('External benchmark homes could not be retained after preflight.'));
     }
     const runCheckpoint =
-      largeEvidenceRun && options.outputPath
+      checkpointedEvidenceRun && options.outputPath
         ? yield* Effect.acquireRelease(
             makeBenchmarkRunCheckpoint(`${options.outputPath}.run.json`),
             (checkpoint, exit) => checkpoint.finish(Exit.isSuccess(exit) ? 'complete' : 'failed'),
@@ -1730,7 +1730,9 @@ const benchmarkCodeGraph = Effect.scoped(
           : {}),
         ...(runtimeProvenance ? benchmarkRuntimeProvenanceMetadata(runtimeProvenance) : {}),
         rssMeasurement:
-          'boundary RSS plus process-lifetime resourceUsage.maxRSS; peak is cumulative, not phase-isolated',
+          'boundary RSS plus process-lifetime resourceUsage.maxRSS normalized to bytes; ' +
+          'Bun 1.3.14 Darwin is bytes, while Bun Linux/Windows and Node KiB are multiplied by 1024; ' +
+          'peak is cumulative, not phase-isolated',
         statusSamples,
         sqliteDurableStorageMeasurement:
           'SQLite durable database allocated-page high-water from direct materialization progress; WAL and SHM remain separately sampled filesystem artifacts',
@@ -6562,6 +6564,7 @@ function benchmarkRunnerLabel(
     if (normalized === 'local-unclassified') return normalized;
     if (/^github-hosted-ubuntu-[a-z0-9.]+-x64$/.test(normalized)) return 'github-hosted-linux-x64';
     if (/^github-hosted-ubuntu-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-linux-arm64';
+    if (/^github-hosted-macos-[a-z0-9.]+-arm64$/.test(normalized)) return 'github-hosted-macos-arm64';
     return 'other';
   }
   const digest = new Bun.CryptoHasher('sha256').update(value).digest('hex');
@@ -7956,7 +7959,12 @@ export function enforceCodeGraphBenchmarkBudget(
 
 function processPeakRssBytes(): number {
   const maxRss = process.resourceUsage().maxRSS;
-  return 'bun' in process.versions ? maxRss : maxRss * 1_024;
+  const runtime: ProcessResourceUsageRuntime = 'bun' in process.versions ? 'bun' : 'node';
+  return processResourceUsageMaxRssBytes(maxRss, process.platform, runtime);
+}
+
+export function requiresLongScaleBenchmarkEvidence(scaleSymbols: number | undefined): boolean {
+  return (scaleSymbols ?? 0) >= LONG_SCALE_PROVENANCE_THRESHOLD;
 }
 
 const prepareBenchmarkEmbedding = Effect.fn('benchmarkCodeGraph.prepareEmbedding')(function* (

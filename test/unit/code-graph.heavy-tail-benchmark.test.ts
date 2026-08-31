@@ -30,6 +30,13 @@ import {
 } from '../../scripts/code-graph-heavy-tail-fixture.js';
 
 describe('code graph large-monorepo heavy-tail benchmark', () => {
+  it('uses the centralized process maxRSS byte normalizer', async () => {
+    const source = await readFile('scripts/benchmark-code-graph-heavy-tail.ts', 'utf8');
+
+    expect(source).toContain('processResourceUsageMaxRssBytes(maxRss, process.platform, runtime)');
+    expect(source).not.toContain("return 'bun' in process.versions ? maxRss : maxRss * 1_024");
+  });
+
   it('keeps the checked profile synchronized with the reviewed workload shape', async () => {
     const baseline = (await Bun.file('test/evaluation/baselines/code-graph-v1/heavy-tail-profile.json').json()) as {
       readonly profile: unknown;

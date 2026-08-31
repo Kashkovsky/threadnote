@@ -824,7 +824,7 @@
     "cold-process-peak-rss": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 1195010
+      "p95Maximum": 1223690240
     },
     "cold-reference-resolution": {
       "samplesMinimum": 1,
@@ -1072,7 +1072,7 @@
     "incremental-process-peak-rss": {
       "samplesMinimum": 1,
       "unit": "bytes",
-      "p95Maximum": 1195010
+      "p95Maximum": 1223690240
     },
     "incremental-sqlite-journal-peak-observed": {
       "samplesMinimum": 1,

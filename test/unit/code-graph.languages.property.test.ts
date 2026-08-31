@@ -127,6 +127,14 @@ describe('polyglot code graph extractor properties', () => {
           },
         );
       }
+
+      layerIt.effect('bounds malformed Swift import spans at a CRLF boundary', () =>
+        Effect.gen(function* () {
+          const file = inventoryFile('src/fuzz.swift', 'import// comment\r\n');
+          const facts = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file);
+          assertFacts(file, facts, 'swift');
+        }),
+      );
     });
 
     layerIt.effect.prop(

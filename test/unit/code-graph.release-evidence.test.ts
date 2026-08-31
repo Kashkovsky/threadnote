@@ -1007,6 +1007,8 @@ describe('code graph release evidence', () => {
           benchmarkMeasurement('cold-index', 'milliseconds', [coldIndexMilliseconds]),
           benchmarkMeasurement('cold-registration-lock-and-database-setup', 'milliseconds', [coldIndexMilliseconds]),
           benchmarkMeasurement('cold-registration-process-cpu-n1', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('cold-process-peak-rss', 'bytes', [512 * 1_048_576 + coldIndexMilliseconds]),
+          benchmarkMeasurement('incremental-process-peak-rss', 'bytes', [512 * 1_048_576 + coldIndexMilliseconds]),
           benchmarkMeasurement('cold-sqlite-wal-peak-observed', 'bytes', [coldIndexMilliseconds]),
           benchmarkMeasurement('same-overlay-reference-registration-lock-and-database-setup', 'milliseconds', [
             coldIndexMilliseconds + 10,
@@ -1437,6 +1439,41 @@ describe('code graph release evidence', () => {
 
     expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet)).toThrow(/cold-index/u);
     expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, pairedControl)).not.toThrow();
+    const correctedRssCandidate = sandwichCandidate({
+      'cold-index': 1_200,
+      'cold-process-peak-rss': 930_451_456,
+      'incremental-process-peak-rss': 930_451_456,
+    });
+    const mixedEraRssEvidence = sandwichEvidence(
+      {
+        'cold-index': 1_200,
+        'cold-process-peak-rss': 935_190_528,
+        'incremental-process-peak-rss': 935_190_528,
+      },
+      sandwichControl({
+        'cold-index': 1_000,
+        // The protected-base artifact predates byte normalization and retains native Linux KiB numerics.
+        'cold-process-peak-rss': 915_952,
+        'incremental-process-peak-rss': 915_952,
+      }),
+    );
+    const mixedEraRssRatchet = {
+      ...githubHostedRatchet,
+      measurements: {
+        ...githubHostedRatchet.measurements,
+        'cold-process-peak-rss': {
+          ...githubHostedRatchet.measurements['cold-process-peak-rss']!,
+          p95Maximum: 1_223_690_240,
+        },
+        'incremental-process-peak-rss': {
+          ...githubHostedRatchet.measurements['incremental-process-peak-rss']!,
+          p95Maximum: 1_223_690_240,
+        },
+      },
+    };
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(correctedRssCandidate, mixedEraRssRatchet, mixedEraRssEvidence),
+    ).not.toThrow();
     fc.assert(
       fc.property(fc.integer({max: 500, min: -500}), fc.integer({max: 50_000, min: 30_000}), (slope, regression) => {
         const baseline = 100_000;
@@ -1569,7 +1606,9 @@ describe('code graph release evidence', () => {
       }),
     ).toThrow(/paired control environment\.fixtureHash/u);
     const invariantGuardNames = [
+      'cold-process-peak-rss',
       'cold-registration-process-cpu-n1',
+      'incremental-process-peak-rss',
       'one-file-reindex-incremental-work-planned-rows-n1',
       'cold-sqlite-wal-peak-observed',
     ] as const;

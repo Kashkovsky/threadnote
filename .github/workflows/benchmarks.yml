@@ -57,7 +57,7 @@ on:
   workflow_dispatch:
     inputs:
       include_100k:
-        description: Run the 100k scale-boundary suite on Linux
+        description: Run the 100k scale-boundary suites (lexical Linux and pinned-vector macOS ARM64)
         required: false
         type: boolean
         default: false
@@ -540,10 +540,10 @@ jobs:
           retention-days: 30
 
   code-graph-vectors-100k:
-    name: Code graph pinned vectors 100k · Linux
+    name: Code graph pinned vectors 100k · macOS ARM64
     if: github.event_name == 'schedule' || inputs.include_100k
     needs: prepare-code-graph-vector-model
-    runs-on: ubuntu-latest
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
@@ -562,6 +562,10 @@ jobs:
           path: artifacts/code-graph-model-home/models/embedding/${{ env.CODE_GRAPH_EMBEDDING_MODEL_ID }}
 
       - name: Gate 100k production-vector activation and scans
+        timeout-minutes: 50
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-macos-15-ARM64
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
         run: >-
           bun run bench:code-graph --
           --vectors
@@ -570,13 +574,14 @@ jobs:
           --samples 3
           --warmups 1
           --fail-on-budget
-          --output artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json
+          --output artifacts/code-graph-vectors-100k-${{ runner.os }}-${{ runner.arch }}.json
 
       - uses: actions/upload-artifact@v7
         if: always()
+        timeout-minutes: 5
         with:
-          name: code-graph-vector-benchmark-100k-Linux-${{ runner.arch }}
-          path: artifacts/code-graph-vectors-100k-Linux-${{ runner.arch }}.json
+          name: code-graph-vector-benchmark-100k-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/code-graph-vectors-100k-${{ runner.os }}-${{ runner.arch }}.json*
           if-no-files-found: error
           retention-days: 30
 

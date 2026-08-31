@@ -3,7 +3,7 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {readFileSync} from '../helpers/node-fs.js';
 import {it as effectIt} from '@effect/vitest';
 import {Database} from 'bun:sqlite';
-import {Clock, Effect, FileSystem, Path, PlatformError, Schedule} from 'effect';
+import {Clock, Effect, FileSystem, Path, PlatformError, Schedule, Schema} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
@@ -26,6 +26,7 @@ import {
   measureSampledBenchmarkIndex,
   parseCodeGraphBenchmarkArguments,
   productionBenchmarkStorageGoverned,
+  requiresLongScaleBenchmarkEvidence,
   restoreBenchmarkOverlay,
   sanitizedBenchmarkEnvironmentProvenance,
   semanticBenchmarkOverlay,
@@ -334,11 +335,60 @@ describe('code graph external benchmark harness', () => {
     expect(source).not.toContain('const sameOverlayReferenceStarted = yield* Clock.currentTimeNanos');
   });
 
-  it('enables recursive process sampling for explicit embedding-context candidates', () => {
+  it('checkpoints and samples 100k evidence without enabling unrelated large-evidence behavior', () => {
     const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
-    expect(source).toContain('const sampleProcessTree = largeEvidenceRun || options.embeddingContexts !== undefined');
+    expect(requiresLongScaleBenchmarkEvidence(99_999)).toBe(false);
+    expect(requiresLongScaleBenchmarkEvidence(100_000)).toBe(true);
+    expect(requiresLongScaleBenchmarkEvidence(250_000)).toBe(true);
+    fc.assert(
+      fc.property(fc.integer({max: 200_000, min: 0}), fc.integer({max: 200_000, min: 0}), (first, second) => {
+        const lower = Math.min(first, second);
+        const upper = Math.max(first, second);
+        expect(Number(requiresLongScaleBenchmarkEvidence(lower))).toBeLessThanOrEqual(
+          Number(requiresLongScaleBenchmarkEvidence(upper)),
+        );
+      }),
+      {numRuns: 100},
+    );
+    expect(source).toContain('const checkpointedEvidenceRun = largeEvidenceRun || longScaleEvidenceRun');
+    expect(source).toContain(
+      'const sampleProcessTree = checkpointedEvidenceRun || options.embeddingContexts !== undefined',
+    );
+    expect(source).toContain('checkpointedEvidenceRun && options.outputPath');
+    expect(source).toContain('const mcpOperationMatrix = largeEvidenceRun');
+    expect(source).toContain('Math.min(options.samples, largeEvidenceRun ? 3 : 10)');
     expect(source.match(/sampleProcessTree\s*\? startExternalSampler/g)).toHaveLength(3);
     expect(source.match(/sampler\s*\? Effect\.void\s*:\s*observeSqliteStoragePeak/g)).toHaveLength(3);
+  });
+
+  it('uses the centralized process maxRSS byte normalizer', () => {
+    const source = readFileSync('scripts/benchmark-code-graph.ts', 'utf8');
+
+    expect(source).toContain('processResourceUsageMaxRssBytes(maxRss, process.platform, runtime)');
+    expect(source).not.toContain("return 'bun' in process.versions ? maxRss : maxRss * 1_024");
+  });
+
+  it('preserves the governed Linux RSS ceiling while expressing it in bytes', () => {
+    const ratchet = Schema.decodeUnknownSync(
+      Schema.fromJsonString(
+        Schema.Struct({
+          measurements: Schema.Struct({
+            'cold-process-peak-rss': Schema.Struct({
+              p95Maximum: Schema.Number,
+              unit: Schema.Literal('bytes'),
+            }),
+            'incremental-process-peak-rss': Schema.Struct({
+              p95Maximum: Schema.Number,
+              unit: Schema.Literal('bytes'),
+            }),
+          }),
+        }),
+      ),
+    )(readFileSync('test/evaluation/baselines/code-graph-v1/production-ratchet-github-linux-x64.json', 'utf8'));
+    const governedCeilingBytes = 1_195_010 * 1_024;
+
+    expect(ratchet.measurements['cold-process-peak-rss'].p95Maximum).toBe(governedCeilingBytes);
+    expect(ratchet.measurements['incremental-process-peak-rss'].p95Maximum).toBe(governedCeilingBytes);
   });
 
   it('retains provenance-valid artifact evidence before reporting a budget or ratchet regression', () => {
@@ -874,6 +924,15 @@ describe('code graph external benchmark harness', () => {
       }),
     ).toMatchObject({
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-linux-x64',
+      THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
+    });
+    expect(
+      sanitizedBenchmarkEnvironmentProvenance({
+        THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-macos-15-ARM64',
+        THREADNOTE_BENCHMARK_RUNNER_ID: 'macos-arm64-runner',
+      }),
+    ).toMatchObject({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-macos-arm64',
       THREADNOTE_BENCHMARK_RUNNER_ID: expect.stringMatching(/^runner-[0-9a-f]{16}$/),
     });
   });
