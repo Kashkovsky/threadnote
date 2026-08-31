@@ -4,7 +4,7 @@ import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
-import {Deferred, Effect, FileSystem, Layer, Option, Ref} from 'effect';
+import {Deferred, Effect, Fiber, FileSystem, Layer, Option, Ref} from 'effect';
 import {
   ResourceAlreadyExists,
   ResourceConflict,
@@ -15,7 +15,12 @@ import {
   resourceMutationLockFailureMessage,
 } from '../../src/effect/resource-store.js';
 import {SystemInfo} from '../../src/effect/system.js';
-import {loadRecallExactMatches, loadRecallIndex} from '../../src/recall/index.js';
+import {
+  loadRecallExactMatches,
+  loadRecallIndex,
+  recallIndexDatabaseFilename,
+  recallIndexStatus,
+} from '../../src/recall/index.js';
 import {InvalidResourceId, parseResourceId} from '../../src/storage/resource-id.js';
 import {mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile} from '../helpers/effect-filesystem.js';
 import {runEffect} from '../helpers/effect-runtime.js';
@@ -339,6 +344,145 @@ describe('native ResourceStore', () => {
     }
   });
 
+  it.effect('finishes derived invalidation when interrupted after a canonical commit', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-invalidation-interrupt-'});
+        const invalidationStarted = yield* Deferred.make<void>();
+        const releaseInvalidation = yield* Deferred.make<void>();
+        const blockingFileSystem = FileSystem.FileSystem.of({
+          ...fs,
+          writeFileString: (target, content, options) =>
+            String(target).includes('.sqlite.stale.')
+              ? Deferred.succeed(invalidationStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseInvalidation)),
+                  Effect.andThen(fs.writeFileString(target, content, options)),
+                )
+              : fs.writeFileString(target, content, options),
+        });
+        const store = yield* ResourceStore.pipe(
+          provideTestLayer(ResourceStore.layerWith()),
+          Effect.provideService(FileSystem.FileSystem, blockingFileSystem),
+        );
+        const uri = 'threadnote://resources/repos/threadnote/interrupted.md';
+        const write = yield* store
+          .write(location(home), uri, 'committed-before-interruption', {mode: 'create'})
+          .pipe(Effect.forkChild({startImmediately: true}));
+
+        yield* Deferred.await(invalidationStarted);
+        const interruption = yield* Fiber.interrupt(write).pipe(Effect.forkChild({startImmediately: true}));
+        yield* Effect.yieldNow;
+        yield* Deferred.succeed(releaseInvalidation, undefined);
+        yield* Fiber.join(interruption);
+
+        expect(yield* store.read(location(home), uri)).toBe('committed-before-interruption');
+        for (const includeInactive of [false, true]) {
+          expect(
+            yield* fs.exists(join(home, 'indexes', 'lexical', `${recallIndexDatabaseFilename(includeInactive)}.stale`)),
+          ).toBe(true);
+        }
+      }),
+    ).pipe(provideTestLayer(resourceStoreDependencies)),
+  );
+
+  it.effect('recovers from failed derived markers through the durable canonical generation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-invalidation-fallback-'});
+        const config = {account: 'local', agentContextHome: home, user: 'test-user'};
+        const uri = 'threadnote://resources/repos/threadnote/replaced-through-fallback.md';
+        const resourcePath = join(
+          home,
+          'data',
+          'local',
+          'resources',
+          'repos',
+          'threadnote',
+          'replaced-through-fallback.md',
+        );
+        const initialStore = yield* ResourceStore.pipe(provideTestLayer(ResourceStore.layerWith()));
+        yield* initialStore.write(location(home), uri, '# First\n\nalpha-42', {mode: 'create'});
+        expect((yield* loadRecallIndex(config, {includeInactive: false}))[0]?.text).toContain('alpha-42');
+        const initialInfo = yield* fs.stat(resourcePath);
+        const initialModifiedAt = Option.getOrThrow(initialInfo.mtime);
+
+        const failedScopes = yield* Ref.make<boolean[]>([]);
+        const failedDerivedMarkerFileSystem = FileSystem.FileSystem.of({
+          ...fs,
+          writeFileString: (target, content, options) =>
+            String(target).includes('.sqlite.stale.')
+              ? Effect.die(new Error('injected derived recall marker failure'))
+              : fs.writeFileString(target, content, options),
+        });
+        const fallbackStore = yield* ResourceStore.pipe(
+          provideTestLayer(
+            ResourceStore.layerWith({
+              onRecallInvalidationFailed: event =>
+                Ref.update(failedScopes, scopes => [...scopes, event.includeInactive]),
+            }),
+          ),
+          Effect.provideService(FileSystem.FileSystem, failedDerivedMarkerFileSystem),
+        );
+        yield* fallbackStore.write(location(home), uri, '# Other\n\nomega-99', {mode: 'replace'});
+        yield* fs.utimes(resourcePath, initialModifiedAt, initialModifiedAt);
+
+        expect((yield* Ref.get(failedScopes)).sort()).toEqual([false, true]);
+        expect(yield* recallIndexStatus(config)).toMatchObject({
+          ready: false,
+          reason: 'canonical documents changed; run `threadnote repair`',
+        });
+        const refreshed = yield* loadRecallIndex(config, {includeInactive: false, query: 'omega-99'});
+        expect(refreshed[0]?.text).toContain('omega-99');
+        expect(refreshed[0]?.text).not.toContain('alpha-42');
+        expect(yield* recallIndexStatus(config)).toMatchObject({documentCount: 1, ready: true});
+      }),
+    ).pipe(provideTestLayer(resourceStoreDependencies)),
+  );
+
+  it.effect('does not let a later successful marker hide an earlier failed invalidation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-invalidation-continuity-'});
+        const config = {account: 'local', agentContextHome: home, user: 'test-user'};
+        const firstUri = 'threadnote://resources/repos/threadnote/first.md';
+        const laterUri = 'threadnote://resources/repos/threadnote/later.md';
+        const firstPath = join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'first.md');
+        const store = yield* ResourceStore.pipe(provideTestLayer(ResourceStore.layerWith()));
+        yield* store.write(location(home), firstUri, '# First\n\nalpha-42', {mode: 'create'});
+        expect((yield* loadRecallIndex(config, {includeInactive: false}))[0]?.text).toContain('alpha-42');
+        const initialInfo = yield* fs.stat(firstPath);
+        const initialModifiedAt = Option.getOrThrow(initialInfo.mtime);
+
+        const failedDerivedMarkerFileSystem = FileSystem.FileSystem.of({
+          ...fs,
+          writeFileString: (target, content, options) =>
+            String(target).includes('.sqlite.stale.')
+              ? Effect.die(new Error('injected first-mutation marker failure'))
+              : fs.writeFileString(target, content, options),
+        });
+        const markerFailingStore = yield* ResourceStore.pipe(
+          provideTestLayer(ResourceStore.layerWith()),
+          Effect.provideService(FileSystem.FileSystem, failedDerivedMarkerFileSystem),
+        );
+        yield* markerFailingStore.write(location(home), firstUri, '# First\n\nomega-99', {mode: 'replace'});
+        yield* fs.utimes(firstPath, initialModifiedAt, initialModifiedAt);
+
+        yield* store.write(location(home), laterUri, '# Later\n\nlater-anchor', {mode: 'create'});
+        const refreshed = yield* loadRecallIndex(config, {includeInactive: false, query: 'omega-99'});
+
+        expect(refreshed[0]?.text).toContain('omega-99');
+        expect(refreshed[0]?.text).not.toContain('alpha-42');
+        expect((yield* loadRecallIndex(config, {includeInactive: false, query: 'later-anchor'}))[0]?.uri).toBe(
+          laterUri,
+        );
+        expect(yield* recallIndexStatus(config)).toMatchObject({documentCount: 2, ready: true});
+      }),
+    ).pipe(provideTestLayer(resourceStoreDependencies)),
+  );
+
   it('does not reuse a warm candidate after a same-size replacement with preserved timestamps', async () => {
     const home = await mkdtemp('threadnote-resource-index-replacement-');
     try {
@@ -394,8 +538,9 @@ describe('native ResourceStore', () => {
 
   it('keeps committed mutations successful when derived-index invalidation fails', async () => {
     const home = await mkdtemp('threadnote-resource-index-failure-');
+    const failedScopes: boolean[] = [];
     try {
-      await writeFile(join(home, 'cache'), 'blocks the derived cache directory');
+      await writeFile(join(home, 'indexes'), 'blocks the derived index directory');
       await runEffect(
         Effect.gen(function* () {
           const store = yield* ResourceStore;
@@ -404,8 +549,18 @@ describe('native ResourceStore', () => {
           expect(yield* store.read(location(home), uri)).toBe('committed despite cache failure');
           yield* store.remove(location(home), uri);
           expect(yield* Effect.exit(store.read(location(home), uri))).toMatchObject({_tag: 'Failure'});
-        }),
+        }).pipe(
+          provideTestLayer(
+            ResourceStore.layerWith({
+              onRecallInvalidationFailed: event =>
+                Effect.sync(() => {
+                  failedScopes.push(event.includeInactive);
+                }),
+            }),
+          ),
+        ),
       );
+      expect(failedScopes.sort()).toEqual([false, false, true, true]);
     } finally {
       await rm(home, {force: true, recursive: true});
     }

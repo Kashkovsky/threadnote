@@ -14,7 +14,7 @@ import {
   copyAnonymousTelemetryMetadata,
   readAnonymousTelemetryReportedOutcome,
 } from '../../telemetry/diagnostic.js';
-import {isMemoryReadRecoveryV1, type MemoryReadRecoveryV1} from '../../mcp/memory_read_recovery.js';
+import {isMemoryReadRecoveryV1, type MemoryReadRecoveryV1} from '../../memory/read_recovery.js';
 import {omitAnonymousTelemetryRecorder, withAnonymousTelemetry} from '../telemetry.js';
 
 // Windows antivirus and filesystem scheduling can make an otherwise healthy

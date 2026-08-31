@@ -1,8 +1,24 @@
-import {Context, Crypto, Effect, FileSystem, Layer, Option, Path, PlatformError, Result, Schema} from 'effect';
+import {
+  Context,
+  Crypto,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  PlatformError,
+  Result,
+  Schedule,
+  Schema,
+} from 'effect';
 import {uriSegment} from '../manifest.js';
 import {globToRegExp} from '../utils.js';
 import {readExclusiveFileLockOwner, withExclusiveFileLock} from './file_lock.js';
 import {resourceAccountMutationLockPath} from './resource_lock.js';
+import {
+  advanceCanonicalMutationGeneration,
+  type CanonicalMutationGenerationTransition,
+} from './resource_mutation_generation.js';
 import {SystemInfo} from './system.js';
 import {
   canonicalResourceUri,
@@ -32,6 +48,13 @@ export interface ResourceStoreLayerOptions {
   readonly onMutationLockAcquired?: (event: ResourceMutationLockEvent) => Effect.Effect<void, never>;
   readonly onMutationLockCompleted?: (event: ResourceMutationLockEvent) => Effect.Effect<void, never>;
   readonly onMutationLockContention?: (event: ResourceMutationLockEvent) => Effect.Effect<void, never>;
+  readonly onRecallInvalidationFailed?: (event: ResourceRecallInvalidationFailureEvent) => Effect.Effect<void, never>;
+}
+
+export interface ResourceRecallInvalidationFailureEvent {
+  readonly account: string;
+  readonly includeInactive: boolean;
+  readonly invalidatedUriCount: number;
 }
 
 export interface ResourceStoreEntry {
@@ -202,18 +225,43 @@ function createResourceStoreOperations(
 ): ResourceStoreShape {
   const resolve = (location: ResourceStoreLocation, uri: string) =>
     resolveResourcePath(fs, path, location, uri).pipe(mapIoError('resolve', uri));
-  const invalidateRecall = (location: ResourceStoreLocation, invalidatedUris: readonly string[]) =>
+  const invalidateRecall = (
+    location: ResourceStoreLocation,
+    includeInactive: boolean,
+    invalidatedUris: readonly string[],
+    canonicalMutationGeneration: CanonicalMutationGenerationTransition,
+  ) =>
     provideLockServices(
-      Effect.all(
-        [
-          expireRecallIndexValidation(location.home, false, invalidatedUris),
-          expireRecallIndexValidation(location.home, true, invalidatedUris),
-        ],
-        {concurrency: 2},
-      ).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
+      expireRecallIndexValidation(location.home, includeInactive, invalidatedUris, canonicalMutationGeneration).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+      ),
     );
-  const invalidateRecallBestEffort = (location: ResourceStoreLocation, invalidatedUris: readonly string[]) =>
-    invalidateRecall(location, invalidatedUris).pipe(Effect.catchCause(() => Effect.void));
+  const invalidateRecallBestEffort = (
+    location: ResourceStoreLocation,
+    invalidatedUris: readonly string[],
+    canonicalMutationGeneration: CanonicalMutationGenerationTransition,
+  ) =>
+    Effect.forEach(
+      [false, true],
+      includeInactive =>
+        invalidateRecall(location, includeInactive, invalidatedUris, canonicalMutationGeneration).pipe(
+          Effect.retry(Schedule.recurs(2)),
+          Effect.catchCause(() => {
+            const event = {
+              account: location.account,
+              includeInactive,
+              invalidatedUriCount: invalidatedUris.length,
+            } satisfies ResourceRecallInvalidationFailureEvent;
+            return Effect.logWarning(
+              `Recall index per-URI invalidation failed after a canonical mutation attempt (${includeInactive ? 'with-inactive' : 'active'} scope); the durable canonical generation will force recovery on the next read.`,
+            ).pipe(
+              Effect.andThen(layerOptions.onRecallInvalidationFailed?.(event) ?? Effect.void),
+              Effect.catchCause(() => Effect.void),
+            );
+          }),
+        ),
+      {concurrency: 2, discard: true},
+    ).pipe(Effect.uninterruptible);
   const withLock = <A, E, R>(location: ResourceStoreLocation, id: ResourceId, effect: Effect.Effect<A, E, R>) => {
     const lockPath = resourceAccountMutationLockPath(path, location.home, location.account);
     const event = {account: location.account, lockPath, uri: id.canonicalUri};
@@ -267,9 +315,17 @@ function createResourceStoreOperations(
         resolved.id,
         Effect.gen(function* () {
           yield* verifyExistingPath(fs, path, resolved);
-          yield* fs.remove(resolved.path, {recursive: options?.recursive === true});
-          yield* syncDirectory(fs, path.dirname(resolved.path));
-          yield* invalidateRecallBestEffort(location, [resolved.id.canonicalUri]);
+          const canonicalMutationGeneration = yield* provideLockServices(
+            advanceCanonicalMutationGeneration(fs, path, location.home, location.account),
+          );
+          yield* fs
+            .remove(resolved.path, {recursive: options?.recursive === true})
+            .pipe(
+              Effect.andThen(syncDirectory(fs, path.dirname(resolved.path))),
+              Effect.ensuring(
+                invalidateRecallBestEffort(location, [resolved.id.canonicalUri], canonicalMutationGeneration),
+              ),
+            );
         }),
       );
     }).pipe(mapIoError('remove', uri));
@@ -320,8 +376,14 @@ function createResourceStoreOperations(
               uri: resolved.id.canonicalUri,
             });
           }
-          yield* writeAtomically(fs, path, resolved, content, options.mode === 'create');
-          yield* invalidateRecallBestEffort(location, [resolved.id.canonicalUri]);
+          const canonicalMutationGeneration = yield* provideLockServices(
+            advanceCanonicalMutationGeneration(fs, path, location.home, location.account),
+          );
+          yield* writeAtomically(fs, path, resolved, content, options.mode === 'create').pipe(
+            Effect.ensuring(
+              invalidateRecallBestEffort(location, [resolved.id.canonicalUri], canonicalMutationGeneration),
+            ),
+          );
         }),
       );
       return {fingerprint, uri: resolved.id.canonicalUri};

@@ -71,6 +71,7 @@ import {
   readMemoryWithRelocations,
   recordMemoryRelocation,
 } from './relocation.js';
+import {memoryReadRecoveryForError, memoryReadRecoveryText} from './read_recovery.js';
 import type {StoreMemoryOptions} from './store_contract.js';
 import {
   attemptSync,
@@ -726,7 +727,12 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
   );
   const canonicalUri = identity!.canonicalUri;
   if (isMemoryRelocationUri(config, canonicalUri)) {
-    const resolved = yield* readMemoryWithRelocations(config, canonicalUri);
+    const resolved = yield* readMemoryWithRelocations(config, canonicalUri).pipe(
+      Effect.tapError(error => {
+        const recovery = memoryReadRecoveryForError(config, error);
+        return recovery === undefined ? Effect.void : Console.error(memoryReadRecoveryText(recovery));
+      }),
+    );
     yield* verifyResolvedMemoryIdentity(identity!, resolved.canonicalUri, resolved.content);
     if (identity!.requestedUri !== resolved.canonicalUri) {
       yield* Console.error(`Resolved memory: ${identity!.requestedUri} -> ${resolved.canonicalUri}`);

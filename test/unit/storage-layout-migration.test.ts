@@ -3,6 +3,8 @@ import {expect, it} from '@effect/vitest';
 import {Effect, FileSystem, Path} from 'effect';
 import {describe} from 'vitest';
 import {sha256FileHex, sha256Hex} from '../../src/effect/digest.js';
+import {ResourceStore} from '../../src/effect/resource-store.js';
+import {readCanonicalMutationGeneration} from '../../src/effect/resource_mutation_generation.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
 import {
@@ -11,6 +13,7 @@ import {
   STORAGE_LAYOUT_MIGRATION_ID,
   StorageLayoutMigrationConflict,
 } from '../../src/migration/layout.js';
+import {loadRecallIndex} from '../../src/recall/index.js';
 
 describe('Threadnote storage layout migration', () => {
   it.effect('ignores empty beta layout scaffolds, including after a completed migration', () =>
@@ -82,6 +85,7 @@ describe('Threadnote storage layout migration', () => {
         expect(yield* fs.exists(path.join(home, 'data', 'viking'))).toBe(true);
         expect(yield* fs.exists(path.join(home, 'data', 'local', '.DS_Store'))).toBe(false);
         expect(yield* fs.exists(path.join(home, 'data', 'viking', 'local', '.DS_Store'))).toBe(true);
+        expect(yield* readCanonicalMutationGeneration(fs, path, home, 'local')).toMatch(/^v1:/);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
@@ -227,6 +231,51 @@ describe('Threadnote storage layout migration', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  it.effect('fully reconciles a migration generation before a later targeted mutation', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-layout-recall-continuity-'});
+        const currentRoot = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote');
+        const legacyRoot = path.join(home, 'data', 'viking', 'local', 'resources', 'repos', 'threadnote');
+        yield* fs.makeDirectory(currentRoot, {recursive: true});
+        yield* fs.makeDirectory(legacyRoot, {recursive: true});
+        yield* fs.writeFileString(path.join(currentRoot, 'first.md'), '# First\n\nfirst-anchor');
+        yield* fs.writeFileString(path.join(currentRoot, 'stable.md'), '# Stable\n\nstable-anchor');
+        yield* fs.writeFileString(path.join(legacyRoot, 'migrated.md'), '# Migrated\n\nmigrated-anchor');
+        const config = {account: 'local', agentContextHome: home, user: 'test-user'};
+        expect(yield* loadRecallIndex(config, {includeInactive: false})).toHaveLength(2);
+
+        expect(yield* migrateThreadnoteStorageLayout({apply: true, home})).toEqual({
+          accounts: 1,
+          action: 'migrated',
+        });
+        const store = yield* ResourceStore;
+        const laterUri = 'threadnote://resources/repos/threadnote/later.md';
+        yield* store.write({account: 'local', home, user: 'test-user'}, laterUri, '# Later\n\nlater-anchor', {
+          mode: 'create',
+        });
+        const indexingTotals: number[] = [];
+        const refreshed = yield* loadRecallIndex(config, {
+          includeInactive: false,
+          onProgress: progress =>
+            Effect.sync(() => {
+              if (progress.phase === 'indexing' && progress.completed === 0) indexingTotals.push(progress.total);
+            }),
+        });
+
+        expect(indexingTotals).toEqual([4]);
+        expect(refreshed.map(candidate => candidate.uri)).toEqual([
+          'threadnote://resources/repos/threadnote/first.md',
+          laterUri,
+          'threadnote://resources/repos/threadnote/migrated.md',
+          'threadnote://resources/repos/threadnote/stable.md',
+        ]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
   it.effect('refuses an account collision without moving either tree', () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -326,6 +375,7 @@ describe('Threadnote storage layout migration', () => {
           action: 'resumed',
         });
         expect(yield* fs.readFileString(target)).toBe('already moved');
+        expect(yield* readCanonicalMutationGeneration(fs, path, home, 'local')).toMatch(/^v1:/);
         expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

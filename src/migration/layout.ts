@@ -2,6 +2,7 @@ import {Crypto, Effect, FileSystem, Option, Path, Schema} from 'effect';
 import {sha256FileHex, sha256Hex} from '../effect/digest.js';
 import {withExclusiveFileLock} from '../effect/file_lock.js';
 import {resourceAccountMutationLockPath} from '../effect/resource_lock.js';
+import {advanceCanonicalMutationGeneration} from '../effect/resource_mutation_generation.js';
 import {SystemInfo} from '../effect/system.js';
 import {
   LEGACY_THREADNOTE_DATA_DIRECTORY,
@@ -172,6 +173,7 @@ export const migrateThreadnoteStorageLayout = Effect.fn('storageLayoutMigration.
           (yield* hasBoundedMigrationTreeContent(fs, path, source, (candidate, type) =>
             shouldIncludeLegacyCanonicalStorePath(path, legacyRoot, candidate, type),
           ));
+        yield* advanceCanonicalMutationGeneration(fs, path, home, account.name);
         if (!sourceHasMaterial) {
           if (!targetExists) {
             return yield* new StorageLayoutMigrationConflict({

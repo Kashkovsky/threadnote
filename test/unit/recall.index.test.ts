@@ -952,6 +952,17 @@ describe('local recall index', () => {
     expect(status.databasePath).toContain('/generations/');
   });
 
+  it('keeps a legacy current index ready when no canonical mutation generation exists yet', async () => {
+    const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'legacy.md');
+    await mkdir(join(resourcePath, '..'), {recursive: true});
+    await writeFile(resourcePath, '# Legacy\n\npre-generation-index-anchor', 'utf8');
+    await run(loadRecallIndex(config(), {includeInactive: false}));
+
+    executeDatabase("DELETE FROM metadata WHERE key = 'canonical_mutation_generation'");
+
+    await expect(run(recallIndexStatus(config()))).resolves.toMatchObject({documentCount: 1, ready: true});
+  });
+
   it('supports concurrent first opens without racing schema initialization', async () => {
     const resourcePath = join(directory, 'data', 'local', 'resources', 'repos', 'threadnote', 'doc.md');
     await mkdir(join(resourcePath, '..'), {recursive: true});

@@ -31,7 +31,7 @@ import {
   type McpProgressNotificationPayload,
   withMcpProgressHeartbeat,
 } from '../../src/effect/ai/mcp.js';
-import {memoryReadRecoveryForRequestedUri} from '../../src/mcp/memory_read_recovery.js';
+import {memoryReadRecoveryForRequestedUri} from '../../src/memory/read_recovery.js';
 import {
   attachAnonymousTelemetryReportedOutcome,
   readAnonymousTelemetryDiagnostic,
