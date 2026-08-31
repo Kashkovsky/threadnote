@@ -1781,6 +1781,31 @@ describe('Threadnote MCP toolsets', () => {
           type: 'object',
         });
 
+        const worksetOnly = await client.callTool(
+          {
+            arguments: {
+              budgetTokens: 800,
+              task: 'Summarize the prepared engineering Workset without a local caller workspace.',
+              workset: 'engineering',
+            },
+            name: 'context_brief',
+          },
+          undefined,
+          {timeout: 10_000},
+        );
+        expect(worksetOnly.isError, JSON.stringify(worksetOnly)).not.toBe(true);
+        expect(worksetOnly.structuredContent).toMatchObject({
+          scope: {kind: 'workset', name: 'engineering'},
+          type: 'context-brief',
+          version: 2,
+        });
+        const worksetOnlyText = (
+          (Array.isArray(worksetOnly.content) ? worksetOnly.content[0] : undefined) as TextContent | undefined
+        )?.text;
+        expect(parseContextBriefAgentViewText(worksetOnlyText ?? '')).toEqual(
+          projectContextBriefAgentView(parseContextBriefV1(worksetOnly.structuredContent)),
+        );
+
         const tooSmall = await client.callTool(
           {
             arguments: {

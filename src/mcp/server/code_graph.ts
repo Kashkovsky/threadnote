@@ -104,7 +104,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           minimum: CONTEXT_BRIEF_MINIMUM_ESTIMATED_TOKENS,
           maximum: CONTEXT_BRIEF_MAXIMUM_ESTIMATED_TOKENS,
         }),
-        callerCwd: McpInput.string('Absolute workspace; max 4096 UTF-8 bytes'),
+        callerCwd: McpInput.string('Absolute workspace when workset is omitted; max 4096 UTF-8 bytes'),
         codeRefs: McpInput.stringOrStrings('Canonical graph path/cgs_<32 hex>; no ./, ../, absolute, cgr_; max 8', {
           maximumItems: CONTEXT_BRIEF_MAXIMUM_CODE_REFS,
         }),
@@ -115,23 +115,26 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
       },
     },
     ({budgetTokens, callerCwd, codeRefs, mode, project, task, workset}) => {
-      const checkedCwd = requiredText(callerCwd, 'context_brief', 'callerCwd', {
-        callerCwd: '/workspace/project',
-        task: 'trace the checkout contract and current blockers',
-      });
-      if (!checkedCwd.ok) return checkedCwd.error;
+      const worksetName = workset?.trim();
+      const checkedCwd = worksetName
+        ? undefined
+        : requiredText(callerCwd, 'context_brief', 'callerCwd', {
+            callerCwd: '/workspace/project',
+            task: 'trace the checkout contract and current blockers',
+          });
+      if (checkedCwd !== undefined && !checkedCwd.ok) return checkedCwd.error;
       const checkedTask = requiredText(task, 'context_brief', 'task', {
-        callerCwd: checkedCwd.value,
+        ...(checkedCwd?.ok === true ? {callerCwd: checkedCwd.value} : {workset: worksetName!}),
         task: 'trace the checkout contract and current blockers',
       });
       if (!checkedTask.ok) return checkedTask.error;
       return Effect.gen(function* () {
         const path = yield* Path.Path;
-        if (!path.isAbsolute(checkedCwd.value)) {
+        const repositoryCwd = checkedCwd?.ok === true ? checkedCwd.value : undefined;
+        if (!worksetName && (repositoryCwd === undefined || !path.isAbsolute(repositoryCwd))) {
           return argumentError('context_brief callerCwd must be an absolute workspace path.');
         }
         const requestedCodeRefs = codeRefs === undefined ? [] : typeof codeRefs === 'string' ? [codeRefs] : codeRefs;
-        const worksetName = workset?.trim();
         const response = yield* compileContextBrief(config, {
           ...(budgetTokens === undefined ? {} : {budgetTokens}),
           codeRefs: requestedCodeRefs,
@@ -139,7 +142,7 @@ export function registerContextBriefTool(server: EffectMcpServerAdapter, config:
           scope: worksetName
             ? {kind: 'workset', name: worksetName, ...(project?.trim() ? {project: project.trim()} : {})}
             : {
-                callerCwd: checkedCwd.value,
+                callerCwd: repositoryCwd!,
                 kind: 'repository',
                 ...(project?.trim() ? {project: project.trim()} : {}),
               },
