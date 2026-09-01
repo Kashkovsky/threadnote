@@ -40,6 +40,10 @@ lines.on('line', line => {
   }
   if (request.method === 'thread/start') {
     const params = request.params ?? {};
+    if ('baseInstructions' in params || typeof params.developerInstructions !== 'string') {
+      process.stderr.write('expected native base instructions plus sealed developer instructions\n');
+      process.exit(6);
+    }
     notify('remoteControl/status/changed', {
       environmentId: null,
       installationId: 'fake-installation',

@@ -15,11 +15,7 @@ import {
 } from 'node:fs/promises';
 import {basename, delimiter, dirname, isAbsolute, join, relative, resolve} from 'node:path';
 import {spawn} from 'node:child_process';
-import {
-  CODE_MEMORY_LINK_AGENT_BASE_INSTRUCTIONS,
-  CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS,
-  type CodeMemoryLinkAppServerCommand,
-} from './code-memory-link-app-server-client.js';
+import {type CodeMemoryLinkAppServerCommand} from './code-memory-link-app-server-client.js';
 
 export const CODE_MEMORY_LINK_CODEX_CONFIG_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION = 'codex-cli 0.149.0-alpha.4.1' as const;
@@ -273,13 +269,7 @@ export async function createCodeMemoryLinkCodexIsolation(input: {
     copyFixtureTree(input.fixtureThreadnoteHome, threadnoteHome, {allowAgentControlFiles: true}),
     copyPrivateFile(input.config.authSourcePath, join(codexHome, 'auth.json')),
   ]);
-  const instructionPath = join(codexHome, 'code-memory-link-instructions.md');
   const proxyPacketPath = join(privateRoot, `proxy-${crypto.randomUUID()}.json`);
-  await writeFile(
-    instructionPath,
-    `${CODE_MEMORY_LINK_AGENT_BASE_INSTRUCTIONS}\n\n${CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS}\n`,
-    {mode: 0o600},
-  );
   await writeFile(proxyPacketPath, `${JSON.stringify(input.proxyPacket({repositoryRoot, threadnoteHome}))}\n`, {
     mode: 0o600,
   });
@@ -287,7 +277,6 @@ export async function createCodeMemoryLinkCodexIsolation(input: {
     join(codexHome, 'config.toml'),
     buildCodeMemoryLinkCodexConfig({
       config: input.config,
-      instructionPath,
       proxyPacketEnvironmentName: CODE_MEMORY_LINK_PROXY_CAPABILITY_ENV,
       repositoryRoot,
     }),
@@ -350,7 +339,6 @@ export function sanitizeCodeMemoryLinkAppServerEnvironment(input: {
 
 export function buildCodeMemoryLinkCodexConfig(input: {
   readonly config: CodeMemoryLinkCodexClientConfigV1;
-  readonly instructionPath: string;
   readonly proxyPacketEnvironmentName: string;
   readonly repositoryRoot: string;
 }): string {
@@ -369,7 +357,6 @@ export function buildCodeMemoryLinkCodexConfig(input: {
     'suppress_unstable_features_warning = true',
     'project_doc_max_bytes = 0',
     'project_doc_fallback_filenames = []',
-    `model_instructions_file = ${toml(input.instructionPath)}`,
     '',
     '[analytics]',
     'enabled = false',
