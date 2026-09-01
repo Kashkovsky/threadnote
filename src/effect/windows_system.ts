@@ -1,6 +1,7 @@
 import {dlopen} from 'bun:ffi';
 import {Effect, Stream} from 'effect';
 import {WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION} from '../worker_protocol.js';
+import {fromPromiseInterruptibleAwaiting} from './errors.js';
 
 class WindowsSystemError extends Error {
   readonly _tag = 'WindowsSystemError' as const;
@@ -139,10 +140,10 @@ export function serveWindowsDiskCapacityWorker(
         id: request.id,
         protocol: WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION,
       };
-      yield* Effect.tryPromise({
-        try: () => io.writeLine(JSON.stringify(response)),
-        catch: cause => new WindowsSystemError('Could not write Windows disk capacity worker response.', {cause}),
-      });
+      yield* fromPromiseInterruptibleAwaiting(
+        () => io.writeLine(JSON.stringify(response)),
+        cause => new WindowsSystemError('Could not write Windows disk capacity worker response.', {cause}),
+      );
     });
   const consumeChunk = (chunk: string | Uint8Array) =>
     Effect.gen(function* () {

@@ -29,6 +29,7 @@ const cli = join(root, 'dist', process.platform === 'win32' ? 'threadnote.exe' :
 const coreEmbeddingModelId = CORE_EMBEDDING_MODEL_ID;
 const coreEmbeddingManifest = BUILTIN_MODEL_MANIFESTS.find(candidate => candidate.id === coreEmbeddingModelId);
 const realModelTimeoutMs = 300_000;
+const coldGraphReadTimeoutMs = process.platform === 'win32' && process.arch === 'arm64' ? 60_000 : 25_000;
 const cliOutputMaxBytes = 16 * 1024 * 1024;
 let home: string;
 let temporaryRoot: string;
@@ -176,7 +177,16 @@ describe('built self-contained distribution', () => {
   });
 
   it('lazily builds and queries the native code graph with visible packaged progress', async () => {
-    const firstQuery = await runCli(['graph', 'query', '--cwd', graphRepository, '--query', 'exclusive file lock']);
+    const firstQuery = await runCli([
+      'graph',
+      'query',
+      '--cwd',
+      graphRepository,
+      '--query',
+      'exclusive file lock',
+      '--read-timeout-ms',
+      String(coldGraphReadTimeoutMs),
+    ]);
     expect(firstQuery).toContain('Scanning repository source from Git.');
     expect(firstQuery).toMatch(
       /Scanning · \d+\/\d+ eligible files · \d+ accepted · \d+ content skipped · \d+ excluded/,
