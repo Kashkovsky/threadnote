@@ -475,10 +475,12 @@ describe('platform benchmark workflow', () => {
     expect(linux.needs).toBe('verify');
     expect(macos.needs).toBe('verify');
 
-    expect(publish.needs).toEqual(['verify', 'linux', 'macos']);
+    expect(publish.needs).toEqual(['verify', 'linux', 'macos', 'windows-build']);
     expect(publish.if).toContain("needs.verify.result == 'success'");
     expect(publish.if).toContain("needs.linux.result == 'success'");
     expect(publish.if).toContain("needs.macos.result == 'success'");
+    expect(publish.if).toContain("needs.windows-build.result == 'success'");
+    expect(publish.if).not.toContain('needs.windows-sign');
     expect(publish.if).not.toContain('needs.production-large-evidence');
     expect(publish.uses).toBe('./.github/workflows/publish-release-assets.yml');
     expect(publish.permissions).toEqual({contents: 'write'});

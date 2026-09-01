@@ -20,6 +20,8 @@ jobs:
     name: Verify release source
     runs-on: macos-15
     timeout-minutes: 60
+    outputs:
+      candidate_commit: ${{ steps.code_memory_link_release.outputs.candidate_commit }}
     env:
       CI: '1'
 
@@ -81,29 +83,57 @@ jobs:
             echo "::error::Exact release governance G must descend from protected origin/main."
             exit 1
           fi
-          descriptor=".github/release-evidence/code-memory-link/${release_tag}.json"
-          candidate_commit="$(
-            bun scripts/verify-code-memory-link-release.ts \
-              --release-descriptor "$descriptor" \
-              --release-tag "$release_tag" \
-              --print-candidate-commit
-          )"
+          descriptor=''
+          deferment=''
+          candidate_receipt='{}'
+          if [[ "$release_tag" == 'v4.6.0' ]]; then
+            evidence_kind='deferment'
+            deferment=".github/release-evidence/code-memory-link/${release_tag}.deferment.json"
+            candidate_commit="$(
+              bun scripts/verify-code-memory-link-release-deferment.ts \
+                --waiver "$deferment" \
+                --release-tag "$release_tag" \
+                --print-candidate-commit
+            )"
+            candidate_receipt="$(
+              bun scripts/verify-code-memory-link-release-deferment.ts \
+                --waiver "$deferment" \
+                --release-tag "$release_tag" \
+                --print-candidate-receipt-json
+            )"
+          else
+            evidence_kind='descriptor'
+            descriptor=".github/release-evidence/code-memory-link/${release_tag}.json"
+            candidate_commit="$(
+              bun scripts/verify-code-memory-link-release.ts \
+                --release-descriptor "$descriptor" \
+                --release-tag "$release_tag" \
+                --print-candidate-commit
+            )"
+          fi
           if [[ ! "$candidate_commit" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Release descriptor did not resolve one exact candidate commit."
+            echo "::error::Release evidence did not resolve one exact candidate commit."
             exit 1
           fi
           if ! git merge-base --is-ancestor "$candidate_commit" "$head_commit"; then
             echo "::error::Exact release governance G must descend from candidate C."
             exit 1
           fi
-          printf 'candidate_commit=%s\n' "$candidate_commit" >> "$GITHUB_OUTPUT"
-          printf 'descriptor=%s\n' "$descriptor" >> "$GITHUB_OUTPUT"
+          {
+            printf 'candidate_commit=%s\n' "$candidate_commit"
+            printf 'candidate_receipt=%s\n' "$candidate_receipt"
+            printf 'deferment=%s\n' "$deferment"
+            printf 'descriptor=%s\n' "$descriptor"
+            printf 'evidence_kind=%s\n' "$evidence_kind"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and install exact Code Memory Link candidate C
         if: github.event_name == 'push'
         shell: bash
         env:
           CANDIDATE_COMMIT: ${{ steps.code_memory_link_release.outputs.candidate_commit }}
+          CANDIDATE_RECEIPT: ${{ steps.code_memory_link_release.outputs.candidate_receipt }}
+          EVIDENCE_KIND: ${{ steps.code_memory_link_release.outputs.evidence_kind }}
           THREADNOTE_BUILD_TARGET: bun-darwin-arm64
           THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-evidence-bin
           THREADNOTE_HOME: ${{ runner.temp }}/threadnote-evidence-home
@@ -118,6 +148,7 @@ jobs:
           bun run dev:install-global -- --json --terminate-superseded > "$install_result_file"
           INSTALL_RESULT_FILE="$install_result_file" bun -e '
             const result = await Bun.file(Bun.env.INSTALL_RESULT_FILE).json();
+            const expected = JSON.parse(Bun.env.CANDIDATE_RECEIPT ?? "{}");
             if (
               result.sourceCommit !== Bun.env.CANDIDATE_COMMIT ||
               result.target !== Bun.env.THREADNOTE_BUILD_TARGET ||
@@ -128,12 +159,29 @@ jobs:
             ) {
               throw new Error("Exact candidate installation did not finish with complete verified cleanup.");
             }
+            if (
+              Bun.env.EVIDENCE_KIND === "deferment" &&
+              (result.sourceCommit !== expected.commit ||
+                result.dependencyInstallation !== expected.dependencyInstallation ||
+                result.executableSha256 !== expected.testedCandidateExecutableSha256 ||
+                result.payloadBytes !== expected.payloadBytes ||
+                result.payloadFileCount !== expected.payloadFileCount ||
+                result.payloadManifestSha256 !== expected.payloadManifestSha256 ||
+                result.releaseMetadataSha256 !== expected.releaseMetadataSha256 ||
+                result.runtime !== expected.runtime ||
+                result.target !== expected.target ||
+                result.version !== expected.version)
+            ) {
+              throw new Error("Exact deferred candidate installation differs from its qualified receipt.");
+            }
           '
 
-      - name: Verify exact final Code Memory Link governance G and retained 100k scale evidence
+      - name: Verify exact final Code Memory Link governance G and retained 100k scale evidence or v4.6.0 deferment
         if: github.event_name == 'push'
         shell: bash
         env:
+          EVIDENCE_KIND: ${{ steps.code_memory_link_release.outputs.evidence_kind }}
+          RELEASE_DEFERMENT: ${{ steps.code_memory_link_release.outputs.deferment }}
           RELEASE_DESCRIPTOR: ${{ steps.code_memory_link_release.outputs.descriptor }}
           RELEASE_TAG: ${{ github.ref_name }}
           THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-evidence-bin
@@ -141,9 +189,19 @@ jobs:
           THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-evidence-install
         run: |
           set -euo pipefail
-          bun run eval:code-memory-link-release -- \
-            --release-descriptor "$RELEASE_DESCRIPTOR" \
-            --release-tag "$RELEASE_TAG"
+          if [[ "$EVIDENCE_KIND" == 'deferment' ]]; then
+            bun scripts/verify-code-memory-link-release-deferment.ts \
+              --waiver "$RELEASE_DEFERMENT" \
+              --release-tag "$RELEASE_TAG"
+          else
+            bun run eval:code-memory-link-release -- \
+              --release-descriptor "$RELEASE_DESCRIPTOR" \
+              --release-tag "$RELEASE_TAG"
+          fi
+
+      - name: Verify v4.6.0 experiment deferment contract
+        if: github.event_name == 'push' && steps.code_memory_link_release.outputs.evidence_kind == 'deferment'
+        run: bun --bun vitest run test/unit/code-memory-link-release-deferment.test.ts
 
       - name: Run release contract smokes
         run: bun run test:smoke:release
@@ -167,8 +225,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 3
           persist-credentials: false
           ref: ${{ github.sha }}
+
+      - name: Select exact verified candidate source
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ needs.verify.outputs.candidate_commit }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
+            selected_commit="$GITHUB_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            selected_commit="$CANDIDATE_COMMIT"
+          else
+            echo "::error::Release payload build is missing an exact verifier-selected candidate."
+            exit 1
+          fi
+          git checkout --detach "$selected_commit"
+          if [[ "$(git rev-parse 'HEAD^{commit}')" != "$selected_commit" ]] || [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::Release payload source differs from the exact verified candidate."
+            exit 1
+          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -229,8 +308,29 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 3
           persist-credentials: false
           ref: ${{ github.sha }}
+
+      - name: Select exact verified candidate source
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ needs.verify.outputs.candidate_commit }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
+            selected_commit="$GITHUB_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            selected_commit="$CANDIDATE_COMMIT"
+          else
+            echo "::error::Release payload build is missing an exact verifier-selected candidate."
+            exit 1
+          fi
+          git checkout --detach "$selected_commit"
+          if [[ "$(git rev-parse 'HEAD^{commit}')" != "$selected_commit" ]] || [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::Release payload source differs from the exact verified candidate."
+            exit 1
+          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -346,9 +446,7 @@ jobs:
           if-no-files-found: error
 
   windows-build:
-    name: Windows build · ${{ matrix.architecture }} · disabled
-    # Windows 4 release artifacts stay unavailable until Authenticode signing is approved and verified.
-    if: ${{ false }}
+    name: Windows · ${{ matrix.architecture }} · unsigned
     needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -365,14 +463,66 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 3
           persist-credentials: false
           ref: ${{ github.sha }}
+
+      - name: Select exact verified candidate source
+        shell: bash
+        env:
+          CANDIDATE_COMMIT: ${{ needs.verify.outputs.candidate_commit }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
+            selected_commit="$GITHUB_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            selected_commit="$CANDIDATE_COMMIT"
+          else
+            echo "::error::Release payload build is missing an exact verifier-selected candidate."
+            exit 1
+          fi
+          git checkout --detach "$selected_commit"
+          if [[ "$(git rev-parse 'HEAD^{commit}')" != "$selected_commit" ]] || [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo "::error::Release payload source differs from the exact verified candidate."
+            exit 1
+          fi
 
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
 
       - run: bun install --frozen-lockfile
+
+      - name: Preload checksum-pinned Bun baseline compiler backend
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        env:
+          BUN_BASELINE_TARBALL_SHA512: b888cb502d52f435a0202ceea0c6daeefbab0499c1aee1384b90b19ef99991da96557473c75460bbadfa1e81fe934a9e6900858778de1b7250d72e9f447bf4b3
+        run: |
+          # Bun 1.3.14 cannot extract this backend itself on Windows (oven-sh/bun#28327).
+          # Preserve Threadnote's baseline CPU contract by placing the exact official
+          # package payload in the cache path Bun checks before attempting a download.
+          $packageName = 'bun-windows-x64-baseline'
+          $archive = Join-Path $env:RUNNER_TEMP "$packageName-$env:BUN_VERSION.tgz"
+          $extractRoot = Join-Path $env:RUNNER_TEMP "$packageName-extracted"
+          $packageUrl = "https://registry.npmjs.org/@oven/$packageName/-/$packageName-$env:BUN_VERSION.tgz"
+          Invoke-WebRequest -Uri $packageUrl -OutFile $archive
+          $actualDigest = (Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash.ToLowerInvariant()
+          if ($actualDigest -ne $env:BUN_BASELINE_TARBALL_SHA512) {
+            throw "Bun baseline compiler backend checksum mismatch."
+          }
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          tar -xzf $archive -C $extractRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $source = Join-Path $extractRoot 'package/bin/bun.exe'
+          $cache = (& bun pm cache).Trim()
+          $destination = Join-Path $cache "bun-windows-x64-baseline-v$env:BUN_VERSION"
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          Copy-Item -LiteralPath $source -Destination $destination -Force
+          if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "Bun baseline compiler backend was not preloaded."
+          }
+
       - run: bun run build
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
@@ -396,10 +546,23 @@ jobs:
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
 
+      - name: Verify PowerShell installer and installed runtime
+        run: bun --bun vitest run --config vitest.windows-e2e.config.ts
+
+      - run: bun run archive:release
+        env:
+          THREADNOTE_RELEASE_TARGET: windows-${{ matrix.architecture }}
+
       - uses: actions/upload-artifact@v7
         with:
           name: unsigned-windows-${{ matrix.architecture }}
           path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-${{ matrix.architecture }}
+          path: artifacts/
           if-no-files-found: error
 
   windows-sign:
@@ -484,8 +647,9 @@ jobs:
       github.event_name == 'push' &&
       needs.verify.result == 'success' &&
       needs.linux.result == 'success' &&
-      needs.macos.result == 'success'
-    needs: [verify, linux, macos]
+      needs.macos.result == 'success' &&
+      needs.windows-build.result == 'success'
+    needs: [verify, linux, macos, windows-build]
     permissions:
       contents: write
     uses: ./.github/workflows/publish-release-assets.yml

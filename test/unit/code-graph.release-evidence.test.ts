@@ -3254,7 +3254,9 @@ describe('code graph release evidence', () => {
       release_sha: '${{ github.sha }}',
     });
     const publisher = publish.jobs['publish-release']!;
-    expect(publisher.needs).toEqual(['verify', 'linux', 'macos']);
+    expect(publisher.needs).toEqual(['verify', 'linux', 'macos', 'windows-build']);
+    expect(publisher.if).toContain("needs.windows-build.result == 'success'");
+    expect(publisher.if).not.toContain('needs.windows-sign');
     expect(publisher.if).not.toContain('needs.production-large-evidence');
     expect(publish.jobs['publish-beta']).toBeUndefined();
     expect(publish.jobs['publish-evidence-gated']).toBeUndefined();

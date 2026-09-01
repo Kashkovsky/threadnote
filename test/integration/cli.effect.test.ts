@@ -1447,6 +1447,23 @@ describe('Effect CLI', () => {
         type: 'code-graph-query-state',
       });
 
+      const humanTimedOut = await runCli([
+        'graph',
+        'query',
+        '--home',
+        home,
+        '--cwd',
+        root,
+        '--query',
+        'boundedReadSymbol',
+        '--freshness',
+        'current',
+        '--read-timeout-ms',
+        '1',
+      ]);
+      expect(humanTimedOut.stdout).toContain('Run graph index, then retry');
+      expect(humanTimedOut.stdout).toContain('larger --read-timeout-ms');
+
       const timedOut = await runCli([
         'graph',
         'query',

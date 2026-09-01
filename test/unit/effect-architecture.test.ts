@@ -135,12 +135,12 @@ describe('Effect architecture boundaries', () => {
     const system = await readFile(join(sourceRoot, 'effect', 'system.ts'), 'utf8');
     const nativeStatfsStart = system.indexOf('function nativeStatfs');
     const fallbackStart = system.indexOf('export function legacyAvailableDiskBytes');
-    const defaultAdaptersStart = system.indexOf('const defaultDiskCapacityProbeAdapters');
+    const windowsWorkerAdapterStart = system.indexOf('export interface WindowsDiskCapacityWorkerProcess');
     expect(nativeStatfsStart).toBeGreaterThanOrEqual(0);
     expect(fallbackStart).toBeGreaterThan(nativeStatfsStart);
-    expect(defaultAdaptersStart).toBeGreaterThan(fallbackStart);
+    expect(windowsWorkerAdapterStart).toBeGreaterThan(fallbackStart);
     const nativeStatfs = system.slice(nativeStatfsStart, fallbackStart);
-    const fallback = system.slice(fallbackStart, defaultAdaptersStart);
+    const fallback = system.slice(fallbackStart, windowsWorkerAdapterStart);
     expect(nativeStatfs).toContain('Effect.tryPromise({');
     expect(nativeStatfs).toContain('nativeFileSystemPromises.statfs!(path, {bigint: true})');
     expect(nativeStatfs).not.toContain('Effect.try({');

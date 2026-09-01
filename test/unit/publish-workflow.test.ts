@@ -47,7 +47,7 @@ describe('standalone release workflows', () => {
     }),
   );
 
-  it.effect('publishes macOS and Linux while retaining disabled Windows release definitions', () =>
+  it.effect('publishes macOS, Linux, and explicit unsigned Windows artifacts', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
 
@@ -56,11 +56,19 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('bun-linux-arm64');
       expect(workflow).toContain('bun-darwin-x64');
       expect(workflow).toContain('bun-darwin-arm64');
-      expect(workflow).toContain('bun-windows-x64-baseline');
+      expect(workflow).toContain('target: bun-windows-x64-baseline');
+      expect(workflow).toContain('oven-sh/bun#28327');
+      expect(workflow).toContain('Preload checksum-pinned Bun baseline compiler backend');
+      expect(workflow).toContain('BUN_BASELINE_TARBALL_SHA512: b888cb502d52f435a0202ceea0c6daeef');
+      expect(workflow).toContain('bun-windows-x64-baseline-v$env:BUN_VERSION');
       expect(workflow).toContain('bun-windows-arm64');
       expect(workflow).toContain('windows-11-arm');
-      expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(2);
-      expect(workflow).toContain('needs: [verify, linux, macos]');
+      expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(1);
+      expect(workflow).toContain('name: Windows · ${{ matrix.architecture }} · unsigned');
+      expect(workflow).toContain('bun --bun vitest run --config vitest.windows-e2e.config.ts');
+      expect(workflow).toContain('name: release-windows-${{ matrix.architecture }}');
+      expect(workflow).toContain("needs.windows-build.result == 'success'");
+      expect(workflow).toContain('needs: [verify, linux, macos, windows-build]');
       expect(workflow).not.toContain('needs: [verify, linux, macos, production-large-evidence]');
       expect(workflow).not.toContain('needs: [linux, macos, windows-sign]');
       expect(workflow).not.toMatch(/\bnpm(?:\s|$)/);
@@ -95,7 +103,7 @@ describe('standalone release workflows', () => {
     }),
   );
 
-  it.effect('signs and notarizes Apple artifacts and keeps the deferred Authenticode sequence intact', () =>
+  it.effect('signs Apple artifacts, publishes unsigned Windows archives, and retains deferred Authenticode', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
       const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
@@ -103,7 +111,8 @@ describe('standalone release workflows', () => {
       const notarization = workflow.indexOf('Notarize the exact release payload');
       const macArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: darwin-');
       const authenticode = workflow.indexOf('Authenticode-sign executable and native payload');
-      const windowsArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: windows-');
+      const unsignedWindowsArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: windows-');
+      const signedWindowsArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: windows-', authenticode);
 
       expect(signing).toBeGreaterThan(0);
       expect(notarization).toBeGreaterThan(signing);
@@ -112,10 +121,52 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('find dist/runtime -type f -print0');
       expect(workflow).toContain('azure/artifact-signing-action@v2');
       expect(workflow).toContain('timestamp-rfc3161: http://timestamp.acs.microsoft.com');
-      expect(windowsArchive).toBeGreaterThan(authenticode);
+      expect(unsignedWindowsArchive).toBeGreaterThan(macArchive);
+      expect(unsignedWindowsArchive).toBeLessThan(authenticode);
+      expect(signedWindowsArchive).toBeGreaterThan(authenticode);
       expect(publisher).toContain('gh release create');
       expect(publisher).toContain('Verify release immutability');
       expect(workflow).not.toContain('types: [published]');
+    }),
+  );
+
+  it.effect('keeps the v4.6.0 publication recovery exact, one-shot, and artifact-bound', () =>
+    Effect.gen(function* () {
+      const recovery = yield* readProjectFile('.github/workflows/publish-v4.6.0-recovery.yml');
+
+      expect(recovery).toContain('workflow_dispatch:');
+      expect(recovery).not.toMatch(/^\s+push:\s*$/m);
+      expect(recovery).toContain('group: publish-v4.6.0');
+      expect(recovery).toContain('TAG_COMMIT: 242d0c47fec4d643154415cb69d05036cd4dc834');
+      expect(recovery).toContain('RECOVERY_BASE_COMMIT: 539a2ea3790457ad2145a7e566958ffc9a6f40fe');
+      expect(recovery).toContain('RECOVERY_BASE_TREE: f81cb3a625fdc959908bc0a584fa330650c0a374');
+      expect(recovery).toContain('CANDIDATE_COMMIT: 9ac28435659ce421ebc78b302616eaac75112597');
+      expect(recovery).toContain("REHEARSAL_RUN_ID: '33518869399'");
+      expect(recovery).toContain('refs/threadnote-v4.6.0-recovery-tag^{commit}');
+      expect(recovery).toContain('verify-code-memory-link-release-deferment.ts');
+      expect(recovery).toContain('run.conclusion !== "success"');
+      expect(recovery).toContain('Sign nested native code and Bun executable');
+      expect(recovery).toContain('Notarize the exact release payload');
+      expect(recovery).toContain('Verify PowerShell installer and installed runtime');
+      expect(recovery).toContain('artifact.digest !== expected.digest');
+      expect(recovery).toContain('artifact.expired !== false');
+      expect(recovery.match(/sha256:[0-9a-f]{64}/g)).toHaveLength(4);
+      expect(recovery.match(/artifact: release-(?:darwin|windows)-(?:arm64|x64)$/gm)).toHaveLength(4);
+      expect(recovery.match(/ref: 9ac28435659ce421ebc78b302616eaac75112597/g)).toHaveLength(1);
+      expect(recovery).toContain('bun-linux-x64-baseline');
+      expect(recovery).toContain('bun-linux-arm64');
+      expect(recovery).toContain('doctor --dry-run --strict');
+      expect(recovery).toContain('test/e2e/local-bins.e2e.ts');
+      expect(recovery).toContain('actions/download-artifact@v8');
+      expect(recovery).toContain('artifact-ids: ${{ matrix.artifact_id }}');
+      expect(recovery).toContain('digest-mismatch: error');
+      expect(recovery).toContain('merge-multiple: true');
+      expect(recovery.match(/artifact_id: [0-9]+$/gm)).toHaveLength(4);
+      expect(recovery).toContain('run-id: 33518869399');
+      expect(recovery).toContain('needs: [verify, linux, promote-rehearsal]');
+      expect(recovery).toContain('uses: ./.github/workflows/publish-release-assets.yml');
+      expect(recovery).toContain('release_tag: v4.6.0');
+      expect(recovery).toContain('release_sha: 242d0c47fec4d643154415cb69d05036cd4dc834');
     }),
   );
 

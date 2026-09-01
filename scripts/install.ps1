@@ -554,7 +554,17 @@ try {
     throw 'Release artifact validation failed: executable, metadata, or native runtime is missing.'
   }
   $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
-  if ($metadata.version -ne $version -or $metadata.executable -ne 'threadnote.exe') {
+  $metadataVersion = $metadata.version
+  $metadataExecutable = $metadata.executable
+  $codeSignature = $metadata.codeSignature
+  if (
+    $metadataVersion -isnot [string] -or
+    $metadataVersion -cne $version -or
+    $metadataExecutable -isnot [string] -or
+    $metadataExecutable -cne 'threadnote.exe' -or
+    $codeSignature -isnot [string] -or
+    $codeSignature -cne 'unsigned'
+  ) {
     throw "Release metadata does not match Threadnote $version."
   }
   $officialRelease = (
@@ -563,16 +573,7 @@ try {
     -not $env:THREADNOTE_RELEASE_DOWNLOAD_ROOT
   )
   if ($officialRelease) {
-    $signedFiles = @((Get-Item -LiteralPath $executable)) + @(
-      Get-ChildItem -LiteralPath (Join-Path $stagedRoot 'runtime') -Recurse -File |
-        Where-Object { $_.Extension -in '.dll', '.node' }
-    )
-    foreach ($file in $signedFiles) {
-      $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-      if ($signature.Status -ne 'Valid') {
-        throw "Invalid Authenticode signature for $($file.FullName): $($signature.Status)"
-      }
-    }
+    Write-Warning 'This Windows release is unsigned. Its immutable GitHub release and SHA-256 checksum were verified.'
   }
 
   Write-ThreadnotePromotionJournal $releaseRoot $stagedRoot $backupRoot $promotionJournal

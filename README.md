@@ -107,7 +107,7 @@ On POSIX systems the installer adds `~/.local/bin` to the detected shell profile
 change its parent shell, so it also prints absolute next commands and the shell-specific `PATH` command that works
 immediately; open a new terminal or run that command before invoking `threadnote` by name.
 
-Windows PowerShell, once Threadnote 4 Windows publishing is re-enabled:
+Windows PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.ps1 | iex
@@ -126,9 +126,9 @@ threadnote mcp-install codex --apply
 
 The downloaded executable embeds the pinned Bun runtime. Users do not need Bun or Node installed. Installers accept
 only immutable GitHub releases and SHA-256 verify archives before atomic promotion. Threadnote 4 releases currently publish
-Developer ID signed and notarized macOS builds plus checksum-verified Linux builds. Windows 4 publishing is temporarily
-disabled until Authenticode signing is approved and verified; Threadnote will not ship an unsigned official Windows
-archive.
+Developer ID signed and notarized macOS builds plus checksum-verified Linux and Windows builds. Threadnote 4.6 Windows
+archives are intentionally unsigned: the installer verifies the immutable GitHub release and SHA-256 checksum and
+prints that limitation before activation. Windows may still show a SmartScreen warning.
 
 After the standalone payload is active, installation removes only verified global npm-distributed Threadnote packages,
 including early Node-based 4.0 betas, and Threadnote-owned OpenViking tools found through uv, pipx, or a user-local pip

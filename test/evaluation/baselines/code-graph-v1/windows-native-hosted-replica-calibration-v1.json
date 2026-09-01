@@ -93,7 +93,9 @@
           "wholeGraphAnalysisP95": 200.6048
         },
         "processCpuMilliseconds": {
+          "coldMaterialization": 1562,
           "hotQueryP95": 235,
+          "oneFileMaterialization": 93,
           "wholeGraphAnalysisP95": 266
         }
       },
@@ -122,7 +124,9 @@
           "wholeGraphAnalysisP95": 3605.5271
         },
         "processCpuMilliseconds": {
+          "coldMaterialization": 1250,
           "hotQueryP95": 219,
+          "oneFileMaterialization": 47,
           "wholeGraphAnalysisP95": 125
         }
       },
@@ -151,7 +155,9 @@
           "wholeGraphAnalysisP95": 118.495
         },
         "processCpuMilliseconds": {
+          "coldMaterialization": 1719,
           "hotQueryP95": 281,
+          "oneFileMaterialization": 94,
           "wholeGraphAnalysisP95": 156
         }
       }
@@ -163,10 +169,131 @@
       "wholeGraphAnalysisProcessCpuObservedP95Maximum": 266
     }
   },
+  "nestedMaterializationOutlier": {
+    "workflowRun": 33476389393,
+    "aggregateJobId": 99757856511,
+    "aggregateArtifactId": 9788468770,
+    "aggregateArtifactSha256": "236d243bcea79434788647daee47ada394f5d983499ac5602a99e090074582e2",
+    "aggregateJsonSha256": "8c9a553ae3cf5e1069c4360faaa2c8a059c0bce09cd59efdc42feb815fba91d2",
+    "commit": "15fcbfc820fc6e0c3ff4d40ede3466a0449670ad",
+    "sourceTree": "729f7cb0ee3ff6550b969f9136cdad928a3ac0ee",
+    "replicas": [
+      {
+        "replica": 1,
+        "classification": "scheduler-storage-tail",
+        "jobId": 99756438755,
+        "artifactId": 9788441031,
+        "createdAt": "2026-09-01T06:15:09.678Z",
+        "archiveSha256": "e4fdb049a8fc4f1805bd1c46547c7573c7262893ff3a03cba302b9e12475b86f",
+        "rawJsonSha256": "27b5a7f7bcf61e12b5d12fefaca1b8324efd1fb2b3dd6d713061e786a4981668",
+        "runnerIdentity": "runner-db8e144145a3f739",
+        "environment": {
+          "architecture": "x64",
+          "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+          "memoryBytes": 17174360064,
+          "operatingSystem": "Windows 10.0.26100"
+        },
+        "wallMilliseconds": {
+          "coldIndex": 27864.6616,
+          "coldMaterialization": 17315.2415,
+          "hotQueryP50": 346.1941,
+          "hotQueryP95": 629.8003,
+          "oneFileIndex": 2879.6715,
+          "oneFileMaterialization": 66.1656,
+          "wholeGraphAnalysisP95": 231.5751
+        },
+        "processCpuMilliseconds": {
+          "coldMaterialization": 1516,
+          "hotQueryP95": 218,
+          "oneFileMaterialization": 46,
+          "wholeGraphAnalysisP95": 172
+        }
+      },
+      {
+        "replica": 2,
+        "classification": "ordinary-pass",
+        "jobId": 99756438756,
+        "artifactId": 9788456643,
+        "createdAt": "2026-09-01T06:15:48.217Z",
+        "archiveSha256": "d966aeacf183225f2329c91a21d6cf810b90b3b8729556b626eecea8bcfae151",
+        "rawJsonSha256": "2066b8fccfcc4bc2f8930dff22d4696c30e19c13df51bf074d04e808a74e6e48",
+        "runnerIdentity": "runner-b348c6fe5c74d032",
+        "environment": {
+          "architecture": "x64",
+          "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+          "memoryBytes": 17174360064,
+          "operatingSystem": "Windows 10.0.26100"
+        },
+        "wallMilliseconds": {
+          "coldIndex": 6559.5881,
+          "coldMaterialization": 1724.5823,
+          "hotQueryP50": 351.972,
+          "hotQueryP95": 386.5179,
+          "oneFileIndex": 3572.5782,
+          "oneFileMaterialization": 87.1238,
+          "wholeGraphAnalysisP95": 209.2312
+        },
+        "processCpuMilliseconds": {
+          "coldMaterialization": 1703,
+          "hotQueryP95": 251,
+          "oneFileMaterialization": 63,
+          "wholeGraphAnalysisP95": 172
+        }
+      },
+      {
+        "replica": 3,
+        "classification": "ordinary-pass",
+        "jobId": 99756438881,
+        "artifactId": 9788460703,
+        "createdAt": "2026-09-01T06:15:57.245Z",
+        "archiveSha256": "f525601194a2a607ecd743008747275fa1f8bc4e08c8682a7cfbdc9d6c00fe24",
+        "rawJsonSha256": "1fc4a9bd12085a955850b1051699db465297f0c1a4e9cb1d9df33b3a8aaea4f5",
+        "runnerIdentity": "runner-e7b5cf5c01661001",
+        "environment": {
+          "architecture": "x64",
+          "cpu": "Intel64 Family 6 Model 106 Stepping 6, GenuineIntel",
+          "memoryBytes": 17174360064,
+          "operatingSystem": "Windows 10.0.26100"
+        },
+        "wallMilliseconds": {
+          "coldIndex": 6814.5742,
+          "coldMaterialization": 1692.2245,
+          "hotQueryP50": 370.1037,
+          "hotQueryP95": 402.658,
+          "oneFileIndex": 4000.7326,
+          "oneFileMaterialization": 99.898,
+          "wholeGraphAnalysisP95": 263.8265
+        },
+        "processCpuMilliseconds": {
+          "coldMaterialization": 1453,
+          "hotQueryP95": 265,
+          "oneFileMaterialization": 94,
+          "wholeGraphAnalysisP95": 312
+        }
+      }
+    ],
+    "outlierDiagnostics": {
+      "coldMaterializationProcessCpuMilliseconds": 1516,
+      "coldMaterializationWallToCpuRatio": 11.421663258575197,
+      "coldMaximumProgressHeartbeatGapMilliseconds": 13080.6681,
+      "sameOverlayReferenceIndexMilliseconds": 5981.3059,
+      "sameOverlayReferenceMaterializationMilliseconds": 1662.5275
+    },
+    "expected": {
+      "coldMaterializationProcessCpuObservedMaximum": 1703,
+      "oneFileMaterializationProcessCpuObservedMaximum": 94,
+      "ordinaryPasses": 2,
+      "safetyPassesBeforeCorrection": 2,
+      "safetyPassesAfterCorrection": 3
+    }
+  },
   "policy": {
+    "coldMaterializationProcessCpuMillisecondsMaximum": 3000,
     "headroomRatio": 0.1,
     "roundingQuantumMilliseconds": 100,
     "hardWallP95MillisecondsMaximum": 1900,
+    "nestedMaterializationUsesEnclosingSafetyCeiling": true,
+    "oneFileMaterializationProcessCpuMillisecondsMaximum": 200,
     "ordinaryWallP95MillisecondsMaximum": 1050,
     "replicas": 3,
     "ordinaryPassesMinimum": 2,

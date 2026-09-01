@@ -244,6 +244,8 @@ export function assertSharedWorktreeFileReady(
   relativePath: string,
   expectedContent: string | undefined,
   dryRun = false,
+  contentEquivalent: (currentContent: string, expectedContent: string) => boolean = (currentContent, expected) =>
+    canonicalMemoryDocumentContent(currentContent) === canonicalMemoryDocumentContent(expected),
 ): Effect.Effect<void, unknown, CommandExecutor | FileSystem.FileSystem | Path.Path | SystemInfo> {
   return Effect.gen(function* () {
     if (dryRun) return;
@@ -279,10 +281,7 @@ export function assertSharedWorktreeFileReady(
       return yield* Effect.fail(new ShareOperationError(`Shared worktree target is not a regular file: ${targetPath}`));
     }
     const currentContent = yield* fs.readFileString(targetPath);
-    if (
-      expectedContent === undefined ||
-      canonicalMemoryDocumentContent(currentContent) !== canonicalMemoryDocumentContent(expectedContent)
-    ) {
+    if (expectedContent === undefined || !contentEquivalent(currentContent, expectedContent)) {
       return yield* Effect.fail(
         new ShareOperationError(
           `Refusing to overwrite changed shared worktree file: ${safeRelativePath}. Sync or resolve the worktree conflict first.`,

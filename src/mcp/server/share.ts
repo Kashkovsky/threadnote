@@ -8,6 +8,7 @@ import {
   publishShareGitChange,
   resolveTeam,
   applyScrubber,
+  setMemoryVisibility,
   sharedUriFor,
   stripPersonalProvenance,
   resourceUriToWorktreeRelative,
@@ -206,7 +207,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
         `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
       );
     }
-    const stripped = stripPersonalProvenance(sourceText);
+    const stripped = setMemoryVisibility(stripPersonalProvenance(sourceText), 'shared');
     const scrub = applyScrubber(stripped, {redact: options.redact === true});
 
     if (options.preview === true) {
@@ -259,7 +260,7 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
               return {blocker: currentCitationBlocker, kind: 'citation_blocked' as const};
             }
             const currentScrub = applyScrubber(
-              stripPersonalProvenance(canonicalMemoryDocumentContent(currentSourceText)),
+              setMemoryVisibility(stripPersonalProvenance(canonicalMemoryDocumentContent(currentSourceText)), 'shared'),
               {
                 redact: options.redact === true,
               },
@@ -268,14 +269,19 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
               return {blocker: currentScrub.blocker, kind: 'blocked' as const};
             }
             const [existingTarget] = yield* readMemoryRecordsByUri(config, [targetUri]);
-            if (
-              existingTarget &&
-              canonicalMemoryDocumentContent(existingTarget.content) !==
-                canonicalMemoryDocumentContent(currentScrub.cleaned)
-            ) {
+            if (existingTarget && !sharedPublicationContentEquivalent(existingTarget.content, currentScrub.cleaned)) {
               return {kind: 'target_conflict' as const};
             }
-            yield* assertSharedWorktreeFileReady(resolved.config.worktree, relativePath, currentScrub.cleaned);
+            // A pre-4.6 MCP publication may have committed otherwise-identical
+            // bytes without shared visibility before source cleanup completed.
+            // Accept only that visibility difference, then upgrade both stores.
+            yield* assertSharedWorktreeFileReady(
+              resolved.config.worktree,
+              relativePath,
+              currentScrub.cleaned,
+              false,
+              sharedPublicationContentEquivalent,
+            );
             yield* ensureSharedDirectoryChain(config, ov, targetUri, false, {quiet: true});
             yield* writeMemoryFile(
               config,
@@ -386,6 +392,13 @@ export function runSharePublishTool(config: RuntimeConfig, sourceUri: string, op
       isError: false,
     };
   }).pipe(Effect.catch(error => Effect.succeed(mcpErrorResult(error))));
+}
+
+function sharedPublicationContentEquivalent(currentContent: string, expectedContent: string): boolean {
+  return (
+    canonicalMemoryDocumentContent(setMemoryVisibility(currentContent, 'shared')) ===
+    canonicalMemoryDocumentContent(setMemoryVisibility(expectedContent, 'shared'))
+  );
 }
 
 export function runShareSkillTool(config: RuntimeConfig, sourcePath: string, options: ShareSkillToolOptions) {

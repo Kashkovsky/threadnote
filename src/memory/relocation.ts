@@ -6,11 +6,13 @@ import {uriSegment} from '../manifest.js';
 import {threadnoteStorageLayout} from '../storage/layout.js';
 import {parseResourceId, resourceIdIsWithin} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
-import {parseMemoryDocument} from './document.js';
+import {parseMemoryDocument, type MemoryRecord} from './document.js';
 
 export const MEMORY_RELOCATION_RECEIPT_VERSION = 1 as const;
 export const MAX_MEMORY_RELOCATION_DEPTH = 8;
 const MAX_MEMORY_RELOCATION_RECEIPT_BYTES = 16 * 1024;
+const MAX_MEMORY_RELOCATION_RECEIPT_COUNT = 1_024;
+const MAX_MEMORY_RELOCATION_RECEIPT_TOTAL_BYTES = 2 * 1024 * 1024;
 
 export class MemoryRelocationError extends Data.TaggedError('MemoryRelocationError')<{
   readonly message: string;
@@ -36,6 +38,15 @@ export interface ResolvedMemoryRead {
   readonly memoryId?: string;
   readonly relocationDepth: number;
   readonly requestedUri: string;
+}
+
+export interface MemoryRelocationIdentityWitnessCandidate {
+  readonly identityConflict?: boolean;
+  readonly memoryId: string;
+  readonly missingMemoryId: boolean;
+  readonly record: MemoryRecord;
+  readonly status: 'active';
+  readonly uri: string;
 }
 
 type RelocationRuntime = Pick<RuntimeConfig, 'account' | 'agentContextHome' | 'user'>;
@@ -169,7 +180,7 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
     );
     if (Option.isSome(destination)) {
       const record = parseMemoryDocument(receipt.toUri, destination.value);
-      if (!record || record.metadata.memoryId !== receipt.memoryId) {
+      if (!record || (record.metadata.memoryId !== undefined && record.metadata.memoryId !== receipt.memoryId)) {
         return yield* Effect.fail(
           relocationError('Memory relocation destination failed its memory_id identity fence.'),
         );
@@ -187,6 +198,105 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
   return yield* Effect.fail(
     relocationError(`Memory relocation chain exceeds the maximum depth of ${MAX_MEMORY_RELOCATION_DEPTH}.`),
   );
+});
+
+/**
+ * Bounded explicit-read fallback for a stable identity whose shared destination
+ * lost only its identity header. Private receipts are witnesses, not topical
+ * recall candidates: a different non-empty destination identity always wins
+ * and fails closed.
+ */
+export const loadMemoryRelocationIdentityWitnesses = Effect.fn('memoryRelocation.loadIdentityWitnesses')(function* (
+  config: RelocationRuntime,
+  memoryIds: readonly string[],
+  allowedUriScopes: readonly string[],
+  options: {readonly destinationUris?: readonly string[]} = {},
+) {
+  const requestedMemoryIds = new Set(memoryIds.filter(validMemoryId));
+  const requestedDestinationUris = new Set(options.destinationUris ?? []);
+  if ((requestedMemoryIds.size === 0 && requestedDestinationUris.size === 0) || allowedUriScopes.length === 0)
+    return [];
+  const root = yield* existingPrivateMemoryRelocationRoot(config);
+  if (root === undefined) return [];
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const entries = (yield* fs.readDirectory(root)).filter(entry => entry.endsWith('.json')).sort();
+  if (entries.length > MAX_MEMORY_RELOCATION_RECEIPT_COUNT) {
+    return yield* Effect.fail(
+      relocationError(
+        `Memory relocation identity scan exceeds the maximum receipt count of ${MAX_MEMORY_RELOCATION_RECEIPT_COUNT}.`,
+      ),
+    );
+  }
+
+  const store = yield* ResourceStore;
+  const location = resourceStoreLocation(config);
+  let scannedBytes = 0;
+  const receipts: MemoryRelocationReceiptV1[] = [];
+  const receiptClaimsByDestination = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const target = path.join(root, entry);
+    const info = yield* fs.stat(target);
+    scannedBytes += Number(info.size);
+    if (scannedBytes > MAX_MEMORY_RELOCATION_RECEIPT_TOTAL_BYTES) {
+      return yield* Effect.fail(
+        relocationError(
+          `Memory relocation identity scan exceeds the ${MAX_MEMORY_RELOCATION_RECEIPT_TOTAL_BYTES}-byte aggregate limit.`,
+        ),
+      );
+    }
+    const receipt = yield* readMemoryRelocationReceiptFile(target);
+    if (receipt === undefined) continue;
+    const canonicalFrom = yield* canonicalManagedMemoryUri(config, receipt.fromUri);
+    const canonicalTo = yield* canonicalManagedMemoryUri(config, receipt.toUri);
+    if (canonicalFrom !== receipt.fromUri || canonicalTo !== receipt.toUri) {
+      return yield* Effect.fail(relocationError('Memory relocation receipt contains a non-canonical URI.'));
+    }
+    receipts.push(receipt);
+    if (requestedDestinationUris.has(receipt.toUri)) requestedMemoryIds.add(receipt.memoryId);
+    const claims = receiptClaimsByDestination.get(receipt.toUri) ?? new Set<string>();
+    claims.add(receipt.memoryId);
+    receiptClaimsByDestination.set(receipt.toUri, claims);
+  }
+
+  const destinationRecords = new Map<string, MemoryRecord | undefined>();
+  const candidates = new Map<string, MemoryRelocationIdentityWitnessCandidate>();
+  for (const receipt of receipts) {
+    if (!requestedMemoryIds.has(receipt.memoryId)) continue;
+    if (!allowedUriScopes.some(scope => resourceIdIsWithin(receipt.toUri, scope))) continue;
+    let record = destinationRecords.get(receipt.toUri);
+    if (!destinationRecords.has(receipt.toUri)) {
+      const destination = yield* store.read(location, receipt.toUri).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+      );
+      record = Option.isSome(destination) ? parseMemoryDocument(receipt.toUri, destination.value) : undefined;
+      destinationRecords.set(receipt.toUri, record);
+    }
+    if (!record || record.metadata.status !== 'active') continue;
+    const observedMemoryId = record.metadata.memoryId;
+    const key = `${receipt.memoryId}\u0000${receipt.toUri}`;
+    candidates.set(key, {
+      identityConflict: observedMemoryId !== undefined && observedMemoryId !== receipt.memoryId,
+      memoryId: receipt.memoryId,
+      missingMemoryId: observedMemoryId === undefined,
+      record,
+      status: 'active',
+      uri: receipt.toUri,
+    });
+  }
+
+  return [...candidates.values()]
+    .map(candidate =>
+      candidate.missingMemoryId && (receiptClaimsByDestination.get(candidate.uri)?.size ?? 0) > 1
+        ? {...candidate, identityConflict: true}
+        : candidate,
+    )
+    .sort((left, right) =>
+      left.memoryId === right.memoryId
+        ? left.uri.localeCompare(right.uri)
+        : left.memoryId.localeCompare(right.memoryId),
+    );
 });
 
 const writeMemoryRelocationReceipt = Effect.fn('memoryRelocation.writeReceipt')(function* (

@@ -4,4 +4,6 @@ export const CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT = '--threadnote-code-graph-
 export const CODE_GRAPH_COMPACTION_WORKER_ARGUMENT = '--threadnote-code-graph-compaction-worker';
 export const CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT =
   '--threadnote-code-graph-git-worktree-registration-worker';
+export const WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT = '--threadnote-windows-disk-capacity-worker';
+export const WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION = 1;
 export const LOCAL_MODEL_WORKER_ARGUMENT = '--threadnote-local-model-worker';

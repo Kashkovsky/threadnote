@@ -10,6 +10,7 @@ import {
   CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   LOCAL_MODEL_WORKER_ARGUMENT,
+  WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT,
 } from './worker_protocol.js';
 
 const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
@@ -20,6 +21,7 @@ const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORK
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isCodeGraphImpactQueryWorker = arguments_[0] === CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
+const isWindowsDiskCapacityWorker = arguments_[0] === WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT;
 const isMcpBroker = arguments_[0] === 'mcp-broker';
 const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
 const isRemoteMemoryService = arguments_[0] === 'remote-memory-service';
@@ -32,18 +34,23 @@ const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   });
 });
 
-if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker || isCodeGraphImpactQueryWorker) {
-  // SQLite's integrity checks, compaction, and graph reads are synchronous
-  // native work. These workers keep the OS default SIGTERM behavior so their
-  // lock-owning or deadline-owning parents can always stop them.
-  runSignalTransparentMain(
-    isCodeGraphCompactionWorker
+if (
+  isCodeGraphDeepDiagnosticsWorker ||
+  isCodeGraphCompactionWorker ||
+  isCodeGraphImpactQueryWorker ||
+  isWindowsDiskCapacityWorker
+) {
+  // These operations perform synchronous native work. Keep the OS default
+  // signal behavior so their lock-owning or deadline-owning parents can stop
+  // them without waiting for the native call to return.
+  const nativeWorkerProgram: Effect.Effect<void, unknown, never> = isWindowsDiskCapacityWorker
+    ? await windowsDiskCapacityWorkerProgram()
+    : isCodeGraphCompactionWorker
       ? await codeGraphAutomaticCompactionWorkerProgram()
       : isCodeGraphImpactQueryWorker
         ? await codeGraphImpactQueryWorkerProgram()
-        : await codeGraphDeepDiagnosticsWorkerProgram(),
-    {disableErrorReporting: true},
-  );
+        : await codeGraphDeepDiagnosticsWorkerProgram();
+  runSignalTransparentMain(nativeWorkerProgram, {disableErrorReporting: true});
 } else {
   const program: Effect.Effect<void, unknown, never> = isRemoteMemoryService
     ? await remoteMemoryServiceProgram()
@@ -64,6 +71,25 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker || isCodeGra
       isGitWorktreeRegistrationWorker ||
       (!isMcpServer && !isMcpBroker),
   });
+}
+
+async function windowsDiskCapacityWorkerProgram() {
+  const worker = await import('./effect/windows_system.js');
+  return worker
+    .serveWindowsDiskCapacityWorker({
+      input: process.stdin,
+      writeLine: line =>
+        new Promise<void>((resolve, reject) => {
+          process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+        }),
+    })
+    .pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (!process.stdin.destroyed) process.stdin.pause();
+        }),
+      ),
+    );
 }
 
 async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {

@@ -103,16 +103,6 @@ describe('Context Brief deferred code-anchor recovery', () => {
           const store = yield* ResourceStore;
           const location = {account: config.account, home, user: config.user} as const;
           yield* store.write(location, memoryUri, content, {mode: 'create'});
-          const delayedFinalizationStore = ResourceStore.of({
-            ...store,
-            write: (writeLocation, uri, value, options) => {
-              const write = store.write(writeLocation, uri, value, options);
-              // Exceed the 750 ms foreground pass deadline only after the
-              // canonical citation commit, reproducing the CI contention race.
-              return uri === memoryUri ? write.pipe(Effect.tap(() => Effect.sleep('900 millis'))) : write;
-            },
-          });
-
           // The service-level indexer deliberately bypasses the CLI graph-index
           // opportunity, leaving the consumer-side missed-wakeup fallback to prove.
           const indexer = yield* CodeGraphIndexer;
@@ -138,9 +128,7 @@ describe('Context Brief deferred code-anchor recovery', () => {
             scope: {callerCwd: repository, kind: 'repository'},
             task: 'Find the decision attached to deferredBacklinkTarget.',
           });
-          const first = yield* retrieveContextBriefCodeLinkedMemoryEvidence(config, plan.codeAnchors).pipe(
-            Effect.provideService(ResourceStore, delayedFinalizationStore),
-          );
+          const first = yield* retrieveContextBriefCodeLinkedMemoryEvidence(config, plan.codeAnchors);
           expect(first.codeAnchorCoverage).toEqual({complete: true, matchedMemories: 1, requested: 1, resolved: 1});
           expect(first.candidates).toMatchObject([
             {

@@ -54,6 +54,22 @@ describe('Windows platform contracts', () => {
     expect(installer).toContain('[Security.Cryptography.SHA256]::Create()');
   });
 
+  it('accepts only an explicitly declared unsigned Windows payload and warns the user', async () => {
+    const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
+
+    expect(installer).toContain('$metadataVersion = $metadata.version');
+    expect(installer).toContain('$metadataVersion -isnot [string]');
+    expect(installer).toContain('$metadataVersion -cne $version');
+    expect(installer).toContain('$metadataExecutable = $metadata.executable');
+    expect(installer).toContain('$metadataExecutable -isnot [string]');
+    expect(installer).toContain("$metadataExecutable -cne 'threadnote.exe'");
+    expect(installer).toContain('$codeSignature = $metadata.codeSignature');
+    expect(installer).toContain('$codeSignature -isnot [string]');
+    expect(installer).toContain("$codeSignature -cne 'unsigned'");
+    expect(installer).toContain('This Windows release is unsigned');
+    expect(installer).not.toContain('Get-AuthenticodeSignature');
+  });
+
   it('downloads release archives as binary data on Windows PowerShell', async () => {
     const installer = await Bun.file(new URL('../../scripts/install.ps1', import.meta.url)).text();
 

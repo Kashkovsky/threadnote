@@ -1,0 +1,321 @@
+name: Recover Threadnote 4.6.0 publication
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: publish-v4.6.0
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: 1.3.14
+  RELEASE_TAG: v4.6.0
+  TAG_COMMIT: 242d0c47fec4d643154415cb69d05036cd4dc834
+  RECOVERY_BASE_COMMIT: 539a2ea3790457ad2145a7e566958ffc9a6f40fe
+  RECOVERY_BASE_TREE: f81cb3a625fdc959908bc0a584fa330650c0a374
+  CANDIDATE_COMMIT: 9ac28435659ce421ebc78b302616eaac75112597
+  REHEARSAL_RUN_ID: '33518869399'
+
+jobs:
+  verify:
+    name: Verify one-shot recovery source
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REHEARSAL_ARTIFACTS: >-
+        {"release-darwin-arm64":{"digest":"sha256:c74425d0f25e8e42277b01d6c14d0c7832edf5868a05b4afd1d426565df5beb4","id":9805055296,"size":114820161},"release-darwin-x64":{"digest":"sha256:f41a07bd5d04c51fb9274f05be96f4dd6e27765cc6db0496754d08a5cab635a3","id":9805044547,"size":123953551},"release-windows-arm64":{"digest":"sha256:dc90ecb6fea4862b5d87055ab9c1c81e1828dfb1d24aef85ba3ef59350f9d06d","id":9805196939,"size":125782944},"release-windows-x64":{"digest":"sha256:eb166d2f9c0985f039bf262c1f6e5ad8caf64d73a24e6c14a4641576d176813a","id":9805066917,"size":131994896}}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 5
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Fence the one-shot recovery lineage and immutable tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          recovery_commit="$(git rev-parse 'HEAD^{commit}')"
+          recovery_lineage="$(git rev-list --parents -n 1 "$recovery_commit")"
+          recovery_base_lineage="$(git rev-list --parents -n 1 "$RECOVERY_BASE_COMMIT")"
+          recovery_base_tree="$(git rev-parse "$RECOVERY_BASE_COMMIT^{tree}")"
+          expected_lineage="$recovery_commit $RECOVERY_BASE_COMMIT"
+          expected_base_lineage="$RECOVERY_BASE_COMMIT $TAG_COMMIT"
+          expected_diff=$'A\t.github/workflows/publish-v4.6.0-recovery.yml\nM\ttest/unit/publish-workflow.test.ts'
+          expected_correction_diff=$'M\t.github/workflows/publish-v4.6.0-recovery.yml\nM\ttest/unit/publish-workflow.test.ts'
+          actual_diff="$(git diff --name-status "$TAG_COMMIT..$recovery_commit")"
+          actual_correction_diff="$(git diff --name-status "$RECOVERY_BASE_COMMIT..$recovery_commit")"
+          if [[ "$GITHUB_REF" != 'refs/heads/main' || "$GITHUB_SHA" != "$recovery_commit" ]]; then
+            echo '::error::The recovery workflow must run from its exact main-branch commit.'
+            exit 1
+          fi
+          if [[ "$recovery_lineage" != "$expected_lineage" ||
+                "$recovery_base_lineage" != "$expected_base_lineage" ||
+                "$recovery_base_tree" != "$RECOVERY_BASE_TREE" ||
+                "$actual_diff" != "$expected_diff" ||
+                "$actual_correction_diff" != "$expected_correction_diff" ]]; then
+            echo '::error::The recovery correction is not the bounded two-commit child of the v4.6.0 tag commit.'
+            exit 1
+          fi
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo '::error::The recovery checkout is not clean.'
+            exit 1
+          fi
+          git fetch --force --no-tags origin "refs/tags/${RELEASE_TAG}:refs/threadnote-v4.6.0-recovery-tag"
+          if [[ "$(git cat-file -t refs/threadnote-v4.6.0-recovery-tag)" != 'tag' ]]; then
+            echo '::error::v4.6.0 is not an annotated tag.'
+            exit 1
+          fi
+          if [[ "$(git rev-parse 'refs/threadnote-v4.6.0-recovery-tag^{commit}')" != "$TAG_COMMIT" ]]; then
+            echo '::error::v4.6.0 does not peel to the exact green governance commit.'
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo '::error::v4.6.0 is already published; refusing a second publication path.'
+            exit 1
+          fi
+
+      - name: Reverify exact v4.6.0 governance at the immutable tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_root="$RUNNER_TEMP/threadnote-v4.6.0-tag"
+          git worktree add --detach "$tag_root" "$TAG_COMMIT"
+          cd "$tag_root"
+          bun install --frozen-lockfile
+          package_tag="v$(bun -e 'console.log((await Bun.file("package.json").json()).version)')"
+          if [[ "$package_tag" != "$RELEASE_TAG" ]]; then
+            echo '::error::The immutable tag does not contain the v4.6.0 package version.'
+            exit 1
+          fi
+          release_notes_file=".github/release-notes/${RELEASE_TAG}.md"
+          if [[ ! -s "$release_notes_file" ]]; then
+            echo '::error::The immutable tag does not contain release notes.'
+            exit 1
+          fi
+          bun scripts/verify-code-memory-link-release-deferment.ts \
+            --waiver ".github/release-evidence/code-memory-link/${RELEASE_TAG}.deferment.json" \
+            --release-tag "$RELEASE_TAG"
+
+      - name: Verify exact successful rehearsal and immutable artifact receipts
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_file="$RUNNER_TEMP/threadnote-v4.6.0-rehearsal-run.json"
+          jobs_file="$RUNNER_TEMP/threadnote-v4.6.0-rehearsal-jobs.json"
+          artifacts_file="$RUNNER_TEMP/threadnote-v4.6.0-rehearsal-artifacts.json"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REHEARSAL_RUN_ID}" > "$run_file"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REHEARSAL_RUN_ID}/jobs?per_page=100" > "$jobs_file"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${REHEARSAL_RUN_ID}/artifacts?per_page=100" > "$artifacts_file"
+          RUN_FILE="$run_file" JOBS_FILE="$jobs_file" ARTIFACTS_FILE="$artifacts_file" bun -e '
+            const run = await Bun.file(Bun.env.RUN_FILE).json();
+            const jobs = await Bun.file(Bun.env.JOBS_FILE).json();
+            const artifacts = await Bun.file(Bun.env.ARTIFACTS_FILE).json();
+            const expectedArtifacts = JSON.parse(Bun.env.REHEARSAL_ARTIFACTS);
+            if (
+              run.id !== Number(Bun.env.REHEARSAL_RUN_ID) ||
+              run.event !== "workflow_dispatch" ||
+              run.conclusion !== "success" ||
+              run.head_sha !== Bun.env.CANDIDATE_COMMIT ||
+              run.path !== ".github/workflows/publish.yml"
+            ) throw new Error("The retained rehearsal run does not match exact candidate C2.");
+            const expectedJobs = new Map([
+              ["Verify release source", ["Run release contract smokes"]],
+              ["macOS · arm64", ["Verify release with strict read-only doctor", "Produce a real embedding with the release payload", "Sign nested native code and Bun executable", "Notarize the exact release payload"]],
+              ["macOS · x64", ["Verify release with strict read-only doctor", "Produce a real embedding with the release payload", "Sign nested native code and Bun executable", "Notarize the exact release payload"]],
+              ["Windows · arm64 · unsigned", ["Prepare fixture and verify with strict read-only doctor", "Produce a real embedding with the release payload", "Verify PowerShell installer and installed runtime"]],
+              ["Windows · x64 · unsigned", ["Prepare fixture and verify with strict read-only doctor", "Produce a real embedding with the release payload", "Verify PowerShell installer and installed runtime"]],
+            ]);
+            for (const [name, requiredSteps] of expectedJobs) {
+              const matches = jobs.jobs.filter(job => job.name === name && job.conclusion === "success");
+              if (matches.length !== 1) throw new Error("Missing successful retained rehearsal job: " + name);
+              for (const stepName of requiredSteps) {
+                const stepMatches = matches[0].steps.filter(step => step.name === stepName && step.conclusion === "success");
+                if (stepMatches.length !== 1) throw new Error("Missing successful retained rehearsal step: " + name + " / " + stepName);
+              }
+            }
+            for (const [name, expected] of Object.entries(expectedArtifacts)) {
+              const matches = artifacts.artifacts.filter(artifact => artifact.name === name);
+              if (matches.length !== 1) throw new Error("Missing unique retained rehearsal artifact: " + name);
+              const artifact = matches[0];
+              if (
+                artifact.id !== expected.id ||
+                artifact.digest !== expected.digest ||
+                artifact.size_in_bytes !== expected.size ||
+                artifact.expired !== false ||
+                artifact.workflow_run?.id !== Number(Bun.env.REHEARSAL_RUN_ID) ||
+                artifact.workflow_run?.head_sha !== Bun.env.CANDIDATE_COMMIT
+              ) throw new Error("Retained rehearsal artifact receipt changed: " + name);
+            }
+          '
+
+      - run: bun install --frozen-lockfile
+      - name: Run focused release-control tests
+        run: bun --bun vitest run test/unit/publish-workflow.test.ts test/unit/code-memory-link-release-deferment.test.ts
+
+  linux:
+    name: Linux recovery · ${{ matrix.architecture }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: x64
+            runner: ubuntu-latest
+            target: bun-linux-x64-baseline
+          - architecture: arm64
+            runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: 9ac28435659ce421ebc78b302616eaac75112597
+
+      - name: Verify exact Linux candidate source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$(git rev-parse 'HEAD^{commit}')" != "$CANDIDATE_COMMIT" ]] ||
+             [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo '::error::Linux recovery payload source differs from exact candidate C2.'
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+        env:
+          THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
+      - run: ./dist/threadnote --version
+      - name: Prepare strict doctor fixture
+        shell: bash
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME"
+          ./dist/threadnote --home "$THREADNOTE_HOME" install --no-start
+      - name: Verify release with strict read-only doctor
+        env:
+          CI: '1'
+          HOME: ${{ runner.temp }}/threadnote-release-user
+          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-release-bin
+          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-release-home
+          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-release-install
+        run: ./dist/threadnote --home "$THREADNOTE_HOME" doctor --dry-run --strict
+      - name: Produce a real embedding with the release payload
+        run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
+      - run: bun run archive:release
+        env:
+          THREADNOTE_RELEASE_TARGET: linux-${{ matrix.architecture }}
+      - name: Verify Linux archive checksum
+        shell: bash
+        run: cd artifacts && sha256sum --check "threadnote-linux-${{ matrix.architecture }}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-${{ matrix.architecture }}
+          path: artifacts/
+          if-no-files-found: error
+
+  promote-rehearsal:
+    name: Promote retained rehearsal · ${{ matrix.platform }} · ${{ matrix.architecture }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: darwin
+            architecture: arm64
+            artifact: release-darwin-arm64
+            artifact_id: 9805055296
+            archive: threadnote-darwin-arm64.tar.gz
+          - platform: darwin
+            architecture: x64
+            artifact: release-darwin-x64
+            artifact_id: 9805044547
+            archive: threadnote-darwin-x64.tar.gz
+          - platform: windows
+            architecture: arm64
+            artifact: release-windows-arm64
+            artifact_id: 9805196939
+            archive: threadnote-windows-arm64.tar.gz
+          - platform: windows
+            architecture: x64
+            artifact: release-windows-x64
+            artifact_id: 9805066917
+            archive: threadnote-windows-x64.tar.gz
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ matrix.artifact_id }}
+          digest-mismatch: error
+          merge-multiple: true
+          path: promoted
+          repository: Kashkovsky/threadnote
+          run-id: 33518869399
+          github-token: ${{ github.token }}
+
+      - name: Verify retained archive checksum and bounded contents
+        shell: bash
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          expected_files=$'promoted/'"$ARCHIVE"$'\npromoted/'"$ARCHIVE"'.sha256'
+          if [[ -n "$(find promoted -mindepth 1 ! -type f -print -quit)" ]]; then
+            echo '::error::Retained rehearsal artifact contains a directory, symlink, or special file.'
+            exit 1
+          fi
+          actual_files="$(find promoted -maxdepth 1 -type f -print | LC_ALL=C sort)"
+          if [[ "$actual_files" != "$expected_files" ]]; then
+            echo '::error::Retained rehearsal artifact contains an unexpected file set.'
+            exit 1
+          fi
+          cd promoted
+          sha256sum --check "${ARCHIVE}.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: promoted/
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish recovered immutable v4.6.0 release
+    if: >-
+      always() &&
+      needs.verify.result == 'success' &&
+      needs.linux.result == 'success' &&
+      needs.promote-rehearsal.result == 'success'
+    needs: [verify, linux, promote-rehearsal]
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/publish-release-assets.yml
+    with:
+      release_tag: v4.6.0
+      release_sha: 242d0c47fec4d643154415cb69d05036cd4dc834

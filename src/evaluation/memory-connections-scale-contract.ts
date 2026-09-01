@@ -339,15 +339,7 @@ export function evaluateMemoryConnectionsScaleCapture(input: {
     projectedConnectionCoverageAccuracy: mean(
       capture.scenarios.flatMap(scenario =>
         [scenario.cold, ...scenario.warmups, ...scenario.samples].map(value =>
-          value.projectedConnectionCoverageTruncated ===
-            (value.retrievalTruncated ||
-              value.omittedConnectionReceiptCount > 0 ||
-              value.omittedPremiseReceiptCount > 0) &&
-          value.projectedCoverageConnectionCount === value.projectedConnections.length &&
-          value.projectedCoveragePremiseCount === value.projectedPremises.length &&
-          value.projectedCoverageResultCount === value.returnedMemoryIds.length
-            ? 1
-            : 0,
+          projectedConnectionCoverageIsExact(value) ? 1 : 0,
         ),
       ),
     ),
@@ -454,6 +446,39 @@ export function evaluateMemoryConnectionsScaleCapture(input: {
     suite: MEMORY_CONNECTIONS_SCALE_ID,
     version: 1,
   };
+}
+
+function projectedConnectionCoverageIsExact(value: MemoryConnectionsScaleObservationV1): boolean {
+  const returnedMemoryIds = new Set(value.returnedMemoryIds);
+  const receiptBackedMemoryIds = new Set(
+    value.projectedConnections.flatMap(connection =>
+      connection.neighborMemoryId !== null && returnedMemoryIds.has(connection.neighborMemoryId)
+        ? [connection.neighborMemoryId]
+        : [],
+    ),
+  );
+  const hasRequiredActionableBundle =
+    value.returnedMemoryIds.length === 0 ||
+    value.projectedConnections.some(
+      connection =>
+        connection.resolution === 'resolved' &&
+        (connection.currentness === 'current' || connection.currentness === 'historical') &&
+        connection.neighborMemoryId !== null &&
+        returnedMemoryIds.has(connection.neighborMemoryId) &&
+        value.projectedPremises.some(
+          premise =>
+            premise.requestedOrdinal === connection.requestedOrdinal &&
+            (premise.state === 'current' || premise.state === 'historical'),
+        ),
+    );
+  return (
+    hasRequiredActionableBundle &&
+    value.projectedConnectionCoverageTruncated ===
+      (value.retrievalTruncated || value.omittedConnectionReceiptCount > 0 || value.omittedPremiseReceiptCount > 0) &&
+    value.projectedCoverageConnectionCount === value.projectedConnections.length &&
+    value.projectedCoveragePremiseCount === value.projectedPremises.length &&
+    value.projectedCoverageResultCount === receiptBackedMemoryIds.size
+  );
 }
 
 function ratio(numerator: number, denominator: number): number {
