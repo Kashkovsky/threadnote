@@ -13,7 +13,7 @@ import {
 
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_NAME = 'threadnote_code_memory_link_gate' as const;
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_VERSION = '1.0.0' as const;
-export const CODE_MEMORY_LINK_NO_ACTION_BUDGET = Object.freeze({steps: 12, tokens: 32_000});
+export const CODE_MEMORY_LINK_NO_ACTION_BUDGET = Object.freeze({steps: 12, tokens: 64_000});
 
 export interface CodeMemoryLinkAppServerCommand {
   readonly argumentsAfterSubcommand?: readonly string[];
