@@ -6,7 +6,10 @@ import {
   assertCodeMemoryLinkPublicAction,
   type CodeMemoryLinkAppServerApprovalReceiptV1,
 } from './code-memory-link-app-server-policy.js';
-import {CodeMemoryLinkCodexTerminalError} from './code-memory-link-codex-terminal.js';
+import {
+  CodeMemoryLinkCodexTerminalError,
+  type CodeMemoryLinkCodexTerminalDiagnosticsV1,
+} from './code-memory-link-codex-terminal.js';
 
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_NAME = 'threadnote_code_memory_link_gate' as const;
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_VERSION = '1.0.0' as const;
@@ -411,6 +414,7 @@ export function assertWithinTaskBudget(
     throw new CodeMemoryLinkCodexTerminalError(
       'provider-step-budget',
       'Codex exceeded the sealed provider inference-step budget.',
+      summarizeCodeMemoryLinkCodexEvents(events),
     );
   }
   const last = usage.at(-1);
@@ -422,6 +426,7 @@ export function assertWithinTaskBudget(
     throw new CodeMemoryLinkCodexTerminalError(
       'provider-token-budget',
       'Codex exceeded the sealed provider token budget.',
+      summarizeCodeMemoryLinkCodexEvents(events),
     );
   }
 }
@@ -442,7 +447,84 @@ export function assertCodeMemoryLinkTurnProgress(
     throw new CodeMemoryLinkCodexTerminalError(
       'no-action-budget',
       'Codex reached the calibration no-action budget without starting a file change.',
+      summarizeCodeMemoryLinkCodexEvents(events),
     );
+  }
+}
+
+export function summarizeCodeMemoryLinkCodexEvents(
+  events: readonly Record<string, unknown>[],
+): CodeMemoryLinkCodexTerminalDiagnosticsV1 {
+  const started = emptyItemCounts();
+  const completed = emptyItemCounts();
+  let contextBriefCallStarts = 0;
+  for (const event of events) {
+    if (event.method !== 'item/started' && event.method !== 'item/completed') continue;
+    const params = record(event.params, `${event.method} params`);
+    const item = record(params.item, `${event.method} item`);
+    incrementItemCount(event.method === 'item/started' ? started : completed, item.type);
+    if (event.method === 'item/started' && item.type === 'mcpToolCall' && item.tool === 'context_brief') {
+      contextBriefCallStarts += 1;
+    }
+  }
+  const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
+  const last = usage.at(-1);
+  return {
+    completedItems: completed,
+    contextBriefCallStarts,
+    startedItems: started,
+    totalTaskUsage: {steps: usage.length, tokens: last === undefined ? 0 : totalTokensFromUsageEvent(last)},
+    version: 1,
+  };
+}
+
+function emptyItemCounts(): {
+  agentMessage: number;
+  commandExecution: number;
+  fileChange: number;
+  mcpToolCall: number;
+  other: number;
+  plan: number;
+  reasoning: number;
+  userMessage: number;
+} {
+  return {
+    agentMessage: 0,
+    commandExecution: 0,
+    fileChange: 0,
+    mcpToolCall: 0,
+    other: 0,
+    plan: 0,
+    reasoning: 0,
+    userMessage: 0,
+  };
+}
+
+function incrementItemCount(counts: ReturnType<typeof emptyItemCounts>, itemType: unknown): void {
+  switch (itemType) {
+    case 'agentMessage':
+      counts.agentMessage += 1;
+      break;
+    case 'commandExecution':
+      counts.commandExecution += 1;
+      break;
+    case 'fileChange':
+      counts.fileChange += 1;
+      break;
+    case 'mcpToolCall':
+      counts.mcpToolCall += 1;
+      break;
+    case 'plan':
+      counts.plan += 1;
+      break;
+    case 'reasoning':
+      counts.reasoning += 1;
+      break;
+    case 'userMessage':
+      counts.userMessage += 1;
+      break;
+    default:
+      counts.other += 1;
   }
 }
 

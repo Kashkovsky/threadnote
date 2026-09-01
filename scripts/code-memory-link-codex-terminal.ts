@@ -16,6 +16,25 @@ export const CODE_MEMORY_LINK_CODEX_TERMINAL_KINDS = [
 
 export type CodeMemoryLinkCodexTerminalKind = (typeof CODE_MEMORY_LINK_CODEX_TERMINAL_KINDS)[number];
 
+export interface CodeMemoryLinkCodexItemCountsV1 {
+  readonly agentMessage: number;
+  readonly commandExecution: number;
+  readonly fileChange: number;
+  readonly mcpToolCall: number;
+  readonly other: number;
+  readonly plan: number;
+  readonly reasoning: number;
+  readonly userMessage: number;
+}
+
+export interface CodeMemoryLinkCodexTerminalDiagnosticsV1 {
+  readonly completedItems: CodeMemoryLinkCodexItemCountsV1;
+  readonly contextBriefCallStarts: number;
+  readonly startedItems: CodeMemoryLinkCodexItemCountsV1;
+  readonly totalTaskUsage: {readonly steps: number; readonly tokens: number};
+  readonly version: 1;
+}
+
 export interface CodeMemoryLinkCodexTerminalReceiptV1 {
   readonly diagnosticHash: string;
   readonly kind: CodeMemoryLinkCodexTerminalKind;
@@ -23,11 +42,17 @@ export interface CodeMemoryLinkCodexTerminalReceiptV1 {
 }
 
 export class CodeMemoryLinkCodexTerminalError extends Error {
+  readonly diagnostics: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly kind: CodeMemoryLinkCodexTerminalKind;
 
-  constructor(kind: CodeMemoryLinkCodexTerminalKind, message: string) {
+  constructor(
+    kind: CodeMemoryLinkCodexTerminalKind,
+    message: string,
+    diagnostics: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null = null,
+  ) {
     super(message);
     this.name = 'CodeMemoryLinkCodexTerminalError';
+    this.diagnostics = diagnostics;
     this.kind = kind;
   }
 }
