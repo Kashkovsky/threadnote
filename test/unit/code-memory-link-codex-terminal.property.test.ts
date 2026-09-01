@@ -3,6 +3,7 @@ import {describe, expect, it} from 'vitest';
 import {
   assertCodeMemoryLinkTurnProgress,
   CODE_MEMORY_LINK_NO_ACTION_BUDGET,
+  summarizeCodeMemoryLinkCodexEvents,
 } from '../../scripts/code-memory-link-app-server-client.js';
 import {
   CODE_MEMORY_LINK_CODEX_TERMINAL_KINDS,
@@ -56,6 +57,50 @@ describe('Code Memory Link Codex terminal receipts', () => {
         },
       ),
       {numRuns: 64},
+    );
+  });
+
+  it('summarizes only closed event classes and aggregate usage', () => {
+    fc.assert(
+      fc.property(
+        fc.uuid().map(value => `private-${value}`),
+        privateText => {
+          const events = [
+            {method: 'item/started', params: {item: {content: privateText, type: 'reasoning'}}},
+            {method: 'item/completed', params: {item: {command: privateText, type: 'commandExecution'}}},
+            {method: 'item/started', params: {item: {tool: 'context_brief', type: 'mcpToolCall'}}},
+            ...usageEvents(2, 321),
+          ];
+          const summary = summarizeCodeMemoryLinkCodexEvents(events);
+          expect(summary).toEqual({
+            completedItems: {
+              agentMessage: 0,
+              commandExecution: 1,
+              fileChange: 0,
+              mcpToolCall: 0,
+              other: 0,
+              plan: 0,
+              reasoning: 0,
+              userMessage: 0,
+            },
+            contextBriefCallStarts: 1,
+            startedItems: {
+              agentMessage: 0,
+              commandExecution: 0,
+              fileChange: 0,
+              mcpToolCall: 1,
+              other: 0,
+              plan: 0,
+              reasoning: 1,
+              userMessage: 0,
+            },
+            totalTaskUsage: {steps: 2, tokens: 321},
+            version: 1,
+          });
+          expect(JSON.stringify(summary)).not.toContain(privateText);
+        },
+      ),
+      {numRuns: 32},
     );
   });
 });

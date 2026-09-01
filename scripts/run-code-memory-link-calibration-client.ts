@@ -15,7 +15,11 @@ import {
 import {sha256HexSync} from '../src/crypto/sha256.js';
 import {CODE_MEMORY_LINK_AGENT_SUITE_PROJECT} from '../src/evaluation/code-memory-link-agent-suite.js';
 import {parseCodeMemoryLinkCodexClientConfigV1} from './code-memory-link-codex-isolation.js';
-import {classifyCodeMemoryLinkCodexTerminal} from './code-memory-link-codex-terminal.js';
+import {
+  classifyCodeMemoryLinkCodexTerminal,
+  CodeMemoryLinkCodexTerminalError,
+  type CodeMemoryLinkCodexTerminalDiagnosticsV1,
+} from './code-memory-link-codex-terminal.js';
 import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
 import {
   CODE_MEMORY_LINK_CALIBRATION_KIND,
@@ -57,6 +61,7 @@ interface CalibrationDiagnosticV1 {
   readonly clientId: string;
   readonly diagnosticHash: string;
   readonly evidenceHash: string | null;
+  readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly fileChangeStarted: boolean;
   readonly firstUsefulMemoryUse: boolean;
   readonly kind: typeof CODE_MEMORY_LINK_CALIBRATION_KIND;
@@ -226,6 +231,7 @@ function completedDiagnostic(
   return sealDiagnostic({
     environment,
     evidenceHash: output.rawEvidence.evidenceHash,
+    eventSummary: null,
     fileChangeStarted: output.rawEvidence.appServer.qualifyingActionItemId !== null,
     firstUsefulMemoryUse: projection.firstUsefulMemoryUse !== null,
     status: 'completed',
@@ -236,15 +242,17 @@ function completedDiagnostic(
 }
 
 function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown): CalibrationDiagnosticV1 {
+  const eventSummary = cause instanceof CodeMemoryLinkCodexTerminalError ? cause.diagnostics : null;
   return sealDiagnostic({
     environment,
     evidenceHash: null,
+    eventSummary,
     fileChangeStarted: false,
     firstUsefulMemoryUse: false,
     status: 'terminal',
     taskPassed: null,
     terminalKind: classifyCodeMemoryLinkCodexTerminal(cause),
-    totalTaskUsage: null,
+    totalTaskUsage: eventSummary?.totalTaskUsage ?? null,
   });
 }
 
@@ -289,6 +297,7 @@ async function calibrationFixture(
 function sealDiagnostic(input: {
   readonly environment: CalibrationEnvironment;
   readonly evidenceHash: string | null;
+  readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly fileChangeStarted: boolean;
   readonly firstUsefulMemoryUse: boolean;
   readonly status: 'completed' | 'terminal';
@@ -300,6 +309,7 @@ function sealDiagnostic(input: {
     arm: input.environment.arm,
     clientId: input.environment.clientId,
     evidenceHash: input.evidenceHash,
+    eventSummary: input.eventSummary,
     fileChangeStarted: input.fileChangeStarted,
     firstUsefulMemoryUse: input.firstUsefulMemoryUse,
     kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
@@ -380,6 +390,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
     'clientId',
     'diagnosticHash',
     'evidenceHash',
+    'eventSummary',
     'fileChangeStarted',
     'firstUsefulMemoryUse',
     'kind',
@@ -412,6 +423,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
     clientId: matching(diagnostic.clientId, CLIENT_ID, 'diagnostic client'),
     evidenceHash:
       diagnostic.evidenceHash === null ? null : matching(diagnostic.evidenceHash, HASH, 'diagnostic evidence hash'),
+    eventSummary: parseEventSummary(diagnostic.eventSummary),
     fileChangeStarted: diagnostic.fileChangeStarted,
     firstUsefulMemoryUse: diagnostic.firstUsefulMemoryUse,
     kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
@@ -436,6 +448,54 @@ function parseUsage(value: unknown): {readonly steps: number; readonly tokens: n
     throw new Error('Calibration usage has unsupported fields.');
   }
   return {steps: integer(usage.steps, 'calibration steps'), tokens: integer(usage.tokens, 'calibration tokens')};
+}
+
+function parseEventSummary(value: unknown): CodeMemoryLinkCodexTerminalDiagnosticsV1 | null {
+  if (value === null) return null;
+  const summary = record(value, 'calibration event summary');
+  if (
+    JSON.stringify(Object.keys(summary).sort()) !==
+      JSON.stringify(['completedItems', 'contextBriefCallStarts', 'startedItems', 'totalTaskUsage', 'version']) ||
+    summary.version !== 1
+  ) {
+    throw new Error('Calibration event summary is invalid.');
+  }
+  const totalTaskUsage = parseUsage(summary.totalTaskUsage);
+  if (totalTaskUsage === null) throw new Error('Calibration event summary requires aggregate usage.');
+  return {
+    completedItems: parseItemCounts(summary.completedItems, 'completed'),
+    contextBriefCallStarts: integer(summary.contextBriefCallStarts, 'Context Brief call starts'),
+    startedItems: parseItemCounts(summary.startedItems, 'started'),
+    totalTaskUsage,
+    version: 1,
+  };
+}
+
+function parseItemCounts(value: unknown, label: string): CodeMemoryLinkCodexTerminalDiagnosticsV1['startedItems'] {
+  const counts = record(value, `${label} item counts`);
+  const fields = [
+    'agentMessage',
+    'commandExecution',
+    'fileChange',
+    'mcpToolCall',
+    'other',
+    'plan',
+    'reasoning',
+    'userMessage',
+  ];
+  if (JSON.stringify(Object.keys(counts).sort()) !== JSON.stringify(fields)) {
+    throw new Error(`${label} item counts have unsupported fields.`);
+  }
+  return {
+    agentMessage: integer(counts.agentMessage, `${label} agent messages`),
+    commandExecution: integer(counts.commandExecution, `${label} command executions`),
+    fileChange: integer(counts.fileChange, `${label} file changes`),
+    mcpToolCall: integer(counts.mcpToolCall, `${label} MCP tool calls`),
+    other: integer(counts.other, `${label} other items`),
+    plan: integer(counts.plan, `${label} plans`),
+    reasoning: integer(counts.reasoning, `${label} reasoning items`),
+    userMessage: integer(counts.userMessage, `${label} user messages`),
+  };
 }
 
 function parseEnvironment(environment: NodeJS.ProcessEnv): CalibrationEnvironment {
