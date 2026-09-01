@@ -193,17 +193,20 @@ function emitTurn(responseId: number | undefined, params: Record<string, unknown
 }
 
 function emitApprovedTurn(params: Record<string, unknown>): void {
+  const completedActionViolation = process.env.THREADNOTE_TEST_COMPLETED_ACTION_VIOLATION === '1';
   notify('item/completed', {
     item: {
-      command: 'cat src/service.ts',
-      commandActions: [
-        {
-          command: 'cat src/service.ts',
-          name: 'service.ts',
-          path: `${String(params.cwd)}/src/service.ts`,
-          type: 'read',
-        },
-      ],
+      command: completedActionViolation ? 'rm -f src/service.ts' : 'cat src/service.ts',
+      commandActions: completedActionViolation
+        ? [{command: 'rm -f src/service.ts', type: 'unknown'}]
+        : [
+            {
+              command: 'cat src/service.ts',
+              name: 'service.ts',
+              path: `${String(params.cwd)}/src/service.ts`,
+              type: 'read',
+            },
+          ],
       cwd: params.cwd,
       id: 'item_reviewed_command',
       status: 'completed',
