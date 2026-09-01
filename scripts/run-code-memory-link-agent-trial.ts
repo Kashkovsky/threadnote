@@ -55,10 +55,7 @@ import {
   projectCodeMemoryLinkAgentPendingCommitDurably,
 } from '../src/evaluation/code-memory-link-agent-ledger-durability.js';
 import {collectCodeMemoryLinkClientImplementation} from './code-memory-link-client-implementation.js';
-import {
-  resolveManagedDevelopmentExecutableForSource,
-  verifyManagedDevelopmentRuntimeForSource,
-} from './development-runtime.js';
+import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {readJsonFile, scriptArguments} from './effect/script.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
@@ -191,8 +188,16 @@ const program = Effect.gen(function* () {
           ),
         );
       }
-      const resolved = yield* resolveManagedDevelopmentExecutableForSource(options.candidateCommit);
-      assertCodeMemoryLinkAgentAbRuntimeIdentity(manifest.candidate, resolved.evidence);
+      const resolved = yield* Effect.tryPromise({
+        try: () =>
+          verifyCodeMemoryLinkEvaluatedSubject({
+            executable: options.candidateExecutable,
+            executableSha256: options.candidateExecutableSha256,
+            sourceCommit: options.candidateCommit,
+          }),
+        catch: cause => new ScriptError('The evaluated subject failed pre-run verification.', {cause}),
+      });
+      assertCodeMemoryLinkAgentAbRuntimeIdentity(manifest.candidate, resolved.identity);
       const attemptId = randomOpaqueId('attempt');
       const invocationNonce = randomOpaqueId('inv');
       const armPacketHash = codeMemoryLinkArmPacketHashV1({
@@ -314,7 +319,15 @@ const program = Effect.gen(function* () {
         failureKind = 'post-run-verification';
         const [after, collectedAfter, governanceAfter] = yield* Effect.all(
           [
-            verifyManagedDevelopmentRuntimeForSource(options.candidateCommit),
+            Effect.tryPromise({
+              try: () =>
+                verifyCodeMemoryLinkEvaluatedSubject({
+                  executable: options.candidateExecutable,
+                  executableSha256: options.candidateExecutableSha256,
+                  sourceCommit: options.candidateCommit,
+                }),
+              catch: cause => new ScriptError('The evaluated subject failed post-run verification.', {cause}),
+            }),
             collectCodeMemoryLinkClientImplementation(options),
             verifyApprovalCheckout(sourceRoot, manifest.harnessGovernanceCommit),
           ],
@@ -336,8 +349,8 @@ const program = Effect.gen(function* () {
         const nextTrial = createCodeMemoryLinkAgentAbTrialV1({
           candidate: manifest.candidate,
           invocationNonce,
-          postRuntime: after,
-          preRuntime: resolved.evidence,
+          postRuntime: after.identity,
+          preRuntime: resolved.identity,
           previousReceiptDigest,
           trial: clientOutput.trial,
           trialId,
@@ -431,6 +444,8 @@ interface Options {
   readonly assignmentPath: string;
   readonly attemptsPath: string;
   readonly candidateCommit: string;
+  readonly candidateExecutable: string;
+  readonly candidateExecutableSha256: string;
   readonly clientArtifactBindings: readonly {readonly path: string; readonly role: string}[];
   readonly clientArguments: readonly string[];
   readonly clientBinaryBindings: readonly {readonly path: string; readonly role: string}[];
@@ -466,6 +481,8 @@ function parseArguments(args: readonly string[]): Options {
         '--assignment',
         '--attempts',
         '--candidate-commit',
+        '--candidate-executable',
+        '--candidate-executable-sha256',
         '--client-command',
         '--client-config',
         '--client-config-projection',
@@ -487,6 +504,8 @@ function parseArguments(args: readonly string[]): Options {
   const approvalCommit = required(values['--approval-commit'], '--approval-commit');
   const attemptsPath = required(values['--attempts'], '--attempts');
   const candidateCommit = required(values['--candidate-commit'], '--candidate-commit');
+  const candidateExecutable = required(values['--candidate-executable'], '--candidate-executable');
+  const candidateExecutableSha256 = required(values['--candidate-executable-sha256'], '--candidate-executable-sha256');
   const clientCommand = required(values['--client-command'], '--client-command');
   const clientConfigurationPath = required(values['--client-config'], '--client-config');
   const clientConfigurationProjectionPath = required(
@@ -520,6 +539,8 @@ function parseArguments(args: readonly string[]): Options {
     attemptsPath,
     clientArtifactBindings,
     candidateCommit,
+    candidateExecutable,
+    candidateExecutableSha256,
     clientArguments,
     clientBinaryBindings,
     clientCommand,

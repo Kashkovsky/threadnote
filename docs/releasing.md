@@ -179,6 +179,8 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
      --auth-source <absolute-codex-auth-source> \
      --bun-executable <absolute-reviewed-bun> \
      --candidate-commit <candidate-sha> \
+     --candidate-executable <absolute-canonical-candidate-executable> \
+     --candidate-executable-sha256 <candidate-executable-sha256> \
      --codex-executable <absolute-reviewed-codex-0.144.5> \
      --git-executable <absolute-reviewed-git> \
      --harness-governance-commit <candidate-sha> \
@@ -201,6 +203,8 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
      --root <absolute-prepared-root> \
      --approval-commit <approval-sha> \
      --candidate-commit <candidate-sha> \
+     --candidate-executable <absolute-canonical-candidate-executable> \
+     --candidate-executable-sha256 <candidate-executable-sha256> \
      --trials <absolute-trials.jsonl> \
      --attempts <absolute-trials.jsonl.attempts.jsonl> \
      --evidence <absolute-trials.jsonl.evidence.jsonl>

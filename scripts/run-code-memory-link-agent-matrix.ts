@@ -52,7 +52,7 @@ import {
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
-import {resolveManagedDevelopmentExecutableForSource} from './development-runtime.js';
+import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
 
 export const CODE_MEMORY_LINK_MATRIX_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_CALIBRATION_RESULT_VERSION = 1 as const;
@@ -93,6 +93,8 @@ interface ReleaseOptions {
   readonly approvalCommit: string;
   readonly attemptsPath: string;
   readonly candidateCommit: string;
+  readonly candidateExecutable: string;
+  readonly candidateExecutableSha256: string;
   readonly evidencePath: string;
   readonly mode: 'release';
   readonly pacingMilliseconds: number;
@@ -121,9 +123,15 @@ interface ClientRegistryV1 {
 const program = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
   if (options.mode === 'release') {
-    const candidateRuntime = yield* resolveManagedDevelopmentExecutableForSource(options.candidateCommit);
     return yield* Effect.tryPromise({
-      try: () => runReleaseMatrix(options, candidateRuntime.installRoot),
+      try: async () => {
+        const subject = await verifyCodeMemoryLinkEvaluatedSubject({
+          executable: options.candidateExecutable,
+          executableSha256: options.candidateExecutableSha256,
+          sourceCommit: options.candidateCommit,
+        });
+        await runReleaseMatrix(options, dirname(subject.executable));
+      },
       catch: cause => new ScriptError('Code Memory Link matrix execution stopped.', {cause}),
     });
   }
@@ -461,6 +469,10 @@ export function releaseInvocationArguments(input: {
     options.attemptsPath,
     '--candidate-commit',
     options.candidateCommit,
+    '--candidate-executable',
+    options.candidateExecutable,
+    '--candidate-executable-sha256',
+    options.candidateExecutableSha256,
     '--client-command',
     client.clientCommand,
     '--client-config',
@@ -1012,6 +1024,8 @@ function parseArguments(arguments_: readonly string[]): Options {
     '--calibration-command',
     '--calibration-results',
     '--candidate-commit',
+    '--candidate-executable',
+    '--candidate-executable-sha256',
     '--evidence',
     '--mode',
     '--pacing-ms',
@@ -1056,6 +1070,15 @@ function parseArguments(arguments_: readonly string[]): Options {
         COMMIT,
         'candidate commit',
       ),
+      candidateExecutable: normalizedAbsolute(
+        required(values.get('--candidate-executable'), '--candidate-executable'),
+        '--candidate-executable',
+      ),
+      candidateExecutableSha256: matching(
+        required(values.get('--candidate-executable-sha256'), '--candidate-executable-sha256'),
+        HASH,
+        'candidate executable hash',
+      ),
       evidencePath: normalizedAbsolute(required(values.get('--evidence'), '--evidence'), '--evidence'),
       mode,
       pacingMilliseconds,
@@ -1065,7 +1088,15 @@ function parseArguments(arguments_: readonly string[]): Options {
     };
   }
   if (mode === 'calibration') {
-    for (const forbidden of ['--approval-commit', '--attempts', '--candidate-commit', '--evidence', '--trials']) {
+    for (const forbidden of [
+      '--approval-commit',
+      '--attempts',
+      '--candidate-commit',
+      '--candidate-executable',
+      '--candidate-executable-sha256',
+      '--evidence',
+      '--trials',
+    ]) {
       if (values.has(forbidden)) throw new ScriptError(`Calibration mode cannot accept release option ${forbidden}.`);
     }
     return {
