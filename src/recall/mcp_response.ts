@@ -74,6 +74,7 @@ export interface RecallMcpStructuredContent {
   readonly output: {
     readonly budgetTokens: number;
     readonly explain: boolean;
+    readonly explainDetails?: 'included' | 'omitted-response-budget';
     readonly omittedResults: number;
     readonly returnedResults: number;
     readonly totalResults: number;
@@ -149,12 +150,22 @@ export function projectRecallMcpResponse(
     const receiptLimits = logical.memoryConnections
       ? memoryConnectionReceiptLimits(logical.memoryConnections, selectedUris)
       : [undefined];
-    for (const limits of receiptLimits) {
-      const structuredContent = renderStructuredContent(logical, warnings, count, budgetTokens, explain, limits);
-      const text = renderRecallMcpText(structuredContent, notices);
-      const measurement = measureAgentToolResponse({structuredContent, text});
-      minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
-      if (measurement.totalBytes <= projectionMaximumBytes) selected = {measurement, structuredContent};
+    for (const includeExplainDetails of explain ? [false, true] : [false]) {
+      for (const limits of receiptLimits) {
+        const structuredContent = renderStructuredContent(
+          logical,
+          warnings,
+          count,
+          budgetTokens,
+          explain,
+          includeExplainDetails,
+          limits,
+        );
+        const text = renderRecallMcpText(structuredContent, notices);
+        const measurement = measureAgentToolResponse({structuredContent, text});
+        minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
+        if (measurement.totalBytes <= projectionMaximumBytes) selected = {measurement, structuredContent};
+      }
     }
   }
   if (selected === undefined) throw new AgentResponseBudgetTooSmallError(projectionMaximumBytes, minimumBytes);
@@ -191,15 +202,16 @@ function renderStructuredContent(
   warnings: readonly RecallOperationalWarning[],
   count: number,
   budgetTokens: number,
-  explain: boolean,
+  explainRequested: boolean,
+  includeExplainDetails: boolean,
   receiptLimits: MemoryConnectionReceiptLimits | undefined,
 ): RecallMcpStructuredContent {
   const selected = logical.results.slice(0, count);
-  const results = selected.map(hit => renderResult(hit, explain));
+  const results = selected.map(hit => renderResult(hit, includeExplainDetails));
   const memoryConnections = logical.memoryConnections
     ? renderMemoryConnections(logical.memoryConnections, new Set(results.map(result => result.uri)), receiptLimits)
     : undefined;
-  const actionableConnectionUris = resolvedConnectionResultUris(logical.memoryConnections, results);
+  const actionableConnectionUris = resolvedConnectionResultUris(memoryConnections, results);
   const nextActionUris = uniqueStrings([...actionableConnectionUris, ...results.map(result => result.uri)]).slice(
     0,
     NEXT_ACTION_URI_LIMIT,
@@ -216,13 +228,14 @@ function renderStructuredContent(
     },
     output: {
       budgetTokens,
-      explain,
+      explain: explainRequested,
+      ...(explainRequested ? {explainDetails: includeExplainDetails ? 'included' : 'omitted-response-budget'} : {}),
       omittedResults,
       returnedResults: results.length,
       totalResults: logical.results.length,
       truncated: omittedResults > 0,
     },
-    ...(explain ? {queryExpansions: logical.queryExpansions} : {}),
+    ...(includeExplainDetails ? {queryExpansions: logical.queryExpansions} : {}),
     rankerVersion: logical.rankerVersion,
     results,
     ...(warnings.length > 0 ? {warnings} : {}),
@@ -230,14 +243,21 @@ function renderStructuredContent(
 }
 
 function resolvedConnectionResultUris(
-  memoryConnections: RecallMemoryConnectionsResult | undefined,
+  memoryConnections: RecallMcpMemoryConnections | undefined,
   results: readonly RecallMcpResult[],
 ): readonly string[] {
   if (memoryConnections === undefined || results.length === 0) return [];
   const resultUris = new Set(results.map(result => result.uri));
+  const actionablePremiseOrdinals = new Set(
+    memoryConnections.premises.flatMap(premise =>
+      premise.state === 'current' || premise.state === 'historical' ? [premise.requestedOrdinal] : [],
+    ),
+  );
   return uniqueStrings(
     memoryConnections.connections.flatMap(connection =>
       connection.resolution === 'resolved' &&
+      (connection.currentness === 'current' || connection.currentness === 'historical') &&
+      actionablePremiseOrdinals.has(connection.requestedOrdinal) &&
       connection.neighborUri !== undefined &&
       resultUris.has(connection.neighborUri)
         ? [connection.neighborUri]
@@ -269,10 +289,18 @@ function renderMemoryConnections(
   receiptLimits: MemoryConnectionReceiptLimits | undefined,
 ): RecallMcpMemoryConnections {
   const eligibleConnections = selectableMemoryConnections(connections, selectedUris);
-  const selectedConnections = eligibleConnections.slice(0, receiptLimits?.connectionCount ?? 0);
-  const selectedPremises = connections.premises.slice(0, receiptLimits?.premiseCount ?? 0);
+  const selectedConnections = selectReceiptPrefix(
+    eligibleConnections,
+    receiptLimits?.connectionCount ?? 0,
+    receiptLimits?.requiredConnectionIndex,
+  );
+  const selectedPremises = selectReceiptPrefix(
+    connections.premises,
+    receiptLimits?.premiseCount ?? 0,
+    receiptLimits?.requiredPremiseIndex,
+  );
   const selectedNeighborUris = new Set(
-    eligibleConnections.flatMap(connection =>
+    selectedConnections.flatMap(connection =>
       connection.neighborUri !== undefined && selectedUris.has(connection.neighborUri) ? [connection.neighborUri] : [],
     ),
   );
@@ -295,6 +323,8 @@ function renderMemoryConnections(
 interface MemoryConnectionReceiptLimits {
   readonly connectionCount: number;
   readonly premiseCount: number;
+  readonly requiredConnectionIndex?: number;
+  readonly requiredPremiseIndex?: number;
 }
 
 function memoryConnectionReceiptLimits(
@@ -303,20 +333,52 @@ function memoryConnectionReceiptLimits(
 ): readonly MemoryConnectionReceiptLimits[] {
   const connectionCount = selectableMemoryConnections(connections, selectedUris).length;
   const premiseCount = connections.premises.length;
-  const limits: MemoryConnectionReceiptLimits[] = [{connectionCount: 0, premiseCount: 0}];
+  const requiredBundle = requiredMemoryConnectionBundle(connections, selectedUris);
+  const required = requiredBundle === undefined ? {} : requiredBundle;
+  const limits: MemoryConnectionReceiptLimits[] = [{connectionCount: 0, premiseCount: 0, ...required}];
   let selectedConnectionCount = 0;
   let selectedPremiseCount = 0;
   for (let ordinal = 0; ordinal < Math.max(connectionCount, premiseCount); ordinal += 1) {
     if (ordinal < premiseCount) {
       selectedPremiseCount += 1;
-      limits.push({connectionCount: selectedConnectionCount, premiseCount: selectedPremiseCount});
+      limits.push({connectionCount: selectedConnectionCount, premiseCount: selectedPremiseCount, ...required});
     }
     if (ordinal < connectionCount) {
       selectedConnectionCount += 1;
-      limits.push({connectionCount: selectedConnectionCount, premiseCount: selectedPremiseCount});
+      limits.push({connectionCount: selectedConnectionCount, premiseCount: selectedPremiseCount, ...required});
     }
   }
   return limits;
+}
+
+function requiredMemoryConnectionBundle(
+  connections: RecallMemoryConnectionsResult,
+  selectedUris: ReadonlySet<string>,
+): Pick<MemoryConnectionReceiptLimits, 'requiredConnectionIndex' | 'requiredPremiseIndex'> | undefined {
+  const eligibleConnections = selectableMemoryConnections(connections, selectedUris);
+  for (const [requiredConnectionIndex, connection] of eligibleConnections.entries()) {
+    if (
+      connection.resolution === 'resolved' &&
+      (connection.currentness === 'current' || connection.currentness === 'historical') &&
+      connection.neighborUri !== undefined &&
+      selectedUris.has(connection.neighborUri)
+    ) {
+      const requiredPremiseIndex = connections.premises.findIndex(
+        premise =>
+          premise.requestedOrdinal === connection.requestedOrdinal &&
+          (premise.state === 'current' || premise.state === 'historical'),
+      );
+      if (requiredPremiseIndex >= 0) return {requiredConnectionIndex, requiredPremiseIndex};
+    }
+  }
+  return undefined;
+}
+
+function selectReceiptPrefix<T>(values: readonly T[], count: number, requiredIndex: number | undefined): readonly T[] {
+  const selected = values.slice(0, count);
+  if (requiredIndex === undefined || requiredIndex < count) return selected;
+  const required = values[requiredIndex];
+  return required === undefined ? selected : [...selected, required];
 }
 
 function selectableMemoryConnections(
