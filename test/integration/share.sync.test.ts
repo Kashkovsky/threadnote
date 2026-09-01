@@ -828,6 +828,56 @@ describe('share sync git handling', () => {
     }
   }, 30000);
 
+  it('keeps a stable local identity when shared ingress drops it and rejects take shared', async () => {
+    const {config, home, root, seed} = await makeShareRepo();
+    const {store} = await nativeStoreFixture(root);
+    const relativePath = 'durable/projects/threadnote/identity-continuity.md';
+    const id = `default:${relativePath}`;
+    const uri = `threadnote://user/denys/memories/shared/default/${relativePath}`;
+    const original = [
+      'MEMORY',
+      'kind: durable',
+      'status: active',
+      'project: threadnote',
+      'topic: identity-continuity',
+      'memory_id: tn_shared_identity_continuity',
+      'source_agent_client: test',
+      'timestamp: 2026-09-01T00:00:00.000Z',
+      `schema_version: ${MEMORY_SCHEMA_VERSION}`,
+      'visibility: shared',
+      '',
+      'Original shared evidence.',
+    ].join('\n');
+    const droppedIdentity = original
+      .replace('memory_id: tn_shared_identity_continuity\n', '')
+      .replace('Original shared evidence.', 'Remote edit without identity.');
+    await mkdir(dirname(join(seed, relativePath)), {recursive: true});
+    await writeFile(join(seed, relativePath), `${original}\n`, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'add identity-bearing shared memory'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(original);
+
+    await writeFile(join(seed, relativePath), `${droppedIdentity}\n`, 'utf8');
+    await git(['add', relativePath], seed);
+    await git(['commit', '-m', 'drop shared memory identity'], seed);
+    await git(['push', 'origin', 'main'], seed);
+    await runShareSync(config, {push: false});
+
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(original);
+    const conflicts = await runEffect(listShareConflicts(config, {team: 'default'}));
+    expect(conflicts).toEqual([expect.objectContaining({id, reason: expect.stringContaining('stable memory_id')})]);
+    await expect(resolveShareConflict(config, id, {take: 'shared'})).rejects.toThrow('stable memory_id');
+    await expect(resolveShareConflict(config, id, {mergedContent: droppedIdentity})).rejects.toThrow(
+      'stable memory_id',
+    );
+    await expect(readFile(canonicalResourceFile(store, uri), 'utf8')).resolves.toBe(original);
+    await expect(readFile(join(home, 'share', 'auto-sync-pending-reindexes.json'), 'utf8')).resolves.toContain(
+      relativePath,
+    );
+  }, 20000);
+
   it('resolves a pending modified conflict by taking shared content', async () => {
     const {config, home, root, seed, worktree} = await makeShareRepo();
     const {store} = await nativeStoreFixture(root);

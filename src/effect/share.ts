@@ -117,7 +117,8 @@ export const runShareConflictResolve = (
   config: ShareRuntime,
   reference: string,
   options: ShareConflictResolveOptions,
-) => withSharedRepositoryLock(config, runShareConflictResolveEffect(config, reference, options));
+) =>
+  withShareConflictMutationLocks(config, reference, options, runShareConflictResolveEffect(config, reference, options));
 export const runSharePublish = Effect.fn('share.publish')(function* (
   config: ShareRuntime,
   sourceUri: string,
@@ -182,9 +183,25 @@ export const runShareSetUrl = (config: ShareRuntime, remoteUrl: string, options:
 export const runShareRemove = (config: ShareRuntime, options: ShareRemoveOptions) =>
   withSharedRepositoryLock(config, runShareRemoveEffect(config, options));
 export const resolveShareConflict = (config: ShareRuntime, reference: string, options: ShareConflictResolveOptions) =>
-  withSharedRepositoryLock(config, resolveShareConflictEffect(config, reference, options));
+  withShareConflictMutationLocks(config, reference, options, resolveShareConflictEffect(config, reference, options));
 export const listSharedAgentArtifacts = (config: ShareRuntime, options: ShareListArtifactsOptions) =>
   withSharedRepositoryLock(config, listSharedAgentArtifactsEffect(config, options));
 export const installSharedAgentArtifacts = (config: ShareRuntime, options: ShareInstallArtifactsOptions) =>
   withSharedRepositoryLock(config, installSharedAgentArtifactsEffect(config, options));
 export const removeMemoryUri = removeMemoryUriEffect;
+
+function withShareConflictMutationLocks<A, E, R>(
+  config: ShareRuntime,
+  reference: string,
+  options: {readonly team?: string},
+  mutation: Effect.Effect<A, E, R>,
+) {
+  return withSharedRepositoryLock(
+    config,
+    Effect.gen(function* () {
+      const conflict = yield* showShareConflictEffect(config, reference, options);
+      const fs = yield* FileSystem.FileSystem;
+      return yield* withMemoryUriLocks(fs, config.agentContextHome, [conflict.uri], mutation);
+    }),
+  );
+}

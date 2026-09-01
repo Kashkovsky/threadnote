@@ -23,6 +23,7 @@ import {
   SHAREABLE_MEMORY_KIND_DIRS,
   ShareOperationError,
   assertSafeShareRelativePath,
+  assertSharedMemoryIdentityContinuity,
   assertShareTeamWritable,
   autoShareState,
   canonicalResourceInput,
@@ -41,12 +42,14 @@ import {
   resolveTeam,
   resourceExistsStrict,
   resourceUriToWorktreeRelative,
+  sharedMemoryIdentityContinuityIssue,
   sharedMemoryContentsEquivalent,
   sharedTeamNameForUri,
   stripPersonalProvenance,
+  verifySharedMemoryIdentityContinuity,
   workfileToResourceUri,
   writeFile,
-  writeMemoryFile,
+  writeMemoryFileChecked,
   writePendingReindexes,
 } from './core.js';
 
@@ -185,28 +188,36 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
       if (inspected.sharedContent === undefined) {
         throw new ShareOperationError(`Cannot take shared for ${inspected.id}: ${inspected.reason}.`);
       }
+      if (inspected.localContent !== undefined) {
+        assertSharedMemoryIdentityContinuity(inspected.uri, inspected.localContent, inspected.sharedContent);
+      }
       yield* ensureSharedDirectoryChain(config, ov, inspected.uri, dryRun);
-      yield* writeMemoryFile(
+      yield* writeMemoryFileChecked(
         config,
         ov,
         inspected.uri,
         inspected.sharedContent,
         inspected.hasLocalContent ? 'replace' : 'create',
         dryRun,
+        verifySharedMemoryIdentityContinuity(config, inspected.uri, inspected.sharedContent),
       );
       messages.push(`Accepted shared file content for ${inspected.uri}.`);
     }
   } else {
     const content = yield* conflictResolutionContent(inspected, take, fromFile, mergedContent);
+    if (inspected.localContent !== undefined) {
+      assertSharedMemoryIdentityContinuity(inspected.uri, inspected.localContent, content);
+    }
     yield* writeSharedConflictFile(conflict.team, inspected, content, dryRun);
     yield* ensureSharedDirectoryChain(config, ov, inspected.uri, dryRun);
-    yield* writeMemoryFile(
+    yield* writeMemoryFileChecked(
       config,
       ov,
       inspected.uri,
       content,
       inspected.hasLocalContent ? 'replace' : 'create',
       dryRun,
+      verifySharedMemoryIdentityContinuity(config, inspected.uri, content),
     );
     const message = options.message ?? `share: resolve ${inspected.relativePath}`;
     gitMessages.push(
@@ -345,6 +356,10 @@ const inspectShareConflict = Effect.fn('share.inspectShareConflict')(function* (
   const localContent = yield* readOptionalMemoryContent(config, ov, uri);
   const shared = yield* readOptionalSharedConflictContent(uri, change);
   const previous = yield* readOptionalPreviousConflictContent(team.config.worktree, uri, change);
+  const identityIssue =
+    localContent !== undefined && shared.content !== undefined
+      ? sharedMemoryIdentityContinuityIssue(uri, localContent, shared.content)
+      : undefined;
   return {
     hasLocalContent: localContent !== undefined,
     hasPreviousContent: previous.content !== undefined,
@@ -352,7 +367,9 @@ const inspectShareConflict = Effect.fn('share.inspectShareConflict')(function* (
     id: conflictId(team.name, change.relativePath),
     localContent,
     previousContent: previous.content,
-    reason: shareConflictReason(change, localContent, shared.content, previous.content, shared.error, previous.error),
+    reason:
+      identityIssue ??
+      shareConflictReason(change, localContent, shared.content, previous.content, shared.error, previous.error),
     relativePath: change.relativePath,
     sharedContent: shared.content,
     status: change.status,
