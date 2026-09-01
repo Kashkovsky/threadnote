@@ -38,7 +38,10 @@ import {
   initializeCodeMemoryLinkFixtureRepository,
   preflightCodeMemoryLinkCandidate,
 } from './code-memory-link-codex-preflight.js';
-import {loadCodeMemoryLinkCodexSuiteTask} from './code-memory-link-codex-suite.js';
+import {
+  loadCodeMemoryLinkCodexSuiteTask,
+  type LoadedCodeMemoryLinkCodexSuiteTaskV1,
+} from './code-memory-link-codex-suite.js';
 import {runCodeMemoryLinkAppServerTurn} from './code-memory-link-app-server-client.js';
 import {formatCodeMemoryLinkCodexTerminalReceipt} from './code-memory-link-codex-terminal.js';
 import {
@@ -111,6 +114,15 @@ interface CodeMemoryLinkCodexHarnessInputV1 {
   readonly taskKind: 'hidden-constraint' | 'negative-control';
 }
 
+export interface CodeMemoryLinkCodexExecutionTaskV1 {
+  readonly fixture: LoadedCodeMemoryLinkCodexSuiteTaskV1['fixture'];
+  readonly fixtureHash: string;
+  readonly judge: LoadedCodeMemoryLinkCodexSuiteTaskV1['judge'];
+  readonly mappedTask: LoadedCodeMemoryLinkCodexSuiteTaskV1['layout']['tasks'][number];
+  readonly rubric: LoadedCodeMemoryLinkCodexSuiteTaskV1['rubric'];
+  readonly taskPacket: LoadedCodeMemoryLinkCodexSuiteTaskV1['taskPacket'];
+}
+
 export async function runCodeMemoryLinkCodexClient(environment: Readonly<Record<string, string | undefined>>): Promise<{
   readonly rawEvidence: CodeMemoryLinkCodexRawEvidenceV1;
   readonly trial: Readonly<Record<string, unknown>>;
@@ -124,8 +136,32 @@ export async function runCodeMemoryLinkCodexClient(environment: Readonly<Record<
     root: config.sealedSuite.root,
     taskId: harness.taskId,
   });
-  assertHarnessSuiteBindings(harness, loaded.taskPacket, loaded.rubric, loaded.suite.fixture.fixtureHash);
   const mappedTask = loaded.layout.tasks.find(task => task.taskId === harness.taskId)!;
+  return await runCodeMemoryLinkCodexExecutionTask(environment, config, {
+    fixture: loaded.fixture,
+    fixtureHash: loaded.suite.fixture.fixtureHash,
+    judge: loaded.judge,
+    mappedTask,
+    rubric: loaded.rubric,
+    taskPacket: loaded.taskPacket,
+  });
+}
+
+export async function runCodeMemoryLinkCodexExecutionTask(
+  environment: Readonly<Record<string, string | undefined>>,
+  config: CodeMemoryLinkCodexClientConfigV1,
+  loaded: CodeMemoryLinkCodexExecutionTaskV1,
+): Promise<{
+  readonly rawEvidence: CodeMemoryLinkCodexRawEvidenceV1;
+  readonly trial: Readonly<Record<string, unknown>>;
+  readonly version: 1;
+}> {
+  const harness = parseCodeMemoryLinkCodexHarnessEnvironment(environment);
+  assertHarnessSuiteBindings(harness, loaded.taskPacket, loaded.rubric, loaded.fixtureHash);
+  if (loaded.mappedTask.taskId !== harness.taskId) {
+    throw new Error('Execution task mapping differs from the trusted harness task.');
+  }
+  const mappedTask = loaded.mappedTask;
   const armWithoutHash = {
     assignmentHash: harness.assignmentHash,
     blindLabel: harness.blindLabel,
