@@ -2267,70 +2267,99 @@ Measure the system before changing its implementation language.
     expect(content).not.toContain('Cursor, and Copilot rely on the user-level instructions Threadnote installs');
   });
 
-  it('documents Cursor Cloud Agents with an exclusive writable shared-memory contract', () => {
+  it('documents the Cursor organization remote-hybrid bootstrap contract', () => {
     const article = docsSections
       .flatMap(section => section.articles)
       .find(candidate => candidate.id === 'cursor-cloud-agents');
     const content = JSON.stringify(article);
     const mcpConfiguration = article?.body.find(
-      block => block.type === 'code' && block.language === 'json' && block.code.includes('THREADNOTE_MCP_TOOLSET'),
+      block => block.type === 'code' && block.language === 'json' && block.code.includes('"threadnote-local"'),
+    );
+    const provisioning = article?.body.find(
+      block => block.type === 'code' && block.language === 'json' && block.code.includes('"tenantId"'),
     );
     const recallPayload = article?.body.find(
-      block => block.type === 'code' && block.language === 'json' && block.code.includes('callerCwd'),
+      block => block.type === 'code' && block.language === 'json' && block.code.includes('"query"'),
     );
     const cloudVerification = article?.body.find(
       block => block.type === 'code' && block.language === 'sh' && block.code.includes('cloud cursor verify'),
     );
 
     expect(article).toBeDefined();
-    expect(article?.title).toBe('Use Threadnote with Cursor Cloud Agents');
-    expect(content).toContain('Available in [Threadnote 4.2]');
-    expect(content).toContain('The managed first-class integration is still in development');
-    expect(content).toContain('Beyond 4.2: what the full integration will add');
-    expect(content).toContain('writable Git-backed share for durable memory');
-    expect(content).toContain('--team cursor-cloud');
+    expect(article?.title).toBe('Bootstrap Threadnote for a Cursor organization');
+    expect(content).toContain('deployable reference implementation, not a hosted Threadnote GA service');
+    expect(content).toContain('two explicit MCP planes');
+    expect(content).toContain('Threadnote service operator');
+    expect(content).toContain('Identity administrator');
+    expect(content).toContain('Cursor team admin');
+    expect(content).toContain('THREADNOTE_REMOTE_ENABLED=false');
+    expect(content).toContain('THREADNOTE_REMOTE_AUTO_MIGRATE=false');
+    expect(content).toContain('NOSUPERUSER NOBYPASSRLS');
+    expect(content).toContain('remote-memory-operator provision');
+    expect(content).toContain('memory:write:durable');
+    expect(content).toContain('cursor_oidc_required');
+    expect(content).toContain('https://api.cursor.com/keys');
+    expect(content).toContain('complete `repo_urls`/`repo_count` set');
+    expect(content).toContain('--mode remote-hybrid');
+    expect(content).toContain('--share-id sh_acme_engineering');
     expect(content).toContain('cloud cursor bootstrap');
     expect(content).toContain('cloud cursor verify');
-    expect(content).toContain('threadnote://user/cursor-cloud/memories/shared/cursor-cloud/');
+    expect(content).toContain('Dashboard → Integrations & MCP');
+    expect(content).toContain('OAuth is per-user');
+    expect(content).toContain('threadnote-share-id');
+    expect(content).toContain('checked-in `.cursor/environment.json`, personal saved environment, then team saved');
+    expect(content).toContain('begin_cursor_attestation');
+    expect(content).toContain('complete_cursor_attestation');
+    expect(content).toContain('unique operationId');
+    expect(content).toContain('There is no personal-memory, Git-share, or alternate-share fallback');
     expect(content).toContain('Do not run `threadnote mcp-install cursor --apply`');
-    expect(content).toContain('remember_context kind=durable');
-    expect(content).toContain('kind=handoff');
-    expect(content).toContain('commits and pushes');
-    expect(content).toContain('capability-enforced cloud profile');
-    expect(content).toContain('stable `threadnote-mcp-server` launcher brokers');
-    expect(content).toContain('MCP registration scope and cloud-VM provisioning are independent');
-    expect(content).toContain('checked-in `.cursor/environment.json`, a personal saved environment, then a team saved');
-    expect(content).toContain('complete override rather than an overlay');
-    expect(content).toContain('CLI `&` handoff has no documented environment or Build selector');
-    expect(content).toContain('adds user secrets only when an agent starts');
-    expect(content).toContain("personal environment's idempotent `install` command");
-    expect(content).toContain('changes made in an ordinary agent VM do not prepare later Builds');
-    expect(content).toContain('make that latest successful Build active before starting agents');
-    expect(content).toContain('add and enable it as a personal MCP server');
-    expect(content).toContain('Registration does not install the stdio executable in the cloud VM');
+    expect(content).toContain('Import never deletes the source, never dual-writes');
 
     if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
       throw new TestError('Missing Cursor Cloud MCP configuration.');
     }
-    expect(JSON.parse(mcpConfiguration.code)).toMatchObject({
-      args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
-      command: '/bin/sh',
-      env: {
-        THREADNOTE_ACCOUNT: 'local',
-        THREADNOTE_AGENT_ID: 'cursor-cloud',
-        THREADNOTE_CURSOR_CLOUD_TEAM: 'cursor-cloud',
-        THREADNOTE_MCP_TOOLSET: 'cursor-cloud',
-        THREADNOTE_USER: 'cursor-cloud',
+    const parsedMcpConfiguration = JSON.parse(mcpConfiguration.code);
+    expect(parsedMcpConfiguration).toEqual({
+      mcpServers: {
+        'threadnote-local': {
+          type: 'stdio',
+          command: '/bin/sh',
+          args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
+          env: {
+            THREADNOTE_ACCOUNT: 'local',
+            THREADNOTE_AGENT_ID: 'cursor-cloud',
+            THREADNOTE_CURSOR_MEMORY_ENDPOINT: 'https://memory.example.com/mcp',
+            THREADNOTE_CURSOR_MEMORY_SHARE_ID: 'sh_acme_engineering',
+            THREADNOTE_MCP_TOOLSET: 'cursor-cloud-local',
+            THREADNOTE_USER: 'cursor-cloud',
+          },
+        },
+        'threadnote-memory': {
+          url: 'https://memory.example.com/mcp',
+          headers: {'threadnote-share-id': 'sh_acme_engineering'},
+        },
       },
-      type: 'stdio',
+    });
+    expect(JSON.stringify(parsedMcpConfiguration)).not.toMatch(/authorization|bearer|token|secret/i);
+
+    if (!provisioning || provisioning.type !== 'code') {
+      throw new TestError('Missing remote-memory provisioning document.');
+    }
+    expect(JSON.parse(provisioning.code)).toMatchObject({
+      tenantId: 'tenant-acme',
+      shareId: 'sh_acme_engineering',
+      cursorAttestationRequired: true,
+      cursorTeamId: '6789',
+      repositoryBindings: {platform: ['https://github.com/acme/platform']},
     });
 
     if (!recallPayload || recallPayload.type !== 'code') {
-      throw new TestError('Missing Cursor Cloud scoped recall payload.');
+      throw new TestError('Missing remote-memory recall payload.');
     }
-    expect(JSON.parse(recallPayload.code)).toMatchObject({
-      callerCwd: '/workspace/your-repository',
-      project: 'your-project',
+    expect(JSON.parse(recallPayload.code)).toEqual({
+      version: 1,
+      query: 'the task or decision to recover',
+      project: 'platform',
     });
 
     if (!cloudVerification || cloudVerification.type !== 'code') {
@@ -2344,9 +2373,11 @@ Measure the system before changing its implementation language.
     expect(cloudVerification.code.indexOf('test -d "$HOME/.threadnote"')).toBeLessThan(
       cloudVerification.code.indexOf('cloud cursor verify'),
     );
-    expect(searchDocs(createDocsSearchIndex(docsSections), 'Cursor Cloud Agents shared memory')[0]?.article.id).toBe(
-      'cursor-cloud-agents',
-    );
+    expect(cloudVerification.code).toContain('--mode remote-hybrid');
+    expect(cloudVerification.code).toContain('--share-id sh_acme_engineering');
+    expect(
+      searchDocs(createDocsSearchIndex(docsSections), 'Cursor organization managed remote memory')[0]?.article.id,
+    ).toBe('cursor-cloud-agents');
   });
 
   it('uses the real Manager labels and share status fields in the mock data', () => {
