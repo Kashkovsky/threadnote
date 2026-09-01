@@ -13,7 +13,10 @@ import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {expireRecallIndexValidation, loadRecallIndexData, recallIndexStatus} from '../../src/recall/index.js';
-import {refreshRecallDerivedIndexesFromSelection} from '../../src/recall/mcp_refresh.js';
+import {
+  refreshRecallDerivedIndexesFromSelection,
+  scheduleMcpRecallBackgroundRefresh,
+} from '../../src/recall/mcp_refresh.js';
 import {loadMcpRecallSemanticScoresResult} from '../../src/recall/runtime.js';
 import {
   ensureVectorIndex,
@@ -89,7 +92,7 @@ describe('MCP recall background vector refresh', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('bounds an existing vector refresh after restoring lexical readiness', () =>
+  effectIt.effect('awaits a trusted mutation vector refresh beyond the former foreground deadline', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -101,13 +104,18 @@ describe('MCP recall background vector refresh', () => {
         yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
         yield* fs.writeFileString(resource, '# Bounded\n\nOriginal content.\n');
         const calls = yield* Ref.make(0);
-        const blocked = yield* Deferred.make<void>();
+        const vectorRefreshStarted = yield* Deferred.make<void>();
+        const releaseVectorRefresh = yield* Deferred.make<void>();
+        const refreshCompleted = yield* Deferred.make<void>();
         const runtime = fakeRuntime((inputs, dimensions) =>
           Ref.updateAndGet(calls, count => count + 1).pipe(
             Effect.flatMap(call =>
               call === 1
                 ? Effect.succeed(inputs.map(() => unitVector(dimensions)))
-                : Deferred.succeed(blocked, undefined).pipe(Effect.andThen(Effect.never)),
+                : Deferred.succeed(vectorRefreshStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseVectorRefresh)),
+                    Effect.as(inputs.map(() => unitVector(dimensions))),
+                  ),
             ),
           ),
         );
@@ -119,18 +127,86 @@ describe('MCP recall background vector refresh', () => {
           yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
           yield* fs.writeFileString(resource, '# Bounded\n\nChanged content.\n');
 
-          const refresh = yield* refreshRecallDerivedIndexesFromSelection(config, [uri]).pipe(Effect.forkScoped);
-          yield* Deferred.await(blocked);
+          const refresh = yield* refreshRecallDerivedIndexesFromSelection(config, [uri]).pipe(
+            Effect.ensuring(Deferred.succeed(refreshCompleted, undefined)),
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(vectorRefreshStarted);
           yield* TestClock.adjust('1 second');
-          yield* Fiber.join(refresh);
+          yield* Effect.forEach(Array.from({length: 20}), () => Effect.yieldNow, {discard: true});
+          expect(Option.isNone(yield* Deferred.poll(refreshCompleted))).toBe(true);
 
           const lexical = yield* recallIndexStatus(config);
           expect(lexical.ready).toBe(true);
           expect(lexical.generation).not.toBe(initial.generation);
           expect(yield* vectorIndexGenerationReadiness(home, manifest, lexical.generation!)).not.toBe('current');
+
+          yield* Deferred.succeed(releaseVectorRefresh, undefined);
+          yield* Fiber.join(refresh);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, lexical.generation!)).toBe('current');
+          expect(yield* Ref.get(calls)).toBe(2);
         }).pipe(
           Effect.provideService(LocalModelRuntime, runtime),
           Effect.provideService(LocalModelStore, installedModelStore(home)),
+          Effect.ensuring(Deferred.succeed(releaseVectorRefresh, undefined)),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('reruns the latest generation when a mutation coalesces into an active refresh', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-recall-generation-rerun-'});
+        const config = {account: 'local', agentContextHome: home, user: 'tester'};
+        const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'rerun.md');
+        const uri = 'threadnote://resources/repos/threadnote/rerun.md';
+        yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
+        yield* fs.writeFileString(resource, '# Rerun\n\nGeneration zero.\n');
+
+        const calls = yield* Ref.make(0);
+        const firstRefreshStarted = yield* Deferred.make<void>();
+        const releaseFirstRefresh = yield* Deferred.make<void>();
+        const runtime = fakeRuntime((inputs, dimensions) =>
+          Ref.updateAndGet(calls, count => count + 1).pipe(
+            Effect.flatMap(call =>
+              call === 2
+                ? Deferred.succeed(firstRefreshStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseFirstRefresh)),
+                  )
+                : Effect.void,
+            ),
+            Effect.as(inputs.map(() => unitVector(dimensions))),
+          ),
+        );
+
+        yield* Effect.gen(function* () {
+          const initial = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
+
+          yield* fs.writeFileString(resource, '# Rerun\n\nGeneration one.\n');
+          yield* expireRecallIndexValidation(home, false, [uri]);
+          expect(yield* scheduleMcpRecallBackgroundRefresh(config, manifest)).toBe('scheduled');
+          yield* Deferred.await(firstRefreshStarted);
+          const firstGeneration = (yield* recallIndexStatus(config)).generation;
+          expect(firstGeneration).toBeDefined();
+          expect(firstGeneration).not.toBe(initial.generation);
+
+          yield* fs.writeFileString(resource, '# Rerun\n\nGeneration two.\n');
+          yield* expireRecallIndexValidation(home, false, [uri]);
+          expect(yield* scheduleMcpRecallBackgroundRefresh(config, manifest)).toBe('coalesced');
+
+          yield* Deferred.succeed(releaseFirstRefresh, undefined);
+          const latestGeneration = yield* awaitRefreshedRecallReadiness(config, firstGeneration);
+          expect(latestGeneration).not.toBe(firstGeneration);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, latestGeneration)).toBe('current');
+          expect(yield* Ref.get(calls)).toBe(3);
+        }).pipe(
+          Effect.provideService(LocalModelRuntime, runtime),
+          Effect.provideService(LocalModelStore, installedModelStore(home)),
+          Effect.ensuring(Deferred.succeed(releaseFirstRefresh, undefined)),
         );
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

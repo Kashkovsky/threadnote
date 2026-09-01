@@ -37,8 +37,9 @@ complete data and destination contract is documented in [Optional anonymous tele
 
 Official standalone installs and updates accept only immutable GitHub releases and verify the archive SHA-256 before
 extraction. macOS additionally requires valid code signatures during installation and Apple notarization acceptance
-before publication. Windows 4 publication is disabled until valid Authenticode signing and clean-machine
-verification are available; unsigned official Windows archives are never published. Linux relies on GitHub's
-immutable-release attestation as the publisher trust root. The repository's release authority is intentionally trusted:
-this model detects corrupted, substituted, mutable, or unsigned delivery, but it does not claim to survive compromise
-of the repository publisher itself. Custom release APIs require an explicit untrusted-source opt-in.
+before publication. Windows 4.6 archives are explicitly marked unsigned; the PowerShell installer and updater warn
+before activation and rely on the immutable GitHub release plus its verified SHA-256 checksum. Windows may therefore
+show a SmartScreen warning. Linux uses the same GitHub immutability and checksum trust root without an OS code
+signature. The repository's release authority is intentionally trusted: this model detects corrupted, substituted,
+or mutable delivery, but it does not claim to survive compromise of the repository publisher itself. Custom release
+APIs require an explicit untrusted-source opt-in.

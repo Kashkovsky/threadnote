@@ -238,7 +238,7 @@ export interface RecallOptions {
   readonly memoryRefs?: readonly string[];
   readonly nodeLimit?: string;
   readonly project?: string;
-  readonly query: string;
+  readonly query?: string;
   readonly relationTypes?: readonly string[];
   readonly threshold?: string;
   readonly uri?: string;

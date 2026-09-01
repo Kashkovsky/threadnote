@@ -2,15 +2,18 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Option, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {ResourceStore} from '../../src/effect/resource-store.js';
 import {readMemoryRecordsByUri} from '../../src/memory/commands.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
+import {recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {
   classifyRecallMemoryPremiseState,
   parseRecallMemoryConnectionInput,
   retrieveRecallMemoryConnections,
 } from '../../src/recall/memory_connections.js';
-import {loadRecallMemoryLinks} from '../../src/recall/index.js';
+import {loadRecallIndexData, loadRecallMemoryLinks} from '../../src/recall/index.js';
 import {rankRecallCandidates, type RecallCandidate} from '../../src/recall/rank.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -125,6 +128,23 @@ describe('recall memory connections', () => {
         ['incoming', 'evidence_for', 'tn_incoming', 'tn_seed'],
         ['outgoing', 'depends_on', 'tn_seed', 'tn_target'],
       ]);
+      const sharedOrdinal = yield* loadRecallMemoryLinks(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        includeInactive: true,
+        limit: 8,
+        memorySeeds: [
+          {memoryId: 'tn_seed', requestedOrdinal: 0},
+          {memoryId: 'tn_target', requestedOrdinal: 0},
+        ],
+      });
+      expect(
+        sharedOrdinal.map(link => [link.direction, link.relationType, link.sourceMemoryId, link.targetMemoryId]),
+      ).toEqual([
+        ['incoming', 'depends_on', 'tn_seed', 'tn_target'],
+        ['incoming', 'evidence_for', 'tn_incoming', 'tn_seed'],
+        ['outgoing', 'depends_on', 'tn_seed', 'tn_target'],
+        ['outgoing', 'related_to', 'tn_target', 'tn_second_hop'],
+      ]);
 
       const result = yield* retrieveRecallMemoryConnections(config, {
         allowedUriScopes: [memoryRoot(config.user)],
@@ -139,9 +159,144 @@ describe('recall memory connections', () => {
         ['incoming', 'evidence_for'],
         ['outgoing', 'depends_on'],
       ]);
-      expect(result.diagnostics).toMatchObject({canonicalRereads: 7, rawLinkRows: 2});
+      expect(result.diagnostics).toMatchObject({canonicalRereads: 4, rawLinkRows: 2});
       expect(result.candidates.map(candidate => candidate.memoryId)).not.toContain('tn_second_hop');
     }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uses one relocation witness for stable, current, and former explicit premise references', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* ResourceStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-connections-relocation-'});
+        const config = runtimeConfig(home, 'relocation-user');
+        const location = {account: config.account, home, user: config.user};
+        const memoryId = 'tn_relocated_connection_seed';
+        const neighborMemoryId = 'tn_relocation_neighbor';
+        const alias = memoryIdentityAlias(memoryId);
+        const formerUri = `${memoryRoot(config.user)}/durable/projects/threadnote/former.md`;
+        const currentUri = `${memoryRoot(config.user)}/shared/default/durable/projects/threadnote/current.md`;
+        const content = formatMemoryDocument(
+          'MEMORY',
+          {
+            kind: 'durable',
+            memoryId,
+            project: 'threadnote',
+            relations: [{type: 'depends_on', uri: memoryIdentityAlias(neighborMemoryId)}],
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-31T00:00:00.000Z',
+            topic: 'relocated-connection-seed',
+            visibility: 'shared',
+          },
+          'Relocated connection seed.',
+        );
+        yield* store.write(location, formerUri, content, {mode: 'create'});
+        yield* store.write(location, currentUri, content, {mode: 'create'});
+        yield* recordMemoryRelocation(config, {
+          fromContent: content,
+          fromUri: formerUri,
+          toContent: content,
+          toUri: currentUri,
+        });
+        yield* store.remove(location, formerUri);
+        yield* store.write(location, currentUri, content.replace(`memory_id: ${memoryId}\n`, ''), {mode: 'upsert'});
+        yield* writeMemory(fs, path, config, 'relocation-neighbor', neighborMemoryId, [
+          {type: 'related_to', uri: alias},
+        ]);
+        yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+
+        for (const memoryRef of [alias, currentUri, formerUri]) {
+          const result = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [memoryRoot(config.user)],
+            memoryRefs: [memoryRef],
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+          });
+          expect(result.premises).toEqual([
+            expect.objectContaining({memoryId, requestedRef: memoryRef, state: 'current', uri: currentUri}),
+          ]);
+          expect(result.candidates.map(candidate => candidate.memoryId)).toEqual([neighborMemoryId]);
+          expect(result.connections).toHaveLength(2);
+          expect(result.connections).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({direction: 'incoming', neighborMemoryId}),
+              expect.objectContaining({direction: 'outgoing', neighborMemoryId}),
+            ]),
+          );
+        }
+
+        const deduplicated = yield* retrieveRecallMemoryConnections(config, {
+          allowedUriScopes: [memoryRoot(config.user)],
+          memoryRefs: [alias, currentUri, formerUri],
+          readRecords: uris => readMemoryRecordsByUri(config, uris),
+        });
+        expect(deduplicated.premises).toEqual([
+          expect.objectContaining({memoryId, requestedOrdinal: 0, requestedRef: alias, state: 'current'}),
+        ]);
+
+        const superseding = formatMemoryDocument(
+          'MEMORY',
+          {
+            kind: 'durable',
+            memoryId,
+            project: 'threadnote',
+            relations: [
+              {type: 'related_to', uri: memoryIdentityAlias(neighborMemoryId)},
+              {type: 'supersedes', uri: memoryIdentityAlias(neighborMemoryId)},
+            ],
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-31T00:00:00.000Z',
+            topic: 'relocated-connection-seed',
+            visibility: 'shared',
+          },
+          'Relocated connection seed.',
+        ).replace(`memory_id: ${memoryId}\n`, '');
+        yield* store.write(location, currentUri, superseding, {mode: 'upsert'});
+        yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+        for (const memoryRef of [alias, currentUri, formerUri]) {
+          const historical = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [memoryRoot(config.user)],
+            includeHistorical: true,
+            memoryRefs: [memoryRef],
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+            relationTypes: ['related_to'],
+          });
+          expect(historical.candidates.map(candidate => candidate.memoryId)).toEqual([neighborMemoryId]);
+          expect(historical.connections).not.toHaveLength(0);
+          expect(historical.connections).toEqual(
+            historical.connections.map(() =>
+              expect.objectContaining({currentness: 'historical', relationType: 'related_to'}),
+            ),
+          );
+
+          const omitted = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [memoryRoot(config.user)],
+            memoryRefs: [memoryRef],
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+            relationTypes: ['related_to'],
+          });
+          expect(omitted.candidates).toEqual([]);
+          expect(omitted.connections).toEqual([]);
+        }
+
+        const conflicting = content.replace(`memory_id: ${memoryId}\n`, 'memory_id: tn_other_live_identity\n');
+        yield* store.write(location, currentUri, conflicting, {mode: 'upsert'});
+        yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+        const rejected = yield* retrieveRecallMemoryConnections(config, {
+          allowedUriScopes: [memoryRoot(config.user)],
+          memoryRefs: [alias],
+          readRecords: uris => readMemoryRecordsByUri(config, uris),
+        });
+        expect(rejected.premises).toEqual([expect.objectContaining({memoryId, state: 'unresolved'})]);
+        expect(rejected.connections).toEqual([]);
+        expect(rejected.candidates).toEqual([]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('counts every bounded selector reread across the repair pass', () =>
@@ -171,6 +326,7 @@ describe('recall memory connections', () => {
       let canonicalRereads = 0;
       let rawLinkRows = 0;
       let refreshRepairs = 0;
+      let truncatedSeedOrdinals: readonly number[] = [];
       const selected = yield* loadRecallMemoryLinks(config, {
         allowedUriScopes: [memoryRoot(config.user)],
         includeInactive: true,
@@ -188,13 +344,17 @@ describe('recall memory connections', () => {
         onRefreshRepair: () => {
           refreshRepairs += 1;
         },
+        onSearchTruncated: ordinals => {
+          truncatedSeedOrdinals = ordinals;
+        },
       });
 
       expect(selected).toHaveLength(1);
       expect(canonicalMismatches).toBe(2);
-      expect(canonicalRereads).toBe(4);
+      expect(canonicalRereads).toBe(2);
       expect(rawLinkRows).toBe(4);
       expect(refreshRepairs).toBe(1);
+      expect(truncatedSeedOrdinals).toEqual([0]);
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
@@ -234,6 +394,265 @@ describe('recall memory connections', () => {
       });
       expect(filtered.premises[0]?.state).toBe('historical');
       expect(filtered.candidates).toEqual([]);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('keeps premise currentness invariant when navigation relation filters change', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-currentness-abstention-'});
+      const config = runtimeConfig(home, 'currentness-abstention-user');
+      const seed = yield* writeMemory(fs, path, config, 'seed', 'tn_currentness_abstention_seed');
+      yield* writeMemory(fs, path, config, 'superseder-0', 'tn_currentness_abstention_0', [], {
+        status: 'archived',
+        supersedes: 'threadnote://memory/tn_currentness_abstention_seed',
+      });
+      yield* writeMemory(fs, path, config, 'superseder-1', 'tn_currentness_abstention_1', [], {
+        supersedes: 'threadnote://memory/tn_currentness_abstention_seed',
+      });
+      yield* writeMemory(fs, path, config, 'superseder-2', 'tn_currentness_abstention_2', [], {
+        supersedes: 'threadnote://memory/tn_currentness_abstention_seed',
+      });
+
+      const result = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        memoryRefs: [seed],
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+      });
+
+      expect(result.premises[0]?.state).toBe('conflicted');
+      expect(result.coverage.truncated).toBe(true);
+      expect(result.diagnostics.currentnessTruncatedMemoryIds).toBeUndefined();
+
+      const filtered = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        memoryRefs: [seed],
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        relationTypes: ['related_to'],
+      });
+      expect(filtered.premises[0]?.state).toBe('conflicted');
+      expect(filtered.diagnostics.currentnessTruncatedMemoryIds).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('canonical-validates stable inactive and sub-second superseder windows without repair', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-currentness-milliseconds-'});
+      const config = runtimeConfig(home, 'currentness-milliseconds-user');
+      const seed = yield* writeMemory(fs, path, config, 'seed', 'tn_currentness_milliseconds_seed');
+      yield* writeMemory(fs, path, config, 'superseder-0', 'tn_currentness_future', [], {
+        supersedes: 'threadnote://memory/tn_currentness_milliseconds_seed',
+        validFrom: '2026-08-31T12:00:00.500Z',
+      });
+      yield* writeMemory(fs, path, config, 'superseder-1', 'tn_currentness_expired', [], {
+        supersedes: 'threadnote://memory/tn_currentness_milliseconds_seed',
+        validTo: '2026-08-31T11:59:59.500Z',
+      });
+      yield* writeMemory(fs, path, config, 'superseder-2', 'tn_currentness_current', [], {
+        supersedes: 'threadnote://memory/tn_currentness_milliseconds_seed',
+      });
+      yield* writeMemory(fs, path, config, 'superseder-3', 'tn_currentness_archived', [], {
+        status: 'archived',
+        supersedes: 'threadnote://memory/tn_currentness_milliseconds_seed',
+      });
+
+      const result = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        memoryRefs: [seed],
+        now: CURRENT,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        relationTypes: ['related_to'],
+      });
+
+      expect(result.premises[0]?.state).toBe('historical');
+      expect(result.diagnostics).toMatchObject({canonicalMismatches: 0, refreshRepairs: 0});
+      expect(result.diagnostics.currentnessTruncatedMemoryIds).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('repairs stale indexed lifecycle before deciding a premise is current', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-currentness-stale-lifecycle-'});
+      const config = runtimeConfig(home, 'currentness-stale-lifecycle-user');
+      const seed = yield* writeMemory(fs, path, config, 'seed', 'tn_currentness_stale_seed');
+      yield* writeMemory(fs, path, config, 'superseder', 'tn_currentness_stale_superseder', [], {
+        supersedes: 'threadnote://memory/tn_currentness_stale_seed',
+        validFrom: '2027-08-31T12:00:00.000Z',
+      });
+
+      const beforeMutation = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        memoryRefs: [seed],
+        now: CURRENT,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        relationTypes: ['related_to'],
+      });
+      expect(beforeMutation.premises[0]?.state).toBe('current');
+      expect(beforeMutation.diagnostics).toMatchObject({canonicalMismatches: 0, refreshRepairs: 0});
+
+      const supersederPath = path.join(
+        config.agentContextHome,
+        'data',
+        config.account,
+        'user',
+        config.user,
+        'memories',
+        'durable',
+        'projects',
+        'threadnote',
+        'superseder.md',
+      );
+      const indexedInfo = yield* fs.stat(supersederPath);
+      const indexedMtime = Option.getOrUndefined(indexedInfo.mtime);
+      if (indexedMtime === undefined) throw new Error('Expected the indexed superseder to have an mtime.');
+      yield* writeMemory(fs, path, config, 'superseder', 'tn_currentness_stale_superseder', [], {
+        supersedes: 'threadnote://memory/tn_currentness_stale_seed',
+        validFrom: '2025-08-31T12:00:00.000Z',
+      });
+      const rewrittenInfo = yield* fs.stat(supersederPath);
+      expect(rewrittenInfo.size).toBe(indexedInfo.size);
+      yield* fs.utimes(supersederPath, indexedMtime, indexedMtime);
+
+      const afterMutation = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        memoryRefs: [seed],
+        now: CURRENT,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        relationTypes: ['related_to'],
+      });
+
+      expect(afterMutation.premises[0]?.state).toBe('historical');
+      expect(afterMutation.diagnostics).toMatchObject({canonicalMismatches: 1, refreshRepairs: 1});
+      expect(afterMutation.diagnostics.currentnessTruncatedMemoryIds).toBeUndefined();
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('does not let a historical prefix starve current neighbors from bounded backfill', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-current-backfill-'});
+      const config = runtimeConfig(home, 'backfill-user');
+      const seed = yield* writeMemory(fs, path, config, 'seed', 'tn_backfill_seed');
+      yield* Effect.forEach(
+        Array.from({length: 40}, (_, index) => index),
+        index =>
+          writeMemory(
+            fs,
+            path,
+            config,
+            `incoming-${String(index).padStart(2, '0')}`,
+            `tn_backfill_${String(index).padStart(2, '0')}`,
+            [{type: 'related_to', uri: 'threadnote://memory/tn_backfill_seed'}],
+            index < 32 ? {status: 'archived'} : {},
+          ),
+        {concurrency: 8},
+      );
+
+      const result = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        limit: 8,
+        memoryRefs: [seed],
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+      });
+
+      expect(result.candidates.map(candidate => candidate.memoryId)).toEqual(
+        Array.from({length: 8}, (_, index) => `tn_backfill_${index + 32}`),
+      );
+      expect(result.coverage.truncated).toBe(true);
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('marks every multi-premise lane truncated when the global bound hides later current neighbors', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-multi-lane-backfill-'});
+      const config = runtimeConfig(home, 'multi-lane-user');
+      const seeds = yield* Effect.forEach(
+        Array.from({length: 8}, (_, index) => index),
+        index => writeMemory(fs, path, config, `seed-${index}`, `tn_multi_seed_${index}`),
+        {concurrency: 8},
+      );
+      yield* Effect.forEach(
+        Array.from({length: 72}, (_, index) => index),
+        index => {
+          const seedIndex = Math.floor(index / 9);
+          const laneIndex = index % 9;
+          return writeMemory(
+            fs,
+            path,
+            config,
+            `incoming-${seedIndex}-${String(laneIndex).padStart(2, '0')}`,
+            `tn_multi_incoming_${seedIndex}_${laneIndex}`,
+            [{type: 'related_to', uri: `threadnote://memory/tn_multi_seed_${seedIndex}`}],
+            laneIndex < 8 ? {status: 'archived'} : {},
+          );
+        },
+        {concurrency: 8},
+      );
+
+      const result = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        limit: 8,
+        memoryRefs: seeds,
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+      });
+
+      expect(result.candidates).toEqual([]);
+      expect(result.coverage).toMatchObject({
+        truncated: true,
+        truncatedSeedOrdinals: Array.from({length: 8}, (_, index) => index),
+      });
+    }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('proves incoming superseders beyond the old global currentness slice', () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-currentness-bound-'});
+      const config = runtimeConfig(home, 'currentness-bound-user');
+      const targetIds = Array.from({length: 64}, (_, index) => `tn_currentness_target_${index}`);
+      const seed = yield* writeMemory(
+        fs,
+        path,
+        config,
+        'seed',
+        'tn_currentness_seed',
+        targetIds.map(memoryId => ({type: 'related_to' as const, uri: `threadnote://memory/${memoryId}`})),
+      );
+      yield* Effect.forEach(
+        targetIds,
+        (memoryId, index) => writeMemory(fs, path, config, `target-${index}`, memoryId),
+        {concurrency: 8},
+      );
+      const supersededIds = ['tn_currentness_seed', ...targetIds];
+      yield* Effect.forEach(
+        supersededIds,
+        (memoryId, index) =>
+          writeMemory(fs, path, config, `superseder-${index}`, `tn_currentness_superseder_${index}`, [], {
+            supersedes: `threadnote://memory/${memoryId}`,
+          }),
+        {concurrency: 8},
+      );
+
+      const result = yield* retrieveRecallMemoryConnections(config, {
+        allowedUriScopes: [memoryRoot(config.user)],
+        limit: 8,
+        memoryRefs: [seed],
+        readRecords: uris => readMemoryRecordsByUri(config, uris),
+        relationTypes: ['related_to'],
+      });
+
+      expect(result.premises[0]?.state).toBe('historical');
+      expect(result.candidates).toEqual([]);
+      expect(result.diagnostics.currentnessTruncatedMemoryIds).toBeUndefined();
     }).pipe(provideTestLayer(ApplicationLayer)),
   );
 

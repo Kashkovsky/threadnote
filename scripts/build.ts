@@ -130,6 +130,7 @@ const build = Effect.gen(function* () {
           manifest: 'assets/code-graph/manifest.json',
           version: 1,
         },
+        codeSignature: target.includes('windows') ? 'unsigned' : target.includes('darwin') ? 'developer-id' : 'none',
         executable: executableName,
         nativeRuntime: `runtime/${NATIVE_RUNTIME_PACKAGE}.js`,
         nativeRuntimePackage: nativePackage,

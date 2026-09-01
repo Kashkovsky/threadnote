@@ -125,6 +125,89 @@ describe('private memory relocation receipts', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
+  effectIt.effect('uses its private receipt when a live destination lost only its identity header', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture('missing-destination-identity');
+        const sourceUri = memoryUri(0);
+        const targetUri = memoryUri(1);
+        const original = memoryContent('tn_receipt_witness', 'Receipt-witnessed evidence.');
+        const missingIdentity = original.replace('memory_id: tn_receipt_witness\n', '');
+        yield* fixture.store.write(fixture.location, sourceUri, original, {mode: 'create'});
+        yield* fixture.store.write(fixture.location, targetUri, original, {mode: 'create'});
+        yield* recordMemoryRelocation(fixture.config, {
+          fromContent: original,
+          fromUri: sourceUri,
+          toContent: original,
+          toUri: targetUri,
+        });
+        yield* fixture.store.remove(fixture.location, sourceUri);
+        yield* fixture.store.write(fixture.location, targetUri, missingIdentity, {mode: 'upsert'});
+
+        expect(yield* readMemoryWithRelocations(fixture.config, sourceUri)).toMatchObject({
+          canonicalUri: targetUri,
+          content: missingIdentity,
+          memoryId: 'tn_receipt_witness',
+          relocationDepth: 1,
+          requestedUri: sourceUri,
+        });
+
+        yield* fixture.store.write(
+          fixture.location,
+          targetUri,
+          memoryContent('tn_different_identity', 'Different evidence.'),
+          {mode: 'upsert'},
+        );
+        const mismatch = yield* readMemoryWithRelocations(fixture.config, sourceUri).pipe(Effect.exit);
+        expect(Exit.isFailure(mismatch)).toBe(true);
+        if (Exit.isFailure(mismatch)) expect(String(mismatch.cause)).toContain('identity fence');
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect.prop(
+    'accepts only an absent or matching destination identity through a receipt',
+    {
+      destinationMemoryId: fc.oneof(
+        fc.constant(undefined),
+        fc.constant('tn_receipt_property'),
+        fc.integer({max: 65_535, min: 0}).map(value => `tn_other_${value.toString(16)}`),
+      ),
+    },
+    ({destinationMemoryId}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeFixture('identity-property');
+          const sourceUri = memoryUri(0);
+          const targetUri = memoryUri(1);
+          const original = memoryContent('tn_receipt_property', 'Property evidence.');
+          yield* fixture.store.write(fixture.location, sourceUri, original, {mode: 'create'});
+          yield* fixture.store.write(fixture.location, targetUri, original, {mode: 'create'});
+          yield* recordMemoryRelocation(fixture.config, {
+            fromContent: original,
+            fromUri: sourceUri,
+            toContent: original,
+            toUri: targetUri,
+          });
+          yield* fixture.store.remove(fixture.location, sourceUri);
+          const destination =
+            destinationMemoryId === undefined
+              ? original.replace('memory_id: tn_receipt_property\n', '')
+              : memoryContent(destinationMemoryId, 'Property evidence.');
+          yield* fixture.store.write(fixture.location, targetUri, destination, {mode: 'upsert'});
+
+          const result = yield* readMemoryWithRelocations(fixture.config, sourceUri).pipe(Effect.exit);
+          if (destinationMemoryId === undefined || destinationMemoryId === 'tn_receipt_property') {
+            expect(Exit.isSuccess(result)).toBe(true);
+          } else {
+            expect(Exit.isFailure(result)).toBe(true);
+            if (Exit.isFailure(result)) expect(String(result.cause)).toContain('identity fence');
+          }
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 24}},
+  );
+
   effectIt.effect.prop(
     'resolves every acyclic chain up to the production depth bound',
     {depth: fc.integer({max: MAX_MEMORY_RELOCATION_DEPTH, min: 1})},

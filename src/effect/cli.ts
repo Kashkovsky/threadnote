@@ -1333,7 +1333,7 @@ const recall = Command.make(
       'string',
     ),
     project: optionalString('project', 'Restrict to this project plus projectless guidance; omit for global recall'),
-    query: requiredString('query', 'Search query'),
+    query: optionalString('query', 'Search query; optional when --memory-ref supplies an explicit navigation seed'),
     relationTypes: repeatedString(
       'relation-type',
       'Filter one-hop expansion by relation type; repeat for multiple types',

@@ -1,6 +1,7 @@
 import {Effect, Schema} from 'effect';
 import {parseMemoryDocument} from '../memory/document.js';
 import {isMemoryId, memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
+import {loadMemoryRelocationIdentityWitnesses} from '../memory/relocation.js';
 import {resourceIdIsWithin} from '../storage/resource-id.js';
 import {loadRecallMemoryIdentities} from './index.js';
 
@@ -23,6 +24,7 @@ export class MemoryIdentityResolutionError extends Schema.TaggedError<MemoryIden
 export interface ResolvedMemoryIdentityAlias {
   readonly canonicalUri: string;
   readonly expectedMemoryId?: string;
+  readonly identityWitness?: 'private-relocation-receipt';
   readonly requestedUri: string;
 }
 
@@ -78,6 +80,19 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
     memoryIds,
     validateNow: options.validateNow,
   });
+  const indexedResolutions = new Map(
+    memoryIds.map(
+      memoryId => [memoryId, classifyMemoryIdentityCandidates(candidates, memoryId, allowedUriScopes)] as const,
+    ),
+  );
+  // A receipt is a bounded disaster-recovery witness for an identity that the
+  // active index cannot find. A live indexed memory_id is stronger evidence and
+  // must not pay an O(lifetime relocations) filesystem scan on every read.
+  const fallbackMemoryIds = memoryIds.filter(memoryId => indexedResolutions.get(memoryId)?.state === 'not-found');
+  const relocationWitnesses =
+    fallbackMemoryIds.length === 0
+      ? []
+      : yield* loadMemoryRelocationIdentityWitnesses(config, fallbackMemoryIds, allowedUriScopes);
 
   const resolved: ResolvedMemoryIdentityAlias[] = [];
   for (const input of inputs) {
@@ -86,9 +101,23 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
       resolved.push({canonicalUri: input, expectedMemoryId: undefined, requestedUri: input});
       continue;
     }
-    const candidate = classifyMemoryIdentityCandidates(candidates, memoryId, allowedUriScopes);
-    if (candidate.state !== 'resolved') {
-      const reason = candidate.state;
+    const indexed = indexedResolutions.get(memoryId) ?? {state: 'not-found' as const};
+    if (indexed.state === 'ambiguous') {
+      return yield* Effect.fail(
+        new MemoryIdentityResolutionError({
+          memoryId,
+          message: 'Stable memory identity is ambiguous or conflicted inside the authorized corpus.',
+          reason: 'ambiguous',
+        }),
+      );
+    }
+    if (indexed.state === 'resolved') {
+      resolved.push({canonicalUri: indexed.uri, expectedMemoryId: memoryId, requestedUri: input});
+      continue;
+    }
+    const witnessed = classifyMemoryIdentityCandidates(relocationWitnesses, memoryId, allowedUriScopes);
+    if (witnessed.state !== 'resolved') {
+      const reason = witnessed.state;
       return yield* Effect.fail(
         new MemoryIdentityResolutionError({
           memoryId,
@@ -100,7 +129,12 @@ export const resolveMemoryIdentityAliases = Effect.fn('recall.resolveMemoryIdent
         }),
       );
     }
-    resolved.push({canonicalUri: candidate.uri, expectedMemoryId: memoryId, requestedUri: input});
+    resolved.push({
+      canonicalUri: witnessed.uri,
+      expectedMemoryId: memoryId,
+      identityWitness: 'private-relocation-receipt',
+      requestedUri: input,
+    });
   }
   return resolved;
 });
@@ -112,8 +146,14 @@ export const verifyResolvedMemoryIdentity = Effect.fn('recall.verifyResolvedMemo
   content: string,
 ) {
   if (resolved.expectedMemoryId === undefined) return;
-  const observedMemoryId = parseMemoryDocument(canonicalUri, content)?.metadata.memoryId;
-  if (observedMemoryId !== resolved.expectedMemoryId) {
+  const record = parseMemoryDocument(canonicalUri, content);
+  const observedMemoryId = record?.metadata.memoryId;
+  const witnessedMissingIdentity =
+    record !== undefined &&
+    observedMemoryId === undefined &&
+    resolved.identityWitness === 'private-relocation-receipt' &&
+    resolved.canonicalUri === canonicalUri;
+  if (observedMemoryId !== resolved.expectedMemoryId && !witnessedMissingIdentity) {
     return yield* Effect.fail(
       new MemoryIdentityResolutionError({
         memoryId: resolved.expectedMemoryId,

@@ -47,7 +47,7 @@ describe('standalone release workflows', () => {
     }),
   );
 
-  it.effect('publishes macOS and Linux while retaining disabled Windows release definitions', () =>
+  it.effect('publishes macOS, Linux, and explicit unsigned Windows artifacts', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
 
@@ -56,11 +56,19 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('bun-linux-arm64');
       expect(workflow).toContain('bun-darwin-x64');
       expect(workflow).toContain('bun-darwin-arm64');
-      expect(workflow).toContain('bun-windows-x64-baseline');
+      expect(workflow).toContain('target: bun-windows-x64-baseline');
+      expect(workflow).toContain('oven-sh/bun#28327');
+      expect(workflow).toContain('Preload checksum-pinned Bun baseline compiler backend');
+      expect(workflow).toContain('BUN_BASELINE_TARBALL_SHA512: b888cb502d52f435a0202ceea0c6daeef');
+      expect(workflow).toContain('bun-windows-x64-baseline-v$env:BUN_VERSION');
       expect(workflow).toContain('bun-windows-arm64');
       expect(workflow).toContain('windows-11-arm');
-      expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(2);
-      expect(workflow).toContain('needs: [verify, linux, macos]');
+      expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(1);
+      expect(workflow).toContain('name: Windows · ${{ matrix.architecture }} · unsigned');
+      expect(workflow).toContain('bun --bun vitest run --config vitest.windows-e2e.config.ts');
+      expect(workflow).toContain('name: release-windows-${{ matrix.architecture }}');
+      expect(workflow).toContain("needs.windows-build.result == 'success'");
+      expect(workflow).toContain('needs: [verify, linux, macos, windows-build]');
       expect(workflow).not.toContain('needs: [verify, linux, macos, production-large-evidence]');
       expect(workflow).not.toContain('needs: [linux, macos, windows-sign]');
       expect(workflow).not.toMatch(/\bnpm(?:\s|$)/);
@@ -95,7 +103,7 @@ describe('standalone release workflows', () => {
     }),
   );
 
-  it.effect('signs and notarizes Apple artifacts and keeps the deferred Authenticode sequence intact', () =>
+  it.effect('signs Apple artifacts, publishes unsigned Windows archives, and retains deferred Authenticode', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
       const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
@@ -103,7 +111,8 @@ describe('standalone release workflows', () => {
       const notarization = workflow.indexOf('Notarize the exact release payload');
       const macArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: darwin-');
       const authenticode = workflow.indexOf('Authenticode-sign executable and native payload');
-      const windowsArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: windows-');
+      const unsignedWindowsArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: windows-');
+      const signedWindowsArchive = workflow.indexOf('THREADNOTE_RELEASE_TARGET: windows-', authenticode);
 
       expect(signing).toBeGreaterThan(0);
       expect(notarization).toBeGreaterThan(signing);
@@ -112,7 +121,9 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('find dist/runtime -type f -print0');
       expect(workflow).toContain('azure/artifact-signing-action@v2');
       expect(workflow).toContain('timestamp-rfc3161: http://timestamp.acs.microsoft.com');
-      expect(windowsArchive).toBeGreaterThan(authenticode);
+      expect(unsignedWindowsArchive).toBeGreaterThan(macArchive);
+      expect(unsignedWindowsArchive).toBeLessThan(authenticode);
+      expect(signedWindowsArchive).toBeGreaterThan(authenticode);
       expect(publisher).toContain('gh release create');
       expect(publisher).toContain('Verify release immutability');
       expect(workflow).not.toContain('types: [published]');

@@ -75,6 +75,7 @@ async function makeHome(root: string): Promise<string> {
       'memory_id: tn_foo_bar',
       'source_agent_client: test',
       'timestamp: 2026-07-23T00:00:00.000Z',
+      'visibility: personal',
       '',
       'Body',
       '',
@@ -218,8 +219,46 @@ describe('Threadnote MCP share_publish', () => {
       );
       const previewText = (preview.content as TextContent[]).map(item => item.text).join('\n');
       expect(previewText).toContain('Body');
+      expect(previewText).toContain('visibility: shared');
+      expect(previewText).not.toContain('visibility: personal');
       expect(previewText).not.toContain('threadnote:hygiene-sources');
       expect(previewText).not.toContain('/private-task.md');
+
+      const legacyPublishedContent = [
+        'MEMORY',
+        'kind: durable',
+        'status: active',
+        'project: foo',
+        'topic: bar',
+        'memory_id: tn_foo_bar',
+        'source_agent_client: test',
+        'timestamp: 2026-07-23T00:00:00.000Z',
+        '',
+        'Body',
+      ].join('\n');
+      const canonicalTargetPath = join(
+        home,
+        'data',
+        'local',
+        'user',
+        'test-user',
+        'memories',
+        'shared',
+        'default',
+        'durable',
+        'projects',
+        'foo',
+        'bar.md',
+      );
+      const worktreeTargetPath = join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md');
+      await writeFile(
+        canonicalTargetPath,
+        legacyPublishedContent.replace(
+          'timestamp: 2026-07-23T00:00:00.000Z',
+          'timestamp: 2026-07-23T00:00:00.000Z\nvisibility: shared',
+        ),
+      );
+      await writeFile(worktreeTargetPath, legacyPublishedContent);
 
       const result = await client.callTool(
         {
@@ -238,14 +277,14 @@ describe('Threadnote MCP share_publish', () => {
       const text = (result.content as TextContent[]).map(item => item.text).join('\n');
       expect(text).toContain(`Published ${sourceUri} -> ${targetUri}`);
       expect(text).toContain('git push skipped (push=false)');
-      const published = await readFile(
-        join(home, 'share', 'worktrees', 'default', 'durable', 'projects', 'foo', 'bar.md'),
-        'utf8',
-      );
+      const published = await readFile(worktreeTargetPath, 'utf8');
       expect(published).toContain('Body');
       expect(published).toContain('memory_id: tn_foo_bar');
+      expect(published).toContain('visibility: shared');
+      expect(published).not.toContain('visibility: personal');
       expect(published).not.toContain('threadnote:hygiene-sources');
       expect(published).not.toContain('/private-task.md');
+      await expect(readFile(canonicalTargetPath, 'utf8')).resolves.toBe(published);
 
       const replaced = await client.callTool(
         {

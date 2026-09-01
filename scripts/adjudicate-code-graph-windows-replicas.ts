@@ -17,7 +17,10 @@ const GIT_COMMIT = /^[0-9a-f]{40}$/u;
 const SANITIZED_RUNNER_IDENTITY = /^runner-[0-9a-f]{16}$/u;
 
 interface WindowsReplicaPolicyV1 {
+  readonly coldMaterializationProcessCpuMillisecondsMaximum: 3000;
   readonly hardWallP95MillisecondsMaximum: 1900;
+  readonly nestedMaterializationUsesEnclosingSafetyCeiling: true;
+  readonly oneFileMaterializationProcessCpuMillisecondsMaximum: 200;
   readonly ordinaryPassesMinimum: 2;
   readonly ordinaryWallP95MillisecondsMaximum: 1050;
   readonly replicas: 3;
@@ -58,8 +61,20 @@ export interface CodeGraphWindowsReplicaGateV1 {
       readonly p95: number;
       readonly samples: number;
     };
+    readonly coldMaterializationProcessCpu: {
+      readonly maximum: number;
+      readonly p50: number;
+      readonly p95: number;
+      readonly samples: number;
+    };
     readonly ordinaryPassed: boolean;
     readonly processCpu: {
+      readonly maximum: number;
+      readonly p50: number;
+      readonly p95: number;
+      readonly samples: number;
+    };
+    readonly oneFileMaterializationProcessCpu: {
       readonly maximum: number;
       readonly p50: number;
       readonly p95: number;
@@ -113,6 +128,11 @@ export function adjudicateCodeGraphWindowsReplicas(
     const runtimePlatform = stringMetadata(artifact, 'runtimePlatform');
     const hotQuery = requiredMeasurement(artifact, 'hot-exact-lexical-query');
     const processCpu = requiredMeasurement(artifact, 'hot-query-process-cpu');
+    const coldMaterializationProcessCpu = requiredMeasurement(artifact, 'cold-materialization-process-cpu-n1');
+    const oneFileMaterializationProcessCpu = requiredMeasurement(
+      artifact,
+      'one-file-reindex-materialization-process-cpu-n1',
+    );
     const wholeGraphAnalysis = requiredMeasurement(artifact, 'whole-graph-structural-analysis');
     const wholeGraphAnalysisProcessCpu = requiredMeasurement(artifact, 'whole-graph-structural-analysis-process-cpu');
 
@@ -147,13 +167,20 @@ export function adjudicateCodeGraphWindowsReplicas(
     failures.push(...invariantFailures.map(failure => `${prefix} ${failure}`));
 
     const safetyFailure = performanceBudgetFailure(artifact, safetyBudget);
+    const materializationCpuFailures = nestedMaterializationCpuFailures(
+      coldMaterializationProcessCpu,
+      oneFileMaterializationProcessCpu,
+      policy,
+    );
     const analysisCpuFailures = wholeGraphAnalysisCpuFailures(wholeGraphAnalysis, wholeGraphAnalysisProcessCpu, policy);
     const ordinaryFailure = performanceBudgetFailure(artifact, budgetInput);
     if (safetyFailure !== undefined) failures.push(`${prefix} safety budget: ${safetyFailure}`);
+    failures.push(...materializationCpuFailures.map(failure => `${prefix} safety budget: ${failure}`));
     failures.push(...analysisCpuFailures.map(failure => `${prefix} safety budget: ${failure}`));
 
     return {
       artifactSha256: input.artifactSha256,
+      coldMaterializationProcessCpu: measurementSummary(coldMaterializationProcessCpu),
       createdAt: artifact.createdAt,
       hotQuery: {
         maximum: hotQuery.maximum,
@@ -168,9 +195,14 @@ export function adjudicateCodeGraphWindowsReplicas(
         p95: processCpu.p95,
         samples: processCpu.samples,
       },
+      oneFileMaterializationProcessCpu: measurementSummary(oneFileMaterializationProcessCpu),
       replica: input.replica,
       runnerIdentity,
-      safetyPassed: invariantFailures.length === 0 && safetyFailure === undefined && analysisCpuFailures.length === 0,
+      safetyPassed:
+        invariantFailures.length === 0 &&
+        safetyFailure === undefined &&
+        materializationCpuFailures.length === 0 &&
+        analysisCpuFailures.length === 0,
       wholeGraphAnalysis: measurementSummary(wholeGraphAnalysis),
       wholeGraphAnalysisProcessCpu: measurementSummary(wholeGraphAnalysisProcessCpu),
     };
@@ -243,6 +275,18 @@ function nativeReplicaInvariantFailures(artifact: BenchmarkArtifactV1): readonly
     if (measurement.unit !== 'milliseconds') failures.push(`${name} measurement must use milliseconds`);
     if (measurement.samples !== 1) failures.push(`${name} samples ${measurement.samples}; expected 1`);
   }
+  for (const [materializationName, enclosingName] of [
+    ['cold-materialization', 'cold-index'],
+    ['one-file-reindex-materialization', 'one-file-reindex-index'],
+  ] as const) {
+    const materialization = requiredMeasurement(artifact, materializationName);
+    const enclosing = requiredMeasurement(artifact, enclosingName);
+    if (materialization.maximum > enclosing.maximum) {
+      failures.push(
+        `${materializationName} maximum ${materialization.maximum} exceeds enclosing ${enclosingName} maximum ${enclosing.maximum}`,
+      );
+    }
+  }
   for (const [name, expected] of [
     ['one-file-reindex-materialization-staged-files', 1],
     ['primary-query-structural-parity', 1],
@@ -274,6 +318,29 @@ function nativeReplicaInvariantFailures(artifact: BenchmarkArtifactV1): readonly
     const leftDigest = stringMetadata(artifact, left);
     const rightDigest = stringMetadata(artifact, right);
     if (!SHA256.test(leftDigest) || leftDigest !== rightDigest) failures.push(`${label} parity digest is invalid`);
+  }
+  return failures;
+}
+
+function nestedMaterializationCpuFailures(
+  cold: BenchmarkArtifactV1['measurements'][number],
+  oneFile: BenchmarkArtifactV1['measurements'][number],
+  policy: WindowsReplicaPolicyV1,
+): readonly string[] {
+  const failures: string[] = [];
+  for (const [name, measurement, maximum] of [
+    ['cold-materialization-process-cpu-n1', cold, policy.coldMaterializationProcessCpuMillisecondsMaximum],
+    [
+      'one-file-reindex-materialization-process-cpu-n1',
+      oneFile,
+      policy.oneFileMaterializationProcessCpuMillisecondsMaximum,
+    ],
+  ] as const) {
+    if (measurement.unit !== 'milliseconds') failures.push(`${name} measurement must use milliseconds`);
+    if (measurement.samples !== 1) failures.push(`${name} samples ${measurement.samples}; expected 1`);
+    if (measurement.maximum > maximum) {
+      failures.push(`${name} maximum ${measurement.maximum} exceeds ${maximum}`);
+    }
   }
   return failures;
 }
@@ -328,7 +395,10 @@ function parseWindowsReplicaPolicy(value: unknown): WindowsReplicaPolicyV1 {
   const policies = requiredRecord(budget.developmentPerformanceReplicaSetByRunnerClass, 'development replica policies');
   const policy = requiredRecord(policies['github-hosted-windows-x64'], 'hosted Windows replica policy');
   const expected: WindowsReplicaPolicyV1 = {
+    coldMaterializationProcessCpuMillisecondsMaximum: 3000,
     hardWallP95MillisecondsMaximum: 1900,
+    nestedMaterializationUsesEnclosingSafetyCeiling: true,
+    oneFileMaterializationProcessCpuMillisecondsMaximum: 200,
     ordinaryPassesMinimum: 2,
     ordinaryWallP95MillisecondsMaximum: 1050,
     replicas: 3,
@@ -359,18 +429,20 @@ function windowsReplicaSafetyBudget(value: unknown, policy: WindowsReplicaPolicy
   const resolved = resolvedWindowsDevelopmentBudget(budget);
   const safetyMaximum = (field: string): number =>
     requiredNumber(resolved[field], `resolved Windows ${field}`) * policy.schedulerSensitiveWallClockSafetyMultiplier;
+  const coldIndexSafetyMaximum = safetyMaximum('coldIndexP95MillisecondsMaximum');
+  const oneFileIndexSafetyMaximum = safetyMaximum('oneFileIncrementalP95MillisecondsMaximum');
   return {
     ...budget,
     developmentPerformanceByRunnerClass: {
       ...runnerPolicies,
       'github-hosted-windows-x64': {
         ...windows,
-        coldIndexP95MillisecondsMaximum: safetyMaximum('coldIndexP95MillisecondsMaximum'),
-        coldMaterializationP95MillisecondsMaximum: safetyMaximum('coldMaterializationP95MillisecondsMaximum'),
+        coldIndexP95MillisecondsMaximum: coldIndexSafetyMaximum,
+        coldMaterializationP95MillisecondsMaximum: coldIndexSafetyMaximum,
         hotQueryP95MillisecondsMaximum: policy.hardWallP95MillisecondsMaximum,
         hotQueryWallP95ToleranceRatioMaximum: 0,
-        oneFileIncrementalP95MillisecondsMaximum: safetyMaximum('oneFileIncrementalP95MillisecondsMaximum'),
-        oneFileMaterializationP95MillisecondsMaximum: safetyMaximum('oneFileMaterializationP95MillisecondsMaximum'),
+        oneFileIncrementalP95MillisecondsMaximum: oneFileIndexSafetyMaximum,
+        oneFileMaterializationP95MillisecondsMaximum: oneFileIndexSafetyMaximum,
         wholeGraphAnalysisP95MillisecondsMaximum: safetyMaximum('wholeGraphAnalysisP95MillisecondsMaximum'),
       },
     },

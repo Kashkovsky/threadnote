@@ -4,8 +4,9 @@
 
 Threadnote releases are standalone executables with an embedded Bun runtime; users do not need Bun, Node, npm, or
 Python installed. Verify the immutable release and archive checksum, then run `threadnote doctor --dry-run`. On macOS,
-`codesign --verify --strict --verbose=2 "$(command -v threadnote)"` checks the Developer ID signature. On Windows,
-`Get-AuthenticodeSignature (Get-Command threadnote).Source` should report `Valid`.
+`codesign --verify --strict --verbose=2 "$(command -v threadnote)"` checks the Developer ID signature. Threadnote 4.6
+Windows builds are unsigned, so Windows may display a SmartScreen warning; the PowerShell installer instead verifies
+the immutable GitHub release and its SHA-256 checksum before activation.
 
 If an older npm-based Threadnote command shadows the standalone launcher, compare every result from
 `command -v -a threadnote` on POSIX or `Get-Command threadnote -All` in PowerShell. The standalone installer removes
@@ -29,8 +30,7 @@ A prerelease installation follows this inclusive beta channel for ordinary updat
 unflagged updates infer stable-only selection again; use `threadnote update --beta` to explicitly re-enter preview
 selection.
 
-The PowerShell installer path is available for testing but no official Windows 4 asset is published until Authenticode
-signing is re-enabled.
+The PowerShell installer supports the official unsigned Windows x64 and arm64 archives published with Threadnote 4.6.
 
 ## The installer finished but `threadnote` is not found
 

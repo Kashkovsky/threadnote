@@ -8,6 +8,8 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory/index.js';
+import {projectRecallCliResponse} from '../../src/recall/cli_response.js';
+import type {RecallMemoryConnectionsResult} from '../../src/recall/memory_connections.js';
 import type {RecallOptions, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 vi.mock('../../src/utils.js', async importOriginal => {
@@ -42,6 +44,51 @@ describe('recall skill catalog intent inference', () => {
   });
 });
 describe('runRecall native index', () => {
+  it('does not claim verified navigation when a resolved neighbor belongs to an unresolved premise', () => {
+    const memoryConnections: RecallMemoryConnectionsResult = {
+      candidates: [],
+      connections: [
+        {
+          currentness: 'current',
+          direction: 'outgoing',
+          distance: 1,
+          neighborMemoryId: 'tn_neighbor',
+          neighborUri: 'threadnote://memory/tn_neighbor',
+          origin: 'relation',
+          relationOrdinal: 0,
+          relationType: 'references',
+          requestedOrdinal: 0,
+          resolution: 'resolved',
+          sourceMemoryId: 'tn_unresolved_seed',
+        },
+      ],
+      coverage: {connectionCount: 1, premiseCount: 1, resultCount: 1, truncated: true, version: 1},
+      diagnostics: {
+        canonicalMismatches: 0,
+        canonicalRereads: 1,
+        currentnessTruncatedMemoryIds: ['tn_unresolved_seed'],
+        rawLinkRows: 1,
+        refreshRepairs: 0,
+        truncatedSeedOrdinals: [0],
+      },
+      premises: [
+        {
+          memoryId: 'tn_unresolved_seed',
+          requestedOrdinal: 0,
+          requestedRef: 'threadnote://memory/tn_unresolved_seed',
+          state: 'unresolved',
+        },
+      ],
+    };
+
+    const projected = projectRecallCliResponse({memoryConnections}, true);
+
+    expect(projected.confidence).toBeUndefined();
+    expect(projected.sections.join('\n')).toContain('threadnote://memory/tn_neighbor');
+    expect(projected.sections.join('\n')).not.toContain('explicit-memory-connection');
+    expect(projected.sections.join('\n')).not.toContain('Next: threadnote read');
+  });
+
   effectIt.effect('uses the native recall index without a repair subprocess', () =>
     Effect.gen(function* () {
       const {output} = yield* captureRecall(runtime, {
@@ -64,6 +111,31 @@ describe('runRecall native index', () => {
       expect(output).toContain('Memory connections (one hop');
       expect(output).toContain('threadnote://memory/tn_cli_seed [unresolved]');
       expect(output).toContain('Relations are navigation evidence, not entailment.');
+    }),
+  );
+  effectIt.effect('supports seed-only navigation without entering the topical query lane', () =>
+    Effect.gen(function* () {
+      const {output, value} = yield* captureRecall(runtime, {
+        dryRun: true,
+        memoryRefs: ['tn_cli_seed_only'],
+        relationTypes: ['references'],
+      });
+      expect(output).toContain('Would expand 1 explicit memory premise(s) by one hop.');
+      expect(output).not.toContain('Would search native recall index');
+      expect(output).not.toContain('No semantically-relevant matches');
+      expect(output).toContain('threadnote://memory/tn_cli_seed_only [unresolved]');
+      expect(output).not.toContain('explicit-memory-connection');
+      expect(output).not.toContain('Next: threadnote read');
+      expect(value.queryExpansions).toEqual([]);
+    }),
+  );
+  effectIt.effect('rejects recall without either a topical query or a memory premise', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(captureRecall(runtime, {dryRun: true, query: '   '}));
+      expect(String(failure)).toContain(
+        'Threadnote recall needs either a non-empty --query or at least one --memory-ref seed.',
+      );
+      expect(String(failure)).toContain('threadnote recall --memory-ref tn_example');
     }),
   );
   effectIt.effect('rejects a CLI relation filter without a memory premise', () =>

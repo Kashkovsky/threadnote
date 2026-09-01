@@ -122,6 +122,7 @@ describe('recall MCP response projection', () => {
     expect(compact.text).toContain('Ranked pointers are not evidence');
 
     const explained = projectRecallMcpResponse(logical([hit(1)]), {budgetTokens: 1_500, explain: true});
+    expect(explained.structuredContent.output).toMatchObject({explain: true, explainDetails: 'included'});
     expect(explained.structuredContent.queryExpansions).toEqual(['expanded query']);
     expect(explained.structuredContent.results[0]).toMatchObject({
       finalScore: 0.73456,
@@ -386,6 +387,102 @@ describe('recall MCP response projection', () => {
     expect(projected.structuredContent.nextAction.uris[0]).toBe(directHit.uri);
   });
 
+  it('preserves a matching explicit-connection receipt bundle before max-budget explanation detail', () => {
+    const results = Array.from({length: 3}, (_, index) =>
+      hit(index, {
+        rankReasons: Array.from({length: 12}, (__, reasonIndex) => ({
+          code: 'exact_term_match' as const,
+          contribution: 0.01,
+          detail: `Verbose diagnostic reason ${reasonIndex} for result ${index} carries optional ranking explanation detail.`,
+        })),
+        rankWarnings: Array.from(
+          {length: 8},
+          (__, warningIndex) => `Optional diagnostic warning ${warningIndex} for result ${index}.`,
+        ),
+      }),
+    );
+    const directHit = results.at(2);
+    if (directHit === undefined) throw new Error('Expected the direct result fixture.');
+    const projected = projectRecallMcpResponse(
+      {
+        ...logical(results),
+        confidence: {
+          level: 'no_answer',
+          margin: 0,
+          reason: 'No candidate passed the minimum combined relevance threshold.',
+          score: 0,
+        },
+        memoryConnections: {
+          candidates: [],
+          connections: [
+            {
+              currentness: 'current',
+              direction: 'outgoing',
+              distance: 1,
+              neighborMemoryId: 'tn_direct',
+              neighborUri: directHit.uri,
+              origin: 'relation',
+              relationOrdinal: 0,
+              relationType: 'references',
+              requestedOrdinal: 1,
+              resolution: 'resolved',
+              sourceMemoryId: 'tn_seed',
+            },
+          ],
+          coverage: {
+            connectionCount: 1,
+            premiseCount: 2,
+            resultCount: 1,
+            truncated: false,
+            version: 1,
+          },
+          diagnostics: {
+            canonicalMismatches: 0,
+            canonicalRereads: 2,
+            rawLinkRows: 1,
+            refreshRepairs: 0,
+            truncatedSeedOrdinals: [],
+          },
+          premises: [
+            {
+              requestedOrdinal: 0,
+              requestedRef: 'threadnote://memory/tn_unresolved',
+              state: 'unresolved',
+            },
+            {
+              memoryId: 'tn_seed',
+              requestedOrdinal: 1,
+              requestedRef: 'threadnote://memory/tn_seed',
+              state: 'current',
+            },
+          ],
+        },
+      },
+      {budgetTokens: 1_500, explain: true},
+    );
+
+    expect(projected.structuredContent.results).toHaveLength(3);
+    expect(projected.structuredContent.output).toMatchObject({
+      explain: true,
+      explainDetails: 'omitted-response-budget',
+    });
+    expect(projected.structuredContent).not.toHaveProperty('queryExpansions');
+    expect(projected.structuredContent.confidence).toMatchObject({
+      basis: 'explicit-memory-connection',
+      level: 'high',
+    });
+    const nextUri = projected.structuredContent.nextAction.uris[0];
+    const receipt = projected.structuredContent.memoryConnections?.connections.find(
+      connection => connection.neighborUri === nextUri,
+    );
+    if (receipt === undefined) throw new Error('Expected an actionable connection receipt.');
+    expect(receipt).toMatchObject({currentness: 'current', requestedOrdinal: 1, resolution: 'resolved'});
+    expect(projected.structuredContent.memoryConnections?.premises).toContainEqual(
+      expect.objectContaining({requestedOrdinal: receipt.requestedOrdinal, state: 'current'}),
+    );
+    expect(projected.measurement.totalBytes).toBeLessThanOrEqual(1_500 * 3);
+  });
+
   it('keeps an explicitly included historical connection actionable while preserving its receipt', () => {
     const historicalHit = hit(1);
     const projected = projectRecallMcpResponse({
@@ -457,7 +554,8 @@ describe('recall MCP response projection', () => {
           selector: value => value,
         }),
         fc.integer({min: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS, max: 1_500}),
-        (segments, budgetTokens) => {
+        fc.boolean(),
+        (segments, budgetTokens, explain) => {
           const results = segments.map((segment, index) =>
             hit(index, {uri: `threadnote://user/test/memories/durable/projects/threadnote/${segment}.md`}),
           );
@@ -509,8 +607,8 @@ describe('recall MCP response projection', () => {
               ],
             },
           };
-          const projected = projectRecallMcpResponse(response, {budgetTokens});
-          const repeated = projectRecallMcpResponse(response, {budgetTokens});
+          const projected = projectRecallMcpResponse(response, {budgetTokens, explain});
+          const repeated = projectRecallMcpResponse(response, {budgetTokens, explain});
           const returnedUris = new Set(projected.structuredContent.results.map(result => result.uri));
 
           expect(projected).toEqual(repeated);
@@ -522,9 +620,14 @@ describe('recall MCP response projection', () => {
           });
           expect(projected.structuredContent.nextAction.uris.length).toBeGreaterThan(0);
           expect(projected.structuredContent.nextAction.uris.every(uri => returnedUris.has(uri))).toBe(true);
-          expect(
-            connections.some(connection => connection.neighborUri === projected.structuredContent.nextAction.uris[0]),
-          ).toBe(true);
+          const actionableReceipt = projected.structuredContent.memoryConnections?.connections.find(
+            connection => connection.neighborUri === projected.structuredContent.nextAction.uris[0],
+          );
+          if (actionableReceipt === undefined) throw new Error('Expected an actionable connection receipt.');
+          expect(actionableReceipt).toMatchObject({resolution: 'resolved'});
+          expect(projected.structuredContent.memoryConnections?.premises).toContainEqual(
+            expect.objectContaining({requestedOrdinal: actionableReceipt.requestedOrdinal}),
+          );
         },
       ),
       {numRuns: 100},

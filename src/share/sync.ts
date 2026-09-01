@@ -1,5 +1,6 @@
-import {Console, Effect, Result} from 'effect';
+import {Console, Effect, FileSystem, Result} from 'effect';
 
+import {withMemoryUriLocks} from '../effect/memory_lock.js';
 import {SystemInfo} from '../effect/system.js';
 
 import type {ShareRuntime, ShareSyncOptions, ShareTeamConfig} from '../types.js';
@@ -48,11 +49,13 @@ import {
   resolveTeam,
   resourceExistsStrict,
   rm,
+  sharedMemoryIdentityContinuityIssue,
   shareTeamAccess,
   sharedMemoryContentsEquivalent,
+  verifySharedMemoryIdentityContinuity,
   workfileToResourceUri,
   writeFile,
-  writeMemoryFile,
+  writeMemoryFileChecked,
   writePendingReindexes,
 } from './core.js';
 
@@ -636,41 +639,62 @@ const applyChangesToCanonicalStore = Effect.fn('share.applyChangesToCanonicalSto
         normalizedChange = yield* normalizePendingChange({config: team, name: team.name}, change);
         const uri = yield* workfileToResourceUri(config, team, normalizedChange.path);
         changeLabel = uri;
-        if (normalizedChange.status === 'removed') {
-          const currentContent = yield* readExistingMemoryContent(config, ov, uri);
-          if (currentContent === undefined) {
-            return;
-          }
-          yield* removeMemoryUri(config, ov, uri, false, options);
-          return;
-        }
-        if (!(yield* isRegularFileNoSymlink(normalizedChange.path))) {
-          return;
-        }
-        // Either 'modified' or 'added' from git's perspective; the file on disk
-        // was just rewritten by the pull-rebase and OV's index needs to catch up.
-        // Both cases collapse to the same OV-side rule: if the URI already exists,
-        // we must write with 'replace' (the create path's retry loop snapshots
-        // existedBeforeWrite=true and would burn every attempt against an
-        // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
-        // earlier path — a prior share init/sync, or a local publish that wrote
-        // the URI before the corresponding upstream commit landed in this clone.
-        const content = yield* readSharedInboundFileContent(uri, normalizedChange.path);
-        const currentContent = yield* readExistingMemoryContent(config, ov, uri);
-        if (currentContent !== undefined) {
-          if (
-            sharedMemoryContentsEquivalent(currentContent, content) &&
-            countManagedMemoryFieldsTrailers(currentContent) <= 1
-          ) {
-            return;
-          }
-          if (options.quiet !== true) {
-            yield* Console.warn(`share sync: ${uri}: replacing local shared cache content with the remote version.`);
-          }
-        }
-        yield* ensureSharedDirectoryChain(config, ov, uri, false, options);
-        const writeMode: 'create' | 'replace' = currentContent !== undefined ? 'replace' : 'create';
-        yield* writeMemoryFile(config, ov, uri, content, writeMode, false, options);
+        const fs = yield* FileSystem.FileSystem;
+        return yield* withMemoryUriLocks(
+          fs,
+          config.agentContextHome,
+          [uri],
+          Effect.gen(function* () {
+            if (normalizedChange.status === 'removed') {
+              const currentContent = yield* readExistingMemoryContent(config, ov, uri);
+              if (currentContent === undefined) {
+                return;
+              }
+              yield* removeMemoryUri(config, ov, uri, false, options);
+              return;
+            }
+            if (!(yield* isRegularFileNoSymlink(normalizedChange.path))) {
+              return;
+            }
+            // Either 'modified' or 'added' from git's perspective; the file on disk
+            // was just rewritten by the pull-rebase and OV's index needs to catch up.
+            // Both cases collapse to the same OV-side rule: if the URI already exists,
+            // we must write with 'replace' (the create path's retry loop snapshots
+            // existedBeforeWrite=true and would burn every attempt against an
+            // ALREADY_EXISTS error). 'added' lands here when OV has the URI from an
+            // earlier path — a prior share init/sync, or a local publish that wrote
+            // the URI before the corresponding upstream commit landed in this clone.
+            const content = yield* readSharedInboundFileContent(uri, normalizedChange.path);
+            const currentContent = yield* readExistingMemoryContent(config, ov, uri);
+            if (currentContent !== undefined) {
+              const identityIssue = sharedMemoryIdentityContinuityIssue(uri, currentContent, content);
+              if (identityIssue !== undefined) return yield* Effect.fail(new ShareOperationError(identityIssue));
+              if (
+                sharedMemoryContentsEquivalent(currentContent, content) &&
+                countManagedMemoryFieldsTrailers(currentContent) <= 1
+              ) {
+                return;
+              }
+              if (options.quiet !== true) {
+                yield* Console.warn(
+                  `share sync: ${uri}: replacing local shared cache content with the remote version.`,
+                );
+              }
+            }
+            yield* ensureSharedDirectoryChain(config, ov, uri, false, options);
+            const writeMode: 'create' | 'replace' = currentContent !== undefined ? 'replace' : 'create';
+            yield* writeMemoryFileChecked(
+              config,
+              ov,
+              uri,
+              content,
+              writeMode,
+              false,
+              verifySharedMemoryIdentityContinuity(config, uri, content),
+              options,
+            );
+          }),
+        );
       }),
     );
     if (Result.isFailure(applyResult)) {

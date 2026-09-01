@@ -4,7 +4,7 @@ import {SystemInfo} from '../effect/system.js';
 
 import {uriSegment} from '../manifest.js';
 
-import {canonicalMemoryDocumentContent, parseMemoryRelationValue} from '../memory/document.js';
+import {canonicalMemoryDocumentContent, parseMemoryDocument, parseMemoryRelationValue} from '../memory/document.js';
 import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
 import {discardMemoryRelocation} from '../memory/relocation.js';
 import {
@@ -1131,6 +1131,41 @@ function sharedMemoryContentsEquivalent(left: string, right: string): boolean {
   return normalizeSharedMemoryComparisonContent(left) === normalizeSharedMemoryComparisonContent(right);
 }
 
+/** Remote shared edits may add an identity to a legacy record, but never drop or replace an established one. */
+function assertSharedMemoryIdentityContinuity(uri: string, currentContent: string, incomingContent: string): void {
+  const issue = sharedMemoryIdentityContinuityIssue(uri, currentContent, incomingContent);
+  if (issue !== undefined) throw new ShareOperationError(issue);
+}
+
+function sharedMemoryIdentityContinuityIssue(
+  uri: string,
+  currentContent: string,
+  incomingContent: string,
+): string | undefined {
+  const currentMemoryId = parseMemoryDocument(uri, currentContent)?.metadata.memoryId;
+  if (currentMemoryId === undefined) return;
+  const incomingMemoryId = parseMemoryDocument(uri, incomingContent)?.metadata.memoryId;
+  if (incomingMemoryId !== currentMemoryId) {
+    return `Refusing shared update for ${uri}: remote content cannot drop or change stable memory_id ${currentMemoryId}.`;
+  }
+}
+
+/** Re-read the live canonical bytes while ResourceStore holds its mutation lock. */
+export const verifySharedMemoryIdentityContinuity = Effect.fn('share.verifyMemoryIdentityContinuity')(function* (
+  config: ShareRuntime,
+  uri: string,
+  incomingContent: string,
+) {
+  const store = yield* ResourceStore;
+  const currentContent = yield* store.read(resourceStoreLocation(config), uri).pipe(
+    Effect.map(Option.some),
+    Effect.catchTag('ResourceNotFound', () => Effect.succeed(Option.none())),
+  );
+  if (Option.isSome(currentContent)) {
+    assertSharedMemoryIdentityContinuity(uri, currentContent.value, incomingContent);
+  }
+});
+
 function normalizeSharedMemoryComparisonContent(content: string): string {
   return canonicalMemoryDocumentContent(content.replace(/\r\n?/g, '\n'));
 }
@@ -1172,6 +1207,7 @@ export {
   ShareOperationError,
   TEAMS_FILE_VERSION,
   assertSafeShareRelativePath,
+  assertSharedMemoryIdentityContinuity,
   assertShareTeamWritable,
   assertWorktreeUsable,
   autoShareState,
@@ -1200,6 +1236,7 @@ export {
   resourceExistsStrict,
   resourceStoreLocation,
   rm,
+  sharedMemoryIdentityContinuityIssue,
   sharedMemoryContentsEquivalent,
   shouldSetDefault,
   teamGitdirPath,

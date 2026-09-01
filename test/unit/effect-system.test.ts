@@ -27,6 +27,7 @@ import {
   availableDiskBytesFromStatfs,
   fileSystemModeIsPrivate,
   legacyAvailableDiskBytes,
+  makePersistentWindowsAvailableDiskBytes,
   parseCanonicalProcessStartIdentityOutput,
   parsePosixAvailableDiskBytes,
   parseLinuxProcessStartIdentity,
@@ -36,6 +37,8 @@ import {
   processResourceUsageMaxRssBytes,
   probeAvailableDiskBytes,
   probeRuntimeAvailableDiskBytes,
+  windowsDiskCapacityWorkerInvocation,
+  probeWindowsProcessStartIdentity,
   readCanonicalProcessStartIdentity,
   readProcessStartIdentity,
   resolveHomeDirectory,
@@ -46,7 +49,9 @@ import {
   runtimeTextDirectoryNames,
   makeCachedProcessStartIdentityResolver,
   SystemInfo,
+  type WindowsDiskCapacityWorkerProcess,
 } from '../../src/effect/system.js';
+import {serveWindowsDiskCapacityWorker, windowsAvailableDiskBytesFromNative} from '../../src/effect/windows_system.js';
 
 describe('SystemInfo structural path adapter', () => {
   it.each([
@@ -227,6 +232,212 @@ describe('SystemInfo disk capacity parsing', () => {
     expect(parseWindowsAvailableDiskBytes('not-a-size')).toBeUndefined();
   });
 
+  effectIt.effect.prop(
+    'converts native Windows free bytes monotonically and saturates at the safe-integer limit',
+    {
+      higher: FC.bigInt({max: 18_446_744_073_709_551_615n, min: 0n}),
+      lower: FC.bigInt({max: 18_446_744_073_709_551_615n, min: 0n}),
+    },
+    ({higher, lower}) =>
+      Effect.sync(() => {
+        const minimum = windowsAvailableDiskBytesFromNative(higher < lower ? higher : lower);
+        const maximum = windowsAvailableDiskBytesFromNative(higher < lower ? lower : higher);
+        if (minimum === undefined || maximum === undefined) {
+          throw new TestError('Valid native Windows capacities must produce safe integers.');
+        }
+        expect(minimum).toBeLessThanOrEqual(maximum);
+        expect(maximum).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+        expect(Number.isSafeInteger(minimum)).toBe(true);
+        expect(Number.isSafeInteger(maximum)).toBe(true);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  it('rejects malformed native Windows capacity observations', () => {
+    for (const malformed of [-1n, -1, 0, Number.MAX_SAFE_INTEGER, '1', null, undefined]) {
+      expect(windowsAvailableDiskBytesFromNative(malformed)).toBeUndefined();
+    }
+    expect(windowsAvailableDiskBytesFromNative(BigInt(Number.MAX_SAFE_INTEGER) + 1n)).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('re-invokes Windows capacity workers through installed and development entrypoints', () => {
+    expect(windowsDiskCapacityWorkerInvocation('C:\\Threadnote\\threadnote.exe', ['threadnote.exe'])).toEqual({
+      arguments: ['--threadnote-windows-disk-capacity-worker'],
+      executable: 'C:\\Threadnote\\threadnote.exe',
+    });
+    expect(
+      windowsDiskCapacityWorkerInvocation('C:\\Bun\\bun.exe', [
+        'C:\\Bun\\bun.exe',
+        'C:\\repo\\src\\standalone.ts',
+        'graph',
+      ]),
+    ).toEqual({
+      arguments: ['C:\\repo\\src\\standalone.ts', '--threadnote-windows-disk-capacity-worker'],
+      executable: 'C:\\Bun\\bun.exe',
+    });
+  });
+
+  effectIt.effect('serves one fresh native Windows capacity observation per serial request', () =>
+    Effect.gen(function* () {
+      const observedPaths: string[] = [];
+      const responses: string[] = [];
+      yield* serveWindowsDiskCapacityWorker(
+        {
+          input: (async function* () {
+            yield [
+              JSON.stringify({id: '1', path: 'C:\\first', protocol: 1}),
+              JSON.stringify({id: '2', path: 'D:\\second', protocol: 1}),
+              '',
+            ].join('\n');
+          })(),
+          writeLine: line => {
+            responses.push(line);
+            return Promise.resolve();
+          },
+        },
+        path =>
+          Effect.sync(() => {
+            observedPaths.push(path);
+            return observedPaths.length * 4_096;
+          }),
+      );
+
+      expect(observedPaths).toEqual(['C:\\first', 'D:\\second']);
+      expect(responses).toEqual([
+        JSON.stringify({availableBytes: 4_096, id: '1', protocol: 1}),
+        JSON.stringify({availableBytes: 8_192, id: '2', protocol: 1}),
+      ]);
+    }),
+  );
+
+  effectIt.effect('reuses one capacity worker while observing every request and closes it with the layer scope', () =>
+    Effect.gen(function* () {
+      let closedInputs = 0;
+      let requests = 0;
+      let spawns = 0;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const windows = yield* makePersistentWindowsAvailableDiskBytes({
+            spawnWorker: () => {
+              spawns += 1;
+              return scriptedWindowsCapacityWorker(
+                line => {
+                  requests += 1;
+                  return windowsCapacityResponse(line, requests * 4_096);
+                },
+                () => {
+                  closedInputs += 1;
+                },
+              );
+            },
+          });
+
+          expect(yield* windows('C:\\first', {}, 1_000)).toBe(4_096);
+          expect(yield* windows('C:\\second', {}, 1_000)).toBe(8_192);
+          expect(spawns).toBe(1);
+          expect(requests).toBe(2);
+        }),
+      );
+      expect(closedInputs).toBe(1);
+    }),
+  );
+
+  effectIt.effect('falls back after an invalid worker response and restarts on the next capacity boundary', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let killedWorkers = 0;
+      let spawns = 0;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const windows = yield* makePersistentWindowsAvailableDiskBytes({
+            spawnWorker: () => {
+              spawns += 1;
+              return scriptedWindowsCapacityWorker(
+                line => (spawns === 1 ? '{}' : windowsCapacityResponse(line, 32_768)),
+                () => {
+                  killedWorkers += 1;
+                },
+              );
+            },
+          });
+          const adapters = {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 16_384;
+              }),
+            statfs: () => Effect.die(new TestError('Windows ARM64 must not use statfs.')),
+            windows,
+          } satisfies Parameters<typeof probeRuntimeAvailableDiskBytes>[4];
+
+          expect(yield* probeRuntimeAvailableDiskBytes('C:\\first', 'win32', 'arm64', {}, adapters, 1_000)).toBe(
+            16_384,
+          );
+          expect(yield* probeRuntimeAvailableDiskBytes('C:\\second', 'win32', 'arm64', {}, adapters, 1_000)).toBe(
+            32_768,
+          );
+        }),
+      );
+
+      expect(spawns).toBe(2);
+      expect(fallbackInvocations).toBe(1);
+      expect(killedWorkers).toBe(2);
+    }),
+  );
+
+  effectIt.effect('kills a blocked Windows capacity worker and uses the bounded fallback', () =>
+    TestClock.withLive(
+      Effect.gen(function* () {
+        if (process.platform === 'win32') return;
+        yield* Effect.acquireUseRelease(
+          Effect.sync(() => {
+            const root = mkdtempSync(join(tmpdir(), 'threadnote-windows-disk-worker-'));
+            const processIdPath = join(root, 'process.pid');
+            const workerPath = join(root, 'worker.ts');
+            writeFileSync(
+              workerPath,
+              `await Bun.write(${JSON.stringify(processIdPath)}, String(process.pid));\nfor await (const _chunk of process.stdin) await Bun.sleep(30_000);\n`,
+            );
+            return {processIdPath, root, workerPath};
+          }),
+          fixture =>
+            Effect.scoped(
+              Effect.gen(function* () {
+                let fallbackInvocations = 0;
+                const windows = yield* makePersistentWindowsAvailableDiskBytes({
+                  invocation: {arguments: [fixture.workerPath], executable: process.execPath},
+                });
+                const startedAt = yield* Clock.currentTimeMillis;
+                const fiber = yield* probeRuntimeAvailableDiskBytes(
+                  'C:\\blocked-worker-fixture',
+                  'win32',
+                  'arm64',
+                  process.env,
+                  {
+                    fallback: () =>
+                      Effect.sync(() => {
+                        fallbackInvocations += 1;
+                        return 16_384;
+                      }),
+                    statfs: () => Effect.die(new TestError('Windows ARM64 must not use statfs.')),
+                    windows,
+                  },
+                  750,
+                ).pipe(Effect.forkChild({startImmediately: true}));
+                const processId = yield* waitForRecordedProcessId(fixture.processIdPath, 500);
+
+                expect(yield* Fiber.join(fiber)).toBe(16_384);
+                expect(fallbackInvocations).toBe(1);
+                expect((yield* Clock.currentTimeMillis) - startedAt).toBeLessThan(2_000);
+                yield* waitForProcessExit(processId, 2_000);
+              }),
+            ),
+          fixture => Effect.sync(() => rmSync(fixture.root, {force: true, recursive: true})),
+        );
+      }),
+    ),
+  );
+
   effectIt.effect('uses an absolute POSIX disk probe when PATH is unavailable', () =>
     TestClock.withLive(
       Effect.gen(function* () {
@@ -324,6 +535,146 @@ describe('SystemInfo disk capacity parsing', () => {
       expect(available).toBe(8_192);
       expect(fallbackInvocations).toBe(1);
       expect(nativeInvocations).toBe(0);
+    }),
+  );
+
+  effectIt.effect('uses native Windows ARM64 capacity without launching the fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let statfsInvocations = 0;
+      let windowsInvocations = 0;
+      const available = yield* probeRuntimeAvailableDiskBytes(
+        'C:\\threadnote-arm64-capacity-fixture',
+        'win32',
+        'arm64',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 16_384;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              statfsInvocations += 1;
+              return {bavail: 1n, bsize: 1n};
+            }),
+          windows: () =>
+            Effect.sync(() => {
+              windowsInvocations += 1;
+              return 32_768;
+            }),
+        },
+      );
+
+      expect(available).toBe(32_768);
+      expect(fallbackInvocations).toBe(0);
+      expect(statfsInvocations).toBe(0);
+      expect(windowsInvocations).toBe(1);
+    }),
+  );
+
+  effectIt.effect('falls back when the native Windows ARM64 capacity probe is unavailable or fails', () =>
+    Effect.gen(function* () {
+      for (const native of [
+        () => Effect.succeed(undefined),
+        () => Effect.fail(new TestError('Native Windows capacity failed.')),
+      ]) {
+        let fallbackInvocations = 0;
+        let statfsInvocations = 0;
+        const available = yield* probeRuntimeAvailableDiskBytes(
+          'C:\\threadnote-arm64-capacity-fixture',
+          'win32',
+          'arm64',
+          {},
+          {
+            fallback: () =>
+              Effect.sync(() => {
+                fallbackInvocations += 1;
+                return 16_384;
+              }),
+            statfs: () =>
+              Effect.sync(() => {
+                statfsInvocations += 1;
+                return {bavail: 1n, bsize: 1n};
+              }),
+            windows: native,
+          },
+        );
+
+        expect(available).toBe(16_384);
+        expect(fallbackInvocations).toBe(1);
+        expect(statfsInvocations).toBe(0);
+      }
+    }),
+  );
+
+  effectIt.effect('shares one Windows ARM64 deadline between the native query and fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInterruptions = 0;
+      const fiber = yield* probeRuntimeAvailableDiskBytes(
+        'C:\\threadnote-arm64-capacity-deadline',
+        'win32',
+        'arm64',
+        {},
+        {
+          fallback: () =>
+            Effect.sleep(60).pipe(
+              Effect.as(16_384),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  fallbackInterruptions += 1;
+                }),
+              ),
+            ),
+          statfs: () => Effect.die(new TestError('Windows ARM64 must not use statfs.')),
+          windows: () => Effect.sleep(60).pipe(Effect.as(undefined)),
+        },
+        100,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(60);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(40);
+
+      expect(yield* Fiber.join(fiber)).toBeUndefined();
+      expect(fallbackInterruptions).toBe(1);
+    }),
+  );
+
+  effectIt.effect('retains the native statfs route on Windows x64', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let statfsInvocations = 0;
+      let windowsInvocations = 0;
+      const available = yield* probeRuntimeAvailableDiskBytes(
+        'C:\\threadnote-x64-capacity-fixture',
+        'win32',
+        'x64',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 16_384;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              statfsInvocations += 1;
+              return {bavail: 8n, bsize: 4_096n};
+            }),
+          windows: () =>
+            Effect.sync(() => {
+              windowsInvocations += 1;
+              return 65_536;
+            }),
+        },
+      );
+
+      expect(available).toBe(32_768);
+      expect(fallbackInvocations).toBe(0);
+      expect(statfsInvocations).toBe(1);
+      expect(windowsInvocations).toBe(0);
     }),
   );
 
@@ -523,6 +874,46 @@ describe('SystemInfo disk capacity parsing', () => {
     ),
   );
 });
+
+function windowsCapacityResponse(request: string, availableBytes: number): string {
+  const id = /"id":"([1-9][0-9]{0,31})"/u.exec(request)?.[1];
+  if (id === undefined) throw new TestError('Expected a bounded Windows capacity request identity.');
+  return JSON.stringify({availableBytes, id, protocol: 1});
+}
+
+function scriptedWindowsCapacityWorker(
+  respond: (line: string) => string,
+  onClose: () => void,
+): WindowsDiskCapacityWorkerProcess {
+  const output = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = output.writable.getWriter();
+  const encoder = new TextEncoder();
+  let resolveExit = (_code: number) => {};
+  const exited = new Promise<number>(resolve => {
+    resolveExit = resolve;
+  });
+  let closed = false;
+  const finish = () => {
+    if (closed) return;
+    closed = true;
+    onClose();
+    resolveExit(0);
+    void writer.close().catch(() => undefined);
+  };
+  return {
+    closeInput: () => {
+      finish();
+      return Promise.resolve();
+    },
+    exited,
+    kill: finish,
+    stdout: output.readable,
+    write: async line => {
+      if (closed) throw new TestError('Cannot write to a closed scripted Windows capacity worker.');
+      await writer.write(encoder.encode(`${respond(line)}\n`));
+    },
+  };
+}
 
 function waitForRecordedProcessId(path: string, timeoutMilliseconds: number) {
   return Effect.gen(function* () {
@@ -730,6 +1121,84 @@ describe('SystemInfo process identity', () => {
       ).toBe(true);
     },
     {fastCheck: {numRuns: 200}},
+  );
+
+  effectIt.effect.prop(
+    'keeps the native Windows identity fast path and falls back only when it is unavailable',
+    {
+      nativeAvailable: FC.boolean(),
+      processId: FC.integer({max: 2_147_483_647, min: 1}),
+      ticks: FC.bigInt({max: 9_999_999_999_999_999_999n, min: 0n}),
+    },
+    ({nativeAvailable, processId, ticks}) =>
+      Effect.gen(function* () {
+        let fallbackInvocations = 0;
+        let nativeInvocations = 0;
+        const nativeIdentity = `win32:${ticks}`;
+        const fallbackIdentity = `win32:${ticks + 1n}`;
+        const identity = yield* probeWindowsProcessStartIdentity(
+          processId,
+          {},
+          {
+            fallback: candidate =>
+              Effect.sync(() => {
+                expect(candidate).toBe(processId);
+                fallbackInvocations += 1;
+                return fallbackIdentity;
+              }),
+            native: candidate =>
+              Effect.sync(() => {
+                expect(candidate).toBe(processId);
+                nativeInvocations += 1;
+                return nativeAvailable ? nativeIdentity : undefined;
+              }),
+          },
+        );
+
+        expect(identity).toBe(nativeAvailable ? nativeIdentity : fallbackIdentity);
+        expect(nativeInvocations).toBe(1);
+        expect(fallbackInvocations).toBe(nativeAvailable ? 0 : 1);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect('bounds and fails closed when Windows process identity adapters fail or stall', () =>
+    Effect.gen(function* () {
+      const failed = yield* probeWindowsProcessStartIdentity(
+        42,
+        {},
+        {
+          fallback: () => Effect.fail(new TestError('fallback failed')),
+          native: () => Effect.succeed(undefined),
+        },
+        25,
+      );
+      expect(failed).toBeUndefined();
+
+      let fallbackInterrupted = 0;
+      const stalled = yield* probeWindowsProcessStartIdentity(
+        42,
+        {},
+        {
+          fallback: () =>
+            Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  fallbackInterrupted += 1;
+                }),
+              ),
+            ),
+          native: () => Effect.succeed(undefined),
+        },
+        25,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(25);
+
+      expect(yield* Fiber.join(stalled)).toBeUndefined();
+      expect(fallbackInterrupted).toBe(1);
+    }),
   );
 
   effectIt.effect('preserves hostile Darwin legacy observations while canonicalizing the explicit v2 channel', () =>
