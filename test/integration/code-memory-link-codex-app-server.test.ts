@@ -4,6 +4,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS,
   assertOnlyContextBriefProxy,
   assertTraceIsolation,
   runCodeMemoryLinkAppServerTurn,
@@ -64,6 +65,14 @@ describe('Code Memory Link Codex app-server transport', () => {
 
   afterEach(async () => {
     await Promise.all(temporaryRoots.splice(0).map(root => rm(root, {force: true, recursive: true})));
+  });
+
+  it('names the pinned code-mode edit surface without implying a direct apply_patch tool', () => {
+    expect(CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS).toContain('tools.apply_patch through functions.exec');
+    expect(CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS).toContain(
+      'tools.exec_command for read-only shell inspection',
+    );
+    expect(CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS).not.toContain('built-in apply_patch');
   });
 
   it('completes a no-model JSONL canary and preserves authoritative event ordering', async () => {

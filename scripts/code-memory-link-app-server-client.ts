@@ -546,9 +546,10 @@ function totalTokensFromUsageEvent(event: Record<string, unknown>): number {
 }
 
 export const CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS = [
-  'Use only the repository, the local shell, the built-in file-edit tool, and the context_brief MCP tool.',
+  'Use only the repository, the code-mode functions.exec tool, its reviewed local-shell and apply_patch capabilities, and the context_brief MCP tool.',
   'Call context_brief directly; never call list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource.',
-  'When the task requires changing a file, you MUST call the built-in apply_patch file-edit tool and complete the edit before replying; a final message alone does not complete the task.',
+  'Use functions.exec with tools.exec_command for read-only shell inspection and with tools.apply_patch for file edits.',
+  'When the task requires changing a file, you MUST call tools.apply_patch through functions.exec and complete the edit before replying; a final message alone does not complete the task.',
   'Do not use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
   'Shell commands may only read, list, or search files inside the repository. Do not inspect environment variables or processes and do not execute repository code; a sealed outer judge performs verification.',
   'Inspect the code before changing it and keep changes scoped.',
