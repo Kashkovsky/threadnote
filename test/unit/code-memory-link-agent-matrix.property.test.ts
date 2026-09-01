@@ -222,6 +222,7 @@ describe('Code Memory Link sequential matrix', () => {
     const corpus = createCodeMemoryLinkAgentSuiteCorpusV1();
     const assembly = assembleCalibrationPlanV1({
       clients: [`cli_${'1'.repeat(32)}`, `cli_${'2'.repeat(32)}`],
+      sealedSuite: {layoutArtifactId: `art_${'3'.repeat(32)}`, suiteHash: '4'.repeat(64)},
       tasks: corpus.calibrationTasks.map(preparedTask),
     });
     const preparedRoot = await realpath(await mkdtemp(join(tmpdir(), 'threadnote-calibration-prepared-')));
@@ -257,6 +258,7 @@ function calibrationPlan() {
   const corpus = createCodeMemoryLinkAgentSuiteCorpusV1();
   return assembleCalibrationPlanV1({
     clients: [`cli_${'1'.repeat(32)}`, `cli_${'2'.repeat(32)}`],
+    sealedSuite: {layoutArtifactId: `art_${'3'.repeat(32)}`, suiteHash: '4'.repeat(64)},
     tasks: corpus.calibrationTasks.map(preparedTask),
   }).plan;
 }
