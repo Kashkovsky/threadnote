@@ -2,6 +2,7 @@ import type {RecallOptions} from '../types.js';
 import type {RecallConfidence} from './rank.js';
 import {
   EXPLICIT_MEMORY_CONNECTION_CONFIDENCE_BASIS,
+  actionableMemoryConnectionUris,
   explicitMemoryConnectionNavigationConfidence,
 } from './connection_confidence.js';
 import {
@@ -70,15 +71,11 @@ export function renderRecallMemoryConnections(result: RecallMemoryConnectionsRes
 export function explicitMemoryConnectionConfidence(
   result: RecallMemoryConnectionsResult | undefined,
 ): RecallConfidence | undefined {
-  return result?.connections.some(connection => connection.resolution === 'resolved' && connection.neighborUri)
-    ? explicitMemoryConnectionNavigationConfidence()
-    : undefined;
+  return actionableMemoryConnectionUris(result).length > 0 ? explicitMemoryConnectionNavigationConfidence() : undefined;
 }
 
 export function renderSeedOnlyRecallNavigation(result: RecallMemoryConnectionsResult): string {
-  const firstNeighbor = result.connections.find(
-    connection => connection.resolution === 'resolved' && connection.neighborUri !== undefined,
-  )?.neighborUri;
+  const firstNeighbor = actionableMemoryConnectionUris(result)[0];
   const confidence = explicitMemoryConnectionNavigationConfidence();
   return [
     ...(firstNeighbor

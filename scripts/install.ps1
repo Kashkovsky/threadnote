@@ -554,10 +554,16 @@ try {
     throw 'Release artifact validation failed: executable, metadata, or native runtime is missing.'
   }
   $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+  $metadataVersion = $metadata.version
+  $metadataExecutable = $metadata.executable
+  $codeSignature = $metadata.codeSignature
   if (
-    $metadata.version -ne $version -or
-    $metadata.executable -ne 'threadnote.exe' -or
-    $metadata.codeSignature -ne 'unsigned'
+    $metadataVersion -isnot [string] -or
+    $metadataVersion -cne $version -or
+    $metadataExecutable -isnot [string] -or
+    $metadataExecutable -cne 'threadnote.exe' -or
+    $codeSignature -isnot [string] -or
+    $codeSignature -cne 'unsigned'
   ) {
     throw "Release metadata does not match Threadnote $version."
   }

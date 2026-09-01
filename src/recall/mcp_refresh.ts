@@ -21,7 +21,13 @@ interface McpRecallRefreshConfig {
 
 export type McpRecallBackgroundRefreshSchedule = 'coalesced' | 'scheduled';
 
-const activeRefreshes = new Map<string, object>();
+interface ActiveMcpRecallRefresh {
+  config: McpRecallRefreshConfig;
+  manifest: LocalModelManifest;
+  pending: boolean;
+}
+
+const activeRefreshes = new Map<string, ActiveMcpRecallRefresh>();
 const TRUSTED_MUTATION_VECTOR_REFRESH_TIMEOUT_MILLISECONDS = 1_000;
 
 class McpRecallBackgroundRefreshBlocked extends Error {
@@ -30,8 +36,10 @@ class McpRecallBackgroundRefreshBlocked extends Error {
 
 /**
  * Start one process-local derived-index refresh without joining it to the MCP
- * request. The filesystem locks remain the cross-process authority; this map
- * only prevents redundant work from concurrent requests in this process.
+ * request. Concurrent calls retain the latest inputs for one trailing rerun so
+ * a newer generation is not lost behind an obsolete generation fence. The
+ * filesystem locks remain the cross-process authority; this map only prevents
+ * redundant work from concurrent requests in this process.
  */
 export const scheduleMcpRecallBackgroundRefresh = Effect.fn('recall.scheduleMcpBackgroundRefresh')(function* (
   config: McpRecallRefreshConfig,
@@ -44,25 +52,45 @@ export const scheduleMcpRecallBackgroundRefresh = Effect.fn('recall.scheduleMcpB
     .pipe(Effect.catch(() => Effect.succeed(path.resolve(config.agentContextHome))));
   return yield* Effect.uninterruptible(
     Effect.gen(function* () {
-      const token = {};
-      const admitted = yield* Effect.sync(() => {
-        if (activeRefreshes.has(canonicalHome)) return false;
-        activeRefreshes.set(canonicalHome, token);
-        return true;
+      const candidate: ActiveMcpRecallRefresh = {config, manifest, pending: false};
+      const active = yield* Effect.sync(() => {
+        const existing = activeRefreshes.get(canonicalHome);
+        if (existing !== undefined) {
+          existing.config = config;
+          existing.manifest = manifest;
+          existing.pending = true;
+          return existing;
+        }
+        activeRefreshes.set(canonicalHome, candidate);
+        return candidate;
       });
-      if (!admitted) return 'coalesced' as const;
+      if (active !== candidate) return 'coalesced' as const;
 
       const clear = Effect.sync(() => {
-        if (activeRefreshes.get(canonicalHome) === token) activeRefreshes.delete(canonicalHome);
+        if (activeRefreshes.get(canonicalHome) === active) activeRefreshes.delete(canonicalHome);
       });
-      const refresh = refreshMcpRecallDerivedIndexes(config, manifest).pipe(
-        Effect.catchCause(() =>
-          Effect.logWarning(
-            'Threadnote background recall-index refresh failed; deterministic lexical recall remains available. Run threadnote doctor --dry-run.',
-          ),
-        ),
-        Effect.ensuring(clear),
-      );
+      const refresh = Effect.gen(function* () {
+        for (;;) {
+          const latest = yield* Effect.sync(() => {
+            active.pending = false;
+            return {config: active.config, manifest: active.manifest};
+          });
+          yield* refreshMcpRecallDerivedIndexes(latest.config, latest.manifest).pipe(
+            Effect.catchCause(() =>
+              Effect.logWarning(
+                'Threadnote background recall-index refresh failed; deterministic lexical recall remains available. Run threadnote doctor --dry-run.',
+              ),
+            ),
+          );
+          const rerun = yield* Effect.sync(() => {
+            if (activeRefreshes.get(canonicalHome) !== active) return false;
+            if (active.pending) return true;
+            activeRefreshes.delete(canonicalHome);
+            return false;
+          });
+          if (!rerun) return;
+        }
+      }).pipe(Effect.ensuring(clear));
       yield* Effect.forkDetach(refresh);
       return 'scheduled' as const;
     }),

@@ -13,7 +13,10 @@ import {LocalModelCatalog} from '../../src/models/catalog.js';
 import {selectLocalModel} from '../../src/models/selection.js';
 import {LocalModelStore, type LocalModelStoreShape} from '../../src/models/store.js';
 import {expireRecallIndexValidation, loadRecallIndexData, recallIndexStatus} from '../../src/recall/index.js';
-import {refreshRecallDerivedIndexesFromSelection} from '../../src/recall/mcp_refresh.js';
+import {
+  refreshRecallDerivedIndexesFromSelection,
+  scheduleMcpRecallBackgroundRefresh,
+} from '../../src/recall/mcp_refresh.js';
 import {loadMcpRecallSemanticScoresResult} from '../../src/recall/runtime.js';
 import {
   ensureVectorIndex,
@@ -144,6 +147,64 @@ describe('MCP recall background vector refresh', () => {
           Effect.provideService(LocalModelRuntime, runtime),
           Effect.provideService(LocalModelStore, installedModelStore(home)),
           Effect.ensuring(Deferred.succeed(releaseBackground, undefined)),
+        );
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('reruns the latest generation when a mutation coalesces into an active refresh', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-mcp-recall-generation-rerun-'});
+        const config = {account: 'local', agentContextHome: home, user: 'tester'};
+        const resource = path.join(home, 'data', 'local', 'resources', 'repos', 'threadnote', 'rerun.md');
+        const uri = 'threadnote://resources/repos/threadnote/rerun.md';
+        yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
+        yield* fs.writeFileString(resource, '# Rerun\n\nGeneration zero.\n');
+
+        const calls = yield* Ref.make(0);
+        const firstRefreshStarted = yield* Deferred.make<void>();
+        const releaseFirstRefresh = yield* Deferred.make<void>();
+        const runtime = fakeRuntime((inputs, dimensions) =>
+          Ref.updateAndGet(calls, count => count + 1).pipe(
+            Effect.flatMap(call =>
+              call === 2
+                ? Deferred.succeed(firstRefreshStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseFirstRefresh)),
+                  )
+                : Effect.void,
+            ),
+            Effect.as(inputs.map(() => unitVector(dimensions))),
+          ),
+        );
+
+        yield* Effect.gen(function* () {
+          const initial = yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: false});
+          yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
+
+          yield* fs.writeFileString(resource, '# Rerun\n\nGeneration one.\n');
+          yield* expireRecallIndexValidation(home, false, [uri]);
+          expect(yield* scheduleMcpRecallBackgroundRefresh(config, manifest)).toBe('scheduled');
+          yield* Deferred.await(firstRefreshStarted);
+          const firstGeneration = (yield* recallIndexStatus(config)).generation;
+          expect(firstGeneration).toBeDefined();
+          expect(firstGeneration).not.toBe(initial.generation);
+
+          yield* fs.writeFileString(resource, '# Rerun\n\nGeneration two.\n');
+          yield* expireRecallIndexValidation(home, false, [uri]);
+          expect(yield* scheduleMcpRecallBackgroundRefresh(config, manifest)).toBe('coalesced');
+
+          yield* Deferred.succeed(releaseFirstRefresh, undefined);
+          const latestGeneration = yield* awaitRefreshedRecallReadiness(config, firstGeneration);
+          expect(latestGeneration).not.toBe(firstGeneration);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, latestGeneration)).toBe('current');
+          expect(yield* Ref.get(calls)).toBe(3);
+        }).pipe(
+          Effect.provideService(LocalModelRuntime, runtime),
+          Effect.provideService(LocalModelStore, installedModelStore(home)),
+          Effect.ensuring(Deferred.succeed(releaseFirstRefresh, undefined)),
         );
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),

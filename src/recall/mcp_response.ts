@@ -8,6 +8,7 @@ import type {RecallConfidence} from './rank.js';
 import type {RecallHit} from '../utils.js';
 import {
   EXPLICIT_MEMORY_CONNECTION_CONFIDENCE_BASIS,
+  actionableMemoryConnectionUris,
   explicitMemoryConnectionNavigationConfidence,
 } from './connection_confidence.js';
 import type {
@@ -247,23 +248,7 @@ function resolvedConnectionResultUris(
   results: readonly RecallMcpResult[],
 ): readonly string[] {
   if (memoryConnections === undefined || results.length === 0) return [];
-  const resultUris = new Set(results.map(result => result.uri));
-  const actionablePremiseOrdinals = new Set(
-    memoryConnections.premises.flatMap(premise =>
-      premise.state === 'current' || premise.state === 'historical' ? [premise.requestedOrdinal] : [],
-    ),
-  );
-  return uniqueStrings(
-    memoryConnections.connections.flatMap(connection =>
-      connection.resolution === 'resolved' &&
-      (connection.currentness === 'current' || connection.currentness === 'historical') &&
-      actionablePremiseOrdinals.has(connection.requestedOrdinal) &&
-      connection.neighborUri !== undefined &&
-      resultUris.has(connection.neighborUri)
-        ? [connection.neighborUri]
-        : [],
-    ),
-  );
+  return actionableMemoryConnectionUris(memoryConnections, new Set(results.map(result => result.uri)));
 }
 
 function renderConfidence(

@@ -8,6 +8,8 @@ import {afterEach, describe, expect, it, vi} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {captureConsole} from '../../src/effect/console.js';
 import {hasAgentSkillCatalogIntent, runRecall, stripAdvancedSearchFlags} from '../../src/memory/index.js';
+import {projectRecallCliResponse} from '../../src/recall/cli_response.js';
+import type {RecallMemoryConnectionsResult} from '../../src/recall/memory_connections.js';
 import type {RecallOptions, RuntimeConfig} from '../../src/types.js';
 import * as utils from '../../src/utils.js';
 vi.mock('../../src/utils.js', async importOriginal => {
@@ -42,6 +44,51 @@ describe('recall skill catalog intent inference', () => {
   });
 });
 describe('runRecall native index', () => {
+  it('does not claim verified navigation when a resolved neighbor belongs to an unresolved premise', () => {
+    const memoryConnections: RecallMemoryConnectionsResult = {
+      candidates: [],
+      connections: [
+        {
+          currentness: 'current',
+          direction: 'outgoing',
+          distance: 1,
+          neighborMemoryId: 'tn_neighbor',
+          neighborUri: 'threadnote://memory/tn_neighbor',
+          origin: 'relation',
+          relationOrdinal: 0,
+          relationType: 'references',
+          requestedOrdinal: 0,
+          resolution: 'resolved',
+          sourceMemoryId: 'tn_unresolved_seed',
+        },
+      ],
+      coverage: {connectionCount: 1, premiseCount: 1, resultCount: 1, truncated: true, version: 1},
+      diagnostics: {
+        canonicalMismatches: 0,
+        canonicalRereads: 1,
+        currentnessTruncatedMemoryIds: ['tn_unresolved_seed'],
+        rawLinkRows: 1,
+        refreshRepairs: 0,
+        truncatedSeedOrdinals: [0],
+      },
+      premises: [
+        {
+          memoryId: 'tn_unresolved_seed',
+          requestedOrdinal: 0,
+          requestedRef: 'threadnote://memory/tn_unresolved_seed',
+          state: 'unresolved',
+        },
+      ],
+    };
+
+    const projected = projectRecallCliResponse({memoryConnections}, true);
+
+    expect(projected.confidence).toBeUndefined();
+    expect(projected.sections.join('\n')).toContain('threadnote://memory/tn_neighbor');
+    expect(projected.sections.join('\n')).not.toContain('explicit-memory-connection');
+    expect(projected.sections.join('\n')).not.toContain('Next: threadnote read');
+  });
+
   effectIt.effect('uses the native recall index without a repair subprocess', () =>
     Effect.gen(function* () {
       const {output} = yield* captureRecall(runtime, {
