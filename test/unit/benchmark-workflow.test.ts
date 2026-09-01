@@ -234,7 +234,7 @@ describe('platform benchmark workflow', () => {
     expect(job.steps?.indexOf(candidateMeasurement!)).toBeLessThan(job.steps?.indexOf(controlMeasurement!) ?? 0);
     expect(job.steps?.indexOf(controlMeasurement!)).toBeLessThan(job.steps?.indexOf(pairedCandidateMeasurement!) ?? 0);
     const pairedGate = job.steps?.find(
-      step => step.name === 'Enforce same-runner paired fallback without changing reviewed limits',
+      step => step.name === 'Enforce same-runner confirmatory fallback with bounded wall tail',
     );
     expect(pairedGate?.if).toBe("steps.static-ratchet.outcome == 'failure'");
     expect(pairedGate?.run).toContain('--artifact artifacts/code-graph-production-ratchet-paired-candidate-Linux-');

@@ -1,0 +1,166 @@
+{
+  "artifact": {
+    "archiveSha256": "505953c0274a1c9a57a9f7aef936b15f8fcd01f7459e10aeac95d839e9fcf41a",
+    "id": 9782092044,
+    "jobId": 99698573470,
+    "name": "code-graph-production-ratchet-Linux-X64",
+    "runId": 33456846932
+  },
+  "candidate": {
+    "headCommit": "c8cc6a2264daee7ad2bba1d7fa93886a3e62f025",
+    "measuredMergeCommit": "1f3243ff0f9f1d1272b66bd4a8405b202befe13f",
+    "protectedBaseCommit": "9126348fdce549b54036223f667efb24c4cfc123"
+  },
+  "historicalHostedObservations": [
+    {
+      "archiveSha256": "9aa54190eb3435813348acf2a69707083be26d6b20c3f76bbaa8008d960cec91",
+      "artifactId": 9780940610,
+      "hotExactLexicalQueryP95Milliseconds": 303.188482,
+      "runId": 33454034332
+    },
+    {
+      "archiveSha256": "069da68a9f76437c26b2262dc4216a564472630bb6bd223d242030bc253ae3fe",
+      "artifactId": 9779961599,
+      "hotExactLexicalQueryP95Milliseconds": 377.702836,
+      "runId": 33451194499
+    },
+    {
+      "archiveSha256": "3ed43ae4ea34455ee80ad488f6d40a95e8559c98fb626382bfe06e2c05e6f3a4",
+      "artifactId": 9779732668,
+      "hotExactLexicalQueryP95Milliseconds": 307.952576,
+      "runId": 33450566772
+    },
+    {
+      "archiveSha256": "b98fe1a8a398bcef71e80ca1bb1a0d52cdfa781493f40d92134e249ecfdd7a32",
+      "artifactId": 9778165413,
+      "hotExactLexicalQueryP95Milliseconds": 369.207798,
+      "runId": 33445933530
+    },
+    {
+      "archiveSha256": "8d9e73c216a33361d674bd63216a89ebaf568e80a1dc92d7fe1e6f93b11ee1b3",
+      "artifactId": 9774975543,
+      "hotExactLexicalQueryP95Milliseconds": 388.439153,
+      "runId": 33437057294
+    },
+    {
+      "archiveSha256": "d38f42899264e6af76aa499791a1dd514bb95f1dc9c87891d7293db35efe10e4",
+      "artifactId": 9769692300,
+      "hotExactLexicalQueryP95Milliseconds": 246.869959,
+      "runId": 33422581467
+    },
+    {
+      "archiveSha256": "eb5f58698c4a6fb0fa41c12bc02302b019594e85ad16451739b7aabdd5e4bf6a",
+      "artifactId": 9764150386,
+      "hotExactLexicalQueryP95Milliseconds": 276.977111,
+      "runId": 33407955499
+    },
+    {
+      "archiveSha256": "78cf7b55aefb748225816f2602d270db7cf4d2606aeb6fec6164adf67bfbdd83",
+      "artifactId": 9763553136,
+      "hotExactLexicalQueryP95Milliseconds": 386.538674,
+      "runId": 33406352085
+    },
+    {
+      "archiveSha256": "efd5116e085df63c512ee48b7653c185c0dcaec6ca51d18f6e9e96eecb12426d",
+      "artifactId": 9762801916,
+      "hotExactLexicalQueryP95Milliseconds": 337.658369,
+      "runId": 33404506169
+    },
+    {
+      "archiveSha256": "463ed5b4e5f9d107ecbb99c48696867b759fef6079c360824b3898cb24b46c61",
+      "artifactId": 9759148377,
+      "hotExactLexicalQueryP95Milliseconds": 339.205149,
+      "runId": 33394875944
+    },
+    {
+      "archiveSha256": "83cfd4283deabd2b29010716ae4841eaf1ad1e5e83a116dd28cba15a170092dd",
+      "artifactId": 9758062936,
+      "hotExactLexicalQueryP95Milliseconds": 328.397604,
+      "runId": 33392126604
+    },
+    {
+      "archiveSha256": "b258c476acd44c4a797c683117f52e089294ecab52f73d52733f89491d19668e",
+      "artifactId": 9749285614,
+      "hotExactLexicalQueryP95Milliseconds": 295.60279,
+      "runId": 33368533124
+    },
+    {
+      "archiveSha256": "c6b93b14acade9db5b32d32a50d212fe5ce800a30bf85f997cb988a1154e1656",
+      "artifactId": 9748430547,
+      "hotExactLexicalQueryP95Milliseconds": 375.300549,
+      "runId": 33366013133
+    },
+    {
+      "archiveSha256": "c714574694155257bc8927b482f273f4605ac3752ab782634e90bb389a9bd176",
+      "artifactId": 9746168837,
+      "hotExactLexicalQueryP95Milliseconds": 409.69492,
+      "runId": 33359000744
+    }
+  ],
+  "historicalHostedSummary": {
+    "count": 14,
+    "maximumMilliseconds": 409.69492,
+    "minimumMilliseconds": 246.869959,
+    "upperMiddleMilliseconds": 339.205149
+  },
+  "observations": [
+    {
+      "createdAt": "2026-09-01T01:03:45.273Z",
+      "hotExactLexicalQueryP95Milliseconds": 295.779441,
+      "hotQueryProcessCpuP95Milliseconds": 257.511,
+      "mcpImpactP95Milliseconds": 652.779737,
+      "oneFileReindexMaterializationP95Milliseconds": 363.873798,
+      "payloadSha256": "b8ba81814d66cbb0bf8096f2bbdf2d7f428c9f70dc4c152886447e42917d1aaf",
+      "role": "screening-candidate"
+    },
+    {
+      "createdAt": "2026-09-01T01:08:55.752Z",
+      "hotExactLexicalQueryP95Milliseconds": 319.953012,
+      "hotQueryProcessCpuP95Milliseconds": 281.794,
+      "mcpImpactP95Milliseconds": 101.908737,
+      "oneFileReindexMaterializationP95Milliseconds": 148.501141,
+      "payloadSha256": "86b5a3192b4c3fd3148516859dd6900ed2cbd996829d150ffa05b302baaff4fe",
+      "role": "protected-base-control"
+    },
+    {
+      "createdAt": "2026-09-01T01:13:41.872Z",
+      "hotExactLexicalQueryP95Milliseconds": 492.101135,
+      "hotQueryProcessCpuP95Milliseconds": 285.777,
+      "mcpImpactP95Milliseconds": 110.119426,
+      "oneFileReindexMaterializationP95Milliseconds": 160.770285,
+      "payloadSha256": "ed542099cb43f1d22f9c686d06aff04483b652baeaa43bfb529ea19c5e588b78",
+      "role": "confirmatory-candidate"
+    }
+  ],
+  "policy": {
+    "absoluteToleranceMillisecondsMaximum": 5,
+    "confirmatoryObservedExcessMilliseconds": 3.101135,
+    "confirmatoryObservedExcessRatio": 0.00634178936605317,
+    "confirmatoryTailAllowancesMaximum": 1,
+    "hardObjectivesEligible": false,
+    "relativeToleranceRatioMaximum": 0.01,
+    "staticHotExactLexicalQueryP95MillisecondsMaximum": 489,
+    "staticHotQueryProcessCpuP95MillisecondsMaximum": 455,
+    "staticMcpImpactP95MillisecondsMaximum": 295,
+    "staticOneFileReindexMaterializationP95MillisecondsMaximum": 301
+  },
+  "priorDiscriminatingFailure": {
+    "archiveSha256": "6881e18a61abc7086b646492ae53875d5c3b88bf20a26d73bf94730fea268581",
+    "artifactId": 9768967029,
+    "confirmatoryExcessMilliseconds": 17.564589,
+    "confirmatoryExcessRatio": 0.03591940490797549,
+    "confirmatoryHotExactLexicalQueryP95Milliseconds": 506.564589,
+    "controlHotExactLexicalQueryP95Milliseconds": 256.748,
+    "jobId": 99578386487,
+    "runId": 33419565336,
+    "screeningHotExactLexicalQueryP95Milliseconds": 334.926
+  },
+  "runner": {
+    "architecture": "x64",
+    "class": "github-hosted-linux-x64",
+    "identity": "runner-f89cf25cbfb64cb9",
+    "sameRunnerComparisonKey": "github-hosted-linux-x64|Linux 6.17.0-1022-azure|x64|INTEL(R) XEON(R) PLATINUM 8573C|16765378560"
+  },
+  "type": "code-graph-production-ratchet-paired-wall-calibration",
+  "version": 1
+}

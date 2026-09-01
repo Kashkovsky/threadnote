@@ -37,5 +37,6 @@ The failed artifact also exposed missing provenance on the 10k matrix: it record
 The replacement workflow supplies the GitHub-hosted runner label and runner name; the existing privacy-safe normalizer
 maps them to `github-hosted-windows-x64` and a hashed runner identity. The override additionally requires the artifact's
 runtime platform to be `win32` and its architecture to be `x64`, so a mislabeled non-Windows artifact retains the
-1-second ceiling. A replacement candidate must pass prospectively with this identity and 25 real samples. A future
-breach stops the release rather than automatically recalibrating.
+1-second ceiling. The first 25-sample prospective run exposed insufficient p95 order-statistic resolution; its retained
+evidence and the unchanged-threshold 100-sample successor policy are documented in
+`windows-scale-10k-hosted-quantile-calibration-v1.md`.

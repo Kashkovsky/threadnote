@@ -358,7 +358,7 @@ jobs:
         run: >-
           bun run bench:code-graph --
           --scale-symbols 10000
-          --samples 25
+          --samples 100
           --warmups 2
           --fail-on-budget
           --output artifacts/code-graph-10k-${{ runner.os }}-${{ runner.arch }}.json

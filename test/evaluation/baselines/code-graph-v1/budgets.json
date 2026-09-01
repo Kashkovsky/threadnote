@@ -20,6 +20,7 @@
     "hotQueryP50MillisecondsMaximum": 125,
     "hotQueryP95MillisecondsMaximum": 250,
     "hotQueryProcessCpuP95MillisecondsMaximum": 250,
+    "hotQuerySamplesMinimum": 25,
     "hotQueryWallP95ToleranceRatioMaximum": 0.05,
     "oneFileIncrementalP95MillisecondsMaximum": 5000,
     "oneFileMaterializationP95MillisecondsMaximum": 4000,
@@ -97,6 +98,7 @@
         "hotQueryP50MillisecondsMaximum": 750,
         "hotQueryP95MillisecondsMaximum": 1200,
         "hotQueryProcessCpuP95MillisecondsMaximum": 500,
+        "hotQuerySamplesMinimum": 100,
         "hotQueryWallP95ToleranceRatioMaximum": 0
       }
     }
@@ -107,7 +109,7 @@
     "The development hot-query wall p95 admits at most 5% scheduler-tail hysteresis only while its independent hard p50 and process-CPU ceilings both remain green; raw observations remain unchanged in the retained artifact.",
     "Hosted Windows uses explicit development-only scheduler and storage headroom for the native cold single-observation fuses, hot query, one-file indexing, and structural analysis; Linux and macOS retain the tighter reviewed fixture ceilings.",
     "The Windows 15-second cold-index and 8-second cold-materialization values are hard single-observation fuses, not p95 claims. They are 10%-headroom, whole-second-rounded envelopes over the first exact-candidate hosted storage tail; a prospective breach stops the release instead of automatically recalibrating.",
-    "The GitHub-hosted Windows x64 10k lexical lane uses a 1.2-second hard wall-p95 fuse over 25 samples, paired with unchanged 750-millisecond p50 and 500-millisecond process-CPU p95 guards and zero additional tolerance. The wall fuse is 10% headroom over the first exact-candidate hosted scheduler tail, rounded to 100 milliseconds; local and non-Windows scale evidence retain the 1-second ceiling.",
+    "The GitHub-hosted Windows x64 10k lexical lane uses a 1.2-second hard wall-p95 fuse over 100 samples, paired with unchanged 750-millisecond p50 and 500-millisecond process-CPU p95 guards and zero additional tolerance. The wall fuse remains 10% headroom over the first exact-candidate hosted scheduler tail, rounded to 100 milliseconds. Threadnote's empirical percentile convention selects rank 96 at 100 samples instead of the second-highest observation at 25; four upper observations are excluded and a fifth wall breach fails while the independent median and CPU guards still reject sustained or computational regressions. Local and non-Windows scale evidence retain the 1-second ceiling.",
     "The Windows overrides keep every quality, safety, RSS, disk, incremental, query, and analysis guard active instead of weakening vector or scale evidence.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",
     "The 100k real-model vector lane uses the explicit hosted macOS ARM64 runner class; the 10k Linux lane retains independent cross-platform model coverage.",
