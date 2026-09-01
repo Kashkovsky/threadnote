@@ -12,7 +12,15 @@ import type {
   ContextBriefV1,
   ProjectedContextBriefV1,
 } from '../context_brief/types.js';
-import type {ManagerContextReadResponse, ManagerRecallResponse, ManagerRecallResult} from './context.js';
+import type {
+  ManagerContextConnectionsResponse,
+  ManagerContextReadResponse,
+  ManagerRecallResponse,
+  ManagerRecallResult,
+} from './context.js';
+import type {ManagerMemoryRelationsResponse} from './memory_relations.js';
+import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
+import {MEMORY_RELATION_TYPES, type MemoryRelation} from '../memory/document.js';
 import {MANAGER_CONTEXT_RECALL_PAGE_SIZE_DEFAULT, projectManagerRecallPage} from './context_paging.js';
 import {api, errorMessage} from './ui_support.js';
 import type {ManagerWorksetPrepareJob} from './worksets.js';
@@ -69,10 +77,19 @@ export function ContextPanel(): React.ReactElement {
   const [readResult, setReadResult] = useState<ManagerContextReadResponse>();
   const [readBusy, setReadBusy] = useState(false);
   const [readError, setReadError] = useState('');
+  const [readerView, setReaderView] = useState<'connections' | 'content'>('content');
+  const [connections, setConnections] = useState<ManagerContextConnectionsResponse>();
+  const [connectionsBusy, setConnectionsBusy] = useState(false);
+  const [connectionsError, setConnectionsError] = useState('');
+  const [relationsBusy, setRelationsBusy] = useState(false);
+  const [relationsError, setRelationsError] = useState('');
   const briefRequest = useRef<AbortController>(undefined);
   const graphRecoveryRequest = useRef<AbortController>(undefined);
   const recallRequest = useRef<AbortController>(undefined);
   const readRequest = useRef<AbortController>(undefined);
+  const connectionsRequest = useRef<AbortController>(undefined);
+  const relationsRequest = useRef<AbortController>(undefined);
+  const readerNavigationRevision = useRef(0);
   const codeRefs = useMemo(() => parseCodeRefs(codeRefsText), [codeRefsText]);
   const tooManyCodeRefs = codeRefs.length > CONTEXT_BRIEF_MAXIMUM_CODE_REFS;
   const codeRefsError = useMemo(() => {
@@ -94,6 +111,8 @@ export function ContextPanel(): React.ReactElement {
       graphRecoveryRequest.current?.abort();
       recallRequest.current?.abort();
       readRequest.current?.abort();
+      connectionsRequest.current?.abort();
+      relationsRequest.current?.abort();
     },
     [],
   );
@@ -248,13 +267,24 @@ export function ContextPanel(): React.ReactElement {
     }
   }
 
-  async function readContext(uri: string, page = 0): Promise<void> {
+  async function readContext(uri: string, page = 0, trackNavigation = true): Promise<void> {
+    if (trackNavigation) readerNavigationRevision.current += 1;
     readRequest.current?.abort();
     const controller = new AbortController();
     readRequest.current = controller;
     setReadBusy(true);
     setReadError('');
-    if (page === 0 && readResult?.canonicalUri !== uri) setReadResult(undefined);
+    if (page === 0 && readResult?.canonicalUri !== uri) {
+      connectionsRequest.current?.abort();
+      relationsRequest.current?.abort();
+      setReaderView('content');
+      setConnections(undefined);
+      setConnectionsBusy(false);
+      setConnectionsError('');
+      setRelationsBusy(false);
+      setRelationsError('');
+      setReadResult(undefined);
+    }
     try {
       const result = await api<ManagerContextReadResponse>(
         '/api/context/read',
@@ -267,6 +297,74 @@ export function ContextPanel(): React.ReactElement {
     } finally {
       if (!controller.signal.aborted) setReadBusy(false);
     }
+  }
+
+  async function readConnections(uri: string): Promise<void> {
+    connectionsRequest.current?.abort();
+    const controller = new AbortController();
+    connectionsRequest.current = controller;
+    setConnectionsBusy(true);
+    setConnectionsError('');
+    try {
+      const result = await api<ManagerContextConnectionsResponse>(
+        '/api/context/connections',
+        {includeHistorical: includeArchived, uri},
+        {signal: controller.signal},
+      );
+      if (!controller.signal.aborted) setConnections(result);
+    } catch (cause) {
+      if (!controller.signal.aborted) setConnectionsError(errorMessage(cause));
+    } finally {
+      if (!controller.signal.aborted) setConnectionsBusy(false);
+    }
+  }
+
+  async function saveRelations(relations: readonly MemoryRelation[]): Promise<void> {
+    const editor = connections?.editor;
+    if (!editor) return;
+    const navigationRevision = readerNavigationRevision.current;
+    relationsRequest.current?.abort();
+    const controller = new AbortController();
+    relationsRequest.current = controller;
+    setRelationsBusy(true);
+    setRelationsError('');
+    try {
+      const updated = await api<ManagerMemoryRelationsResponse>(
+        '/api/memory/relations',
+        {expectedContent: editor.expectedContent, relations, uri: editor.uri},
+        {signal: controller.signal},
+      );
+      if (controller.signal.aborted || readerNavigationRevision.current !== navigationRevision) return;
+      setConnections(current =>
+        current?.editor
+          ? {
+              ...current,
+              editor: {
+                expectedContent: updated.content,
+                relations: updated.relations,
+                uri: updated.uri,
+              },
+            }
+          : current,
+      );
+      await readContext(updated.uri, 0, false);
+      if (controller.signal.aborted || readerNavigationRevision.current !== navigationRevision) return;
+      await readConnections(updated.uri);
+    } catch (cause) {
+      if (!controller.signal.aborted) setRelationsError(errorMessage(cause));
+    } finally {
+      if (!controller.signal.aborted) setRelationsBusy(false);
+    }
+  }
+
+  function inspectConnectionCitation(citation: MemoryCodeCitationV1): void {
+    const codeRef = citation.target.kind === 'symbol' ? citation.target.nodeId : citation.path;
+    setView('brief');
+    void runBrief({
+      codeRefs: [codeRef],
+      mode: 'explain',
+      task: `Explain the code evidence connected to ${citation.path}.`,
+    });
   }
 
   function setScope(next: ContextScopeKind): void {
@@ -527,12 +625,38 @@ export function ContextPanel(): React.ReactElement {
           error={readError}
           onClose={() => {
             readRequest.current?.abort();
+            connectionsRequest.current?.abort();
+            relationsRequest.current?.abort();
             setReadBusy(false);
+            setConnectionsBusy(false);
+            setRelationsBusy(false);
             setReadResult(undefined);
+            setConnections(undefined);
             setReadError('');
+            setConnectionsError('');
+            setRelationsError('');
+            setReaderView('content');
           }}
+          connections={connections}
+          connectionsBusy={connectionsBusy}
+          connectionsError={connectionsError}
+          onInspectCode={inspectConnectionCitation}
+          onLoadConnections={uri => void readConnections(uri)}
+          onOpen={uri => void readContext(uri)}
           onPage={(uri, page) => void readContext(uri, page)}
+          onSaveRelations={relations => void saveRelations(relations)}
+          onView={nextView => {
+            if (nextView === 'content') {
+              connectionsRequest.current?.abort();
+              setConnectionsBusy(false);
+              setConnectionsError('');
+            }
+            setReaderView(nextView);
+          }}
+          relationsBusy={relationsBusy}
+          relationsError={relationsError}
           result={readResult}
+          view={readerView}
         />
       ) : null}
     </div>
@@ -839,10 +963,21 @@ function RecallResultCard(props: {
 
 function ContextReader(props: {
   readonly busy: boolean;
+  readonly connections?: ManagerContextConnectionsResponse;
+  readonly connectionsBusy: boolean;
+  readonly connectionsError: string;
   readonly error: string;
   readonly onClose: () => void;
+  readonly onInspectCode: (citation: MemoryCodeCitationV1) => void;
+  readonly onLoadConnections: (uri: string) => void;
+  readonly onOpen: (uri: string) => void;
   readonly onPage: (uri: string, page: number) => void;
+  readonly onSaveRelations: (relations: readonly MemoryRelation[]) => void;
+  readonly onView: (view: 'connections' | 'content') => void;
+  readonly relationsBusy: boolean;
+  readonly relationsError: string;
   readonly result?: ManagerContextReadResponse;
+  readonly view: 'connections' | 'content';
 }): React.ReactElement {
   const result = props.result;
   return (
@@ -868,10 +1003,49 @@ function ContextReader(props: {
           {result.metadata.trust ? <span>{result.metadata.trust}</span> : null}
         </div>
       ) : null}
+      {result?.metadata ? (
+        <div aria-label="Context reader view" className="segmented-control context-reader-tabs" role="tablist">
+          <button
+            aria-selected={props.view === 'content'}
+            className={props.view === 'content' ? 'is-active' : undefined}
+            onClick={() => props.onView('content')}
+            role="tab"
+            type="button"
+          >
+            Content
+          </button>
+          <button
+            aria-selected={props.view === 'connections'}
+            className={props.view === 'connections' ? 'is-active' : undefined}
+            onClick={() => {
+              props.onView('connections');
+              if (!props.connections || props.connections.requestedUri !== result.requestedUri) {
+                props.onLoadConnections(result.requestedUri);
+              }
+            }}
+            role="tab"
+            type="button"
+          >
+            Connections
+          </button>
+        </div>
+      ) : null}
       {props.busy ? <ContextStatus loading loadingText="Reading canonical context…" error="" /> : null}
       {props.error ? <ContextStatus error={props.error} loading={false} loadingText="" /> : null}
-      {result ? <pre>{result.content}</pre> : null}
-      {result && result.page.total > 1 ? (
+      {props.view === 'content' && result ? <pre>{result.content}</pre> : null}
+      {props.view === 'connections' ? (
+        <ContextConnections
+          busy={props.connectionsBusy}
+          error={props.connectionsError}
+          onInspectCode={props.onInspectCode}
+          onOpen={props.onOpen}
+          onSaveRelations={props.onSaveRelations}
+          relationsBusy={props.relationsBusy}
+          relationsError={props.relationsError}
+          result={props.connections}
+        />
+      ) : null}
+      {props.view === 'content' && result && result.page.total > 1 ? (
         <footer>
           <button
             disabled={result.page.previous === undefined || props.busy}
@@ -893,6 +1067,182 @@ function ContextReader(props: {
         </footer>
       ) : null}
     </aside>
+  );
+}
+
+function ContextConnections(props: {
+  readonly busy: boolean;
+  readonly error: string;
+  readonly onInspectCode: (citation: MemoryCodeCitationV1) => void;
+  readonly onOpen: (uri: string) => void;
+  readonly onSaveRelations: (relations: readonly MemoryRelation[]) => void;
+  readonly relationsBusy: boolean;
+  readonly relationsError: string;
+  readonly result?: ManagerContextConnectionsResponse;
+}): React.ReactElement {
+  if (props.busy) return <ContextStatus error="" loading loadingText="Verifying direct memory connections…" />;
+  if (props.error) return <ContextStatus error={props.error} loading={false} loadingText="" />;
+  if (!props.result)
+    return <ContextEmpty title="Connections not loaded" text="Open this tab to verify direct links." />;
+  const result = props.result;
+  const nodes = new Map(result.nodes.map(node => [node.memoryId, node]));
+  const groups = [
+    {
+      connections: result.connections.filter(connection => connection.resolution === 'unresolved'),
+      title: 'Unresolved authored links',
+    },
+    {
+      connections: result.connections.filter(
+        connection => connection.direction === 'incoming' && connection.resolution !== 'unresolved',
+      ),
+      title: 'Incoming',
+    },
+    {
+      connections: result.connections.filter(
+        connection => connection.direction === 'outgoing' && connection.resolution !== 'unresolved',
+      ),
+      title: 'Outgoing',
+    },
+  ];
+  return (
+    <div className="context-connections" aria-label="Verified memory connections">
+      <div className="context-connection-summary">
+        <strong>{result.coverage.resultCount} direct neighbor(s)</strong>
+        <span>{result.trust.replaceAll('-', ' ')}</span>
+        {result.coverage.truncated ? <em>Bounded result is truncated.</em> : null}
+      </div>
+      <div className="context-premises">
+        {result.premises.map(premise => (
+          <span className={`is-${premise.state}`} key={`${premise.requestedOrdinal}:${premise.requestedRef}`}>
+            Premise {premise.requestedOrdinal + 1}: {premise.state}
+          </span>
+        ))}
+      </div>
+      {groups.map(group => (
+        <section className="context-connection-group" key={group.title}>
+          <SectionHeading count={group.connections.length} title={group.title} />
+          {group.connections.length === 0 ? (
+            <SmallEmpty text={`No ${group.title.toLowerCase()} in this bounded view.`} />
+          ) : null}
+          {group.connections.map((connection, index) => {
+            const node = connection.neighborMemoryId ? nodes.get(connection.neighborMemoryId) : undefined;
+            return (
+              <article
+                className="context-connection-card"
+                key={`${connection.requestedOrdinal}:${connection.direction}:${connection.relationType}:${connection.neighborMemoryId ?? 'unresolved'}:${index}`}
+              >
+                <header>
+                  <strong>{connection.relationType}</strong>
+                  <span>{connection.direction}</span>
+                  <em className={`is-${connection.currentness}`}>{connection.currentness}</em>
+                </header>
+                <code>{connection.neighborUri ?? 'Unresolved legacy target (locator withheld)'}</code>
+                <small>
+                  {connection.origin} · distance {connection.distance} · {connection.resolution}
+                  {node ? ` · ${node.metadata.status}${node.metadata.trust ? ` · ${node.metadata.trust}` : ''}` : ''}
+                </small>
+                <footer>
+                  {connection.neighborUri ? (
+                    <button onClick={() => props.onOpen(connection.neighborUri!)} type="button">
+                      Open neighbor
+                    </button>
+                  ) : null}
+                  {node?.codeCitations.map(citation => (
+                    <button key={citation.id} onClick={() => props.onInspectCode(citation)} type="button">
+                      Inspect {citation.target.kind === 'symbol' ? citation.target.name : citation.path}
+                    </button>
+                  ))}
+                </footer>
+              </article>
+            );
+          })}
+        </section>
+      ))}
+      {result.editor ? (
+        <RelationEditor
+          busy={props.relationsBusy}
+          editor={result.editor}
+          error={props.relationsError}
+          onSave={props.onSaveRelations}
+        />
+      ) : (
+        <SmallEmpty text="Relation editing is available only for an active identity-bearing memory." />
+      )}
+    </div>
+  );
+}
+
+function RelationEditor(props: {
+  readonly busy: boolean;
+  readonly editor: NonNullable<ManagerContextConnectionsResponse['editor']>;
+  readonly error: string;
+  readonly onSave: (relations: readonly MemoryRelation[]) => void;
+}): React.ReactElement {
+  const [relations, setRelations] = useState<readonly MemoryRelation[]>(props.editor.relations);
+  useEffect(() => setRelations(props.editor.relations), [props.editor.expectedContent, props.editor.relations]);
+  const invalid = relations.some(relation => !relation.uri.trim());
+  return (
+    <section className="context-relation-editor" aria-busy={props.busy}>
+      <SectionHeading count={relations.length} title="Structured relations" />
+      <p>Targets are resolved to stable identities and checked again during the write.</p>
+      {relations.map((relation, index) => (
+        <div className="context-relation-row" key={`${index}:${relation.type}`}>
+          <label>
+            Type
+            <select
+              disabled={props.busy}
+              onChange={event =>
+                setRelations(current =>
+                  current.map((item, itemIndex) =>
+                    itemIndex === index ? {...item, type: event.target.value as MemoryRelation['type']} : item,
+                  ),
+                )
+              }
+              value={relation.type}
+            >
+              {MEMORY_RELATION_TYPES.map(type => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Target memory
+            <input
+              disabled={props.busy}
+              onChange={event =>
+                setRelations(current =>
+                  current.map((item, itemIndex) => (itemIndex === index ? {...item, uri: event.target.value} : item)),
+                )
+              }
+              placeholder="threadnote://memory/tn_…"
+              value={relation.uri}
+            />
+          </label>
+          <button
+            disabled={props.busy}
+            onClick={() => setRelations(current => current.filter((_item, itemIndex) => itemIndex !== index))}
+            type="button"
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      {props.error ? <p role="alert">{props.error}</p> : null}
+      <div className="context-form-actions">
+        <button
+          disabled={props.busy || relations.length >= 16}
+          onClick={() => setRelations(current => [...current, {type: 'related_to', uri: ''}])}
+          type="button"
+        >
+          Add relation
+        </button>
+        <button disabled={props.busy || invalid} onClick={() => props.onSave(relations)} type="button">
+          {props.busy ? 'Saving relations…' : 'Save relations'}
+        </button>
+      </div>
+    </section>
   );
 }
 

@@ -4,6 +4,7 @@ import {forEachFileWithinBoundary} from '../effect/safe_scan.js';
 import {uriSegment} from '../manifest.js';
 import {canonicalResourceUri, parseResourceId} from '../storage/resource-id.js';
 import type {IndexedRecallCodeLink} from './code_links.js';
+import {memoryLinkLocatorDigest, type IndexedRecallMemoryLink} from './memory_links.js';
 import {normalizeRecallProject} from './eligibility.js';
 import {recallApprovedAuthoritative} from './index_eligibility.js';
 import type {RecallIndexPosting} from './index_lexical.js';
@@ -29,6 +30,8 @@ export interface IndexedRecallSource {
   readonly codeLinks: readonly IndexedRecallCodeLink[];
   readonly documentLength: number;
   readonly exactSearchText: string;
+  readonly memoryLinks: readonly IndexedRecallMemoryLink[];
+  readonly memoryLinksTruncated: boolean;
   readonly postings: ReadonlyMap<string, RecallIndexPosting>;
   readonly source: RecallIndexSource;
 }
@@ -36,6 +39,7 @@ export interface IndexedRecallSource {
 interface RecallRefreshSourceInsert extends RecallIndexSource {
   readonly authorityPolicyKey: string | null;
   readonly invalidated: boolean;
+  readonly uriLocatorDigest: string;
 }
 
 interface RecallRefreshSourceRow {
@@ -47,6 +51,7 @@ interface RecallRefreshSourceRow {
 
 interface RecallRefreshIndexedGenerationRow {
   readonly candidate_json: string;
+  readonly memory_links_json: string;
   readonly uri: string;
 }
 
@@ -77,6 +82,7 @@ const TEXT_EXTENSIONS = new Set(['.json', '.md', '.mdx', '.txt', '.yaml', '.yml'
 export const RECALL_REFRESH_AFFECTED_TERM_TABLE = 'recall_refresh_affected_terms';
 export const RECALL_REFRESH_INDEXED_CODE_LINK_TABLE = 'recall_refresh_indexed_code_links';
 export const RECALL_REFRESH_INDEXED_DOCUMENT_TABLE = 'recall_refresh_indexed_documents';
+export const RECALL_REFRESH_INDEXED_MEMORY_LINK_TABLE = 'recall_refresh_indexed_memory_links';
 export const RECALL_REFRESH_INDEXED_POSTING_TABLE = 'recall_refresh_indexed_postings';
 export const RECALL_REFRESH_REPLACED_DOCUMENT_TABLE = 'recall_refresh_replaced_documents';
 export const RECALL_REFRESH_SOURCE_TABLE = 'recall_refresh_sources';
@@ -100,10 +106,11 @@ export const scanRecallSources = Effect.fn('recall.scanSources')(function* (
     pendingSources = [];
     return sql.unsafe(
       `INSERT INTO ${RECALL_REFRESH_SOURCE_TABLE} (
-        uri, source_path, source_modified_at, source_size, authority_policy_key, invalidated
-      ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
+        uri, uri_locator_digest, source_path, source_modified_at, source_size, authority_policy_key, invalidated
+      ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
       batch.flatMap(source => [
         source.uri,
+        source.uriLocatorDigest,
         source.path,
         source.modifiedAt ?? null,
         source.size,
@@ -140,6 +147,7 @@ export const scanRecallSources = Effect.fn('recall.scanSources')(function* (
             path: file.path,
             size: file.size,
             uri,
+            uriLocatorDigest: memoryLinkLocatorDigest(uri),
           });
           scannedSourceCount += 1;
           if (pendingSources.length >= RECALL_REFRESH_SOURCE_PAGE_SIZE) {
@@ -227,8 +235,9 @@ export function insertIndexedRecallSources(sql: SqlClient.SqlClient, indexedSour
     yield* sql.unsafe(
       `INSERT INTO temp.${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE} (
         uri, project, approved_authoritative, workspace_scope, recorded_at,
-        candidate_json, logical_key, document_length, exact_search_text
-      ) VALUES ${indexedSources.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+        candidate_json, logical_key, document_length, exact_search_text,
+        memory_links_json, memory_links_truncated
+      ) VALUES ${indexedSources.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
       indexedSources.flatMap(indexed => [
         stripRecallAnchor(indexed.candidate.uri),
         normalizeRecallProject(indexed.candidate.fields?.project) ?? null,
@@ -239,6 +248,8 @@ export function insertIndexedRecallSources(sql: SqlClient.SqlClient, indexedSour
         recallCandidateLogicalCorpusKey(indexed.candidate),
         indexed.documentLength,
         indexed.exactSearchText,
+        JSON.stringify({links: indexed.memoryLinks, truncated: indexed.memoryLinksTruncated}),
+        indexed.memoryLinksTruncated ? 1 : 0,
       ]),
     );
     const codeLinks = indexedSources.flatMap(indexed =>
@@ -252,6 +263,30 @@ export function insertIndexedRecallSources(sql: SqlClient.SqlClient, indexedSour
         `INSERT INTO temp.${RECALL_REFRESH_INDEXED_CODE_LINK_TABLE} (
           uri, citation_ordinal, selector_kind, selector_digest
         ) VALUES ${batch.map(() => '(?, ?, ?, ?)').join(', ')}`,
+        batch.flat(),
+      );
+    }
+    const memoryLinks = indexedSources.flatMap(indexed =>
+      indexed.memoryLinks.map(
+        link =>
+          [
+            indexed.source.uri,
+            link.sourceMemoryId,
+            link.targetMemoryId,
+            link.targetLocatorDigest,
+            link.relationType,
+            link.relationOrigin,
+            link.relationOrdinal,
+          ] as const,
+      ),
+    );
+    for (let index = 0; index < memoryLinks.length; index += 200) {
+      const batch = memoryLinks.slice(index, index + 200);
+      yield* sql.unsafe(
+        `INSERT INTO temp.${RECALL_REFRESH_INDEXED_MEMORY_LINK_TABLE} (
+          uri, source_memory_id, target_memory_id, target_locator_digest,
+          relation_type, relation_origin, relation_ordinal
+        ) VALUES ${batch.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
         batch.flat(),
       );
     }
@@ -335,7 +370,7 @@ export function hashRecallRefreshGeneration(sql: SqlClient.SqlClient, previousCo
     while (true) {
       const predicate = cursor === undefined ? '' : 'WHERE uri COLLATE BINARY > ? COLLATE BINARY';
       const rows = yield* sql.unsafe<RecallRefreshIndexedGenerationRow>(
-        `SELECT uri, candidate_json FROM temp.${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE}
+        `SELECT uri, candidate_json, memory_links_json FROM temp.${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE}
          ${predicate} ORDER BY uri COLLATE BINARY LIMIT ?`,
         cursor === undefined ? [RECALL_REFRESH_GENERATION_PAGE_SIZE] : [cursor, RECALL_REFRESH_GENERATION_PAGE_SIZE],
       );
@@ -354,7 +389,7 @@ export function hashRecallRefreshGeneration(sql: SqlClient.SqlClient, previousCo
           });
         }
         hash.update(
-          `${first ? '' : ','}{"candidate":${row.candidate_json},"codeLinks":${JSON.stringify(codeLinks)},"uri":${JSON.stringify(row.uri)}}`,
+          `${first ? '' : ','}{"candidate":${row.candidate_json},"codeLinks":${JSON.stringify(codeLinks)},"memoryLinks":${row.memory_links_json},"uri":${JSON.stringify(row.uri)}}`,
         );
         first = false;
       }
@@ -415,6 +450,7 @@ export function dropRecallSourceScan(sql: SqlClient.SqlClient) {
       RECALL_REFRESH_AFFECTED_TERM_TABLE,
       RECALL_REFRESH_INDEXED_POSTING_TABLE,
       RECALL_REFRESH_INDEXED_CODE_LINK_TABLE,
+      RECALL_REFRESH_INDEXED_MEMORY_LINK_TABLE,
       RECALL_REFRESH_INDEXED_DOCUMENT_TABLE,
       RECALL_REFRESH_SOURCE_TABLE,
     ]) {
@@ -428,14 +464,24 @@ function prepareRecallSourceScan(sql: SqlClient.SqlClient) {
     yield* sql.unsafe('PRAGMA temp_store = FILE');
     yield* dropRecallSourceScan(sql);
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_SOURCE_TABLE} (
-      uri TEXT PRIMARY KEY NOT NULL, source_path TEXT NOT NULL, source_modified_at TEXT,
+      uri TEXT PRIMARY KEY NOT NULL,
+      uri_locator_digest TEXT NOT NULL CHECK (
+        length(uri_locator_digest) = 64 AND uri_locator_digest NOT GLOB '*[^0-9a-f]*'
+      ),
+      source_path TEXT NOT NULL, source_modified_at TEXT,
       source_size INTEGER NOT NULL CHECK (source_size >= 0), authority_policy_key TEXT,
       invalidated INTEGER NOT NULL CHECK (invalidated IN (0, 1))) WITHOUT ROWID`);
+    yield* sql.unsafe(
+      `CREATE INDEX temp.${RECALL_REFRESH_SOURCE_TABLE}_locator_digest
+       ON ${RECALL_REFRESH_SOURCE_TABLE}(uri_locator_digest, uri)`,
+    );
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE} (
       uri TEXT PRIMARY KEY NOT NULL, project TEXT,
       approved_authoritative INTEGER NOT NULL CHECK (approved_authoritative IN (0, 1)),
       workspace_scope TEXT, recorded_at TEXT, candidate_json TEXT NOT NULL, logical_key TEXT NOT NULL,
-      document_length INTEGER NOT NULL CHECK (document_length >= 0), exact_search_text TEXT NOT NULL) WITHOUT ROWID`);
+      document_length INTEGER NOT NULL CHECK (document_length >= 0), exact_search_text TEXT NOT NULL,
+      memory_links_json TEXT NOT NULL,
+      memory_links_truncated INTEGER NOT NULL CHECK (memory_links_truncated IN (0, 1))) WITHOUT ROWID`);
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_INDEXED_POSTING_TABLE} (
       uri TEXT NOT NULL, term TEXT NOT NULL, field_weight REAL NOT NULL CHECK (field_weight >= 0),
       term_frequency INTEGER NOT NULL CHECK (term_frequency > 0), PRIMARY KEY (uri, term)) WITHOUT ROWID`);
@@ -443,6 +489,22 @@ function prepareRecallSourceScan(sql: SqlClient.SqlClient) {
       uri TEXT NOT NULL, citation_ordinal INTEGER NOT NULL CHECK (citation_ordinal >= 0),
       selector_kind TEXT NOT NULL, selector_digest TEXT NOT NULL CHECK (length(selector_digest) = 64),
       PRIMARY KEY (uri, citation_ordinal, selector_kind, selector_digest)) WITHOUT ROWID`);
+    yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_INDEXED_MEMORY_LINK_TABLE} (
+      uri TEXT NOT NULL,
+      source_memory_id TEXT NOT NULL,
+      target_memory_id TEXT NOT NULL,
+      target_locator_digest TEXT NOT NULL CHECK (
+        target_locator_digest = '' OR (
+          length(target_locator_digest) = 64 AND target_locator_digest NOT GLOB '*[^0-9a-f]*'
+        )
+      ),
+      relation_type TEXT NOT NULL,
+      relation_origin TEXT NOT NULL,
+      relation_ordinal INTEGER NOT NULL CHECK (relation_ordinal >= 0),
+      CHECK (target_memory_id <> '' OR target_locator_digest <> ''),
+      PRIMARY KEY (
+        uri, relation_origin, relation_ordinal, relation_type, target_memory_id, target_locator_digest
+      )) WITHOUT ROWID`);
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_AFFECTED_TERM_TABLE} (
       term TEXT PRIMARY KEY NOT NULL) WITHOUT ROWID`);
     yield* sql.unsafe(`CREATE TEMP TABLE ${RECALL_REFRESH_REPLACED_DOCUMENT_TABLE} (

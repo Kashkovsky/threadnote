@@ -526,8 +526,8 @@ describe('native memory workflow', () => {
         let sourceChanged = false;
         const racingStore = ResourceStore.of({
           ...store,
-          write: (writeLocation, writeUri, content, options) =>
-            store.write(writeLocation, writeUri, content, options).pipe(
+          writeChecked: (writeLocation, writeUri, content, options, check) =>
+            store.writeChecked(writeLocation, writeUri, content, options, check).pipe(
               Effect.tap(() => {
                 if (sourceChanged || !writeUri.includes('/handoffs/archived/')) return Effect.void;
                 sourceChanged = true;

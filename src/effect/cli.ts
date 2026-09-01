@@ -1227,6 +1227,7 @@ const remember = Command.make(
       'require-current-code-refs',
       'Fail before writing unless every code reference has exact-current graph evidence',
     ),
+    relations: repeatedString('relation', 'Typed memory relation as <type>=<threadnote://uri>; repeat for multiple'),
     replace: withValueAlias(
       optionalString('replace', 'Supersede an existing threadnote:// memory after storing the new memory'),
       'replace-uri',
@@ -1321,6 +1322,11 @@ const recall = Command.make(
     dryRun: boolean('dry-run', 'Print the native query without searching'),
     includeArchived: boolean('include-archived', 'Include archived memories in recall results'),
     inferScope: negatedBoolean('infer-scope', 'Disable query-based scope inference'),
+    memoryRefs: repeatedString(
+      'memory-ref',
+      'Stable memory ID or managed memory URI to expand by one hop; repeat for multiple premises',
+      8,
+    ),
     nodeLimit: withValueAlias(
       withValueAlias(optionalString('node-limit', 'Maximum number of search results'), 'n', 'string'),
       'limit',
@@ -1328,6 +1334,11 @@ const recall = Command.make(
     ),
     project: optionalString('project', 'Restrict to this project plus projectless guidance; omit for global recall'),
     query: requiredString('query', 'Search query'),
+    relationTypes: repeatedString(
+      'relation-type',
+      'Filter one-hop expansion by relation type; repeat for multiple types',
+      5,
+    ),
     threshold: optionalString(
       'threshold',
       'Minimum topical relevanceScore 0-1; defaults to THREADNOTE_RECALL_THRESHOLD or 0.3',

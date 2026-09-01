@@ -38,6 +38,7 @@ export {
   shareTeamAccess,
   stripPersonalProvenance,
   writeMemoryFile,
+  writeMemoryFileChecked,
 } from './core.js';
 export {
   runShareInit,

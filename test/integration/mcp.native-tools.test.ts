@@ -14,7 +14,13 @@ import {
   MAX_MEMORY_CODE_CITATIONS,
   MEMORY_SCHEMA_VERSION,
 } from '../../src/memory/code_citation.js';
-import {formatMemoryDocument, parseMemoryDocument} from '../../src/memory/document.js';
+import {
+  formatMemoryDocument,
+  MAX_MEMORY_RELATIONS,
+  MEMORY_RELATION_TYPES,
+  parseMemoryDocument,
+} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
 import {isDeferredCodeAnchorIntentFilename} from '../../src/memory/deferred_code_anchor.js';
 import {recallIndexDatabaseFilename} from '../../src/recall/index.js';
 import {
@@ -469,10 +475,21 @@ describe('Threadnote MCP toolsets', () => {
             explain: {type: 'boolean'},
             nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
             project: {type: 'string'},
-            query: {type: 'string'},
+            query: {description: expect.stringContaining('optional when memoryRefs'), type: 'string'},
             threshold: {maximum: 1, minimum: 0, type: 'number'},
           },
           type: 'object',
+        });
+        expect(recall?.inputSchema.properties).toMatchObject({
+          memoryRefs: {
+            anyOf: [{type: 'string'}, {items: {type: 'string'}, maxItems: 8, type: 'array'}],
+          },
+          relationTypes: {
+            anyOf: [
+              {enum: MEMORY_RELATION_TYPES, type: 'string'},
+              {items: {enum: MEMORY_RELATION_TYPES, type: 'string'}, maxItems: 5, type: 'array'},
+            ],
+          },
         });
         expect(JSON.stringify(recall?.inputSchema)).not.toContain('null');
         const read = tools.tools.find(tool => tool.name === 'read_context');
@@ -499,6 +516,19 @@ describe('Threadnote MCP toolsets', () => {
         expect(tools.tools.find(tool => tool.name === 'remember_context')?.inputSchema).toMatchObject({
           properties: {
             citationPolicy: {enum: ['require-current', 'defer'], type: 'string'},
+            relations: {
+              items: {
+                additionalProperties: false,
+                properties: {
+                  type: {enum: MEMORY_RELATION_TYPES, type: 'string'},
+                  uri: {type: 'string'},
+                },
+                required: ['type', 'uri'],
+                type: 'object',
+              },
+              maxItems: MAX_MEMORY_RELATIONS,
+              type: 'array',
+            },
           },
         });
 
@@ -507,12 +537,36 @@ describe('Threadnote MCP toolsets', () => {
           query: 'threadnote',
         });
         expect(validationError).toContain('greater than or equal to 1');
+        const missingQueryAndMemoryRefs = await callErrorText(client, 'recall_context', {
+          project: 'threadnote',
+        });
+        expect(missingQueryAndMemoryRefs).toContain(
+          'needs either a non-empty "query" or at least one "memoryRefs" seed',
+        );
+        const missingMemoryRefs = await callErrorText(client, 'recall_context', {
+          query: 'threadnote',
+          relationTypes: ['depends_on'],
+        });
+        expect(missingMemoryRefs).toContain('relationTypes requires memoryRefs');
+        const tooManyMemoryRefs = await callErrorText(client, 'recall_context', {
+          memoryRefs: Array.from({length: 9}, (_, index) => `threadnote://memory/tn_${index}`),
+          query: 'threadnote',
+        });
+        expect(tooManyMemoryRefs).toContain('at most 8');
         const tooManyCodeRefs = await callErrorText(client, 'remember_context', {
           callerCwd: fixture.root,
           codeRefs: Array.from({length: MAX_MEMORY_CODE_CITATIONS + 1}, (_, index) => `src/${index}.ts`),
           text: 'This memory must not be stored.',
         });
         expect(tooManyCodeRefs).toContain(`at most ${MAX_MEMORY_CODE_CITATIONS}`);
+        const tooManyRelations = await callErrorText(client, 'remember_context', {
+          relations: Array.from({length: MAX_MEMORY_RELATIONS + 1}, (_, index) => ({
+            type: 'related_to',
+            uri: `threadnote://memory/tn_${index}`,
+          })),
+          text: 'This memory must not be stored.',
+        });
+        expect(tooManyRelations).toContain(`at most ${MAX_MEMORY_RELATIONS}`);
         const inactiveDeferred = await callErrorText(client, 'remember_context', {
           callerCwd: fixture.root,
           citationPolicy: 'defer',
@@ -586,6 +640,96 @@ describe('Threadnote MCP toolsets', () => {
           threshold: 0,
         });
         expect(tooSmall).toContain('greater than or equal to 700');
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('supports pure seed-only navigation with coherent confidence and next action', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const memory = (topic: string, memoryId: string, body: string, relation?: string) =>
+          [
+            'MEMORY',
+            'kind: durable',
+            'status: active',
+            'project: threadnote',
+            `topic: ${topic}`,
+            'source_agent_client: integration-test',
+            'timestamp: 2026-08-31T00:00:00.000Z',
+            `memory_id: ${memoryId}`,
+            ...(relation ? [`relation: ${relation}`] : []),
+            '',
+            body,
+          ].join('\n');
+        await writeCanonicalMemory(
+          fixture.home,
+          'mcp-connection-seed.md',
+          memory(
+            'mcp-connection-seed',
+            'tn_mcp_connection_seed',
+            'Seed body is lexically unrelated.',
+            'depends_on threadnote://memory/tn_mcp_connection_target',
+          ),
+        );
+        await writeCanonicalMemory(
+          fixture.home,
+          'mcp-connection-target.md',
+          memory('mcp-connection-target', 'tn_mcp_connection_target', 'Direct neighbor is also lexically unrelated.'),
+        );
+
+        const result = await client.callTool(
+          {
+            arguments: {
+              memoryRefs: ['threadnote://memory/tn_mcp_connection_seed'],
+              project: 'threadnote',
+              relationTypes: ['depends_on'],
+            },
+            name: 'recall_context',
+          },
+          undefined,
+          {timeout: 5_000},
+        );
+
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
+        const structured = result.structuredContent as {
+          readonly confidence?: {readonly basis?: string; readonly level?: string; readonly reason?: string};
+          readonly memoryConnections?: {
+            readonly connections: readonly Record<string, unknown>[];
+            readonly coverage: Record<string, unknown>;
+            readonly premises: readonly Record<string, unknown>[];
+          };
+          readonly nextAction?: {readonly tool?: string; readonly uris?: readonly string[]};
+          readonly results?: readonly {readonly uri?: string}[];
+        };
+        expect(structured.memoryConnections?.premises).toEqual([
+          expect.objectContaining({memoryId: 'tn_mcp_connection_seed', state: 'current'}),
+        ]);
+        expect(structured.memoryConnections?.connections).toEqual([
+          expect.objectContaining({
+            currentness: 'current',
+            direction: 'outgoing',
+            neighborMemoryId: 'tn_mcp_connection_target',
+            relationType: 'depends_on',
+            resolution: 'resolved',
+          }),
+        ]);
+        expect(structured.results).toEqual([
+          expect.objectContaining({uri: expect.stringContaining('mcp-connection-target.md')}),
+        ]);
+        expect(structured.confidence).toMatchObject({
+          basis: 'explicit-memory-connection',
+          level: 'high',
+          reason: expect.stringContaining('navigation only, not entailment'),
+        });
+        expect(structured.nextAction).toEqual({
+          tool: 'read_context',
+          uris: [structured.results?.[0]?.uri],
+        });
+        expect(structured.memoryConnections).not.toHaveProperty('diagnostics');
+        expect((result.content as TextContent[]).map(item => item.text).join('\n')).toContain(
+          'Relations are navigation evidence, not entailment.',
+        );
       },
       {toolset: 'core'},
     );
@@ -1250,6 +1394,102 @@ describe('Threadnote MCP toolsets', () => {
         expect((output[0] as TextContent | undefined)?.text).toContain('Replacement evidence.');
         expect((output[1] as TextContent | undefined)?.text).toContain(`canonical ${canonicalUri}`);
         expect(structured).toMatchObject({canonicalUri, requestedUri});
+      },
+      {toolset: 'core'},
+    );
+  });
+
+  it('normalizes remember_context relations to stable identities and rejects duplicate or self links', async () => {
+    await withMcpClient(
+      async (client, fixture) => {
+        const targetUri = 'threadnote://user/test-user/memories/durable/projects/threadnote/relation-target.md';
+        const target = canonicalMemoryContent('relation-target', 'Relation target evidence.').replace(
+          'source_agent_client:',
+          'memory_id: tn_relation_target\nsource_agent_client:',
+        );
+        await writeCanonicalMemory(fixture.home, 'relation-target.md', target);
+
+        const stored = await client.callTool(
+          {
+            arguments: {
+              project: 'threadnote',
+              relations: [{type: 'depends_on', uri: targetUri}],
+              text: 'Relation source evidence.',
+              topic: 'relation-source',
+            },
+            name: 'remember_context',
+          },
+          undefined,
+          {timeout: 30_000},
+        );
+        expect(stored.isError, JSON.stringify(stored)).not.toBe(true);
+        const storedUri = (stored.structuredContent as {readonly memoryUri?: string}).memoryUri;
+        expect(storedUri).toBe('threadnote://user/test-user/memories/durable/projects/threadnote/relation-source.md');
+
+        const read = await client.callTool(
+          {arguments: {budgetTokens: 1_500, uri: storedUri}, name: 'read_context'},
+          undefined,
+          {timeout: 30_000},
+        );
+        const readContent = Array.isArray(read.content) ? read.content : [];
+        expect((readContent[0] as TextContent | undefined)?.text).toContain(
+          `relation: depends_on ${memoryIdentityAlias('tn_relation_target')}`,
+        );
+
+        const failedClear = await client.callTool({
+          arguments: {
+            citationPolicy: 'defer',
+            project: 'threadnote',
+            replaceUri: storedUri,
+            text: 'A failed replacement must not claim that it cleared edges.',
+            topic: 'relation-source',
+          },
+          name: 'remember_context',
+        });
+        expect(failedClear.isError).toBe(true);
+        expect(
+          (failedClear.structuredContent as {readonly clearedMemoryRelations?: unknown} | undefined)
+            ?.clearedMemoryRelations,
+        ).toBeUndefined();
+
+        const cleared = await client.callTool({
+          arguments: {
+            project: 'threadnote',
+            replaceUri: storedUri,
+            text: 'Relation source without replacement edges.',
+            topic: 'relation-source',
+          },
+          name: 'remember_context',
+        });
+        expect(cleared.isError, JSON.stringify(cleared)).not.toBe(true);
+        expect(cleared.content).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({text: expect.stringContaining('Cleared 1 prior memory relation(s)')}),
+          ]),
+        );
+        expect(cleared.structuredContent).toMatchObject({clearedMemoryRelations: 1});
+        const clearedRead = await callText(client, 'read_context', {budgetTokens: 1_500, uri: storedUri});
+        expect(clearedRead).not.toContain('relation:');
+
+        const duplicate = await callErrorText(client, 'remember_context', {
+          project: 'threadnote',
+          relations: [
+            {type: 'depends_on', uri: targetUri},
+            {type: 'depends_on', uri: memoryIdentityAlias('tn_relation_target')},
+          ],
+          text: 'Duplicate relation source.',
+          topic: 'duplicate-relation-source',
+        });
+        expect(duplicate).toContain('Duplicate memory relations');
+
+        const self = await callErrorText(client, 'remember_context', {
+          project: 'threadnote',
+          relations: [{type: 'related_to', uri: memoryIdentityAlias('tn_relation_target')}],
+          replaceUri: targetUri,
+          text: 'Attempted self relation.',
+          topic: 'relation-target',
+        });
+        expect(self).toContain('cannot relate to itself');
       },
       {toolset: 'core'},
     );
@@ -3484,13 +3724,19 @@ describe('Threadnote MCP toolsets', () => {
           'HANDOFF',
           {
             codeCitations: [citation],
+            createdAt: '2026-08-25T20:00:00.000Z',
+            evidence: ['threadnote://memory/tn_public_archive_evidence'],
             kind: 'handoff',
+            memoryId: 'tn_public_archive_source',
             project: 'threadnote',
+            references: ['threadnote://memory/tn_public_archive_reference'],
+            relations: [{type: 'references', uri: 'threadnote://memory/tn_public_archive_target'}],
             schemaVersion: MEMORY_SCHEMA_VERSION,
             sourceAgentClient: 'codex',
             sourceCommit: citation.sourceCommit,
             sourceObservedAt: '2026-08-26T20:00:00.000Z',
             status: 'active',
+            supersedes: 'threadnote://memory/tn_public_archive_history',
             timestamp: '2026-08-26T20:00:00.000Z',
             topic: validTopic,
           },
@@ -3518,10 +3764,17 @@ describe('Threadnote MCP toolsets', () => {
         expect(archived?.metadata).toMatchObject({
           archivedFrom: validUri,
           codeCitations: [citation],
+          createdAt: '2026-08-25T20:00:00.000Z',
+          evidence: ['threadnote://memory/tn_public_archive_evidence'],
+          memoryId: 'tn_public_archive_source',
+          references: ['threadnote://memory/tn_public_archive_reference'],
+          relations: [{type: 'references', uri: 'threadnote://memory/tn_public_archive_target'}],
           schemaVersion: MEMORY_SCHEMA_VERSION,
           sourceCommit: citation.sourceCommit,
           sourceObservedAt: '2026-08-26T20:00:00.000Z',
           status: 'archived',
+          supersedes: 'threadnote://memory/tn_public_archive_history',
+          visibility: 'personal',
         });
         expect(archived?.metadata.citationErrors).toBeUndefined();
         expect(archived?.body).toBe(

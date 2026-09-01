@@ -1630,7 +1630,10 @@ function hybridRankRecallHits(
   resultLimit: number,
 ): {readonly confidence: RecallConfidence; readonly ranked: readonly RecallHit[]} {
   const candidateUris = context.candidateUris ? new Set(context.candidateUris.map(uri => stripAnchor(uri))) : undefined;
-  const eligibleHits = candidateUris ? hits.filter(hit => candidateUris.has(stripAnchor(hit.uri))) : hits;
+  const protectedUris = new Set((context.protectedUris ?? []).map(uri => stripAnchor(uri)));
+  const allowedByCandidateSelection = (uri: string) =>
+    candidateUris === undefined || candidateUris.has(stripAnchor(uri)) || protectedUris.has(stripAnchor(uri));
+  const eligibleHits = hits.filter(hit => allowedByCandidateSelection(hit.uri));
   const byUri = new Map(eligibleHits.map(hit => [stripAnchor(hit.uri), hit]));
   const recordsByUri = new Map(
     (context.records ?? [])
@@ -1642,7 +1645,7 @@ function hybridRankRecallHits(
     context.allowedUriScopes,
     resultLimit,
     context.eligibility,
-  ).filter(candidate => candidateUris === undefined || candidateUris.has(stripAnchor(candidate.uri)));
+  ).filter(candidate => allowedByCandidateSelection(candidate.uri));
   const indexedByUri = new Map(scopedIndexedCandidates.map(candidate => [stripAnchor(candidate.uri), candidate]));
   const hitCandidates = eligibleHits.map(hit => {
     const uri = stripAnchor(hit.uri);
@@ -1717,7 +1720,7 @@ function hybridRankRecallHits(
   return {
     confidence: result.confidence,
     ranked:
-      result.confidence.level === 'no_answer'
+      result.confidence.level === 'no_answer' && protectedUris.size === 0
         ? []
         : result.results.map(ranked => {
             const hit = byUri.get(ranked.candidate.uri);

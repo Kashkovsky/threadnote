@@ -19,6 +19,16 @@ Call `recall_context` with the stable project and absolute `callerCwd` when you 
 control over ranking. In monorepos, use the nested package or app cwd. Omit `project` for global recall or use a named
 Workset for cross-repository work.
 
+When a relevant memory is already known and adjacent evidence would help, pass its stable memory ID or canonical
+managed-memory URI in `memoryRefs`. Keep a topical `query` when both retrieval lanes are useful, or omit it for pure
+seed-only navigation. Optionally narrow the one-hop expansion with `relationTypes`: `depends_on`, `evidence_for`,
+`references`, `related_to`, or `supersedes`. This is explicit navigation, not recursive graph discovery. A response with
+confidence basis `explicit-memory-connection` puts a verified neighbor first in `nextAction`; that confidence covers
+pointer navigation, not entailment. Use the returned premise and connection receipts to understand resolution,
+currentness, direction, and truncation; read only useful neighbor pointers before relying on them. An unresolved,
+conflicted, or out-of-scope premise does not expand, and truncated connection coverage is not evidence that other
+neighbors are absent.
+
 Recall results are unread pointers, not evidence. Read every relevant `threadnote://` result with `read_context` before
 using it. Keep recall compact; use `explain: true` only to diagnose ranking.
 

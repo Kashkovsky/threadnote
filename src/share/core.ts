@@ -4,7 +4,8 @@ import {SystemInfo} from '../effect/system.js';
 
 import {uriSegment} from '../manifest.js';
 
-import {canonicalMemoryDocumentContent} from '../memory/document.js';
+import {canonicalMemoryDocumentContent, parseMemoryRelationValue} from '../memory/document.js';
+import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
 import {discardMemoryRelocation} from '../memory/relocation.js';
 import {
   memoryCodeCitationContentSharingBlocker,
@@ -827,8 +828,9 @@ const isRegularFileNoSymlink = Effect.fn('share.isRegularFileNoSymlink')(functio
 /**
  * Removes personal lifecycle, candidate, session, evidence, and relation
  * provenance from the header block before a memory is published to a team's
- * shared git repo. Personal threadnote:// URIs do not resolve for teammates, and
- * candidate/session IDs are local workflow state rather than durable knowledge.
+ * shared git repo. Callers that already validated a shared write may retain only
+ * stable identity-alias relation headers. Personal threadnote:// URIs do not
+ * resolve for teammates, and candidate/session IDs are local workflow state.
  * Defence-in-depth: even if a producer accidentally retains local provenance,
  * it stops here.
  *
@@ -836,7 +838,10 @@ const isRegularFileNoSymlink = Effect.fn('share.isRegularFileNoSymlink')(functio
  * blank line). Prose mentions of "supersedes:" elsewhere in the body are
  * untouched.
  */
-export function stripPersonalProvenance(content: string): string {
+export function stripPersonalProvenance(
+  content: string,
+  options: {readonly preserveStableMemoryRelations?: boolean} = {},
+): string {
   const lines = content.split('\n');
   let headerEnd = lines.length;
   for (let index = 0; index < lines.length; index += 1) {
@@ -847,17 +852,26 @@ export function stripPersonalProvenance(content: string): string {
   }
   const cleaned: string[] = [];
   for (let index = 0; index < headerEnd; index += 1) {
+    const line = lines[index]!;
+    const stableRelation = options.preserveStableMemoryRelations === true && isStableMemoryRelationHeader(line);
     if (
-      /^(?:archived_from|candidate_id|evidence|references|relation|source_session_id|supersedes):\s/.test(lines[index])
+      !stableRelation &&
+      /^\s*(?:archived_from|candidate_id|evidence|references|relation|source_session_id|supersedes):/.test(line)
     ) {
       continue;
     }
-    cleaned.push(lines[index]);
+    cleaned.push(line);
   }
   for (let index = headerEnd; index < lines.length; index += 1) {
     cleaned.push(lines[index]);
   }
   return stripGeneratedMemoryHygieneSources(cleaned.join('\n'));
+}
+
+function isStableMemoryRelationHeader(line: string): boolean {
+  if (!line.startsWith('relation:')) return false;
+  const relation = parseMemoryRelationValue(line.slice('relation:'.length).trimStart());
+  return relation !== undefined && memoryIdFromIdentityAlias(relation.uri) !== undefined;
 }
 
 export function setMemoryVisibility(content: string, visibility: 'personal' | 'shared'): string {
@@ -974,6 +988,39 @@ export const writeMemoryFile = Effect.fn('share.writeMemoryFile')(function* (
   yield* discardMemoryRelocation(config, uri);
 });
 
+/**
+ * Commit a memory only after a read-only invariant check succeeds under the
+ * ResourceStore account mutation lock. The check must not mutate ResourceStore.
+ */
+export function writeMemoryFileChecked<E, R>(
+  config: ShareRuntime,
+  _ov: string,
+  uri: string,
+  content: string,
+  initialMode: 'create' | 'replace',
+  dryRun: boolean,
+  check: Effect.Effect<void, E, R>,
+  options: {readonly quiet?: boolean} = {},
+) {
+  return Effect.gen(function* () {
+    if (dryRun) {
+      if (options.quiet !== true) {
+        yield* Console.log(`Would write native resource: ${uri} --mode ${initialMode}`);
+      }
+      return;
+    }
+    const store = yield* ResourceStore;
+    yield* store.writeChecked(
+      resourceStoreLocation(config),
+      uri,
+      content,
+      {mode: initialMode === 'replace' ? 'upsert' : 'create'},
+      check,
+    );
+    yield* discardMemoryRelocation(config, uri);
+  });
+}
+
 function resourceStoreLocation(config: ShareRuntime) {
   return {
     account: config.account,
@@ -1015,7 +1062,9 @@ const prepareSharedInboundContentEffect = Effect.fn('share.prepareSharedInboundC
 });
 
 function prepareSharedInboundContent(uri: string, rawContent: string): string {
-  const stripped = stripPersonalProvenance(canonicalMemoryDocumentContent(rawContent));
+  const stripped = stripPersonalProvenance(canonicalMemoryDocumentContent(rawContent), {
+    preserveStableMemoryRelations: true,
+  });
   const citationBlocker = memoryCodeCitationContentSharingBlocker(uri, stripped);
   if (citationBlocker) {
     throw new ShareOperationError(

@@ -67,7 +67,8 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    section.
 2. Merge the release source and ensure ordinary CI is green.
 3. Dispatch `Platform benchmarks` on exact clean candidate **C** with
-   `include_context_brief_citations_scale=true` and `include_code_memory_link_scale=true`. Before tagging, require its Context Brief citation artifact to report
+   `include_context_brief_citations_scale=true`, `include_code_memory_link_scale=true`, and
+   `include_memory_connections_scale=true`. Before tagging, require its Context Brief citation artifact to report
    v2 `evidenceClass=release-scale`, `gate.passed=true`, the exact candidate commit, `dirty=false`, 100,000 indexed
    memory candidates, exactly 100 samples, exactly 5 warmups, and the `local-100k`, `workset-50`, and `workset-128`
    profiles. A development-smoke artifact is deliberately release-failing regardless of its measurements. This gate is
@@ -115,6 +116,29 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    latency budgets. Those truncations are required abstention evidence for the shadowed file-selector prefix, not a
    claim that the unexamined prefix contains no other eligible link. Require zero truncations for the true no-answer
    scenario.
+   For Memory Connections, run `bun run eval:memory-connections-retrieval` on C and require the approved
+   `memory-connections-retrieval-bench-v1` fixture hash
+   `f14272e99ae45c04169df0f761fba6bacb77d73eb9b2b67489a7a443900b1fad` with `gate.passed=true`. The frozen suite must
+   cover all five reviewed abilities and all ten one-hop, multi-seed, cycle, unresolved/conflicted, historical,
+   supersession, authorization, and no-connection scenarios. Require precision, recall, premise-currentness accuracy,
+   and no-answer accuracy of exactly 1; zero authorization leaks, false-authority claims, and duplicate results; and no
+   response above 1,500 estimated tokens.
+   Require the Memory Connections scale artifact to report suite `memory-connections-one-hop-scale-v1`, version 1,
+   `evidenceClass=release-scale`, and `gate.passed=true` on exact clean C. Its identity must bind
+   `candidateCommit=observedCommit=C`, runner class `github-hosted-macos-15-ARM64`, and a 64-hex built-artifact digest;
+   a development-smoke artifact cannot pass. Require the approved fixture hash
+   `136c49200cb5661faa60db25a682faa8793dcbb3cfe9da7387d396f32d0a5ee7`, exactly 100,000 materialized and indexed
+   memories, exactly 99,994 authorized dense-hub memories, and the ordered `incoming-hub`, `sparse-incoming`, and
+   `no-answer` scenarios with at least 5 warmups and 25 measured samples each. The query limit is 8: the dense hub must
+   return the exact first eight frozen neighbors with truncation, sparse incoming must return its exact two neighbors
+   without truncation, and no-answer must return none without truncation. Across cold, warmup, and measured evidence,
+   require exact precision, recall, no-answer, truncation, bounded-result, projected-connection-coverage,
+   projected-output-completeness, and projected-receipt-accounting accuracy; zero duplicate or unexpected results and
+   receipt identities; and exact connection identity, direction, roles, ordinal, resolution/currentness, and premise
+   identity/currentness. No response may exceed 1,500 estimated tokens, 257 raw link rows, or 322 canonical rereads.
+   Measured lookup p95 must be at most 250 ms and every measured lookup at most 1,000 ms. The materialized corpus must
+   be at most 256 MiB, recall storage at most 2 GiB, added peak RSS at most 3 GiB, materialization at most 5 minutes,
+   and index construction at most 10 minutes. Download and review the retained 90-day workflow artifact before tagging.
    For any release that changes Context Brief or memory retrieval, also retain a three-arm agent experiment artifact
    whose gate status is `passed`, whose clean candidate/build identity matches that SHA, and whose preregistered
    manifest and post-run evidence hashes are both present in the source-reviewed allowlists. It must cover at least two

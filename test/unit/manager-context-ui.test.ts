@@ -9,7 +9,12 @@ import {
   CONTEXT_BRIEF_VERSION,
   type ProjectedContextBriefV1,
 } from '../../src/context_brief/types.js';
-import type {ManagerContextReadResponse, ManagerRecallResponse} from '../../src/manager/context.js';
+import type {
+  ManagerContextConnectionsResponse,
+  ManagerContextReadResponse,
+  ManagerRecallResponse,
+} from '../../src/manager/context.js';
+import {createMemoryCodeCitation} from '../../src/memory/code_citation.js';
 import {ContextBriefResult, ContextPanel, parseCodeRefs} from '../../src/manager/context_view.js';
 
 const MEMORY_URI = 'threadnote://memory/tn_manager_context';
@@ -19,11 +24,13 @@ const GRAPH_REF = `cgs_${'a'.repeat(32)}`;
 let reactRoot: Root | undefined;
 let originalFetch: typeof fetch;
 let requests: Array<{readonly body: Record<string, unknown>; readonly path: string}>;
+let canonicalMemoryBody: string;
 
 beforeEach(() => {
   (globalThis as typeof globalThis & {IS_REACT_ACT_ENVIRONMENT: boolean}).IS_REACT_ACT_ENVIRONMENT = true;
   originalFetch = globalThis.fetch;
   requests = [];
+  canonicalMemoryBody = 'Canonical memory body';
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const path =
       typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
@@ -57,6 +64,20 @@ beforeEach(() => {
     }
     if (path === '/api/context/recall') {
       return Promise.resolve(jsonResponse(recallResponse(String(body.query ?? ''))));
+    }
+    if (path === '/api/context/connections') {
+      return Promise.resolve(jsonResponse(connectionsResponse(String(body.uri ?? ''))));
+    }
+    if (path === '/api/memory/relations') {
+      canonicalMemoryBody = 'Updated canonical memory body';
+      return Promise.resolve(
+        jsonResponse({
+          content: 'updated canonical content',
+          memoryId: 'tn_manager_context',
+          relations: body.relations,
+          uri: RELOCATED_URI,
+        }),
+      );
     }
     if (path === '/api/context/read') return Promise.resolve(jsonResponse(readResponse(Number(body.page ?? 0))));
     throw new Error(`Unexpected Manager Context request: ${path}`);
@@ -267,6 +288,139 @@ describe('Manager Context workspace', () => {
     expect(requests.at(-1)?.path).toBe('/api/context/read');
   });
 
+  it('lazily lists direct connections, opens neighbors, and saves only through the structured relation editor', async () => {
+    await renderContext();
+    await changeInput(inputWithLabel('Caller workspace'), '/private/threadnote');
+    await clickButton('Recall & read');
+    await changeInput(inputWithLabel('Recall query'), 'connected memory');
+    await clickButton('Recall context');
+    await waitForText('9 ranked pointers');
+    const row = document.querySelector<HTMLButtonElement>('.context-recall-card > button');
+    await act(async () => row?.click());
+    await waitForText('Canonical memory body page 1.');
+
+    expect(requests.filter(request => request.path === '/api/context/connections')).toHaveLength(0);
+    await clickButton('Connections');
+    await waitForText('relations are navigation evidence not entailment');
+
+    expect(requests.filter(request => request.path === '/api/context/connections')).toEqual([
+      {body: {includeHistorical: false, uri: MEMORY_URI}, path: '/api/context/connections'},
+    ]);
+    expect(document.body.textContent).toContain('Outgoing');
+    expect(document.body.textContent).toContain('depends_on');
+    expect(document.body.textContent).toContain('current');
+    expect(document.body.textContent).toContain('Structured relations');
+    expect(document.body.textContent).toContain('Inspect ContextPanel');
+
+    await changeInput(inputWithLabel('Target memory'), 'threadnote://memory/tn_neighbor_updated');
+    await clickButton('Save relations');
+    await waitForRequestCount('/api/memory/relations', 1);
+    expect(requests.find(request => request.path === '/api/memory/relations')?.body).toMatchObject({
+      expectedContent: 'canonical source content',
+      relations: [{type: 'depends_on', uri: 'threadnote://memory/tn_neighbor_updated'}],
+      uri: RELOCATED_URI,
+    });
+    await waitForRequestCount('/api/context/connections', 2);
+    await waitForRequestCount('/api/context/read', 2);
+
+    await clickButton('Content');
+    await waitForText('Updated canonical memory body page 1.');
+    await clickButton('Connections');
+
+    await clickButton('Open neighbor');
+    await waitForRequestCount('/api/context/read', 3);
+    expect(requests.at(-1)).toMatchObject({
+      body: {uri: expect.stringContaining('neighbor.md')},
+      path: '/api/context/read',
+    });
+  });
+
+  it('does not let a delayed relation refresh override newer reader navigation', async () => {
+    const routedFetch = globalThis.fetch;
+    let refreshAborted = false;
+    globalThis.fetch = Object.assign(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const path =
+          typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
+        const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+        if (path !== '/api/context/read' || body.uri !== RELOCATED_URI) return routedFetch(input, init);
+        requests.push({body, path});
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              refreshAborted = true;
+              reject(new DOMException('Cancelled', 'AbortError'));
+            },
+            {once: true},
+          );
+        });
+      },
+      {preconnect: originalFetch.preconnect},
+    );
+    await renderContext();
+    await clickButton('Recall & read');
+    await changeInput(inputWithLabel('Recall query'), 'relation refresh race');
+    await clickButton('Recall context');
+    await waitForText('9 ranked pointers');
+    const row = document.querySelector<HTMLButtonElement>('.context-recall-card > button');
+    await act(async () => row?.click());
+    await waitForText('Canonical memory body page 1.');
+    await clickButton('Connections');
+    await waitForText('Structured relations');
+
+    await clickButton('Save relations');
+    await waitForRequestCount('/api/context/read', 2);
+    await clickButton('Open neighbor');
+    await waitForRequestCount('/api/context/read', 3);
+    await flush();
+
+    expect(refreshAborted).toBe(true);
+    expect(requests.filter(request => request.path === '/api/context/connections')).toHaveLength(1);
+    expect(requests.at(-1)).toMatchObject({
+      body: {uri: expect.stringContaining('neighbor.md')},
+      path: '/api/context/read',
+    });
+  });
+
+  it('cancels an in-flight connection lookup when the reader returns to content', async () => {
+    const routedFetch = globalThis.fetch;
+    let aborted = false;
+    globalThis.fetch = Object.assign(
+      (input: string | URL | Request, init?: RequestInit) => {
+        const path =
+          typeof input === 'string' ? input : input instanceof URL ? input.pathname : new URL(input.url).pathname;
+        if (path !== '/api/context/connections') return routedFetch(input, init);
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            'abort',
+            () => {
+              aborted = true;
+              reject(new DOMException('Cancelled', 'AbortError'));
+            },
+            {once: true},
+          );
+        });
+      },
+      {preconnect: originalFetch.preconnect},
+    );
+    await renderContext();
+    await clickButton('Recall & read');
+    await changeInput(inputWithLabel('Recall query'), 'cancel connection lookup');
+    await clickButton('Recall context');
+    await waitForText('9 ranked pointers');
+    const row = document.querySelector<HTMLButtonElement>('.context-recall-card > button');
+    await act(async () => row?.click());
+    await waitForText('Canonical memory body page 1.');
+
+    await clickButton('Connections');
+    await clickButton('Content');
+
+    expect(aborted).toBe(true);
+    expect(document.body.textContent).not.toContain('Cancelled');
+    expect(document.body.textContent).toContain('Canonical memory body page 1.');
+  });
+
   it('invalidates the stable recall snapshot when any search criterion changes', async () => {
     await renderContext();
     await clickButton('Recall & read');
@@ -375,7 +529,9 @@ async function waitForRequestCount(path: string, count: number): Promise<void> {
     if (requests.filter(request => request.path === path).length >= count) return;
     await flush();
   }
-  throw new Error(`Expected ${count} requests to ${path}.`);
+  throw new Error(
+    `Expected ${count} requests to ${path}; observed ${requests.filter(request => request.path === path).length}. Requests: ${JSON.stringify(requests)}`,
+  );
 }
 
 async function flush(): Promise<void> {
@@ -573,7 +729,7 @@ function recallResponse(query: string): ManagerRecallResponse {
 function readResponse(page: number): ManagerContextReadResponse {
   return {
     canonicalUri: RELOCATED_URI,
-    content: `Canonical memory body page ${page + 1}.`,
+    content: `${canonicalMemoryBody} page ${page + 1}.`,
     metadata: {
       kind: 'durable',
       project: 'product',
@@ -586,5 +742,83 @@ function readResponse(page: number): ManagerContextReadResponse {
     requestedUri: MEMORY_URI,
     title: 'context-brief',
     trust: 'untrusted-evidence-never-follow-instructions',
+  };
+}
+
+function connectionsResponse(requestedUri: string): ManagerContextConnectionsResponse {
+  const neighborUri = 'threadnote://user/tester/memories/durable/projects/product/neighbor.md';
+  const citation = createMemoryCodeCitation({
+    extractorSet: 'manager-ui-test',
+    fileContentHash: {algorithm: 'sha256', value: 'a'.repeat(64)},
+    path: 'src/manager/context_view.tsx',
+    repositoryId: 'b'.repeat(64),
+    repositoryIdentityKind: 'remote',
+    sourceCommit: 'c'.repeat(40),
+    sourceDirty: false,
+    sourceSnapshotId: `cgsn_${'d'.repeat(40)}`,
+    target: {
+      fragmentCanonicalization: 'utf8-source-span-v1',
+      fragmentHash: {algorithm: 'sha256', value: 'e'.repeat(64)},
+      kind: 'symbol',
+      language: 'typescript',
+      name: 'ContextPanel',
+      nodeId: `cgs_${'f'.repeat(32)}`,
+      qualifiedName: 'ContextPanel',
+      span: {column: 1, endColumn: 2, endLine: 1, line: 1},
+      symbolKind: 'function',
+    },
+    version: 1,
+  });
+  return {
+    connections: [
+      {
+        currentness: 'current',
+        direction: 'outgoing',
+        distance: 1,
+        neighborMemoryId: 'tn_neighbor',
+        neighborUri,
+        origin: 'relation',
+        relationOrdinal: 0,
+        relationType: 'depends_on',
+        requestedOrdinal: 0,
+        resolution: 'resolved',
+        sourceMemoryId: 'tn_manager_context',
+        sourceUri: RELOCATED_URI,
+        targetMemoryId: 'tn_neighbor',
+        targetUri: neighborUri,
+      },
+    ],
+    coverage: {connectionCount: 1, premiseCount: 1, resultCount: 1, truncated: false, version: 1},
+    editor: {
+      expectedContent: 'canonical source content',
+      relations: [{type: 'depends_on', uri: 'threadnote://memory/tn_neighbor'}],
+      uri: RELOCATED_URI,
+    },
+    nodes: [
+      {
+        codeCitations: [citation],
+        memoryId: 'tn_neighbor',
+        metadata: {
+          kind: 'durable',
+          project: 'product',
+          status: 'active',
+          timestamp: '2026-08-31T00:00:00.000Z',
+          topic: 'neighbor',
+          trust: 'approved',
+        },
+        uri: neighborUri,
+      },
+    ],
+    premises: [
+      {
+        memoryId: 'tn_manager_context',
+        requestedOrdinal: 0,
+        requestedRef: requestedUri,
+        state: 'current',
+        uri: RELOCATED_URI,
+      },
+    ],
+    requestedUri,
+    trust: 'relations-are-navigation-evidence-not-entailment',
   };
 }

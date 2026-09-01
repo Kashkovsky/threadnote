@@ -53,6 +53,27 @@ describe('runRecall native index', () => {
       expect(output).toContain('availability check');
     }),
   );
+  effectIt.effect('accepts bounded seeded one-hop controls and prints premise evidence', () =>
+    Effect.gen(function* () {
+      const {output} = yield* captureRecall(runtime, {
+        dryRun: true,
+        memoryRefs: ['tn_cli_seed'],
+        query: 'connection navigation',
+        relationTypes: ['depends_on'],
+      });
+      expect(output).toContain('Memory connections (one hop');
+      expect(output).toContain('threadnote://memory/tn_cli_seed [unresolved]');
+      expect(output).toContain('Relations are navigation evidence, not entailment.');
+    }),
+  );
+  effectIt.effect('rejects a CLI relation filter without a memory premise', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(
+        captureRecall(runtime, {dryRun: true, query: 'invalid connection controls', relationTypes: ['depends_on']}),
+      );
+      expect(String(failure)).toContain('--relation-type requires at least one --memory-ref');
+    }),
+  );
   effectIt.effect('ignores obsolete local-AI service configuration while deterministic recall remains available', () =>
     Effect.gen(function* () {
       const dir = yield* Effect.promise(() => mkdtemp(join(tmpdir(), 'threadnote-recall-malformed-local-ai-')));

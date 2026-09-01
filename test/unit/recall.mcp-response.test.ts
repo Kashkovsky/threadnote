@@ -69,7 +69,7 @@ describe('recall MCP response projection', () => {
                 root: `threadnote://shared/${team}/memories`,
                 team,
                 type: 'threadnote-memory-scope',
-                version: 1,
+                version: 1 as const,
               },
               warnings: [lexicalIndexUnavailableWarning()],
             },
@@ -99,6 +99,7 @@ describe('recall MCP response projection', () => {
   it('returns a compact unread queue by default and restores ranking detail only with explain', () => {
     const compact = projectRecallMcpResponse(logical([hit(1)]), {budgetTokens: 1_500});
 
+    expect(compact.structuredContent.confidence?.basis).toBe('ranked-relevance');
     expect(compact.structuredContent).toMatchObject({
       nextAction: {
         tool: 'read_context',
@@ -128,6 +129,406 @@ describe('recall MCP response projection', () => {
       reasons: expect.any(Array),
       signals: expect.any(Object),
     });
+  });
+
+  it('projects bounded one-hop receipts only when seeded recall requested them', () => {
+    const firstHit = hit(1);
+    const omittedHit = hit(2);
+    const projected = projectRecallMcpResponse(
+      {
+        ...logical([firstHit]),
+        memoryConnections: {
+          candidates: [],
+          connections: [
+            {
+              currentness: 'current',
+              direction: 'outgoing',
+              distance: 1,
+              neighborMemoryId: 'tn_first',
+              neighborUri: firstHit.uri,
+              origin: 'relation',
+              relationOrdinal: 0,
+              relationType: 'depends_on',
+              requestedOrdinal: 0,
+              resolution: 'resolved',
+              sourceMemoryId: 'tn_seed',
+            },
+            {
+              currentness: 'current',
+              direction: 'outgoing',
+              distance: 1,
+              neighborMemoryId: 'tn_omitted',
+              neighborUri: omittedHit.uri,
+              origin: 'relation',
+              relationOrdinal: 1,
+              relationType: 'related_to',
+              requestedOrdinal: 0,
+              resolution: 'resolved',
+              sourceMemoryId: 'tn_seed',
+            },
+          ],
+          coverage: {
+            connectionCount: 2,
+            premiseCount: 1,
+            resultCount: 2,
+            truncated: false,
+            version: 1,
+          },
+          diagnostics: {
+            canonicalMismatches: 0,
+            canonicalRereads: 3,
+            rawLinkRows: 3,
+            refreshRepairs: 0,
+            truncatedSeedOrdinals: [],
+          },
+          premises: [
+            {
+              memoryId: 'tn_seed',
+              requestedOrdinal: 0,
+              requestedRef: 'threadnote://memory/tn_seed',
+              state: 'current',
+            },
+          ],
+        },
+      },
+      {budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS},
+    );
+
+    expect(projected.structuredContent.memoryConnections).toMatchObject({
+      connections: [{neighborMemoryId: 'tn_first'}],
+      coverage: {connectionCount: 1, resultCount: 1, truncated: true},
+      premises: [{memoryId: 'tn_seed', state: 'current'}],
+    });
+    expect(projected.structuredContent.memoryConnections).not.toHaveProperty('diagnostics');
+    expect(projected.text).toContain('Relations are navigation evidence, not entailment');
+    expect(projected.measurement.totalBytes).toBeLessThanOrEqual(RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS * 3);
+  });
+
+  it('budgets the maximum unresolved receipt shape at the advertised minimum', () => {
+    const premises = Array.from({length: 8}, (_, requestedOrdinal) => ({
+      memoryId: `tn_seed_${requestedOrdinal}`,
+      requestedOrdinal,
+      requestedRef: `threadnote://memory/tn_seed_${requestedOrdinal}`,
+      state: 'unresolved' as const,
+    }));
+    const connections = Array.from({length: 32}, (_, relationOrdinal) => ({
+      currentness: 'unresolved' as const,
+      direction: 'outgoing' as const,
+      distance: 1 as const,
+      neighborMemoryId: `tn_missing_${relationOrdinal}`,
+      origin: 'relation' as const,
+      relationOrdinal,
+      relationType: 'references' as const,
+      requestedOrdinal: relationOrdinal % premises.length,
+      resolution: 'unresolved' as const,
+      sourceMemoryId: `tn_seed_${relationOrdinal % premises.length}`,
+      targetMemoryId: `tn_missing_${relationOrdinal}`,
+    }));
+    const response = {
+      ...logical([]),
+      memoryConnections: {
+        candidates: [],
+        connections,
+        coverage: {
+          connectionCount: connections.length,
+          premiseCount: premises.length,
+          resultCount: 0,
+          truncated: false,
+          version: 1 as const,
+        },
+        diagnostics: {
+          canonicalMismatches: 0,
+          canonicalRereads: 32,
+          rawLinkRows: 32,
+          refreshRepairs: 0,
+          truncatedSeedOrdinals: [],
+        },
+        premises,
+      },
+    };
+
+    const first = projectRecallMcpResponse(response, {
+      budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
+    });
+    const second = projectRecallMcpResponse(response, {
+      budgetTokens: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
+    });
+
+    expect(first).toEqual(second);
+    expect(first.measurement.totalBytes).toBeLessThanOrEqual(RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS * 3);
+    expect(first.structuredContent.memoryConnections).toMatchObject({
+      coverage: {resultCount: 0, truncated: true},
+    });
+    expect(first.structuredContent.memoryConnections?.connections.length).toBeLessThan(connections.length);
+    expect(first.structuredContent.memoryConnections?.coverage.connectionCount).toBe(
+      first.structuredContent.memoryConnections?.connections.length,
+    );
+    expect(first.structuredContent.memoryConnections?.coverage.premiseCount).toBe(
+      first.structuredContent.memoryConnections?.premises.length,
+    );
+  });
+
+  it('counts only projected direct neighbors in seeded one-hop coverage', () => {
+    const directHit = hit(1);
+    const topicalHit = hit(2);
+    const projected = projectRecallMcpResponse({
+      ...logical([directHit, topicalHit]),
+      memoryConnections: {
+        candidates: [],
+        connections: [
+          {
+            currentness: 'current',
+            direction: 'outgoing',
+            distance: 1,
+            neighborMemoryId: 'tn_direct',
+            neighborUri: directHit.uri,
+            origin: 'relation',
+            relationOrdinal: 0,
+            relationType: 'depends_on',
+            requestedOrdinal: 0,
+            resolution: 'resolved',
+            sourceMemoryId: 'tn_seed',
+          },
+        ],
+        coverage: {
+          connectionCount: 1,
+          premiseCount: 1,
+          resultCount: 1,
+          truncated: false,
+          version: 1,
+        },
+        diagnostics: {
+          canonicalMismatches: 0,
+          canonicalRereads: 2,
+          rawLinkRows: 2,
+          refreshRepairs: 0,
+          truncatedSeedOrdinals: [],
+        },
+        premises: [
+          {
+            memoryId: 'tn_seed',
+            requestedOrdinal: 0,
+            requestedRef: 'threadnote://memory/tn_seed',
+            state: 'current',
+          },
+        ],
+      },
+    });
+
+    expect(projected.structuredContent.results.map(result => result.uri)).toEqual([directHit.uri, topicalHit.uri]);
+    expect(projected.structuredContent.memoryConnections).toMatchObject({
+      connections: [{neighborUri: directHit.uri}],
+      coverage: {connectionCount: 1, resultCount: 1, truncated: false},
+    });
+  });
+
+  it('treats a projected verified connection as high-confidence navigation, not a topical answer', () => {
+    const topicalHit = hit(1);
+    const directHit = hit(2);
+    const projected = projectRecallMcpResponse({
+      ...logical([topicalHit, directHit]),
+      confidence: {
+        level: 'no_answer',
+        margin: 0,
+        reason: 'No candidate passed the minimum combined relevance threshold.',
+        score: 0,
+      },
+      memoryConnections: {
+        candidates: [],
+        connections: [
+          {
+            currentness: 'current',
+            direction: 'outgoing',
+            distance: 1,
+            neighborMemoryId: 'tn_direct',
+            neighborUri: directHit.uri,
+            origin: 'relation',
+            relationOrdinal: 0,
+            relationType: 'depends_on',
+            requestedOrdinal: 0,
+            resolution: 'resolved',
+            sourceMemoryId: 'tn_seed',
+          },
+        ],
+        coverage: {
+          connectionCount: 1,
+          premiseCount: 1,
+          resultCount: 1,
+          truncated: false,
+          version: 1,
+        },
+        diagnostics: {
+          canonicalMismatches: 0,
+          canonicalRereads: 2,
+          rawLinkRows: 1,
+          refreshRepairs: 0,
+          truncatedSeedOrdinals: [],
+        },
+        premises: [
+          {
+            memoryId: 'tn_seed',
+            requestedOrdinal: 0,
+            requestedRef: 'threadnote://memory/tn_seed',
+            state: 'current',
+          },
+        ],
+      },
+    });
+
+    expect(projected.structuredContent.confidence).toEqual({
+      basis: 'explicit-memory-connection',
+      level: 'high',
+      margin: 1,
+      reason: 'Verified one-hop relation; confidence covers navigation only, not entailment.',
+      score: 1,
+    });
+    expect(projected.structuredContent.results.map(result => result.uri)).toEqual([topicalHit.uri, directHit.uri]);
+    expect(projected.structuredContent.nextAction.uris[0]).toBe(directHit.uri);
+  });
+
+  it('keeps an explicitly included historical connection actionable while preserving its receipt', () => {
+    const historicalHit = hit(1);
+    const projected = projectRecallMcpResponse({
+      ...logical([historicalHit]),
+      confidence: {
+        level: 'no_answer',
+        margin: 0,
+        reason: 'No candidate passed the minimum combined relevance threshold.',
+        score: 0,
+      },
+      memoryConnections: {
+        candidates: [],
+        connections: [
+          {
+            currentness: 'historical',
+            direction: 'outgoing',
+            distance: 1,
+            neighborMemoryId: 'tn_historical',
+            neighborUri: historicalHit.uri,
+            origin: 'relation',
+            relationOrdinal: 0,
+            relationType: 'references',
+            requestedOrdinal: 0,
+            resolution: 'resolved',
+            sourceMemoryId: 'tn_seed',
+          },
+        ],
+        coverage: {
+          connectionCount: 1,
+          premiseCount: 1,
+          resultCount: 1,
+          truncated: false,
+          version: 1,
+        },
+        diagnostics: {
+          canonicalMismatches: 0,
+          canonicalRereads: 2,
+          rawLinkRows: 1,
+          refreshRepairs: 0,
+          truncatedSeedOrdinals: [],
+        },
+        premises: [
+          {
+            memoryId: 'tn_seed',
+            requestedOrdinal: 0,
+            requestedRef: 'threadnote://memory/tn_seed',
+            state: 'current',
+          },
+        ],
+      },
+    });
+
+    expect(projected.structuredContent.confidence).toMatchObject({
+      basis: 'explicit-memory-connection',
+      level: 'high',
+    });
+    expect(projected.structuredContent.memoryConnections?.connections).toEqual([
+      expect.objectContaining({currentness: 'historical', resolution: 'resolved'}),
+    ]);
+    expect(projected.structuredContent.nextAction.uris).toEqual([historicalHit.uri]);
+  });
+
+  it('keeps every projected verified connection actionable across bounded response budgets', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z0-9-]{1,24}$/), {
+          maxLength: 8,
+          minLength: 1,
+          selector: value => value,
+        }),
+        fc.integer({min: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS, max: 1_500}),
+        (segments, budgetTokens) => {
+          const results = segments.map((segment, index) =>
+            hit(index, {uri: `threadnote://user/test/memories/durable/projects/threadnote/${segment}.md`}),
+          );
+          const connections = results.map((result, relationOrdinal) => ({
+            currentness: relationOrdinal % 2 === 0 ? ('current' as const) : ('historical' as const),
+            direction: 'outgoing' as const,
+            distance: 1 as const,
+            neighborMemoryId: `tn_direct_${relationOrdinal}`,
+            neighborUri: result.uri,
+            origin: 'relation' as const,
+            relationOrdinal,
+            relationType: 'related_to' as const,
+            requestedOrdinal: 0,
+            resolution: 'resolved' as const,
+            sourceMemoryId: 'tn_seed',
+          }));
+          const response = {
+            ...logical(results),
+            confidence: {
+              level: 'no_answer' as const,
+              margin: 0,
+              reason: 'No candidate passed the minimum combined relevance threshold.',
+              score: 0,
+            },
+            memoryConnections: {
+              candidates: [],
+              connections,
+              coverage: {
+                connectionCount: connections.length,
+                premiseCount: 1,
+                resultCount: results.length,
+                truncated: false,
+                version: 1 as const,
+              },
+              diagnostics: {
+                canonicalMismatches: 0,
+                canonicalRereads: results.length + 1,
+                rawLinkRows: connections.length,
+                refreshRepairs: 0,
+                truncatedSeedOrdinals: [],
+              },
+              premises: [
+                {
+                  memoryId: 'tn_seed',
+                  requestedOrdinal: 0,
+                  requestedRef: 'threadnote://memory/tn_seed',
+                  state: 'current' as const,
+                },
+              ],
+            },
+          };
+          const projected = projectRecallMcpResponse(response, {budgetTokens});
+          const repeated = projectRecallMcpResponse(response, {budgetTokens});
+          const returnedUris = new Set(projected.structuredContent.results.map(result => result.uri));
+
+          expect(projected).toEqual(repeated);
+          expect(projected.measurement.totalBytes).toBeLessThanOrEqual(budgetTokens * 3);
+          expect(projected.structuredContent.memoryConnections?.coverage.resultCount).toBeGreaterThan(0);
+          expect(projected.structuredContent.confidence).toMatchObject({
+            basis: 'explicit-memory-connection',
+            level: 'high',
+          });
+          expect(projected.structuredContent.nextAction.uris.length).toBeGreaterThan(0);
+          expect(projected.structuredContent.nextAction.uris.every(uri => returnedUris.has(uri))).toBe(true);
+          expect(
+            connections.some(connection => connection.neighborUri === projected.structuredContent.nextAction.uris[0]),
+          ).toBe(true);
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('surfaces a typed identity-conflict warning without enabling diagnostic explanations', () => {

@@ -7,6 +7,7 @@ import {describe, expect, it} from 'vitest';
 
 const sourceUri = 'threadnote://user/test-user/memories/durable/projects/foo/bar.md';
 const targetUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/bar.md';
+const dependencyUri = 'threadnote://user/test-user/memories/shared/default/durable/projects/foo/dependency.md';
 
 interface TextContent {
   readonly text: string;
@@ -29,8 +30,40 @@ async function makeHome(root: string): Promise<string> {
     'bar.md',
   );
   const gitdir = join(home, 'share', 'teams', 'default.gitdir');
+  const dependencyContent = [
+    'MEMORY',
+    'kind: durable',
+    'status: active',
+    'visibility: shared',
+    'project: foo',
+    'topic: dependency',
+    'memory_id: tn_shared_dependency',
+    'source_agent_client: test',
+    'timestamp: 2026-07-23T00:00:00.000Z',
+    '',
+    'Shared dependency.',
+  ].join('\n');
+  const canonicalDependencyPath = join(
+    home,
+    'data',
+    'local',
+    'user',
+    'test-user',
+    'memories',
+    'shared',
+    'default',
+    'durable',
+    'projects',
+    'foo',
+    'dependency.md',
+  );
+  const worktreeDependencyPath = join(worktree, 'durable', 'projects', 'foo', 'dependency.md');
   await mkdir(worktree, {recursive: true});
   await mkdir(join(sourcePath, '..'), {recursive: true});
+  await mkdir(join(canonicalDependencyPath, '..'), {recursive: true});
+  await mkdir(join(worktreeDependencyPath, '..'), {recursive: true});
+  await writeFile(canonicalDependencyPath, dependencyContent);
+  await writeFile(worktreeDependencyPath, dependencyContent);
   await writeFile(
     sourcePath,
     [
@@ -213,6 +246,45 @@ describe('Threadnote MCP share_publish', () => {
       expect(published).toContain('memory_id: tn_foo_bar');
       expect(published).not.toContain('threadnote:hygiene-sources');
       expect(published).not.toContain('/private-task.md');
+
+      const replaced = await client.callTool(
+        {
+          arguments: {
+            kind: 'durable',
+            project: 'foo',
+            relations: [{type: 'depends_on', uri: dependencyUri}],
+            replaceUri: targetUri,
+            text: 'Updated shared body with a stable dependency.',
+            topic: 'bar',
+          },
+          name: 'remember_context',
+        },
+        undefined,
+        {timeout: 30_000},
+      );
+      expect(replaced.isError, JSON.stringify(replaced)).not.toBe(true);
+      const replacedContent = await readFile(
+        join(
+          home,
+          'data',
+          'local',
+          'user',
+          'test-user',
+          'memories',
+          'shared',
+          'default',
+          'durable',
+          'projects',
+          'foo',
+          'bar.md',
+        ),
+        'utf8',
+      );
+      expect(replacedContent).toContain('memory_id: tn_foo_bar');
+      expect(replacedContent).toContain('created_at: 2026-07-23T00:00:00.000Z');
+      expect(replacedContent).toContain('visibility: shared');
+      expect(replacedContent).toContain('relation: depends_on threadnote://memory/tn_shared_dependency');
+      expect(replacedContent).toContain('Updated shared body with a stable dependency.');
     } finally {
       await client.close().catch(() => undefined);
       await rm(root, {force: true, recursive: true});

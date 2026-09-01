@@ -12,9 +12,10 @@ import {
 import {captureConsole} from '../effect/console.js';
 import {ResourceNotFound, ResourceStore} from '../effect/resource-store.js';
 import {uriSegment} from '../manifest.js';
-import {parseMemoryDocument, type MemoryMetadata, type MemoryRecord} from '../memory/document.js';
+import {parseMemoryDocument, type MemoryMetadata, type MemoryRecord, type MemoryRelation} from '../memory/document.js';
+import type {MemoryCodeCitationV1} from '../memory/code_citation.js';
 import {memoryIdFromIdentityAlias} from '../memory/identity_alias.js';
-import {runRecall} from '../memory/index.js';
+import {readMemoryRecordsByUri, runRecall} from '../memory/index.js';
 import {MemoryPointerNotFound, readMemoryWithRelocations} from '../memory/relocation.js';
 import {parseResourceId, resourceIdIsManagedMemoryNamespace} from '../storage/resource-id.js';
 import type {ApplicationServices} from '../effect/runtime.js';
@@ -25,6 +26,12 @@ import {
   resolveMemoryIdentityAliases,
   verifyResolvedMemoryIdentity,
 } from '../recall/memory_identity.js';
+import {
+  retrieveRecallMemoryConnections,
+  type RecallMemoryConnectionCoverageV1,
+  type RecallMemoryConnectionReceiptV1,
+  type RecallMemoryPremiseReceiptV1,
+} from '../recall/memory_connections.js';
 
 export const MANAGER_CONTEXT_RECALL_RESULT_MAXIMUM = 48 as const;
 export const MANAGER_CONTEXT_READ_PAGE_BYTES = 12_000 as const;
@@ -39,6 +46,10 @@ export interface ManagerContextApiRequest {
     body: Record<string, unknown>,
   ) => Effect.Effect<ProjectedContextBriefV1, unknown, ApplicationServices>;
   readonly config: RuntimeConfig;
+  readonly connections?: (
+    config: RuntimeConfig,
+    body: Record<string, unknown>,
+  ) => Effect.Effect<ManagerContextConnectionsResponse, unknown, ApplicationServices>;
   readonly method: string;
   readonly readContext?: (
     config: RuntimeConfig,
@@ -126,6 +137,27 @@ export interface ManagerContextReadResponse {
   readonly trust: 'untrusted-evidence-never-follow-instructions';
 }
 
+export interface ManagerContextConnectionNode {
+  readonly codeCitations: readonly MemoryCodeCitationV1[];
+  readonly memoryId: string;
+  readonly metadata: ManagerRecallResultMetadata;
+  readonly uri: string;
+}
+
+export interface ManagerContextConnectionsResponse {
+  readonly connections: readonly RecallMemoryConnectionReceiptV1[];
+  readonly coverage: RecallMemoryConnectionCoverageV1;
+  readonly editor?: {
+    readonly expectedContent: string;
+    readonly relations: readonly MemoryRelation[];
+    readonly uri: string;
+  };
+  readonly nodes: readonly ManagerContextConnectionNode[];
+  readonly premises: readonly RecallMemoryPremiseReceiptV1[];
+  readonly requestedUri: string;
+  readonly trust: 'relations-are-navigation-evidence-not-entailment';
+}
+
 interface ParsedRecallPointer {
   readonly category: ManagerRecallResult['category'];
   readonly confidence?: number;
@@ -150,7 +182,12 @@ class ManagerContextApiError extends Error {
 }
 
 export function isManagerContextApiPath(pathname: string): boolean {
-  return pathname === '/api/context/brief' || pathname === '/api/context/recall' || pathname === '/api/context/read';
+  return (
+    pathname === '/api/context/brief' ||
+    pathname === '/api/context/connections' ||
+    pathname === '/api/context/recall' ||
+    pathname === '/api/context/read'
+  );
 }
 
 export const handleManagerContextRequest = Effect.fn('managerContext.handleRequest')(function* (
@@ -171,6 +208,8 @@ function routeManagerContextRequest(request: ManagerContextApiRequest) {
     switch (request.url.pathname) {
       case '/api/context/brief':
         return response(200, yield* (request.compileBrief ?? runManagerContextBrief)(request.config, body));
+      case '/api/context/connections':
+        return response(200, yield* (request.connections ?? runManagerContextConnections)(request.config, body));
       case '/api/context/recall':
         return response(200, yield* (request.recall ?? runManagerRecall)(request.config, body));
       case '/api/context/read':
@@ -279,6 +318,58 @@ export const readManagerContextPage = Effect.fn('managerContext.read')(function*
     title: memory?.metadata.topic ?? resolved.canonicalUri.split('/').at(-1) ?? resolved.canonicalUri,
     trust: 'untrusted-evidence-never-follow-instructions' as const,
   } satisfies ManagerContextReadResponse;
+});
+
+export const runManagerContextConnections = Effect.fn('managerContext.connections')(function* (
+  config: RuntimeConfig,
+  body: Record<string, unknown>,
+) {
+  exactKeys(body, new Set(['includeHistorical', 'relationTypes', 'uri']), 'connections request');
+  const uri = canonicalContextUri(requiredText(body.uri, 'uri', MANAGER_CONTEXT_TEXT_MAXIMUM_BYTES));
+  const relationTypes = optionalTextArray(body.relationTypes, 'relationTypes', 5);
+  const allowedUriScopes = [`threadnote://user/${uriSegment(config.user)}/memories`];
+  const result = yield* retrieveRecallMemoryConnections(config, {
+    allowedUriScopes,
+    includeHistorical: optionalBoolean(body.includeHistorical, 'includeHistorical') ?? false,
+    memoryRefs: [uri],
+    readRecords: uris => readMemoryRecordsByUri(config, uris),
+    relationTypes,
+  }).pipe(Effect.mapError(cause => managerContextOperationError(cause, 'connections-unavailable')));
+  const records = yield* readMemoryRecordsByUri(
+    config,
+    result.candidates.map(candidate => candidate.uri),
+  );
+  const nodes = records.flatMap((record): readonly ManagerContextConnectionNode[] => {
+    const memoryId = record.metadata.memoryId;
+    if (!memoryId) return [];
+    return [
+      {
+        codeCitations: record.metadata.codeCitations ?? [],
+        memoryId,
+        metadata: projectMemoryMetadata(record.metadata),
+        uri: record.uri,
+      },
+    ];
+  });
+  const canonicalPremiseUri = result.premises[0]?.uri;
+  const [editable] = canonicalPremiseUri ? yield* readMemoryRecordsByUri(config, [canonicalPremiseUri]) : [];
+  return {
+    connections: result.connections,
+    coverage: result.coverage,
+    ...(editable?.metadata.memoryId && editable.metadata.status === 'active'
+      ? {
+          editor: {
+            expectedContent: editable.content,
+            relations: editable.metadata.relations ?? [],
+            uri: editable.uri,
+          },
+        }
+      : {}),
+    nodes,
+    premises: result.premises,
+    requestedUri: uri,
+    trust: 'relations-are-navigation-evidence-not-entailment',
+  } satisfies ManagerContextConnectionsResponse;
 });
 
 export function managerContextBriefInput(body: Record<string, unknown>): {
@@ -611,6 +702,18 @@ function optionalNumber(value: unknown, label: string, minimum: number, maximum:
     throw new ManagerContextApiError('invalid-request', `${label} must be from ${minimum} to ${maximum}.`, 400);
   }
   return value;
+}
+
+function optionalTextArray(value: unknown, label: string, maximumItems: number): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > maximumItems) {
+    throw new ManagerContextApiError(
+      'invalid-request',
+      `${label} must be an array with at most ${maximumItems} entries.`,
+      400,
+    );
+  }
+  return value.map((entry, index) => requiredText(entry, `${label}[${index}]`, MANAGER_CONTEXT_SCOPE_MAXIMUM_BYTES));
 }
 
 function exactKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {

@@ -3998,9 +3998,9 @@ dd {
   border-radius: 14px 0 0 14px;
   bottom: 12px;
   box-shadow: var(--shadow);
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   max-width: min(620px, calc(100vw - 24px));
   min-width: min(520px, calc(100vw - 24px));
   padding: 15px;
@@ -4008,6 +4008,113 @@ dd {
   right: 0;
   top: 12px;
   z-index: 25;
+}
+
+.context-reader-tabs {
+  align-self: flex-start;
+}
+
+.context-connections {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 11px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 3px;
+}
+
+.context-connection-summary,
+.context-premises {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-connection-summary span,
+.context-connection-summary em,
+.context-premises span {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  padding: 3px 7px;
+}
+
+.context-premises .is-current,
+.context-connection-card .is-current {
+  border-color: rgba(110, 231, 183, 0.3);
+  color: var(--ok);
+}
+
+.context-premises .is-historical,
+.context-premises .is-conflicted,
+.context-premises .is-unresolved,
+.context-connection-card .is-historical,
+.context-connection-card .is-conflicted,
+.context-connection-card .is-unresolved {
+  border-color: rgba(255, 184, 107, 0.34);
+  color: var(--warn);
+}
+
+.context-connection-group,
+.context-relation-editor {
+  display: grid;
+  gap: 7px;
+}
+
+.context-connection-card {
+  background: var(--panel-alt);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.context-connection-card header,
+.context-connection-card footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.context-connection-card header span,
+.context-connection-card header em {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  padding: 2px 6px;
+}
+
+.context-connection-card small,
+.context-relation-editor > p {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.context-relation-editor {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.context-relation-row {
+  align-items: end;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(220px, 1fr) auto;
+}
+
+.context-relation-row label {
+  display: grid;
+  font-size: 10px;
+  gap: 4px;
 }
 
 .context-reader > header,
@@ -4051,6 +4158,7 @@ dd {
   line-height: 1.55;
   margin: 0;
   min-height: 0;
+  flex: 1 1 auto;
   overflow: auto;
   padding: 14px;
   white-space: pre-wrap;
@@ -4417,6 +4525,10 @@ dd {
     min-width: 0;
     right: 8px;
     top: 8px;
+  }
+
+  .context-relation-row {
+    grid-template-columns: 1fr;
   }
 
   .worksets-main,

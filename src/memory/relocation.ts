@@ -4,7 +4,7 @@ import {ResourceStore} from '../effect/resource-store.js';
 import {fileSystemModeIsPrivate, runtimePlatform} from '../effect/system.js';
 import {uriSegment} from '../manifest.js';
 import {threadnoteStorageLayout} from '../storage/layout.js';
-import {parseResourceId} from '../storage/resource-id.js';
+import {parseResourceId, resourceIdIsWithin} from '../storage/resource-id.js';
 import type {RuntimeConfig} from '../types.js';
 import {parseMemoryDocument} from './document.js';
 
@@ -101,8 +101,18 @@ export const discardMemoryRelocation = Effect.fn('memoryRelocation.discard')(fun
 export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(function* (
   config: RelocationRuntime,
   requestedInput: string,
+  options: {readonly allowedUriScopes?: readonly string[]} = {},
 ) {
   const requestedUri = yield* canonicalManagedMemoryUri(config, requestedInput);
+  const allowedUriScopes = options.allowedUriScopes?.map(scope => parseResourceId(scope).canonicalUri);
+  const isAuthorized = (uri: string) =>
+    allowedUriScopes === undefined || allowedUriScopes.some(scope => resourceIdIsWithin(uri, scope));
+  if (!isAuthorized(requestedUri)) {
+    return yield* new MemoryPointerNotFound({
+      message: `Memory resource does not exist: ${requestedUri}`,
+      uri: requestedUri,
+    });
+  }
   const store = yield* ResourceStore;
   const location = resourceStoreLocation(config);
   const direct = yield* store.read(location, requestedUri).pipe(
@@ -143,6 +153,15 @@ export const readMemoryWithRelocations = Effect.fn('memoryRelocation.read')(func
       return yield* Effect.fail(relocationError('Memory relocation chain contains a loop.'));
     }
     visited.add(receipt.toUri);
+    // Private relocation receipts may cross share boundaries. Authorization
+    // must be checked before the destination read so the receipt cannot become
+    // an existence oracle for a private or different-team memory.
+    if (!isAuthorized(receipt.toUri)) {
+      return yield* new MemoryPointerNotFound({
+        message: `Memory resource does not exist: ${requestedUri}`,
+        uri: requestedUri,
+      });
+    }
 
     const destination = yield* store.read(location, receipt.toUri).pipe(
       Effect.map(Option.some),

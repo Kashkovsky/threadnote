@@ -1,15 +1,16 @@
 import type {CallToolResult} from '@modelcontextprotocol/sdk/types.js';
-import {Console, Effect} from 'effect';
+import {Console, Effect, Schema} from 'effect';
 import {EffectMcpServerAdapter, McpInput} from '../../effect/ai/mcp.js';
 import {enrichMemoryMetadataWithConfiguredLocalAi} from '../../effect/ai/enrichment.js';
-import {isInSharedNamespace} from '../../share/index.js';
+import {isInSharedNamespace, sharedTeamNameForUri} from '../../share/index.js';
 import {MemoryCodeCitationCaptureError} from '../../memory/code_citation_capture.js';
 import {MAX_MEMORY_CODE_CITATIONS, MEMORY_SCHEMA_VERSION} from '../../memory/code_citation.js';
 import {
   memoryCodeCitationSharingBlocker,
   memoryCodeCitationSharingBlockerMessage,
 } from '../../memory/code_citation_policy.js';
-import type {MemoryMetadata} from '../../memory/document.js';
+import {MAX_MEMORY_RELATIONS, MEMORY_RELATION_TYPES, type MemoryMetadata} from '../../memory/document.js';
+import {resolveAuthoredMemoryRelations} from '../../memory/relations.js';
 import {
   DEFAULT_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
   finalizeDeferredCodeAnchors,
@@ -47,23 +48,32 @@ export function registerStoreTool(
       annotations: {readOnlyHint: false, destructiveHint: true},
       description: `${description} Never store secrets, credentials, customer data, or raw logs.`,
       inputSchema: {
-        callerCwd: McpInput.string('Absolute cwd for nested package/app scope'),
+        callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path or cgs_/cgr_ ref; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
-        citationPolicy: McpInput.literals(
-          ['require-current', 'defer'],
-          'Private codeRefs default to defer; require-current fails pre-write',
+        citationPolicy: McpInput.literals(['require-current', 'defer'], 'codeRefs policy'),
+        kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke']),
+        project: McpInput.string(),
+        references: McpInput.stringOrStrings('Memory URI(s)'),
+        relations: Schema.optionalKey(
+          Schema.Array(
+            Schema.Struct({
+              type: Schema.Literals(MEMORY_RELATION_TYPES),
+              uri: Schema.String,
+            }),
+          )
+            .check(Schema.isMaxLength(MAX_MEMORY_RELATIONS))
+            .annotate({
+              description: `Typed links; max ${MAX_MEMORY_RELATIONS}`,
+            }),
         ),
-        kind: McpInput.literals(['durable', 'handoff', 'incident', 'preference', 'smoke'], 'Memory lifecycle kind'),
-        project: McpInput.string('Project/repo namespace'),
-        references: McpInput.stringOrStrings('Prior read-only threadnote:// URI(s)'),
-        replaceUri: McpInput.string('threadnote:// memory URI to replace safely'),
-        text: McpInput.string('Memory text'),
-        sourceAgentClient: McpInput.string('Originating client'),
-        status: McpInput.literals(['active', 'archived', 'expired', 'superseded'], 'Memory status'),
-        topic: McpInput.string('Stable topic'),
+        replaceUri: McpInput.string('Replaced memory URI'),
+        text: McpInput.string(),
+        sourceAgentClient: McpInput.string(),
+        status: McpInput.literals(['active', 'archived', 'expired', 'superseded']),
+        topic: McpInput.string(),
       },
     },
     ({
@@ -73,6 +83,7 @@ export function registerStoreTool(
       kind,
       project,
       references,
+      relations,
       replaceUri,
       sourceAgentClient,
       status,
@@ -174,9 +185,20 @@ export function registerStoreTool(
         const [replaced] = checkedReplaceUri.value
           ? yield* readMemoryRecordsByUri(config, [checkedReplaceUri.value])
           : [];
+        const sharedTeam = checkedReplaceUri.value ? sharedTeamNameForUri(config, checkedReplaceUri.value) : undefined;
+        const relationScope =
+          memoryScope?.root ??
+          (sharedTeam
+            ? `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(sharedTeam)}`
+            : `threadnote://user/${uriSegment(config.user)}/memories`);
+        const authoredRelations = yield* resolveAuthoredMemoryRelations(config, relations ?? [], {
+          allowedUriScopes: [relationScope],
+          sourceMemoryId: replaced?.metadata.memoryId,
+        });
         const scopedMetadata = {
           ...metadata,
           ...(codeCitations.length === 0 ? {} : {codeCitations}),
+          ...(authoredRelations.relations === undefined ? {} : {relations: authoredRelations.relations}),
           ...(commonCitationSourceCommit(codeCitations) === undefined
             ? {}
             : {sourceCommit: commonCitationSourceCommit(codeCitations)}),
@@ -191,10 +213,15 @@ export function registerStoreTool(
           }
           const result = yield* writeCursorCloudSharedMemory(config, memoryScope, {
             bodyText: checkedText.value,
+            expectedSourceContent: authoredRelations.targets,
             metadata: scopedMetadata,
             replaceUri: checkedReplaceUri.value,
           });
-          return withClearedCodeCitationReceipt(result, replaced?.metadata.codeCitations?.length, codeCitations.length);
+          return withClearedMemoryRelationReceipt(
+            withClearedCodeCitationReceipt(result, replaced?.metadata.codeCitations?.length, codeCitations.length),
+            replaced?.metadata.relations?.length,
+            authoredRelations.relations?.length ?? 0,
+          );
         }
         const enrichedMetadata =
           memoryScope || (checkedReplaceUri.value && isInSharedNamespace(config, checkedReplaceUri.value))
@@ -209,6 +236,7 @@ export function registerStoreTool(
         const result = yield* writeDurableMemory(config, {
           bodyText: checkedText.value,
           deferredCodeAnchor,
+          expectedSourceContent: authoredRelations.targets,
           metadata: enrichedMetadata,
           replaceUri: checkedReplaceUri.value,
         });
@@ -227,10 +255,15 @@ export function registerStoreTool(
                 },
               }
             : result;
+        const relationReceiptResult = withClearedMemoryRelationReceipt(
+          projectedResult,
+          replaced?.metadata.relations?.length,
+          authoredRelations.relations?.length ?? 0,
+        );
         return deferredCodeAnchor
-          ? withDeferredCodeAnchorWriteReceipt(projectedResult, deferredCodeAnchor)
+          ? withDeferredCodeAnchorWriteReceipt(relationReceiptResult, deferredCodeAnchor)
           : withClearedCodeCitationReceipt(
-              projectedResult,
+              relationReceiptResult,
               replaced?.metadata.codeCitations?.length,
               codeCitations.length,
             );
@@ -303,6 +336,23 @@ function withClearedCodeCitationReceipt(
     structuredContent: {
       ...(result.structuredContent ?? {}),
       clearedCodeCitations: previousCount,
+    },
+  };
+}
+
+function withClearedMemoryRelationReceipt(
+  result: CallToolResult,
+  previousCount: number | undefined,
+  currentCount: number,
+): CallToolResult {
+  if (result.isError === true || !previousCount || currentCount > 0) return result;
+  const note = `Cleared ${previousCount} prior memory relation(s); provide relations to author the replacement edges.`;
+  return {
+    ...result,
+    content: [...result.content, {type: 'text', text: note}],
+    structuredContent: {
+      ...(result.structuredContent ?? {}),
+      clearedMemoryRelations: previousCount,
     },
   };
 }

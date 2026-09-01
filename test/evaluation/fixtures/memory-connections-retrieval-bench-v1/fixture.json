@@ -1,0 +1,324 @@
+{
+  "abilities": ["static-contract", "dynamic-state", "workflow-knowledge", "environment-gotcha", "premise-awareness"],
+  "cases": [
+    {
+      "ability": "static-contract",
+      "expectedConnectionCount": 2,
+      "expectedMemoryIds": ["tn_direct_incoming", "tn_direct_target"],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": [],
+      "id": "direct-incoming-and-outgoing",
+      "memoryRefs": ["threadnote://memory/tn_direct_seed"],
+      "scenario": "direct-incoming-outgoing"
+    },
+    {
+      "ability": "workflow-knowledge",
+      "expectedConnectionCount": 2,
+      "expectedMemoryIds": ["tn_fair_a1", "tn_fair_b1"],
+      "expectedPremiseStates": ["current", "current"],
+      "forbiddenMemoryIds": [],
+      "id": "multi-seed-round-robin",
+      "limit": 2,
+      "memoryRefs": ["threadnote://memory/tn_fair_seed_a", "threadnote://memory/tn_fair_seed_b"],
+      "scenario": "multi-seed-fairness"
+    },
+    {
+      "ability": "workflow-knowledge",
+      "expectedConnectionCount": 1,
+      "expectedMemoryIds": ["tn_chain_mid"],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": ["tn_chain_deep"],
+      "id": "one-hop-does-not-recurse",
+      "memoryRefs": ["threadnote://memory/tn_chain_seed"],
+      "scenario": "one-hop-chain"
+    },
+    {
+      "ability": "environment-gotcha",
+      "expectedConnectionCount": 2,
+      "expectedMemoryIds": ["tn_cycle_b"],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": [],
+      "id": "cycle-deduplicates-neighbor",
+      "memoryRefs": ["threadnote://memory/tn_cycle_a"],
+      "scenario": "cycle"
+    },
+    {
+      "ability": "environment-gotcha",
+      "expectedConnectionCount": 1,
+      "expectedMemoryIds": [],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": [],
+      "id": "legacy-unresolved-receipt",
+      "memoryRefs": ["threadnote://memory/tn_legacy_seed"],
+      "scenario": "unresolved-legacy"
+    },
+    {
+      "ability": "premise-awareness",
+      "expectedConnectionCount": 0,
+      "expectedMemoryIds": [],
+      "expectedPremiseStates": ["conflicted"],
+      "forbiddenMemoryIds": [],
+      "id": "identity-conflicted-premise-abstains",
+      "memoryRefs": ["threadnote://memory/tn_conflict"],
+      "scenario": "identity-conflict"
+    },
+    {
+      "ability": "premise-awareness",
+      "expectedConnectionCount": 1,
+      "expectedMemoryIds": [],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": [],
+      "id": "identity-conflicted-neighbor-is-receipt-only",
+      "memoryRefs": ["threadnote://memory/tn_conflict_source"],
+      "scenario": "identity-conflict"
+    },
+    {
+      "ability": "dynamic-state",
+      "expectedConnectionCount": 1,
+      "expectedMemoryIds": ["tn_historical_source"],
+      "expectedPremiseStates": ["historical"],
+      "forbiddenMemoryIds": [],
+      "id": "validity-window-precedes-freshness",
+      "includeHistorical": true,
+      "memoryRefs": ["threadnote://memory/tn_historical"],
+      "scenario": "historical-validity"
+    },
+    {
+      "ability": "dynamic-state",
+      "expectedConnectionCount": 1,
+      "expectedMemoryIds": ["tn_superseding"],
+      "expectedPremiseStates": ["historical"],
+      "forbiddenMemoryIds": [],
+      "id": "explicit-superseder-makes-premise-historical",
+      "memoryRefs": ["threadnote://memory/tn_superseded"],
+      "relationTypes": ["supersedes"],
+      "scenario": "explicit-supersession"
+    },
+    {
+      "ability": "environment-gotcha",
+      "expectedConnectionCount": 0,
+      "expectedMemoryIds": [],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": ["tn_foreign_target"],
+      "id": "foreign-target-is-not-disclosed",
+      "memoryRefs": ["threadnote://memory/tn_auth_seed"],
+      "scenario": "authorization-nondisclosure"
+    },
+    {
+      "ability": "static-contract",
+      "expectedConnectionCount": 0,
+      "expectedMemoryIds": [],
+      "expectedPremiseStates": ["current"],
+      "forbiddenMemoryIds": [],
+      "id": "no-connections-abstains",
+      "memoryRefs": ["threadnote://memory/tn_empty"],
+      "scenario": "no-connections"
+    }
+  ],
+  "documents": [
+    {
+      "body": "Direct seed.",
+      "memoryId": "tn_direct_seed",
+      "relations": [{"type": "depends_on", "uri": "threadnote://memory/tn_direct_target"}],
+      "status": "active",
+      "topic": "direct-seed",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Direct target.",
+      "memoryId": "tn_direct_target",
+      "relations": [],
+      "status": "active",
+      "topic": "direct-target",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Incoming evidence.",
+      "memoryId": "tn_direct_incoming",
+      "relations": [{"type": "evidence_for", "uri": "threadnote://memory/tn_direct_seed"}],
+      "status": "active",
+      "topic": "direct-incoming",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Fair seed A.",
+      "memoryId": "tn_fair_seed_a",
+      "relations": [
+        {"type": "related_to", "uri": "threadnote://memory/tn_fair_a1"},
+        {"type": "related_to", "uri": "threadnote://memory/tn_fair_a2"}
+      ],
+      "status": "active",
+      "topic": "fair-seed-a",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Fair seed B.",
+      "memoryId": "tn_fair_seed_b",
+      "relations": [{"type": "related_to", "uri": "threadnote://memory/tn_fair_b1"}],
+      "status": "active",
+      "topic": "fair-seed-b",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Fair A one.",
+      "memoryId": "tn_fair_a1",
+      "relations": [],
+      "status": "active",
+      "topic": "fair-a1",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Fair A two.",
+      "memoryId": "tn_fair_a2",
+      "relations": [],
+      "status": "active",
+      "topic": "fair-a2",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Fair B one.",
+      "memoryId": "tn_fair_b1",
+      "relations": [],
+      "status": "active",
+      "topic": "fair-b1",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Chain seed.",
+      "memoryId": "tn_chain_seed",
+      "relations": [{"type": "depends_on", "uri": "threadnote://memory/tn_chain_mid"}],
+      "status": "active",
+      "topic": "chain-seed",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Chain middle.",
+      "memoryId": "tn_chain_mid",
+      "relations": [{"type": "depends_on", "uri": "threadnote://memory/tn_chain_deep"}],
+      "status": "active",
+      "topic": "chain-mid",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Chain deep.",
+      "memoryId": "tn_chain_deep",
+      "relations": [],
+      "status": "active",
+      "topic": "chain-deep",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Cycle A.",
+      "memoryId": "tn_cycle_a",
+      "relations": [{"type": "related_to", "uri": "threadnote://memory/tn_cycle_b"}],
+      "status": "active",
+      "topic": "cycle-a",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Cycle B.",
+      "memoryId": "tn_cycle_b",
+      "relations": [{"type": "related_to", "uri": "threadnote://memory/tn_cycle_a"}],
+      "status": "active",
+      "topic": "cycle-b",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Legacy unresolved seed.",
+      "memoryId": "tn_legacy_seed",
+      "relations": [
+        {
+          "type": "references",
+          "uri": "threadnote://user/mc-retrieval/memories/durable/projects/threadnote/legacy-missing.md"
+        }
+      ],
+      "status": "active",
+      "topic": "legacy-seed",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Conflict variant A.",
+      "memoryId": "tn_conflict",
+      "relations": [],
+      "status": "active",
+      "topic": "conflict-a",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Conflict variant B.",
+      "memoryId": "tn_conflict",
+      "relations": [],
+      "status": "active",
+      "topic": "conflict-b",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Source pointing at conflicted identity.",
+      "memoryId": "tn_conflict_source",
+      "relations": [{"type": "references", "uri": "threadnote://memory/tn_conflict"}],
+      "status": "active",
+      "topic": "conflict-source",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Expired premise.",
+      "memoryId": "tn_historical",
+      "relations": [],
+      "status": "active",
+      "topic": "historical",
+      "user": "mc-retrieval",
+      "validTo": "2026-08-30T00:00:00.000Z"
+    },
+    {
+      "body": "Source for expired premise.",
+      "memoryId": "tn_historical_source",
+      "relations": [{"type": "evidence_for", "uri": "threadnote://memory/tn_historical"}],
+      "status": "active",
+      "topic": "historical-source",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Older premise.",
+      "memoryId": "tn_superseded",
+      "relations": [],
+      "status": "active",
+      "topic": "superseded",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Current replacement.",
+      "memoryId": "tn_superseding",
+      "relations": [],
+      "status": "active",
+      "supersedes": "threadnote://memory/tn_superseded",
+      "topic": "superseding",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Authorized source.",
+      "memoryId": "tn_auth_seed",
+      "relations": [{"type": "references", "uri": "threadnote://memory/tn_foreign_target"}],
+      "status": "active",
+      "topic": "auth-seed",
+      "user": "mc-retrieval"
+    },
+    {
+      "body": "Unauthorized target.",
+      "memoryId": "tn_foreign_target",
+      "relations": [],
+      "status": "active",
+      "topic": "foreign-target",
+      "user": "mc-foreign"
+    },
+    {
+      "body": "No connection premise.",
+      "memoryId": "tn_empty",
+      "relations": [],
+      "status": "active",
+      "topic": "empty",
+      "user": "mc-retrieval"
+    }
+  ],
+  "id": "memory-connections-retrieval-bench-v1",
+  "version": 1
+}

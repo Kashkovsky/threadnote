@@ -206,6 +206,35 @@ describe('stripPersonalProvenance', () => {
     expect(out).toContain('Reviewed body.');
   });
 
+  it('preserves only validated stable memory relations when explicitly requested', () => {
+    const input = [
+      'MEMORY',
+      'kind: durable',
+      'project: foo',
+      'relation: depends_on threadnote://memory/tn_shared_dependency',
+      'relation:references threadnote://memory/tn_compact_shared_dependency',
+      'relation: references threadnote://user/me/memories/durable/projects/foo/private.md',
+      'relation:depends_on threadnote://user/me/memories/durable/projects/foo/compact-private.md',
+      ' relation: depends_on threadnote://user/me/memories/durable/projects/foo/indented-private.md',
+      'relation: unknown threadnote://memory/tn_not_allowed',
+      'relation: evidence_for threadnote://memory/not-a-memory-id',
+      '',
+      'Shared body.',
+    ].join('\n');
+
+    expect(stripPersonalProvenance(input)).not.toMatch(/^relation:/m);
+
+    const shared = stripPersonalProvenance(input, {preserveStableMemoryRelations: true});
+    expect(shared).toContain('relation: depends_on threadnote://memory/tn_shared_dependency');
+    expect(shared).toContain('relation:references threadnote://memory/tn_compact_shared_dependency');
+    expect(shared).not.toContain('private.md');
+    expect(shared).not.toContain('compact-private.md');
+    expect(shared).not.toContain('indented-private.md');
+    expect(shared).not.toContain('tn_not_allowed');
+    expect(shared).not.toContain('not-a-memory-id');
+    expect(shared).toContain('Shared body.');
+  });
+
   it('leaves content unchanged when there is no header to strip', () => {
     const input = 'just a body\nwith no provenance';
     expect(stripPersonalProvenance(input)).toBe(input);

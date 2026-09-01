@@ -16,6 +16,9 @@ on:
       - 'scripts/benchmark-context-brief-citations-target.ts'
       - 'scripts/benchmark-code-memory-link-scale.ts'
       - 'scripts/benchmark-code-memory-link-scale-target.ts'
+      - 'scripts/benchmark-memory-connections-scale.ts'
+      - 'scripts/benchmark-memory-connections-scale-target.ts'
+      - 'scripts/evaluate-memory-connections-retrieval.ts'
       - 'scripts/generate-code-graph-heavy-tail-ratchet.ts'
       - 'scripts/generate-code-graph-production-ratchet.ts'
       - 'scripts/code-graph-benchmark-sampler.ts'
@@ -47,6 +50,8 @@ on:
       - 'test/evaluation/baselines/code-graph-workset-v1/**'
       - 'test/evaluation/baselines/context-brief-citations-v1/**'
       - 'test/evaluation/baselines/code-memory-link-scale-v1/**'
+      - 'test/evaluation/baselines/memory-connections-scale-v1/**'
+      - 'test/evaluation/fixtures/memory-connections-retrieval-bench-v1/**'
       - 'test/evaluation/candidates/threadnote-4.0.0/**'
       - 'test/evaluation/fixtures/code-graph-v1/**'
       - 'test/evaluation/fixtures/code-graph-workset-v1/**'
@@ -79,6 +84,11 @@ on:
         default: false
       include_code_memory_link_scale:
         description: Run the governed 100,000-memory code-to-memory inverse-selector gate
+        required: false
+        type: boolean
+        default: false
+      include_memory_connections_scale:
+        description: Run the governed 100,000-memory one-hop connection gate
         required: false
         type: boolean
         default: false
@@ -115,6 +125,9 @@ jobs:
 
       - name: Gate production lexical and exact-search behavior
         run: bun run eval:recall
+
+      - name: Gate seeded one-hop memory retrieval and currentness
+        run: bun run eval:memory-connections-retrieval
 
       - name: Gate paged vector storage and incremental reuse
         run: >-
@@ -419,6 +432,40 @@ jobs:
         with:
           name: code-memory-link-inverse-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
           path: artifacts/test/evaluation/retained/code-memory-link-scale/*.json
+          if-no-files-found: error
+          retention-days: 90
+
+  memory-connections-one-hop-scale:
+    name: Memory connections · 100,000 memories · release macOS class
+    if: github.event_name == 'schedule' || inputs.include_memory_connections_scale
+    runs-on: macos-15
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build and gate one-hop retrieval at 100,000 memories
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-macos-15-ARM64
+        run: >-
+          bun run bench:memory-connections-scale --
+          --candidate-commit "${{ github.sha }}"
+          --output artifacts/memory-connections-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: memory-connections-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          path: artifacts/memory-connections-scale-*.json
           if-no-files-found: error
           retention-days: 90
 

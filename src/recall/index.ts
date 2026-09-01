@@ -42,6 +42,7 @@ import {
   recallEligibilityPolicyRestrictsCandidates,
   type RecallEligibilityPolicy,
 } from './eligibility.js';
+import {recallCandidateIsValid} from './candidate_validation.js';
 import {recallEligibilityPredicate} from './index_eligibility.js';
 import {
   boundedRecallPhysicalCandidateLimit,
@@ -55,6 +56,12 @@ import {
   type RecallCodeLinkMatch,
   type RecallCodeLinkQueryOptions,
 } from './code_links.js';
+import {
+  deriveIndexedRecallMemoryLinks,
+  selectRecallMemoryLinks,
+  type RecallMemoryLinkMatch,
+  type RecallMemoryLinkQueryOptions,
+} from './memory_links.js';
 import * as RecallIndexIdentity from './index_identity.js';
 import {
   recallIndexCanonicalMutationContinuityAllowsIncrementalRefresh,
@@ -93,6 +100,7 @@ import {
   RECALL_REFRESH_AFFECTED_TERM_TABLE,
   RECALL_REFRESH_INDEXED_CODE_LINK_TABLE,
   RECALL_REFRESH_INDEXED_DOCUMENT_TABLE,
+  RECALL_REFRESH_INDEXED_MEMORY_LINK_TABLE,
   RECALL_REFRESH_INDEXED_POSTING_TABLE,
   RECALL_REFRESH_REPLACED_DOCUMENT_TABLE,
   RECALL_REFRESH_SOURCE_TABLE,
@@ -184,7 +192,7 @@ interface RecallTermStatisticRow {
   readonly term: string;
 }
 
-const RECALL_INDEX_DATABASE_VERSION = 11;
+const RECALL_INDEX_DATABASE_VERSION = 12;
 const RECALL_INDEX_POINTER_VERSION = 1;
 const ACTIVE_DATABASE_FILENAME = `active-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
 const INACTIVE_DATABASE_FILENAME = `with-inactive-v${RECALL_INDEX_DATABASE_VERSION}.sqlite`;
@@ -221,6 +229,8 @@ interface LoadRecallIndexOptions {
   /** Enabled only from explicit recency wording in the original user query. */
   readonly recencyIntent?: boolean;
   readonly requiredUris?: readonly string[];
+  /** Bypass the short freshness cache, but reindex only sources whose live metadata changed. */
+  readonly validateNow?: boolean;
   readonly workspaceScope?: string;
   /** Select the protected hierarchy by default, or only scopes outside it for the bounded challenger lane. */
   readonly workspaceScopeMode?: RecallWorkspaceScopeMode;
@@ -230,7 +240,7 @@ interface LoadRecallIndexBatchOptions {
   readonly forceRefresh?: boolean;
   readonly includeInactive: boolean;
   readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
-  readonly selections: readonly Omit<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive'>[];
+  readonly selections: readonly Omit<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive' | 'validateNow'>[];
 }
 
 interface LoadRecallExactMatchesOptions {
@@ -249,10 +259,22 @@ export interface LoadRecallCodeLinksOptions extends RecallCodeLinkQueryOptions {
   readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
 }
 
+export interface LoadRecallMemoryLinksOptions extends RecallMemoryLinkQueryOptions {
+  readonly forceRefresh?: boolean;
+  readonly includeInactive: boolean;
+  readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
+  /** @internal Reports the single forced-refresh repair initiated by this load. */
+  readonly onRefreshRepair?: () => void;
+}
+
 const loadRecallIndexDataInternal = Effect.fn('recall.loadIndexDataInternal')(function* (
   config: RecallIndexConfig,
   options:
-    LoadRecallCodeLinksOptions | LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+    | LoadRecallCodeLinksOptions
+    | LoadRecallMemoryLinksOptions
+    | LoadRecallIndexOptions
+    | LoadRecallIndexBatchOptions
+    | LoadRecallExactMatchesOptions,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const pathService = yield* Path.Path;
@@ -278,7 +300,11 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
   options:
-    LoadRecallCodeLinksOptions | LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+    | LoadRecallCodeLinksOptions
+    | LoadRecallMemoryLinksOptions
+    | LoadRecallIndexOptions
+    | LoadRecallIndexBatchOptions
+    | LoadRecallExactMatchesOptions,
   prepareForActivation = false,
   indexLockHeld = false,
 ) {
@@ -297,28 +323,35 @@ const executeRecallIndexQuery = Effect.fn('recall.executeIndexQuery')(function* 
         databasePath,
         staleMarkerBasePath,
         config,
-        options,
+        {
+          forceRefresh: options.forceRefresh,
+          includeInactive: options.includeInactive,
+          onProgress: options.onProgress,
+          validateNow: 'validateNow' in options ? options.validateNow : undefined,
+        },
         indexLockHeld,
       );
       const result = yield* 'anchors' in options
         ? selectRecallCodeLinks(sql, options)
-        : Effect.gen(function* () {
-            const metadata = yield* loadRecallMetadata(sql);
-            const generation = metadata.get('content_generation') ?? '';
-            const corpusStatistics = yield* loadRecallCorpusStatistics(sql, recallStatisticTerms(options));
-            const loadIdentityConflicts = RecallIndexIdentity.createRecallIdentityConflictLoader(sql);
-            const selectData = (selection: LoadRecallIndexOptions) =>
-              selectRecallIndexData(sql, corpusStatistics, generation, selection, loadIdentityConflicts);
-            return 'terms' in options
-              ? yield* selectRecallExactMatches(sql, options)
-              : 'selections' in options
-                ? yield* Effect.forEach(
-                    options.selections,
-                    selection => selectData({...selection, includeInactive: options.includeInactive}),
-                    {concurrency: 1},
-                  )
-                : yield* selectData(options);
-          });
+        : 'memorySeeds' in options
+          ? selectRecallMemoryLinks(sql, options)
+          : Effect.gen(function* () {
+              const metadata = yield* loadRecallMetadata(sql);
+              const generation = metadata.get('content_generation') ?? '';
+              const corpusStatistics = yield* loadRecallCorpusStatistics(sql, recallStatisticTerms(options));
+              const loadIdentityConflicts = RecallIndexIdentity.createRecallIdentityConflictLoader(sql);
+              const selectData = (selection: LoadRecallIndexOptions) =>
+                selectRecallIndexData(sql, corpusStatistics, generation, selection, loadIdentityConflicts);
+              return 'terms' in options
+                ? yield* selectRecallExactMatches(sql, options)
+                : 'selections' in options
+                  ? yield* Effect.forEach(
+                      options.selections,
+                      selection => selectData({...selection, includeInactive: options.includeInactive}),
+                      {concurrency: 1},
+                    )
+                  : yield* selectData(options);
+            });
       if (prepareForActivation) {
         yield* sql.unsafe('PRAGMA wal_checkpoint(TRUNCATE)');
         yield* sql.unsafe('PRAGMA journal_mode = DELETE');
@@ -335,7 +368,11 @@ const recoverRecallIndex = Effect.fn('recall.recoverIndex')(function* (
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
   options:
-    LoadRecallCodeLinksOptions | LoadRecallIndexOptions | LoadRecallIndexBatchOptions | LoadRecallExactMatchesOptions,
+    | LoadRecallCodeLinksOptions
+    | LoadRecallMemoryLinksOptions
+    | LoadRecallIndexOptions
+    | LoadRecallIndexBatchOptions
+    | LoadRecallExactMatchesOptions,
   firstCause: Cause.Cause<unknown>,
 ) {
   return yield* withRecallIndexLock(fs, path, config.agentContextHome, options.includeInactive, () =>
@@ -414,12 +451,14 @@ export const loadRecallMemoryIdentities = Effect.fn('recall.loadMemoryIdentities
   options: {
     readonly allowedUriScopes: readonly string[];
     readonly memoryIds: readonly string[];
+    readonly validateNow?: boolean;
   },
 ) {
   const data = yield* loadRecallIndexData(config, {
     allowedUriScopes: options.allowedUriScopes,
     includeInactive: false,
     memoryIds: options.memoryIds,
+    validateNow: options.validateNow,
   });
   return data.candidates;
 });
@@ -439,11 +478,11 @@ export const loadRecallCodeLinks = Effect.fn('recall.loadCodeLinks')(function* (
   let truncatedSelectorCount = 0;
   const first = (yield* loadRecallIndexDataInternal(config, {
     ...options,
-    onCanonicalMismatch: count => {
+    onCanonicalMismatch: (count: number) => {
       canonicalMismatchCount += count;
       options.onCanonicalMismatch?.(count);
     },
-    onSearchTruncated: count => {
+    onSearchTruncated: (count: number) => {
       truncatedSelectorCount += count;
     },
   })) as readonly RecallCodeLinkMatch[];
@@ -455,11 +494,48 @@ export const loadRecallCodeLinks = Effect.fn('recall.loadCodeLinks')(function* (
   const refreshed = (yield* loadRecallIndexDataInternal(config, {
     ...options,
     forceRefresh: true,
-    onSearchTruncated: count => {
+    onSearchTruncated: (count: number) => {
       refreshedTruncatedSelectorCount += count;
     },
   })) as readonly RecallCodeLinkMatch[];
   if (refreshedTruncatedSelectorCount > 0) options.onSearchTruncated?.(refreshedTruncatedSelectorCount);
+  return refreshed;
+});
+
+export const loadRecallMemoryLinks = Effect.fn('recall.loadMemoryLinks')(function* (
+  config: RecallIndexConfig,
+  options: LoadRecallMemoryLinksOptions,
+) {
+  let canonicalMismatchCount = 0;
+  let truncatedSeedOrdinals: readonly number[] = [];
+  const first = (yield* loadRecallIndexDataInternal(config, {
+    ...options,
+    onCanonicalMismatch: (count: number) => {
+      canonicalMismatchCount += count;
+      options.onCanonicalMismatch?.(count);
+    },
+    onSearchTruncated: (ordinals: readonly number[]) => {
+      truncatedSeedOrdinals = [...new Set([...truncatedSeedOrdinals, ...ordinals])].sort((a, b) => a - b);
+    },
+  })) as readonly RecallMemoryLinkMatch[];
+  if (options.forceRefresh === true || canonicalMismatchCount === 0) {
+    if (truncatedSeedOrdinals.length > 0) options.onSearchTruncated?.(truncatedSeedOrdinals);
+    return first;
+  }
+  options.onRefreshRepair?.();
+  let refreshedTruncatedSeedOrdinals: readonly number[] = [];
+  const refreshed = (yield* loadRecallIndexDataInternal(config, {
+    ...options,
+    forceRefresh: true,
+    onSearchTruncated: (ordinals: readonly number[]) => {
+      refreshedTruncatedSeedOrdinals = [...new Set([...refreshedTruncatedSeedOrdinals, ...ordinals])].sort(
+        (a, b) => a - b,
+      );
+    },
+  })) as readonly RecallMemoryLinkMatch[];
+  if (refreshedTruncatedSeedOrdinals.length > 0) {
+    options.onSearchTruncated?.(refreshedTruncatedSeedOrdinals);
+  }
   return refreshed;
 });
 
@@ -963,7 +1039,8 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
       authority_policy_key TEXT,
       candidate_json TEXT NOT NULL,
       logical_key TEXT NOT NULL,
-      document_length INTEGER NOT NULL CHECK (document_length >= 0)
+      document_length INTEGER NOT NULL CHECK (document_length >= 0),
+      memory_links_truncated INTEGER NOT NULL CHECK (memory_links_truncated IN (0, 1))
     )
   `);
   yield* sql.unsafe(`
@@ -987,6 +1064,34 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
         length(selector_digest) = 64 AND selector_digest NOT GLOB '*[^0-9a-f]*'
       ),
       PRIMARY KEY (document_id, citation_ordinal, selector_kind, selector_digest)
+    ) WITHOUT ROWID
+  `);
+  yield* sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS memory_links (
+      source_document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      source_memory_id TEXT NOT NULL,
+      target_memory_id TEXT NOT NULL,
+      target_locator_digest TEXT NOT NULL CHECK (
+        target_locator_digest = '' OR (
+          length(target_locator_digest) = 64 AND target_locator_digest NOT GLOB '*[^0-9a-f]*'
+        )
+      ),
+      relation_type TEXT NOT NULL CHECK (
+        relation_type IN ('depends_on', 'evidence_for', 'references', 'related_to', 'supersedes')
+      ),
+      relation_origin TEXT NOT NULL CHECK (
+        relation_origin IN ('relation', 'references', 'evidence', 'supersedes')
+      ),
+      relation_ordinal INTEGER NOT NULL CHECK (relation_ordinal >= 0),
+      CHECK (target_memory_id <> '' OR target_locator_digest <> ''),
+      PRIMARY KEY (
+        source_document_id,
+        relation_origin,
+        relation_ordinal,
+        relation_type,
+        target_memory_id,
+        target_locator_digest
+      )
     ) WITHOUT ROWID
   `);
   yield* sql.unsafe(`
@@ -1024,13 +1129,22 @@ const initializeRecallDatabase = Effect.fn('recall.initializeDatabase')(function
   yield* sql.unsafe(
     'CREATE INDEX IF NOT EXISTS code_links_selector_uri ON code_links(selector_kind, selector_digest, document_uri COLLATE BINARY, citation_ordinal, document_id)',
   );
+  yield* sql.unsafe(
+    'CREATE INDEX IF NOT EXISTS memory_links_source ON memory_links(source_memory_id, relation_type, source_document_id, relation_origin, relation_ordinal)',
+  );
+  yield* sql.unsafe(
+    "CREATE INDEX IF NOT EXISTS memory_links_target ON memory_links(target_memory_id, relation_type, source_document_id, relation_origin, relation_ordinal) WHERE target_memory_id <> ''",
+  );
+  yield* sql.unsafe(
+    "CREATE INDEX IF NOT EXISTS memory_links_locator ON memory_links(target_locator_digest, relation_type, source_document_id, relation_origin, relation_ordinal) WHERE target_locator_digest <> ''",
+  );
   yield* sql`
     INSERT INTO metadata (key, value)
     VALUES ('schema_version', ${String(RECALL_INDEX_DATABASE_VERSION)})
     ON CONFLICT(key) DO NOTHING
   `;
   yield* sql`INSERT INTO metadata (key, value) VALUES ('mutation_sequence', '0') ON CONFLICT(key) DO NOTHING`;
-  for (const table of ['documents', 'postings', 'term_statistics', 'code_links'] as const) {
+  for (const table of ['documents', 'postings', 'term_statistics', 'code_links', 'memory_links'] as const) {
     for (const operation of ['INSERT', 'UPDATE', 'DELETE'] as const) {
       yield* sql.unsafe(`
         CREATE TRIGGER IF NOT EXISTS ${table}_integrity_${operation.toLowerCase()}
@@ -1060,7 +1174,12 @@ const ensureRecallDatabaseFresh = Effect.fn('recall.ensureDatabaseFresh')(functi
   databasePath: string,
   staleMarkerBasePath: string,
   config: RecallIndexConfig,
-  options: Pick<LoadRecallIndexOptions, 'forceRefresh' | 'includeInactive' | 'onProgress'>,
+  options: {
+    readonly forceRefresh?: boolean;
+    readonly includeInactive: boolean;
+    readonly onProgress?: (progress: RecallIndexProgress) => Effect.Effect<void, unknown>;
+    readonly validateNow?: boolean;
+  },
   indexLockHeld = false,
 ) {
   const metadata = yield* loadRecallMetadata(sql);
@@ -1205,12 +1324,15 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
             const canonicalResource = yield* verifyCanonicalResource(fs, source.uri, content, canonicalResourcePolicy);
             const memory = parseMemoryDocument(source.uri, content);
             const candidate = indexCandidate(source.uri, content, canonicalResource, memory);
+            const memoryLinkProjection = deriveIndexedRecallMemoryLinks(memory);
             const postings = candidatePostings(candidate);
             return {
               candidate,
               codeLinks: deriveIndexedRecallCodeLinks(memory?.metadata.codeCitations ?? []),
               documentLength: recallDocumentTerms(candidate).length,
               exactSearchText: recallExactSearchText(candidate),
+              memoryLinks: memoryLinkProjection.links,
+              memoryLinksTruncated: memoryLinkProjection.truncated,
               postings,
               source,
             } satisfies IndexedRecallSource;
@@ -1264,7 +1386,8 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           authority_policy_key,
           candidate_json,
           logical_key,
-          document_length
+          document_length,
+          memory_links_truncated
         )
         SELECT
           indexed.uri,
@@ -1278,7 +1401,8 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           source.authority_policy_key,
           indexed.candidate_json,
           indexed.logical_key,
-          indexed.document_length
+          indexed.document_length,
+          indexed.memory_links_truncated
         FROM temp.${RECALL_REFRESH_INDEXED_DOCUMENT_TABLE} AS indexed
         INNER JOIN temp.${RECALL_REFRESH_SOURCE_TABLE} AS source ON source.uri = indexed.uri
         ORDER BY indexed.uri COLLATE BINARY
@@ -1302,6 +1426,34 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
           code_link.selector_digest COLLATE BINARY
       `);
       yield* sql.unsafe(`
+        INSERT INTO memory_links (
+          source_document_id,
+          source_memory_id,
+          target_memory_id,
+          target_locator_digest,
+          relation_type,
+          relation_origin,
+          relation_ordinal
+        )
+        SELECT
+          document.id,
+          memory_link.source_memory_id,
+          memory_link.target_memory_id,
+          memory_link.target_locator_digest,
+          memory_link.relation_type,
+          memory_link.relation_origin,
+          memory_link.relation_ordinal
+        FROM temp.${RECALL_REFRESH_INDEXED_MEMORY_LINK_TABLE} AS memory_link
+        INNER JOIN documents AS document ON document.uri = memory_link.uri
+        ORDER BY
+          document.id,
+          memory_link.relation_origin COLLATE BINARY,
+          memory_link.relation_ordinal,
+          memory_link.relation_type COLLATE BINARY,
+          memory_link.target_memory_id COLLATE BINARY,
+          memory_link.target_locator_digest COLLATE BINARY
+      `);
+      yield* sql.unsafe(`
         INSERT INTO postings (term, document_id, field_weight, term_frequency)
         SELECT posting.term, document.id, posting.field_weight, posting.term_frequency
         FROM temp.${RECALL_REFRESH_INDEXED_POSTING_TABLE} AS posting
@@ -1317,6 +1469,7 @@ const refreshRecallDatabase = Effect.fn('recall.refreshDatabase')(function* (
         }) ?? Effect.void;
       }
       yield* RecallIndexIdentity.rebuildRecallIdentityConflicts(sql);
+      yield* resolveLegacyRecallMemoryLinks(sql);
       yield* sql.unsafe(`
         DELETE FROM term_statistics
         WHERE term IN (SELECT term FROM temp.${RECALL_REFRESH_AFFECTED_TERM_TABLE})
@@ -1396,6 +1549,42 @@ function numericMetadata(metadata: ReadonlyMap<string, string>, key: string): nu
   const value = Number(metadata.get(key) ?? '0');
   return Number.isFinite(value) ? value : 0;
 }
+
+/**
+ * Legacy URI edges retain only a locator digest. Re-resolve every such row
+ * against the exact corpus staged for this database so target add/delete/move
+ * operations converge with a clean rebuild even when the source is unchanged.
+ */
+const resolveLegacyRecallMemoryLinks = Effect.fn('recall.resolveLegacyMemoryLinks')(function* (
+  sql: SqlClient.SqlClient,
+) {
+  const resolvedTarget = `(SELECT json_extract(target.candidate_json, '$.memoryId')
+    FROM temp.${RECALL_REFRESH_SOURCE_TABLE} AS target_source
+    INNER JOIN documents AS target ON target.uri = target_source.uri
+    WHERE target_source.uri_locator_digest = memory_links.target_locator_digest
+      AND json_type(target.candidate_json, '$.memoryId') = 'text'
+      AND COALESCE(json_extract(target.candidate_json, '$.status'), 'active') = 'active'
+      AND length(json_extract(target.candidate_json, '$.memoryId')) BETWEEN 4 AND 131
+      AND substr(json_extract(target.candidate_json, '$.memoryId'), 1, 3) = 'tn_'
+      AND substr(json_extract(target.candidate_json, '$.memoryId'), 4) NOT GLOB '*[^A-Za-z0-9_-]*'
+      AND NOT EXISTS (
+        SELECT 1 FROM memory_identity_conflicts AS conflict
+        WHERE conflict.memory_id = json_extract(target.candidate_json, '$.memoryId')
+      )
+      AND (
+        SELECT COUNT(*) FROM documents AS identity_document
+        WHERE json_extract(identity_document.candidate_json, '$.memoryId') =
+          json_extract(target.candidate_json, '$.memoryId')
+      ) = 1
+    ORDER BY target.uri COLLATE BINARY
+    LIMIT 1)`;
+  yield* sql.unsafe(`
+    UPDATE memory_links
+    SET target_memory_id = COALESCE(${resolvedTarget}, '')
+    WHERE target_locator_digest <> ''
+      AND target_memory_id <> COALESCE(${resolvedTarget}, '')
+  `);
+});
 
 const loadRecallCorpusStatistics = Effect.fn('recall.loadCorpusStatistics')(function* (
   sql: SqlClient.SqlClient,
@@ -1792,68 +1981,4 @@ function verifyCanonicalResource(
     Effect.map(sourceContent => sourceContent === indexedContent),
     Effect.catch(() => Effect.succeed(false)),
   );
-}
-
-function recallCandidateIsValid(value: unknown): value is RecallCandidate {
-  if (!isPlainRecord(value) || typeof value.uri !== 'string' || typeof value.text !== 'string') {
-    return false;
-  }
-  const stringValues = [
-    'authority',
-    'contentHash',
-    'kind',
-    'memoryId',
-    'status',
-    'timestamp',
-    'trust',
-    'validFrom',
-    'validTo',
-  ] as const;
-  if (stringValues.some(key => value[key] !== undefined && typeof value[key] !== 'string')) {
-    return false;
-  }
-  const numberValues = ['feedback', 'reranker', 'semantic'] as const;
-  if (numberValues.some(key => value[key] !== undefined && !isFiniteNumber(value[key]))) {
-    return false;
-  }
-  if (value.identityConflict !== undefined && typeof value.identityConflict !== 'boolean') {
-    return false;
-  }
-  if (value.exactTerms !== undefined && !isStringArray(value.exactTerms)) {
-    return false;
-  }
-  if (value.equivalentUris !== undefined && !isStringArray(value.equivalentUris)) {
-    return false;
-  }
-  if (value.fields !== undefined) {
-    if (!isPlainRecord(value.fields)) return false;
-    const fields = value.fields;
-    if (
-      !['project', 'title', 'topic', 'workspaceScope'].every(
-        key => fields[key] === undefined || typeof fields[key] === 'string',
-      ) ||
-      !['identifiers', 'keywords'].every(key => fields[key] === undefined || isStringArray(fields[key]))
-    ) {
-      return false;
-    }
-  }
-  return (
-    value.relations === undefined ||
-    (Array.isArray(value.relations) &&
-      value.relations.every(
-        relation => isPlainRecord(relation) && typeof relation.type === 'string' && typeof relation.uri === 'string',
-      ))
-  );
-}
-
-function isPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every(entry => typeof entry === 'string');
 }

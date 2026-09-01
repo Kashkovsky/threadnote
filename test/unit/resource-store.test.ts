@@ -2,9 +2,11 @@ import {provideTestLayer} from '../helpers/effect-layer.js';
 import {symlink, writeFile as writeFileBytes} from '../helpers/node-fs-promises.js';
 import {join} from '../helpers/node-path.js';
 import * as BunServices from '@effect/platform-bun/BunServices';
-import {describe, expect, it} from '@effect/vitest';
+import {describe, expect, it, it as effectIt} from '@effect/vitest';
 import * as FC from 'effect/testing/FastCheck';
 import {Deferred, Effect, Fiber, FileSystem, Layer, Option, Ref} from 'effect';
+import {TestClock} from 'effect/testing';
+import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {
   ResourceAlreadyExists,
   ResourceConflict,
@@ -690,6 +692,79 @@ describe('native ResourceStore', () => {
       await rm(home, {force: true, recursive: true});
     }
   });
+
+  effectIt.effect('keeps a checked invariant and its write atomic against every account writer', () =>
+    TestClock.withLive(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-checked-write-'});
+          const sourceUri = 'threadnote://resources/repos/threadnote/checked-source.md';
+          const competingUri = 'threadnote://resources/repos/threadnote/competing-target.md';
+          const checkStarted = yield* Deferred.make<void>();
+          const releaseCheck = yield* Deferred.make<void>();
+          const competingContended = yield* Deferred.make<void>();
+          const completionOrder: string[] = [];
+          const store = yield* ResourceStore.pipe(
+            provideTestLayer(
+              ResourceStore.layerWith({
+                onMutationLockCompleted: event =>
+                  Effect.sync(() => {
+                    completionOrder.push(event.uri);
+                  }),
+                onMutationLockContention: event =>
+                  event.uri === competingUri
+                    ? Deferred.succeed(competingContended, undefined).pipe(Effect.asVoid)
+                    : Effect.void,
+              }),
+            ),
+          );
+
+          const checked = yield* store
+            .writeChecked(
+              location(home),
+              sourceUri,
+              'checked source',
+              {mode: 'create'},
+              Deferred.succeed(checkStarted, undefined).pipe(Effect.andThen(Deferred.await(releaseCheck))),
+            )
+            .pipe(Effect.forkChild({startImmediately: true}));
+          yield* Deferred.await(checkStarted);
+          const competing = yield* store
+            .write(location(home), competingUri, 'competing target', {mode: 'create'})
+            .pipe(Effect.forkChild({startImmediately: true}));
+          yield* Deferred.await(competingContended);
+
+          yield* Deferred.succeed(releaseCheck, undefined);
+          yield* Fiber.join(checked);
+          yield* Fiber.join(competing);
+
+          expect(completionOrder).toEqual([sourceUri, competingUri]);
+          expect(yield* store.read(location(home), sourceUri)).toBe('checked source');
+          expect(yield* store.read(location(home), competingUri)).toBe('competing target');
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    ),
+  );
+
+  effectIt.effect('preserves checked-write rejection identity and leaves the destination absent', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-resource-checked-reject-'});
+        const uri = 'threadnote://resources/repos/threadnote/rejected.md';
+        const rejected = {reason: 'stale-invariant'} as const;
+        const store = yield* ResourceStore;
+
+        expect(
+          yield* Effect.flip(
+            store.writeChecked(location(home), uri, 'must not commit', {mode: 'create'}, Effect.fail(rejected)),
+          ),
+        ).toBe(rejected);
+        expect(Option.isNone(yield* Effect.option(store.read(location(home), uri)))).toBe(true);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
 
   it.runIf(process.platform !== 'win32')('rejects a symlink escape inside the canonical tree', async () => {
     const home = await mkdtemp('threadnote-resource-symlink-');

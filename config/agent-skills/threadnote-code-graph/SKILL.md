@@ -26,4 +26,8 @@ for `inspect_code_graph` (including Worksets) but is deliberately rejected by Co
 follow its retained selector to make the next query narrower. If it retains `graph-status` after a ready-read failure,
 inspect graph health and rerun; do not infer absence from the empty evidence lane. Carry the most consequential anchors
 into the final handoff.
+
+Typed memory connections complement code citations; they do not replace graph evidence. When a code-linked memory is
+relevant, pass its stable identity through `recall_context.memoryRefs` to inspect direct related decisions, read the
+useful neighbor memories, and then verify their cited anchors against the current code graph.
 <!-- END THREADNOTE USER INSTRUCTIONS -->

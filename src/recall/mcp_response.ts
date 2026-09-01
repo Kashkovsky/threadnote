@@ -6,6 +6,12 @@ import {
 } from '../evaluation/agent-response.js';
 import type {RecallConfidence} from './rank.js';
 import type {RecallHit} from '../utils.js';
+import type {
+  RecallMemoryConnectionCoverageV1,
+  RecallMemoryConnectionReceiptV1,
+  RecallMemoryConnectionsResult,
+  RecallMemoryPremiseReceiptV1,
+} from './memory_connections.js';
 import {
   mergeRecallOperationalWarnings,
   renderRecallOperationalWarning,
@@ -27,11 +33,17 @@ const POST_PROJECTION_NOTICE_RESERVE_BYTES = 256;
 export interface RecallMcpLogicalResponse {
   readonly confidence?: RecallConfidence;
   readonly memoryScope?: unknown;
+  readonly memoryConnections?: RecallMemoryConnectionsResult;
   readonly notices?: readonly string[];
   readonly queryExpansions: readonly string[];
   readonly rankerVersion: string;
   readonly results: readonly RecallHit[];
   readonly warnings?: readonly RecallOperationalWarning[];
+}
+
+export interface RecallMcpConfidence extends RecallConfidence {
+  /** Identifies whether confidence covers ranked relevance or verified pointer navigation. */
+  readonly basis: 'explicit-memory-connection' | 'ranked-relevance';
 }
 
 export interface RecallMcpResponseProjectionOptions {
@@ -48,8 +60,9 @@ export interface ProjectedRecallMcpResponse {
 
 export interface RecallMcpStructuredContent {
   readonly [key: string]: unknown;
-  readonly confidence?: RecallConfidence;
+  readonly confidence?: RecallMcpConfidence;
   readonly memoryScope?: unknown;
+  readonly memoryConnections?: RecallMcpMemoryConnections;
   readonly nextAction: {
     readonly tool: 'read_context';
     readonly uris: readonly string[];
@@ -66,6 +79,12 @@ export interface RecallMcpStructuredContent {
   readonly rankerVersion: string;
   readonly results: readonly RecallMcpResult[];
   readonly warnings?: readonly RecallOperationalWarning[];
+}
+
+export interface RecallMcpMemoryConnections {
+  readonly connections: readonly RecallMemoryConnectionReceiptV1[];
+  readonly coverage: RecallMemoryConnectionCoverageV1;
+  readonly premises: readonly RecallMemoryPremiseReceiptV1[];
 }
 
 export interface RecallMcpResult {
@@ -96,11 +115,7 @@ const MEMORY_IDENTITY_CONFLICT_WARNING = {
   remediation: 'Treat it as conflicting evidence and verify against a canonical source before use.',
 } as const satisfies RecallMcpResultWarning;
 
-/**
- * Projects the already-ranked recall set without changing its order. The only
- * budget reduction is a ranked-prefix reduction; compact fields never change
- * in response to the requested budget.
- */
+/** Projects the already-ranked recall set without changing its order. */
 export function projectRecallMcpResponse(
   logical: RecallMcpLogicalResponse,
   options: RecallMcpResponseProjectionOptions = {},
@@ -126,11 +141,17 @@ export function projectRecallMcpResponse(
   let minimumBytes = Number.POSITIVE_INFINITY;
 
   for (let count = 0; count <= logical.results.length; count += 1) {
-    const structuredContent = renderStructuredContent(logical, warnings, count, budgetTokens, explain);
-    const text = renderRecallMcpText(structuredContent, notices);
-    const measurement = measureAgentToolResponse({structuredContent, text});
-    minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
-    if (measurement.totalBytes <= projectionMaximumBytes) selected = {measurement, structuredContent};
+    const selectedUris = new Set(logical.results.slice(0, count).map(result => result.uri));
+    const receiptLimits = logical.memoryConnections
+      ? memoryConnectionReceiptLimits(logical.memoryConnections, selectedUris)
+      : [undefined];
+    for (const limits of receiptLimits) {
+      const structuredContent = renderStructuredContent(logical, warnings, count, budgetTokens, explain, limits);
+      const text = renderRecallMcpText(structuredContent, notices);
+      const measurement = measureAgentToolResponse({structuredContent, text});
+      minimumBytes = Math.min(minimumBytes, measurement.totalBytes);
+      if (measurement.totalBytes <= projectionMaximumBytes) selected = {measurement, structuredContent};
+    }
   }
   if (selected === undefined) throw new AgentResponseBudgetTooSmallError(projectionMaximumBytes, minimumBytes);
   return {
@@ -151,6 +172,11 @@ export function renderRecallMcpText(response: RecallMcpStructuredContent, notice
     : ' No memory pointer is available to read.';
   return [
     `Recall returned ${count} unread pointer(s)${omitted}. Ranked pointers are not evidence.${next}`,
+    ...(response.memoryConnections
+      ? [
+          `Seeded one-hop coverage: ${response.memoryConnections.coverage.resultCount} result(s), ${response.memoryConnections.connections.length} verified connection receipt(s), ${response.memoryConnections.premises.length} premise receipt(s)${response.memoryConnections.coverage.truncated ? '; truncated' : ''}. Relations are navigation evidence, not entailment.`,
+        ]
+      : []),
     ...(response.warnings ?? []).map(renderRecallOperationalWarning),
     ...notices,
   ].join('\n');
@@ -162,16 +188,27 @@ function renderStructuredContent(
   count: number,
   budgetTokens: number,
   explain: boolean,
+  receiptLimits: MemoryConnectionReceiptLimits | undefined,
 ): RecallMcpStructuredContent {
   const selected = logical.results.slice(0, count);
   const results = selected.map(hit => renderResult(hit, explain));
+  const memoryConnections = logical.memoryConnections
+    ? renderMemoryConnections(logical.memoryConnections, new Set(results.map(result => result.uri)), receiptLimits)
+    : undefined;
+  const actionableConnectionUris = resolvedConnectionResultUris(logical.memoryConnections, results);
+  const nextActionUris = uniqueStrings([...actionableConnectionUris, ...results.map(result => result.uri)]).slice(
+    0,
+    NEXT_ACTION_URI_LIMIT,
+  );
+  const confidence = renderConfidence(logical.confidence, actionableConnectionUris.length > 0);
   const omittedResults = logical.results.length - results.length;
   return {
-    ...(logical.confidence === undefined ? {} : {confidence: logical.confidence}),
+    ...(confidence === undefined ? {} : {confidence}),
     ...(logical.memoryScope === undefined ? {} : {memoryScope: logical.memoryScope}),
+    ...(memoryConnections === undefined ? {} : {memoryConnections}),
     nextAction: {
       tool: 'read_context',
-      uris: results.slice(0, NEXT_ACTION_URI_LIMIT).map(result => result.uri),
+      uris: nextActionUris,
     },
     output: {
       budgetTokens,
@@ -186,6 +223,110 @@ function renderStructuredContent(
     results,
     ...(warnings.length > 0 ? {warnings} : {}),
   };
+}
+
+function resolvedConnectionResultUris(
+  memoryConnections: RecallMemoryConnectionsResult | undefined,
+  results: readonly RecallMcpResult[],
+): readonly string[] {
+  if (memoryConnections === undefined || results.length === 0) return [];
+  const resultUris = new Set(results.map(result => result.uri));
+  return uniqueStrings(
+    memoryConnections.connections.flatMap(connection =>
+      connection.resolution === 'resolved' &&
+      connection.neighborUri !== undefined &&
+      resultUris.has(connection.neighborUri)
+        ? [connection.neighborUri]
+        : [],
+    ),
+  );
+}
+
+function renderConfidence(
+  confidence: RecallConfidence | undefined,
+  hasActionableConnection: boolean,
+): RecallMcpConfidence | undefined {
+  if (hasActionableConnection) {
+    return {
+      basis: 'explicit-memory-connection',
+      level: 'high',
+      margin: 1,
+      reason: 'Verified one-hop relation; confidence covers navigation only, not entailment.',
+      score: 1,
+    };
+  }
+  return confidence === undefined ? undefined : {...confidence, basis: 'ranked-relevance'};
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
+}
+
+function renderMemoryConnections(
+  connections: RecallMemoryConnectionsResult,
+  selectedUris: ReadonlySet<string>,
+  receiptLimits: MemoryConnectionReceiptLimits | undefined,
+): RecallMcpMemoryConnections {
+  const eligibleConnections = selectableMemoryConnections(connections, selectedUris);
+  const selectedConnections = eligibleConnections.slice(0, receiptLimits?.connectionCount ?? 0);
+  const selectedPremises = connections.premises.slice(0, receiptLimits?.premiseCount ?? 0);
+  const selectedNeighborUris = new Set(
+    eligibleConnections.flatMap(connection =>
+      connection.neighborUri !== undefined && selectedUris.has(connection.neighborUri) ? [connection.neighborUri] : [],
+    ),
+  );
+  return {
+    connections: selectedConnections,
+    coverage: {
+      ...connections.coverage,
+      connectionCount: selectedConnections.length,
+      premiseCount: selectedPremises.length,
+      resultCount: selectedNeighborUris.size,
+      truncated:
+        connections.coverage.truncated ||
+        selectedConnections.length < connections.connections.length ||
+        selectedPremises.length < connections.premises.length,
+    },
+    premises: selectedPremises,
+  };
+}
+
+interface MemoryConnectionReceiptLimits {
+  readonly connectionCount: number;
+  readonly premiseCount: number;
+}
+
+function memoryConnectionReceiptLimits(
+  connections: RecallMemoryConnectionsResult,
+  selectedUris: ReadonlySet<string>,
+): readonly MemoryConnectionReceiptLimits[] {
+  const connectionCount = selectableMemoryConnections(connections, selectedUris).length;
+  const premiseCount = connections.premises.length;
+  const limits: MemoryConnectionReceiptLimits[] = [{connectionCount: 0, premiseCount: 0}];
+  let selectedConnectionCount = 0;
+  let selectedPremiseCount = 0;
+  for (let ordinal = 0; ordinal < Math.max(connectionCount, premiseCount); ordinal += 1) {
+    if (ordinal < premiseCount) {
+      selectedPremiseCount += 1;
+      limits.push({connectionCount: selectedConnectionCount, premiseCount: selectedPremiseCount});
+    }
+    if (ordinal < connectionCount) {
+      selectedConnectionCount += 1;
+      limits.push({connectionCount: selectedConnectionCount, premiseCount: selectedPremiseCount});
+    }
+  }
+  return limits;
+}
+
+function selectableMemoryConnections(
+  connections: RecallMemoryConnectionsResult,
+  selectedUris: ReadonlySet<string>,
+): readonly RecallMemoryConnectionReceiptV1[] {
+  return connections.connections.filter(
+    connection =>
+      connection.resolution === 'unresolved' ||
+      (connection.neighborUri !== undefined && selectedUris.has(connection.neighborUri)),
+  );
 }
 
 function renderResult(hit: RecallHit, explain: boolean): RecallMcpResult {

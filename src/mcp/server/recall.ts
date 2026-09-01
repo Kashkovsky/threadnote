@@ -47,7 +47,9 @@ import {
   assertMemoryRecordArchivable,
   canonicalMemoryDocumentContent,
   isSharedMemoryUri,
+  MEMORY_RELATION_TYPES,
   memoryArchiveBody,
+  memoryArchiveMetadata,
   type MemoryMetadata,
 } from '../../memory/document.js';
 import {captureMemoryCodeCitationsForMcp} from '../memory_code_citation.js';
@@ -92,6 +94,11 @@ import {loadRecallExactMatches} from '../../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
 import {RECALL_RANKER_VERSION} from '../../recall/rank.js';
 import {
+  parseRecallMemoryConnectionInput,
+  type ParsedRecallMemoryConnectionInput,
+} from '../../recall/memory_connections.js';
+import type {MemoryRelationType} from '../../memory/document.js';
+import {
   projectRecallMcpResponse,
   RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
   RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
@@ -114,6 +121,7 @@ import {
   recallSelectionAnchorIds,
   recallSelectionQueries,
   selectedRecallCandidateUris,
+  type McpRecallSemanticScoresResult,
 } from '../../recall/runtime.js';
 import {
   McpServerOperationError,
@@ -161,25 +169,25 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
     {
       annotations: {readOnlyHint: false, destructiveHint: false},
       description:
-        'After routine durable and handoff writes, form up to three additional reviewable memory candidates. Persists a pending review, never active memory.',
+        'After routine durable and handoff writes, form up to three additional reviewable candidates; persists pending review only.',
       inputSchema: {
-        callerCwd: McpInput.string('Absolute cwd; infers project'),
+        callerCwd: McpInput.string('Absolute cwd'),
         codeRefs: McpInput.stringOrStrings(
-          `Graph-indexed repository-relative path, cgs_ symbol, or cgr_ qualified ref to carry into approved candidates; max ${MAX_MEMORY_CODE_CITATIONS}`,
+          `Graph-indexed repository-relative path/cgs_/cgr_; max ${MAX_MEMORY_CODE_CITATIONS}`,
           {maximumItems: MAX_MEMORY_CODE_CITATIONS},
         ),
-        decisions: McpInput.stringOrStrings('Reusable decisions'),
-        evidence: McpInput.stringOrStrings('Bounded file, commit, or session pointers'),
-        handoff: McpInput.stringOrStrings('Status, blockers, checks, and next steps'),
-        invariants: McpInput.stringOrStrings('Stable constraints or contracts'),
-        outcome: McpInput.string('Concise task outcome'),
-        preferences: McpInput.stringOrStrings('Explicit user preferences'),
-        project: McpInput.string('Stable project; inferred from callerCwd'),
-        sourceAgentClient: McpInput.string('Originating client'),
-        sourceCommit: McpInput.string('Source commit'),
-        sourceSessionId: McpInput.string('Source session/thread'),
-        task: McpInput.string('Concise task description'),
-        topic: McpInput.string('Stable topic; defaults from task'),
+        decisions: McpInput.stringOrStrings('Decisions'),
+        evidence: McpInput.stringOrStrings('Evidence pointers'),
+        handoff: McpInput.stringOrStrings('Handoff'),
+        invariants: McpInput.stringOrStrings('Stable contracts'),
+        outcome: McpInput.string('Task outcome'),
+        preferences: McpInput.stringOrStrings('User preferences'),
+        project: McpInput.string('Project; infer from cwd'),
+        sourceAgentClient: McpInput.string('Client'),
+        sourceCommit: McpInput.string('Commit'),
+        sourceSessionId: McpInput.string('Session/thread'),
+        task: McpInput.string('Task'),
+        topic: McpInput.string('Topic; defaults from task'),
       },
     },
     ({
@@ -692,38 +700,80 @@ export function registerSearchTool(
       annotations: {readOnlyHint: true, destructiveHint: false},
       description,
       inputSchema: {
-        budgetTokens: McpInput.integer('Response budget; 700-1500 tokens, default 1500', {
+        budgetTokens: McpInput.integer('Response tokens: 700-1500; default 1500', {
           minimum: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
           maximum: RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
         }),
-        query: McpInput.string('Search query'),
-        uri: McpInput.string('threadnote:// subtree'),
-        callerCwd: McpInput.string('Absolute nested workspace cwd'),
-        project: McpInput.string('Restrict to this project plus projectless guidance; omit for global recall'),
-        nodeLimit: McpInput.integer('Result limit', {minimum: 1, maximum: 100}),
+        query: McpInput.string('Task query; optional when memoryRefs supplies explicit navigation seeds'),
+        uri: McpInput.string('Scope subtree'),
+        callerCwd: McpInput.string('Absolute workspace cwd'),
+        project: McpInput.string('Project + projectless; omit for global'),
+        nodeLimit: McpInput.integer('Max results', {minimum: 1, maximum: 100}),
         includeArchived: McpInput.boolean('Include archived'),
-        explain: McpInput.boolean('Include reasons, signals, and warnings'),
-        threshold: McpInput.number('Topical relevanceScore floor before lifecycle/trust; env or 0.3 default', {
+        memoryRefs: McpInput.stringOrStrings('One-hop memory IDs/URIs', {
+          maximumItems: 8,
+        }),
+        relationTypes: McpInput.literalsOrLiterals(MEMORY_RELATION_TYPES, 'Relation-type filter', {
+          maximumItems: 5,
+        }),
+        explain: McpInput.boolean('Include reasons and warnings'),
+        threshold: McpInput.number('Relevance floor; env or 0.3', {
           minimum: 0,
           maximum: 1,
         }),
-        workset: McpInput.string('Seed-manifest workset'),
+        workset: McpInput.string('Named workset'),
       },
     },
     (
-      {budgetTokens, callerCwd, explain, includeArchived, nodeLimit, project, query, threshold, uri, workset},
+      {
+        budgetTokens,
+        callerCwd,
+        explain,
+        includeArchived,
+        memoryRefs,
+        nodeLimit,
+        project,
+        query,
+        relationTypes,
+        threshold,
+        uri,
+        workset,
+      },
       {progress},
     ) => {
-      const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
-      if (!checkedQuery.ok) {
-        return checkedQuery.error;
-      }
       const checkedUri = optionalResourceUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
       }
       if (workset?.trim() && memoryScope) {
         return argumentError(`${name} does not allow worksets in the Cursor Cloud profile.`);
+      }
+      let memoryConnections: ParsedRecallMemoryConnectionInput | undefined;
+      try {
+        const normalizedMemoryRefs = normalizeStringOrStrings(memoryRefs);
+        const normalizedRelationTypes = normalizeStringOrStrings(relationTypes);
+        if (normalizedRelationTypes.length > 0 && normalizedMemoryRefs.length === 0) {
+          return argumentError(`${name} relationTypes requires memoryRefs.`);
+        }
+        memoryConnections =
+          normalizedMemoryRefs.length > 0
+            ? parseRecallMemoryConnectionInput({
+                memoryRefs: normalizedMemoryRefs,
+                relationTypes: normalizedRelationTypes,
+              })
+            : undefined;
+      } catch (error) {
+        return argumentError(errorMessage(error));
+      }
+      const normalizedQuery = query?.trim() ?? '';
+      if (!normalizedQuery && memoryConnections === undefined) {
+        return argumentError(
+          [
+            `Threadnote MCP tool "${name}" needs either a non-empty "query" or at least one "memoryRefs" seed.`,
+            'Pass JSON arguments to the tool call.',
+            `Examples: ${name}({"query":"unity-ui-ccc latest handoff"}) or ${name}({"memoryRefs":["threadnote://memory/tn_example"]})`,
+          ].join('\n'),
+        );
       }
       const scopedUri = checkedUri.value ?? memoryScope?.root;
       if (scopedUri && memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
@@ -736,10 +786,12 @@ export function registerSearchTool(
           callerCwd,
           explain: explain === true,
           project: project?.trim() || undefined,
-          query: checkedQuery.value,
+          query: normalizedQuery,
           pinnedUri: scopedUri,
           nodeLimit,
           includeArchived: includeArchived === true,
+          memoryRefs: memoryConnections?.memoryRefs,
+          relationTypes: memoryConnections?.relationTypes,
           threshold: threshold === undefined ? undefined : String(threshold),
           workset: workset?.trim() || undefined,
         },
@@ -758,15 +810,21 @@ export function registerSearchTool(
   );
 }
 
+function normalizeStringOrStrings(value: string | readonly string[] | undefined): readonly string[] {
+  return value === undefined ? [] : typeof value === 'string' ? [value] : value;
+}
+
 interface RecallToolParams {
   readonly budgetTokens: number | undefined;
   readonly callerCwd: string | undefined;
   readonly explain: boolean;
   readonly includeArchived: boolean;
+  readonly memoryRefs: readonly string[] | undefined;
   readonly nodeLimit: number | undefined;
   readonly pinnedUri: string | undefined;
   readonly project: string | undefined;
   readonly query: string;
+  readonly relationTypes: readonly MemoryRelationType[] | undefined;
   readonly threshold: string | undefined;
   readonly workset: string | undefined;
 }
@@ -835,31 +893,37 @@ function runRecallTool(
           }),
         );
     yield* progress.report(RECALL_MCP_PROGRESS.workspaceContext);
+    const query = params.query;
+    const navigationOnly = query.length === 0;
     const workspaceComponent =
-      !params.pinnedUri && !params.workset
+      !navigationOnly && !params.pinnedUri && !params.workset
         ? yield* resolveWorkspaceComponentContext({cwd: params.callerCwd, includeProcessCwd: false})
         : undefined;
     const workspaceBranch =
-      !params.pinnedUri && !params.workset && recallQueryRequestsBranchContext(params.query)
+      !navigationOnly && !params.pinnedUri && !params.workset && recallQueryRequestsBranchContext(query)
         ? yield* resolveWorkspaceBranch({cwd: params.callerCwd, includeProcessCwd: false})
         : undefined;
-    const query = params.query;
-    const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(params.query, {
-      cwd: params.callerCwd,
-      includeProcessCwd: false,
-    });
+    const projectQuery = navigationOnly
+      ? ''
+      : yield* enrichRecallQueryWithWorkspaceProjectContext(query, {
+          cwd: params.callerCwd,
+          includeProcessCwd: false,
+        });
     const explicitProjectName = params.pinnedUri ? undefined : params.project;
     const queryProject = params.pinnedUri
       ? undefined
       : yield* inferProjectFromQuery(config.manifestPath, explicitProjectName ?? params.query);
     const project =
       queryProject ??
-      (params.pinnedUri || explicitProjectName
+      (navigationOnly || params.pinnedUri || explicitProjectName
         ? undefined
         : yield* inferProjectFromQuery(config.manifestPath, projectQuery));
     const inferredProjectMemoryName = params.pinnedUri
       ? undefined
-      : (project?.name ?? (yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
+      : (project?.name ??
+        (navigationOnly
+          ? undefined
+          : yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
     const recallProjectName = explicitProjectName ?? inferredProjectMemoryName;
     const thresholdPolicy =
       params.threshold === undefined
@@ -885,7 +949,9 @@ function runRecallTool(
       ? undefined
       : explicitWorkset
         ? explicitWorkset
-        : yield* inferWorksetFromQuery(config.manifestPath, projectQuery);
+        : navigationOnly
+          ? undefined
+          : yield* inferWorksetFromQuery(config.manifestPath, projectQuery);
     if (workset && workset.projects.length > 0) {
       sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
       const alreadyScoped = new Set(
@@ -916,10 +982,12 @@ function runRecallTool(
     );
     const exactMatches = exactLookup.matches;
     let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
-    const environment = (yield* SystemInfo).environment();
-    const effectAiResult = yield* resolveEffectAiConfiguration(config, environment).pipe(Effect.result);
-    const effectAi = Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
-    if (Result.isFailure(effectAiResult)) {
+    const effectAiResult = navigationOnly
+      ? undefined
+      : yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment()).pipe(Effect.result);
+    const effectAi =
+      effectAiResult !== undefined && Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
+    if (effectAiResult !== undefined && Result.isFailure(effectAiResult)) {
       sections.push(
         `Local AI recall unavailable: ${errorMessage(effectAiResult.failure)}. Deterministic recall continued.`,
       );
@@ -927,40 +995,45 @@ function runRecallTool(
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold));
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
-    const semanticRetrieval = yield* withMcpProgressHeartbeat(
-      progress,
-      RECALL_MCP_PROGRESS.semanticRetrieval,
-      withAnonymousTelemetryPhase(
-        'recall.semantic-retrieval',
-        withProductionPhaseTiming(
-          'recall.semantic-retrieval',
-          loadMcpRecallSemanticScoresResult(
-            config,
-            query,
-            recallLimit,
-            eligibility,
-            params.pinnedUri ? [params.pinnedUri] : undefined,
+    const semanticRetrieval: McpRecallSemanticScoresResult = navigationOnly
+      ? {
+          result: {corpusGeneration: Option.none(), scores: Option.none(), warning: Option.none()},
+          status: 'unavailable',
+        }
+      : yield* withMcpProgressHeartbeat(
+          progress,
+          RECALL_MCP_PROGRESS.semanticRetrieval,
+          withAnonymousTelemetryPhase(
+            'recall.semantic-retrieval',
+            withProductionPhaseTiming(
+              'recall.semantic-retrieval',
+              loadMcpRecallSemanticScoresResult(
+                config,
+                query,
+                recallLimit,
+                eligibility,
+                params.pinnedUri ? [params.pinnedUri] : undefined,
+              ),
+              result =>
+                result.status === 'available'
+                  ? 'success'
+                  : result.status === 'unavailable'
+                    ? 'unavailable'
+                    : result.status === 'timed-out'
+                      ? 'timed-out'
+                      : 'failure',
+            ),
+            result =>
+              result.status === 'available'
+                ? 'success'
+                : result.status === 'unavailable'
+                  ? 'unavailable'
+                  : result.status === 'timed-out'
+                    ? 'timed-out'
+                    : 'failure',
           ),
-          result =>
-            result.status === 'available'
-              ? 'success'
-              : result.status === 'unavailable'
-                ? 'unavailable'
-                : result.status === 'timed-out'
-                  ? 'timed-out'
-                  : 'failure',
-        ),
-        result =>
-          result.status === 'available'
-            ? 'success'
-            : result.status === 'unavailable'
-              ? 'unavailable'
-              : result.status === 'timed-out'
-                ? 'timed-out'
-                : 'failure',
-      ),
-      progressTiming.heartbeatMilliseconds,
-    );
+          progressTiming.heartbeatMilliseconds,
+        );
     let semanticResult = semanticRetrieval.result;
     const surfacedSemanticWarnings = new Set<string>();
     const appendSemanticWarning = (result: typeof semanticResult) => {
@@ -988,6 +1061,7 @@ function runRecallTool(
                 feedbackQuery: params.query,
                 includeInactive: params.includeArchived,
                 limit: recallLimit,
+                memoryRefs: params.memoryRefs,
                 minimumScore: hybridMinimumScore,
                 passes,
                 preferredUriScopes: params.pinnedUri ? undefined : [...scopedRecallUris],
@@ -995,6 +1069,7 @@ function runRecallTool(
                 query,
                 queryVariants: expansionQueries,
                 readRecords: uris => readMemoryRecordsByUri(config, uris),
+                relationTypes: params.relationTypes,
                 rerankerCache,
                 seedUris: [params.pinnedUri, seededUri].filter((uri): uri is string => uri !== undefined),
                 semanticGenerationMismatchPolicy: 'fallback',
@@ -1012,7 +1087,7 @@ function runRecallTool(
         progressTiming.heartbeatMilliseconds,
       );
     let recallSections = yield* prepareSections();
-    const shouldAttemptAiExpansion = shouldExpandRecall(recallSections.confidence);
+    const shouldAttemptAiExpansion = !navigationOnly && shouldExpandRecall(recallSections.confidence);
     const indexSelectionCandidates = shouldAttemptAiExpansion
       ? buildRecallIndexSelectionCandidates(recallSections.expansionCandidates, recallProjectName, 24)
       : [];
@@ -1038,18 +1113,17 @@ function runRecallTool(
           )
         : [];
     const needsFallbackExpansion =
-      shouldExpandRecall(recallSections.confidence) &&
+      shouldAttemptAiExpansion &&
       groundedExpansionQueries.length < recallRewriteLimitForConfidence(recallSections.confidence);
-    const expansionVocabulary =
-      needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
-        ? yield* loadRecallExpansionVocabulary(config, {
-            allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris],
-            eligibility,
-            includeInactive: params.includeArchived,
-            project: recallProjectName,
-            rankedCandidates: recallSections.expansionCandidates,
-          }).pipe(Effect.catch(() => Effect.succeed([])))
-        : [];
+    const expansionVocabulary = needsFallbackExpansion
+      ? yield* loadRecallExpansionVocabulary(config, {
+          allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris],
+          eligibility,
+          includeInactive: params.includeArchived,
+          project: recallProjectName,
+          rankedCandidates: recallSections.expansionCandidates,
+        }).pipe(Effect.catch(() => Effect.succeed([])))
+      : [];
     const fallbackExpansionQueries = needsFallbackExpansion
       ? yield* expandWeakRecallQueryEffect(
           {
@@ -1131,6 +1205,7 @@ function runRecallTool(
           {
             confidence: recallSections.confidence,
             ...(memoryScope ? {memoryScope: cursorCloudMemoryScopeReceipt(memoryScope)} : {}),
+            ...(recallSections.memoryConnections ? {memoryConnections: recallSections.memoryConnections} : {}),
             notices: responseNotices,
             warnings: operationalWarnings,
             queryExpansions: expansionQueries,
@@ -1859,22 +1934,18 @@ export function registerArchiveTool(
           catch: error => new McpServerOperationError(errorMessage(error)),
           try: () => assertMemoryRecordArchivable(sourceRecord),
         });
+        const timestamp = new Date().toISOString();
         const archiveResult = yield* writeDurableMemory(config, {
           bodyText: memoryArchiveBody(sourceRecord.body),
           expectedSourceContent: [{content: sourceContent, uri: checkedUri.value}],
-          metadata: {
+          metadata: memoryArchiveMetadata(sourceRecord.metadata, {
             archivedFrom: checkedUri.value,
-            codeCitations: sourceRecord.metadata.codeCitations,
             kind: kind ?? 'handoff',
             project: normalizeOptionalMetadata(project),
-            schemaVersion: sourceRecord.metadata.schemaVersion,
             sourceAgentClient: 'mcp',
-            sourceCommit: sourceRecord.metadata.sourceCommit,
-            sourceObservedAt: sourceRecord.metadata.sourceObservedAt,
-            status: 'archived',
-            timestamp: new Date().toISOString(),
+            timestamp,
             topic: normalizeOptionalMetadata(topic),
-          },
+          }),
         });
         if (archiveResult.isError === true) {
           return archiveResult;

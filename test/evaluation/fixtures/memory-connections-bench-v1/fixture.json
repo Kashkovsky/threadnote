@@ -1,0 +1,316 @@
+{
+  "abilities": ["static-contract", "dynamic-state", "workflow-knowledge", "environment-gotcha", "premise-awareness"],
+  "authoring": {
+    "cases": [
+      {
+        "ability": "static-contract",
+        "allowedScopes": ["threadnote://user/memory-connections-bench/memories"],
+        "expected": {
+          "kind": "success",
+          "relations": [{"type": "depends_on", "uri": "threadnote://memory/tn_active_target"}]
+        },
+        "id": "canonical-target-normalizes-to-stable-identity",
+        "relations": [
+          {
+            "type": "depends_on",
+            "uri": "threadnote://user/memory-connections-bench/memories/durable/projects/threadnote/active-target.md"
+          }
+        ],
+        "scenario": "normalize-canonical",
+        "sourceMemoryId": null
+      },
+      {
+        "ability": "workflow-knowledge",
+        "allowedScopes": ["threadnote://user/memory-connections-bench/memories"],
+        "expected": {
+          "kind": "success",
+          "relations": [{"type": "evidence_for", "uri": "threadnote://memory/tn_active_target"}]
+        },
+        "id": "stable-alias-remains-stable",
+        "relations": [{"type": "evidence_for", "uri": "threadnote://memory/tn_active_target"}],
+        "scenario": "normalize-alias",
+        "sourceMemoryId": null
+      },
+      {
+        "ability": "workflow-knowledge",
+        "allowedScopes": ["threadnote://user/memory-connections-bench/memories"],
+        "expected": {"kind": "failure", "messageIncludes": "Duplicate"},
+        "id": "canonical-and-alias-duplicate-after-resolution",
+        "relations": [
+          {
+            "type": "related_to",
+            "uri": "threadnote://user/memory-connections-bench/memories/durable/projects/threadnote/active-target.md"
+          },
+          {"type": "related_to", "uri": "threadnote://memory/tn_active_target"}
+        ],
+        "scenario": "reject-duplicate",
+        "sourceMemoryId": null
+      },
+      {
+        "ability": "premise-awareness",
+        "allowedScopes": ["threadnote://user/memory-connections-bench/memories"],
+        "expected": {"kind": "failure", "messageIncludes": "cannot relate to itself"},
+        "id": "self-link-is-rejected-after-resolution",
+        "relations": [
+          {
+            "type": "references",
+            "uri": "threadnote://user/memory-connections-bench/memories/durable/projects/threadnote/self-source.md"
+          }
+        ],
+        "scenario": "reject-self",
+        "sourceMemoryId": "tn_self"
+      },
+      {
+        "ability": "dynamic-state",
+        "allowedScopes": ["threadnote://user/memory-connections-bench/memories"],
+        "expected": {"kind": "failure", "messageIncludes": "active"},
+        "id": "archived-target-is-not-authorable",
+        "relations": [
+          {
+            "type": "depends_on",
+            "uri": "threadnote://user/memory-connections-bench/memories/durable/archived/threadnote/inactive-target.md"
+          }
+        ],
+        "scenario": "reject-inactive",
+        "sourceMemoryId": null
+      },
+      {
+        "ability": "environment-gotcha",
+        "allowedScopes": ["threadnote://user/memory-connections-bench/memories"],
+        "expected": {"kind": "failure", "messageIncludes": "authorized memory scope"},
+        "id": "cross-scope-target-is-rejected-before-resolution",
+        "relations": [
+          {
+            "type": "references",
+            "uri": "threadnote://user/memory-connections-outsider/memories/durable/projects/threadnote/outside-target.md"
+          }
+        ],
+        "scenario": "reject-out-of-scope",
+        "sourceMemoryId": null
+      }
+    ],
+    "documents": [
+      {
+        "memoryId": "tn_active_target",
+        "relations": [],
+        "status": "active",
+        "topic": "active-target",
+        "user": "memory-connections-bench"
+      },
+      {
+        "memoryId": "tn_inactive_target",
+        "relations": [],
+        "status": "archived",
+        "topic": "inactive-target",
+        "user": "memory-connections-bench"
+      },
+      {
+        "memoryId": "tn_self",
+        "relations": [],
+        "status": "active",
+        "topic": "self-source",
+        "user": "memory-connections-bench"
+      },
+      {
+        "memoryId": "tn_outside",
+        "relations": [],
+        "status": "active",
+        "topic": "outside-target",
+        "user": "memory-connections-outsider"
+      }
+    ]
+  },
+  "id": "memory-connections-bench-v1",
+  "productScope": "authoring-projection",
+  "projectionTraces": [
+    {
+      "ability": "environment-gotcha",
+      "id": "stable-alias-survives-target-move-and-source-lifecycle",
+      "initialDocuments": [
+        {
+          "memoryId": "tn_moving_target",
+          "relations": [],
+          "status": "active",
+          "topic": "old-target",
+          "user": "mc-projection-alias"
+        },
+        {
+          "memoryId": "tn_other_target",
+          "relations": [],
+          "status": "active",
+          "topic": "other-target",
+          "user": "mc-projection-alias"
+        },
+        {
+          "memoryId": "tn_alias_source",
+          "relations": [{"type": "depends_on", "uri": "threadnote://memory/tn_moving_target"}],
+          "status": "active",
+          "topic": "source",
+          "user": "mc-projection-alias"
+        }
+      ],
+      "operations": [
+        {
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_alias_source",
+              "targetMemoryId": "tn_moving_target",
+              "targetRef": "threadnote://memory/tn_moving_target"
+            }
+          ],
+          "kind": "refresh"
+        },
+        {
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_alias_source",
+              "targetMemoryId": "tn_moving_target",
+              "targetRef": "threadnote://memory/tn_moving_target"
+            }
+          ],
+          "fromTopic": "old-target",
+          "kind": "target-move",
+          "toTopic": "moved-target",
+          "user": "mc-projection-alias"
+        },
+        {
+          "document": {
+            "memoryId": "tn_alias_source",
+            "relations": [{"type": "evidence_for", "uri": "threadnote://memory/tn_other_target"}],
+            "status": "active",
+            "topic": "source",
+            "user": "mc-projection-alias"
+          },
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "evidence_for",
+              "sourceMemoryId": "tn_alias_source",
+              "targetMemoryId": "tn_other_target",
+              "targetRef": "threadnote://memory/tn_other_target"
+            }
+          ],
+          "kind": "source-replace"
+        },
+        {
+          "expectedRows": [],
+          "kind": "source-delete",
+          "topic": "source",
+          "user": "mc-projection-alias"
+        },
+        {"expectedRows": [], "kind": "clean-rebuild"}
+      ],
+      "user": "mc-projection-alias"
+    },
+    {
+      "ability": "dynamic-state",
+      "id": "legacy-target-add-id-change-delete-and-clean-rebuild",
+      "initialDocuments": [
+        {
+          "memoryId": "tn_legacy_source",
+          "relations": [
+            {
+              "type": "depends_on",
+              "uri": "threadnote://user/mc-projection-legacy/memories/durable/projects/threadnote/late-target.md"
+            }
+          ],
+          "status": "active",
+          "topic": "source",
+          "user": "mc-projection-legacy"
+        }
+      ],
+      "operations": [
+        {
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_legacy_source",
+              "targetMemoryId": null,
+              "targetRef": "threadnote://user/mc-projection-legacy/memories/durable/projects/threadnote/late-target.md"
+            }
+          ],
+          "kind": "refresh"
+        },
+        {
+          "document": {
+            "memoryId": "tn_target_v1",
+            "relations": [],
+            "status": "active",
+            "topic": "late-target",
+            "user": "mc-projection-legacy"
+          },
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_legacy_source",
+              "targetMemoryId": "tn_target_v1",
+              "targetRef": "threadnote://user/mc-projection-legacy/memories/durable/projects/threadnote/late-target.md"
+            }
+          ],
+          "kind": "target-add"
+        },
+        {
+          "document": {
+            "memoryId": "tn_target_v2",
+            "relations": [],
+            "status": "active",
+            "topic": "late-target",
+            "user": "mc-projection-legacy"
+          },
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_legacy_source",
+              "targetMemoryId": "tn_target_v2",
+              "targetRef": "threadnote://user/mc-projection-legacy/memories/durable/projects/threadnote/late-target.md"
+            }
+          ],
+          "kind": "target-id-change"
+        },
+        {
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_legacy_source",
+              "targetMemoryId": null,
+              "targetRef": "threadnote://user/mc-projection-legacy/memories/durable/projects/threadnote/late-target.md"
+            }
+          ],
+          "kind": "target-delete",
+          "topic": "late-target",
+          "user": "mc-projection-legacy"
+        },
+        {
+          "expectedRows": [
+            {
+              "relationOrdinal": 0,
+              "relationOrigin": "relation",
+              "relationType": "depends_on",
+              "sourceMemoryId": "tn_legacy_source",
+              "targetMemoryId": null,
+              "targetRef": "threadnote://user/mc-projection-legacy/memories/durable/projects/threadnote/late-target.md"
+            }
+          ],
+          "kind": "clean-rebuild"
+        }
+      ],
+      "user": "mc-projection-legacy"
+    }
+  ],
+  "version": 1
+}

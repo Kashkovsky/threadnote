@@ -22,6 +22,8 @@ export function assertManagerRawSharedMemorySave(
     throw new Error(`${uri} changed after it was opened in Manager. Reload and retry.`);
   assertMemoryDocumentSchemaWritable(existingContent);
   assertMemoryDocumentSchemaWritable(content);
+  assertManagerRelationHeadersUnchanged(existingContent, content);
+  assertManagerMemoryIdentityUnchanged(uri, existingContent, content);
   const record = parseMemoryDocument(uri, content);
   if (!record) throw new Error('Raw shared memory content must be a valid Threadnote memory document.');
   const address = sharedMemoryUriParts(config, uri);
@@ -53,9 +55,35 @@ export function assertManagerRawPersonalMemorySave(
   }
   assertMemoryDocumentSchemaWritable(existingContent);
   assertMemoryDocumentSchemaWritable(content);
+  assertManagerRelationHeadersUnchanged(existingContent, content);
+  assertManagerMemoryIdentityUnchanged(uri, existingContent, content);
   const record = parseMemoryDocument(uri, content);
   if (!record) throw new Error('Raw personal memory content must be a valid Threadnote memory document.');
   if ((record.metadata.citationErrors?.length ?? 0) > 0) {
     throw new Error('Malformed code citation metadata must be repaired or recaptured before saving.');
   }
+}
+
+function assertManagerRelationHeadersUnchanged(existingContent: string, content: string): void {
+  if (JSON.stringify(relationHeaderLines(existingContent)) !== JSON.stringify(relationHeaderLines(content))) {
+    throw new Error(
+      'Raw Manager saves cannot change typed memory relations. Use remember_context or threadnote remember until the structured relation editor is available.',
+    );
+  }
+}
+
+function assertManagerMemoryIdentityUnchanged(uri: string, existingContent: string, content: string): void {
+  const existingMemoryId = parseMemoryDocument(uri, existingContent)?.metadata.memoryId;
+  const updatedMemoryId = parseMemoryDocument(uri, content)?.metadata.memoryId;
+  if (existingMemoryId !== updatedMemoryId) {
+    throw new Error(
+      'Raw Manager saves cannot change stable memory_id. Use remember_context or threadnote remember for identity-safe replacement.',
+    );
+  }
+}
+
+function relationHeaderLines(content: string): readonly string[] {
+  const lines = content.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
+  const headerEnd = lines.findIndex(line => line.trim() === '');
+  return lines.slice(0, headerEnd === -1 ? lines.length : headerEnd).filter(line => line.startsWith('relation:'));
 }
