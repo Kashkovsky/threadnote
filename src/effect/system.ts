@@ -1,8 +1,11 @@
-import {Context, Deferred, Effect, Exit, Layer, Ref} from 'effect';
+import {Context, Deferred, Effect, Exit, Layer, Ref, Semaphore} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
-import {WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT} from '../worker_protocol.js';
+import {
+  WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT,
+  WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION,
+} from '../worker_protocol.js';
 
 class SystemOperationError extends Error {
   readonly _tag = 'SystemOperationError' as const;
@@ -411,9 +414,18 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
       const canonicalProcessStartIdentity = yield* makeCachedProcessStartIdentityResolver(process.pid, processId =>
         readCanonicalProcessStartIdentity(processId, runtimePlatform, process.env),
       );
+      const windowsAvailableDiskBytes =
+        runtimePlatform === 'win32' && runtimeArchitecture === 'arm64'
+          ? yield* makePersistentWindowsAvailableDiskBytes()
+          : undefined;
+      const diskCapacityProbeAdapters: DiskCapacityProbeAdapters = {
+        fallback: legacyAvailableDiskBytes,
+        statfs: nativeStatfs,
+        ...(windowsAvailableDiskBytes === undefined ? {} : {windows: windowsAvailableDiskBytes}),
+      };
       return SystemInfo.of({
         architecture: runtimeArchitecture,
-        availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env),
+        availableDiskBytes: path => availableDiskBytes(path, runtimePlatform, process.env, diskCapacityProbeAdapters),
         canonicalProcessStartIdentity,
         currentDirectory: () => process.cwd(),
         environment: () => process.env,
@@ -504,6 +516,8 @@ export class SystemInfo extends Context.Service<SystemInfo, SystemInfoShape>()('
 
 const DISK_QUERY_TIMEOUT_MS = 10_000;
 const DISK_QUERY_OUTPUT_LIMIT_BYTES = 64 * 1_024;
+const WINDOWS_DISK_CAPACITY_WORKER_RESPONSE_LIMIT_BYTES = 1_024;
+const WINDOWS_DISK_CAPACITY_WORKER_SHUTDOWN_TIMEOUT_MS = 1_000;
 const KIBIBYTE_BYTES = 1024;
 const DARWIN_PROCESS_START_OUTPUT_PATTERN =
   /^ {0,4}((?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (?: [1-9]|[12][0-9]|3[01]) (?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9] [0-9]{4}) {0,4}\n?$/;
@@ -526,7 +540,11 @@ export interface DiskCapacityProbeAdapters {
     environment: NodeJS.ProcessEnv,
   ) => Effect.Effect<number | undefined, unknown>;
   readonly statfs: (path: string) => Effect.Effect<unknown, unknown>;
-  readonly windows?: (path: string, environment: NodeJS.ProcessEnv) => Effect.Effect<number | undefined, unknown>;
+  readonly windows?: (
+    path: string,
+    environment: NodeJS.ProcessEnv,
+    timeoutMilliseconds?: number,
+  ) => Effect.Effect<number | undefined, unknown>;
 }
 
 export interface WindowsProcessStartIdentityProbeAdapters {
@@ -538,14 +556,13 @@ class NativeStatfsUnavailableError {
   readonly _tag = 'NativeStatfsUnavailableError';
 }
 
-function availableDiskBytes(path: string, platform: NodeJS.Platform, environment: NodeJS.ProcessEnv) {
-  return probeRuntimeAvailableDiskBytes(
-    path,
-    platform,
-    runtimeArchitecture,
-    environment,
-    defaultDiskCapacityProbeAdapters,
-  );
+function availableDiskBytes(
+  path: string,
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  adapters: DiskCapacityProbeAdapters,
+) {
+  return probeRuntimeAvailableDiskBytes(path, platform, runtimeArchitecture, environment, adapters);
 }
 
 export function probeRuntimeAvailableDiskBytes(
@@ -568,9 +585,10 @@ export function probeRuntimeAvailableDiskBytes(
     );
   }
   // Bun 1.3.14's standalone Windows ARM64 statfs adapter is unusable. Prefer a
-  // killable standalone native query and retain PowerShell as one fallback.
+  // persistent killable native worker and retain PowerShell as one fallback.
   if (platform === 'win32' && architecture === 'arm64') {
-    const native = adapters.windows?.(path, environment) ?? Effect.succeed(undefined);
+    const nativeTimeoutMilliseconds = Math.max(1, Math.floor(timeoutMilliseconds / 2));
+    const native = adapters.windows?.(path, environment, nativeTimeoutMilliseconds) ?? Effect.succeed(undefined);
     return native.pipe(
       Effect.matchEffect({
         onFailure: () => adapters.fallback(path, platform, environment),
@@ -705,51 +723,331 @@ export function windowsDiskCapacityWorkerInvocation(
   };
 }
 
-/** @internal Killable boundary for the synchronous Windows kernel query. */
-export function isolatedWindowsAvailableDiskBytes(
-  path: string,
-  environment: NodeJS.ProcessEnv,
-  invocation = windowsDiskCapacityWorkerInvocation(process.execPath, process.argv),
-) {
-  return Effect.acquireUseRelease(
-    Effect.try({
-      try: () =>
-        Bun.spawn({
-          cmd: [invocation.executable, ...invocation.arguments, path],
-          env: withoutTelemetrySessionEnvironment(environment),
-          killSignal: 'SIGKILL',
-          maxBuffer: DISK_QUERY_OUTPUT_LIMIT_BYTES,
-          stderr: 'ignore',
-          stdin: 'ignore',
-          stdout: 'pipe',
-        }),
-      catch: systemOperationError,
-    }),
-    child =>
-      Effect.tryPromise({
-        try: async () => {
-          const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-          return exitCode === 0 ? parseWindowsAvailableDiskBytes(output) : undefined;
-        },
-        catch: systemOperationError,
-      }),
-    child =>
-      Effect.sync(() => {
-        if (child.exitCode !== null) return;
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // The process may exit while its finalizer runs.
+export interface WindowsDiskCapacityWorkerProcess {
+  readonly closeInput: () => Promise<void>;
+  readonly exited: Promise<number>;
+  readonly kill: () => void;
+  readonly stdout: ReadableStream<Uint8Array>;
+  readonly write: (line: string) => Promise<void>;
+}
+
+export interface WindowsDiskCapacityWorkerSpawnOptions {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly invocation: {readonly arguments: readonly string[]; readonly executable: string};
+}
+
+export interface PersistentWindowsDiskCapacityOptions {
+  readonly invocation?: {readonly arguments: readonly string[]; readonly executable: string};
+  readonly spawnWorker?: (
+    options: WindowsDiskCapacityWorkerSpawnOptions,
+  ) => Promise<WindowsDiskCapacityWorkerProcess> | WindowsDiskCapacityWorkerProcess;
+}
+
+interface WindowsDiskCapacityWorkerResponse {
+  readonly availableBytes: number | null;
+  readonly id: string;
+  readonly protocol: typeof WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION;
+}
+
+interface WindowsDiskCapacityPendingResponse {
+  readonly id: string;
+  readonly reject: (cause: SystemOperationError) => void;
+  readonly resolve: (availableBytes: number | undefined) => void;
+}
+
+function decodeWindowsDiskCapacityWorkerResponse(line: string): WindowsDiskCapacityWorkerResponse | undefined {
+  try {
+    const value: unknown = JSON.parse(line);
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('availableBytes' in value) ||
+      !('id' in value) ||
+      !('protocol' in value) ||
+      (value.availableBytes !== null &&
+        (typeof value.availableBytes !== 'number' ||
+          !Number.isSafeInteger(value.availableBytes) ||
+          value.availableBytes < 0)) ||
+      typeof value.id !== 'string' ||
+      !/^[1-9][0-9]{0,31}$/u.test(value.id) ||
+      value.protocol !== WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION
+    ) {
+      return undefined;
+    }
+    return {
+      availableBytes: value.availableBytes,
+      id: value.id,
+      protocol: WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+class WindowsDiskCapacityWorkerConnection {
+  private closed = false;
+  private readonly decoder = new TextDecoder();
+  private readonly encoder = new TextEncoder();
+  private pending: WindowsDiskCapacityPendingResponse | undefined;
+  private stdoutBuffer = '';
+  private stdoutBufferBytes = 0;
+
+  constructor(private readonly process: WindowsDiskCapacityWorkerProcess) {
+    void this.consumeStdout();
+    void process.exited.then(
+      () => this.fail('Windows disk capacity worker exited.'),
+      () => this.fail('Windows disk capacity worker exit could not be observed.'),
+    );
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  async close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      this.rejectPending('Windows disk capacity worker closed.');
+    }
+    const closedGracefully = await promiseCompletesBeforeDeadline(
+      Promise.resolve()
+        .then(() => this.process.closeInput())
+        .then(() => this.process.exited),
+      WINDOWS_DISK_CAPACITY_WORKER_SHUTDOWN_TIMEOUT_MS,
+    );
+    if (!closedGracefully) this.kill();
+  }
+
+  async request(
+    path: string,
+    id: string,
+    timeoutMilliseconds: number,
+    signal: AbortSignal,
+  ): Promise<number | undefined> {
+    if (this.closed) throw new SystemOperationError('Windows disk capacity worker is closed.');
+    if (this.pending !== undefined) throw new SystemOperationError('Windows disk capacity worker request overlapped.');
+    if (signal.aborted) {
+      this.fail('Windows disk capacity worker request was interrupted.');
+      throw new SystemOperationError('Windows disk capacity worker request was interrupted.');
+    }
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let removeAbortListener = () => {};
+    const response = new Promise<number | undefined>((resolve, reject) => {
+      this.pending = {
+        id,
+        reject,
+        resolve,
+      };
+      timeout = setTimeout(
+        () => this.fail('Windows disk capacity worker request timed out.'),
+        Math.max(1, Math.floor(timeoutMilliseconds)),
+      );
+      timeout.unref?.();
+      const onAbort = () => this.fail('Windows disk capacity worker request was interrupted.');
+      signal.addEventListener('abort', onAbort, {once: true});
+      removeAbortListener = () => signal.removeEventListener('abort', onAbort);
+    });
+    const request = JSON.stringify({
+      id,
+      path,
+      protocol: WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION,
+    });
+    void Promise.resolve(this.process.write(`${request}\n`)).catch(() => {
+      this.fail('Could not write Windows disk capacity worker request.');
+    });
+    return response.finally(() => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      removeAbortListener();
+    });
+  }
+
+  private async consumeStdout(): Promise<void> {
+    try {
+      for await (const chunk of this.process.stdout) {
+        this.stdoutBuffer += this.decoder.decode(chunk, {stream: true});
+        this.stdoutBufferBytes += chunk.byteLength;
+        if (this.stdoutBufferBytes > WINDOWS_DISK_CAPACITY_WORKER_RESPONSE_LIMIT_BYTES) {
+          this.fail('Windows disk capacity worker response exceeded its limit.');
+          return;
         }
-      }),
+        this.consumeStdoutLines();
+        if (this.closed) return;
+        this.stdoutBufferBytes = this.encoder.encode(this.stdoutBuffer).byteLength;
+      }
+      this.stdoutBuffer += this.decoder.decode();
+      this.consumeStdoutLines();
+      if (this.stdoutBuffer.trim()) this.fail('Windows disk capacity worker returned an incomplete response.');
+      else this.fail('Windows disk capacity worker exited.');
+    } catch {
+      this.fail('Could not read Windows disk capacity worker response.');
+    }
+  }
+
+  private consumeStdoutLines(): void {
+    for (;;) {
+      const newline = this.stdoutBuffer.indexOf('\n');
+      if (newline < 0) return;
+      const line = this.stdoutBuffer.slice(0, newline).replace(/\r$/u, '');
+      this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      if (!line) continue;
+      const pending = this.pending;
+      const response = decodeWindowsDiskCapacityWorkerResponse(line);
+      if (pending === undefined || response === undefined || response.id !== pending.id) {
+        this.fail('Windows disk capacity worker returned an invalid response.');
+        return;
+      }
+      this.pending = undefined;
+      pending.resolve(response.availableBytes ?? undefined);
+    }
+  }
+
+  private fail(message: string): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.rejectPending(message);
+    this.kill();
+  }
+
+  private kill(): void {
+    try {
+      this.process.kill();
+    } catch {
+      // The worker may exit while the parent handles its response.
+    }
+  }
+
+  private rejectPending(message: string): void {
+    const pending = this.pending;
+    if (pending === undefined) return;
+    this.pending = undefined;
+    pending.reject(new SystemOperationError(message));
+  }
+}
+
+class WindowsDiskCapacityWorkerPool {
+  private closed = false;
+  private connection: WindowsDiskCapacityWorkerConnection | undefined;
+  private sequence = 0;
+
+  constructor(
+    private readonly invocation: {readonly arguments: readonly string[]; readonly executable: string},
+    private readonly spawnWorker: (
+      options: WindowsDiskCapacityWorkerSpawnOptions,
+    ) => Promise<WindowsDiskCapacityWorkerProcess> | WindowsDiskCapacityWorkerProcess,
+  ) {}
+
+  async close(): Promise<void> {
+    this.closed = true;
+    const connection = this.connection;
+    this.connection = undefined;
+    await connection?.close();
+  }
+
+  async request(
+    path: string,
+    environment: NodeJS.ProcessEnv,
+    timeoutMilliseconds: number,
+    signal: AbortSignal,
+  ): Promise<number | undefined> {
+    if (this.closed) throw new SystemOperationError('Windows disk capacity worker pool is closed.');
+    let connection: WindowsDiskCapacityWorkerConnection | undefined;
+    try {
+      connection = await this.activeConnection(environment);
+      const id = String(++this.sequence);
+      return await connection.request(path, id, timeoutMilliseconds, signal);
+    } catch (cause: unknown) {
+      if (connection !== undefined) await this.discard(connection);
+      throw systemOperationError(cause);
+    }
+  }
+
+  private async activeConnection(environment: NodeJS.ProcessEnv): Promise<WindowsDiskCapacityWorkerConnection> {
+    if (this.closed) throw new SystemOperationError('Windows disk capacity worker pool is closed.');
+    if (this.connection !== undefined && !this.connection.isClosed) return this.connection;
+    const process = await this.spawnWorker({environment, invocation: this.invocation});
+    const connection = new WindowsDiskCapacityWorkerConnection(process);
+    if (this.closed) {
+      await connection.close();
+      throw new SystemOperationError('Windows disk capacity worker pool closed while starting.');
+    }
+    this.connection = connection;
+    return connection;
+  }
+
+  private async discard(connection: WindowsDiskCapacityWorkerConnection): Promise<void> {
+    if (this.connection === connection) this.connection = undefined;
+    await connection.close();
+  }
+}
+
+/** One killable worker process, with one fresh kernel observation per request. */
+export function makePersistentWindowsAvailableDiskBytes(options: PersistentWindowsDiskCapacityOptions = {}) {
+  const invocation = options.invocation ?? windowsDiskCapacityWorkerInvocation(process.execPath, process.argv);
+  return Effect.acquireRelease(
+    Effect.gen(function* () {
+      const permits = yield* Semaphore.make(1);
+      const pool = new WindowsDiskCapacityWorkerPool(invocation, options.spawnWorker ?? spawnWindowsDiskCapacityWorker);
+      return {permits, pool};
+    }),
+    ({pool}) => Effect.promise(() => pool.close()),
+  ).pipe(
+    Effect.map(
+      ({permits, pool}) =>
+        (path: string, environment: NodeJS.ProcessEnv, timeoutMilliseconds = DISK_QUERY_TIMEOUT_MS / 2) =>
+          permits.withPermit(
+            Effect.tryPromise({
+              try: signal => pool.request(path, environment, timeoutMilliseconds, signal),
+              catch: systemOperationError,
+            }),
+          ),
+    ),
   );
 }
 
-const defaultDiskCapacityProbeAdapters: DiskCapacityProbeAdapters = {
-  fallback: legacyAvailableDiskBytes,
-  statfs: nativeStatfs,
-  windows: isolatedWindowsAvailableDiskBytes,
-};
+function spawnWindowsDiskCapacityWorker(
+  options: WindowsDiskCapacityWorkerSpawnOptions,
+): WindowsDiskCapacityWorkerProcess {
+  const child = Bun.spawn({
+    cmd: [options.invocation.executable, ...options.invocation.arguments],
+    env: withoutTelemetrySessionEnvironment(options.environment),
+    killSignal: 'SIGKILL',
+    stderr: 'ignore',
+    stdin: 'pipe',
+    stdout: 'pipe',
+  });
+  const input = child.stdin;
+  return {
+    closeInput: async () => {
+      await input.end();
+    },
+    exited: child.exited,
+    kill: () => child.kill('SIGKILL'),
+    stdout: child.stdout,
+    write: async line => {
+      input.write(line);
+      await input.flush();
+    },
+  };
+}
+
+function promiseCompletesBeforeDeadline(promise: Promise<unknown>, timeoutMilliseconds: number): Promise<boolean> {
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (completed: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(completed);
+    };
+    const timeout = setTimeout(() => finish(false), timeoutMilliseconds);
+    timeout.unref?.();
+    void promise.then(
+      () => finish(true),
+      () => finish(false),
+    );
+  });
+}
 
 function isNativeStatfsUnavailable(cause: unknown): boolean {
   const underlying = cause instanceof SystemOperationError ? cause.cause : cause;

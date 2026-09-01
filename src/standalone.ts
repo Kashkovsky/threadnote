@@ -43,16 +43,14 @@ if (
   // These operations perform synchronous native work. Keep the OS default
   // signal behavior so their lock-owning or deadline-owning parents can stop
   // them without waiting for the native call to return.
-  runSignalTransparentMain(
-    isWindowsDiskCapacityWorker
-      ? await windowsDiskCapacityWorkerProgram(arguments_.slice(1))
-      : isCodeGraphCompactionWorker
-        ? await codeGraphAutomaticCompactionWorkerProgram()
-        : isCodeGraphImpactQueryWorker
-          ? await codeGraphImpactQueryWorkerProgram()
-          : await codeGraphDeepDiagnosticsWorkerProgram(),
-    {disableErrorReporting: true},
-  );
+  const nativeWorkerProgram: Effect.Effect<void, unknown, never> = isWindowsDiskCapacityWorker
+    ? await windowsDiskCapacityWorkerProgram()
+    : isCodeGraphCompactionWorker
+      ? await codeGraphAutomaticCompactionWorkerProgram()
+      : isCodeGraphImpactQueryWorker
+        ? await codeGraphImpactQueryWorkerProgram()
+        : await codeGraphDeepDiagnosticsWorkerProgram();
+  runSignalTransparentMain(nativeWorkerProgram, {disableErrorReporting: true});
 } else {
   const program: Effect.Effect<void, unknown, never> = isRemoteMemoryService
     ? await remoteMemoryServiceProgram()
@@ -75,21 +73,23 @@ if (
   });
 }
 
-async function windowsDiskCapacityWorkerProgram(arguments_: readonly string[]) {
+async function windowsDiskCapacityWorkerProgram() {
   const worker = await import('./effect/windows_system.js');
-  const path = arguments_.length === 1 ? arguments_[0] : undefined;
-  return (path === undefined ? Effect.succeed(undefined) : worker.readWindowsAvailableDiskBytesNative(path)).pipe(
-    Effect.tap(available =>
-      Effect.sync(() => {
-        if (available === undefined) {
-          process.exitCode = 2;
-          return;
-        }
-        process.stdout.write(String(available));
-      }),
-    ),
-    Effect.asVoid,
-  );
+  return worker
+    .serveWindowsDiskCapacityWorker({
+      input: process.stdin,
+      writeLine: line =>
+        new Promise<void>((resolve, reject) => {
+          process.stdout.write(`${line}\n`, error => (error ? reject(error) : resolve()));
+        }),
+    })
+    .pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (!process.stdin.destroyed) process.stdin.pause();
+        }),
+      ),
+    );
 }
 
 async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {

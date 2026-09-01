@@ -1,5 +1,6 @@
 import {dlopen} from 'bun:ffi';
-import {Effect} from 'effect';
+import {Effect, Stream} from 'effect';
+import {WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION} from '../worker_protocol.js';
 
 class WindowsSystemError extends Error {
   readonly _tag = 'WindowsSystemError' as const;
@@ -14,6 +15,7 @@ const WINDOWS_VERSION_MAJOR_OFFSET = 4;
 const WINDOWS_VERSION_MINOR_OFFSET = 8;
 const WINDOWS_VERSION_BUILD_OFFSET = 12;
 const WINDOWS_PATH_CODE_UNIT_LIMIT = 32_767;
+const WINDOWS_DISK_CAPACITY_WORKER_INPUT_LIMIT_BYTES = 256 * 1_024;
 const MAXIMUM_SAFE_BYTE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
 
 export interface WindowsHardwareInfo {
@@ -66,6 +68,109 @@ export function readWindowsAvailableDiskBytesNative(path: string): Effect.Effect
       return undefined;
     }
   });
+}
+
+interface WindowsDiskCapacityWorkerRequest {
+  readonly id: string;
+  readonly path: string;
+  readonly protocol: typeof WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION;
+}
+
+interface WindowsDiskCapacityWorkerResponse {
+  readonly availableBytes: number | null;
+  readonly id: string;
+  readonly protocol: typeof WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION;
+}
+
+export interface WindowsDiskCapacityWorkerServerIo {
+  readonly input: AsyncIterable<string | Uint8Array>;
+  readonly writeLine: (line: string) => Promise<void>;
+}
+
+function decodeWindowsDiskCapacityWorkerRequest(line: string): WindowsDiskCapacityWorkerRequest | undefined {
+  try {
+    const value: unknown = JSON.parse(line);
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('id' in value) ||
+      !('path' in value) ||
+      !('protocol' in value) ||
+      typeof value.id !== 'string' ||
+      !/^[1-9][0-9]{0,31}$/u.test(value.id) ||
+      typeof value.path !== 'string' ||
+      value.path.length === 0 ||
+      value.path.length > WINDOWS_PATH_CODE_UNIT_LIMIT ||
+      value.path.includes('\0') ||
+      value.protocol !== WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION
+    ) {
+      return undefined;
+    }
+    return {id: value.id, path: value.path, protocol: WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION};
+  } catch {
+    return undefined;
+  }
+}
+
+/** Serve serial, bounded capacity queries until the owning process closes stdin. */
+export function serveWindowsDiskCapacityWorker(
+  io: WindowsDiskCapacityWorkerServerIo,
+  readAvailableBytes: (
+    path: string,
+  ) => Effect.Effect<number | undefined, unknown> = readWindowsAvailableDiskBytesNative,
+): Effect.Effect<void, WindowsSystemError> {
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let buffered = '';
+  const handleLine = (line: string) =>
+    Effect.gen(function* () {
+      if (encoder.encode(line).byteLength > WINDOWS_DISK_CAPACITY_WORKER_INPUT_LIMIT_BYTES) {
+        return yield* Effect.fail(new WindowsSystemError('Windows disk capacity worker request exceeded its limit.'));
+      }
+      const request = decodeWindowsDiskCapacityWorkerRequest(line);
+      if (request === undefined) {
+        return yield* Effect.fail(new WindowsSystemError('Windows disk capacity worker request was invalid.'));
+      }
+      const availableBytes = yield* readAvailableBytes(request.path).pipe(
+        Effect.catch(() => Effect.succeed(undefined)),
+      );
+      const response: WindowsDiskCapacityWorkerResponse = {
+        availableBytes: availableBytes ?? null,
+        id: request.id,
+        protocol: WINDOWS_DISK_CAPACITY_WORKER_PROTOCOL_VERSION,
+      };
+      yield* Effect.tryPromise({
+        try: () => io.writeLine(JSON.stringify(response)),
+        catch: cause => new WindowsSystemError('Could not write Windows disk capacity worker response.', {cause}),
+      });
+    });
+  const consumeChunk = (chunk: string | Uint8Array) =>
+    Effect.gen(function* () {
+      buffered += typeof chunk === 'string' ? chunk : decoder.decode(chunk, {stream: true});
+      for (;;) {
+        const newline = buffered.indexOf('\n');
+        if (newline < 0) break;
+        const line = buffered.slice(0, newline).replace(/\r$/u, '');
+        buffered = buffered.slice(newline + 1);
+        if (line) yield* handleLine(line);
+      }
+      if (encoder.encode(buffered).byteLength > WINDOWS_DISK_CAPACITY_WORKER_INPUT_LIMIT_BYTES) {
+        return yield* Effect.fail(new WindowsSystemError('Windows disk capacity worker input exceeded its limit.'));
+      }
+    });
+  return Stream.fromAsyncIterable(
+    io.input,
+    cause => new WindowsSystemError('Could not read Windows disk capacity worker input.', {cause}),
+  ).pipe(
+    Stream.runForEach(consumeChunk),
+    Effect.andThen(
+      Effect.gen(function* () {
+        buffered += decoder.decode();
+        const finalLine = buffered.replace(/\r$/u, '');
+        if (finalLine) yield* handleLine(finalLine);
+      }),
+    ),
+  );
 }
 
 export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {

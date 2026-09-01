@@ -56,7 +56,11 @@ describe('standalone release workflows', () => {
       expect(workflow).toContain('bun-linux-arm64');
       expect(workflow).toContain('bun-darwin-x64');
       expect(workflow).toContain('bun-darwin-arm64');
-      expect(workflow).toContain('bun-windows-x64-baseline');
+      expect(workflow).toContain('target: bun-windows-x64-baseline');
+      expect(workflow).toContain('oven-sh/bun#28327');
+      expect(workflow).toContain('Preload checksum-pinned Bun baseline compiler backend');
+      expect(workflow).toContain('BUN_BASELINE_TARBALL_SHA512: b888cb502d52f435a0202ceea0c6daeef');
+      expect(workflow).toContain('bun-windows-x64-baseline-v$env:BUN_VERSION');
       expect(workflow).toContain('bun-windows-arm64');
       expect(workflow).toContain('windows-11-arm');
       expect(workflow.match(/if: \$\{\{ false \}\}/g)).toHaveLength(1);

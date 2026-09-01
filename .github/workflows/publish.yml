@@ -371,6 +371,37 @@ jobs:
           bun-version: ${{ env.BUN_VERSION }}
 
       - run: bun install --frozen-lockfile
+
+      - name: Preload checksum-pinned Bun baseline compiler backend
+        if: matrix.architecture == 'x64'
+        shell: pwsh
+        env:
+          BUN_BASELINE_TARBALL_SHA512: b888cb502d52f435a0202ceea0c6daeefbab0499c1aee1384b90b19ef99991da96557473c75460bbadfa1e81fe934a9e6900858778de1b7250d72e9f447bf4b3
+        run: |
+          # Bun 1.3.14 cannot extract this backend itself on Windows (oven-sh/bun#28327).
+          # Preserve Threadnote's baseline CPU contract by placing the exact official
+          # package payload in the cache path Bun checks before attempting a download.
+          $packageName = 'bun-windows-x64-baseline'
+          $archive = Join-Path $env:RUNNER_TEMP "$packageName-$env:BUN_VERSION.tgz"
+          $extractRoot = Join-Path $env:RUNNER_TEMP "$packageName-extracted"
+          $packageUrl = "https://registry.npmjs.org/@oven/$packageName/-/$packageName-$env:BUN_VERSION.tgz"
+          Invoke-WebRequest -Uri $packageUrl -OutFile $archive
+          $actualDigest = (Get-FileHash -LiteralPath $archive -Algorithm SHA512).Hash.ToLowerInvariant()
+          if ($actualDigest -ne $env:BUN_BASELINE_TARBALL_SHA512) {
+            throw "Bun baseline compiler backend checksum mismatch."
+          }
+          New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+          tar -xzf $archive -C $extractRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $source = Join-Path $extractRoot 'package/bin/bun.exe'
+          $cache = (& bun pm cache).Trim()
+          $destination = Join-Path $cache "bun-windows-x64-baseline-v$env:BUN_VERSION"
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          Copy-Item -LiteralPath $source -Destination $destination -Force
+          if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "Bun baseline compiler backend was not preloaded."
+          }
+
       - run: bun run build
         env:
           THREADNOTE_BUILD_TARGET: ${{ matrix.target }}
