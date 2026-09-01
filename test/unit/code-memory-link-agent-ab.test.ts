@@ -49,7 +49,7 @@ const CLIENTS = CLIENT_IDS.map((clientId, index) => ({
   environmentPolicyHash: hash(890 + index),
   executionBundleHash: hash(895 + index),
   expectedClient: {
-    appServerVersion: '0.144.5' as const,
+    appServerVersion: '0.149.0-alpha.4.1' as const,
     model: index === 0 ? 'gpt-5.6-luna' : 'gpt-5.6-terra',
     modelProvider: 'openai',
     reasoningEffort: 'medium',

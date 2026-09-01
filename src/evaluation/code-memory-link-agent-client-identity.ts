@@ -7,7 +7,7 @@ import {
   record,
 } from './code-memory-link-agent-protocol-primitives.js';
 
-export const CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION = '0.144.5' as const;
+export const CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION = '0.149.0-alpha.4.1' as const;
 
 export interface CodeMemoryLinkExpectedCodexClientV1 {
   readonly appServerVersion: typeof CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION;

@@ -59,7 +59,7 @@ const PROXY = {server: 'code-memory-link-proxy', tool: 'context_brief'} as const
 const ARM_PACKET_HASH = 'c'.repeat(64);
 const RUN_BINDING_HASH = 'd'.repeat(64);
 const CLIENT = {
-  appServerVersion: '0.144.5',
+  appServerVersion: '0.149.0-alpha.4.1',
   model: 'gpt-5.6-luna',
   modelProvider: 'openai',
   reasoningEffort: 'medium',
@@ -618,7 +618,7 @@ describe('Code Memory Link real-agent protocol', () => {
   it('canonically binds retained client identity to the reviewed model, provider, effort, and proxy', () => {
     const identity = projectCodeMemoryLinkExpectedCodexClientV1({expectedClient: CLIENT, proxyTool: PROXY});
     expect(identity).toEqual({
-      appServerVersion: '0.144.5',
+      appServerVersion: '0.149.0-alpha.4.1',
       effectiveModel: CLIENT.model,
       modelProviderDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
       proxyToolDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),

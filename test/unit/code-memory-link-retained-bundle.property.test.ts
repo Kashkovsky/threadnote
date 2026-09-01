@@ -12,12 +12,16 @@ const CANDIDATE = 'a'.repeat(40);
 const CLIENTS = [
   {
     clientId: `cli_${'1'.repeat(16)}`,
-    configProjection: json({appServerVersion: '0.144.5', model: 'gpt-5.6-luna', roleBinding: 'b'.repeat(64)}),
+    configProjection: json({appServerVersion: '0.149.0-alpha.4.1', model: 'gpt-5.6-luna', roleBinding: 'b'.repeat(64)}),
     descriptor: json({descriptorHash: 'c'.repeat(64), version: 1}),
   },
   {
     clientId: `cli_${'2'.repeat(16)}`,
-    configProjection: json({appServerVersion: '0.144.5', model: 'gpt-5.6-terra', roleBinding: 'd'.repeat(64)}),
+    configProjection: json({
+      appServerVersion: '0.149.0-alpha.4.1',
+      model: 'gpt-5.6-terra',
+      roleBinding: 'd'.repeat(64),
+    }),
     descriptor: json({descriptorHash: 'e'.repeat(64), version: 1}),
   },
 ] as const;

@@ -670,7 +670,7 @@ function manifestClient(clientId: string, index: number, model: string) {
     environmentPolicyHash: (index + 2).toString(16).repeat(64),
     executionBundleHash: (index + 4).toString(16).repeat(64),
     expectedClient: {
-      appServerVersion: '0.144.5' as const,
+      appServerVersion: '0.149.0-alpha.4.1' as const,
       model,
       modelProvider: 'openai',
       reasoningEffort: 'medium',

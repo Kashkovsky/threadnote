@@ -255,7 +255,7 @@ export async function runCodeMemoryLinkCodexExecutionTask(
       threadnoteHome: isolation.threadnoteHome,
     });
     const expectedClient = {
-      appServerVersion: CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION.replace('codex-cli ', '') as '0.144.5',
+      appServerVersion: CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION.replace('codex-cli ', '') as '0.149.0-alpha.4.1',
       model: config.model.id,
       modelProvider: config.model.provider,
       reasoningEffort: config.model.reasoningEffort,
