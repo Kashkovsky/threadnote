@@ -237,27 +237,31 @@ export class CodeMemoryLinkAppServerClient {
       this.#abort(new Error('Codex app-server emitted an unsupported message.'));
       return;
     }
-    if (message.method === 'item/started') {
-      const params = record(message.params, 'item/started params');
-      const item = record(params.item, 'item/started item');
-      const itemId = textValue(item.id, 'item/started item id');
-      if (this.#startedItems.has(itemId)) {
-        this.#abort(new Error('Codex app-server repeated a started action item id.'));
-        return;
+    try {
+      if (message.method === 'item/started') {
+        const params = record(message.params, 'item/started params');
+        const item = record(params.item, 'item/started item');
+        const itemId = textValue(item.id, 'item/started item id');
+        if (this.#startedItems.has(itemId)) {
+          this.#abort(new Error('Codex app-server repeated a started action item id.'));
+          return;
+        }
+        this.#startedItems.set(itemId, item);
       }
-      this.#startedItems.set(itemId, item);
-    }
-    if (message.method === 'item/completed') {
-      const params = record(message.params, 'item/completed params');
-      const item = record(params.item, 'item/completed item');
-      const itemId = textValue(item.id, 'item/completed item id');
-      const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
-      if (actionType !== null && !this.#approvedItemIds.has(itemId)) {
-        this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
-        return;
+      if (message.method === 'item/completed') {
+        const params = record(message.params, 'item/completed params');
+        const item = record(params.item, 'item/completed item');
+        const itemId = textValue(item.id, 'item/completed item id');
+        const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
+        if (actionType !== null && !this.#approvedItemIds.has(itemId)) {
+          this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
+          return;
+        }
       }
+      this.#events.push(message);
+    } catch (cause) {
+      this.#abort(cause instanceof Error ? cause : new Error(String(cause)));
     }
-    this.#events.push(message);
   }
 
   #acceptServerRequest(message: Record<string, unknown>): void {

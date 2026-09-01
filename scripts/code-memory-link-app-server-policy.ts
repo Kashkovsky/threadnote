@@ -202,7 +202,7 @@ function reviewableCommands(item: Record<string, unknown>, repositoryRoot: strin
   const command = text(item.command, 'command');
   const shellTokens = tokenize(command);
   if (shellTokens[0] === '/bin/zsh') {
-    if (shellTokens.length !== 3 || shellTokens[1] !== '-lc') {
+    if (shellTokens.length !== 3 || (shellTokens[1] !== '-c' && shellTokens[1] !== '-lc')) {
       throw new Error('Code Memory Link shell command uses an unsupported invocation shape.');
     }
     if (

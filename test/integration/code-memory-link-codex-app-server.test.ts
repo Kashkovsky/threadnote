@@ -543,6 +543,34 @@ describe('Code Memory Link Codex app-server transport', () => {
     ).rejects.toThrow(expected);
   });
 
+  it('turns an unsafe completed action into a bounded client failure', async () => {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), 'threadnote-codex-app-server-unsafe-completion-'));
+    temporaryRoots.push(repositoryRoot);
+    await mkdir(join(repositoryRoot, 'src'));
+    await writeFile(join(repositoryRoot, 'src/service.ts'), 'export const service = true;\n');
+
+    await expect(
+      runCodeMemoryLinkAppServerTurn({
+        appServer: {
+          argumentsBeforeSubcommand: [join(process.cwd(), 'test/helpers/fake-code-memory-link-app-server.ts')],
+          executable: process.execPath,
+        },
+        cwd: repositoryRoot,
+        environment: {
+          HOME: repositoryRoot,
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          THREADNOTE_TEST_COMPLETED_ACTION_VIOLATION: '1',
+        },
+        expected: {model: 'gpt-5.6-luna', modelProvider: 'openai', reasoningEffort: 'medium'},
+        outputSchema: {type: 'object'},
+        prompt: 'Complete the public fixture task.',
+        proxyServerName: 'context_brief_gate',
+        taskBudget: {steps: 2, tokens: 150},
+        timeoutMilliseconds: 10_000,
+      }),
+    ).rejects.toThrow('outside the reviewed read-only allowlist');
+  });
+
   it.each([
     ['instruction-source', /unexpected host or repository instruction source/u],
     ['read-only-sandbox', /did not enforce the no-network workspace sandbox/u],
