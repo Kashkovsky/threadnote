@@ -2,6 +2,7 @@ import {it as effectIt} from '@effect/vitest';
 import {Deferred, Effect, Fiber, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {describe, expect} from 'vitest';
+import {CodeGraphIndexer} from '../../src/code_graph/indexer.js';
 import {CodeGraphQueryService} from '../../src/code_graph/query.js';
 import {CodeGraphStore} from '../../src/code_graph/store.js';
 import type {CodeGraphStoreShape} from '../../src/code_graph/store_shape.js';
@@ -29,7 +30,7 @@ import {
   writePrivateDeferredCodeAnchorFile,
 } from '../../src/memory/deferred_code_anchor_private_fs.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
-import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
+import {formatMemoryDocument, parseMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import type {RuntimeConfig} from '../../src/types.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 
@@ -750,6 +751,87 @@ describe('deferred code-anchor outbox', () => {
         });
         expect(attemptedUris).toEqual([MEMORY_URI]);
         expect(yield* fixtureIntentPaths(fixture)).toHaveLength(1);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('reconciles a canonical citation commit interrupted by the opportunistic pass deadline', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = yield* makeFixture().pipe(TestClock.withLive);
+        yield* fixture.fs.makeDirectory(fixture.path.join(fixture.repository, 'src'));
+        yield* fixture.fs.writeFileString(
+          fixture.path.join(fixture.repository, 'src', 'deadline.ts'),
+          'export const deadline = "committed";\n',
+        );
+        yield* runCommandEffect('git', ['add', '.'], {cwd: fixture.repository}).pipe(TestClock.withLive);
+        yield* runCommandEffect(
+          'git',
+          [
+            '-c',
+            'user.name=Threadnote Test',
+            '-c',
+            'user.email=test@threadnote.local',
+            'commit',
+            '--quiet',
+            '--message',
+            'add deadline fixture',
+          ],
+          {cwd: fixture.repository},
+        ).pipe(TestClock.withLive);
+        const store = yield* ResourceStore;
+        const content = memoryContent(fixture.metadata, 'Committed before the foreground deadline.');
+        yield* stageDeferredCodeAnchorIntent(fixture.config, {
+          memoryContent: content,
+          memoryMetadata: fixture.metadata,
+          memoryUri: MEMORY_URI,
+          request: deferredRequest(fixture.repository, ['src/deadline.ts']),
+        });
+        yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
+        const indexer = yield* CodeGraphIndexer;
+        yield* indexer
+          .index({cwd: fixture.repository, ensureVectors: false, threadnoteHome: fixture.config.agentContextHome})
+          .pipe(TestClock.withLive);
+        const [intentPath] = yield* fixtureIntentPaths(fixture);
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+          repositoryId: string;
+          worktreeId: string;
+        };
+        const committed = yield* Deferred.make<void>();
+        const postCommitStore = ResourceStore.of({
+          ...store,
+          write: (location, uri, value, options) =>
+            uri === MEMORY_URI
+              ? store.write(location, uri, value, options).pipe(
+                  Effect.tap(() => Deferred.succeed(committed, undefined)),
+                  Effect.andThen(Effect.never),
+                )
+              : store.write(location, uri, value, options),
+        });
+        const fiber = yield* finalizeDeferredCodeAnchorsForRoute(
+          fixture.config,
+          {
+            callerCwd: fixture.repository,
+            kind: 'repository',
+            repositoryId: intent.repositoryId,
+            worktreeId: intent.worktreeId,
+          },
+          {limit: 1, passTimeoutMilliseconds: 100},
+        ).pipe(Effect.provideService(ResourceStore, postCommitStore), Effect.forkScoped);
+        yield* Deferred.await(committed);
+        yield* TestClock.adjust('100 millis');
+
+        expect(yield* Fiber.join(fiber)).toMatchObject({matchedCount: 1, scannedCount: 0, state: 'contended'});
+        expect(yield* fixtureIntentPaths(fixture)).toEqual([]);
+        const finalized = parseMemoryDocument(
+          MEMORY_URI,
+          yield* store.read(resourceStoreLocation(fixture.config), MEMORY_URI),
+        );
+        expect(finalized?.metadata).toMatchObject({
+          codeCitations: [{path: 'src/deadline.ts'}],
+          memoryId: fixture.metadata.memoryId,
+          status: fixture.metadata.status,
+        });
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
