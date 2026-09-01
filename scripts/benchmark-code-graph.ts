@@ -7896,6 +7896,7 @@ export function enforceCodeGraphBenchmarkBudget(
   const record = value as {
     readonly developmentPerformance?: unknown;
     readonly developmentPerformanceByPlatform?: Readonly<Record<string, unknown>>;
+    readonly developmentPerformanceByRunnerClass?: Readonly<Record<string, unknown>>;
     readonly scalePerformance?: Readonly<Record<string, unknown>>;
     readonly scalePerformanceByRunnerClass?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
     readonly vectorPerformance?: unknown;
@@ -7919,6 +7920,15 @@ export function enforceCodeGraphBenchmarkBudget(
     record.developmentPerformanceByPlatform[runtimePlatform] !== null
       ? record.developmentPerformanceByPlatform[runtimePlatform]
       : undefined;
+  const runnerDevelopmentOverride =
+    artifact.metadata.vectorEnabled !== true &&
+    scaleSymbols === undefined &&
+    typeof runnerClass === 'string' &&
+    benchmarkRunnerClassMatchesArtifact(runnerClass, runtimePlatform, artifact.environment.architecture) &&
+    typeof record.developmentPerformanceByRunnerClass?.[runnerClass] === 'object' &&
+    record.developmentPerformanceByRunnerClass[runnerClass] !== null
+      ? record.developmentPerformanceByRunnerClass[runnerClass]
+      : undefined;
   const runnerScalePerformance =
     typeof runnerClass === 'string' ? record.scalePerformanceByRunnerClass?.[runnerClass] : undefined;
   const runnerScaleOverride =
@@ -7932,7 +7942,12 @@ export function enforceCodeGraphBenchmarkBudget(
       : undefined;
   const selected =
     typeof baseSelected === 'object' && baseSelected !== null
-      ? {...baseSelected, ...(platformOverride ?? {}), ...(runnerScaleOverride ?? {})}
+      ? {
+          ...baseSelected,
+          ...(platformOverride ?? {}),
+          ...(runnerDevelopmentOverride ?? {}),
+          ...(runnerScaleOverride ?? {}),
+        }
       : baseSelected;
   if (typeof selected !== 'object' || selected === null) {
     throw new ScriptError(

@@ -22,6 +22,10 @@ interface WorkflowJob {
   }[];
   readonly strategy?: {
     readonly matrix?: {
+      readonly include?: readonly {
+        readonly hotQuerySamples?: number;
+        readonly os?: string;
+      }[];
       readonly scale?: readonly number[];
     };
   };
@@ -116,6 +120,12 @@ describe('platform benchmark workflow', () => {
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-${{ matrix.os }}-${{ runner.arch }}',
       THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
     });
+    expect(nativeJob.strategy?.matrix?.include).toEqual([
+      {hotQuerySamples: 25, os: 'ubuntu-latest'},
+      {hotQuerySamples: 25, os: 'macos-latest'},
+      {hotQuerySamples: 100, os: 'windows-latest'},
+    ]);
+    expect(nativeCapture?.run).toContain('--samples ${{ matrix.hotQuerySamples }}');
 
     for (const jobName of [
       'code-graph',

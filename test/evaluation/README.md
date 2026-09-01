@@ -628,6 +628,13 @@ scans, RSS, and disk. Code-graph embeddings use paged SQLite generations so cand
 do not materialize a repository-sized sidecar. The platform workflow retains full artifacts rather than pretending
 shared-runner latency is machine-independent.
 
+The native GitHub-hosted Windows x64 query lane records 100 post-warmup samples; Linux, macOS, and local Windows retain 25. This runner-scoped sample floor increases the empirical p95 resolution after a 25-sample same-tree scheduler-tail
+failure. It does not widen the Windows 750 ms p50, 1,000 ms p95, 500 ms process-CPU p95, or existing 5% guarded p95
+allowance. Under the production percentile convention, 100 samples exclude four upper-order observations and a fifth
+wall breach fails. The retained rationale and artifact provenance are in
+`baselines/code-graph-v1/windows-native-hosted-query-quantile-calibration-v1.{json,md}`; a release candidate must pass
+that 100-sample native lane prospectively.
+
 The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
 eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested
 workspaces. One reusable workflow runs weekly, through the explicit `include_production_large` input, and from a

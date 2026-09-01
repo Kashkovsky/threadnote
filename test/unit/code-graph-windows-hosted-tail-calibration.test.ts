@@ -5,6 +5,7 @@ import {enforceCodeGraphBenchmarkBudget} from '../../scripts/benchmark-code-grap
 import {
   BenchmarkEnvironmentSchemaV1,
   BenchmarkMeasurementSchemaV1,
+  benchmarkMeasurement,
   type BenchmarkArtifactV1,
 } from '../../src/evaluation/benchmark.js';
 
@@ -43,6 +44,11 @@ const budgetFile = Schema.decodeUnknownSync(
           hotQueryProcessCpuP95MillisecondsMaximum: PositiveFinite,
           oneFileIncrementalP95MillisecondsMaximum: PositiveFinite,
           wholeGraphAnalysisP95MillisecondsMaximum: PositiveFinite,
+        }),
+      }),
+      developmentPerformanceByRunnerClass: Schema.Struct({
+        'github-hosted-windows-x64': Schema.Struct({
+          hotQuerySamplesMinimum: Schema.Literal(100),
         }),
       }),
     }),
@@ -316,6 +322,62 @@ describe('hosted Windows native cold-tail calibration', () => {
     );
   });
 
+  it('requires 100 hot-query samples only on the matching hosted Windows runner class', () => {
+    const hosted = hostedCandidateArtifact(100);
+    expect(() => enforceCodeGraphBenchmarkBudget(hosted, budgetFile, undefined)).not.toThrow();
+    expect(() => enforceCodeGraphBenchmarkBudget(candidateArtifact(), budgetFile, undefined)).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(hostedCandidateArtifact(25, {architecture: 'arm64'}), budgetFile, undefined),
+    ).not.toThrow();
+    expect(budgetFailures(hostedCandidateArtifact(25, {runtimePlatform: 'linux'}), budgetFile)).not.toContain(
+      'hot-exact-lexical-query requires at least 100 samples for wall tolerance',
+    );
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        hostedCandidateArtifact(25, {runnerClass: 'github-hosted-linux-x64'}),
+        budgetFile,
+        undefined,
+      ),
+    ).not.toThrow();
+
+    fc.assert(
+      fc.property(fc.integer({max: 99, min: 1}), samples => {
+        expect(() => enforceCodeGraphBenchmarkBudget(hostedCandidateArtifact(samples), budgetFile, undefined)).toThrow(
+          /requires at least 100 samples/u,
+        );
+      }),
+      {numRuns: 100},
+    );
+    fc.assert(
+      fc.property(fc.integer({max: 250, min: 100}), samples => {
+        expect(() =>
+          enforceCodeGraphBenchmarkBudget(hostedCandidateArtifact(samples), budgetFile, undefined),
+        ).not.toThrow();
+      }),
+      {numRuns: 100},
+    );
+  });
+
+  it('uses the production percentile at the four-versus-five guarded wall-tail boundary', () => {
+    const wallMaximum =
+      windowsBudget.hotQueryP95MillisecondsMaximum *
+      (1 + budgetFile.developmentPerformance.hotQueryWallP95ToleranceRatioMaximum);
+    const wallSamples = (breaches: 4 | 5) => [
+      ...Array.from({length: 95}, () => 500),
+      ...(breaches === 4 ? [wallMaximum] : []),
+      ...Array.from({length: breaches}, () => wallMaximum + 1),
+    ];
+    const withWall = (breaches: 4 | 5) =>
+      replaceMeasurement(hostedCandidateArtifact(100), 'hot-exact-lexical-query', () =>
+        benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', wallSamples(breaches)),
+      );
+
+    expect(() => enforceCodeGraphBenchmarkBudget(withWall(4), budgetFile, undefined)).not.toThrow();
+    expect(() => enforceCodeGraphBenchmarkBudget(withWall(5), budgetFile, undefined)).toThrow(
+      /hot-exact-lexical-query/u,
+    );
+  });
+
   it('keeps every unchanged independent budget strict above its boundary', () => {
     const unchangedGuards: readonly GuardMutation[] = [
       {
@@ -454,6 +516,27 @@ function candidateArtifact(
     ...calibration.candidateBudgetArtifact,
     measurements: calibration.candidateBudgetMeasurements,
     metadata: {...calibration.candidateBudgetArtifact.metadata, runtimePlatform},
+  };
+}
+
+function hostedCandidateArtifact(
+  samples: number,
+  overrides: {
+    readonly architecture?: string;
+    readonly runnerClass?: string;
+    readonly runtimePlatform?: string;
+  } = {},
+): BenchmarkArtifactV1 {
+  const artifact = candidateArtifact(overrides.runtimePlatform);
+  return {
+    ...artifact,
+    environment: {...artifact.environment, architecture: overrides.architecture ?? artifact.environment.architecture},
+    measurements: artifact.measurements.map(measurement =>
+      measurement.name === 'hot-exact-lexical-query' || measurement.name === 'hot-query-process-cpu'
+        ? {...measurement, samples}
+        : measurement,
+    ),
+    metadata: {...artifact.metadata, runnerClass: overrides.runnerClass ?? 'github-hosted-windows-x64'},
   };
 }
 
