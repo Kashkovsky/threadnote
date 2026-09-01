@@ -28,6 +28,14 @@ const SIMPLE_FLAGS = new Map<string, ReadonlySet<string>>([
   ['wc', new Set(['-c', '-l', '-w', '--'])],
 ]);
 
+/** A reviewed action was well-formed but is outside the experiment's execution policy. */
+export class CodeMemoryLinkActionDeniedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'CodeMemoryLinkActionDeniedError';
+  }
+}
+
 export function approveCodeMemoryLinkAppServerRequest(input: {
   readonly method: string;
   readonly params: unknown;
@@ -105,7 +113,7 @@ function approveCommand(
       throw new Error(`Command approval ${field} differs from its started action item.`);
     }
   }
-  assertReadCommand(item, scope.repositoryRoot);
+  denyUnsupportedAction(() => assertReadCommand(item, scope.repositoryRoot));
   return receipt('commandExecution', String(params.itemId), params);
 }
 
@@ -151,7 +159,7 @@ function approveFileChange(
   if (item.type !== 'fileChange' || item.id !== params.itemId) {
     throw new Error('File-change approval does not match its started action item.');
   }
-  assertFileChanges(item, scope.repositoryRoot);
+  denyUnsupportedAction(() => assertFileChanges(item, scope.repositoryRoot));
   return receipt('fileChange', String(params.itemId), params);
 }
 
@@ -192,10 +200,11 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
   } else if (executable === 'ls') assertLs(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'rg') assertRipgrep(tokens.slice(1), repositoryRoot, cwd);
   else if (executable === 'sed') assertSed(tokens.slice(1), repositoryRoot, cwd);
+  else if (executable === 'od') assertOd(tokens.slice(1), repositoryRoot, cwd);
   else if (SIMPLE_READ_EXECUTABLES.has(executable)) {
     assertSimpleRead(executable, tokens.slice(1), repositoryRoot, cwd);
   } else {
-    throw new Error(`Code Memory Link command executable ${executable} is outside the reviewed read-only allowlist.`);
+    throw new Error('Code Memory Link command executable is outside the reviewed read-only allowlist.');
   }
 }
 
@@ -305,6 +314,47 @@ function assertSimpleRead(executable: string, args: readonly string[], root: str
     throw new Error(`${executable} requires an explicit repository file.`);
   }
   for (const path of paths) containedPath(path, root, cwd);
+}
+
+function assertOd(args: readonly string[], root: string, cwd: string): void {
+  const paths: string[] = [];
+  let optionsEnded = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index]!;
+    if (!optionsEnded && value === '--') {
+      optionsEnded = true;
+      continue;
+    }
+    if (!optionsEnded && (value === '-A' || value === '-t')) {
+      boundedLiteral(args[++index], `od ${value}`);
+      continue;
+    }
+    if (!optionsEnded && (value === '-j' || value === '-N' || value === '-w')) {
+      positiveCount(args[++index], `od ${value}`);
+      continue;
+    }
+    if (
+      !optionsEnded &&
+      (value === '-v' || /^-A[dnox]$/u.test(value) || /^-t[a-zA-Z0-9.]+$/u.test(value) || /^-[jNw][0-9]+$/u.test(value))
+    ) {
+      continue;
+    }
+    if (!optionsEnded && value.startsWith('-')) throw new Error('od option is outside the reviewed grammar.');
+    paths.push(value);
+  }
+  for (const path of paths) containedPath(path, root, cwd);
+}
+
+function denyUnsupportedAction(check: () => void): void {
+  try {
+    check();
+  } catch (cause) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    throw new CodeMemoryLinkActionDeniedError(
+      `Code Memory Link declined an action outside the reviewed policy: ${error.message}`,
+      {cause: error},
+    );
+  }
 }
 
 function assertLs(args: readonly string[], root: string, cwd: string): void {

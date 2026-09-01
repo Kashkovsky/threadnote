@@ -24,6 +24,16 @@ describe('Code Memory Link pre-execution app-server policy', () => {
         startedItem: item,
       }),
     ).toThrow('outside the selected thread');
+
+    const od = commandApproval('od -An -tx1 -N 3 src/service.ts', 'src/service.ts');
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: od.params,
+        scope: SCOPE,
+        startedItem: od.item,
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
   });
 
   it('accepts the pinned code-mode shell wrapper only when every projected command is a bounded read', () => {

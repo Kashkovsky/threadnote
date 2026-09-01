@@ -24,6 +24,14 @@ lines.on('line', line => {
     params?: Record<string, unknown>;
     result?: {decision?: string};
   };
+  if (request.id === 899 && request.method === undefined) {
+    if (request.result?.decision !== 'cancel' || !pendingTurnParams) {
+      process.stderr.write('expected denied command cancellation\n');
+      process.exit(9);
+    }
+    emitDeclinedCommandAndRecovery(pendingTurnParams);
+    return;
+  }
   if (request.id === 900 && request.method === undefined) {
     if (request.result?.decision !== 'accept' || !pendingTurnParams) {
       process.stderr.write('expected reviewed command approval\n');
@@ -116,7 +124,45 @@ function assertLocalEnvironment(params: Record<string, unknown>): void {
 
 function emitTurn(responseId: number | undefined, params: Record<string, unknown>): void {
   pendingTurnParams = params;
-  const command = {
+  const deniedCommand = process.env.THREADNOTE_TEST_RECOVER_FROM_DENIED_COMMAND === '1';
+  const command = deniedCommand
+    ? {
+        command: "/bin/zsh -lc 'printf x > src/service.ts'",
+        commandActions: [{command: 'printf x > src/service.ts', type: 'unknown'}],
+        cwd: params.cwd,
+        id: 'item_denied_command',
+        source: 'agent',
+        status: 'inProgress',
+        type: 'commandExecution',
+      }
+    : reviewedCommand(params);
+  const response = {
+    id: responseId,
+    result: {
+      turn: {
+        error: null,
+        id: process.env.THREADNOTE_TEST_MALFORMED_TURN_RESPONSE === '1' ? null : turnId,
+        items: [],
+        status: 'inProgress',
+      },
+    },
+  };
+  const events = [
+    turnSettings(params),
+    {
+      method: 'turn/started',
+      params: {threadId, turn: {error: null, id: turnId, items: [], status: 'inProgress'}},
+    },
+    {method: 'item/started', params: {item: command, threadId, turnId}},
+    approvalRequest(deniedCommand ? 899 : 900, command),
+  ];
+  writeMessages(
+    process.env.THREADNOTE_TEST_APPROVAL_BEFORE_RESPONSE === '1' ? [...events, response] : [response, ...events],
+  );
+}
+
+function reviewedCommand(params: Record<string, unknown>): Record<string, unknown> {
+  return {
     command: 'cat src/service.ts',
     commandActions: [
       {
@@ -131,65 +177,69 @@ function emitTurn(responseId: number | undefined, params: Record<string, unknown
     status: 'inProgress',
     type: 'commandExecution',
   };
-  const response = {
-    id: responseId,
-    result: {
-      turn: {
-        error: null,
-        id: process.env.THREADNOTE_TEST_MALFORMED_TURN_RESPONSE === '1' ? null : turnId,
-        items: [],
-        status: 'inProgress',
-      },
-    },
-  };
-  const events = [
-    {
-      method: 'thread/settings/updated',
-      params: {
-        threadId,
-        threadSettings: {
-          activePermissionProfile: null,
-          approvalPolicy: 'untrusted',
-          approvalsReviewer: 'user',
-          cwd: params.cwd,
-          sandboxPolicy: {
-            excludeSlashTmp: true,
-            excludeTmpdirEnvVar: true,
-            networkAccess: false,
-            type: 'workspaceWrite',
-            writableRoots: [],
-          },
+}
+
+function turnSettings(params: Record<string, unknown>): Record<string, unknown> {
+  return {
+    method: 'thread/settings/updated',
+    params: {
+      threadId,
+      threadSettings: {
+        activePermissionProfile: null,
+        approvalPolicy: 'untrusted',
+        approvalsReviewer: 'user',
+        cwd: params.cwd,
+        sandboxPolicy: {
+          excludeSlashTmp: true,
+          excludeTmpdirEnvVar: true,
+          networkAccess: false,
+          type: 'workspaceWrite',
+          writableRoots: [],
         },
       },
     },
-    {
-      method: 'turn/started',
-      params: {threadId, turn: {error: null, id: turnId, items: [], status: 'inProgress'}},
+  };
+}
+
+function approvalRequest(id: number, command: Record<string, unknown>): Record<string, unknown> {
+  return {
+    id,
+    method: 'item/commandExecution/requestApproval',
+    params: {
+      approvalId: null,
+      command: command.command,
+      commandActions: command.commandActions,
+      cwd: command.cwd,
+      environmentId: null,
+      itemId: command.id,
+      networkApprovalContext: null,
+      proposedExecpolicyAmendment: null,
+      proposedNetworkPolicyAmendments: null,
+      reason: 'Inspect the public fixture source.',
+      startedAtMs: 1,
+      threadId,
+      turnId,
     },
-    {method: 'item/started', params: {item: command, threadId, turnId}},
-    {
-      id: 900,
-      method: 'item/commandExecution/requestApproval',
-      params: {
-        approvalId: null,
-        command: command.command,
-        commandActions: command.commandActions,
-        cwd: command.cwd,
-        environmentId: null,
-        itemId: command.id,
-        networkApprovalContext: null,
-        proposedExecpolicyAmendment: null,
-        proposedNetworkPolicyAmendments: null,
-        reason: 'Read the public fixture source.',
-        startedAtMs: 1,
-        threadId,
-        turnId,
-      },
+  };
+}
+
+function emitDeclinedCommandAndRecovery(params: Record<string, unknown>): void {
+  notify('serverRequest/resolved', {requestId: 899, threadId});
+  notify('item/completed', {
+    item: {
+      command: "/bin/zsh -lc 'printf x > src/service.ts'",
+      commandActions: [{command: 'printf x > src/service.ts', type: 'unknown'}],
+      cwd: params.cwd,
+      id: 'item_denied_command',
+      source: 'agent',
+      status: 'declined',
+      type: 'commandExecution',
     },
-  ];
-  writeMessages(
-    process.env.THREADNOTE_TEST_APPROVAL_BEFORE_RESPONSE === '1' ? [...events, response] : [response, ...events],
-  );
+    threadId,
+    turnId,
+  });
+  const command = reviewedCommand(params);
+  writeMessages([{method: 'item/started', params: {item: command, threadId, turnId}}, approvalRequest(900, command)]);
 }
 
 function emitApprovedTurn(params: Record<string, unknown>): void {

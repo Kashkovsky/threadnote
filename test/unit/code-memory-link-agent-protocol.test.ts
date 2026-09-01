@@ -273,6 +273,38 @@ describe('Code Memory Link real-agent protocol', () => {
     });
   });
 
+  it('retains declined actions without requiring an accepted-action approval receipt', () => {
+    const rubric = hiddenRubric();
+    const events = traceEvents([100, 200, 300, 400]);
+    const actionStartIndex = eventIndex(events, 'item/started', ACTION_ITEM_ID);
+    events.splice(
+      actionStartIndex,
+      0,
+      itemStarted('item-declined', 'commandExecution'),
+      notification('item/completed', {
+        item: {id: 'item-declined', status: 'declined', type: 'commandExecution'},
+        threadId: THREAD_ID,
+        turnId: TURN_ID,
+      }),
+    );
+
+    const evidence = normalizeCodeMemoryLinkCodexAppServerEvidenceV1({
+      approvalReceipts: actionApprovalReceipts(),
+      events,
+      expectedClient: CLIENT,
+      proxyTool: PROXY,
+      qualifyingActionItemId: ACTION_ITEM_ID,
+      rubric,
+      runBindingHash: RUN_BINDING_HASH,
+      staticArtifacts: passingStaticArtifacts(),
+      threadStartResponse: threadStart(),
+    });
+    expect(evidence.checkpoints).toContainEqual(
+      expect.objectContaining({itemType: 'commandExecution', method: 'item/completed', status: 'declined'}),
+    );
+    expect(parseCodeMemoryLinkCodexAppServerEvidenceV1(evidence)).toEqual(evidence);
+  });
+
   it('rederives from retained evidence and rejects tampering, reordered boundaries, and nonmonotone accounting', () => {
     const rubric = hiddenRubric();
     const evidence = normalizeCodeMemoryLinkCodexAppServerEvidenceV1({
