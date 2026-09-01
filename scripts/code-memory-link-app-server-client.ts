@@ -326,7 +326,6 @@ export async function runCodeMemoryLinkAppServerTurn(
         allowProviderModelFallback: false,
         approvalPolicy: 'on-request',
         approvalsReviewer: 'user',
-        baseInstructions: CODE_MEMORY_LINK_AGENT_BASE_INSTRUCTIONS,
         cwd: input.cwd,
         developerInstructions: CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS,
         environments: [],
@@ -545,9 +544,6 @@ function totalTokensFromUsageEvent(event: Record<string, unknown>): number {
   }
   return Number(total.totalTokens);
 }
-
-export const CODE_MEMORY_LINK_AGENT_BASE_INSTRUCTIONS =
-  'You are an isolated coding agent. Use the provided tools to inspect and edit only the supplied repository, perform every requested action, verify the resulting files, and reply only after the task is complete.';
 
 export const CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS = [
   'Use only the repository, the local shell, the built-in file-edit tool, and the context_brief MCP tool.',

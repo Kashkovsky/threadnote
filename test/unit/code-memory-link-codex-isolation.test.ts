@@ -43,7 +43,6 @@ describe('Code Memory Link Codex isolation', () => {
   it('generates a strict config with exactly one proxy and no ambient agent surfaces', () => {
     const generated = buildCodeMemoryLinkCodexConfig({
       config: config(),
-      instructionPath: '/private/codex/instructions.md',
       proxyPacketEnvironmentName: 'CODE_MEMORY_LINK_PROXY_PACKET',
       repositoryRoot: '/public/repository',
     });
@@ -62,6 +61,7 @@ describe('Code Memory Link Codex isolation', () => {
     expect(generated).toContain('multi_agent = false');
     expect(generated).toContain('non_prefixed_mcp_tool_names = true');
     expect(generated).toContain('suppress_unstable_features_warning = true');
+    expect(generated).not.toContain('model_instructions_file');
     expect(generated).not.toContain('[agents]');
     expect(generated).not.toContain('view_image');
     expect(generated).not.toContain('THREADNOTE_');
