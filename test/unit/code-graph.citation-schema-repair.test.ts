@@ -77,11 +77,15 @@ describe('code graph snapshot-file citation schema repair', () => {
       });
       yield* fs.writeFile(spool, new Uint8Array([1]));
 
-      const preview = yield* repairCodeGraphIndexes(home, true, undefined, undefined, {
-        migrateSchema: true,
-        mode: 'deep',
-        targetCheckoutId: identity.checkoutId,
-      });
+      // Promotion's opportunistic cleanup stays parked on the test clock;
+      // only the repair's real filesystem-lock boundary needs live time.
+      const preview = yield* TestClock.withLive(
+        repairCodeGraphIndexes(home, true, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'deep',
+          targetCheckoutId: identity.checkoutId,
+        }),
+      );
       expect(preview).toMatchObject({
         deferredDatabases: 0,
         migratedDatabases: 1,
@@ -95,11 +99,13 @@ describe('code graph snapshot-file citation schema repair', () => {
         persistentExtensionSchemaRevision: 15,
       });
 
-      const applied = yield* repairCodeGraphIndexes(home, false, undefined, undefined, {
-        migrateSchema: true,
-        mode: 'deep',
-        targetCheckoutId: identity.checkoutId,
-      });
+      const applied = yield* TestClock.withLive(
+        repairCodeGraphIndexes(home, false, undefined, undefined, {
+          migrateSchema: true,
+          mode: 'deep',
+          targetCheckoutId: identity.checkoutId,
+        }),
+      );
       expect(applied).toEqual(preview);
       expect(yield* fs.exists(spool)).toBe(true);
       expect(yield* store.diagnose(databasePath)).toMatchObject({
@@ -151,7 +157,7 @@ describe('code graph snapshot-file citation schema repair', () => {
           }
         }),
       ).toBe(1);
-    }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
+    }).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('post-update quick repair migrates an exact revision-15 alias schema', () =>

@@ -8,6 +8,7 @@ import {
 } from '../../scripts/benchmark-code-graph.js';
 import {
   BenchmarkArtifactSchemaV1,
+  benchmarkMeasurement,
   type BenchmarkArtifactV1,
   parseBenchmarkArtifactV1,
 } from '../../src/evaluation/benchmark.js';
@@ -23,6 +24,7 @@ const GuardedHotQueryBudget = Schema.Struct({
   hotQueryP50MillisecondsMaximum: PositiveFinite,
   hotQueryP95MillisecondsMaximum: PositiveFinite,
   hotQueryProcessCpuP95MillisecondsMaximum: PositiveFinite,
+  hotQuerySamplesMinimum: PositiveInteger,
   hotQueryWallP95ToleranceRatioMaximum: NonNegativeFinite,
 });
 
@@ -136,6 +138,60 @@ const calibration = Schema.decodeUnknownSync(
   ),
 )(await Bun.file('test/evaluation/baselines/code-graph-v1/windows-scale-10k-hosted-tail-calibration-v1.json').text());
 
+const quantileCalibration = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      candidateCommit: GitCommit,
+      candidateWorkflow: Schema.Struct({
+        archiveDigest: ArchiveDigest,
+        artifactId: PositiveInteger,
+        artifactRawJsonSha256: Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u)),
+        conclusion: Schema.Literal('failure'),
+        jobId: PositiveInteger,
+        runId: PositiveInteger,
+      }),
+      createdAt: Schema.String,
+      environment: Schema.Struct({
+        architecture: Schema.Literal('x64'),
+        cpu: Schema.String,
+        memoryBytes: PositiveInteger,
+        operatingSystem: Schema.String,
+        runnerClass: Schema.Literal('github-hosted-windows-x64'),
+        runnerIdentity: Schema.String.check(Schema.isPattern(/^runner-[0-9a-f]{16}$/u)),
+        runtime: Schema.Literal('bun/1.3.14'),
+        runtimePlatform: Schema.Literal('win32'),
+      }),
+      governedInputs: Schema.Struct({
+        additionalToleranceRatio: NonNegativeFinite,
+        companionHotQueryP50MillisecondsMaximum: PositiveFinite,
+        companionHotQueryProcessCpuP95MillisecondsMaximum: PositiveFinite,
+        hardWallP95MillisecondsMaximum: PositiveFinite,
+        productionP95ExcludedUpperOrderStatistics: PositiveInteger,
+        previousSamples: PositiveInteger,
+        prospectiveSamples: PositiveInteger,
+      }),
+      measurements: Schema.Struct({
+        exactReadyProcessCpuP95Milliseconds: NonNegativeFinite,
+        exactReadyWallMaximumMilliseconds: PositiveFinite,
+        exactReadyWallP50Milliseconds: PositiveFinite,
+        exactReadyWallP95Milliseconds: PositiveFinite,
+        outerProcessCpuP50Milliseconds: NonNegativeFinite,
+        outerProcessCpuP95Milliseconds: NonNegativeFinite,
+        outerWallMaximumMilliseconds: PositiveFinite,
+        outerWallP50Milliseconds: PositiveFinite,
+        outerWallP95Milliseconds: PositiveFinite,
+        samples: PositiveInteger,
+      }),
+      type: Schema.Literal('threadnote-windows-scale-10k-hosted-quantile-calibration'),
+      version: Schema.Literal(1),
+    }),
+  ),
+)(
+  await Bun.file(
+    'test/evaluation/baselines/code-graph-v1/windows-scale-10k-hosted-quantile-calibration-v1.json',
+  ).text(),
+);
+
 const benchmarkWorkflow = Schema.decodeUnknownSync(
   Schema.Struct({
     jobs: Schema.Struct({
@@ -203,6 +259,7 @@ describe('hosted Windows 10k scheduler-tail calibration', () => {
       hotQueryP95MillisecondsMaximum: derived,
       hotQueryProcessCpuP95MillisecondsMaximum:
         calibration.governedInputs.companionHotQueryProcessCpuP95MillisecondsMaximum,
+      hotQuerySamplesMinimum: quantileCalibration.governedInputs.prospectiveSamples,
       hotQueryWallP95ToleranceRatioMaximum: calibration.governedInputs.additionalToleranceRatio,
     });
     expect(calibration.governedInputs.additionalToleranceRatio).toBe(0);
@@ -247,7 +304,7 @@ describe('hosted Windows 10k scheduler-tail calibration', () => {
       THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-${{ matrix.os }}-${{ runner.arch }}',
       THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
     });
-    expect(capture.run).toContain('--samples 25');
+    expect(capture.run).toContain('--samples 100');
     expect(upload.if).toBe('always()');
     expect(
       sanitizedBenchmarkEnvironmentProvenance({
@@ -260,20 +317,77 @@ describe('hosted Windows 10k scheduler-tail calibration', () => {
     });
   });
 
+  it('retains the failed 25-sample validation and increases quantile resolution without widening any guard', () => {
+    const measurement = quantileCalibration.measurements;
+    const governed = quantileCalibration.governedInputs;
+
+    expect(quantileCalibration.candidateCommit).toBe('9126348fdce549b54036223f667efb24c4cfc123');
+    expect(quantileCalibration.candidateWorkflow).toMatchObject({
+      artifactId: 9_781_216_114,
+      jobId: 99_692_956_963,
+      runId: 33_454_986_359,
+    });
+    expect(measurement.samples).toBe(governed.previousSamples);
+    expect(measurement.outerWallP95Milliseconds / measurement.outerProcessCpuP95Milliseconds).toBeGreaterThan(5.9);
+    expect(measurement.outerWallP95Milliseconds / measurement.exactReadyWallP95Milliseconds).toBeGreaterThan(4.1);
+    expect(measurement.outerProcessCpuP95Milliseconds).toBeLessThan(
+      governed.companionHotQueryProcessCpuP95MillisecondsMaximum,
+    );
+    expect(measurement.exactReadyWallP95Milliseconds).toBeLessThan(governed.hardWallP95MillisecondsMaximum / 2);
+    expect(governed.prospectiveSamples).toBe(100);
+    expect(governed.prospectiveSamples - (Math.floor(governed.prospectiveSamples * 0.95) + 1)).toBe(
+      governed.productionP95ExcludedUpperOrderStatistics,
+    );
+    expect(hostedBudget).toMatchObject({
+      hotQueryP50MillisecondsMaximum: governed.companionHotQueryP50MillisecondsMaximum,
+      hotQueryP95MillisecondsMaximum: governed.hardWallP95MillisecondsMaximum,
+      hotQueryProcessCpuP95MillisecondsMaximum: governed.companionHotQueryProcessCpuP95MillisecondsMaximum,
+      hotQuerySamplesMinimum: governed.prospectiveSamples,
+      hotQueryWallP95ToleranceRatioMaximum: governed.additionalToleranceRatio,
+    });
+  });
+
+  it('uses the production percentile at the four-versus-five wall-breach boundary', () => {
+    const wallMaximum = hostedBudget.hotQueryP95MillisecondsMaximum;
+    const wallSamples = (breaches: 4 | 5) => [
+      ...Array.from({length: 95}, () => 500),
+      ...(breaches === 4 ? [wallMaximum] : []),
+      ...Array.from({length: breaches}, () => wallMaximum + 1),
+    ];
+    const fourBreaches = benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', wallSamples(4));
+    const fiveBreaches = benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', wallSamples(5));
+    const withHotQuery = (measurement: ReturnType<typeof benchmarkMeasurement>) => {
+      const artifact = candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 100});
+      return parseBenchmarkArtifactV1({
+        ...artifact,
+        measurements: artifact.measurements.map(candidate =>
+          candidate.name === 'hot-exact-lexical-query' ? measurement : candidate,
+        ),
+      });
+    };
+
+    expect(fourBreaches.p95).toBe(wallMaximum);
+    expect(fiveBreaches.p95).toBe(wallMaximum + 1);
+    expect(() => enforceCodeGraphBenchmarkBudget(withHotQuery(fourBreaches), budgetFile, 10_000)).not.toThrow();
+    expect(() => enforceCodeGraphBenchmarkBudget(withHotQuery(fiveBreaches), budgetFile, 10_000)).toThrow(
+      /hot-exact-lexical-query/u,
+    );
+  });
+
   it('replays the failure, admits the prospective hosted sample, and rejects undersampling', () => {
     const previousBudget = {...budgetFile, scalePerformanceByRunnerClass: {}};
     const observed = candidateArtifact({runnerClass: 'local-unclassified', samples: 10});
-    const prospective = candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 25});
+    const prospective = candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 100});
 
     expect(() => enforceCodeGraphBenchmarkBudget(observed, previousBudget, 10_000)).toThrow(/hot-exact-lexical-query/u);
     expect(() => enforceCodeGraphBenchmarkBudget(prospective, budgetFile, 10_000)).not.toThrow();
     expect(() =>
       enforceCodeGraphBenchmarkBudget(
-        candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 24}),
+        candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 99}),
         budgetFile,
         10_000,
       ),
-    ).toThrow(/requires at least 25 samples/u);
+    ).toThrow(/requires at least 100 samples/u);
     expect(() => enforceCodeGraphBenchmarkBudget(observed, budgetFile, 10_000)).toThrow(/hot-exact-lexical-query/u);
     expect(() =>
       enforceCodeGraphBenchmarkBudget(
@@ -296,11 +410,36 @@ describe('hosted Windows 10k scheduler-tail calibration', () => {
         10_000,
       ),
     ).toThrow(/hot-exact-lexical-query/u);
+
+    fc.assert(
+      fc.property(fc.integer({max: 99, min: 1}), samples => {
+        expect(() =>
+          enforceCodeGraphBenchmarkBudget(
+            candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples}),
+            budgetFile,
+            10_000,
+          ),
+        ).toThrow(/requires at least 100 samples/u);
+      }),
+      {numRuns: 100},
+    );
+    fc.assert(
+      fc.property(fc.integer({max: 250, min: 100}), samples => {
+        expect(() =>
+          enforceCodeGraphBenchmarkBudget(
+            candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples}),
+            budgetFile,
+            10_000,
+          ),
+        ).not.toThrow();
+      }),
+      {numRuns: 100},
+    );
   });
 
   it('keeps the p95, p50, and process-CPU companion guards strict above each boundary', () => {
     const boundary = replaceHotQueryStatistics(
-      candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 25}),
+      candidateArtifact({runnerClass: 'github-hosted-windows-x64', samples: 100}),
       {
         p50: hostedBudget.hotQueryP50MillisecondsMaximum,
         p95: hostedBudget.hotQueryP95MillisecondsMaximum,

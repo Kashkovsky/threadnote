@@ -7908,9 +7908,19 @@ export function enforceCodeGraphBenchmarkBudget(
   } else {
     const p50Maximum = budget.hotQueryP50MillisecondsMaximum;
     const processCpuMaximum = budget.hotQueryProcessCpuP95MillisecondsMaximum;
+    const configuredSamplesMinimum = budget.hotQuerySamplesMinimum;
+    const samplesMinimum =
+      configuredSamplesMinimum === undefined
+        ? CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM
+        : typeof configuredSamplesMinimum === 'number'
+          ? configuredSamplesMinimum
+          : Number.NaN;
     const p95ToleranceRatio = budget.hotQueryWallP95ToleranceRatioMaximum;
     const guardedToleranceConfigured =
-      p50Maximum !== undefined || processCpuMaximum !== undefined || p95ToleranceRatio !== undefined;
+      p50Maximum !== undefined ||
+      processCpuMaximum !== undefined ||
+      configuredSamplesMinimum !== undefined ||
+      p95ToleranceRatio !== undefined;
     const guardConfigurationValid =
       typeof p50Maximum === 'number' &&
       Number.isFinite(p50Maximum) &&
@@ -7918,6 +7928,8 @@ export function enforceCodeGraphBenchmarkBudget(
       typeof processCpuMaximum === 'number' &&
       Number.isFinite(processCpuMaximum) &&
       processCpuMaximum >= 0 &&
+      Number.isSafeInteger(samplesMinimum) &&
+      samplesMinimum >= CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM &&
       typeof p95ToleranceRatio === 'number' &&
       Number.isFinite(p95ToleranceRatio) &&
       p95ToleranceRatio >= 0 &&
@@ -7925,17 +7937,15 @@ export function enforceCodeGraphBenchmarkBudget(
     const processCpu = artifact.measurements.find(candidate => candidate.name === 'hot-query-process-cpu');
     if (guardedToleranceConfigured && !guardConfigurationValid) {
       failures.push(
-        'hot query wall tolerance requires non-negative numeric p50 and process-CPU bounds plus a ratio from 0 to 0.05',
+        'hot query wall tolerance requires non-negative numeric p50 and process-CPU bounds, an integer sample minimum of at least 25, and a ratio from 0 to 0.05',
       );
     }
     if (guardConfigurationValid) {
       if (hotQuery.unit !== 'milliseconds') {
         failures.push(`${hotQueryName} measurement must use milliseconds`);
       }
-      if (hotQuery.samples < CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM) {
-        failures.push(
-          `${hotQueryName} requires at least ${CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM} samples for wall tolerance`,
-        );
+      if (hotQuery.samples < samplesMinimum) {
+        failures.push(`${hotQueryName} requires at least ${samplesMinimum} samples for wall tolerance`);
       }
       if (hotQuery.p50 > p50Maximum) {
         failures.push(`${hotQueryName} p50 ${hotQuery.p50} exceeds ${p50Maximum}`);
@@ -7954,7 +7964,7 @@ export function enforceCodeGraphBenchmarkBudget(
     const companionBoundsPassed =
       guardConfigurationValid &&
       hotQuery.unit === 'milliseconds' &&
-      hotQuery.samples >= CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM &&
+      hotQuery.samples >= samplesMinimum &&
       hotQuery.p50 <= p50Maximum &&
       processCpu !== undefined &&
       processCpu.unit === 'milliseconds' &&
