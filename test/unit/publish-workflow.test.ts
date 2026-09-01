@@ -138,6 +138,8 @@ describe('standalone release workflows', () => {
       expect(recovery).not.toMatch(/^\s+push:\s*$/m);
       expect(recovery).toContain('group: publish-v4.6.0');
       expect(recovery).toContain('TAG_COMMIT: 242d0c47fec4d643154415cb69d05036cd4dc834');
+      expect(recovery).toContain('RECOVERY_BASE_COMMIT: 539a2ea3790457ad2145a7e566958ffc9a6f40fe');
+      expect(recovery).toContain('RECOVERY_BASE_TREE: f81cb3a625fdc959908bc0a584fa330650c0a374');
       expect(recovery).toContain('CANDIDATE_COMMIT: 9ac28435659ce421ebc78b302616eaac75112597');
       expect(recovery).toContain("REHEARSAL_RUN_ID: '33518869399'");
       expect(recovery).toContain('refs/threadnote-v4.6.0-recovery-tag^{commit}');

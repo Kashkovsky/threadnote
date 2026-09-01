@@ -15,6 +15,8 @@ env:
   BUN_VERSION: 1.3.14
   RELEASE_TAG: v4.6.0
   TAG_COMMIT: 242d0c47fec4d643154415cb69d05036cd4dc834
+  RECOVERY_BASE_COMMIT: 539a2ea3790457ad2145a7e566958ffc9a6f40fe
+  RECOVERY_BASE_TREE: f81cb3a625fdc959908bc0a584fa330650c0a374
   CANDIDATE_COMMIT: 9ac28435659ce421ebc78b302616eaac75112597
   REHEARSAL_RUN_ID: '33518869399'
 
@@ -31,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 4
+          fetch-depth: 5
           persist-credentials: false
           ref: ${{ github.sha }}
 
@@ -45,15 +47,24 @@ jobs:
           set -euo pipefail
           recovery_commit="$(git rev-parse 'HEAD^{commit}')"
           recovery_lineage="$(git rev-list --parents -n 1 "$recovery_commit")"
-          expected_lineage="$recovery_commit $TAG_COMMIT"
+          recovery_base_lineage="$(git rev-list --parents -n 1 "$RECOVERY_BASE_COMMIT")"
+          recovery_base_tree="$(git rev-parse "$RECOVERY_BASE_COMMIT^{tree}")"
+          expected_lineage="$recovery_commit $RECOVERY_BASE_COMMIT"
+          expected_base_lineage="$RECOVERY_BASE_COMMIT $TAG_COMMIT"
           expected_diff=$'A\t.github/workflows/publish-v4.6.0-recovery.yml\nM\ttest/unit/publish-workflow.test.ts'
+          expected_correction_diff=$'M\t.github/workflows/publish-v4.6.0-recovery.yml\nM\ttest/unit/publish-workflow.test.ts'
           actual_diff="$(git diff --name-status "$TAG_COMMIT..$recovery_commit")"
+          actual_correction_diff="$(git diff --name-status "$RECOVERY_BASE_COMMIT..$recovery_commit")"
           if [[ "$GITHUB_REF" != 'refs/heads/main' || "$GITHUB_SHA" != "$recovery_commit" ]]; then
             echo '::error::The recovery workflow must run from its exact main-branch commit.'
             exit 1
           fi
-          if [[ "$recovery_lineage" != "$expected_lineage" || "$actual_diff" != "$expected_diff" ]]; then
-            echo '::error::The recovery commit is not the single bounded child of the v4.6.0 tag commit.'
+          if [[ "$recovery_lineage" != "$expected_lineage" ||
+                "$recovery_base_lineage" != "$expected_base_lineage" ||
+                "$recovery_base_tree" != "$RECOVERY_BASE_TREE" ||
+                "$actual_diff" != "$expected_diff" ||
+                "$actual_correction_diff" != "$expected_correction_diff" ]]; then
+            echo '::error::The recovery correction is not the bounded two-commit child of the v4.6.0 tag commit.'
             exit 1
           fi
           if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
@@ -127,15 +138,15 @@ jobs:
             ]);
             for (const [name, requiredSteps] of expectedJobs) {
               const matches = jobs.jobs.filter(job => job.name === name && job.conclusion === "success");
-              if (matches.length !== 1) throw new Error(`Missing successful retained rehearsal job: ${name}`);
+              if (matches.length !== 1) throw new Error("Missing successful retained rehearsal job: " + name);
               for (const stepName of requiredSteps) {
                 const stepMatches = matches[0].steps.filter(step => step.name === stepName && step.conclusion === "success");
-                if (stepMatches.length !== 1) throw new Error(`Missing successful retained rehearsal step: ${name} / ${stepName}`);
+                if (stepMatches.length !== 1) throw new Error("Missing successful retained rehearsal step: " + name + " / " + stepName);
               }
             }
             for (const [name, expected] of Object.entries(expectedArtifacts)) {
               const matches = artifacts.artifacts.filter(artifact => artifact.name === name);
-              if (matches.length !== 1) throw new Error(`Missing unique retained rehearsal artifact: ${name}`);
+              if (matches.length !== 1) throw new Error("Missing unique retained rehearsal artifact: " + name);
               const artifact = matches[0];
               if (
                 artifact.id !== expected.id ||
@@ -144,7 +155,7 @@ jobs:
                 artifact.expired !== false ||
                 artifact.workflow_run?.id !== Number(Bun.env.REHEARSAL_RUN_ID) ||
                 artifact.workflow_run?.head_sha !== Bun.env.CANDIDATE_COMMIT
-              ) throw new Error(`Retained rehearsal artifact receipt changed: ${name}`);
+              ) throw new Error("Retained rehearsal artifact receipt changed: " + name);
             }
           '
 
