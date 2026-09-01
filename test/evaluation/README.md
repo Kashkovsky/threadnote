@@ -213,9 +213,24 @@ workspace and never emits governed attempts, trials, or raw evidence:
 bun run eval:code-memory-link-agent-matrix -- \
   --mode calibration \
   --root <absolute-prepared-root> \
-  --calibration-command <absolute-reviewed-calibration-client> \
+  --calibration-command <absolute-reviewed-bun> \
+  --calibration-arg <absolute-run-code-memory-link-calibration-client.ts> \
+  --calibration-arg --prepared-root \
+  --calibration-arg <absolute-prepared-root> \
+  --calibration-arg --candidate-commit \
+  --calibration-arg <exact-40-character-sha> \
+  --calibration-arg --candidate-executable \
+  --calibration-arg <absolute-canonical-evaluated-threadnote> \
+  --calibration-arg --candidate-executable-sha256 \
+  --calibration-arg <64-lowercase-hex> \
+  --calibration-arg --diagnostics \
+  --calibration-arg <absolute-diagnostics.calibration.jsonl> \
   --calibration-results <absolute-results.calibration.jsonl>
 ```
+
+The reviewed calibration client runs the exact rostered client against the separately sealed calibration suite. It
+retains only bounded usage, terminal-kind, file-change, memory-use, pass/fail, and evidence-hash diagnostics in the
+separate diagnostics ledger; neither calibration file is compatible with the governed release ledgers.
 
 `bun run eval:code-memory-link-codex-client` is the exact rostered Codex entrypoint. It accepts no CLI arguments and is
 invoked only by the governed trial harness, which supplies all trusted suite, assignment, budget, and ledger bindings

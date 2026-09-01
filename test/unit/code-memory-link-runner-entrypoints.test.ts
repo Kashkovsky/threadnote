@@ -7,6 +7,7 @@ const execFilePromise = promisify(execFile);
 describe('Code Memory Link evidence runner entrypoints', () => {
   it.each([
     ['scripts/describe-code-memory-link-client.ts', [], '--client-command requires a value'],
+    ['scripts/run-code-memory-link-calibration-client.ts', [], '--candidate-commit requires a value'],
     ['scripts/run-code-memory-link-agent-trial.ts', [], '--assignment requires a value'],
     [
       'scripts/run-code-memory-link-agent-trial.ts',

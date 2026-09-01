@@ -696,6 +696,7 @@ export function parseCalibrationPlan(value: unknown): CodeMemoryLinkCalibrationP
       'planHash',
       'releaseLedgerCompatible',
       'runs',
+      'sealedSuite',
       'tasks',
       'version',
     ],
@@ -708,6 +709,20 @@ export function parseCalibrationPlan(value: unknown): CodeMemoryLinkCalibrationP
     throw new Error('Calibration plan must be explicitly non-evidence and release-incompatible.');
   }
   const calibrationCorpusHash = matching(plan.calibrationCorpusHash, HASH, 'calibration corpus hash');
+  const sealedSuiteInput = record(plan.sealedSuite, 'calibration sealed suite');
+  exactKeys(sealedSuiteInput, ['layoutArtifactId', 'rootSource', 'suiteHash'], 'calibration sealed suite');
+  if (sealedSuiteInput.rootSource !== 'calibration/sealed') {
+    throw new Error('Calibration sealed suite must remain in its private namespace.');
+  }
+  const sealedSuite = {
+    layoutArtifactId: matching(
+      sealedSuiteInput.layoutArtifactId,
+      /^art_[0-9a-f]{16,64}$/u,
+      'calibration layout artifact',
+    ),
+    rootSource: 'calibration/sealed' as const,
+    suiteHash: matching(sealedSuiteInput.suiteHash, HASH, 'calibration suite hash'),
+  };
   const clients = stringArray(plan.clients, 'calibration clients', true).map((client, index) =>
     matching(client, CLIENT_ID, `calibration client ${index}`),
   );
@@ -854,6 +869,7 @@ export function parseCalibrationPlan(value: unknown): CodeMemoryLinkCalibrationP
     kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
     releaseLedgerCompatible: false as const,
     runs,
+    sealedSuite,
     tasks,
     version: CODE_MEMORY_LINK_CALIBRATION_PLAN_VERSION,
   };

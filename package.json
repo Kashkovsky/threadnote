@@ -83,6 +83,7 @@
     "eval:code-memory-link-agent-ab": "bun scripts/evaluate-code-memory-link-agent-ab.ts",
     "eval:code-memory-link-agent-prepare": "bun scripts/prepare-code-memory-link-agent-ab.ts",
     "eval:code-memory-link-agent-matrix": "bun scripts/run-code-memory-link-agent-matrix.ts",
+    "eval:code-memory-link-agent-calibration-client": "bun scripts/run-code-memory-link-calibration-client.ts",
     "eval:code-memory-link-agent-trial": "bun scripts/run-code-memory-link-agent-trial.ts",
     "eval:code-memory-link-codex-client": "bun scripts/run-code-memory-link-codex-client.ts",
     "eval:code-memory-link-dogfood": "bun scripts/run-code-memory-link-dogfood.ts",
