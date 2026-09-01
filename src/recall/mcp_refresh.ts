@@ -1,4 +1,4 @@
-import {Effect, FileSystem, Path} from 'effect';
+import {Effect, FileSystem, Option, Path} from 'effect';
 import {LocalModelCatalog, type LocalModelManifest} from '../models/catalog.js';
 import {readModelSelection} from '../models/selection.js';
 import {LocalModelStore} from '../models/store.js';
@@ -80,8 +80,11 @@ const refreshMcpRecallDerivedIndexes = Effect.fn('recall.refreshMcpDerivedIndexe
 /**
  * Restore derived-index readiness after a trusted product mutation. Lexical
  * readiness is synchronous and independently invalidated. An already-built
- * selected vector index gets one bounded best-effort refresh; this hook never
- * constructs a previously absent vector index or adds an unbounded graph tail.
+ * selected vector index gets one bounded foreground refresh. A timeout hands
+ * the same generation to the process-local single-flight background lane so a
+ * graph-triggered mutation does not leave semantic recall stale indefinitely.
+ * This hook never constructs a previously absent vector index or adds an
+ * unbounded graph tail.
  */
 export const refreshRecallDerivedIndexesFromSelection = Effect.fn('recall.refreshDerivedIndexesFromSelection')(
   function* (config: McpRecallRefreshConfig, invalidatedUris: readonly string[]) {
@@ -106,10 +109,12 @@ export const refreshRecallDerivedIndexesFromSelection = Effect.fn('recall.refres
       if (!installed.installed) return;
       const vectorStatus = yield* vectorIndexStatus(config.agentContextHome, manifest);
       if (!vectorStatus.ready && vectorStatus.reason === 'not built') return;
-      yield* refreshRecallVectorIndex(config, manifest, index).pipe(
+      const refreshed = yield* refreshRecallVectorIndex(config, manifest, index).pipe(
         Effect.timeoutOption(TRUSTED_MUTATION_VECTOR_REFRESH_TIMEOUT_MILLISECONDS),
-        Effect.asVoid,
       );
+      if (Option.isNone(refreshed)) {
+        yield* scheduleMcpRecallBackgroundRefresh(config, manifest);
+      }
     }).pipe(Effect.catchCause(() => Effect.void));
   },
 );
