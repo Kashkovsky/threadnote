@@ -92,7 +92,7 @@ describe('MCP recall background vector refresh', () => {
     ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
-  effectIt.effect('bounds the foreground vector refresh and completes the stale generation in the background', () =>
+  effectIt.effect('awaits a trusted mutation vector refresh beyond the former foreground deadline', () =>
     Effect.scoped(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
@@ -104,20 +104,18 @@ describe('MCP recall background vector refresh', () => {
         yield* fs.makeDirectory(path.dirname(resource), {recursive: true});
         yield* fs.writeFileString(resource, '# Bounded\n\nOriginal content.\n');
         const calls = yield* Ref.make(0);
-        const foregroundBlocked = yield* Deferred.make<void>();
-        const backgroundStarted = yield* Deferred.make<void>();
-        const releaseBackground = yield* Deferred.make<void>();
+        const vectorRefreshStarted = yield* Deferred.make<void>();
+        const releaseVectorRefresh = yield* Deferred.make<void>();
+        const refreshCompleted = yield* Deferred.make<void>();
         const runtime = fakeRuntime((inputs, dimensions) =>
           Ref.updateAndGet(calls, count => count + 1).pipe(
             Effect.flatMap(call =>
               call === 1
                 ? Effect.succeed(inputs.map(() => unitVector(dimensions)))
-                : call === 2
-                  ? Deferred.succeed(foregroundBlocked, undefined).pipe(Effect.andThen(Effect.never))
-                  : Deferred.succeed(backgroundStarted, undefined).pipe(
-                      Effect.andThen(Deferred.await(releaseBackground)),
-                      Effect.as(inputs.map(() => unitVector(dimensions))),
-                    ),
+                : Deferred.succeed(vectorRefreshStarted, undefined).pipe(
+                    Effect.andThen(Deferred.await(releaseVectorRefresh)),
+                    Effect.as(inputs.map(() => unitVector(dimensions))),
+                  ),
             ),
           ),
         );
@@ -129,24 +127,28 @@ describe('MCP recall background vector refresh', () => {
           yield* ensureVectorIndex(config, manifest, initial.candidates, {corpusGeneration: initial.generation});
           yield* fs.writeFileString(resource, '# Bounded\n\nChanged content.\n');
 
-          const refresh = yield* refreshRecallDerivedIndexesFromSelection(config, [uri]).pipe(Effect.forkScoped);
-          yield* Deferred.await(foregroundBlocked);
+          const refresh = yield* refreshRecallDerivedIndexesFromSelection(config, [uri]).pipe(
+            Effect.ensuring(Deferred.succeed(refreshCompleted, undefined)),
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(vectorRefreshStarted);
           yield* TestClock.adjust('1 second');
-          yield* Fiber.join(refresh);
-          yield* Deferred.await(backgroundStarted);
+          yield* Effect.forEach(Array.from({length: 20}), () => Effect.yieldNow, {discard: true});
+          expect(Option.isNone(yield* Deferred.poll(refreshCompleted))).toBe(true);
 
           const lexical = yield* recallIndexStatus(config);
           expect(lexical.ready).toBe(true);
           expect(lexical.generation).not.toBe(initial.generation);
           expect(yield* vectorIndexGenerationReadiness(home, manifest, lexical.generation!)).not.toBe('current');
-          expect(yield* Ref.get(calls)).toBe(3);
 
-          yield* Deferred.succeed(releaseBackground, undefined);
-          expect(yield* awaitVectorReadiness(home, lexical.generation!, 'current')).toBe('current');
+          yield* Deferred.succeed(releaseVectorRefresh, undefined);
+          yield* Fiber.join(refresh);
+          expect(yield* vectorIndexGenerationReadiness(home, manifest, lexical.generation!)).toBe('current');
+          expect(yield* Ref.get(calls)).toBe(2);
         }).pipe(
           Effect.provideService(LocalModelRuntime, runtime),
           Effect.provideService(LocalModelStore, installedModelStore(home)),
-          Effect.ensuring(Deferred.succeed(releaseBackground, undefined)),
+          Effect.ensuring(Deferred.succeed(releaseVectorRefresh, undefined)),
         );
       }),
     ).pipe(provideTestLayer(ApplicationLayer)),
