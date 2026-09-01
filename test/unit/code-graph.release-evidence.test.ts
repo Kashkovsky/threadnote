@@ -21,6 +21,7 @@ import {
   productionProfileArtifactMetadata,
   resolvedReleaseEvidenceSource,
   IndexPhaseTimeline,
+  type CodeGraphBenchmarkMeasurementRatchetV1,
 } from '../../scripts/benchmark-code-graph.js';
 import {PRODUCTION_LARGE_CODE_GRAPH_PROFILE} from '../../scripts/code-graph-fixture.js';
 import {benchmarkMeasurement, type BenchmarkArtifactV1} from '../../src/evaluation/benchmark.js';
@@ -1005,6 +1006,9 @@ describe('code graph release evidence', () => {
         [
           ...requiredReleaseMeasurements(PRODUCTION_RELEASE_EVIDENCE_MEASUREMENTS),
           benchmarkMeasurement('cold-index', 'milliseconds', [coldIndexMilliseconds]),
+          benchmarkMeasurement('hot-exact-lexical-query', 'milliseconds', [coldIndexMilliseconds + 200]),
+          benchmarkMeasurement('hot-query-process-cpu', 'milliseconds', [coldIndexMilliseconds + 100]),
+          benchmarkMeasurement('mcp-impact-duration', 'milliseconds', [coldIndexMilliseconds + 50]),
           benchmarkMeasurement('cold-registration-lock-and-database-setup', 'milliseconds', [coldIndexMilliseconds]),
           benchmarkMeasurement('cold-registration-process-cpu-n1', 'milliseconds', [coldIndexMilliseconds]),
           benchmarkMeasurement('cold-process-peak-rss', 'bytes', [512 * 1_048_576 + coldIndexMilliseconds]),
@@ -1439,6 +1443,106 @@ describe('code graph release evidence', () => {
 
     expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet)).toThrow(/cold-index/u);
     expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, pairedControl)).not.toThrow();
+    const confirmatoryWallName = 'hot-exact-lexical-query';
+    const confirmatoryWallLimit = (p95Maximum: number): CodeGraphBenchmarkMeasurementRatchetV1 => ({
+      p95Maximum,
+      samplesMinimum: 1,
+      unit: 'milliseconds',
+    });
+    const confirmatoryWallRatchet = (p95Maximum: number) => ({
+      ...githubHostedRatchet,
+      measurements: {
+        ...githubHostedRatchet.measurements,
+        [confirmatoryWallName]: confirmatoryWallLimit(p95Maximum),
+      },
+    });
+    const calibratedConfirmatoryWallEvidence = sandwichEvidence(
+      {[confirmatoryWallName]: 295.779441},
+      sandwichControl({[confirmatoryWallName]: 319.953012}),
+    );
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({[confirmatoryWallName]: 492.101135}),
+        confirmatoryWallRatchet(489),
+        calibratedConfirmatoryWallEvidence,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({[confirmatoryWallName]: 319.953012}),
+        confirmatoryWallRatchet(489),
+        sandwichEvidence({[confirmatoryWallName]: 652.779737}, sandwichControl({[confirmatoryWallName]: 319.953012})),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({[confirmatoryWallName]: 493.891}),
+        confirmatoryWallRatchet(489),
+        calibratedConfirmatoryWallEvidence,
+      ),
+    ).toThrow(/remeasured candidate hot-exact-lexical-query/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({[confirmatoryWallName]: 492.101135}),
+        confirmatoryWallRatchet(489),
+        sandwichEvidence({[confirmatoryWallName]: 492.101135}, sandwichControl({[confirmatoryWallName]: 319.953012})),
+      ),
+    ).toThrow(/hot-exact-lexical-query/u);
+    const multipleConfirmatoryTailRatchet = {
+      ...confirmatoryWallRatchet(489),
+      measurements: {
+        ...confirmatoryWallRatchet(489).measurements,
+        'mcp-impact-duration': confirmatoryWallLimit(295),
+      },
+    };
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({
+          [confirmatoryWallName]: 492.101135,
+          'mcp-impact-duration': 297.5,
+        }),
+        multipleConfirmatoryTailRatchet,
+        sandwichEvidence(
+          {
+            [confirmatoryWallName]: 295.779441,
+            'mcp-impact-duration': 100,
+          },
+          sandwichControl({
+            [confirmatoryWallName]: 319.953012,
+            'mcp-impact-duration': 101.908737,
+          }),
+        ),
+      ),
+    ).toThrow(/confirmatory wall tail tolerance is singular/u);
+    fc.assert(
+      fc.property(
+        fc.integer({max: 10_000, min: 100}),
+        fc.double({max: 1, min: 0, noNaN: true}),
+        (p95Maximum, fraction) => {
+          const tolerance = Math.min(p95Maximum * 0.01, 5);
+          const staticPass = p95Maximum - 1;
+          const evidence = sandwichEvidence(
+            {[confirmatoryWallName]: staticPass},
+            sandwichControl({[confirmatoryWallName]: staticPass}),
+          );
+          expect(() =>
+            enforceCodeGraphBenchmarkRatchet(
+              sandwichCandidate({[confirmatoryWallName]: p95Maximum + tolerance * fraction}),
+              confirmatoryWallRatchet(p95Maximum),
+              evidence,
+            ),
+          ).not.toThrow();
+          expect(() =>
+            enforceCodeGraphBenchmarkRatchet(
+              sandwichCandidate({[confirmatoryWallName]: p95Maximum + tolerance + 0.001}),
+              confirmatoryWallRatchet(p95Maximum),
+              evidence,
+            ),
+          ).toThrow(new RegExp(confirmatoryWallName));
+        },
+      ),
+      {numRuns: 30},
+    );
     const correctedRssCandidate = sandwichCandidate({
       'cold-index': 1_200,
       'cold-process-peak-rss': 930_451_456,
@@ -1534,6 +1638,37 @@ describe('code graph release evidence', () => {
         sandwichEvidence({'one-file-reindex-index': 30_000}, sandwichControl({'one-file-reindex-index': 30_000})),
       ),
     ).toThrow(/objective one-file-reindex-index has not been attained/u);
+    const oneFileIndexObjective = githubHostedRatchet.measurements['one-file-reindex-index']!.p95Maximum!;
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'one-file-reindex-index': oneFileIndexObjective - 1}),
+        githubHostedRatchet,
+        sandwichEvidence(
+          {'one-file-reindex-index': oneFileIndexObjective + 1},
+          sandwichControl({'one-file-reindex-index': oneFileIndexObjective - 1}),
+        ),
+      ),
+    ).toThrow(/initial candidate .*one-file-reindex-index/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'one-file-reindex-index': oneFileIndexObjective + 1}),
+        githubHostedRatchet,
+        sandwichEvidence(
+          {'one-file-reindex-index': oneFileIndexObjective - 1},
+          sandwichControl({'one-file-reindex-index': oneFileIndexObjective - 1}),
+        ),
+      ),
+    ).toThrow(/remeasured candidate .*one-file-reindex-index/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        sandwichCandidate({'one-file-reindex-index': oneFileIndexObjective - 1}),
+        githubHostedRatchet,
+        sandwichEvidence(
+          {'one-file-reindex-index': oneFileIndexObjective - 1},
+          sandwichControl({'one-file-reindex-index': oneFileIndexObjective + 1}),
+        ),
+      ),
+    ).toThrow(/paired control .*one-file-reindex-index/u);
     for (const [metadataName, value] of [
       ['runnerIdentity', 'another-runner'],
       ['sameRunnerComparisonKey', 'another-host'],

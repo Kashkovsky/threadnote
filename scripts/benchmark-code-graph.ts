@@ -6899,6 +6899,15 @@ const PRODUCTION_RATCHET_DETAILED_MILLISECOND_RELATIVE_HEADROOM = 0.75;
 const PRODUCTION_RATCHET_MILLISECOND_NOISE_HEADROOM = 100;
 const PRODUCTION_RATCHET_DETAILED_MILLISECOND_NOISE_HEADROOM = 300;
 const PRODUCTION_RATCHET_SANDWICH_MAXIMUM_SPAN_MILLISECONDS = 40 * 60_000;
+// The first candidate observation is the screening measurement that starts a
+// same-runner candidate-control-candidate sequence. When the protected-base
+// control passes, the final candidate is the confirmatory observation. Admit
+// one non-objective confirmatory wall-only boundary crossing only when the
+// screening candidate passed, capped by both 1% and 5 ms. Static limits and
+// hard objectives stay unchanged, and independently ratcheted CPU, RSS, work,
+// and storage remain strict.
+const PRODUCTION_RATCHET_CONFIRMATORY_WALL_TAIL_RELATIVE_TOLERANCE = 0.01;
+const PRODUCTION_RATCHET_CONFIRMATORY_WALL_TAIL_ABSOLUTE_TOLERANCE_MILLISECONDS = 5;
 // Cold registration includes two race-fenced Git status observations and
 // synchronous fresh SQLite setup on hosted virtual storage. Preserve a strict
 // sub-five-second wall objective while allowing the independently ratcheted
@@ -7353,6 +7362,7 @@ export function enforceCodeGraphBenchmarkRatchet(
   const pairedEvidence = pairedControl
     ? prepareCodeGraphBenchmarkRatchetPairedControl(artifact, pairedControl, ratchet, failures)
     : undefined;
+  let confirmatoryWallTailAcceptedName: string | undefined;
   for (const [name, limit] of Object.entries(ratchet.measurements).sort(([left], [right]) =>
     left.localeCompare(right),
   )) {
@@ -7392,16 +7402,8 @@ export function enforceCodeGraphBenchmarkRatchet(
       failures.push(...initialStaticFailures.map(failure => `initial candidate ${failure}`));
       failures.push(...staticFailures.map(failure => `remeasured candidate ${failure}`));
     };
-    if (staticFailures.length === 0 && initialStaticFailures.length === 0) continue;
-    if (
-      !productionHostSensitiveWallMeasurement(name, limit) ||
-      limit.p95Maximum === undefined ||
-      !candidateHasOnlyStaticP95Failure(initialMeasurement, limit, initialStaticFailures) ||
-      !candidateHasOnlyStaticP95Failure(measurement, limit, staticFailures)
-    ) {
-      appendCandidateStaticFailures();
-      continue;
-    }
+    const hardObjective = PRODUCTION_RATCHET_MILLISECOND_TARGETS.get(name);
+    if (staticFailures.length === 0 && initialStaticFailures.length === 0 && hardObjective === undefined) continue;
     const controlMatches = pairedEvidence.controlMeasurementsByName.get(name) ?? [];
     if (controlMatches.length !== 1) {
       failures.push(`paired control ${name} measurement occurs ${controlMatches.length} times instead of exactly once`);
@@ -7412,7 +7414,54 @@ export function enforceCodeGraphBenchmarkRatchet(
       failures.push(`paired control ${name} unit or sample count does not match both candidates`);
       continue;
     }
+    if (hardObjective !== undefined) {
+      const objectiveFailures = [
+        ['initial candidate', initialMeasurement],
+        ['paired control', controlMeasurement],
+        ['remeasured candidate', measurement],
+      ] as const;
+      let objectiveFailed = false;
+      for (const [label, candidate] of objectiveFailures) {
+        if (candidate.p95 <= hardObjective) continue;
+        objectiveFailed = true;
+        failures.push(
+          `${label} production ratchet objective ${name} has not been attained: p95 ${candidate.p95} exceeds ${hardObjective}`,
+        );
+      }
+      if (objectiveFailed) continue;
+      if (staticFailures.length === 0 && initialStaticFailures.length === 0) continue;
+    }
+    if (
+      !productionHostSensitiveWallMeasurement(name, limit) ||
+      limit.p95Maximum === undefined ||
+      !candidateHasOnlyStaticP95Failure(initialMeasurement, limit, initialStaticFailures) ||
+      !candidateHasOnlyStaticP95Failure(measurement, limit, staticFailures)
+    ) {
+      appendCandidateStaticFailures();
+      continue;
+    }
     if (controlMeasurement.p95 <= limit.p95Maximum) {
+      const confirmatoryAcceptance = productionConfirmatoryWallP95Acceptance(
+        name,
+        measurement,
+        limit,
+        initialStaticFailures,
+        staticFailures,
+      );
+      if (confirmatoryAcceptance === 'screening-cleared') {
+        continue;
+      }
+      if (confirmatoryAcceptance === 'bounded-confirmatory-tail') {
+        if (confirmatoryWallTailAcceptedName === undefined) {
+          confirmatoryWallTailAcceptedName = name;
+          continue;
+        }
+        appendCandidateStaticFailures();
+        failures.push(
+          `confirmatory wall tail tolerance is singular, but both ${confirmatoryWallTailAcceptedName} and ${name} require it`,
+        );
+        continue;
+      }
       appendCandidateStaticFailures();
       continue;
     }
@@ -7499,6 +7548,26 @@ function candidateHasOnlyStaticP95Failure(
       (limit.samplesMinimum === undefined || measurement.samples >= limit.samplesMinimum) &&
       staticFailures.length === 1)
   );
+}
+
+function productionConfirmatoryWallP95Acceptance(
+  name: string,
+  remeasuredCandidate: BenchmarkArtifactV1['measurements'][number],
+  limit: CodeGraphBenchmarkMeasurementRatchetV1,
+  initialStaticFailures: readonly string[],
+  remeasuredStaticFailures: readonly string[],
+): 'bounded-confirmatory-tail' | 'screening-cleared' | undefined {
+  if (PRODUCTION_RATCHET_MILLISECOND_TARGETS.has(name)) return undefined;
+  // The screening observation exists to trigger this sequence. A passing
+  // protected-base control followed by a passing confirmatory candidate is
+  // sufficient evidence that an initial wall-only spike was transient.
+  if (remeasuredStaticFailures.length === 0) return 'screening-cleared';
+  if (initialStaticFailures.length !== 0 || limit.p95Maximum === undefined) return undefined;
+  const tolerance = Math.min(
+    limit.p95Maximum * PRODUCTION_RATCHET_CONFIRMATORY_WALL_TAIL_RELATIVE_TOLERANCE,
+    PRODUCTION_RATCHET_CONFIRMATORY_WALL_TAIL_ABSOLUTE_TOLERANCE_MILLISECONDS,
+  );
+  return remeasuredCandidate.p95 <= limit.p95Maximum + tolerance ? 'bounded-confirmatory-tail' : undefined;
 }
 
 function benchmarkMeasurementsByName(

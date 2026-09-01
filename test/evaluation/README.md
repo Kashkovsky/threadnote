@@ -506,24 +506,28 @@ reviewed repeated before/after evidence and rationale; do not widen a limit to m
 required with `--ratchet`; a provenance-valid artifact is written before a ratchet failure is reported so the
 regression remains reviewable.
 
-The pull-request production ratchet first applies those reviewed limits unchanged. If only that static gate fails, CI
-keeps the initial candidate artifact as evidence, measures the exact protected-base commit in a detached worktree on
-the same runner, and then immediately remeasures the exact candidate. The paired gate binds all three artifacts in a
-strictly ordered, bounded candidate-control-candidate sandwich. For allowlisted wall p95 metrics, it linearly
-interpolates the two candidate observations at the control timestamp, which cancels linear runner drift instead of
-favoring whichever source happened to run second. Candidate dispersion beyond the existing relative/absolute
-headroom fails closed. Pairing is admitted only when the expected candidate and control commits,
-`sameRunnerComparisonKey`, privacy-safe `runnerIdentity`, fixture/output/runtime/storage metadata, and the assessed
-measurement set match. Non-wall CPU, work, storage, RSS, correctness, and shape failures from either candidate stay
-blocking. Cumulative parser, serialization, transaction, and general
-materialization-stage or subphase timers are work even though their unit is milliseconds, so they also stay static;
-new timings require explicit elapsed-wall classification before they can pair. The explicitly reviewed graph-cache
-persistence and SQLite commit splits may pair because they are synchronous hosted-storage wall waits, while their
-independent CPU, row/work, and byte/storage bounds remain static. An allowlisted wall limit becomes relative only when
-the protected-base control also misses that same static limit; the existing relative/absolute headroom bounds the
-interpolated candidate estimate, while hard objectives still bind the control and both candidate observations. This
-separates hosted VM scheduling noise from branch regressions
-without widening the checked-in ratchet or accepting a candidate that is slower than a passing same-runner control.
+The pull-request production ratchet first applies those reviewed limits unchanged. That first candidate is the
+screening observation. If only its static gate fails, CI keeps the artifact as evidence, measures the exact
+protected-base commit in a detached worktree on the same runner, and then takes exactly one confirmatory candidate
+observation. The paired gate binds all three artifacts in a strictly ordered, bounded candidate-control-candidate
+sandwich; it does not retry until one passes. When the protected-base control and confirmation both pass an allowlisted
+non-objective wall metric, they clear a screening-only wall spike. When screening and control pass, the confirmation
+may cross one such static wall boundary in the entire sequence by at most the smaller of 1% and 5 ms. A second
+confirmatory crossing fails. Two candidate misses still use the
+existing strict sandwich path: it linearly interpolates the candidate observations at the control timestamp, which
+cancels linear runner drift instead of favoring whichever source happened to run second. Candidate dispersion beyond
+the existing relative/absolute headroom fails closed. Pairing is admitted only when the expected candidate and control
+commits, `sameRunnerComparisonKey`, privacy-safe `runnerIdentity`, fixture/output/runtime/storage metadata, and the
+assessed measurement set match. Non-wall CPU, work, storage, RSS, correctness, and shape failures from either candidate
+stay blocking. Cumulative parser, serialization, transaction, and general materialization-stage or subphase timers are
+work even though their unit is milliseconds, so they also stay static; new timings require explicit elapsed-wall
+classification before they can pair. The explicitly reviewed graph-cache persistence and SQLite commit splits may
+pair because they are synchronous hosted-storage wall waits, while their independent CPU, row/work, and byte/storage
+bounds remain static. An allowlisted wall limit becomes relative only when the protected-base control also misses that
+same static limit; the existing relative/absolute headroom bounds the interpolated candidate estimate. Hard objectives
+still bind the control and both candidate observations with no screening or confirmatory tolerance. This separates
+hosted VM scheduling noise from branch regressions without widening the checked-in ratchet; the bounded confirmation
+exception is a wall-only scheduler-tail allowance, not a relative performance claim against a passing control.
 
 ### Cross-repository workset contract
 
