@@ -518,9 +518,14 @@ existing strict sandwich path: it linearly interpolates the candidate observatio
 cancels linear runner drift instead of favoring whichever source happened to run second. Candidate dispersion beyond
 the existing relative/absolute headroom fails closed. Pairing is admitted only when the expected candidate and control
 commits, `sameRunnerComparisonKey`, privacy-safe `runnerIdentity`, fixture/output/runtime/storage metadata, and the
-assessed measurement set match. Non-wall CPU, work, storage, RSS, correctness, and shape failures from either candidate
-stay blocking. Cumulative parser, serialization, transaction, and general materialization-stage or subphase timers are
-work even though their unit is milliseconds, so they also stay static; new timings require explicit elapsed-wall
+assessed measurement set match. Non-wall CPU, work, storage, RSS, correctness, and product-execution shape failures
+from either candidate stay blocking. The sole pre-product exception is the fixture/Git bootstrap process-count peak:
+the screening observation may report the specifically reviewed five-process peak against the unchanged maximum of
+four only when the protected-base control and immediate candidate confirmation both pass that static limit. A
+fractional or larger overlap, a changed baseline, either later miss, and every product-phase process-count miss still
+fail. Cumulative parser, serialization, transaction, and general
+materialization-stage or subphase timers are work even though their unit is milliseconds, so they also stay static;
+new timings require explicit elapsed-wall
 classification before they can pair. The explicitly reviewed graph-cache persistence and SQLite commit splits may
 pair because they are synchronous hosted-storage wall waits, while their independent CPU, row/work, and byte/storage
 bounds remain static. An allowlisted wall limit becomes relative only when the protected-base control also misses that

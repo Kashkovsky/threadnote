@@ -1443,6 +1443,133 @@ describe('code graph release evidence', () => {
 
     expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet)).toThrow(/cold-index/u);
     expect(() => enforceCodeGraphBenchmarkRatchet(noisyCandidate, githubHostedRatchet, pairedControl)).not.toThrow();
+    const bootstrapProcessCountName = 'bootstrap-external-process-count-peak-observed-n1';
+    const bootstrapProcessCountLimit: CodeGraphBenchmarkMeasurementRatchetV1 = {
+      maximum: 4,
+      samplesMinimum: 1,
+      unit: 'count',
+    };
+    const bootstrapProcessCountRatchet = {
+      ...githubHostedRatchet,
+      measurements: {
+        ...githubHostedRatchet.measurements,
+        [bootstrapProcessCountName]: bootstrapProcessCountLimit,
+      },
+    };
+    const withProcessCount = (artifact: BenchmarkArtifactV1, name: string, value: number): BenchmarkArtifactV1 => ({
+      ...artifact,
+      measurements: [
+        ...artifact.measurements.filter(measurement => measurement.name !== name),
+        benchmarkMeasurement(name, 'count', [value]),
+      ],
+    });
+    const bootstrapProcessCountCandidate = (value: number) =>
+      withProcessCount(sandwichCandidate({}), bootstrapProcessCountName, value);
+    const bootstrapProcessCountEvidence = (initial: number, control: number) => {
+      const evidence = sandwichEvidence({}, sandwichControl({}));
+      return {
+        ...evidence,
+        artifact: withProcessCount(evidence.artifact, bootstrapProcessCountName, control),
+        initialCandidateArtifact: withProcessCount(
+          evidence.initialCandidateArtifact,
+          bootstrapProcessCountName,
+          initial,
+        ),
+      };
+    };
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        bootstrapProcessCountCandidate(2),
+        bootstrapProcessCountRatchet,
+        bootstrapProcessCountEvidence(5, 2),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        bootstrapProcessCountCandidate(2),
+        bootstrapProcessCountRatchet,
+        bootstrapProcessCountEvidence(6, 2),
+      ),
+    ).toThrow(/initial candidate bootstrap-external-process-count-peak-observed-n1/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        bootstrapProcessCountCandidate(2),
+        bootstrapProcessCountRatchet,
+        bootstrapProcessCountEvidence(4.5, 2),
+      ),
+    ).toThrow(/initial candidate bootstrap-external-process-count-peak-observed-n1/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        bootstrapProcessCountCandidate(2),
+        bootstrapProcessCountRatchet,
+        bootstrapProcessCountEvidence(5, 5),
+      ),
+    ).toThrow(/initial candidate bootstrap-external-process-count-peak-observed-n1/u);
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        bootstrapProcessCountCandidate(5),
+        bootstrapProcessCountRatchet,
+        bootstrapProcessCountEvidence(5, 2),
+      ),
+    ).toThrow(/remeasured candidate bootstrap-external-process-count-peak-observed-n1/u);
+    const widenedBootstrapProcessCountRatchet = {
+      ...bootstrapProcessCountRatchet,
+      measurements: {
+        ...bootstrapProcessCountRatchet.measurements,
+        [bootstrapProcessCountName]: {...bootstrapProcessCountLimit, maximum: 5},
+      },
+    };
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        bootstrapProcessCountCandidate(5),
+        widenedBootstrapProcessCountRatchet,
+        bootstrapProcessCountEvidence(6, 5),
+      ),
+    ).toThrow(/initial candidate bootstrap-external-process-count-peak-observed-n1/u);
+    const coldProcessCountName = 'cold-external-process-count-peak-observed-n1';
+    const coldProcessCountRatchet = {
+      ...githubHostedRatchet,
+      measurements: {
+        ...githubHostedRatchet.measurements,
+        [coldProcessCountName]: {
+          maximum: 8,
+          samplesMinimum: 1,
+          unit: 'count',
+        } satisfies CodeGraphBenchmarkMeasurementRatchetV1,
+      },
+    };
+    const coldProcessCountEvidence = sandwichEvidence({}, sandwichControl({}));
+    expect(() =>
+      enforceCodeGraphBenchmarkRatchet(
+        withProcessCount(sandwichCandidate({}), coldProcessCountName, 6),
+        coldProcessCountRatchet,
+        {
+          ...coldProcessCountEvidence,
+          artifact: withProcessCount(coldProcessCountEvidence.artifact, coldProcessCountName, 6),
+          initialCandidateArtifact: withProcessCount(
+            coldProcessCountEvidence.initialCandidateArtifact,
+            coldProcessCountName,
+            9,
+          ),
+        },
+      ),
+    ).toThrow(/initial candidate cold-external-process-count-peak-observed-n1/u);
+    fc.assert(
+      fc.property(
+        fc.integer({max: 80, min: 0}).map(value => value / 10),
+        initialMaximum => {
+          const enforce = () =>
+            enforceCodeGraphBenchmarkRatchet(
+              bootstrapProcessCountCandidate(2),
+              bootstrapProcessCountRatchet,
+              bootstrapProcessCountEvidence(initialMaximum, 2),
+            );
+          if (initialMaximum <= 4 || initialMaximum === 5) expect(enforce).not.toThrow();
+          else expect(enforce).toThrow(new RegExp(bootstrapProcessCountName));
+        },
+      ),
+      {numRuns: 40},
+    );
     const confirmatoryWallName = 'hot-exact-lexical-query';
     const confirmatoryWallLimit = (p95Maximum: number): CodeGraphBenchmarkMeasurementRatchetV1 => ({
       p95Maximum,
