@@ -44,6 +44,7 @@ lines.on('line', line => {
       process.stderr.write('expected native base instructions plus sealed developer instructions\n');
       process.exit(6);
     }
+    assertLocalEnvironment(params);
     notify('remoteControl/status/changed', {
       environmentId: null,
       installationId: 'fake-installation',
@@ -51,7 +52,7 @@ lines.on('line', line => {
       status: 'disabled',
     });
     respond(request.id, {
-      approvalPolicy: preflightViolation === 'wrong-approval' ? 'never' : 'on-request',
+      approvalPolicy: preflightViolation === 'wrong-approval' ? 'never' : params.approvalPolicy,
       approvalsReviewer: 'user',
       cwd: preflightViolation === 'wrong-cwd' ? '/private/foreign-repository' : params.cwd,
       instructionSources: preflightViolation === 'instruction-source' ? ['/private/AGENTS.md'] : [],
@@ -98,11 +99,20 @@ lines.on('line', line => {
       process.stderr.write(`preflight violation reached turn/start: ${preflightViolation}\n`);
       process.exit(7);
     }
+    assertLocalEnvironment(request.params ?? {});
     emitTurn(request.id, request.params ?? {});
     return;
   }
   respondError(request.id, -32_601, 'unsupported fake request');
 });
+
+function assertLocalEnvironment(params: Record<string, unknown>): void {
+  const expected = [{cwd: params.cwd, environmentId: 'local', runtimeWorkspaceRoots: [params.cwd]}];
+  if (JSON.stringify(params.environments) !== JSON.stringify(expected)) {
+    process.stderr.write('expected one explicit local execution environment\n');
+    process.exit(8);
+  }
+}
 
 function emitTurn(responseId: number | undefined, params: Record<string, unknown>): void {
   pendingTurnParams = params;
@@ -139,7 +149,7 @@ function emitTurn(responseId: number | undefined, params: Record<string, unknown
         threadId,
         threadSettings: {
           activePermissionProfile: null,
-          approvalPolicy: 'on-request',
+          approvalPolicy: 'untrusted',
           approvalsReviewer: 'user',
           cwd: params.cwd,
           sandboxPolicy: {

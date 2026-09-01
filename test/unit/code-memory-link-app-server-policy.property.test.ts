@@ -26,6 +26,64 @@ describe('Code Memory Link pre-execution app-server policy', () => {
     ).toThrow('outside the selected thread');
   });
 
+  it('accepts the pinned code-mode shell wrapper only when every projected command is a bounded read', () => {
+    const projected = "pwd && sed -n '1,40p' src/service.ts";
+    const command = `/bin/zsh -lc ${shellWord(projected)}`;
+    const commandActions = [{command: projected, type: 'unknown'}];
+    const item = {
+      command,
+      commandActions,
+      cwd: ROOT,
+      id: 'item_code_mode_command',
+      source: 'agent',
+      status: 'inProgress',
+      type: 'commandExecution',
+    };
+    const params = {
+      approvalId: null,
+      availableDecisions: ['accept', {acceptWithExecpolicyAmendment: {execpolicy_amendment: ['pwd']}}, 'cancel'],
+      command,
+      commandActions,
+      cwd: ROOT,
+      environmentId: 'local',
+      itemId: item.id,
+      networkApprovalContext: null,
+      proposedExecpolicyAmendment: ['pwd'],
+      proposedNetworkPolicyAmendments: null,
+      reason: null,
+      startedAtMs: 1,
+      threadId: SCOPE.threadId,
+      turnId: SCOPE.turnId,
+    };
+
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params,
+        scope: SCOPE,
+        startedItem: item,
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
+    for (const unsafe of [
+      'pwd || cat src/service.ts',
+      'cat src/service.ts > result.json',
+      'cat $(pwd)/src/service.ts',
+      'sed -i 1d src/service.ts',
+    ]) {
+      const unsafeCommand = `/bin/zsh -lc ${shellWord(unsafe)}`;
+      const unsafeActions = [{command: unsafe, type: 'unknown'}];
+      expect(() =>
+        approveCodeMemoryLinkAppServerRequest({
+          method: 'item/commandExecution/requestApproval',
+          params: {...params, command: unsafeCommand, commandActions: unsafeActions},
+          scope: SCOPE,
+          startedItem: {...item, command: unsafeCommand, commandActions: unsafeActions},
+        }),
+      ).toThrow();
+    }
+  });
+
   it('rejects shell-control, expansion, unquoted glob, and mutating sed syntax before execution', () => {
     fc.assert(
       fc.property(fc.constantFrom(';', '|', '&', '$', '`', '>', '<', '*', '?', '[x]'), operator => {
@@ -117,4 +175,8 @@ function commandApproval(command: string, path: string) {
       turnId: SCOPE.turnId,
     },
   };
+}
+
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }

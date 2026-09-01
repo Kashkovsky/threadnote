@@ -68,6 +68,7 @@ function approveCommand(
     params,
     [
       'approvalId',
+      'availableDecisions',
       'command',
       'commandActions',
       'cwd',
@@ -87,13 +88,13 @@ function approveCommand(
   assertApprovalScope(params, scope);
   if (
     params.approvalId != null ||
-    params.environmentId != null ||
+    (params.environmentId != null && params.environmentId !== 'local') ||
     params.networkApprovalContext != null ||
-    params.proposedExecpolicyAmendment != null ||
     params.proposedNetworkPolicyAmendments != null
   ) {
-    throw new Error('Code Memory Link rejects compound, remote, network, and persistent command approvals.');
+    throw new Error('Code Memory Link rejects compound, remote, and network command approvals.');
   }
+  assertTemporaryCommandApproval(params);
   const item = object(startedItemInput, 'started command item');
   if (item.type !== 'commandExecution' || item.id !== params.itemId) {
     throw new Error('Command approval does not match its started action item.');
@@ -105,6 +106,30 @@ function approveCommand(
   }
   assertReadCommand(item, scope.repositoryRoot);
   return receipt('commandExecution', String(params.itemId), params);
+}
+
+function assertTemporaryCommandApproval(params: Record<string, unknown>): void {
+  if (params.proposedExecpolicyAmendment != null) {
+    if (
+      !Array.isArray(params.proposedExecpolicyAmendment) ||
+      params.proposedExecpolicyAmendment.length === 0 ||
+      params.proposedExecpolicyAmendment.length > 32 ||
+      params.proposedExecpolicyAmendment.some(
+        token => typeof token !== 'string' || token.length === 0 || token.length > 256 || token.includes('\0'),
+      )
+    ) {
+      throw new Error('Code Memory Link command approval proposes an invalid execpolicy amendment.');
+    }
+  }
+  if (params.availableDecisions == null) return;
+  if (
+    !Array.isArray(params.availableDecisions) ||
+    !params.availableDecisions.includes('accept') ||
+    !params.availableDecisions.includes('cancel') ||
+    new TextEncoder().encode(JSON.stringify(params.availableDecisions)).byteLength > 4_096
+  ) {
+    throw new Error('Code Memory Link command approval lacks bounded one-time decisions.');
+  }
 }
 
 function approveFileChange(
@@ -144,7 +169,17 @@ function assertApprovalScope(params: Record<string, unknown>, scope: ApprovalSco
 
 function assertReadCommand(item: Record<string, unknown>, repositoryRoot: string): void {
   const cwd = containedPath(text(item.cwd, 'command cwd'), repositoryRoot);
-  const command = text(item.command, 'command');
+  const commands = reviewableCommands(item, repositoryRoot, cwd);
+  for (const command of commands) assertSingleReadCommand(command, repositoryRoot, cwd);
+  if (!text(item.command, 'command').startsWith('/bin/zsh -lc ')) {
+    if (!Array.isArray(item.commandActions) || item.commandActions.length === 0) {
+      throw new Error('Code Memory Link command lacks a reviewable read-only action projection.');
+    }
+    assertReadOnlyActionProjection(item.commandActions as readonly unknown[], repositoryRoot, cwd);
+  }
+}
+
+function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: string): void {
   const tokens = tokenize(command);
   const executable = tokens[0];
   if (!executable || executable.includes('/') || executable.includes('\\')) {
@@ -160,16 +195,121 @@ function assertReadCommand(item: Record<string, unknown>, repositoryRoot: string
   } else {
     throw new Error('Code Memory Link command executable is outside the reviewed read-only allowlist.');
   }
-  if (!Array.isArray(item.commandActions) || item.commandActions.length === 0) {
-    throw new Error('Code Memory Link command lacks a reviewable read-only action projection.');
+}
+
+function reviewableCommands(item: Record<string, unknown>, repositoryRoot: string, cwd: string): readonly string[] {
+  const command = text(item.command, 'command');
+  if (command.startsWith('/bin/zsh -lc ')) {
+    if (
+      !Array.isArray(item.commandActions) ||
+      (item.source !== 'agent' && item.source !== 'unifiedExecStartup') ||
+      item.commandActions.length !== 1
+    ) {
+      throw new Error('Code Memory Link shell command lacks one reviewed local action projection.');
+    }
+    const action = object(item.commandActions[0], 'command action');
+    const projected = text(action.command, 'code-mode command projection');
+    const wrapped = decodeShellWord(command.slice('/bin/zsh -lc '.length));
+    if (wrapped !== projected) throw new Error('Code Memory Link shell wrapper differs from its action projection.');
+    if (action.type === 'unknown') {
+      exactKeys(action, ['command', 'type'], 'code-mode compound command action', false);
+      return splitReadCommandChain(projected);
+    }
+    assertReadOnlyActionProjection([action], repositoryRoot, cwd);
+    return [projected];
   }
-  for (const actionInput of item.commandActions) {
+  return [command];
+}
+
+function assertReadOnlyActionProjection(commandActions: readonly unknown[], repositoryRoot: string, cwd: string): void {
+  for (const actionInput of commandActions) {
     const action = object(actionInput, 'command action');
     if (!['read', 'listFiles', 'search'].includes(String(action.type))) {
       throw new Error('Code Memory Link command action is not read-only.');
     }
     if (typeof action.path === 'string' && action.path.length > 0) containedPath(action.path, repositoryRoot, cwd);
   }
+}
+
+function splitReadCommandChain(command: string): readonly string[] {
+  if (command.length > 16_384 || /[\0\r\n]/u.test(command)) {
+    throw new Error('Command chain is not bounded single-line text.');
+  }
+  const commands: string[] = [];
+  let start = 0;
+  let quote: 'single' | 'double' | null = null;
+  for (let index = 0; index < command.length; index += 1) {
+    const character = command[index]!;
+    if (quote === 'single') {
+      if (character === "'") quote = null;
+      continue;
+    }
+    if (quote === 'double') {
+      if (character === '"') quote = null;
+      else if (character === '$' || character === '`' || character === '\\') {
+        throw new Error('Command chain contains expansion inside double quotes.');
+      }
+      continue;
+    }
+    if (character === "'") quote = 'single';
+    else if (character === '"') quote = 'double';
+    else if (character === '&') {
+      if (command[index + 1] !== '&') throw new Error('Command chain contains unsupported shell control.');
+      commands.push(nonemptyCommand(command.slice(start, index)));
+      start = index + 2;
+      index += 1;
+    } else if (';|<>`$(){}\\'.includes(character)) {
+      throw new Error('Command chain contains unsupported shell control or expansion.');
+    }
+  }
+  if (quote !== null) throw new Error('Command chain contains an unterminated quote.');
+  commands.push(nonemptyCommand(command.slice(start)));
+  return commands;
+}
+
+function nonemptyCommand(value: string): string {
+  const command = value.trim();
+  if (!command) throw new Error('Command chain contains an empty command.');
+  return command;
+}
+
+function decodeShellWord(value: string): string {
+  if (!value || value.length > 16_384 || /[\0\r\n]/u.test(value)) {
+    throw new Error('Code Memory Link shell wrapper is invalid.');
+  }
+  let decoded = '';
+  let quote: 'single' | 'double' | null = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (quote === 'single') {
+      if (character === "'") quote = null;
+      else decoded += character;
+      continue;
+    }
+    if (quote === 'double') {
+      if (character === '"') quote = null;
+      else if (character === '\\') {
+        const escaped = value[++index];
+        if (escaped !== '"' && escaped !== '\\') {
+          throw new Error('Code Memory Link shell wrapper contains unsupported escaping.');
+        }
+        decoded += escaped;
+      } else {
+        if (character === '$' || character === '`') {
+          throw new Error('Code Memory Link shell wrapper contains expansion.');
+        }
+        decoded += character;
+      }
+      continue;
+    }
+    if (character === "'") quote = 'single';
+    else if (character === '"') quote = 'double';
+    else if (/\s/u.test(character) || ';&|<>`$(){}\\*?[]'.includes(character)) {
+      throw new Error('Code Memory Link shell wrapper must contain exactly one literal argument.');
+    } else decoded += character;
+  }
+  if (quote !== null) throw new Error('Code Memory Link shell wrapper contains an unterminated quote.');
+  return decoded;
 }
 
 function assertSimpleRead(executable: string, args: readonly string[], root: string, cwd: string): void {
