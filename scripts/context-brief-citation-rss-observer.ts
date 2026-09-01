@@ -3,6 +3,8 @@ import {SystemInfo} from '../src/effect/system.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
+  CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
   contextBriefCitationRssSampleGapSummary,
   type ContextBriefCitationRssSampleGapSummaryV1,
 } from '../src/evaluation/context-brief-citation-scale-contract.js';
@@ -18,8 +20,9 @@ export const CONTEXT_BRIEF_CITATION_RSS_OBSERVER_MODE = '--internal-context-brie
 
 const ARTIFACT_VERSION = 2 as const;
 const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
-const MAXIMUM_OBSERVATIONS = 256;
-const MAXIMUM_PROTOCOL_SEQUENCE = MAXIMUM_OBSERVATIONS * 2 + 1;
+export const CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS =
+  CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.length * CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES;
+const MAXIMUM_PROTOCOL_SEQUENCE = CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS * 2 + 1;
 const MAXIMUM_REQUEST_BYTES = 4 * 1_024;
 const MAXIMUM_RUNTIME_MILLISECONDS = 3 * 60 * 60 * 1_000;
 
@@ -301,7 +304,10 @@ export function parseContextBriefCitationRssArtifact(value: unknown): ContextBri
     'RSS observer artifact',
   );
   const contract = parseObserverContract(artifact);
-  if (!Array.isArray(artifact.observations) || artifact.observations.length > MAXIMUM_OBSERVATIONS) {
+  if (
+    !Array.isArray(artifact.observations) ||
+    artifact.observations.length > CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS
+  ) {
     invalid('RSS observer artifact observations are invalid.');
   }
   const observations = artifact.observations.map(parseObservation);
@@ -369,7 +375,9 @@ export function applyContextBriefCitationRssRequest(
   let acknowledgement: ContextBriefCitationRssAcknowledgementV2;
   if (request.operation === 'begin') {
     if (current.active !== undefined) invalid('RSS observer cannot begin while another observation is active.');
-    if (current.observations.length >= MAXIMUM_OBSERVATIONS) invalid('RSS observer observation bound exceeded.');
+    if (current.observations.length >= CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS) {
+      invalid('RSS observer observation bound exceeded.');
+    }
     if (current.observations.some(observation => observation.observationId === request.observationId)) {
       invalid('RSS observer observation ID was reused.');
     }
@@ -517,7 +525,12 @@ export const writeContextBriefCitationRssRequest = Effect.fn('contextBriefCitati
 /** Wait for the exact sequence acknowledgement; stale acks are ignored and future acks fail closed. */
 export const waitForContextBriefCitationRssAcknowledgement = Effect.fn(
   'contextBriefCitationRss.waitForAcknowledgement',
-)(function* (acknowledgementPath: string, sequence: number, timeoutMilliseconds: number) {
+)(function* (
+  acknowledgementPath: string,
+  sequence: number,
+  timeoutMilliseconds: number,
+  childExitCode?: () => number | null,
+) {
   protocolSequence(sequence, 'RSS observer acknowledgement sequence');
   positiveSafeInteger(timeoutMilliseconds, 'RSS observer acknowledgement timeout');
   const startedAt = yield* Clock.currentTimeMillis;
@@ -528,6 +541,14 @@ export const waitForContextBriefCitationRssAcknowledgement = Effect.fn(
       const acknowledgement = parseContextBriefCitationRssAcknowledgement(parseJson(text, 'acknowledgement'));
       if (acknowledgement.sequence === sequence) return acknowledgement;
       if (acknowledgement.sequence > sequence) invalid('RSS observer acknowledgement skipped the expected sequence.');
+    }
+    const exitCode = childExitCode?.();
+    if (exitCode !== undefined && exitCode !== null) {
+      return yield* Effect.fail(
+        new ScriptError(
+          `Context Brief RSS observer exited with ${exitCode} before acknowledgement sequence ${sequence}.`,
+        ),
+      );
     }
     if ((yield* Clock.currentTimeMillis) - startedAt >= timeoutMilliseconds) {
       return yield* Effect.fail(new ScriptError('Timed out waiting for the RSS observer acknowledgement.'));

@@ -1,0 +1,162 @@
+{
+  "type": "threadnote-macos-native-hosted-median-calibration",
+  "version": 1,
+  "runnerClass": "github-hosted-macos-arm64",
+  "runtime": "bun/1.3.14",
+  "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+  "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+  "collection": {
+    "samples": 25,
+    "warmups": 5
+  },
+  "policy": {
+    "ordinaryWallP50MillisecondsMaximum": 125,
+    "guardedToleranceRatioMaximum": 0.05,
+    "guardedWallP50MillisecondsMaximum": 131.25,
+    "hotWallP95MillisecondsMaximum": 250,
+    "hotWallP95ToleranceRatioMaximum": 0.05,
+    "processCpuP95MillisecondsMaximum": 250
+  },
+  "expected": {
+    "observations": 6,
+    "ordinaryBreaches": 1,
+    "guardedBreaches": 0,
+    "maximumObservedWallP50Milliseconds": 125.649917,
+    "ordinaryBoundaryDeltaMilliseconds": 0.649917,
+    "ordinaryBoundaryRatio": 1.005199336
+  },
+  "observations": [
+    {
+      "workflowRun": 33452060622,
+      "jobId": 99683952733,
+      "artifactId": 9780139352,
+      "commit": "55c9fecf0e2808e580f544c4a6a6b3b734b74c20",
+      "sourceTree": "75cebc848d14883c01679c6d751295823d5e7f3f",
+      "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+      "benchmarkHarnessBlob": "a7adade93563b157a2f22b22c2e212da342f70bc",
+      "createdAt": "2026-08-31T23:47:44.886Z",
+      "runnerIdentity": "runner-9ce23e1b5ef92475",
+      "archiveSha256": "c34a84e050e3b74105213025f37aa775e35ff35652f880e316f09c546b860d90",
+      "rawJsonSha256": "a7cdd586ca4d3854dd2a7217bf5f3561820de6469c7ecfb2b581fbee8bff4701",
+      "wallMilliseconds": {
+        "p50": 62.190375,
+        "p95": 117.268917,
+        "maximum": 131.69275
+      },
+      "processCpuMilliseconds": {
+        "p95": 74.291,
+        "maximum": 75.389
+      }
+    },
+    {
+      "workflowRun": 33454986359,
+      "jobId": 99692956989,
+      "artifactId": 9781183386,
+      "commit": "9126348fdce549b54036223f667efb24c4cfc123",
+      "sourceTree": "64a6b2d1910a28d5d27075143b9892b11c460da3",
+      "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+      "benchmarkHarnessBlob": "6b953169b1bfcc156aad3f30ba735fb5ad1519fb",
+      "createdAt": "2026-09-01T00:33:20.227Z",
+      "runnerIdentity": "runner-254eb420b1716866",
+      "archiveSha256": "06bc0f8aae9a950fd8c6926bda11ae81b04ecac205615ee6dfe1c448cb5670be",
+      "rawJsonSha256": "e71b844a24e19bf76fe2fd49ba25e5f3c8c4e17d0dd9a9ad254751572ef08df9",
+      "wallMilliseconds": {
+        "p50": 113.852875,
+        "p95": 140.85225,
+        "maximum": 146.6105
+      },
+      "processCpuMilliseconds": {
+        "p95": 130.784,
+        "maximum": 132.199
+      }
+    },
+    {
+      "workflowRun": 33460824382,
+      "jobId": 99710382557,
+      "artifactId": 9783138435,
+      "commit": "1ce43969b08a772cb19e712eb71d7d34c38b7b66",
+      "sourceTree": "b4a5f22dbe90284d4ec6c7da7a216be4f1627ad3",
+      "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+      "benchmarkHarnessBlob": "789ac7f938d64b36ebb9f9c2793920b4f282a1fd",
+      "createdAt": "2026-09-01T02:01:54.729Z",
+      "runnerIdentity": "runner-215858b012ee4997",
+      "archiveSha256": "06c14188458ccd529fa41f29f56e1ce0760b7bd3735994d535f386b10590c2c5",
+      "rawJsonSha256": "68e083de113f367b2fe11d13adba78a042710db28abad662d2f9f1bdeeaae1ac",
+      "wallMilliseconds": {
+        "p50": 61.273125,
+        "p95": 74.613167,
+        "maximum": 82.048416
+      },
+      "processCpuMilliseconds": {
+        "p95": 74.978,
+        "maximum": 77.426
+      }
+    },
+    {
+      "workflowRun": 33462845808,
+      "jobId": 99716484584,
+      "artifactId": 9783821980,
+      "commit": "8f0dceda3107bce69cc555ac3fc4db794e18ad15",
+      "sourceTree": "e1fc4934be4abf21711f1c15d3a72eaa9fda7d01",
+      "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+      "benchmarkHarnessBlob": "0f23f5456fd1e4bfae98bad586276140463e348c",
+      "createdAt": "2026-09-01T02:33:23.756Z",
+      "runnerIdentity": "runner-9e35ec2209619c81",
+      "archiveSha256": "cf03d33f7c80abaa91bd8cfdf05bfcd2cbdb5ece4a7ddda672403ac450dabd34",
+      "rawJsonSha256": "c12a1ae0bbbc948a2522d33755946aa331c802b0a2412b2747ed595aea41512e",
+      "wallMilliseconds": {
+        "p50": 116.338,
+        "p95": 149.174084,
+        "maximum": 152.286792
+      },
+      "processCpuMilliseconds": {
+        "p95": 128.605,
+        "maximum": 144.656
+      }
+    },
+    {
+      "workflowRun": 33464018157,
+      "jobId": 99720012815,
+      "artifactId": 9784200257,
+      "commit": "568b0fefaa220c0f1497970fc43cf4fb05bd9806",
+      "sourceTree": "e1fc4934be4abf21711f1c15d3a72eaa9fda7d01",
+      "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+      "benchmarkHarnessBlob": "0f23f5456fd1e4bfae98bad586276140463e348c",
+      "createdAt": "2026-09-01T02:50:40.875Z",
+      "runnerIdentity": "runner-6ad9da0fb055b162",
+      "archiveSha256": "3b1e13f6c2559f55856de541e004687e6bc698eb105e2014e9d194127b3d7c1a",
+      "rawJsonSha256": "7b0771d616bc0bdc2c298cc0b07149d067c7e5ecdb4b774464094be6b2e268eb",
+      "wallMilliseconds": {
+        "p50": 54.082917,
+        "p95": 66.203166,
+        "maximum": 73.509917
+      },
+      "processCpuMilliseconds": {
+        "p95": 64.184,
+        "maximum": 71.887
+      }
+    },
+    {
+      "workflowRun": 33466815457,
+      "jobId": 99728282034,
+      "artifactId": 9785160396,
+      "commit": "9d037a04c5f23da0a356d2578d0e0d6af5144a4d",
+      "sourceTree": "f36871a2d43c5e3081338eb2f008ea43bfda66ef",
+      "codeGraphSourceTree": "9278a440106017f54944df66885831518ff9e863",
+      "benchmarkHarnessBlob": "0f23f5456fd1e4bfae98bad586276140463e348c",
+      "createdAt": "2026-09-01T03:37:45.778Z",
+      "runnerIdentity": "runner-ec74ec681d0f8c03",
+      "archiveSha256": "552502a42c1e35e8119b3fc098e448a7515244bc73d9c9449bd7b641b379473b",
+      "rawJsonSha256": "9d2751fffa628cd71f257661eb8d2657cb668eb04dc42376724866f56278d8bd",
+      "wallMilliseconds": {
+        "p50": 125.649917,
+        "p95": 154.917917,
+        "maximum": 165.969541
+      },
+      "processCpuMilliseconds": {
+        "p95": 137.378,
+        "maximum": 166.991
+      }
+    }
+  ]
+}

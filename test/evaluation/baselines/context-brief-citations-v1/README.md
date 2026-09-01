@@ -44,3 +44,8 @@ expire.
 The later `validation-quantile-calibration-v1.json` and matching rationale preserve the five-run evidence used to
 increase release sampling from 25 to 100 without changing the reviewed latency ceilings. Its verifier re-derives the
 pooled and latest-four-run quantiles and the four-versus-five upper-tail boundary.
+
+`rss-observer-capacity-calibration-v1.json` and its rationale retain the first 100-sample prospective run that exposed
+the old 256-observation protocol ceiling. The correction derives capacity from the three-profile, 100-sample release
+contract, rejects oversized schedules before setup, and reports child failure immediately; it changes no evidence
+budget and requires a fresh complete prospective artifact.

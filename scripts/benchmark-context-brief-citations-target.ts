@@ -31,6 +31,7 @@ import {
 } from '../src/evaluation/context-brief-citation-scale.js';
 import {
   contextBriefCitationRssObserverArguments,
+  CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS,
   isContextBriefCitationRssObserverMode,
   parseContextBriefCitationRssArtifact,
   parseContextBriefCitationRssReady,
@@ -157,6 +158,11 @@ export function parseContextBriefCitationScaleBenchmarkArguments(
     else if (argument === '--samples') samples = positiveInteger(args[++index], argument);
     else if (argument === '--warmups') warmups = nonNegativeInteger(args[++index], argument);
     else throw new ScriptError(`Unknown Context Brief citation scale benchmark option: ${argument}`);
+  }
+  if (samples > Math.floor(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS / profileIds.length)) {
+    throw new ScriptError(
+      `The Context Brief RSS observer supports at most ${CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS} total profile/sample observations; received ${profileIds.length * samples}.`,
+    );
   }
   return {
     budgetPath,
@@ -303,6 +309,33 @@ export function makeContextBriefCitationRssObserverController(
   return {close, finish, observe};
 }
 
+export const waitForContextBriefCitationRssBarrierAcknowledgement = Effect.fn(
+  'contextBriefCitationScale.waitForRssBarrierAcknowledgement',
+)(function* (
+  acknowledgementPath: string,
+  sequence: number,
+  timeoutMilliseconds: number,
+  childExitCode: () => number | null,
+  stderr: Promise<string>,
+) {
+  return yield* waitForContextBriefCitationRssAcknowledgement(
+    acknowledgementPath,
+    sequence,
+    timeoutMilliseconds,
+    childExitCode,
+  ).pipe(
+    Effect.catch(error =>
+      childExitCode() === null
+        ? Effect.fail(error)
+        : Effect.gen(function* () {
+            return yield* Effect.fail(
+              new ScriptError(`${error.message} ${yield* boundedObserverStderr(stderr)}`, {cause: error}),
+            );
+          }),
+    ),
+  );
+});
+
 const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScale.startRssObserver')(function* (
   expectedBuiltArtifactSha256: string,
 ) {
@@ -373,10 +406,12 @@ const startContextBriefCitationRssObserver = Effect.fn('contextBriefCitationScal
       yield* writeContextBriefCitationRssRequest(paths.requestPath, sequenced).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),
       );
-      const acknowledgement = yield* waitForContextBriefCitationRssAcknowledgement(
+      const acknowledgement = yield* waitForContextBriefCitationRssBarrierAcknowledgement(
         paths.acknowledgementPath,
         sequence,
         RSS_OBSERVER_BARRIER_TIMEOUT_MILLISECONDS,
+        () => child.exitCode,
+        stderr,
       ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
       yield* validateContextBriefCitationRssAcknowledgement(sequenced, expected, acknowledgement);
     });

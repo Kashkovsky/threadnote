@@ -30,6 +30,7 @@ import {
   type ContextBriefCitationScaleReleaseIdentityV1,
 } from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import {parseContextBriefCitationScaleBenchmarkArguments} from '../../scripts/benchmark-context-brief-citations-target.js';
+import {CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS} from '../../scripts/context-brief-citation-rss-observer.js';
 
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
@@ -116,10 +117,68 @@ const validationQuantileCalibration = Schema.decodeUnknownSync(
 )(
   await Bun.file('test/evaluation/baselines/context-brief-citations-v1/validation-quantile-calibration-v1.json').text(),
 );
+const rssObserverCapacityCalibration = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      correction: Schema.Struct({
+        capacityDerivedFromReleaseContract: Schema.Literal(true),
+        childStderrPropagated: Schema.Literal(true),
+        maximumObservations: Schema.Literal(300),
+        maximumProtocolSequence: Schema.Literal(601),
+        parentDetectsChildExitBeforeTimeout: Schema.Literal(true),
+        preflightRejectsOversizedSchedules: Schema.Literal(true),
+      }),
+      failure: Schema.Struct({
+        firstRejectedObservation: Schema.Literal(257),
+        lastAcknowledgedSequence: Schema.Literal(512),
+        parentAcknowledgementTimeoutMilliseconds: Schema.Literal(30_000),
+        previousMaximumObservations: Schema.Literal(256),
+        reportedMessage: Schema.Literal('Timed out waiting for the RSS observer acknowledgement.'),
+        requestSequence: Schema.Literal(513),
+      }),
+      prospectiveRun: Schema.Struct({
+        artifactProduced: Schema.Literal(false),
+        builtArtifactSha256: Sha256,
+        commit: GitCommit,
+        invocation: Schema.Struct({
+          profiles: Schema.Literal(3),
+          samplesPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
+          totalObservedSamples: Schema.Literal(300),
+          warmupsPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+        }),
+        jobId: PositiveInteger,
+        jobLogSha256: Sha256,
+        sourceTree: GitCommit,
+        workflowAttempt: Schema.Literal(1),
+        workflowRun: PositiveInteger,
+      }),
+      type: Schema.Literal('threadnote-context-brief-rss-observer-capacity-calibration'),
+      version: Schema.Literal(1),
+    }),
+  ),
+)(
+  await Bun.file(
+    'test/evaluation/baselines/context-brief-citations-v1/rss-observer-capacity-calibration-v1.json',
+  ).text(),
+);
 const benchmarkWorkflow = await Bun.file('.github/workflows/benchmarks.yml').text();
 const scaleEvaluationSource = await Bun.file('src/evaluation/context-brief-citation-scale.ts').text();
 
 describe('Context Brief citation scale benchmark', () => {
+  it('rederives observer capacity from the complete release schedule and retains the failed prospective provenance', () => {
+    const {correction, failure, prospectiveRun} = rssObserverCapacityCalibration;
+    expect(prospectiveRun.invocation.profiles * prospectiveRun.invocation.samplesPerProfile).toBe(
+      prospectiveRun.invocation.totalObservedSamples,
+    );
+    expect(failure.firstRejectedObservation).toBe(failure.previousMaximumObservations + 1);
+    expect(failure.requestSequence).toBe(failure.previousMaximumObservations * 2 + 1);
+    expect(failure.lastAcknowledgedSequence).toBe(failure.requestSequence - 1);
+    expect(correction.maximumObservations).toBe(prospectiveRun.invocation.totalObservedSamples);
+    expect(correction.maximumProtocolSequence).toBe(correction.maximumObservations * 2 + 1);
+    expect(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS).toBe(correction.maximumObservations);
+    expect(prospectiveRun.artifactProduced).toBe(false);
+  });
+
   it('pins the reviewed 100k / 50 / 128 envelope and built-target defaults', () => {
     expect(budget).toMatchObject({
       corpusMemoryCandidates: 100_000,
@@ -169,6 +228,51 @@ describe('Context Brief citation scale benchmark', () => {
         'b'.repeat(40),
       ]),
     ).toMatchObject({candidateCommit: 'b'.repeat(40)});
+    expect(() => parseContextBriefCitationScaleBenchmarkArguments(['--samples', '101'])).toThrow(
+      /supports at most 300 total profile\/sample observations; received 303/u,
+    );
+    expect(
+      parseContextBriefCitationScaleBenchmarkArguments(['--profiles', 'local-100k', '--samples', '300']),
+    ).toMatchObject({profileIds: ['local-100k'], samples: 300});
+  });
+
+  it('accepts exactly the unique-profile schedules that fit the 300-observation capacity', () => {
+    const parseSchedule = (profileIds: readonly string[], samples: number) =>
+      parseContextBriefCitationScaleBenchmarkArguments([
+        '--profiles',
+        profileIds.join(','),
+        '--samples',
+        String(samples),
+      ]);
+
+    expect(parseSchedule(['local-100k', 'workset-50'], 150)).toMatchObject({
+      profileIds: ['local-100k', 'workset-50'],
+      samples: 150,
+    });
+    expect(() => parseSchedule(['local-100k', 'workset-50'], 151)).toThrow(
+      /supports at most 300 total profile\/sample observations; received 302/u,
+    );
+
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.constantFrom(...CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS), {
+          maxLength: CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.length,
+          minLength: 1,
+        }),
+        fc.integer({max: 2, min: -2}),
+        (profileIds, capacityOffset) => {
+          const samples =
+            Math.floor(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS / profileIds.length) + capacityOffset;
+          const totalObservations = profileIds.length * samples;
+          if (totalObservations <= CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS) {
+            expect(parseSchedule(profileIds, samples)).toMatchObject({profileIds, samples});
+          } else {
+            expect(() => parseSchedule(profileIds, samples)).toThrow(`received ${totalObservations}`);
+          }
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('fails closed when any release-runner identity field is relabeled', () => {

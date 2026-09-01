@@ -22,6 +22,8 @@ interface WindowsReplicaPolicyV1 {
   readonly ordinaryWallP95MillisecondsMaximum: 1050;
   readonly replicas: 3;
   readonly samplesPerReplica: 100;
+  readonly schedulerSensitiveWallClockSafetyMultiplier: 2;
+  readonly wholeGraphAnalysisProcessCpuP95MillisecondsMaximum: 400;
   readonly warmupsPerReplica: 5;
 }
 
@@ -66,6 +68,18 @@ export interface CodeGraphWindowsReplicaGateV1 {
     readonly replica: number;
     readonly runnerIdentity: string;
     readonly safetyPassed: boolean;
+    readonly wholeGraphAnalysis: {
+      readonly maximum: number;
+      readonly p50: number;
+      readonly p95: number;
+      readonly samples: number;
+    };
+    readonly wholeGraphAnalysisProcessCpu: {
+      readonly maximum: number;
+      readonly p50: number;
+      readonly p95: number;
+      readonly samples: number;
+    };
   }[];
   readonly suite: 'code-graph-windows-hosted-replicas-v1';
   readonly version: 1;
@@ -87,14 +101,20 @@ export function adjudicateCodeGraphWindowsReplicas(
     failures.push(`replica ordinals must be exactly ${expectedReplicas.join(',')}`);
   }
 
-  const observations = sorted.map(input => {
-    const artifact = parseBenchmarkArtifactV1(input.artifact);
+  const parsed = sorted.map(input => ({artifact: parseBenchmarkArtifactV1(input.artifact), input}));
+  for (const {artifact, input} of parsed) {
+    assertUniqueMeasurementNames(artifact, `replica ${input.replica}`);
+  }
+
+  const observations = parsed.map(({artifact, input}) => {
     const prefix = `replica ${input.replica}`;
     const runnerClass = stringMetadata(artifact, 'runnerClass');
     const runnerIdentity = stringMetadata(artifact, 'runnerIdentity');
     const runtimePlatform = stringMetadata(artifact, 'runtimePlatform');
     const hotQuery = requiredMeasurement(artifact, 'hot-exact-lexical-query');
     const processCpu = requiredMeasurement(artifact, 'hot-query-process-cpu');
+    const wholeGraphAnalysis = requiredMeasurement(artifact, 'whole-graph-structural-analysis');
+    const wholeGraphAnalysisProcessCpu = requiredMeasurement(artifact, 'whole-graph-structural-analysis-process-cpu');
 
     if (!SHA256.test(input.artifactSha256)) failures.push(`${prefix} artifact digest is not lowercase SHA-256`);
     if (artifact.environment.commit !== expectedCommit) {
@@ -123,11 +143,14 @@ export function adjudicateCodeGraphWindowsReplicas(
         `${prefix} hot-query samples ${hotQuery.samples}/${processCpu.samples}; expected ${policy.samplesPerReplica}/${policy.samplesPerReplica}`,
       );
     }
-    failures.push(...nativeReplicaInvariantFailures(artifact).map(failure => `${prefix} ${failure}`));
+    const invariantFailures = nativeReplicaInvariantFailures(artifact);
+    failures.push(...invariantFailures.map(failure => `${prefix} ${failure}`));
 
     const safetyFailure = performanceBudgetFailure(artifact, safetyBudget);
+    const analysisCpuFailures = wholeGraphAnalysisCpuFailures(wholeGraphAnalysis, wholeGraphAnalysisProcessCpu, policy);
     const ordinaryFailure = performanceBudgetFailure(artifact, budgetInput);
     if (safetyFailure !== undefined) failures.push(`${prefix} safety budget: ${safetyFailure}`);
+    failures.push(...analysisCpuFailures.map(failure => `${prefix} safety budget: ${failure}`));
 
     return {
       artifactSha256: input.artifactSha256,
@@ -138,7 +161,7 @@ export function adjudicateCodeGraphWindowsReplicas(
         p95: hotQuery.p95,
         samples: hotQuery.samples,
       },
-      ordinaryPassed: ordinaryFailure === undefined,
+      ordinaryPassed: invariantFailures.length === 0 && ordinaryFailure === undefined,
       processCpu: {
         maximum: processCpu.maximum,
         p50: processCpu.p50,
@@ -147,7 +170,9 @@ export function adjudicateCodeGraphWindowsReplicas(
       },
       replica: input.replica,
       runnerIdentity,
-      safetyPassed: safetyFailure === undefined,
+      safetyPassed: invariantFailures.length === 0 && safetyFailure === undefined && analysisCpuFailures.length === 0,
+      wholeGraphAnalysis: measurementSummary(wholeGraphAnalysis),
+      wholeGraphAnalysisProcessCpu: measurementSummary(wholeGraphAnalysisProcessCpu),
     };
   });
 
@@ -170,7 +195,7 @@ export function adjudicateCodeGraphWindowsReplicas(
   const ordinaryPasses = observations.filter(observation => observation.ordinaryPassed).length;
   if (ordinaryPasses < policy.ordinaryPassesMinimum) {
     failures.push(
-      `ordinary wall gate passed ${ordinaryPasses}/${policy.replicas}; required ${policy.ordinaryPassesMinimum}`,
+      `ordinary performance budget passed ${ordinaryPasses}/${policy.replicas}; required ${policy.ordinaryPassesMinimum}`,
     );
   }
 
@@ -207,6 +232,17 @@ function nativeReplicaInvariantFailures(artifact: BenchmarkArtifactV1): readonly
   const failures: string[] = [];
   if (artifact.metadata.vectorEnabled !== false) failures.push('must be lexical-only');
   if ('scaleSymbols' in artifact.metadata) failures.push('must use the reviewed native development fixture');
+  for (const name of [
+    'cold-index',
+    'cold-materialization',
+    'one-file-reindex-index',
+    'one-file-reindex-materialization',
+  ] as const) {
+    const measurement = artifact.measurements.find(candidate => candidate.name === name);
+    if (measurement === undefined) continue;
+    if (measurement.unit !== 'milliseconds') failures.push(`${name} measurement must use milliseconds`);
+    if (measurement.samples !== 1) failures.push(`${name} samples ${measurement.samples}; expected 1`);
+  }
   for (const [name, expected] of [
     ['one-file-reindex-materialization-staged-files', 1],
     ['primary-query-structural-parity', 1],
@@ -242,6 +278,41 @@ function nativeReplicaInvariantFailures(artifact: BenchmarkArtifactV1): readonly
   return failures;
 }
 
+function wholeGraphAnalysisCpuFailures(
+  wall: BenchmarkArtifactV1['measurements'][number],
+  processCpu: BenchmarkArtifactV1['measurements'][number],
+  policy: WindowsReplicaPolicyV1,
+): readonly string[] {
+  const failures: string[] = [];
+  if (wall.unit !== 'milliseconds') {
+    failures.push('whole-graph-structural-analysis measurement must use milliseconds');
+  }
+  if (wall.samples !== 3) {
+    failures.push(`whole-graph-structural-analysis samples ${wall.samples}; expected 3`);
+  }
+  if (processCpu.unit !== 'milliseconds') {
+    failures.push('whole-graph-structural-analysis-process-cpu measurement must use milliseconds');
+  }
+  if (processCpu.samples !== wall.samples) {
+    failures.push('whole-graph-structural-analysis-process-cpu sample count must match the wall measurement');
+  }
+  if (processCpu.p95 > policy.wholeGraphAnalysisProcessCpuP95MillisecondsMaximum) {
+    failures.push(
+      `whole-graph-structural-analysis-process-cpu p95 ${processCpu.p95} exceeds ${policy.wholeGraphAnalysisProcessCpuP95MillisecondsMaximum}`,
+    );
+  }
+  return failures;
+}
+
+function measurementSummary(measurement: BenchmarkArtifactV1['measurements'][number]) {
+  return {
+    maximum: measurement.maximum,
+    p50: measurement.p50,
+    p95: measurement.p95,
+    samples: measurement.samples,
+  };
+}
+
 function performanceBudgetFailure(artifact: BenchmarkArtifactV1, budget: unknown): string | undefined {
   try {
     enforceCodeGraphBenchmarkBudget(artifact, budget, undefined);
@@ -262,6 +333,8 @@ function parseWindowsReplicaPolicy(value: unknown): WindowsReplicaPolicyV1 {
     ordinaryWallP95MillisecondsMaximum: 1050,
     replicas: 3,
     samplesPerReplica: 100,
+    schedulerSensitiveWallClockSafetyMultiplier: 2,
+    wholeGraphAnalysisProcessCpuP95MillisecondsMaximum: 400,
     warmupsPerReplica: 5,
   };
   if (
@@ -283,14 +356,22 @@ function windowsReplicaSafetyBudget(value: unknown, policy: WindowsReplicaPolicy
   const budget = requiredRecord(value, 'code graph budget');
   const runnerPolicies = requiredRecord(budget.developmentPerformanceByRunnerClass, 'development runner policies');
   const windows = requiredRecord(runnerPolicies['github-hosted-windows-x64'], 'hosted Windows development policy');
+  const resolved = resolvedWindowsDevelopmentBudget(budget);
+  const safetyMaximum = (field: string): number =>
+    requiredNumber(resolved[field], `resolved Windows ${field}`) * policy.schedulerSensitiveWallClockSafetyMultiplier;
   return {
     ...budget,
     developmentPerformanceByRunnerClass: {
       ...runnerPolicies,
       'github-hosted-windows-x64': {
         ...windows,
+        coldIndexP95MillisecondsMaximum: safetyMaximum('coldIndexP95MillisecondsMaximum'),
+        coldMaterializationP95MillisecondsMaximum: safetyMaximum('coldMaterializationP95MillisecondsMaximum'),
         hotQueryP95MillisecondsMaximum: policy.hardWallP95MillisecondsMaximum,
         hotQueryWallP95ToleranceRatioMaximum: 0,
+        oneFileIncrementalP95MillisecondsMaximum: safetyMaximum('oneFileIncrementalP95MillisecondsMaximum'),
+        oneFileMaterializationP95MillisecondsMaximum: safetyMaximum('oneFileMaterializationP95MillisecondsMaximum'),
+        wholeGraphAnalysisP95MillisecondsMaximum: safetyMaximum('wholeGraphAnalysisP95MillisecondsMaximum'),
       },
     },
   };
@@ -316,6 +397,20 @@ function requiredMeasurement(artifact: BenchmarkArtifactV1, name: string) {
   const measurement = artifact.measurements.find(candidate => candidate.name === name);
   if (measurement === undefined) throw new ScriptError(`Replica artifact is missing ${name}.`);
   return measurement;
+}
+
+function assertUniqueMeasurementNames(artifact: BenchmarkArtifactV1, prefix: string): void {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const measurement of artifact.measurements) {
+    if (seen.has(measurement.name)) duplicates.add(measurement.name);
+    else seen.add(measurement.name);
+  }
+  if (duplicates.size > 0) {
+    throw new ScriptError(
+      `${prefix} measurement names must be unique; duplicates: ${[...duplicates].sort().join(', ')}`,
+    );
+  }
 }
 
 function stringMetadata(artifact: BenchmarkArtifactV1, key: string): string {

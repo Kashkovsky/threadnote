@@ -2595,6 +2595,34 @@ describe('code graph release evidence', () => {
         undefined,
       ),
     ).toThrow(/ratio from 0 to 0.05/);
+
+    const p50TolerantPerformance = {
+      ...developmentPerformance,
+      hotQueryWallP50ToleranceRatioMaximum: 0.05,
+    };
+    const withP50 = (p50: number) =>
+      replace(
+        hotWall.name,
+        benchmarkMeasurement(hotWall.name, 'milliseconds', [...Array.from({length: 23}, () => p50), 105, 106]),
+      );
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(withP50(63), {developmentPerformance: p50TolerantPerformance}, undefined),
+    ).not.toThrow();
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(withP50(63.001), {developmentPerformance: p50TolerantPerformance}, undefined),
+    ).toThrow(/p50 63.001 exceeds 63/);
+    expect(() =>
+      enforceCodeGraphBenchmarkBudget(
+        artifact,
+        {
+          developmentPerformance: {
+            ...p50TolerantPerformance,
+            hotQueryWallP50ToleranceRatioMaximum: 0.051,
+          },
+        },
+        undefined,
+      ),
+    ).toThrow(/p50 ratio from 0 to 0.05/);
   });
 
   it('accepts repeatable structured controls without retaining them in the artifact contract', () => {

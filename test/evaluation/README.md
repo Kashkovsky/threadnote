@@ -629,12 +629,20 @@ do not materialize a repository-sized sidecar. The platform workflow retains ful
 shared-runner latency is machine-independent.
 
 The native GitHub-hosted Windows x64 query gate uses three fixed independent runner replicas with 100 post-warmup
-samples each; Linux, macOS, and local Windows retain one 25-sample run. Every Windows replica keeps all non-wall,
-750 ms p50, 500 ms process-CPU p95, work, parity, RSS, and disk guards, plus a 1,900 ms wall-p95 safety fuse. At least
-two replicas must pass the unchanged 1,000 ms p95 plus guarded 5% boundary. The runner is the experimental unit: the
-gate never pools 300 queries and never adaptively retries. The retained rationale and artifact provenance are in
+samples each; Linux, macOS, and local Windows retain one 25-sample run. At least two Windows replicas must pass the
+entire ordinary performance budget. Every replica retains exact work/parity, RSS, disk, 750 ms p50, and 500 ms hot CPU
+guards while also passing the 1,900 ms hot-p95 fuse, two-times fuses over every other resolved Windows wall-clock
+ceiling, and the 400 ms whole-graph-analysis CPU companion. The runner is the experimental unit: the gate never pools
+300 queries and never adaptively retries. The retained rationale and artifact provenance are in
 `baselines/code-graph-v1/windows-native-hosted-replica-calibration-v1.{json,md}`; a release candidate must pass one
 prospective three-runner set.
+
+The matching GitHub-hosted macOS ARM64 class retains the ordinary 125 ms hot-query median and admits at most 5%
+hosted-runner hysteresis (131.25 ms) while its p95, process CPU, sample-count, work, RSS, disk, and correctness guards
+remain unchanged. Local or mismatched runners receive no median tolerance. Six independent hosted observations and
+the exact boundary derivation are retained in
+`baselines/code-graph-v1/macos-native-hosted-median-calibration-v1.{json,md}`; a new exact candidate must pass
+prospectively rather than relabeling the failed observation.
 
 The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
 eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested

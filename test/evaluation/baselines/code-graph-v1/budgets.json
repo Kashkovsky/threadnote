@@ -39,6 +39,9 @@
     }
   },
   "developmentPerformanceByRunnerClass": {
+    "github-hosted-macos-arm64": {
+      "hotQueryWallP50ToleranceRatioMaximum": 0.05
+    },
     "github-hosted-windows-x64": {
       "hotQuerySamplesMinimum": 100
     }
@@ -50,6 +53,8 @@
       "ordinaryWallP95MillisecondsMaximum": 1050,
       "replicas": 3,
       "samplesPerReplica": 100,
+      "schedulerSensitiveWallClockSafetyMultiplier": 2,
+      "wholeGraphAnalysisProcessCpuP95MillisecondsMaximum": 400,
       "warmupsPerReplica": 5
     }
   },
@@ -122,9 +127,10 @@
     "Quality and safety budgets are release gates on every platform.",
     "Development performance budgets detect order-of-magnitude regressions on the reviewed fixture.",
     "The development hot-query wall p95 admits at most 5% scheduler-tail hysteresis only while its independent hard p50 and process-CPU ceilings both remain green; raw observations remain unchanged in the retained artifact.",
-    "Hosted Windows uses explicit development-only scheduler and storage headroom for the native cold single-observation fuses, hot query, one-file indexing, and structural analysis; Linux and macOS retain the tighter reviewed fixture ceilings.",
+    "Hosted Windows uses explicit development-only scheduler and storage headroom for native wall-clock phases. Linux and local macOS retain the tighter reviewed fixture ceilings; the matching GitHub-hosted macOS ARM64 class alone admits at most 5% median hysteresis while every p95, process-CPU, work, RSS, disk, and correctness guard remains active.",
+    "Six independent GitHub-hosted macOS ARM64 native runs over the unchanged code-graph source tree ranged from 54.083 to 125.650 milliseconds at p50 while all wall-p95 and process-CPU-p95 observations stayed below 250 milliseconds. The hosted-only p50 ratio preserves the 125-millisecond ordinary boundary and fails above 131.25 milliseconds; mismatched and local runners receive no median tolerance.",
     "The Windows 15-second cold-index and 8-second cold-materialization values are hard single-observation fuses, not p95 claims. They are 10%-headroom, whole-second-rounded envelopes over the first exact-candidate hosted storage tail; a prospective breach stops the release instead of automatically recalibrating.",
-    "The GitHub-hosted Windows x64 native fixture uses three fixed independent runner replicas of 100 hot-query samples each while retaining the 750-millisecond p50, 1-second p95 plus guarded 5% wall-tail allowance, and 500-millisecond process-CPU p95 limits. Every replica must pass every non-wall budget plus a 1.9-second wall-p95 safety fuse, and at least two of three must pass the ordinary 1.05-second wall boundary. The runner, rather than each query, is the hosted-variance experimental unit; no adaptive retry is allowed. Local Windows development runs retain one 25-sample run.",
+    "The GitHub-hosted Windows x64 native fixture uses three fixed independent runner replicas of 100 hot-query samples each. At least two replicas must pass the entire ordinary performance budget. Every replica must retain all correctness, work, RSS, disk, 750-millisecond hot-query p50, and 500-millisecond hot-query process-CPU guards while passing a 1.9-second hot-query wall-p95 fuse, two-times fuses over the resolved Windows cold-index, cold-materialization, one-file-index, one-file-materialization, and whole-graph-analysis wall ceilings, and a 400-millisecond whole-graph-analysis process-CPU p95 companion. The runner, rather than each query, is the hosted-variance experimental unit; no adaptive retry is allowed. Local Windows development runs retain one 25-sample run.",
     "The GitHub-hosted Windows x64 10k lexical lane uses a 1.2-second hard wall-p95 fuse over 100 samples, paired with unchanged 750-millisecond p50 and 500-millisecond process-CPU p95 guards and zero additional tolerance. The wall fuse remains 10% headroom over the first exact-candidate hosted scheduler tail, rounded to 100 milliseconds. Threadnote's empirical percentile convention selects rank 96 at 100 samples instead of the second-highest observation at 25; four upper observations are excluded and a fifth wall breach fails while the independent median and CPU guards still reject sustained or computational regressions. Local and non-Windows scale evidence retain the 1-second ceiling.",
     "The Windows overrides keep every quality, safety, RSS, disk, incremental, query, and analysis guard active instead of weakening vector or scale evidence.",
     "Pinned production-vector budgets gate the lexically disjoint development control plus full vector activation and scans at 10k and 100k symbols.",

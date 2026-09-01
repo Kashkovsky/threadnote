@@ -7885,6 +7885,7 @@ function formatRatchetValue(value: unknown): string {
 }
 
 const CODE_GRAPH_HOT_QUERY_WALL_P95_TOLERANCE_RATIO_MAXIMUM = 0.05;
+const CODE_GRAPH_HOT_QUERY_WALL_P50_TOLERANCE_RATIO_MAXIMUM = 0.05;
 const CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM = 25;
 
 export function enforceCodeGraphBenchmarkBudget(
@@ -7999,11 +8000,19 @@ export function enforceCodeGraphBenchmarkBudget(
         : typeof configuredSamplesMinimum === 'number'
           ? configuredSamplesMinimum
           : Number.NaN;
+    const configuredP50ToleranceRatio = budget.hotQueryWallP50ToleranceRatioMaximum;
+    const p50ToleranceRatio =
+      configuredP50ToleranceRatio === undefined
+        ? 0
+        : typeof configuredP50ToleranceRatio === 'number'
+          ? configuredP50ToleranceRatio
+          : Number.NaN;
     const p95ToleranceRatio = budget.hotQueryWallP95ToleranceRatioMaximum;
     const guardedToleranceConfigured =
       p50Maximum !== undefined ||
       processCpuMaximum !== undefined ||
       configuredSamplesMinimum !== undefined ||
+      configuredP50ToleranceRatio !== undefined ||
       p95ToleranceRatio !== undefined;
     const guardConfigurationValid =
       typeof p50Maximum === 'number' &&
@@ -8014,6 +8023,9 @@ export function enforceCodeGraphBenchmarkBudget(
       processCpuMaximum >= 0 &&
       Number.isSafeInteger(samplesMinimum) &&
       samplesMinimum >= CODE_GRAPH_HOT_QUERY_WALL_TOLERANCE_SAMPLES_MINIMUM &&
+      Number.isFinite(p50ToleranceRatio) &&
+      p50ToleranceRatio >= 0 &&
+      p50ToleranceRatio <= CODE_GRAPH_HOT_QUERY_WALL_P50_TOLERANCE_RATIO_MAXIMUM &&
       typeof p95ToleranceRatio === 'number' &&
       Number.isFinite(p95ToleranceRatio) &&
       p95ToleranceRatio >= 0 &&
@@ -8021,18 +8033,19 @@ export function enforceCodeGraphBenchmarkBudget(
     const processCpu = artifact.measurements.find(candidate => candidate.name === 'hot-query-process-cpu');
     if (guardedToleranceConfigured && !guardConfigurationValid) {
       failures.push(
-        'hot query wall tolerance requires non-negative numeric p50 and process-CPU bounds, an integer sample minimum of at least 25, and a ratio from 0 to 0.05',
+        'hot query wall tolerance requires non-negative numeric p50 and process-CPU bounds, an integer sample minimum of at least 25, a p95 ratio from 0 to 0.05, and an optional p50 ratio from 0 to 0.05',
       );
     }
     if (guardConfigurationValid) {
+      const boundedMedianMaximum = p50Maximum * (1 + p50ToleranceRatio);
       if (hotQuery.unit !== 'milliseconds') {
         failures.push(`${hotQueryName} measurement must use milliseconds`);
       }
       if (hotQuery.samples < samplesMinimum) {
         failures.push(`${hotQueryName} requires at least ${samplesMinimum} samples for wall tolerance`);
       }
-      if (hotQuery.p50 > p50Maximum) {
-        failures.push(`${hotQueryName} p50 ${hotQuery.p50} exceeds ${p50Maximum}`);
+      if (hotQuery.p50 > boundedMedianMaximum) {
+        failures.push(`${hotQueryName} p50 ${hotQuery.p50} exceeds ${boundedMedianMaximum}`);
       }
       if (!processCpu) {
         failures.push('missing hot-query-process-cpu measurement');
@@ -8044,12 +8057,14 @@ export function enforceCodeGraphBenchmarkBudget(
         failures.push(`hot-query-process-cpu p95 ${processCpu.p95} exceeds ${processCpuMaximum}`);
       }
     }
+    const boundedMedianMaximum =
+      typeof p50Maximum === 'number' && Number.isFinite(p50Maximum) ? p50Maximum * (1 + p50ToleranceRatio) : Number.NaN;
     const boundedTailMaximum = guardConfigurationValid ? hotQueryMaximum * (1 + p95ToleranceRatio) : hotQueryMaximum;
     const companionBoundsPassed =
       guardConfigurationValid &&
       hotQuery.unit === 'milliseconds' &&
       hotQuery.samples >= samplesMinimum &&
-      hotQuery.p50 <= p50Maximum &&
+      hotQuery.p50 <= boundedMedianMaximum &&
       processCpu !== undefined &&
       processCpu.unit === 'milliseconds' &&
       processCpu.samples === hotQuery.samples &&
