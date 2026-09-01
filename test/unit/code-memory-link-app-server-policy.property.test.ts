@@ -77,6 +77,36 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       ).toMatchObject({itemType: 'commandExecution'});
     }
 
+    const sequence = "pwd; sed -n '1,40p' src/service.ts";
+    const sequenceCommand = `/bin/zsh -c ${shellWord(sequence)}`;
+    const sequenceActions = [
+      {command: 'pwd', type: 'read'},
+      {command: "sed -n '1,40p' src/service.ts", path: `${ROOT}/src/service.ts`, type: 'read'},
+    ];
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: {...params, command: sequenceCommand, commandActions: sequenceActions},
+        scope: SCOPE,
+        startedItem: {...item, command: sequenceCommand, commandActions: sequenceActions},
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
+    const pipeline = 'rg -n service src | head -n 5';
+    const pipelineCommand = `/bin/zsh -c ${shellWord(pipeline)}`;
+    const pipelineActions = [
+      {command: 'rg -n service src', path: `${ROOT}/src`, type: 'search'},
+      {command: 'head -n 5', type: 'read'},
+    ];
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: {...params, command: pipelineCommand, commandActions: pipelineActions},
+        scope: SCOPE,
+        startedItem: {...item, command: pipelineCommand, commandActions: pipelineActions},
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
     for (const unsafe of [
       'pwd || cat src/service.ts',
       'cat src/service.ts > result.json',

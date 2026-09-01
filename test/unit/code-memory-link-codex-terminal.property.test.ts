@@ -2,7 +2,6 @@ import fc from 'fast-check';
 import {describe, expect, it} from 'vitest';
 import {
   assertCodeMemoryLinkTurnProgress,
-  CODE_MEMORY_LINK_NO_ACTION_BUDGET,
   summarizeCodeMemoryLinkCodexEvents,
 } from '../../scripts/code-memory-link-app-server-client.js';
 import {
@@ -32,30 +31,24 @@ describe('Code Memory Link Codex terminal receipts', () => {
     );
   });
 
-  it('stops monotonically at either no-action boundary and disables the stop after a file change starts', () => {
+  it('admits the exact sealed budget and rejects any provider overrun even after a file change', () => {
     fc.assert(
-      fc.property(
-        fc.integer({min: 1, max: CODE_MEMORY_LINK_NO_ACTION_BUDGET.steps + 4}),
-        fc.integer({min: 1, max: CODE_MEMORY_LINK_NO_ACTION_BUDGET.tokens + 4_000}),
-        (steps, tokens) => {
-          const events = usageEvents(steps, tokens);
-          const shouldStop =
-            steps >= CODE_MEMORY_LINK_NO_ACTION_BUDGET.steps || tokens >= CODE_MEMORY_LINK_NO_ACTION_BUDGET.tokens;
-          if (shouldStop) {
-            expect(() => assertCodeMemoryLinkTurnProgress(events, {steps: 100, tokens: 1_000_000})).toThrow(
-              /no-action budget/u,
-            );
-          } else {
-            expect(() => assertCodeMemoryLinkTurnProgress(events, {steps: 100, tokens: 1_000_000})).not.toThrow();
-          }
-          expect(() =>
-            assertCodeMemoryLinkTurnProgress([...fileChangeStarted(), ...events], {
-              steps: 100,
-              tokens: 1_000_000,
-            }),
-          ).not.toThrow();
-        },
-      ),
+      fc.property(fc.integer({min: 2, max: 64}), fc.integer({min: 2_000, max: 384_000}), (stepBudget, tokenBudget) => {
+        const taskBudget = {steps: stepBudget, tokens: tokenBudget};
+        expect(() => assertCodeMemoryLinkTurnProgress(usageEvents(stepBudget, tokenBudget), taskBudget)).not.toThrow();
+        expect(() => assertCodeMemoryLinkTurnProgress(usageEvents(stepBudget + 1, tokenBudget), taskBudget)).toThrow(
+          /inference-step budget/u,
+        );
+        expect(() => assertCodeMemoryLinkTurnProgress(usageEvents(stepBudget, tokenBudget + 1), taskBudget)).toThrow(
+          /provider token budget/u,
+        );
+        expect(() =>
+          assertCodeMemoryLinkTurnProgress(
+            [...fileChangeStarted(), ...usageEvents(stepBudget, tokenBudget + 1)],
+            taskBudget,
+          ),
+        ).toThrow(/provider token budget/u);
+      }),
       {numRuns: 64},
     );
   });

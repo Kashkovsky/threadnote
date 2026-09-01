@@ -13,7 +13,6 @@ import {
 
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_NAME = 'threadnote_code_memory_link_gate' as const;
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_VERSION = '1.0.0' as const;
-export const CODE_MEMORY_LINK_NO_ACTION_BUDGET = Object.freeze({steps: 12, tokens: 64_000});
 
 export interface CodeMemoryLinkAppServerCommand {
   readonly argumentsAfterSubcommand?: readonly string[];
@@ -447,20 +446,6 @@ export function assertCodeMemoryLinkTurnProgress(
   taskBudget: {readonly steps: number; readonly tokens: number},
 ): void {
   assertWithinTaskBudget(events, taskBudget);
-  if (hasStartedFileChange(events)) return;
-  const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
-  const last = usage.at(-1);
-  const totalTokens = last === undefined ? 0 : totalTokensFromUsageEvent(last);
-  if (
-    usage.length >= CODE_MEMORY_LINK_NO_ACTION_BUDGET.steps ||
-    totalTokens >= CODE_MEMORY_LINK_NO_ACTION_BUDGET.tokens
-  ) {
-    throw new CodeMemoryLinkCodexTerminalError(
-      'no-action-budget',
-      'Codex reached the calibration no-action budget without starting a file change.',
-      summarizeCodeMemoryLinkCodexEvents(events),
-    );
-  }
 }
 
 export function summarizeCodeMemoryLinkCodexEvents(
@@ -537,14 +522,6 @@ function incrementItemCount(counts: ReturnType<typeof emptyItemCounts>, itemType
     default:
       counts.other += 1;
   }
-}
-
-function hasStartedFileChange(events: readonly Record<string, unknown>[]): boolean {
-  return events.some(event => {
-    if (event.method !== 'item/started') return false;
-    const params = record(event.params, 'item/started params');
-    return record(params.item, 'item/started item').type === 'fileChange';
-  });
 }
 
 function totalTokensFromUsageEvent(event: Record<string, unknown>): number {
@@ -649,6 +626,20 @@ export function assertTraceIsolation(
         throw new Error('The Context Brief proxy did not start successfully.');
       }
     }
+    if (method === 'serverRequest/resolved') {
+      const params = record(event.params, 'resolved server request');
+      const requestId = params.requestId;
+      if (
+        params.threadId !== expected.threadId ||
+        !(
+          (typeof requestId === 'string' && requestId.length > 0 && requestId.length <= 256) ||
+          (typeof requestId === 'number' && Number.isSafeInteger(requestId))
+        )
+      ) {
+        throw new Error('Resolved server request is outside the selected thread or request scope.');
+      }
+      continue;
+    }
     if (method !== 'item/started' && method !== 'item/completed') continue;
     const params = record(event.params, `${method} params`);
     const item = record(params.item, `${method} item`);
@@ -700,6 +691,7 @@ const ALLOWED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'model/safetyBuffering/updated',
   'model/verification',
   'remoteControl/status/changed',
+  'serverRequest/resolved',
   'thread/started',
   'thread/settings/updated',
   'thread/status/changed',

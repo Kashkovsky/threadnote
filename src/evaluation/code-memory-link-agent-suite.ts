@@ -12,8 +12,10 @@ export const CODE_MEMORY_LINK_AGENT_SUITE_USER = 'code-memory-link' as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT = 'local' as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_AGENT_ID = 'agent-gate' as const;
 
-export const CODE_MEMORY_LINK_AGENT_SUITE_BUDGET = Object.freeze({steps: 48, tokens: 16_000});
-export const CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET = Object.freeze({steps: 48, tokens: 192_000});
+// A non-evidence Codex 0.149 canary used 207,039 tokens after four of the six required no-memory writes. The uniform
+// 384k ceiling admits the bounded six-write path without giving any experiment arm a different stopping condition.
+export const CODE_MEMORY_LINK_AGENT_SUITE_BUDGET = Object.freeze({steps: 48, tokens: 384_000});
+export const CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET = Object.freeze({steps: 48, tokens: 384_000});
 
 export type CodeMemoryLinkAgentSuiteTaskKind = 'hidden-constraint' | 'negative-control';
 export type CodeMemoryLinkAgentSuiteRetrievalClass = 'anchored-only' | 'code-authoritative-control' | 'lexical';

@@ -43,7 +43,7 @@ describe('Code Memory Link sealed agent corpus', () => {
     );
     expect(corpus.calibrationTasks).toHaveLength(CODE_MEMORY_LINK_AGENT_SUITE_CALIBRATION_TASKS);
     expect(corpus.calibrationTasks.every(task => task.budget === CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET)).toBe(true);
-    expect(corpus.releaseTasks.every(task => task.budget.tokens === 16_000)).toBe(true);
+    expect(corpus.releaseTasks.every(task => task.budget.tokens === 384_000)).toBe(true);
     expect(new Set(corpus.releaseTasks.map(task => task.taskId))).not.toContain(corpus.calibrationTasks[0]!.taskId);
     expect(fixture).toMatchObject({
       anchoredOnlyHiddenTasks: 7,
