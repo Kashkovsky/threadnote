@@ -163,7 +163,7 @@ function replayFixture() {
 function clientFixture(model: string, index: number) {
   const clientId = `cli_${String(index + 1).repeat(16)}`;
   const expectedClient = {
-    appServerVersion: '0.144.5' as const,
+    appServerVersion: '0.149.0-alpha.4.1' as const,
     model,
     modelProvider: 'openai',
     reasoningEffort: 'medium',

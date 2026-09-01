@@ -22,7 +22,7 @@ import {
 } from './code-memory-link-app-server-client.js';
 
 export const CODE_MEMORY_LINK_CODEX_CONFIG_VERSION = 1 as const;
-export const CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION = 'codex-cli 0.144.5' as const;
+export const CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION = 'codex-cli 0.149.0-alpha.4.1' as const;
 export const CODE_MEMORY_LINK_PROXY_SERVER_NAME = 'context_brief_gate' as const;
 export const CODE_MEMORY_LINK_PROXY_CAPABILITY_ENV = 'CODE_MEMORY_LINK_PROXY_PACKET' as const;
 export const CODE_MEMORY_LINK_SAFE_EXECUTABLE_NAMES = [

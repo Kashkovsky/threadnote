@@ -109,9 +109,9 @@ describe('Code Memory Link Codex isolation', () => {
 function config(): CodeMemoryLinkCodexClientConfigV1 {
   return {
     appServer: {
-      executable: '/opt/codex/0.144.5/codex',
+      executable: '/opt/codex/0.149.0-alpha.4.1/codex',
       executableSha256: 'a'.repeat(64),
-      version: 'codex-cli 0.144.5',
+      version: 'codex-cli 0.149.0-alpha.4.1',
     },
     authSourcePath: '/host/codex/auth.json',
     git: {executable: '/private/safe-bin/git', executableSha256: 'c'.repeat(64)},

@@ -126,7 +126,7 @@ describe('Code Memory Link Codex app-server transport', () => {
     const rubric = {...rubricInput, rubricHash: codeMemoryLinkRubricHashV1(rubricInput)};
     const content = 'pass=true\n';
     const expectedClient = {
-      appServerVersion: '0.144.5' as const,
+      appServerVersion: '0.149.0-alpha.4.1' as const,
       model: 'gpt-5.6-luna',
       modelProvider: 'openai',
       reasoningEffort: 'medium',
@@ -806,7 +806,7 @@ describe('Code Memory Link Codex app-server transport', () => {
       appServer: {
         executable: fakeExecutable,
         executableSha256: await sha256File(fakeExecutable),
-        version: 'codex-cli 0.144.5',
+        version: 'codex-cli 0.149.0-alpha.4.1',
       },
       authSourcePath: auth,
       git: {executable: gitExecutable, executableSha256: await sha256File(gitExecutable)},

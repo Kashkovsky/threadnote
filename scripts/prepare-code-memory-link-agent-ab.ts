@@ -1127,7 +1127,7 @@ async function createManifest(input: {
     environmentPolicyHash: client.descriptor.environmentPolicyHash,
     executionBundleHash: client.descriptor.executionBundleHash,
     expectedClient: {
-      appServerVersion: CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION.replace('codex-cli ', '') as '0.144.5',
+      appServerVersion: CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION.replace('codex-cli ', '') as '0.149.0-alpha.4.1',
       model: client.model,
       modelProvider: input.options.modelProvider,
       reasoningEffort: input.options.reasoningEffort,

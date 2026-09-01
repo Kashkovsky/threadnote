@@ -3,7 +3,7 @@
 import {createInterface} from 'node:readline';
 
 if (process.argv[2] === '--version') {
-  process.stdout.write('codex-cli 0.144.5\n');
+  process.stdout.write('codex-cli 0.149.0-alpha.4.1\n');
   process.exit(0);
 }
 if (process.argv[2] !== 'app-server') {
@@ -35,7 +35,7 @@ lines.on('line', line => {
   }
   if (request.method === 'initialized') return;
   if (request.method === 'initialize') {
-    respond(request.id, {serverInfo: {name: 'fake-codex-app-server', version: '0.144.5'}});
+    respond(request.id, {serverInfo: {name: 'fake-codex-app-server', version: '0.149.0-alpha.4.1'}});
     return;
   }
   if (request.method === 'thread/start') {

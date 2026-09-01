@@ -151,7 +151,7 @@ bun run eval:code-memory-link-agent-prepare -- \
   --candidate-commit <exact-40-character-sha> \
   --candidate-executable <absolute-canonical-evaluated-threadnote> \
   --candidate-executable-sha256 <64-lowercase-hex> \
-  --codex-executable <absolute-reviewed-codex-0.144.5> \
+  --codex-executable <absolute-reviewed-codex-0.149.0-alpha.4.1> \
   --git-executable <absolute-reviewed-git> \
   --harness-governance-commit <exact-clean-harness-sha> \
   --model-provider openai \
