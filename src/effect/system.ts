@@ -2,6 +2,7 @@ import {Context, Deferred, Effect, Exit, Layer, Ref} from 'effect';
 import {effectiveLinuxMemoryBytes, linuxCgroupMemoryFiles} from './linux_cgroup.js';
 import {withoutTelemetrySessionEnvironment} from '../telemetry/session.js';
 import {readWindowsHardwareInfo, readWindowsProcessStartIdentity} from './windows_system.js';
+import {WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT} from '../worker_protocol.js';
 
 class SystemOperationError extends Error {
   readonly _tag = 'SystemOperationError' as const;
@@ -525,6 +526,7 @@ export interface DiskCapacityProbeAdapters {
     environment: NodeJS.ProcessEnv,
   ) => Effect.Effect<number | undefined, unknown>;
   readonly statfs: (path: string) => Effect.Effect<unknown, unknown>;
+  readonly windows?: (path: string, environment: NodeJS.ProcessEnv) => Effect.Effect<number | undefined, unknown>;
 }
 
 export interface WindowsProcessStartIdentityProbeAdapters {
@@ -554,17 +556,35 @@ export function probeRuntimeAvailableDiskBytes(
   adapters: DiskCapacityProbeAdapters,
   timeoutMilliseconds = DISK_QUERY_TIMEOUT_MS,
 ) {
-  // Bun 1.3.14 standalone runtimes have produced unusable native statfs
-  // observations on these exact release targets. Keep the same bounded,
-  // cancellable query contract while using the platform capacity command.
-  return (platform === 'darwin' && architecture === 'x64') || (platform === 'win32' && architecture === 'arm64')
-    ? adapters.fallback(path, platform, environment).pipe(
-        Effect.timeoutOrElse({
-          duration: timeoutMilliseconds,
-          orElse: () => Effect.succeed(undefined),
-        }),
-      )
-    : probeAvailableDiskBytes(path, platform, environment, adapters, timeoutMilliseconds);
+  // Bun 1.3.14's standalone darwin-x64 runtime has produced unusable native
+  // statfs observations on the exact Intel release runner. Keep the same
+  // bounded, cancellable query contract while using df on that architecture.
+  if (platform === 'darwin' && architecture === 'x64') {
+    return adapters.fallback(path, platform, environment).pipe(
+      Effect.timeoutOrElse({
+        duration: timeoutMilliseconds,
+        orElse: () => Effect.succeed(undefined),
+      }),
+    );
+  }
+  // Bun 1.3.14's standalone Windows ARM64 statfs adapter is unusable. Prefer a
+  // killable standalone native query and retain PowerShell as one fallback.
+  if (platform === 'win32' && architecture === 'arm64') {
+    const native = adapters.windows?.(path, environment) ?? Effect.succeed(undefined);
+    return native.pipe(
+      Effect.matchEffect({
+        onFailure: () => adapters.fallback(path, platform, environment),
+        onSuccess: available =>
+          available === undefined ? adapters.fallback(path, platform, environment) : Effect.succeed(available),
+      }),
+      Effect.timeoutOrElse({
+        duration: timeoutMilliseconds,
+        orElse: () => Effect.succeed(undefined),
+      }),
+      Effect.catch(() => Effect.succeed(undefined)),
+    );
+  }
+  return probeAvailableDiskBytes(path, platform, environment, adapters, timeoutMilliseconds);
 }
 
 export function probeAvailableDiskBytes(
@@ -665,9 +685,70 @@ export function legacyAvailableDiskBytes(
   );
 }
 
+/** @internal Re-invoke either the compiled binary or current source entrypoint. */
+export function windowsDiskCapacityWorkerInvocation(
+  executablePath: string,
+  processArguments: readonly string[],
+): {readonly arguments: readonly string[]; readonly executable: string} {
+  const executableName = executablePath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
+  if (executableName !== 'bun' && executableName !== 'bun.exe') {
+    return {arguments: [WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT], executable: executablePath};
+  }
+  const currentScript = processArguments[1];
+  const standaloneScript =
+    currentScript && /(?:^|[/\\])(?:standalone\.(?:js|ts)|threadnote\.cjs)$/iu.test(currentScript)
+      ? currentScript
+      : Bun.fileURLToPath(new URL('../standalone.ts', import.meta.url));
+  return {
+    arguments: [standaloneScript, WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT],
+    executable: executablePath,
+  };
+}
+
+/** @internal Killable boundary for the synchronous Windows kernel query. */
+export function isolatedWindowsAvailableDiskBytes(
+  path: string,
+  environment: NodeJS.ProcessEnv,
+  invocation = windowsDiskCapacityWorkerInvocation(process.execPath, process.argv),
+) {
+  return Effect.acquireUseRelease(
+    Effect.try({
+      try: () =>
+        Bun.spawn({
+          cmd: [invocation.executable, ...invocation.arguments, path],
+          env: withoutTelemetrySessionEnvironment(environment),
+          killSignal: 'SIGKILL',
+          maxBuffer: DISK_QUERY_OUTPUT_LIMIT_BYTES,
+          stderr: 'ignore',
+          stdin: 'ignore',
+          stdout: 'pipe',
+        }),
+      catch: systemOperationError,
+    }),
+    child =>
+      Effect.tryPromise({
+        try: async () => {
+          const [exitCode, output] = await Promise.all([child.exited, new Response(child.stdout).text()]);
+          return exitCode === 0 ? parseWindowsAvailableDiskBytes(output) : undefined;
+        },
+        catch: systemOperationError,
+      }),
+    child =>
+      Effect.sync(() => {
+        if (child.exitCode !== null) return;
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // The process may exit while its finalizer runs.
+        }
+      }),
+  );
+}
+
 const defaultDiskCapacityProbeAdapters: DiskCapacityProbeAdapters = {
   fallback: legacyAvailableDiskBytes,
   statfs: nativeStatfs,
+  windows: isolatedWindowsAvailableDiskBytes,
 };
 
 function isNativeStatfsUnavailable(cause: unknown): boolean {

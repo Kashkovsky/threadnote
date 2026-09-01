@@ -10,6 +10,7 @@ import {
   CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT,
   CODE_GRAPH_PARSER_WORKER_ARGUMENT,
   LOCAL_MODEL_WORKER_ARGUMENT,
+  WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT,
 } from './worker_protocol.js';
 
 const executableName = process.execPath.replaceAll('\\', '/').split('/').at(-1)?.toLowerCase();
@@ -20,6 +21,7 @@ const isCodeGraphCompactionWorker = arguments_[0] === CODE_GRAPH_COMPACTION_WORK
 const isCodeGraphDeepDiagnosticsWorker = arguments_[0] === CODE_GRAPH_DEEP_DIAGNOSTICS_WORKER_ARGUMENT;
 const isCodeGraphImpactQueryWorker = arguments_[0] === CODE_GRAPH_IMPACT_QUERY_WORKER_ARGUMENT;
 const isGitWorktreeRegistrationWorker = arguments_[0] === CODE_GRAPH_GIT_WORKTREE_REGISTRATION_WORKER_ARGUMENT;
+const isWindowsDiskCapacityWorker = arguments_[0] === WINDOWS_DISK_CAPACITY_WORKER_ARGUMENT;
 const isMcpBroker = arguments_[0] === 'mcp-broker';
 const isRemoteMemoryOperator = arguments_[0] === 'remote-memory-operator';
 const isRemoteMemoryService = arguments_[0] === 'remote-memory-service';
@@ -32,16 +34,23 @@ const runSignalTransparentMain = Runtime.makeRunMain(({fiber, teardown}) => {
   });
 });
 
-if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker || isCodeGraphImpactQueryWorker) {
-  // SQLite's integrity checks, compaction, and graph reads are synchronous
-  // native work. These workers keep the OS default SIGTERM behavior so their
-  // lock-owning or deadline-owning parents can always stop them.
+if (
+  isCodeGraphDeepDiagnosticsWorker ||
+  isCodeGraphCompactionWorker ||
+  isCodeGraphImpactQueryWorker ||
+  isWindowsDiskCapacityWorker
+) {
+  // These operations perform synchronous native work. Keep the OS default
+  // signal behavior so their lock-owning or deadline-owning parents can stop
+  // them without waiting for the native call to return.
   runSignalTransparentMain(
-    isCodeGraphCompactionWorker
-      ? await codeGraphAutomaticCompactionWorkerProgram()
-      : isCodeGraphImpactQueryWorker
-        ? await codeGraphImpactQueryWorkerProgram()
-        : await codeGraphDeepDiagnosticsWorkerProgram(),
+    isWindowsDiskCapacityWorker
+      ? await windowsDiskCapacityWorkerProgram(arguments_.slice(1))
+      : isCodeGraphCompactionWorker
+        ? await codeGraphAutomaticCompactionWorkerProgram()
+        : isCodeGraphImpactQueryWorker
+          ? await codeGraphImpactQueryWorkerProgram()
+          : await codeGraphDeepDiagnosticsWorkerProgram(),
     {disableErrorReporting: true},
   );
 } else {
@@ -64,6 +73,23 @@ if (isCodeGraphDeepDiagnosticsWorker || isCodeGraphCompactionWorker || isCodeGra
       isGitWorktreeRegistrationWorker ||
       (!isMcpServer && !isMcpBroker),
   });
+}
+
+async function windowsDiskCapacityWorkerProgram(arguments_: readonly string[]) {
+  const worker = await import('./effect/windows_system.js');
+  const path = arguments_.length === 1 ? arguments_[0] : undefined;
+  return (path === undefined ? Effect.succeed(undefined) : worker.readWindowsAvailableDiskBytesNative(path)).pipe(
+    Effect.tap(available =>
+      Effect.sync(() => {
+        if (available === undefined) {
+          process.exitCode = 2;
+          return;
+        }
+        process.stdout.write(String(available));
+      }),
+    ),
+    Effect.asVoid,
+  );
 }
 
 async function remoteMemoryOperatorProgram(arguments_: readonly string[]) {

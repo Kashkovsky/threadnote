@@ -13,12 +13,59 @@ const WINDOWS_VERSION_INFO_BYTES = 276;
 const WINDOWS_VERSION_MAJOR_OFFSET = 4;
 const WINDOWS_VERSION_MINOR_OFFSET = 8;
 const WINDOWS_VERSION_BUILD_OFFSET = 12;
+const WINDOWS_PATH_CODE_UNIT_LIMIT = 32_767;
+const MAXIMUM_SAFE_BYTE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
 
 export interface WindowsHardwareInfo {
   readonly cpuModel: string;
   readonly effectiveMemoryBytes: number;
   readonly memoryBytes: number;
   readonly operatingSystem: string;
+}
+
+/** Convert one native ULARGE_INTEGER observation without losing integer precision. */
+export function windowsAvailableDiskBytesFromNative(value: unknown): number | undefined {
+  if (typeof value !== 'bigint' || value < 0n) return undefined;
+  return Number(value > MAXIMUM_SAFE_BYTE_COUNT ? MAXIMUM_SAFE_BYTE_COUNT : value);
+}
+
+/** Encode one NUL-terminated Windows UTF-16 string for a native pointer. */
+function windowsWideString(value: string): Uint16Array {
+  const wide = new Uint16Array(value.length + 1);
+  for (let index = 0; index < value.length; index += 1) wide[index] = value.charCodeAt(index);
+  return wide;
+}
+
+/**
+ * Observe caller-available bytes through the Windows kernel. This synchronous
+ * primitive must run only inside the dedicated killable standalone worker.
+ */
+export function readWindowsAvailableDiskBytesNative(path: string): Effect.Effect<number | undefined> {
+  return Effect.sync(() => {
+    if (path.length === 0 || path.length > WINDOWS_PATH_CODE_UNIT_LIMIT || path.includes('\0')) return undefined;
+    try {
+      const kernel = dlopen('kernel32.dll', {
+        GetDiskFreeSpaceExW: {
+          args: ['buffer', 'buffer', 'buffer', 'buffer'],
+          returns: 'i32',
+        },
+      });
+      try {
+        const widePath = windowsWideString(path);
+        const availableToCaller = new BigUint64Array(1);
+        const totalBytes = new BigUint64Array(1);
+        const totalFreeBytes = new BigUint64Array(1);
+        if (kernel.symbols.GetDiskFreeSpaceExW(widePath, availableToCaller, totalBytes, totalFreeBytes) === 0) {
+          return undefined;
+        }
+        return windowsAvailableDiskBytesFromNative(availableToCaller[0]);
+      } finally {
+        kernel.close();
+      }
+    } catch {
+      return undefined;
+    }
+  });
 }
 
 export function readWindowsHardwareInfo(environment: NodeJS.ProcessEnv) {
