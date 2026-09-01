@@ -571,6 +571,40 @@ describe('Code Memory Link Codex app-server transport', () => {
     ).rejects.toThrow('outside the reviewed read-only allowlist');
   });
 
+  it('cancels a denied command and lets the selected turn recover through reviewed actions', async () => {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), 'threadnote-codex-app-server-denied-recovery-'));
+    temporaryRoots.push(repositoryRoot);
+    await mkdir(join(repositoryRoot, 'src'));
+    await writeFile(join(repositoryRoot, 'src/service.ts'), 'export const service = true;\n');
+
+    const trace = await runCodeMemoryLinkAppServerTurn({
+      appServer: {
+        argumentsBeforeSubcommand: [join(process.cwd(), 'test/helpers/fake-code-memory-link-app-server.ts')],
+        executable: process.execPath,
+      },
+      cwd: repositoryRoot,
+      environment: {
+        HOME: repositoryRoot,
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        THREADNOTE_TEST_RECOVER_FROM_DENIED_COMMAND: '1',
+      },
+      expected: {model: 'gpt-5.6-luna', modelProvider: 'openai', reasoningEffort: 'medium'},
+      outputSchema: {type: 'object'},
+      prompt: 'Complete the public fixture task.',
+      proxyServerName: 'context_brief_gate',
+      taskBudget: {steps: 2, tokens: 150},
+      timeoutMilliseconds: 10_000,
+    });
+
+    const declined = trace.events.find(event => {
+      const params = event.params as {item?: {id?: unknown; status?: unknown}} | undefined;
+      return event.method === 'item/completed' && params?.item?.id === 'item_denied_command';
+    });
+    expect(declined).toMatchObject({params: {item: {status: 'declined'}}});
+    expect(trace.approvals).toHaveLength(1);
+    expect(trace.approvals[0]).toMatchObject({itemType: 'commandExecution'});
+  });
+
   it.each([
     ['instruction-source', /unexpected host or repository instruction source/u],
     ['read-only-sandbox', /did not enforce the no-network workspace sandbox/u],

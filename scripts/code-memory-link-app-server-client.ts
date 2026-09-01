@@ -2,6 +2,7 @@
 import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {createInterface, type Interface as ReadlineInterface} from 'node:readline';
 import {
+  CodeMemoryLinkActionDeniedError,
   approveCodeMemoryLinkAppServerRequest,
   assertCodeMemoryLinkPublicAction,
   type CodeMemoryLinkAppServerApprovalReceiptV1,
@@ -56,6 +57,7 @@ interface PendingRequest {
 export class CodeMemoryLinkAppServerClient {
   readonly #approvals: CodeMemoryLinkAppServerApprovalReceiptV1[] = [];
   readonly #approvedItemIds = new Set<string>();
+  readonly #declinedItemIds = new Set<string>();
   readonly #events: Record<string, unknown>[] = [];
   readonly #pending = new Map<number, PendingRequest>();
   readonly #process: ChildProcessWithoutNullStreams;
@@ -251,10 +253,17 @@ export class CodeMemoryLinkAppServerClient {
         const params = record(message.params, 'item/completed params');
         const item = record(params.item, 'item/completed item');
         const itemId = textValue(item.id, 'item/completed item id');
-        const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
-        if (actionType !== null && !this.#approvedItemIds.has(itemId)) {
-          this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
-          return;
+        if (this.#declinedItemIds.has(itemId)) {
+          if (item.status !== 'declined' || !['commandExecution', 'fileChange'].includes(String(item.type))) {
+            this.#abort(new Error('Codex did not retain the canceled action as declined.'));
+            return;
+          }
+        } else {
+          const actionType = assertCodeMemoryLinkPublicAction(item, this.#repositoryRoot);
+          if (actionType !== null && !this.#approvedItemIds.has(itemId)) {
+            this.#abort(new Error('Codex completed an action without a reviewed pre-execution approval.'));
+            return;
+          }
         }
       }
       this.#events.push(message);
@@ -278,12 +287,27 @@ export class CodeMemoryLinkAppServerClient {
         scope: {...this.#approvalScope, repositoryRoot: this.#repositoryRoot},
         startedItem,
       });
-      if (this.#approvedItemIds.has(itemId)) throw new Error('Codex repeated an action approval request.');
+      if (this.#approvedItemIds.has(itemId) || this.#declinedItemIds.has(itemId)) {
+        throw new Error('Codex repeated an action approval request.');
+      }
       this.#approvedItemIds.add(itemId);
       this.#approvals.push(approval);
       this.#write({id, result: {decision: 'accept'}});
     } catch (cause) {
       const error = cause instanceof Error ? cause : new Error(String(cause));
+      if (error instanceof CodeMemoryLinkActionDeniedError) {
+        const params = record(message.params, `${method} params`);
+        const itemId = textValue(params.itemId, `${method} item id`);
+        if (this.#approvedItemIds.has(itemId) || this.#declinedItemIds.has(itemId)) {
+          this.#unexpectedServerRequests.push(message);
+          this.#write({id, result: {decision: 'cancel'}});
+          this.#abort(new Error('Codex repeated an action approval request.', {cause: error}));
+          return;
+        }
+        this.#declinedItemIds.add(itemId);
+        this.#write({id, result: {decision: 'cancel'}});
+        return;
+      }
       this.#unexpectedServerRequests.push(message);
       this.#write({id, result: {decision: 'cancel'}});
       this.#abort(new Error(`Codex app-server approval was rejected: ${error.message}`, {cause: error}));
@@ -538,6 +562,7 @@ export const CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS = [
   'Use only the repository, the code-mode functions.exec tool, its reviewed local-shell and apply_patch capabilities, and the context_brief MCP tool.',
   'Call context_brief directly; never call list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource.',
   'Use functions.exec with tools.exec_command for read-only shell inspection and with tools.apply_patch for file edits.',
+  'Never write through a shell command or shell redirection. If a read command is declined, continue with the reviewed tools.',
   'When the task requires changing a file, you MUST call tools.apply_patch through functions.exec and complete the edit before replying; a final message alone does not complete the task.',
   'Do not use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
   'Shell commands may only read, list, or search files inside the repository. Do not inspect environment variables or processes and do not execute repository code; a sealed outer judge performs verification.',
@@ -576,6 +601,16 @@ export function assertTraceIsolation(
     readonly turnId: string;
   },
 ): void {
+  const declinedActionIds = new Set(
+    events.flatMap(event => {
+      if (event.method !== 'item/completed') return [];
+      const params = record(event.params, 'item/completed params');
+      const item = record(params.item, 'item/completed item');
+      return item.status === 'declined' && ['commandExecution', 'fileChange'].includes(String(item.type))
+        ? [textValue(item.id, 'declined item id')]
+        : [];
+    }),
+  );
   let selectedTurnStarted = false;
   let selectedTurnSettingsUpdated = false;
   for (const event of events) {
@@ -643,6 +678,16 @@ export function assertTraceIsolation(
     if (method !== 'item/started' && method !== 'item/completed') continue;
     const params = record(event.params, `${method} params`);
     const item = record(params.item, `${method} item`);
+    if (
+      typeof item.id === 'string' &&
+      declinedActionIds.has(item.id) &&
+      ['commandExecution', 'fileChange'].includes(String(item.type))
+    ) {
+      if (method === 'item/completed' && item.status !== 'declined') {
+        throw new Error('Canceled action did not retain declined status.');
+      }
+      continue;
+    }
     if (item.type === 'mcpToolCall') {
       if (item.server !== expected.proxyServerName || item.tool !== 'context_brief') {
         throw new Error('Codex invoked an unexpected or rerouted MCP tool.');

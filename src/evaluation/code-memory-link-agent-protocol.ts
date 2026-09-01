@@ -1103,6 +1103,7 @@ function normalizeCodexEvidence(
   }
   const publicActions = checkpoints.flatMap(checkpoint =>
     checkpoint.method === 'item/completed' &&
+    checkpoint.status !== 'declined' &&
     (checkpoint.itemType === 'commandExecution' || checkpoint.itemType === 'fileChange')
       ? [{itemIdDigest: checkpoint.itemIdDigest, itemType: checkpoint.itemType}]
       : [],
@@ -1939,7 +1940,6 @@ function strictlyMonotoneUsage(
     current.reasoningOutputTokens >= previous.reasoningOutputTokens
   );
 }
-
 function parseStaticArtifacts(value: readonly unknown[]): readonly CodeMemoryLinkStaticArtifactInputV1[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > 128) {
     invalid('static judge artifacts must contain 1-128 content-addressed entries');
