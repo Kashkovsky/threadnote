@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "type": "threadnote-windows-native-hosted-replica-calibration",
+  "sourceTree": "e1fc4934be4abf21711f1c15d3a72eaa9fda7d01",
+  "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+  "runnerClass": "github-hosted-windows-x64",
+  "runtime": "bun/1.3.14",
+  "observations": [
+    {
+      "classification": "ordinary-pass",
+      "workflowRun": 33462845808,
+      "jobId": 99716484324,
+      "artifactId": 9783884953,
+      "commit": "8f0dceda3107bce69cc555ac3fc4db794e18ad15",
+      "sourceTree": "e1fc4934be4abf21711f1c15d3a72eaa9fda7d01",
+      "createdAt": "2026-09-01T02:36:10.079Z",
+      "archiveSha256": "132b002597d5324cebb74745b35b060651c1b34e386af5403e046881457368b7",
+      "rawJsonSha256": "d4f22b026a61fa93f810ef332cd25adcbcee39e086ce85e4456944b7594eba6b",
+      "runnerIdentity": "runner-9bd36cfadc1a1ae8",
+      "environment": {
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "operatingSystem": "Windows 10.0.26100"
+      },
+      "wallMilliseconds": {
+        "maximum": 906.2541,
+        "p50": 454.4315,
+        "p95": 525.8618
+      },
+      "processCpuMilliseconds": {
+        "maximum": 313,
+        "p50": 187,
+        "p95": 281
+      }
+    },
+    {
+      "classification": "wall-tail",
+      "workflowRun": 33464018157,
+      "jobId": 99720012764,
+      "artifactId": 9784295778,
+      "commit": "568b0fefaa220c0f1497970fc43cf4fb05bd9806",
+      "sourceTree": "e1fc4934be4abf21711f1c15d3a72eaa9fda7d01",
+      "createdAt": "2026-09-01T02:55:20.942Z",
+      "archiveSha256": "ed452b689ee695e79fb6306fa65b71b202c68717ab52df80b40b8001f2fd3e8f",
+      "rawJsonSha256": "cbbd24778679523f5007abcf1a4ec2ca4df126b35def26075d5a26506e134f72",
+      "runnerIdentity": "runner-8e10387a0fb52d07",
+      "environment": {
+        "architecture": "x64",
+        "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+        "memoryBytes": 17174360064,
+        "operatingSystem": "Windows 10.0.26100"
+      },
+      "wallMilliseconds": {
+        "maximum": 2184.2209,
+        "p50": 393.7612,
+        "p95": 1673.8084
+      },
+      "processCpuMilliseconds": {
+        "maximum": 328,
+        "p50": 203,
+        "p95": 282
+      }
+    }
+  ],
+  "policy": {
+    "headroomRatio": 0.1,
+    "roundingQuantumMilliseconds": 100,
+    "hardWallP95MillisecondsMaximum": 1900,
+    "ordinaryWallP95MillisecondsMaximum": 1050,
+    "replicas": 3,
+    "ordinaryPassesMinimum": 2,
+    "samplesPerReplica": 100,
+    "warmupsPerReplica": 5
+  },
+  "expected": {
+    "wallP95DeltaMilliseconds": 1147.9466,
+    "wallP95Ratio": 3.1829815362135068,
+    "processCpuP95DeltaMilliseconds": 1,
+    "slowerTailHasLowerWallP50": true
+  }
+}

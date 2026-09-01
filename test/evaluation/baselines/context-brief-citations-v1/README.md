@@ -40,3 +40,7 @@ The privacy-safe canonical projection in `sample-gap-calibration-v2.json` retain
 workflow, attempt, artifact, commit, timestamp, and raw-artifact-digest provenance. Its unit verifier independently
 re-derives the documented aggregate and policy ceiling, so the calibration remains reviewable after hosted artifacts
 expire.
+
+The later `validation-quantile-calibration-v1.json` and matching rationale preserve the five-run evidence used to
+increase release sampling from 25 to 100 without changing the reviewed latency ceilings. Its verifier re-derives the
+pooled and latest-four-run quantiles and the four-versus-five upper-tail boundary.

@@ -378,7 +378,7 @@ provenance without making like-for-like fixture identity nondeterministic.
 
 The profiles are local/96 citations, workset-50/16 cited repositories/64 citations, and workset-128/32 cited
 repositories/96 citations. Every warmup and measured sample selects a different set of canonical schema-v4 memories,
-so validation receipts are not process-cache hits. Release-scale evidence requires exactly 25 measured samples after
+so validation receipts are not process-cache hits. Release-scale evidence requires exactly 100 measured samples after
 exactly five warmups. The first-use memory series completes before timing begins, and the observer exits before the
 timing warmups and measured samples run. Timing therefore has no observer or boundary-RSS instrumentation; it records
 p95 latency, selected-memory counts, validation receipts, distinct graph database paths, production
@@ -405,7 +405,7 @@ root, it has at least three successful samples and no failures, and its root and
 peak-minus-immediate-baseline arithmetic is internally consistent. Across the ordered memory series, observations
 whose longest successful-sample gap exceeds 100 ms may comprise at most 10%, at most two may occur consecutively, and
 no gap may exceed 350 ms. The single-repository profile must observe a workload descendant at least once, while each
-sustained multi-repository Workset profile must do so in at least 80% of its 25 memory observations. This distinction
+sustained multi-repository Workset profile must do so in at least 80% of its 100 memory observations. This distinction
 keeps the fan-out coverage gate strong without claiming that the roughly 45 ms macOS `ps` cadence reliably catches
 every short-lived local Git child. The fixed 64 MiB ceiling applies independently to
 the maximum sampled transient process-tree growth and to retained root growth, computed from every immediate begin
@@ -422,7 +422,7 @@ every child process or absolute peak was observed.
 bun run bench:context-brief-citations -- \
   --candidate-commit <exact-40-character-sha> \
   --memory-candidates 100000 \
-  --samples 25 \
+  --samples 100 \
   --warmups 5 \
   --fail-on-budget \
   --output artifacts/context-brief-citations-scale.json
@@ -442,7 +442,7 @@ Release-quality execution also requires an explicit exact candidate commit and p
 observed commit matches, Git status was successfully observed, and execution is in GitHub Actions on a hosted
 `macos-15` runner with `RUNNER_ENVIRONMENT=github-hosted`, `RUNNER_OS=macOS`, runner class
 `github-hosted-macos-15-ARM64`, arm64 architecture, an Apple-M1-class CPU, `bun/1.3.14`, and `threadnote-4.6.0`. Release
-mode rejects any sample or warmup count other than 25/5. Without `--fail-on-budget`, the artifact is classified as
+mode rejects any sample or warmup count other than 100/5. Without `--fail-on-budget`, the artifact is classified as
 `development-smoke` and receives an unconditional gate failure, so local evidence cannot be relabeled as release-scale
 evidence. The fixed-class absolute gate remains an agent-latency objective; a parent-relative same-runner comparison
 cannot replace it.
@@ -628,12 +628,13 @@ scans, RSS, and disk. Code-graph embeddings use paged SQLite generations so cand
 do not materialize a repository-sized sidecar. The platform workflow retains full artifacts rather than pretending
 shared-runner latency is machine-independent.
 
-The native GitHub-hosted Windows x64 query lane records 100 post-warmup samples; Linux, macOS, and local Windows retain 25. This runner-scoped sample floor increases the empirical p95 resolution after a 25-sample same-tree scheduler-tail
-failure. It does not widen the Windows 750 ms p50, 1,000 ms p95, 500 ms process-CPU p95, or existing 5% guarded p95
-allowance. Under the production percentile convention, 100 samples exclude four upper-order observations and a fifth
-wall breach fails. The retained rationale and artifact provenance are in
-`baselines/code-graph-v1/windows-native-hosted-query-quantile-calibration-v1.{json,md}`; a release candidate must pass
-that 100-sample native lane prospectively.
+The native GitHub-hosted Windows x64 query gate uses three fixed independent runner replicas with 100 post-warmup
+samples each; Linux, macOS, and local Windows retain one 25-sample run. Every Windows replica keeps all non-wall,
+750 ms p50, 500 ms process-CPU p95, work, parity, RSS, and disk guards, plus a 1,900 ms wall-p95 safety fuse. At least
+two replicas must pass the unchanged 1,000 ms p95 plus guarded 5% boundary. The runner is the experimental unit: the
+gate never pools 300 queries and never adaptively retries. The retained rationale and artifact provenance are in
+`baselines/code-graph-v1/windows-native-hosted-replica-calibration-v1.{json,md}`; a release candidate must pass one
+prospective three-runner set.
 
 The reviewed `production-large` profile is shaped after the beta.27 field investigation: approximately 48,000
 eligible files, 800,000 symbols, 2.7 million edges, 12 million lexical term rows, and 24 integrated and nested

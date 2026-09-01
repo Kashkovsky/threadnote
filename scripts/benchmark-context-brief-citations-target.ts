@@ -17,6 +17,8 @@ import {sha256FileHex} from '../src/effect/digest.js';
 import {SystemInfo} from '../src/effect/system.js';
 import {
   CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
   parseContextBriefCitationScaleArtifactV2,
   parseContextBriefCitationScaleBudgetV1,
   type ContextBriefCitationScaleProfileId,
@@ -98,14 +100,14 @@ const program = Effect.scoped(
     if (
       options.failOnBudget &&
       (options.memoryCandidates !== budget.corpusMemoryCandidates ||
-        options.samples !== 25 ||
-        options.warmups !== 5 ||
+        options.samples !== CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES ||
+        options.warmups !== CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS ||
         JSON.stringify(options.profileIds) !== JSON.stringify(CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS) ||
         !/^[0-9a-f]{40}$/u.test(options.candidateCommit ?? ''))
     ) {
       return yield* Effect.fail(
         new ScriptError(
-          '--fail-on-budget requires an exact candidate commit, the reviewed 100k corpus, all three profiles, exactly 25 samples, and exactly 5 warmups.',
+          `--fail-on-budget requires an exact candidate commit, the reviewed 100k corpus, all three profiles, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples, and exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups.`,
         ),
       );
     }
@@ -141,8 +143,8 @@ export function parseContextBriefCitationScaleBenchmarkArguments(
   let memoryCandidates = 100_000;
   let outputPath: string | undefined;
   let profileIds: readonly ContextBriefCitationScaleProfileId[] = CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS;
-  let samples = 25;
-  let warmups = 5;
+  let samples: number = CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES;
+  let warmups: number = CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS;
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index]!;
     if (argument === '--budget') budgetPath = required(args[++index], argument);

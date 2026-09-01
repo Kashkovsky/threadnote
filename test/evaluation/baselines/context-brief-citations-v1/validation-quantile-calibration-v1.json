@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "type": "threadnote-context-brief-validation-quantile-calibration",
+  "benchmarkBundleSha256": "dcf3592a7f91e73a0cf5feaf295b975dd47f101ff27ac859ad85d9223850c37e",
+  "fixtureSha256": "88d4c76742d6a23292a29faf625db31da83bfc4249680fa7151739cb3f139d75",
+  "profile": "workset-128",
+  "validationP95MaximumMilliseconds": 1400,
+  "percentileEstimator": "sorted[floor(sampleCount * 0.95)]",
+  "historicalSamplesPerRun": 25,
+  "prospectiveSamples": 100,
+  "prospectiveWarmups": 5,
+  "runs": [
+    {
+      "workflowRun": 33447480677,
+      "jobId": 99669723047,
+      "artifactId": 9778685783,
+      "commit": "afed2ea9a31f99e3d48d20eb2974f0bd9cbba2ad",
+      "createdAt": "2026-08-31T22:48:24.107Z",
+      "benchmarkBundleSha256": "dcf3592a7f91e73a0cf5feaf295b975dd47f101ff27ac859ad85d9223850c37e",
+      "fixtureSha256": "88d4c76742d6a23292a29faf625db31da83bfc4249680fa7151739cb3f139d75",
+      "archiveSha256": "7e33f832378a2244e58fc4108f1877e22971ed1f9f5459c3188199f33c8278f2",
+      "rawJsonSha256": "3850aca843308f40f8c76f923cbc13f89d8fe33eabdf8eb6aa795ce521c320e1",
+      "validationMilliseconds": [
+        866.517709, 1036.405417, 1200.334625, 943.70375, 755.65825, 696.1715, 805.840417, 720.243291, 903.945958,
+        719.7035, 721.9015, 1006.285875, 880.544333, 920.878417, 891.516333, 696.432583, 729.666333, 721.717875,
+        703.921625, 693.769834, 791.802834, 724.253042, 690.161708, 697.3855, 695.714125
+      ]
+    },
+    {
+      "workflowRun": 33452060622,
+      "jobId": 99683952737,
+      "artifactId": 9780257204,
+      "commit": "55c9fecf0e2808e580f544c4a6a6b3b734b74c20",
+      "createdAt": "2026-08-31T23:52:39.707Z",
+      "benchmarkBundleSha256": "dcf3592a7f91e73a0cf5feaf295b975dd47f101ff27ac859ad85d9223850c37e",
+      "fixtureSha256": "88d4c76742d6a23292a29faf625db31da83bfc4249680fa7151739cb3f139d75",
+      "archiveSha256": "7c55db9a9e209cee85e189e5bc7a6db9385d7ce7ad06241d3dcb099144c94df4",
+      "rawJsonSha256": "06a5003b2a72f1de531461e169dc4af747eb84e1b0caba51cabc892c6f79a780",
+      "validationMilliseconds": [
+        743.988167, 695.768083, 715.639541, 713.253625, 705.849167, 846.61275, 720.593958, 732.683459, 721.224583,
+        691.9975, 1055.606334, 701.982958, 994.456833, 763.602333, 946.495042, 769.019584, 925.397042, 991.302458,
+        755.711916, 689.285792, 666.804333, 652.183042, 706.683084, 721.470375, 664.188792
+      ]
+    },
+    {
+      "workflowRun": 33454986359,
+      "jobId": 99692956910,
+      "artifactId": 9781235160,
+      "commit": "9126348fdce549b54036223f667efb24c4cfc123",
+      "createdAt": "2026-09-01T00:35:33.202Z",
+      "benchmarkBundleSha256": "dcf3592a7f91e73a0cf5feaf295b975dd47f101ff27ac859ad85d9223850c37e",
+      "fixtureSha256": "88d4c76742d6a23292a29faf625db31da83bfc4249680fa7151739cb3f139d75",
+      "archiveSha256": "8629b0809613bbf3c427b377c6df588b8b377ed6a3aadb19ffbae15728ab751b",
+      "rawJsonSha256": "833a4ee7677a3f63067b8b856bb252bf13d89895e5c7a375f14818ffb3eeafe2",
+      "validationMilliseconds": [
+        732.180167, 701.857875, 665.901125, 576.911791, 620.281083, 580.597292, 581.997875, 750.9395, 707.853209,
+        726.580542, 592.892833, 553.3305, 639.12725, 571.36525, 644.133083, 664.931458, 675.286333, 685.861583,
+        628.275541, 712.025541, 593.700041, 537.690375, 622.442708, 539.481459, 601.317333
+      ]
+    },
+    {
+      "workflowRun": 33460824382,
+      "jobId": 99710382486,
+      "artifactId": 9783251089,
+      "commit": "1ce43969b08a772cb19e712eb71d7d34c38b7b66",
+      "createdAt": "2026-09-01T02:07:14.749Z",
+      "benchmarkBundleSha256": "dcf3592a7f91e73a0cf5feaf295b975dd47f101ff27ac859ad85d9223850c37e",
+      "fixtureSha256": "88d4c76742d6a23292a29faf625db31da83bfc4249680fa7151739cb3f139d75",
+      "archiveSha256": "77ea6b9d8f32389718b371887f57c93819d8e6978330fcc9c4824839138cdd06",
+      "rawJsonSha256": "4b4435140251b10bc79e39998407efffedb2e85fadc9f8efe4cca1be6baaaf0a",
+      "validationMilliseconds": [
+        713.764541, 700.460958, 721.46775, 746.495625, 749.055833, 906.881333, 593.750708, 644.44925, 580.564083,
+        601.362458, 654.2895, 607.159833, 728.782625, 607.069542, 813.433542, 785.281041, 693.162292, 669.7355,
+        682.417584, 648.34975, 702.873458, 596.361791, 625.097458, 612.389041, 635.8335
+      ]
+    },
+    {
+      "workflowRun": 33464018157,
+      "jobId": 99720012750,
+      "artifactId": 9784313166,
+      "commit": "568b0fefaa220c0f1497970fc43cf4fb05bd9806",
+      "createdAt": "2026-09-01T02:55:57.453Z",
+      "benchmarkBundleSha256": "dcf3592a7f91e73a0cf5feaf295b975dd47f101ff27ac859ad85d9223850c37e",
+      "fixtureSha256": "88d4c76742d6a23292a29faf625db31da83bfc4249680fa7151739cb3f139d75",
+      "archiveSha256": "062bf72ae50dc2a0faf9dc7eb07f3f6ee61296e0920e11ed68f4ae83dd653504",
+      "rawJsonSha256": "1ade9dee2a30ae81da9b66ee4e60f83ddc80f8a1c74c4c091bc0fe89f6327b54",
+      "validationMilliseconds": [
+        1022.0805, 1143.441458, 1067.90325, 1081.884666, 883.69725, 876.8635, 1311.257041, 1130.263333, 1118.975709,
+        1040.013, 1439.192, 1300.912625, 1117.491666, 1090.889042, 931.359875, 879.10675, 982.884709, 1011.896792,
+        845.004958, 1523.319791, 1009.226459, 1031.437584, 1077.939541, 1046.85275, 894.745833
+      ]
+    }
+  ],
+  "expected": {
+    "observationCount": 125,
+    "p50Milliseconds": 721.46775,
+    "p95Milliseconds": 1130.263333,
+    "maximumMilliseconds": 1523.319791,
+    "thresholdBreaches": 2,
+    "latestFourObservationCount": 100,
+    "latestFourP95Milliseconds": 1143.441458,
+    "maximumExcludedTailValuesAtProspectiveSamples": 4,
+    "firstFailingTailValuesAtProspectiveSamples": 5
+  }
+}

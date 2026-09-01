@@ -8,6 +8,7 @@ on:
       - 'bun.lock'
       - 'package.json'
       - 'scripts/benchmark-code-graph.ts'
+      - 'scripts/adjudicate-code-graph-windows-replicas.ts'
       - 'scripts/benchmark-code-graph-embedding-contexts.ts'
       - 'scripts/benchmark-code-graph-workset.ts'
       - 'scripts/benchmark-code-graph-heavy-tail.ts'
@@ -178,8 +179,6 @@ jobs:
             hotQuerySamples: 25
           - os: macos-latest
             hotQuerySamples: 25
-          - os: windows-latest
-            hotQuerySamples: 100
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
@@ -213,6 +212,91 @@ jobs:
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
+
+  code-graph-windows-replicas:
+    name: Code graph Windows replica ${{ matrix.replica }} · windows-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        replica: [1, 2, 3]
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate native graph quality
+        run: bun run eval:code-graph
+
+      - name: Capture fixed native graph replica
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-windows-latest-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
+        run: >-
+          bun run bench:code-graph --
+          --samples 100
+          --warmups 5
+          --output artifacts/code-graph-${{ runner.os }}-${{ runner.arch }}-replica-${{ matrix.replica }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: code-graph-benchmarks-${{ runner.os }}-${{ runner.arch }}-replica-${{ matrix.replica }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/code-graph-${{ runner.os }}-${{ runner.arch }}-replica-${{ matrix.replica }}.json
+          if-no-files-found: error
+          retention-days: 30
+
+  code-graph-windows:
+    name: Code graph · windows-latest
+    needs: code-graph-windows-replicas
+    if: ${{ always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - run: bun install --frozen-lockfile
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: code-graph-benchmarks-Windows-X64-replica-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/windows-replicas
+          merge-multiple: true
+
+      - name: Adjudicate fixed hosted-runner replicas
+        run: >-
+          bun run gate:code-graph:windows-replicas --
+          --input artifacts/windows-replicas
+          --expected-commit "${{ github.sha }}"
+          --fail-on-budget
+          --output artifacts/code-graph-windows-replica-gate-${{ github.run_id }}-${{ github.run_attempt }}.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: code-graph-windows-replica-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/code-graph-windows-replica-gate-*.json
+          if-no-files-found: error
+          retention-days: 90
 
   code-graph-workset:
     name: Code graph workset 32/50/64/128 · pinned Linux class
@@ -276,7 +360,7 @@ jobs:
           bun run bench:context-brief-citations --
           --candidate-commit "${{ github.sha }}"
           --memory-candidates 100000
-          --samples 25
+          --samples 100
           --warmups 5
           --fail-on-budget
           --output artifacts/context-brief-citations-scale-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}.json

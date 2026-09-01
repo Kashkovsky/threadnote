@@ -3,6 +3,7 @@ import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
+import {benchmarkMeasurement} from '../../src/evaluation/benchmark.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
@@ -10,6 +11,8 @@ import {
   CONTEXT_BRIEF_CITATION_SCALE_EXECUTION_V2,
   CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
   contextBriefCitationScaleGate,
   contextBriefCitationRssSampleGapFailures,
   contextBriefCitationRssSampleGapSummary,
@@ -70,6 +73,49 @@ const sampleGapCalibration = Schema.decodeUnknownSync(
     }),
   ),
 )(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text());
+const validationQuantileCalibration = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      benchmarkBundleSha256: Sha256,
+      expected: Schema.Struct({
+        firstFailingTailValuesAtProspectiveSamples: PositiveInteger,
+        latestFourObservationCount: PositiveInteger,
+        latestFourP95Milliseconds: Schema.Number,
+        maximumExcludedTailValuesAtProspectiveSamples: NonNegativeInteger,
+        maximumMilliseconds: Schema.Number,
+        observationCount: PositiveInteger,
+        p50Milliseconds: Schema.Number,
+        p95Milliseconds: Schema.Number,
+        thresholdBreaches: NonNegativeInteger,
+      }),
+      fixtureSha256: Sha256,
+      historicalSamplesPerRun: Schema.Literal(25),
+      percentileEstimator: Schema.Literal('sorted[floor(sampleCount * 0.95)]'),
+      profile: Schema.Literal('workset-128'),
+      prospectiveSamples: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
+      prospectiveWarmups: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+      runs: Schema.Array(
+        Schema.Struct({
+          archiveSha256: Sha256,
+          artifactId: PositiveInteger,
+          benchmarkBundleSha256: Sha256,
+          commit: GitCommit,
+          createdAt: IsoInstant,
+          fixtureSha256: Sha256,
+          jobId: PositiveInteger,
+          rawJsonSha256: Sha256,
+          validationMilliseconds: Schema.Array(Schema.Number),
+          workflowRun: PositiveInteger,
+        }),
+      ),
+      type: Schema.Literal('threadnote-context-brief-validation-quantile-calibration'),
+      validationP95MaximumMilliseconds: PositiveInteger,
+      version: Schema.Literal(1),
+    }),
+  ),
+)(
+  await Bun.file('test/evaluation/baselines/context-brief-citations-v1/validation-quantile-calibration-v1.json').text(),
+);
 const benchmarkWorkflow = await Bun.file('.github/workflows/benchmarks.yml').text();
 const scaleEvaluationSource = await Bun.file('src/evaluation/context-brief-citation-scale.ts').text();
 
@@ -111,8 +157,8 @@ describe('Context Brief citation scale benchmark', () => {
       {
         memoryCandidates: 100_000,
         profileIds: CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
-        samples: 25,
-        warmups: 5,
+        samples: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+        warmups: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
       },
     );
     expect(
@@ -259,6 +305,54 @@ describe('Context Brief citation scale benchmark', () => {
     expect(maximumConsecutiveBreachesWithinRun).toBeLessThanOrEqual(
       CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumConsecutiveBreaches,
     );
+  });
+
+  it('rederives the 100-sample validation quantile from retained same-bundle hosted evidence', () => {
+    expect(validationQuantileCalibration.runs).toHaveLength(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.workflowRun)).size).toBe(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.artifactId)).size).toBe(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.rawJsonSha256)).size).toBe(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.archiveSha256)).size).toBe(5);
+    expect(
+      validationQuantileCalibration.runs.every(
+        run =>
+          run.benchmarkBundleSha256 === validationQuantileCalibration.benchmarkBundleSha256 &&
+          run.fixtureSha256 === validationQuantileCalibration.fixtureSha256,
+      ),
+    ).toBe(true);
+    expect(
+      validationQuantileCalibration.runs.every(
+        run => run.validationMilliseconds.length === validationQuantileCalibration.historicalSamplesPerRun,
+      ),
+    ).toBe(true);
+
+    const all = validationQuantileCalibration.runs.flatMap(run => run.validationMilliseconds);
+    const pooled = benchmarkMeasurement('validation-pooled', 'milliseconds', all);
+    const latestFour = benchmarkMeasurement(
+      'validation-latest-four',
+      'milliseconds',
+      validationQuantileCalibration.runs.slice(1).flatMap(run => run.validationMilliseconds),
+    );
+    expect({
+      latestFourObservationCount: latestFour.samples,
+      latestFourP95Milliseconds: latestFour.p95,
+      maximumMilliseconds: pooled.maximum,
+      observationCount: pooled.samples,
+      p50Milliseconds: pooled.p50,
+      p95Milliseconds: pooled.p95,
+      thresholdBreaches: all.filter(value => value > validationQuantileCalibration.validationP95MaximumMilliseconds)
+        .length,
+    }).toEqual({
+      latestFourObservationCount: validationQuantileCalibration.expected.latestFourObservationCount,
+      latestFourP95Milliseconds: validationQuantileCalibration.expected.latestFourP95Milliseconds,
+      maximumMilliseconds: validationQuantileCalibration.expected.maximumMilliseconds,
+      observationCount: validationQuantileCalibration.expected.observationCount,
+      p50Milliseconds: validationQuantileCalibration.expected.p50Milliseconds,
+      p95Milliseconds: validationQuantileCalibration.expected.p95Milliseconds,
+      thresholdBreaches: validationQuantileCalibration.expected.thresholdBreaches,
+    });
+    expect(validationQuantileCalibration.expected.maximumExcludedTailValuesAtProspectiveSamples).toBe(4);
+    expect(validationQuantileCalibration.expected.firstFailingTailValuesAtProspectiveSamples).toBe(5);
   });
 
   effectIt.effect.prop(
@@ -559,6 +653,45 @@ describe('Context Brief citation scale benchmark', () => {
     );
   });
 
+  it('uses the 100-sample production quantile at the four-versus-five validation-tail boundary', () => {
+    const profile = budget.profiles.find(candidate => candidate.id === 'workset-128')!;
+    const order = Array.from({length: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}, (_, index) => index);
+
+    fc.assert(
+      fc.property(
+        fc.integer({max: 10, min: 0}),
+        fc.shuffledSubarray(order, {
+          maxLength: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+          minLength: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+        }),
+        (tailValues, permutation) => {
+          const observations = permutation.map((value, ordinal) => {
+            const validationMilliseconds =
+              value < tailValues
+                ? profile.maximumValidationP95Milliseconds + 1
+                : profile.maximumValidationP95Milliseconds;
+            return scaleObservation(
+              profile,
+              {},
+              {contextBriefMilliseconds: validationMilliseconds * 2, validationMilliseconds},
+              {observationId: `workset-128-${ordinal}`, ordinal},
+            );
+          });
+          const evaluated = evaluateContextBriefCitationScaleProfile(
+            budget,
+            profile.id,
+            scaleObservation(profile),
+            observations,
+          );
+          const validationFailures = evaluated.failures.filter(failure => failure.includes('validation p95'));
+
+          expect(validationFailures.length === 0).toBe(tailValues <= 4);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
   it('accepts a complete v2 artifact and rejects bounded single-field evidence tampering', () => {
     const artifact = scaleArtifact();
     expect(parseContextBriefCitationScaleArtifactV2(artifact, budget)).toEqual(artifact);
@@ -619,8 +752,8 @@ describe('Context Brief citation scale benchmark', () => {
     });
     expect(command).toContain('--candidate-commit "${{ github.sha }}"');
     expect(command).toContain('--memory-candidates 100000');
-    expect(command).toContain('--samples 25');
-    expect(command).toContain('--warmups 5');
+    expect(command).toContain(`--samples ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}`);
+    expect(command).toContain(`--warmups ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS}`);
     expect(command).toContain('--fail-on-budget');
     expect(benchmarkStep?.env?.THREADNOTE_BENCHMARK_RUNNER_CLASS).toBe(
       CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
