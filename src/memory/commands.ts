@@ -98,6 +98,7 @@ import {
   buildRecallIndexSelectionCandidates,
   buildRecallSelectionCandidates,
   createRecallRerankerCache,
+  emptyRecallSemanticScoresResult,
   loadRecallExpansionVocabulary,
   loadRecallSemanticScoresResult,
   prepareRecallSections,
@@ -116,7 +117,7 @@ import {
   type RecallOperationalWarning,
 } from '../recall/warning.js';
 import type {RecallConfidence} from '../recall/rank.js';
-import {parseRecallCliMemoryConnectionInput, renderRecallMemoryConnections} from '../recall/cli_response.js';
+import {parseRecallCliInput, projectRecallCliResponse} from '../recall/cli_response.js';
 import type {RecallMemoryConnectionsResult} from '../recall/memory_connections.js';
 import type {
   ArchiveOptions,
@@ -378,12 +379,13 @@ function deferredCodeAnchorStoredMessage(memoryUri: string, request: DeferredCod
 }
 
 export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig, options: RecallOptions) {
-  const memoryConnections = yield* attemptSync(() => parseRecallCliMemoryConnectionInput(options));
+  const {memoryConnections, query} = yield* attemptSync(() => parseRecallCliInput(options));
+  const navigationOnly = query.length === 0;
   if (options.dryRun !== true) {
     yield* withAnonymousTelemetryPhase('recall.shared-sync', syncSharedReposAndLog(config));
     yield* withAnonymousTelemetryPhase('recall.obsidian-sync', syncObsidianSourcesAndLog(config));
   }
-  const includeWorkspaceComponent = !options.uri && !options.workset;
+  const includeWorkspaceComponent = !navigationOnly && !options.uri && !options.workset;
   const workspaceOptions = options.callerCwd
     ? {cwd: options.callerCwd, includeProcessCwd: false}
     : {includeProcessCwd: true};
@@ -391,19 +393,31 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     ? yield* resolveWorkspaceComponentContext(workspaceOptions)
     : undefined;
   const workspaceBranch =
-    includeWorkspaceComponent && recallQueryRequestsBranchContext(options.query)
+    includeWorkspaceComponent && recallQueryRequestsBranchContext(query)
       ? yield* resolveWorkspaceBranch(workspaceOptions)
       : undefined;
-  const query = options.query;
-  const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(options.query, workspaceOptions);
+  const projectQuery = navigationOnly
+    ? ''
+    : yield* enrichRecallQueryWithWorkspaceProjectContext(query, workspaceOptions);
   const dryRun = options.dryRun === true;
   const explicitUri = options.uri ? parseResourceId(options.uri).canonicalUri : undefined;
   const inferredUri =
-    explicitUri ?? (options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
-  const queryProject = yield* inferProjectFromQuery(config.manifestPath, options.project ?? options.query);
-  const project = queryProject ?? (yield* inferProjectFromQuery(config.manifestPath, projectQuery));
-  const projectMemoryName = yield* recallProjectMemoryName(options.project, workspaceOptions);
-  const recallProjectName = project?.name ?? projectMemoryName;
+    explicitUri ??
+    (navigationOnly || options.inferScope === false ? undefined : yield* inferRecallUri(config, projectQuery));
+  const explicitProjectName = explicitUri ? undefined : normalizeOptionalMetadata(options.project);
+  const queryProject =
+    !explicitUri && (!navigationOnly || explicitProjectName)
+      ? yield* inferProjectFromQuery(config.manifestPath, explicitProjectName ?? query)
+      : undefined;
+  const project =
+    queryProject ??
+    (!navigationOnly && !explicitUri && !explicitProjectName
+      ? yield* inferProjectFromQuery(config.manifestPath, projectQuery)
+      : undefined);
+  const recallProjectName =
+    explicitProjectName ??
+    project?.name ??
+    (explicitUri || navigationOnly ? undefined : yield* resolveWorkspaceRepoName(workspaceOptions));
   const nodeLimit = options.nodeLimit
     ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
     : undefined;
@@ -434,7 +448,9 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const passes: Array<readonly RecallHit[]> = [];
   if (dryRun) {
     yield* Console.log(
-      `Would search native recall index for ${JSON.stringify(query)}${inferredUri ? ` under ${inferredUri}` : ''}.`,
+      navigationOnly
+        ? `Would expand ${memoryConnections?.memoryRefs.length ?? 0} explicit memory premise(s) by one hop.`
+        : `Would search native recall index for ${JSON.stringify(query)}${inferredUri ? ` under ${inferredUri}` : ''}.`,
     );
   }
   const scopedRecallUris = new Set([inferredUri].filter((uri): uri is string => uri !== undefined));
@@ -465,7 +481,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const workset =
     !options.uri && explicitWorkset
       ? explicitWorkset
-      : !options.uri && options.inferScope !== false
+      : !navigationOnly && !options.uri && options.inferScope !== false
         ? yield* inferWorksetFromQuery(config.manifestPath, projectQuery)
         : undefined;
   if (workset && workset.projects.length > 0) {
@@ -493,36 +509,40 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     worksetProjectNames: workset?.projects.map(member => member.name),
   });
 
-  const exactLookup = dryRun
-    ? {matches: [], operationalWarnings: []}
-    : yield* collectNativeExactMemoryMatches(config, query, {
-        includeArchived,
-        eligibility,
-        project,
-      });
+  const exactLookup =
+    dryRun || navigationOnly
+      ? {matches: [], operationalWarnings: []}
+      : yield* collectNativeExactMemoryMatches(config, query, {
+          includeArchived,
+          eligibility,
+          project,
+        });
   const exactMatches = exactLookup.matches;
   let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
-  const environment = (yield* SystemInfo).environment();
-  const effectAi = dryRun ? undefined : yield* resolveEffectAiConfiguration(config, environment);
+  const effectAi =
+    dryRun || navigationOnly
+      ? undefined
+      : yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment());
   let hybridMinimumScore = recallHybridMinimumScore(Number(recallThreshold));
   const expansionQueries: string[] = [];
   const recallLimit = nodeLimit ?? 12;
-  let semanticResult = dryRun
-    ? Option.none<RecallSemanticScoresResult>()
-    : Option.some(
-        yield* withAnonymousTelemetryPhase(
-          'recall.semantic-retrieval',
-          loadRecallSemanticScoresResult(
-            config,
-            query,
-            recallLimit,
-            eligibility,
-            explicitUri ? [explicitUri] : undefined,
+  let semanticResult =
+    dryRun || navigationOnly
+      ? Option.some(emptyRecallSemanticScoresResult())
+      : Option.some(
+          yield* withAnonymousTelemetryPhase(
+            'recall.semantic-retrieval',
+            loadRecallSemanticScoresResult(
+              config,
+              query,
+              recallLimit,
+              eligibility,
+              explicitUri ? [explicitUri] : undefined,
+            ),
+            result =>
+              Option.isSome(result.warning) ? 'failure' : Option.isSome(result.scores) ? 'success' : 'unavailable',
           ),
-          result =>
-            Option.isSome(result.warning) ? 'failure' : Option.isSome(result.scores) ? 'success' : 'unavailable',
-        ),
-      );
+        );
   const surfacedSemanticWarnings = new Set<string>();
   const surfacedOperationalWarningCodes = new Set<RecallOperationalWarning['code']>();
   const surfaceOperationalWarnings = (warnings: readonly RecallOperationalWarning[]) =>
@@ -555,7 +575,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
           candidateUris,
           exactMatches,
           eligibility,
-          feedbackQuery: options.query,
+          feedbackQuery: query,
           includeInactive: includeArchived,
           limit: recallLimit,
           memoryRefs: memoryConnections?.memoryRefs,
@@ -581,7 +601,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       }),
     );
   let recallSections = yield* prepareSections();
-  const shouldAttemptAiExpansion = !dryRun && shouldExpandRecall(recallSections.confidence);
+  const shouldAttemptAiExpansion = !dryRun && !navigationOnly && shouldExpandRecall(recallSections.confidence);
   const indexSelectionCandidates = shouldAttemptAiExpansion
     ? buildRecallIndexSelectionCandidates(recallSections.expansionCandidates, recallProjectName, 24)
     : [];
@@ -589,11 +609,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     indexSelectionCandidates.length > 0
       ? yield* withAnonymousTelemetryPhase(
           'model.inference',
-          selectExpandedRecallCandidatesEffect(
-            {candidates: indexSelectionCandidates, query: options.query},
-            config,
-            effectAi,
-          ),
+          selectExpandedRecallCandidatesEffect({candidates: indexSelectionCandidates, query}, config, effectAi),
         )
       : undefined;
   const groundedExpansionQueries =
@@ -604,13 +620,13 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
             indexSelectionCandidates,
             recallSections.expansionCandidates,
             indexSelectionIds,
-            options.query,
+            query,
             2,
           ),
         )
       : [];
   const needsFallbackExpansion =
-    shouldExpandRecall(recallSections.confidence) &&
+    shouldAttemptAiExpansion &&
     groundedExpansionQueries.length < recallRewriteLimitForConfidence(recallSections.confidence);
   const expansionVocabulary =
     needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
@@ -631,7 +647,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
             {
               confidence: recallSections.confidence,
               project: recallProjectName,
-              query: options.query,
+              query,
               vocabulary: expansionVocabulary,
             },
             config,
@@ -657,7 +673,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
     );
     const selectedIds = yield* withAnonymousTelemetryPhase(
       'model.inference',
-      selectExpandedRecallCandidatesEffect({candidates: selectionCandidates, query: options.query}, config, effectAi),
+      selectExpandedRecallCandidatesEffect({candidates: selectionCandidates, query}, config, effectAi),
     );
     if (selectedIds !== undefined) {
       const selectedUris = selectedRecallCandidateUris(
@@ -671,23 +687,17 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
       );
     }
   }
-  const {semanticSection, exactTail} = recallSections;
-  if (semanticSection) {
-    yield* Console.log(`\n${semanticSection}`);
+  const cliProjection = projectRecallCliResponse(recallSections, navigationOnly);
+  for (const section of cliProjection.sections) {
+    yield* Console.log(`\n${section}`);
   }
-  if (exactTail) {
-    yield* Console.log(`\n${exactTail}`);
-  }
-  if (recallSections.memoryConnections) {
-    yield* Console.log(`\n${renderRecallMemoryConnections(recallSections.memoryConnections)}`);
-  }
-  const referencedSection = yield* referencedContextSection(config, semanticSection ?? '');
+  const referencedSection = yield* referencedContextSection(config, cliProjection.rankedContext);
   if (referencedSection) {
     yield* Console.log(`\n${referencedSection}`);
   }
-  yield* printRecallHygieneNudges(config, semanticSection ?? '');
+  yield* printRecallHygieneNudges(config, cliProjection.rankedContext);
   return {
-    ...(recallSections.confidence === undefined ? {} : {confidence: recallSections.confidence}),
+    ...(cliProjection.confidence === undefined ? {} : {confidence: cliProjection.confidence}),
     ...(recallSections.memoryConnections ? {memoryConnections: recallSections.memoryConnections} : {}),
     queryExpansions: expansionQueries,
     ranked: recallSections.ranked.slice(0, recallLimit),
@@ -1801,13 +1811,6 @@ function worksetScopeUris(config: RuntimeConfig, workset: ResolvedWorkset): read
   }
   return [...new Set(scopes)];
 }
-
-const recallProjectMemoryName = Effect.fn('memory.recallProjectMemoryName')(function* (
-  explicitProject: string | undefined,
-  options: {readonly cwd?: string; readonly includeProcessCwd?: boolean},
-) {
-  return normalizeOptionalMetadata(explicitProject) ?? (yield* resolveWorkspaceRepoName(options));
-});
 
 function projectMemoryScopeUris(
   config: RuntimeConfig,

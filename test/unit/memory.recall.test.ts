@@ -66,6 +66,31 @@ describe('runRecall native index', () => {
       expect(output).toContain('Relations are navigation evidence, not entailment.');
     }),
   );
+  effectIt.effect('supports seed-only navigation without entering the topical query lane', () =>
+    Effect.gen(function* () {
+      const {output, value} = yield* captureRecall(runtime, {
+        dryRun: true,
+        memoryRefs: ['tn_cli_seed_only'],
+        relationTypes: ['references'],
+      });
+      expect(output).toContain('Would expand 1 explicit memory premise(s) by one hop.');
+      expect(output).not.toContain('Would search native recall index');
+      expect(output).not.toContain('No semantically-relevant matches');
+      expect(output).toContain('threadnote://memory/tn_cli_seed_only [unresolved]');
+      expect(output).not.toContain('explicit-memory-connection');
+      expect(output).not.toContain('Next: threadnote read');
+      expect(value.queryExpansions).toEqual([]);
+    }),
+  );
+  effectIt.effect('rejects recall without either a topical query or a memory premise', () =>
+    Effect.gen(function* () {
+      const failure = yield* Effect.flip(captureRecall(runtime, {dryRun: true, query: '   '}));
+      expect(String(failure)).toContain(
+        'Threadnote recall needs either a non-empty --query or at least one --memory-ref seed.',
+      );
+      expect(String(failure)).toContain('threadnote recall --memory-ref tn_example');
+    }),
+  );
   effectIt.effect('rejects a CLI relation filter without a memory premise', () =>
     Effect.gen(function* () {
       const failure = yield* Effect.flip(

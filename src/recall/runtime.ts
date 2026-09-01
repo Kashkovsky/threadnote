@@ -526,7 +526,9 @@ type McpReadOnlySemanticScoresAttempt =
   | {readonly state: 'structurally-unavailable'}
   | {readonly state: 'unavailable'};
 
-function emptyRecallSemanticScoresResult(warning: Option.Option<string> = Option.none()): RecallSemanticScoresResult {
+export function emptyRecallSemanticScoresResult(
+  warning: Option.Option<string> = Option.none(),
+): RecallSemanticScoresResult {
   return {
     corpusGeneration: Option.none(),
     scores: Option.none(),

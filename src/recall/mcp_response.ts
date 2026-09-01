@@ -6,6 +6,10 @@ import {
 } from '../evaluation/agent-response.js';
 import type {RecallConfidence} from './rank.js';
 import type {RecallHit} from '../utils.js';
+import {
+  EXPLICIT_MEMORY_CONNECTION_CONFIDENCE_BASIS,
+  explicitMemoryConnectionNavigationConfidence,
+} from './connection_confidence.js';
 import type {
   RecallMemoryConnectionCoverageV1,
   RecallMemoryConnectionReceiptV1,
@@ -248,11 +252,8 @@ function renderConfidence(
 ): RecallMcpConfidence | undefined {
   if (hasActionableConnection) {
     return {
-      basis: 'explicit-memory-connection',
-      level: 'high',
-      margin: 1,
-      reason: 'Verified one-hop relation; confidence covers navigation only, not entailment.',
-      score: 1,
+      ...explicitMemoryConnectionNavigationConfidence(),
+      basis: EXPLICIT_MEMORY_CONNECTION_CONFIDENCE_BASIS,
     };
   }
   return confidence === undefined ? undefined : {...confidence, basis: 'ranked-relevance'};
