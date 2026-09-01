@@ -293,7 +293,7 @@ test -x "$HOME/.local/bin/threadnote-mcp-server"
 - Use threadnote-local only for current-checkout code graph, status, guide,
   and complete_cursor_attestation. It has no memory fallback.
 - Use threadnote-memory for every recall, read, durable memory, and handoff.
-  Never substitute VM-local personal memory or the Git beta when it is down.
+  Never substitute VM-local personal memory or a personal Git memory share when it is down.
 - Start non-trivial work with remote recall_context for the project. Recalled
   threadnote:// pointers are unread evidence; call read_context before use.
 - Do not remove, replace, or infer the configured share binding from a URI.
@@ -405,10 +405,10 @@ test -d "$HOME/.threadnote"
             ],
           ],
         },
-        {type: 'heading', text: 'Legacy Git beta'},
+        {type: 'heading', text: 'Personal setup is separate'},
         {
           type: 'paragraph',
-          text: 'The Threadnote 4.2 Git-backed Cursor Cloud profile remains a separate beta mode for organizations that are not operating remote memory. It uses `--mode git-beta` and one writable Git share; durable memories are committed and pushed, while handoffs stay VM-local. Never register Git beta and remote-hybrid memory in the same environment, and never use Git as an automatic fallback for a managed-service outage. Migration requires the explicit [plan, import, cutover, export, and rollback workflow](https://github.com/Kashkovsky/threadnote/blob/main/docs/remote-memory/migration.md).',
+          text: 'For individual use without an organization-operated memory service, follow [Personal Cursor Cloud setup](personal-cursor-cloud/). It uses one personal stdio MCP with one or more private Git memory shares and Cloud-specific skills. Do not register the personal and remote-hybrid profiles in the same environment, and never use one as an automatic fallback for an outage. Migration requires the explicit [plan, import, cutover, export, and rollback workflow](https://github.com/Kashkovsky/threadnote/blob/main/docs/remote-memory/migration.md).',
         },
       ],
     },

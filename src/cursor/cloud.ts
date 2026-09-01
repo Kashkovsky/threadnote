@@ -5,21 +5,25 @@ import {runShareInit, runShareSync} from '../share/index.js';
 import {normalizeTeamName, readTeamsFile, shareTeamAccess} from '../share/index.js';
 import {withSharedRepositoryLock} from '../effect/share_lock.js';
 import {SystemInfo} from '../effect/system.js';
-import {canonicalResourceUri} from '../storage/resource-id.js';
+import {canonicalResourceUri, resourceIdIsWithin} from '../storage/resource-id.js';
 import {uriSegment} from '../mcp/server/common.js';
+import {installCursorCloudAgentIntegration} from '../agent_integration/index.js';
 
 /** Legacy selector retained for Threadnote 4.2 Dashboard configurations. */
 export const CURSOR_CLOUD_MCP_TOOLSET = 'cursor-cloud' as const;
 export const CURSOR_CLOUD_GIT_BETA_MCP_TOOLSET = 'cursor-cloud-git-beta' as const;
+export const CURSOR_CLOUD_PERSONAL_MCP_TOOLSET = 'cursor-cloud-personal' as const;
 export const CURSOR_CLOUD_LOCAL_MCP_TOOLSET = 'cursor-cloud-local' as const;
 export const CURSOR_CLOUD_MEMORY_ENDPOINT_ENV = 'THREADNOTE_CURSOR_MEMORY_ENDPOINT';
 export const CURSOR_CLOUD_MEMORY_SHARE_ID_ENV = 'THREADNOTE_CURSOR_MEMORY_SHARE_ID';
 export const CURSOR_CLOUD_TEAM_ENV = 'THREADNOTE_CURSOR_CLOUD_TEAM';
+export const CURSOR_CLOUD_TEAMS_ENV = 'THREADNOTE_CURSOR_CLOUD_TEAMS';
 export const DEFAULT_CURSOR_CLOUD_IDENTITY = 'cursor-cloud';
 
 const CURSOR_CLOUD_SHARE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
+export const MAX_CURSOR_CLOUD_TEAMS = 16;
 
-export type CursorCloudMode = 'git-beta' | 'remote-hybrid';
+export type CursorCloudMode = 'personal' | 'remote-hybrid';
 
 export class CursorCloudOperationError extends Error {
   readonly _tag = 'CursorCloudOperationError' as const;
@@ -45,7 +49,8 @@ export interface CursorCloudMcpConfig {
     THREADNOTE_ACCOUNT: string;
     THREADNOTE_AGENT_ID: string;
     THREADNOTE_CURSOR_CLOUD_TEAM: string;
-    THREADNOTE_MCP_TOOLSET: typeof CURSOR_CLOUD_GIT_BETA_MCP_TOOLSET;
+    THREADNOTE_CURSOR_CLOUD_TEAMS?: string;
+    THREADNOTE_MCP_TOOLSET: typeof CURSOR_CLOUD_PERSONAL_MCP_TOOLSET;
     THREADNOTE_USER: string;
   }>;
   readonly type: 'stdio';
@@ -75,10 +80,14 @@ export interface CursorCloudRemoteHybridMcpConfig {
   }>;
 }
 
-export interface CursorCloudMemoryScope {
-  readonly mode: 'shared-read-write';
+export interface CursorCloudShareScope {
   readonly root: string;
   readonly team: string;
+}
+
+export interface CursorCloudMemoryScope {
+  readonly mode: 'shared-read-write';
+  readonly shares: readonly CursorCloudShareScope[];
 }
 
 export interface CursorCloudBootstrapOptions {
@@ -103,14 +112,17 @@ export interface CursorCloudVerifyCheck {
   readonly status: 'fail' | 'ok' | 'warn';
 }
 
-export interface CursorCloudVerifyReceiptV1 {
+export interface CursorCloudVerifyReceiptV2 {
   readonly checks: readonly CursorCloudVerifyCheck[];
   readonly memoryRoot: string;
+  readonly memoryRoots: readonly string[];
   readonly profile: 'shared-read-write';
   readonly provider: 'cursor-cloud';
+  readonly shares: readonly CursorCloudShareScope[];
   readonly status: 'fail' | 'ok';
   readonly team: string;
-  readonly version: 1;
+  readonly teams: readonly string[];
+  readonly version: 2;
 }
 
 export interface CursorCloudRemoteHybridVerifyReceiptV1 {
@@ -126,6 +138,55 @@ export interface CursorCloudRemoteHybridVerifyReceiptV1 {
 
 export function cursorCloudMemoryRoot(user: string, team: string): string {
   return canonicalResourceUri('user', [uriSegment(user), 'memories', 'shared', normalizeTeamName(team)]);
+}
+
+export function normalizeCursorCloudTeams(teams: string | readonly string[] | undefined): readonly string[] {
+  const values = teams === undefined ? [] : typeof teams === 'string' ? [teams] : teams;
+  const normalized = [...new Set(values.map(team => normalizeTeamName(team)))].sort();
+  const selected = normalized.length === 0 ? [DEFAULT_CURSOR_CLOUD_IDENTITY] : normalized;
+  if (selected.length > MAX_CURSOR_CLOUD_TEAMS) {
+    throw new CursorCloudOperationError(
+      `Personal Cursor Cloud supports at most ${MAX_CURSOR_CLOUD_TEAMS} shares in one MCP server.`,
+    );
+  }
+  return selected;
+}
+
+export function cursorCloudScopeRoots(scope: CursorCloudMemoryScope): readonly string[] {
+  return scope.shares.map(share => share.root);
+}
+
+export function cursorCloudScopeTeams(scope: CursorCloudMemoryScope): readonly string[] {
+  return scope.shares.map(share => share.team);
+}
+
+export function cursorCloudShareForTeam(
+  scope: CursorCloudMemoryScope,
+  team: string | undefined,
+): CursorCloudShareScope | undefined {
+  if (team === undefined) return scope.shares.length === 1 ? scope.shares[0] : undefined;
+  const normalized = normalizeTeamName(team);
+  return scope.shares.find(share => share.team === normalized);
+}
+
+export function cursorCloudShareForUri(scope: CursorCloudMemoryScope, uri: string): CursorCloudShareScope | undefined {
+  return scope.shares.find(share => resourceIdIsWithin(uri, share.root));
+}
+
+export function cursorCloudUriWithinScope(scope: CursorCloudMemoryScope, uri: string): boolean {
+  return cursorCloudShareForUri(scope, uri) !== undefined;
+}
+
+export function cursorCloudMemoryScopeReceipt(scope: CursorCloudMemoryScope) {
+  const shares = scope.shares.map(share => ({root: share.root, team: share.team}));
+  return {
+    memoryRoots: shares.map(share => share.root),
+    mode: scope.mode,
+    shares,
+    teams: shares.map(share => share.team),
+    type: 'threadnote-memory-scope',
+    version: 2,
+  } as const;
 }
 
 export function buildCursorCloudProfile(
@@ -149,15 +210,20 @@ export function buildCursorCloudProfile(
   };
 }
 
-export function buildCursorCloudMcpConfig(profile: CursorCloudProfileV1): CursorCloudMcpConfig {
+export function buildCursorCloudMcpConfig(
+  profile: CursorCloudProfileV1,
+  requestedTeams: readonly string[] = [profile.team],
+): CursorCloudMcpConfig {
+  const teams = normalizeCursorCloudTeams(requestedTeams);
   return {
     args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
     command: '/bin/sh',
     env: {
       THREADNOTE_ACCOUNT: profile.account,
       THREADNOTE_AGENT_ID: profile.agentId,
-      THREADNOTE_CURSOR_CLOUD_TEAM: profile.team,
-      THREADNOTE_MCP_TOOLSET: CURSOR_CLOUD_GIT_BETA_MCP_TOOLSET,
+      THREADNOTE_CURSOR_CLOUD_TEAM: teams[0]!,
+      ...(teams.length === 1 ? {} : {THREADNOTE_CURSOR_CLOUD_TEAMS: JSON.stringify(teams)}),
+      THREADNOTE_MCP_TOOLSET: CURSOR_CLOUD_PERSONAL_MCP_TOOLSET,
       THREADNOTE_USER: profile.user,
     },
     type: 'stdio',
@@ -256,9 +322,9 @@ export function credentialFreeGitRemote(remote: string): string {
     } catch {
       throw new CursorCloudOperationError('The Cursor Cloud memory remote must be a valid Git URL.');
     }
-    if (parsed.username || parsed.password) {
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
       throw new CursorCloudOperationError(
-        'The Cursor Cloud memory remote must not contain embedded credentials; configure authentication in Cursor or the Git provider.',
+        'The Cursor Cloud memory remote must not contain embedded credentials, query parameters, or fragments; configure authentication in Cursor or the Git provider.',
       );
     }
   }
@@ -282,27 +348,24 @@ export const resolveCursorCloudMemoryScope = Effect.fn('cursorCloud.resolveMemor
   config: RuntimeConfig,
   environment: Readonly<Record<string, string | undefined>>,
 ) {
-  const rawTeam = environment[CURSOR_CLOUD_TEAM_ENV]?.trim();
-  if (!rawTeam) {
-    throw new CursorCloudOperationError(`${CURSOR_CLOUD_TEAM_ENV} is required by the Cursor Cloud Git beta toolset.`);
-  }
-  const team = normalizeTeamName(rawTeam);
+  const teams = cursorCloudTeamsFromEnvironment(environment);
   const teamsFile = yield* readTeamsFile(config);
-  const configured = teamsFile.teams[team];
-  if (!configured) {
-    throw new CursorCloudOperationError(
-      `Cursor Cloud memory team "${team}" is not configured. Run threadnote cloud cursor bootstrap first.`,
-    );
-  }
-  if (shareTeamAccess(configured) !== 'read-write') {
-    throw new CursorCloudOperationError(
-      `Cursor Cloud memory team "${team}" must be read-write before the MCP profile can start.`,
-    );
+  for (const team of teams) {
+    const configured = teamsFile.teams[team];
+    if (!configured) {
+      throw new CursorCloudOperationError(
+        `Cursor Cloud memory team "${team}" is not configured. Run threadnote cloud cursor bootstrap --team ${team} first.`,
+      );
+    }
+    if (shareTeamAccess(configured) !== 'read-write') {
+      throw new CursorCloudOperationError(
+        `Cursor Cloud memory team "${team}" must be read-write before the MCP profile can start.`,
+      );
+    }
   }
   return {
     mode: 'shared-read-write',
-    root: cursorCloudMemoryRoot(config.user, team),
-    team,
+    shares: teams.map(team => ({root: cursorCloudMemoryRoot(config.user, team), team})),
   } satisfies CursorCloudMemoryScope;
 });
 
@@ -313,11 +376,12 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
     readonly endpoint?: string;
     readonly mode?: CursorCloudMode;
     readonly shareId?: string;
-    readonly team?: string;
+    readonly teams?: readonly string[];
     readonly user?: string;
   },
 ) {
-  const profile = buildCursorCloudProfile(config, options);
+  const teams = normalizeCursorCloudTeams(options.teams);
+  const profile = buildCursorCloudProfile(config, {...options, team: teams[0]});
   const output =
     options.mode === 'remote-hybrid'
       ? buildCursorCloudRemoteHybridMcpConfig(
@@ -325,7 +389,7 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
           requiredRemoteEndpoint(options.endpoint),
           requiredRemoteShareId(options.shareId),
         )
-      : buildCursorCloudMcpConfig(profile);
+      : buildCursorCloudMcpConfig(profile, teams);
   yield* Console.log(JSON.stringify(output, undefined, 2));
 });
 
@@ -342,7 +406,7 @@ export const runCursorCloudBootstrap = Effect.fn('cursorCloud.bootstrap')(functi
     });
   }
   if (!options.remote) {
-    throw new CursorCloudOperationError('The Cursor Cloud Git beta bootstrap requires --remote.');
+    throw new CursorCloudOperationError('Personal Cursor Cloud bootstrap requires --remote.');
   }
   const remote = options.remote;
   yield* withSharedRepositoryLock(
@@ -366,6 +430,7 @@ export const runCursorCloudBootstrap = Effect.fn('cursorCloud.bootstrap')(functi
         yield* runShareSync(config, {push: true, team: plan.team});
       }
       yield* Console.log(`Cursor Cloud memory root: ${cursorCloudMemoryRoot(config.user, plan.team)}/`);
+      yield* installCursorCloudAgentIntegration(config, options.dryRun === true);
     }),
   );
 });
@@ -378,7 +443,7 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
     readonly json?: boolean;
     readonly mode?: CursorCloudMode;
     readonly shareId?: string;
-    readonly team?: string;
+    readonly teams?: readonly string[];
   },
 ) {
   if (options.mode === 'remote-hybrid') {
@@ -396,10 +461,10 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
-  const team = normalizeTeamName(options.team ?? DEFAULT_CURSOR_CLOUD_IDENTITY);
-  const memoryRoot = cursorCloudMemoryRoot(config.user, team);
+  const teams = normalizeCursorCloudTeams(options.teams);
+  const shares = teams.map(team => ({root: cursorCloudMemoryRoot(config.user, team), team}));
+  const [firstShare] = shares;
   const teamsFile = yield* readTeamsFile(config);
-  const configured = teamsFile.teams[team];
   const checks: CursorCloudVerifyCheck[] = [
     {
       detail:
@@ -412,13 +477,18 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
       name: 'Threadnote home',
       status: (yield* fs.exists(config.agentContextHome)) ? 'ok' : 'fail',
     },
-    {
-      detail: configured ? 'configured' : 'missing',
-      name: 'memory team',
-      status: configured ? 'ok' : 'fail',
-    },
   ];
-  if (configured) checks.push(...(yield* configuredTeamChecks(fs, configured)));
+  for (const team of teams) {
+    const configured = teamsFile.teams[team];
+    checks.push({
+      detail: configured ? 'configured' : 'missing',
+      name: `memory team ${team}`,
+      status: configured ? 'ok' : 'fail',
+    });
+    if (configured) {
+      checks.push(...(yield* configuredTeamChecks(fs, configured, team)));
+    }
+  }
   const cwdIsAbsolute = path.isAbsolute(options.cwd);
   const cwdExists = cwdIsAbsolute && (yield* fs.exists(options.cwd));
   checks.push({
@@ -426,15 +496,18 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
     name: 'local graph checkout',
     status: cwdExists ? 'ok' : 'fail',
   });
-  checks.push({detail: memoryRoot, name: 'exclusive memory root', status: 'ok'});
-  const receipt: CursorCloudVerifyReceiptV1 = {
+  for (const share of shares) checks.push({detail: share.root, name: `memory root ${share.team}`, status: 'ok'});
+  const receipt: CursorCloudVerifyReceiptV2 = {
     checks,
-    memoryRoot,
+    memoryRoot: firstShare!.root,
+    memoryRoots: shares.map(share => share.root),
     profile: 'shared-read-write',
     provider: 'cursor-cloud',
+    shares,
     status: checks.some(check => check.status === 'fail') ? 'fail' : 'ok',
-    team,
-    version: 1,
+    team: firstShare!.team,
+    teams,
+    version: 2,
   };
   yield* printCursorCloudVerifyReceipt(receipt, options.json);
   if (receipt.status === 'fail') {
@@ -578,7 +651,7 @@ const runCursorCloudRemoteHybridBootstrap = Effect.fn('cursorCloud.remoteHybridB
 });
 
 const printCursorCloudVerifyReceipt = Effect.fn('cursorCloud.printVerifyReceipt')(function* (
-  receipt: CursorCloudVerifyReceiptV1 | CursorCloudRemoteHybridVerifyReceiptV1,
+  receipt: CursorCloudVerifyReceiptV2 | CursorCloudRemoteHybridVerifyReceiptV1,
   json?: boolean,
 ) {
   if (json === true) {
@@ -646,6 +719,7 @@ function assertEquivalentWritableTeam(existing: ShareTeamConfig, remote: string,
 const configuredTeamChecks = Effect.fn('cursorCloud.configuredTeamChecks')(function* (
   fs: FileSystem.FileSystem,
   configured: ShareTeamConfig,
+  team: string,
 ) {
   const remoteStatus = yield* Effect.try({
     try: () => credentialFreeGitRemote(configured.remote),
@@ -657,23 +731,53 @@ const configuredTeamChecks = Effect.fn('cursorCloud.configuredTeamChecks')(funct
   return [
     {
       detail: shareTeamAccess(configured),
-      name: 'share access',
+      name: `share access ${team}`,
       status: shareTeamAccess(configured) === 'read-write' ? ('ok' as const) : ('fail' as const),
     },
     {
       detail: remoteStatus === 'ok' ? 'credential-free remote' : 'remote contains credentials or is invalid',
-      name: 'Git remote',
+      name: `Git remote ${team}`,
       status: remoteStatus,
     },
     {
       detail: (yield* fs.exists(configured.worktree)) ? 'present' : 'missing',
-      name: 'share worktree',
+      name: `share worktree ${team}`,
       status: (yield* fs.exists(configured.worktree)) ? ('ok' as const) : ('fail' as const),
     },
     {
       detail: (yield* fs.exists(configured.gitdir)) ? 'present' : 'missing',
-      name: 'share gitdir',
+      name: `share gitdir ${team}`,
       status: (yield* fs.exists(configured.gitdir)) ? ('ok' as const) : ('fail' as const),
     },
   ] satisfies readonly CursorCloudVerifyCheck[];
 });
+
+function cursorCloudTeamsFromEnvironment(environment: Readonly<Record<string, string | undefined>>): readonly string[] {
+  const rawTeams = environment[CURSOR_CLOUD_TEAMS_ENV]?.trim();
+  const rawTeam = environment[CURSOR_CLOUD_TEAM_ENV]?.trim();
+  if (!rawTeams && !rawTeam) {
+    throw new CursorCloudOperationError(
+      `${CURSOR_CLOUD_TEAM_ENV} or ${CURSOR_CLOUD_TEAMS_ENV} is required by the Personal Cursor Cloud toolset.`,
+    );
+  }
+  let decoded: unknown;
+  if (rawTeams) {
+    try {
+      decoded = JSON.parse(rawTeams);
+    } catch {
+      throw new CursorCloudOperationError(`${CURSOR_CLOUD_TEAMS_ENV} must be a JSON array of share names.`);
+    }
+    if (!Array.isArray(decoded) || decoded.some(team => typeof team !== 'string')) {
+      throw new CursorCloudOperationError(`${CURSOR_CLOUD_TEAMS_ENV} must be a JSON array of share names.`);
+    }
+  } else {
+    return normalizeCursorCloudTeams(rawTeam);
+  }
+  const teams = normalizeCursorCloudTeams(decoded as readonly string[] | undefined);
+  if (rawTeam && !teams.includes(normalizeTeamName(rawTeam))) {
+    throw new CursorCloudOperationError(
+      `${CURSOR_CLOUD_TEAM_ENV} must name one of the shares in ${CURSOR_CLOUD_TEAMS_ENV}.`,
+    );
+  }
+  return teams;
+}

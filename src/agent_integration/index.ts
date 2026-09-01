@@ -68,6 +68,8 @@ interface AgentArtifact {
   readonly path: string;
 }
 
+type AgentArtifactProfile = NonNullable<AgentIntegrationMcpReceipt['artifactProfile']>;
+
 class AgentIntegrationError extends Error {
   readonly _tag = 'AgentIntegrationError' as const;
 }
@@ -90,6 +92,21 @@ export const installAgentIntegration = Effect.fn('agentIntegrations.install')(fu
   };
   const install = installAgentIntegrationInTransaction(config, agent, mcp, options.dryRun);
   yield* options.dryRun ? install : withAgentIntegrationLock(config, install);
+});
+
+export const installCursorCloudAgentIntegration = Effect.fn('agentIntegrations.installCursorCloud')(function* (
+  config: RuntimeConfig,
+  dryRun: boolean,
+) {
+  const mcp: AgentIntegrationMcpReceipt = {
+    artifactProfile: 'cursor-cloud-personal',
+    external: true,
+    name: 'threadnote',
+    repair: false,
+    toolset: 'cursor-cloud-personal',
+  };
+  const install = installAgentIntegrationInTransaction(config, 'cursor', mcp, dryRun);
+  yield* dryRun ? install : withAgentIntegrationLock(config, install);
 });
 
 export const migrateLegacyAgentIntegrations = Effect.fn('agentIntegrations.migrateLegacy')(function* (
@@ -116,7 +133,7 @@ export const migrateLegacyAgentIntegrationsInTransaction = Effect.fn('agentInteg
       const installedVersion = yield* getThreadnoteVersion();
       let pendingRegistry = emptyAgentIntegrationRegistry(true);
       for (const agent of selected) {
-        const artifacts = yield* agentArtifacts(agent);
+        const artifacts = yield* agentArtifacts(agent, unknownMcp.artifactProfile);
         pendingRegistry = withAgentIntegrationHost(
           pendingRegistry,
           agent,
@@ -178,7 +195,7 @@ export const agentIntegrationDoctorChecks = Effect.fn('agentIntegrations.doctorC
         status: 'warn',
       });
     }
-    const artifacts = yield* agentArtifacts(agent);
+    const artifacts = yield* agentArtifacts(agent, receipt.mcp.artifactProfile);
     for (const artifact of artifacts) {
       const current = yield* readFileIfExists(artifact.path);
       const currentManagedBlock = current === undefined ? undefined : extractManagedBlock(current);
@@ -213,7 +230,10 @@ export const removeAgentIntegrationsInTransaction = Effect.fn('agentIntegrations
   const registry = yield* readAgentIntegrationRegistry(config);
   const clients = registry === undefined ? AGENT_CLIENTS : registeredAgentClients(registry);
   for (const agent of clients) {
-    for (const artifact of yield* agentArtifacts(agent)) yield* removeArtifact(artifact, dryRun);
+    const receipt = registry?.hosts[agent];
+    for (const artifact of yield* agentArtifacts(agent, receipt?.mcp.artifactProfile)) {
+      yield* removeArtifact(artifact, dryRun);
+    }
   }
   for (const legacyPath of LEGACY_CURSOR_INSTRUCTION_PATHS) {
     const target = yield* expandPath(legacyPath);
@@ -237,7 +257,7 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
   dryRun: boolean,
 ) {
   const currentRegistry = (yield* readAgentIntegrationRegistry(config)) ?? emptyAgentIntegrationRegistry(false);
-  const artifacts = yield* agentArtifacts(agent);
+  const artifacts = yield* agentArtifacts(agent, mcp.artifactProfile);
   const installedVersion = yield* getThreadnoteVersion();
   const receipt = hostReceipt(artifacts, installedVersion, mcp, 'pending');
   if (dryRun) {
@@ -272,18 +292,22 @@ export const installAgentIntegrationInTransaction = Effect.fn('agentIntegrations
   yield* Console.log(`Registered ${agent} agent integration.`);
 });
 
-function agentArtifacts(agent: AgentClient) {
+function agentArtifacts(agent: AgentClient, requestedProfile?: AgentArtifactProfile) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const root = yield* toolRoot();
     const host = HOST_TARGETS[agent];
     const instructionPath = yield* expandPath(host.instruction.path);
+    const profile = requestedProfile ?? 'default';
+    const profileRoot =
+      profile === 'default' ? path.join(root, 'config') : path.join(root, 'config', 'agent-profiles', profile);
     const bootstrap = (yield* (yield* FileSystem.FileSystem).readFileString(
-      path.join(root, 'config', 'agent-instructions.md'),
+      path.join(profileRoot, 'agent-instructions.md'),
     )).trim();
     const block = `${USER_INSTRUCTIONS_START_MARKER}\n${bootstrap}\n${USER_INSTRUCTIONS_END_MARKER}`;
     const instructionContent = renderInstructionContent(agent, host.instruction.kind, block);
-    const cursorPluginProvidesInstructions = agent === 'cursor' && (yield* isCursorMarketplacePluginInstalled());
+    const cursorPluginProvidesInstructions =
+      profile === 'default' && agent === 'cursor' && (yield* isCursorMarketplacePluginInstalled());
     const artifacts: AgentArtifact[] = cursorPluginProvidesInstructions
       ? []
       : [
@@ -298,7 +322,7 @@ function agentArtifacts(agent: AgentClient) {
     const skillRoot = yield* expandPath(host.skillRoot);
     for (const skill of AGENT_SKILLS) {
       const content = `${(yield* (yield* FileSystem.FileSystem).readFileString(
-        path.join(root, 'config', 'agent-skills', skill, 'SKILL.md'),
+        path.join(profileRoot, 'agent-skills', skill, 'SKILL.md'),
       )).trim()}\n`;
       artifacts.push({
         content,
@@ -378,7 +402,9 @@ const writeArtifact = Effect.fn('agentIntegrations.writeArtifact')(function* (ar
     }
     const unmanagedContent = removeManagedBlock(current);
     next =
-      unmanagedContent !== undefined && isGeneratedInstructionFrontmatter(unmanagedContent)
+      unmanagedContent !== undefined &&
+      (isGeneratedInstructionFrontmatter(unmanagedContent) ||
+        (artifact.name.startsWith('skill ') && isGeneratedSkillFrontmatter(unmanagedContent)))
         ? artifact.content
         : upsertManagedBlock(current, expectedBlock);
   }
@@ -453,6 +479,15 @@ function isGeneratedInstructionFrontmatter(content: string): boolean {
   return (
     trimmed.includes('description: Route non-trivial work through installed Threadnote skills') &&
     (trimmed.includes('alwaysApply: true') || trimmed.includes('applyTo: "**"'))
+  );
+}
+
+function isGeneratedSkillFrontmatter(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    /^---\n[\s\S]*\n---$/.test(trimmed) &&
+    /^name: threadnote-(?:context|code-graph|memory)$/mu.test(trimmed) &&
+    /^description: \S.+$/mu.test(trimmed)
   );
 }
 

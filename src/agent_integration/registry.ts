@@ -19,7 +19,9 @@ const AGENT_INTEGRATION_LOCK_OPTIONS = {
 } as const;
 
 export interface AgentIntegrationMcpReceipt {
+  readonly artifactProfile?: 'cursor-cloud-personal' | 'default';
   readonly cwd?: string;
+  readonly external?: boolean;
   readonly name: string;
   readonly repair: boolean;
   readonly scope?: ClaudeMcpScope;
@@ -146,6 +148,14 @@ function isHostReceipt(value: unknown): value is AgentIntegrationHostReceipt {
       return false;
     }
   }
+  if (
+    value.mcp.artifactProfile !== undefined &&
+    value.mcp.artifactProfile !== 'default' &&
+    value.mcp.artifactProfile !== 'cursor-cloud-personal'
+  ) {
+    return false;
+  }
+  if (value.mcp.external !== undefined && typeof value.mcp.external !== 'boolean') return false;
   if (value.mcp.repair && value.mcp.toolset === undefined) return false;
   if (value.mcp.scope !== undefined && !['local', 'project', 'user'].includes(value.mcp.scope as string)) return false;
   if (value.mcp.cwd !== undefined && (typeof value.mcp.cwd !== 'string' || value.mcp.cwd.length === 0)) return false;

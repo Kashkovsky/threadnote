@@ -79,16 +79,20 @@ export const refreshSharedReposInBackground = Effect.fn('share.refreshSharedRepo
 
 export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncSharedReposBeforeAgentRead')(function* (
   config: ShareRuntime,
-  selectedTeam?: string,
+  teamSelector?: string | readonly string[],
 ) {
+  const selectedTeams =
+    teamSelector === undefined ? undefined : new Set(typeof teamSelector === 'string' ? [teamSelector] : teamSelector);
   const state = autoShareState(config);
   return yield* enqueueShareOperation(
     state,
     Effect.fn('share.callback')(function* () {
       yield* loadPendingReindexes(config, state);
-      const warnings = yield* refreshShareUpdateStateLocked(config, state, {force: false, team: selectedTeam});
+      const warnings = yield* refreshShareUpdateStateLocked(config, state, {force: false, teams: selectedTeams});
       const syncTeams = new Set(
-        [...state.behindTeams, ...state.pendingReindexes.keys()].filter(team => !selectedTeam || team === selectedTeam),
+        [...state.behindTeams, ...state.pendingReindexes.keys()].filter(
+          team => !selectedTeams || selectedTeams.has(team),
+        ),
       );
       if (syncTeams.size === 0) {
         return {syncedTeams: [], warnings};
@@ -113,7 +117,6 @@ export const syncSharedReposBeforeAgentRead = Effect.fn('share.syncSharedReposBe
         }
       }
       state.behindTeams = remainingBehind;
-      state.lastCheckedAt = Date.now();
       return {syncedTeams, warnings};
     }),
   );
@@ -138,20 +141,25 @@ const refreshShareUpdateState = Effect.fn('share.refreshShareUpdateState')(funct
 const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLocked')(function* (
   config: ShareRuntime,
   state: AutoShareState,
-  options: {readonly force: boolean; readonly team?: string},
+  options: {readonly force: boolean; readonly teams?: ReadonlySet<string>},
 ) {
   const now = Date.now();
-  if (
-    !options.force &&
-    !state.forceNextCheck &&
-    state.lastCheckedAt > 0 &&
-    now - state.lastCheckedAt < SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS
-  ) {
+  const teamsFile = yield* readTeamsFile(config);
+  const configuredTeams = Object.keys(teamsFile.teams).filter(team => !options.teams || options.teams.has(team));
+  const teamsToCheck = new Set(
+    configuredTeams.filter(
+      team =>
+        options.force ||
+        state.forceNextCheck ||
+        now - (state.checkedAtByTeam.get(team) ?? 0) >= SHARED_BACKGROUND_FETCH_INTERVAL_MILLISECONDS,
+    ),
+  );
+  if (teamsToCheck.size === 0) {
     return [];
   }
   state.forceNextCheck = false;
   return yield* Effect.gen(function* () {
-    const statuses = yield* fetchShareUpdateStatuses(config, options.team);
+    const statuses = yield* fetchShareUpdateStatuses(config, teamsToCheck);
     const nextBehindTeams = new Set(state.behindTeams);
     for (const status of statuses) {
       if (!status.warning) {
@@ -164,7 +172,14 @@ const refreshShareUpdateStateLocked = Effect.fn('share.refreshShareUpdateStateLo
     }
     state.behindTeams = nextBehindTeams;
     return statuses.flatMap(status => (status.warning ? [status.warning] : []));
-  }).pipe(Effect.ensuring(Effect.sync(() => (state.lastCheckedAt = Date.now()))));
+  }).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        const checkedAt = Date.now();
+        for (const team of teamsToCheck) state.checkedAtByTeam.set(team, checkedAt);
+      }),
+    ),
+  );
 });
 
 function enqueueShareOperation<A, E, R>(
@@ -176,10 +191,10 @@ function enqueueShareOperation<A, E, R>(
 
 const fetchShareUpdateStatuses = Effect.fn('share.fetchShareUpdateStatuses')(function* (
   config: ShareRuntime,
-  selectedTeam?: string,
+  selectedTeams?: ReadonlySet<string>,
 ) {
   const teamsFile = yield* readTeamsFile(config);
-  const teams = Object.entries(teamsFile.teams).filter(([name]) => !selectedTeam || name === selectedTeam);
+  const teams = Object.entries(teamsFile.teams).filter(([name]) => !selectedTeams || selectedTeams.has(name));
   if (teams.length === 0) {
     return [];
   }

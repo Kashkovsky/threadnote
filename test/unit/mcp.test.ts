@@ -8,7 +8,7 @@ import {Effect, FileSystem, Path} from 'effect';
 import {TestClock} from 'effect/testing';
 import {afterEach, describe, expect, it, vi} from 'vitest';
 import {captureConsole} from '../../src/effect/console.js';
-import {readAgentIntegrationRegistry} from '../../src/agent_integration/index.js';
+import {installCursorCloudAgentIntegration, readAgentIntegrationRegistry} from '../../src/agent_integration/index.js';
 import {installCommandShim} from '../../src/command-shim.js';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {SystemInfo} from '../../src/effect/system.js';
@@ -143,12 +143,12 @@ describe('MCP toolsets', () => {
 
   it('rejects unsupported toolsets', () => {
     expect(() => parseMcpToolset('minimal')).toThrow(
-      'Invalid MCP toolset: minimal. Expected core, cursor-cloud, cursor-cloud-git-beta, cursor-cloud-local, or full.',
+      'Invalid MCP toolset: minimal. Expected core, cursor-cloud-personal, cursor-cloud-local, cursor-cloud, cursor-cloud-git-beta, or full.',
     );
   });
 
   it('gives Cursor Cloud shared writes without review, publishing, maintenance, or worksets', () => {
-    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud'))).toEqual({
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal'))).toEqual({
       contextBrief: false,
       graphLocal: true,
       graphWorkset: false,
@@ -159,7 +159,10 @@ describe('MCP toolsets', () => {
       memoryWrite: true,
     });
     expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud-git-beta'))).toEqual(
-      mcpToolCapabilities(parseMcpToolset('cursor-cloud')),
+      mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal')),
+    );
+    expect(mcpToolCapabilities(parseMcpToolset('cursor-cloud'))).toEqual(
+      mcpToolCapabilities(parseMcpToolset('cursor-cloud-personal')),
     );
   });
 
@@ -379,6 +382,45 @@ describe('JSON MCP host configuration', () => {
         const cursorConfig: unknown = JSON.parse(yield* fs.readFileString(cursorPath));
         expect(cursorConfig).toMatchObject({mcpServers: {unrelated: {command: 'keep-me'}}});
         expect(JSON.stringify(cursorConfig)).not.toContain('team-memory');
+        expect(yield* readAgentIntegrationRegistry(testRuntime)).toBeUndefined();
+        expect(yield* fs.exists(path.join(user, '.cursor', 'rules', 'threadnote.mdc'))).toBe(false);
+        expect(yield* fs.exists(path.join(user, '.cursor', 'skills', 'threadnote-context', 'SKILL.md'))).toBe(false);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uninstall preserves a Dashboard-owned personal Cursor MCP entry', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseSystem = yield* SystemInfo;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-cursor-cloud-uninstall-'});
+        const user = path.join(root, 'user');
+        const bin = path.join(root, 'bin');
+        const cursorPath = path.join(user, '.cursor', 'mcp.json');
+        const testRuntime = runtime(path.join(user, '.threadnote'));
+        const originalConfig = {
+          mcpServers: {
+            threadnote: {command: 'dashboard-owned-local-companion'},
+            unrelated: {command: 'keep-me'},
+          },
+        };
+        yield* fs.makeDirectory(path.dirname(cursorPath), {recursive: true});
+        yield* fs.writeFileString(cursorPath, `${JSON.stringify(originalConfig, undefined, 2)}\n`);
+        const testSystem = SystemInfo.of({
+          ...baseSystem,
+          environment: () => ({...baseSystem.environment(), PATH: bin, THREADNOTE_BIN_DIR: bin}),
+          homeDirectory: user,
+          platform: 'linux',
+        });
+
+        yield* installCursorCloudAgentIntegration(testRuntime, false).pipe(
+          Effect.provideService(SystemInfo, testSystem),
+        );
+        yield* runUninstall(testRuntime, {preserveMemories: true}).pipe(Effect.provideService(SystemInfo, testSystem));
+
+        expect(JSON.parse(yield* fs.readFileString(cursorPath))).toEqual(originalConfig);
         expect(yield* readAgentIntegrationRegistry(testRuntime)).toBeUndefined();
         expect(yield* fs.exists(path.join(user, '.cursor', 'rules', 'threadnote.mdc'))).toBe(false);
         expect(yield* fs.exists(path.join(user, '.cursor', 'skills', 'threadnote-context', 'SKILL.md'))).toBe(false);

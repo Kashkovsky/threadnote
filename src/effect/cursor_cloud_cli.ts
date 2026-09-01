@@ -16,7 +16,7 @@ interface CursorCloudAttestFlagBuilders {
   readonly requiredString: (name: string, description: string) => Flag.Flag<string>;
 }
 
-type CursorCloudMode = 'git-beta' | 'remote-hybrid';
+type CursorCloudMode = 'personal' | 'remote-hybrid';
 
 export function makeCursorCloudIdentityFlags(
   defaultString: (name: string, description: string, value: string) => Flag.Flag<string>,
@@ -31,12 +31,12 @@ export function makeCursorCloudIdentityFlags(
 export function makeCursorCloudModeFlag(
   defaultChoice: (
     name: string,
-    choices: readonly ['git-beta', 'remote-hybrid'],
+    choices: readonly ['personal', 'remote-hybrid'],
     description: string,
-    value: 'git-beta',
+    value: 'personal',
   ) => Flag.Flag<CursorCloudMode>,
 ) {
-  return defaultChoice('mode', ['git-beta', 'remote-hybrid'], 'Cursor Cloud memory transport mode', 'git-beta');
+  return defaultChoice('mode', ['personal', 'remote-hybrid'], 'Cursor Cloud memory transport mode', 'personal');
 }
 
 export function makeCursorCloudAttestCommand<E, R>(

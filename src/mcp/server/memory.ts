@@ -69,7 +69,7 @@ import {
   resourceIdIsWithin,
   resourceIdWithoutAnchor,
 } from '../../storage/resource-id.js';
-import type {CursorCloudMemoryScope} from '../../cursor/cloud.js';
+import type {CursorCloudShareScope} from '../../cursor/cloud.js';
 import {
   McpServerOperationError,
   type RuntimeConfig,
@@ -645,7 +645,7 @@ export function writeDurableMemory(config: RuntimeConfig, params: WriteDurableMe
 
 export function writeCursorCloudSharedMemory(
   config: RuntimeConfig,
-  scope: CursorCloudMemoryScope,
+  scope: CursorCloudShareScope,
   params: WriteDurableMemoryParams,
 ) {
   const write = withSharedRepositoryLock(
@@ -754,11 +754,12 @@ export function writeCursorCloudSharedMemory(
           return {
             _meta: {
               'threadnote.io/memory-scope': {
-                mode: scope.mode,
-                root: scope.root,
-                team: scope.team,
+                memoryRoots: [scope.root],
+                mode: 'shared-read-write',
+                shares: [{root: scope.root, team: scope.team}],
+                teams: [scope.team],
                 type: 'threadnote-memory-scope',
-                version: 1,
+                version: 2,
               },
             },
             content: [{type: 'text' as const, text: messages.join('\n')}],

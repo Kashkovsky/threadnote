@@ -1,7 +1,8 @@
 export const DEFAULT_MCP_TOOLSET = 'core';
 export const MCP_TOOLSET_ENV = 'THREADNOTE_MCP_TOOLSET';
 
-export type McpToolset = 'core' | 'cursor-cloud' | 'cursor-cloud-git-beta' | 'cursor-cloud-local' | 'full';
+export type McpToolset =
+  'core' | 'cursor-cloud' | 'cursor-cloud-git-beta' | 'cursor-cloud-local' | 'cursor-cloud-personal' | 'full';
 
 export interface McpToolCapabilities {
   readonly contextBrief: boolean;
@@ -55,6 +56,16 @@ const TOOLSET_CAPABILITIES = {
     memoryReview: false,
     memoryWrite: false,
   },
+  'cursor-cloud-personal': {
+    contextBrief: false,
+    graphLocal: true,
+    graphWorkset: false,
+    maintenance: false,
+    memoryPublish: false,
+    memoryRead: true,
+    memoryReview: false,
+    memoryWrite: true,
+  },
   full: {
     contextBrief: true,
     graphLocal: true,
@@ -73,12 +84,13 @@ export function parseMcpToolset(value: string): McpToolset {
     value === 'cursor-cloud' ||
     value === 'cursor-cloud-git-beta' ||
     value === 'cursor-cloud-local' ||
+    value === 'cursor-cloud-personal' ||
     value === 'full'
   ) {
     return value;
   }
   throw new Error(
-    `Invalid MCP toolset: ${value}. Expected core, cursor-cloud, cursor-cloud-git-beta, cursor-cloud-local, or full.`,
+    `Invalid MCP toolset: ${value}. Expected core, cursor-cloud-personal, cursor-cloud-local, cursor-cloud, cursor-cloud-git-beta, or full.`,
   );
 }
 
@@ -86,6 +98,6 @@ export function mcpToolCapabilities(toolset: McpToolset): McpToolCapabilities {
   return TOOLSET_CAPABILITIES[toolset];
 }
 
-export function isCursorCloudGitBetaToolset(toolset: McpToolset): boolean {
-  return toolset === 'cursor-cloud' || toolset === 'cursor-cloud-git-beta';
+export function isCursorCloudPersonalToolset(toolset: McpToolset): boolean {
+  return toolset === 'cursor-cloud-personal' || toolset === 'cursor-cloud' || toolset === 'cursor-cloud-git-beta';
 }

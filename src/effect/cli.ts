@@ -1527,6 +1527,10 @@ const finalizeCodeRefs = Command.make(
 ).pipe(Command.withDescription('Finalize private pending memory code citations from exact-current ready graphs'));
 
 const cursorCloudIdentityFlags = makeCursorCloudIdentityFlags(defaultString);
+const cursorCloudBaseIdentityFlags = {
+  agentId: cursorCloudIdentityFlags.agentId,
+  user: cursorCloudIdentityFlags.user,
+};
 const cursorCloudMode = makeCursorCloudModeFlag(defaultChoice);
 const cursorCloudRuntime = (config: RuntimeConfig, agentId: string, user: string) =>
   cursorCloudRuntimeConfig(config, {agentId, user});
@@ -1534,7 +1538,7 @@ const cursorCloudRuntime = (config: RuntimeConfig, agentId: string, user: string
 const cursorCloudConfig = Command.make(
   'config',
   {
-    ...cursorCloudIdentityFlags,
+    ...cursorCloudBaseIdentityFlags,
     endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
     memoryMode: defaultChoice(
       'memory-mode',
@@ -1544,15 +1548,16 @@ const cursorCloudConfig = Command.make(
     ),
     mode: cursorCloudMode,
     shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
+    teams: repeatedString('team', 'Personal Git memory share; repeat to expose several through one MCP'),
   },
-  ({agentId, endpoint, mode, shareId, team, user}) =>
+  ({agentId, endpoint, mode, shareId, teams, user}) =>
     withRuntimeEffect(config =>
       runCursorCloudConfig(cursorCloudRuntime(config, agentId, user), {
         agentId,
         endpoint,
         mode,
         shareId,
-        team,
+        teams,
         user,
       }),
     ),
@@ -1583,21 +1588,22 @@ const cursorCloudBootstrap = Command.make(
         team,
       }),
     ),
-).pipe(Command.withDescription('Idempotently prepare an exclusive writable Cursor Cloud memory share'));
+).pipe(Command.withDescription('Idempotently prepare one writable Personal Cursor Cloud memory share'));
 
 const cursorCloudVerify = Command.make(
   'verify',
   {
-    ...cursorCloudIdentityFlags,
+    ...cursorCloudBaseIdentityFlags,
     cwd: requiredString('cwd', 'Absolute Cursor Cloud checkout path used for local code-graph inspection'),
     endpoint: optionalString('endpoint', 'Managed remote Streamable HTTP MCP endpoint'),
     json: boolean('json', 'Print a machine-readable verification receipt'),
     mode: cursorCloudMode,
     shareId: optionalString('share-id', 'Opaque managed remote memory share identifier'),
+    teams: repeatedString('team', 'Personal Git memory share; repeat to verify one MCP share set'),
   },
-  ({agentId, cwd, endpoint, json, mode, shareId, team, user}) =>
+  ({agentId, cwd, endpoint, json, mode, shareId, teams, user}) =>
     withRuntimeEffect(config =>
-      runCursorCloudVerify(cursorCloudRuntime(config, agentId, user), {cwd, endpoint, json, mode, shareId, team}),
+      runCursorCloudVerify(cursorCloudRuntime(config, agentId, user), {cwd, endpoint, json, mode, shareId, teams}),
     ),
 ).pipe(Command.withDescription('Verify the Cursor Cloud runtime, share, and local graph checkout'));
 
