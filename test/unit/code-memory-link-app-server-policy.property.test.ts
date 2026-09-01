@@ -65,6 +65,16 @@ describe('Code Memory Link pre-execution app-server policy', () => {
       }),
     ).toMatchObject({itemType: 'commandExecution'});
 
+    const completedDisplayCommand = `${shellWord('/bin/zsh')} -lc ${shellWord(projected)}`;
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: {...params, command: completedDisplayCommand},
+        scope: SCOPE,
+        startedItem: {...item, command: completedDisplayCommand, source: 'unifiedExecStartup'},
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
+
     for (const unsafe of [
       'pwd || cat src/service.ts',
       'cat src/service.ts > result.json',

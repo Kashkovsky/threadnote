@@ -169,9 +169,10 @@ function assertApprovalScope(params: Record<string, unknown>, scope: ApprovalSco
 
 function assertReadCommand(item: Record<string, unknown>, repositoryRoot: string): void {
   const cwd = containedPath(text(item.cwd, 'command cwd'), repositoryRoot);
+  const command = text(item.command, 'command');
   const commands = reviewableCommands(item, repositoryRoot, cwd);
   for (const command of commands) assertSingleReadCommand(command, repositoryRoot, cwd);
-  if (!text(item.command, 'command').startsWith('/bin/zsh -lc ')) {
+  if (tokenize(command)[0] !== '/bin/zsh') {
     if (!Array.isArray(item.commandActions) || item.commandActions.length === 0) {
       throw new Error('Code Memory Link command lacks a reviewable read-only action projection.');
     }
@@ -199,7 +200,11 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
 
 function reviewableCommands(item: Record<string, unknown>, repositoryRoot: string, cwd: string): readonly string[] {
   const command = text(item.command, 'command');
-  if (command.startsWith('/bin/zsh -lc ')) {
+  const shellTokens = tokenize(command);
+  if (shellTokens[0] === '/bin/zsh') {
+    if (shellTokens.length !== 3 || shellTokens[1] !== '-lc') {
+      throw new Error('Code Memory Link shell command uses an unsupported invocation shape.');
+    }
     if (
       !Array.isArray(item.commandActions) ||
       (item.source !== 'agent' && item.source !== 'unifiedExecStartup') ||
@@ -209,8 +214,8 @@ function reviewableCommands(item: Record<string, unknown>, repositoryRoot: strin
     }
     const action = object(item.commandActions[0], 'command action');
     const projected = text(action.command, 'code-mode command projection');
-    const wrapped = decodeShellWord(command.slice('/bin/zsh -lc '.length));
-    if (wrapped !== projected) throw new Error('Code Memory Link shell wrapper differs from its action projection.');
+    if (shellTokens[2] !== projected)
+      throw new Error('Code Memory Link shell wrapper differs from its action projection.');
     if (action.type === 'unknown') {
       exactKeys(action, ['command', 'type'], 'code-mode compound command action', false);
       return splitReadCommandChain(projected);
@@ -271,45 +276,6 @@ function nonemptyCommand(value: string): string {
   const command = value.trim();
   if (!command) throw new Error('Command chain contains an empty command.');
   return command;
-}
-
-function decodeShellWord(value: string): string {
-  if (!value || value.length > 16_384 || /[\0\r\n]/u.test(value)) {
-    throw new Error('Code Memory Link shell wrapper is invalid.');
-  }
-  let decoded = '';
-  let quote: 'single' | 'double' | null = null;
-  for (let index = 0; index < value.length; index += 1) {
-    const character = value[index]!;
-    if (quote === 'single') {
-      if (character === "'") quote = null;
-      else decoded += character;
-      continue;
-    }
-    if (quote === 'double') {
-      if (character === '"') quote = null;
-      else if (character === '\\') {
-        const escaped = value[++index];
-        if (escaped !== '"' && escaped !== '\\') {
-          throw new Error('Code Memory Link shell wrapper contains unsupported escaping.');
-        }
-        decoded += escaped;
-      } else {
-        if (character === '$' || character === '`') {
-          throw new Error('Code Memory Link shell wrapper contains expansion.');
-        }
-        decoded += character;
-      }
-      continue;
-    }
-    if (character === "'") quote = 'single';
-    else if (character === '"') quote = 'double';
-    else if (/\s/u.test(character) || ';&|<>`$(){}\\*?[]'.includes(character)) {
-      throw new Error('Code Memory Link shell wrapper must contain exactly one literal argument.');
-    } else decoded += character;
-  }
-  if (quote !== null) throw new Error('Code Memory Link shell wrapper contains an unterminated quote.');
-  return decoded;
 }
 
 function assertSimpleRead(executable: string, args: readonly string[], root: string, cwd: string): void {
