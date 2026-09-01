@@ -5,6 +5,7 @@ import {describe, expect, it} from 'vitest';
 interface WorkflowJob {
   readonly env?: Readonly<Record<string, string>>;
   readonly if?: string;
+  readonly name?: string;
   readonly needs?: string | readonly string[];
   readonly outputs?: Readonly<Record<string, string>>;
   readonly permissions?: Readonly<Record<string, string>>;
@@ -18,14 +19,16 @@ interface WorkflowJob {
     readonly run?: string;
     readonly 'timeout-minutes'?: number;
     readonly uses?: string;
-    readonly with?: Readonly<Record<string, string>>;
+    readonly with?: Readonly<Record<string, boolean | number | string>>;
   }[];
   readonly strategy?: {
+    readonly 'max-parallel'?: number;
     readonly matrix?: {
       readonly include?: readonly {
         readonly hotQuerySamples?: number;
         readonly os?: string;
       }[];
+      readonly replica?: readonly number[];
       readonly scale?: readonly number[];
     };
   };
@@ -66,10 +69,19 @@ describe('platform benchmark workflow', () => {
     const worksetCommand = worksetJob.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const nativeJob = workflow.jobs['code-graph']!;
     const nativeCapture = nativeJob.steps?.find(step => step.name === 'Capture native graph benchmark');
+    const windowsReplicas = workflow.jobs['code-graph-windows-replicas']!;
+    const windowsCapture = windowsReplicas.steps?.find(step => step.name === 'Capture fixed native graph replica');
+    const windowsUpload = windowsReplicas.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
+    const windowsGate = workflow.jobs['code-graph-windows']!;
+    const windowsDownload = windowsGate.steps?.find(step => step.uses === 'actions/download-artifact@v8');
+    const windowsAdjudication = windowsGate.steps?.find(
+      step => step.name === 'Adjudicate fixed hosted-runner replicas',
+    );
 
     expect(paths).toEqual(
       expect.arrayContaining([
         '.github/workflows/benchmarks.yml',
+        'scripts/adjudicate-code-graph-windows-replicas.ts',
         'scripts/benchmark-code-graph.ts',
         'scripts/benchmark-code-graph-workset.ts',
         'scripts/code-graph-benchmark-sampler.ts',
@@ -123,12 +135,37 @@ describe('platform benchmark workflow', () => {
     expect(nativeJob.strategy?.matrix?.include).toEqual([
       {hotQuerySamples: 25, os: 'ubuntu-latest'},
       {hotQuerySamples: 25, os: 'macos-latest'},
-      {hotQuerySamples: 100, os: 'windows-latest'},
     ]);
     expect(nativeCapture?.run).toContain('--samples ${{ matrix.hotQuerySamples }}');
+    expect(windowsReplicas.name).toBe('Code graph Windows replica ${{ matrix.replica }} · windows-latest');
+    expect(windowsReplicas.strategy?.['max-parallel']).toBe(3);
+    expect(windowsReplicas.strategy?.matrix?.replica).toEqual([1, 2, 3]);
+    expect(windowsCapture?.run).toContain('--samples 100');
+    expect(windowsCapture?.run).toContain('--warmups 5');
+    expect(windowsCapture?.run).toContain('replica-${{ matrix.replica }}.json');
+    expect(windowsCapture?.run).not.toContain('--fail-on-budget');
+    expect(windowsCapture?.env).toEqual({
+      THREADNOTE_BENCHMARK_RUNNER_CLASS: 'github-hosted-windows-latest-${{ runner.arch }}',
+      THREADNOTE_BENCHMARK_RUNNER_ID: '${{ runner.name }}',
+    });
+    expect(windowsUpload?.if).toBe('always()');
+    expect(windowsUpload?.with?.name).toContain('${{ matrix.replica }}-${{ github.run_id }}-${{ github.run_attempt }}');
+    expect(windowsGate.name).toBe('Code graph · windows-latest');
+    expect(windowsGate.needs).toBe('code-graph-windows-replicas');
+    expect(windowsGate.if).toContain('always()');
+    expect(windowsDownload?.with?.pattern).toContain(
+      'Windows-X64-replica-*-${{ github.run_id }}-${{ github.run_attempt }}',
+    );
+    expect(windowsDownload?.with?.['merge-multiple']).toBe(true);
+    expect(windowsAdjudication?.run).toContain('gate:code-graph:windows-replicas');
+    expect(windowsAdjudication?.run).toContain('--expected-commit "${{ github.sha }}"');
+    expect(windowsAdjudication?.run).toContain('--fail-on-budget');
+    expect(windowsAdjudication?.run?.toLowerCase()).not.toContain('retry');
 
     for (const jobName of [
       'code-graph',
+      'code-graph-windows-replicas',
+      'code-graph-windows',
       'code-graph-10k',
       'code-graph-load-evidence',
       'code-graph-vectors',
@@ -154,6 +191,8 @@ describe('platform benchmark workflow', () => {
     for (const jobName of [
       'code-graph-pr-scale',
       'code-graph',
+      'code-graph-windows-replicas',
+      'code-graph-windows',
       'code-graph-10k',
       'code-graph-vectors',
       'code-graph-vectors-10k',

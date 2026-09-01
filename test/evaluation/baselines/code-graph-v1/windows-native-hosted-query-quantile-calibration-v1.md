@@ -32,3 +32,7 @@ The failed native archive digest is
 `sha256:eb2a535dd1c60335202b52db7a6fc819c5612108809961c8cde7de92c45b7949`. The identical-tree control archive
 digest is `sha256:8b61d95aed8c68cf5b45489df84cb9683d9bde1a9e003c8e629ac786fa91156a`; its raw JSON digest is
 `sha256:eadde585d3be9103f6e2776d914d8abf64e4e0b1cc1b6de13c1c8e26a17fab4a`.
+
+A later exact-tree 100-sample run established that within-run sampling alone does not cover between-runner hosted
+variance. This historical correction is therefore superseded for release admission by the fixed three-runner policy
+and evidence in `windows-native-hosted-replica-calibration-v1.{json,md}`; its raw provenance remains valid.

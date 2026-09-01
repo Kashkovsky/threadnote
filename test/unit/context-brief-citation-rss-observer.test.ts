@@ -9,6 +9,7 @@ import {
 import type {BenchmarkProcessTreeSample} from '../../scripts/code-graph-benchmark-sampler.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_OBSERVER_MODE,
+  CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS,
   applyContextBriefCitationRssRequest,
   contextBriefCitationRssArtifact,
   contextBriefCitationRssNextSampleDeadlineNanos,
@@ -137,6 +138,39 @@ describe('Context Brief citation RSS observer protocol', () => {
     );
   });
 
+  it('admits the complete 100-sample release schedule and rejects observation 301', () => {
+    expect(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS).toBe(300);
+    let current = state();
+    for (let index = 0; index < CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS; index += 1) {
+      const observationId = `release-${String(index).padStart(3, '0')}`;
+      current = applyContextBriefCitationRssRequest(
+        current,
+        request('begin', index * 2 + 1, observationId),
+        attempt(index * 2, sample(100, 100)),
+      ).state;
+      current = applyContextBriefCitationRssRequest(
+        current,
+        request('end', index * 2 + 2, observationId),
+        attempt(index * 2 + 1, sample(100, 100)),
+      ).state;
+    }
+
+    expect(current.observations).toHaveLength(300);
+    expect(() =>
+      applyContextBriefCitationRssRequest(
+        current,
+        request('begin', 601, 'release-overflow'),
+        attempt(601, sample(100, 100)),
+      ),
+    ).toThrow(/observation bound exceeded/u);
+    const stopped = applyContextBriefCitationRssRequest(
+      current,
+      {operation: 'stop', sequence: 601, version: 2},
+      attempt(601, sample(100, 100)),
+    );
+    expect(contextBriefCitationRssArtifact(stopped.state).observations).toHaveLength(300);
+  });
+
   it('rejects malformed or internally inconsistent wire evidence', () => {
     expect(() =>
       parseContextBriefCitationRssRequest({...request('begin', 1, 'local-100k-memory-001'), extra: 1}),
@@ -144,7 +178,7 @@ describe('Context Brief citation RSS observer protocol', () => {
     expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 1, state: 'begun', version: 2})).toThrow(
       /fields are invalid/u,
     );
-    expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 514, state: 'stopped', version: 2})).toThrow(
+    expect(() => parseContextBriefCitationRssAcknowledgement({sequence: 602, state: 'stopped', version: 2})).toThrow(
       /protocol bound/u,
     );
     expect(() =>

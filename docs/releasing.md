@@ -69,7 +69,7 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
 3. Dispatch `Platform benchmarks` on exact clean candidate **C** with
    `include_context_brief_citations_scale=true` and `include_code_memory_link_scale=true`. Before tagging, require its Context Brief citation artifact to report
    v2 `evidenceClass=release-scale`, `gate.passed=true`, the exact candidate commit, `dirty=false`, 100,000 indexed
-   memory candidates, exactly 25 samples, exactly five warmups, and the `local-100k`, `workset-50`, and `workset-128`
+   memory candidates, exactly 100 samples, exactly 5 warmups, and the `local-100k`, `workset-50`, and `workset-128`
    profiles. A development-smoke artifact is deliberately release-failing regardless of its measurements. This gate is
    mandatory for a release that changes Context Brief, recall, citation, or graph-validation behavior;
    production-large evidence is not a substitute.

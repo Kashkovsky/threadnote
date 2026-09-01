@@ -1,11 +1,13 @@
+import * as BunServices from '@effect/platform-bun/BunServices';
 import {describe, expect, it} from '@effect/vitest';
-import {Effect, Exit, Fiber} from 'effect';
+import {Effect, Exit, FileSystem, Fiber} from 'effect';
 import {TestClock} from 'effect/testing';
 import {
   makeContextBriefCitationRssObserverController,
   terminateContextBriefCitationRssProcess,
   validateContextBriefCitationRssAcknowledgement,
   validateContextBriefCitationRssBundleDigest,
+  waitForContextBriefCitationRssBarrierAcknowledgement,
   waitForContextBriefCitationRssReady,
 } from '../../scripts/benchmark-context-brief-citations-target.js';
 import type {
@@ -13,10 +15,12 @@ import type {
   ContextBriefCitationRssArtifactV2,
   ContextBriefCitationRssReadyV2,
 } from '../../scripts/context-brief-citation-rss-observer.js';
+import {waitForContextBriefCitationRssAcknowledgement} from '../../scripts/context-brief-citation-rss-observer.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
 } from '../../src/evaluation/context-brief-citation-scale-contract.js';
+import {provideTestLayer} from '../helpers/effect-layer.js';
 import {ScriptError} from '../../scripts/effect/errors.js';
 
 describe('Context Brief citation RSS parent controller', () => {
@@ -83,6 +87,83 @@ describe('Context Brief citation RSS parent controller', () => {
         expect(error.message).toContain('mismatched barrier');
       }
     }),
+  );
+
+  it.effect('reports observer exit immediately instead of waiting for the acknowledgement deadline', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-context-rss-parent-'});
+        const acknowledgementPath = `${root}/acknowledgement.json`;
+        yield* fs.writeFileString(
+          acknowledgementPath,
+          `${JSON.stringify({observationId: 'local-100k-0', sequence: 1, state: 'begun', version: 2})}\n`,
+        );
+
+        const error = yield* waitForContextBriefCitationRssAcknowledgement(
+          acknowledgementPath,
+          2,
+          30_000,
+          () => 1,
+        ).pipe(Effect.flip);
+
+        expect(error.message).toContain('exited with 1 before acknowledgement sequence 2');
+      }),
+    ).pipe(provideTestLayer(BunServices.layer)),
+  );
+
+  it.effect('decorates child exits observed during polling with bounded stderr', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-context-rss-parent-transition-'});
+        const acknowledgementPath = `${root}/acknowledgement.json`;
+        yield* fs.writeFileString(
+          acknowledgementPath,
+          `${JSON.stringify({observationId: 'local-100k-0', sequence: 1, state: 'begun', version: 2})}\n`,
+        );
+
+        let exitCode: number | null = null;
+        const transitionFiber = yield* waitForContextBriefCitationRssBarrierAcknowledgement(
+          acknowledgementPath,
+          2,
+          30_000,
+          () => exitCode,
+          Promise.resolve('  transition diagnostic  '),
+        ).pipe(Effect.flip, Effect.forkChild({startImmediately: true}));
+        yield* Effect.yieldNow;
+        exitCode = 7;
+        yield* TestClock.adjust(5);
+        const transitionError = yield* Fiber.join(transitionFiber);
+
+        expect(transitionError.message).toBe(
+          'Context Brief RSS observer exited with 7 before acknowledgement sequence 2. transition diagnostic',
+        );
+
+        const errorFor = (stderr: string) =>
+          waitForContextBriefCitationRssBarrierAcknowledgement(
+            acknowledgementPath,
+            2,
+            30_000,
+            () => 9,
+            Promise.resolve(stderr),
+          ).pipe(Effect.flip);
+        const empty = yield* errorFor('');
+        expect(empty.message).toBe(
+          'Context Brief RSS observer exited with 9 before acknowledgement sequence 2. no diagnostic',
+        );
+
+        const nonempty = yield* errorFor('  observer diagnostic  ');
+        expect(nonempty.message).toBe(
+          'Context Brief RSS observer exited with 9 before acknowledgement sequence 2. observer diagnostic',
+        );
+
+        const oversized = yield* errorFor(`${'x'.repeat(4_097)}must-not-survive`);
+        expect(oversized.message).toBe(
+          `Context Brief RSS observer exited with 9 before acknowledgement sequence 2. ${'x'.repeat(4_096)}`,
+        );
+      }),
+    ).pipe(provideTestLayer(BunServices.layer)),
   );
 
   it.effect('closes the child after begin, use, or end failure while preserving end cleanup after use begins', () =>

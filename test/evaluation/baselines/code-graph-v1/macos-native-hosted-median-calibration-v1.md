@@ -1,0 +1,7 @@
+# Hosted macOS native median calibration v1
+
+Six independent `macos-latest` ARM64 runners executed the unchanged `src/code_graph` tree, reviewed fixture, Bun 1.3.14, and native 25-sample/5-warmup contract. Each observation explicitly binds that common code-graph source tree alongside its full commit tree and benchmark-harness blob; the retained workflow runs, jobs, artifacts, archives, raw payloads, and runner identities are distinct. Harness changes in the cohort affected provenance/enforcement rather than measurement collection. Their wall medians range from 54.083 to 125.650 milliseconds while every wall-p95 and process-CPU-p95 guard remains below 250 milliseconds. The sole ordinary breach is 125.650 versus 125 milliseconds (+0.650 milliseconds, +0.520%).
+
+The hosted-runner policy therefore retains 125 milliseconds as the ordinary median and permits at most 5% bounded wall-median hysteresis (131.25 milliseconds) only for the matching `github-hosted-macos-arm64` class. The existing 250-millisecond process-CPU ceiling, 250-millisecond wall-p95 ceiling plus its bounded 5% tail allowance, sample minimum, and every cold/index/materialization/analysis/RSS/disk gate remain active. Local and mismatched runner classes retain the strict 125-millisecond median.
+
+The companion unit contract independently rederives the cohort, exact boundary, platform scope, and monotonic failure above the 5% ceiling. A new exact candidate must pass prospectively; this calibration does not relabel the failed observation in place.

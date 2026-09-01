@@ -14,6 +14,8 @@ import {getThreadnoteVersion} from '../release/runtime_version.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
   contextBriefCitationRssSampleGapFailures,
   contextBriefCitationScaleGate,
   contextBriefCitationScaleRetainedRootRssGrowthBytes,
@@ -273,9 +275,13 @@ export const evaluateContextBriefCitationScale = Effect.fn('evaluation.contextBr
       `indexed memory corpus ${fixture.indexedMemoryCandidates}; required ${options.budget.corpusMemoryCandidates}`,
     );
   }
-  if (options.invocationMode === 'release-scale' && (options.samples !== 25 || options.warmups !== 5)) {
+  if (
+    options.invocationMode === 'release-scale' &&
+    (options.samples !== CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES ||
+      options.warmups !== CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS)
+  ) {
     failures.push(
-      `release evidence requires exactly 25 samples and 5 warmups; received ${options.samples}/${options.warmups}`,
+      `release evidence requires exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples and ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups; received ${options.samples}/${options.warmups}`,
     );
   }
   if (!/^[0-9a-f]{64}$/u.test(options.builtArtifactSha256)) {

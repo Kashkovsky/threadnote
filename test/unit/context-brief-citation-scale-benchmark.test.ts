@@ -3,6 +3,7 @@ import fc from 'fast-check';
 import {it as effectIt} from '@effect/vitest';
 import {Effect, Schema} from 'effect';
 import {describe, expect, it} from 'vitest';
+import {benchmarkMeasurement} from '../../src/evaluation/benchmark.js';
 import {
   CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2,
   CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
@@ -10,6 +11,8 @@ import {
   CONTEXT_BRIEF_CITATION_SCALE_EXECUTION_V2,
   CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
   CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+  CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
   contextBriefCitationScaleGate,
   contextBriefCitationRssSampleGapFailures,
   contextBriefCitationRssSampleGapSummary,
@@ -27,6 +30,7 @@ import {
   type ContextBriefCitationScaleReleaseIdentityV1,
 } from '../../src/evaluation/context-brief-citation-scale-contract.js';
 import {parseContextBriefCitationScaleBenchmarkArguments} from '../../scripts/benchmark-context-brief-citations-target.js';
+import {CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS} from '../../scripts/context-brief-citation-rss-observer.js';
 
 const NonNegativeInteger = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
@@ -70,10 +74,112 @@ const sampleGapCalibration = Schema.decodeUnknownSync(
     }),
   ),
 )(await Bun.file('test/evaluation/baselines/context-brief-citations-v1/sample-gap-calibration-v2.json').text());
+const validationQuantileCalibration = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      benchmarkBundleSha256: Sha256,
+      expected: Schema.Struct({
+        firstFailingTailValuesAtProspectiveSamples: PositiveInteger,
+        latestFourObservationCount: PositiveInteger,
+        latestFourP95Milliseconds: Schema.Number,
+        maximumExcludedTailValuesAtProspectiveSamples: NonNegativeInteger,
+        maximumMilliseconds: Schema.Number,
+        observationCount: PositiveInteger,
+        p50Milliseconds: Schema.Number,
+        p95Milliseconds: Schema.Number,
+        thresholdBreaches: NonNegativeInteger,
+      }),
+      fixtureSha256: Sha256,
+      historicalSamplesPerRun: Schema.Literal(25),
+      percentileEstimator: Schema.Literal('sorted[floor(sampleCount * 0.95)]'),
+      profile: Schema.Literal('workset-128'),
+      prospectiveSamples: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
+      prospectiveWarmups: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+      runs: Schema.Array(
+        Schema.Struct({
+          archiveSha256: Sha256,
+          artifactId: PositiveInteger,
+          benchmarkBundleSha256: Sha256,
+          commit: GitCommit,
+          createdAt: IsoInstant,
+          fixtureSha256: Sha256,
+          jobId: PositiveInteger,
+          rawJsonSha256: Sha256,
+          validationMilliseconds: Schema.Array(Schema.Number),
+          workflowRun: PositiveInteger,
+        }),
+      ),
+      type: Schema.Literal('threadnote-context-brief-validation-quantile-calibration'),
+      validationP95MaximumMilliseconds: PositiveInteger,
+      version: Schema.Literal(1),
+    }),
+  ),
+)(
+  await Bun.file('test/evaluation/baselines/context-brief-citations-v1/validation-quantile-calibration-v1.json').text(),
+);
+const rssObserverCapacityCalibration = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      correction: Schema.Struct({
+        capacityDerivedFromReleaseContract: Schema.Literal(true),
+        childStderrPropagated: Schema.Literal(true),
+        maximumObservations: Schema.Literal(300),
+        maximumProtocolSequence: Schema.Literal(601),
+        parentDetectsChildExitBeforeTimeout: Schema.Literal(true),
+        preflightRejectsOversizedSchedules: Schema.Literal(true),
+      }),
+      failure: Schema.Struct({
+        firstRejectedObservation: Schema.Literal(257),
+        lastAcknowledgedSequence: Schema.Literal(512),
+        parentAcknowledgementTimeoutMilliseconds: Schema.Literal(30_000),
+        previousMaximumObservations: Schema.Literal(256),
+        reportedMessage: Schema.Literal('Timed out waiting for the RSS observer acknowledgement.'),
+        requestSequence: Schema.Literal(513),
+      }),
+      prospectiveRun: Schema.Struct({
+        artifactProduced: Schema.Literal(false),
+        builtArtifactSha256: Sha256,
+        commit: GitCommit,
+        invocation: Schema.Struct({
+          profiles: Schema.Literal(3),
+          samplesPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES),
+          totalObservedSamples: Schema.Literal(300),
+          warmupsPerProfile: Schema.Literal(CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS),
+        }),
+        jobId: PositiveInteger,
+        jobLogSha256: Sha256,
+        sourceTree: GitCommit,
+        workflowAttempt: Schema.Literal(1),
+        workflowRun: PositiveInteger,
+      }),
+      type: Schema.Literal('threadnote-context-brief-rss-observer-capacity-calibration'),
+      version: Schema.Literal(1),
+    }),
+  ),
+)(
+  await Bun.file(
+    'test/evaluation/baselines/context-brief-citations-v1/rss-observer-capacity-calibration-v1.json',
+  ).text(),
+);
 const benchmarkWorkflow = await Bun.file('.github/workflows/benchmarks.yml').text();
+const releaseGuide = await Bun.file('docs/releasing.md').text();
 const scaleEvaluationSource = await Bun.file('src/evaluation/context-brief-citation-scale.ts').text();
 
 describe('Context Brief citation scale benchmark', () => {
+  it('rederives observer capacity from the complete release schedule and retains the failed prospective provenance', () => {
+    const {correction, failure, prospectiveRun} = rssObserverCapacityCalibration;
+    expect(prospectiveRun.invocation.profiles * prospectiveRun.invocation.samplesPerProfile).toBe(
+      prospectiveRun.invocation.totalObservedSamples,
+    );
+    expect(failure.firstRejectedObservation).toBe(failure.previousMaximumObservations + 1);
+    expect(failure.requestSequence).toBe(failure.previousMaximumObservations * 2 + 1);
+    expect(failure.lastAcknowledgedSequence).toBe(failure.requestSequence - 1);
+    expect(correction.maximumObservations).toBe(prospectiveRun.invocation.totalObservedSamples);
+    expect(correction.maximumProtocolSequence).toBe(correction.maximumObservations * 2 + 1);
+    expect(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS).toBe(correction.maximumObservations);
+    expect(prospectiveRun.artifactProduced).toBe(false);
+  });
+
   it('pins the reviewed 100k / 50 / 128 envelope and built-target defaults', () => {
     expect(budget).toMatchObject({
       corpusMemoryCandidates: 100_000,
@@ -111,8 +217,8 @@ describe('Context Brief citation scale benchmark', () => {
       {
         memoryCandidates: 100_000,
         profileIds: CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS,
-        samples: 25,
-        warmups: 5,
+        samples: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+        warmups: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS,
       },
     );
     expect(
@@ -123,6 +229,51 @@ describe('Context Brief citation scale benchmark', () => {
         'b'.repeat(40),
       ]),
     ).toMatchObject({candidateCommit: 'b'.repeat(40)});
+    expect(() => parseContextBriefCitationScaleBenchmarkArguments(['--samples', '101'])).toThrow(
+      /supports at most 300 total profile\/sample observations; received 303/u,
+    );
+    expect(
+      parseContextBriefCitationScaleBenchmarkArguments(['--profiles', 'local-100k', '--samples', '300']),
+    ).toMatchObject({profileIds: ['local-100k'], samples: 300});
+  });
+
+  it('accepts exactly the unique-profile schedules that fit the 300-observation capacity', () => {
+    const parseSchedule = (profileIds: readonly string[], samples: number) =>
+      parseContextBriefCitationScaleBenchmarkArguments([
+        '--profiles',
+        profileIds.join(','),
+        '--samples',
+        String(samples),
+      ]);
+
+    expect(parseSchedule(['local-100k', 'workset-50'], 150)).toMatchObject({
+      profileIds: ['local-100k', 'workset-50'],
+      samples: 150,
+    });
+    expect(() => parseSchedule(['local-100k', 'workset-50'], 151)).toThrow(
+      /supports at most 300 total profile\/sample observations; received 302/u,
+    );
+
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.constantFrom(...CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS), {
+          maxLength: CONTEXT_BRIEF_CITATION_SCALE_PROFILE_IDS.length,
+          minLength: 1,
+        }),
+        fc.integer({max: 2, min: -2}),
+        (profileIds, capacityOffset) => {
+          const samples =
+            Math.floor(CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS / profileIds.length) + capacityOffset;
+          const totalObservations = profileIds.length * samples;
+          if (totalObservations <= CONTEXT_BRIEF_CITATION_RSS_MAXIMUM_OBSERVATIONS) {
+            expect(parseSchedule(profileIds, samples)).toMatchObject({profileIds, samples});
+          } else {
+            expect(() => parseSchedule(profileIds, samples)).toThrow(`received ${totalObservations}`);
+          }
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('fails closed when any release-runner identity field is relabeled', () => {
@@ -259,6 +410,54 @@ describe('Context Brief citation scale benchmark', () => {
     expect(maximumConsecutiveBreachesWithinRun).toBeLessThanOrEqual(
       CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2.maximumConsecutiveBreaches,
     );
+  });
+
+  it('rederives the 100-sample validation quantile from retained same-bundle hosted evidence', () => {
+    expect(validationQuantileCalibration.runs).toHaveLength(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.workflowRun)).size).toBe(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.artifactId)).size).toBe(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.rawJsonSha256)).size).toBe(5);
+    expect(new Set(validationQuantileCalibration.runs.map(run => run.archiveSha256)).size).toBe(5);
+    expect(
+      validationQuantileCalibration.runs.every(
+        run =>
+          run.benchmarkBundleSha256 === validationQuantileCalibration.benchmarkBundleSha256 &&
+          run.fixtureSha256 === validationQuantileCalibration.fixtureSha256,
+      ),
+    ).toBe(true);
+    expect(
+      validationQuantileCalibration.runs.every(
+        run => run.validationMilliseconds.length === validationQuantileCalibration.historicalSamplesPerRun,
+      ),
+    ).toBe(true);
+
+    const all = validationQuantileCalibration.runs.flatMap(run => run.validationMilliseconds);
+    const pooled = benchmarkMeasurement('validation-pooled', 'milliseconds', all);
+    const latestFour = benchmarkMeasurement(
+      'validation-latest-four',
+      'milliseconds',
+      validationQuantileCalibration.runs.slice(1).flatMap(run => run.validationMilliseconds),
+    );
+    expect({
+      latestFourObservationCount: latestFour.samples,
+      latestFourP95Milliseconds: latestFour.p95,
+      maximumMilliseconds: pooled.maximum,
+      observationCount: pooled.samples,
+      p50Milliseconds: pooled.p50,
+      p95Milliseconds: pooled.p95,
+      thresholdBreaches: all.filter(value => value > validationQuantileCalibration.validationP95MaximumMilliseconds)
+        .length,
+    }).toEqual({
+      latestFourObservationCount: validationQuantileCalibration.expected.latestFourObservationCount,
+      latestFourP95Milliseconds: validationQuantileCalibration.expected.latestFourP95Milliseconds,
+      maximumMilliseconds: validationQuantileCalibration.expected.maximumMilliseconds,
+      observationCount: validationQuantileCalibration.expected.observationCount,
+      p50Milliseconds: validationQuantileCalibration.expected.p50Milliseconds,
+      p95Milliseconds: validationQuantileCalibration.expected.p95Milliseconds,
+      thresholdBreaches: validationQuantileCalibration.expected.thresholdBreaches,
+    });
+    expect(validationQuantileCalibration.expected.maximumExcludedTailValuesAtProspectiveSamples).toBe(4);
+    expect(validationQuantileCalibration.expected.firstFailingTailValuesAtProspectiveSamples).toBe(5);
   });
 
   effectIt.effect.prop(
@@ -559,6 +758,45 @@ describe('Context Brief citation scale benchmark', () => {
     );
   });
 
+  it('uses the 100-sample production quantile at the four-versus-five validation-tail boundary', () => {
+    const profile = budget.profiles.find(candidate => candidate.id === 'workset-128')!;
+    const order = Array.from({length: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}, (_, index) => index);
+
+    fc.assert(
+      fc.property(
+        fc.integer({max: 10, min: 0}),
+        fc.shuffledSubarray(order, {
+          maxLength: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+          minLength: CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES,
+        }),
+        (tailValues, permutation) => {
+          const observations = permutation.map((value, ordinal) => {
+            const validationMilliseconds =
+              value < tailValues
+                ? profile.maximumValidationP95Milliseconds + 1
+                : profile.maximumValidationP95Milliseconds;
+            return scaleObservation(
+              profile,
+              {},
+              {contextBriefMilliseconds: validationMilliseconds * 2, validationMilliseconds},
+              {observationId: `workset-128-${ordinal}`, ordinal},
+            );
+          });
+          const evaluated = evaluateContextBriefCitationScaleProfile(
+            budget,
+            profile.id,
+            scaleObservation(profile),
+            observations,
+          );
+          const validationFailures = evaluated.failures.filter(failure => failure.includes('validation p95'));
+
+          expect(validationFailures.length === 0).toBe(tailValues <= 4);
+        },
+      ),
+      {numRuns: 50},
+    );
+  });
+
   it('accepts a complete v2 artifact and rejects bounded single-field evidence tampering', () => {
     const artifact = scaleArtifact();
     expect(parseContextBriefCitationScaleArtifactV2(artifact, budget)).toEqual(artifact);
@@ -619,8 +857,11 @@ describe('Context Brief citation scale benchmark', () => {
     });
     expect(command).toContain('--candidate-commit "${{ github.sha }}"');
     expect(command).toContain('--memory-candidates 100000');
-    expect(command).toContain('--samples 25');
-    expect(command).toContain('--warmups 5');
+    expect(command).toContain(`--samples ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}`);
+    expect(command).toContain(`--warmups ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS}`);
+    expect(releaseGuide).toContain(
+      `memory candidates, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups`,
+    );
     expect(command).toContain('--fail-on-budget');
     expect(benchmarkStep?.env?.THREADNOTE_BENCHMARK_RUNNER_CLASS).toBe(
       CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,

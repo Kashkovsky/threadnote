@@ -6,6 +6,8 @@ export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS = 'github-hosted-
 export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNTIME = 'bun/1.3.14' as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SOURCE_VERSION = 'threadnote-4.6.0' as const;
 export const CONTEXT_BRIEF_CITATION_SCALE_ARTIFACT_SUITE = 'context-brief-citations-scale-v2' as const;
+export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES = 100 as const;
+export const CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS = 5 as const;
 export const CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE = 'absolute-monotonic-deadline-v1' as const;
 export const CONTEXT_BRIEF_CITATION_RSS_SAMPLE_GAP_POLICY_V2 = {
   breachThresholdMilliseconds: 100,
@@ -1250,9 +1252,11 @@ function rederiveArtifactFailures(input: {
     input.fixture.indexedMemoryCandidates === input.budget.corpusMemoryCandidates
       ? ''
       : `indexed memory corpus ${input.fixture.indexedMemoryCandidates}; required ${input.budget.corpusMemoryCandidates}`,
-    input.evidenceClass !== 'release-scale' || (input.samples === 25 && input.warmups === 5)
+    input.evidenceClass !== 'release-scale' ||
+    (input.samples === CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES &&
+      input.warmups === CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS)
       ? ''
-      : `release evidence requires exactly 25 samples and 5 warmups; received ${input.samples}/${input.warmups}`,
+      : `release evidence requires exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples and ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups; received ${input.samples}/${input.warmups}`,
     /^[0-9a-f]{64}$/u.test(input.execution.builtArtifactSha256)
       ? ''
       : 'benchmark execution artifact digest is missing or malformed',

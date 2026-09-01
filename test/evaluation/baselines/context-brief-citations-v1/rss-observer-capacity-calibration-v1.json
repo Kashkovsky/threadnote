@@ -1,0 +1,36 @@
+{
+  "type": "threadnote-context-brief-rss-observer-capacity-calibration",
+  "version": 1,
+  "prospectiveRun": {
+    "workflowRun": 33466815457,
+    "workflowAttempt": 1,
+    "jobId": 99728282139,
+    "commit": "9d037a04c5f23da0a356d2578d0e0d6af5144a4d",
+    "sourceTree": "f36871a2d43c5e3081338eb2f008ea43bfda66ef",
+    "builtArtifactSha256": "a8e137d9bc0f81cc7c56a15a79fd11f1c2b0c2793b1d6eb796b92853b612453c",
+    "jobLogSha256": "3b273c76985f39360ccc46986bf0e951aac3ebcb341a9d6948a655143b38335b",
+    "artifactProduced": false,
+    "invocation": {
+      "profiles": 3,
+      "samplesPerProfile": 100,
+      "warmupsPerProfile": 5,
+      "totalObservedSamples": 300
+    }
+  },
+  "failure": {
+    "previousMaximumObservations": 256,
+    "firstRejectedObservation": 257,
+    "requestSequence": 513,
+    "lastAcknowledgedSequence": 512,
+    "parentAcknowledgementTimeoutMilliseconds": 30000,
+    "reportedMessage": "Timed out waiting for the RSS observer acknowledgement."
+  },
+  "correction": {
+    "maximumObservations": 300,
+    "maximumProtocolSequence": 601,
+    "capacityDerivedFromReleaseContract": true,
+    "preflightRejectsOversizedSchedules": true,
+    "parentDetectsChildExitBeforeTimeout": true,
+    "childStderrPropagated": true
+  }
+}
