@@ -257,6 +257,18 @@ export function exactKeys(
   }
 }
 
+export function boundedRequestId(value: unknown, label: string): string | number {
+  if (typeof value === 'number' && Number.isSafeInteger(value)) return value;
+  if (typeof value === 'string') return boundedText(value, label, 256);
+  return invalid(`${label} is invalid`);
+}
+
+export function validateResolvedServerRequestV1(params: Record<string, unknown>, threadId: string): void {
+  exactKeys(params, ['requestId', 'threadId'], 'resolved server request');
+  matchingIdentifier(params.threadId, threadId, 'resolved server request thread id');
+  boundedRequestId(params.requestId, 'resolved server request id');
+}
+
 export function protocolDigest(domain: string, value: unknown): string {
   return sha256HexSync(`code-memory-link-agent-protocol-v1\0${domain}\0${JSON.stringify(value)}\n`);
 }

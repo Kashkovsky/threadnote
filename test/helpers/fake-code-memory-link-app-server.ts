@@ -194,6 +194,7 @@ function emitTurn(responseId: number | undefined, params: Record<string, unknown
 
 function emitApprovedTurn(params: Record<string, unknown>): void {
   const completedActionViolation = process.env.THREADNOTE_TEST_COMPLETED_ACTION_VIOLATION === '1';
+  notify('serverRequest/resolved', {requestId: 900, threadId});
   notify('item/completed', {
     item: {
       command: completedActionViolation ? 'rm -f src/service.ts' : 'cat src/service.ts',

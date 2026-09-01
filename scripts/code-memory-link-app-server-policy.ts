@@ -17,6 +17,7 @@ interface ApprovalScope {
 
 const FORBIDDEN_PATH_SEGMENTS = new Set(['.codex', '.git']);
 const SIMPLE_READ_EXECUTABLES = new Set(['cat', 'file', 'head', 'nl', 'stat', 'tail', 'wc']);
+const STDIN_READ_EXECUTABLES = new Set(['cat', 'head', 'nl', 'tail', 'wc']);
 const SIMPLE_FLAGS = new Map<string, ReadonlySet<string>>([
   ['cat', new Set(['-b', '-n', '-s', '--'])],
   ['file', new Set(['-b', '--'])],
@@ -194,7 +195,7 @@ function assertSingleReadCommand(command: string, repositoryRoot: string, cwd: s
   else if (SIMPLE_READ_EXECUTABLES.has(executable)) {
     assertSimpleRead(executable, tokens.slice(1), repositoryRoot, cwd);
   } else {
-    throw new Error('Code Memory Link command executable is outside the reviewed read-only allowlist.');
+    throw new Error(`Code Memory Link command executable ${executable} is outside the reviewed read-only allowlist.`);
   }
 }
 
@@ -207,21 +208,21 @@ function reviewableCommands(item: Record<string, unknown>, repositoryRoot: strin
     }
     if (
       !Array.isArray(item.commandActions) ||
-      (item.source !== 'agent' && item.source !== 'unifiedExecStartup') ||
-      item.commandActions.length !== 1
+      item.commandActions.length === 0 ||
+      item.commandActions.length > 32 ||
+      (item.source !== 'agent' && item.source !== 'unifiedExecStartup')
     ) {
-      throw new Error('Code Memory Link shell command lacks one reviewed local action projection.');
+      throw new Error('Code Memory Link shell command lacks bounded reviewed local action projections.');
     }
-    const action = object(item.commandActions[0], 'command action');
-    const projected = text(action.command, 'code-mode command projection');
-    if (shellTokens[2] !== projected)
-      throw new Error('Code Memory Link shell wrapper differs from its action projection.');
-    if (action.type === 'unknown') {
-      exactKeys(action, ['command', 'type'], 'code-mode compound command action', false);
-      return splitReadCommandChain(projected);
+    const actions = item.commandActions.map(action => object(action, 'command action'));
+    const projected = shellTokens[2]!;
+    for (const action of actions) {
+      if (action.type === 'unknown') {
+        exactKeys(action, ['command', 'type'], 'code-mode unknown command action', false);
+        text(action.command, 'code-mode unknown command projection');
+      } else assertReadOnlyActionProjection([action], repositoryRoot, cwd);
     }
-    assertReadOnlyActionProjection([action], repositoryRoot, cwd);
-    return [projected];
+    return splitReadCommandChain(projected);
   }
   return [command];
 }
@@ -263,7 +264,14 @@ function splitReadCommandChain(command: string): readonly string[] {
       commands.push(nonemptyCommand(command.slice(start, index)));
       start = index + 2;
       index += 1;
-    } else if (';|<>`$(){}\\'.includes(character)) {
+    } else if (character === ';') {
+      commands.push(nonemptyCommand(command.slice(start, index)));
+      start = index + 1;
+    } else if (character === '|') {
+      if (command[index + 1] === '|') throw new Error('Command chain contains unsupported shell control.');
+      commands.push(nonemptyCommand(command.slice(start, index)));
+      start = index + 1;
+    } else if ('<>`$(){}\\'.includes(character)) {
       throw new Error('Command chain contains unsupported shell control or expansion.');
     }
   }
@@ -293,7 +301,9 @@ function assertSimpleRead(executable: string, args: readonly string[], root: str
     if (value.startsWith('-')) throw new Error(`${executable} option is outside the reviewed grammar.`);
     paths.push(value);
   }
-  if (paths.length === 0) throw new Error(`${executable} requires an explicit repository file.`);
+  if (paths.length === 0 && !STDIN_READ_EXECUTABLES.has(executable)) {
+    throw new Error(`${executable} requires an explicit repository file.`);
+  }
   for (const path of paths) containedPath(path, root, cwd);
 }
 
@@ -308,7 +318,7 @@ function assertLs(args: readonly string[], root: string, cwd: string): void {
 }
 
 function assertSed(args: readonly string[], root: string, cwd: string): void {
-  if (args.length < 3 || args[0] !== '-n' || !/^[0-9]+(?:,[0-9]+)?p$/u.test(args[1]!)) {
+  if (args.length < 2 || args[0] !== '-n' || !/^[0-9]+(?:,[0-9]+)?p$/u.test(args[1]!)) {
     throw new Error('sed is limited to one numeric print range.');
   }
   for (const path of args.slice(2)) {

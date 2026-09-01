@@ -247,7 +247,7 @@ function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown)
     environment,
     evidenceHash: null,
     eventSummary,
-    fileChangeStarted: false,
+    fileChangeStarted: (eventSummary?.startedItems.fileChange ?? 0) > 0,
     firstUsefulMemoryUse: false,
     status: 'terminal',
     taskPassed: null,

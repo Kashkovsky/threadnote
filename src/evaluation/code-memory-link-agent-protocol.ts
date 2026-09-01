@@ -33,6 +33,7 @@ import {
   unique,
   uniqueMap,
   validateCodeMemoryLinkThreadSettingsUpdateV1,
+  validateResolvedServerRequestV1,
   type CanonicalJsonValue,
 } from './code-memory-link-agent-protocol-primitives.js';
 import * as contextBriefProtocol from './code-memory-link-context-brief-protocol.js';
@@ -391,6 +392,7 @@ const ALLOWED_NON_TURN_METHODS = new Set([
   'app/list/updated',
   'mcpServer/startupStatus/updated',
   'remoteControl/status/changed',
+  'serverRequest/resolved',
   'thread/started',
   'thread/settings/updated',
   'thread/status/changed',
@@ -1774,15 +1776,16 @@ function validateNonTurnNotification(
   }
   if (notification.method === 'mcpServer/startupStatus/updated') {
     const observedName = boundedText(notification.params.name, 'MCP startup server name', 128);
-    if (observedName !== proxyTool.server) {
-      invalid('an unexpected MCP server appeared in the app-server trace');
-    }
+    if (observedName !== proxyTool.server) invalid('an unexpected MCP server appeared in the app-server trace');
     if (!['ready', 'starting'].includes(String(notification.params.status))) {
       invalid('the Context Brief proxy failed or was cancelled during startup');
     }
-    if (notification.params.threadId != null) {
+    if (notification.params.threadId != null)
       matchingIdentifier(notification.params.threadId, threadId, 'MCP startup thread id');
-    }
+    return;
+  }
+  if (notification.method === 'serverRequest/resolved') {
+    validateResolvedServerRequestV1(notification.params, threadId);
     return;
   }
   if (notification.method === 'account/rateLimits/updated') {
