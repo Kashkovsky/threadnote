@@ -244,7 +244,7 @@ function registerTools(
       server,
       config,
       'recall_context',
-      'Search memory. Results are unread threadnote:// pointers, not evidence; read useful ones with read_context.',
+      'Search memory by query, or navigate verified one-hop relations with memoryRefs alone. Results are unread threadnote:// pointers, not evidence; read useful ones with read_context.',
       recallProgressTiming,
       memoryScope,
     );

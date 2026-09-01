@@ -475,7 +475,7 @@ describe('Threadnote MCP toolsets', () => {
             explain: {type: 'boolean'},
             nodeLimit: {maximum: 100, minimum: 1, type: 'integer'},
             project: {type: 'string'},
-            query: {type: 'string'},
+            query: {description: expect.stringContaining('optional when memoryRefs'), type: 'string'},
             threshold: {maximum: 1, minimum: 0, type: 'number'},
           },
           type: 'object',
@@ -537,6 +537,12 @@ describe('Threadnote MCP toolsets', () => {
           query: 'threadnote',
         });
         expect(validationError).toContain('greater than or equal to 1');
+        const missingQueryAndMemoryRefs = await callErrorText(client, 'recall_context', {
+          project: 'threadnote',
+        });
+        expect(missingQueryAndMemoryRefs).toContain(
+          'needs either a non-empty "query" or at least one "memoryRefs" seed',
+        );
         const missingMemoryRefs = await callErrorText(client, 'recall_context', {
           query: 'threadnote',
           relationTypes: ['depends_on'],
@@ -639,7 +645,7 @@ describe('Threadnote MCP toolsets', () => {
     );
   });
 
-  it('returns budgeted seeded one-hop receipts without exposing internal diagnostics', async () => {
+  it('supports pure seed-only navigation with coherent confidence and next action', async () => {
     await withMcpClient(
       async (client, fixture) => {
         const memory = (topic: string, memoryId: string, body: string, relation?: string) =>
@@ -677,7 +683,6 @@ describe('Threadnote MCP toolsets', () => {
             arguments: {
               memoryRefs: ['threadnote://memory/tn_mcp_connection_seed'],
               project: 'threadnote',
-              query: 'no lexical overlap whatsoever',
               relationTypes: ['depends_on'],
             },
             name: 'recall_context',
@@ -686,13 +691,15 @@ describe('Threadnote MCP toolsets', () => {
           {timeout: 5_000},
         );
 
-        expect(result.isError).not.toBe(true);
+        expect(result.isError, JSON.stringify(result)).not.toBe(true);
         const structured = result.structuredContent as {
+          readonly confidence?: {readonly basis?: string; readonly level?: string; readonly reason?: string};
           readonly memoryConnections?: {
             readonly connections: readonly Record<string, unknown>[];
             readonly coverage: Record<string, unknown>;
             readonly premises: readonly Record<string, unknown>[];
           };
+          readonly nextAction?: {readonly tool?: string; readonly uris?: readonly string[]};
           readonly results?: readonly {readonly uri?: string}[];
         };
         expect(structured.memoryConnections?.premises).toEqual([
@@ -707,7 +714,18 @@ describe('Threadnote MCP toolsets', () => {
             resolution: 'resolved',
           }),
         ]);
-        expect(structured.results?.some(item => item.uri?.includes('mcp-connection-target.md'))).toBe(true);
+        expect(structured.results).toEqual([
+          expect.objectContaining({uri: expect.stringContaining('mcp-connection-target.md')}),
+        ]);
+        expect(structured.confidence).toMatchObject({
+          basis: 'explicit-memory-connection',
+          level: 'high',
+          reason: expect.stringContaining('navigation only, not entailment'),
+        });
+        expect(structured.nextAction).toEqual({
+          tool: 'read_context',
+          uris: [structured.results?.[0]?.uri],
+        });
         expect(structured.memoryConnections).not.toHaveProperty('diagnostics');
         expect((result.content as TextContent[]).map(item => item.text).join('\n')).toContain(
           'Relations are navigation evidence, not entailment.',

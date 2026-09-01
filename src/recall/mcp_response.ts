@@ -41,6 +41,11 @@ export interface RecallMcpLogicalResponse {
   readonly warnings?: readonly RecallOperationalWarning[];
 }
 
+export interface RecallMcpConfidence extends RecallConfidence {
+  /** Identifies whether confidence covers ranked relevance or verified pointer navigation. */
+  readonly basis: 'explicit-memory-connection' | 'ranked-relevance';
+}
+
 export interface RecallMcpResponseProjectionOptions {
   readonly budgetTokens?: number;
   readonly explain?: boolean;
@@ -55,7 +60,7 @@ export interface ProjectedRecallMcpResponse {
 
 export interface RecallMcpStructuredContent {
   readonly [key: string]: unknown;
-  readonly confidence?: RecallConfidence;
+  readonly confidence?: RecallMcpConfidence;
   readonly memoryScope?: unknown;
   readonly memoryConnections?: RecallMcpMemoryConnections;
   readonly nextAction: {
@@ -190,14 +195,20 @@ function renderStructuredContent(
   const memoryConnections = logical.memoryConnections
     ? renderMemoryConnections(logical.memoryConnections, new Set(results.map(result => result.uri)), receiptLimits)
     : undefined;
+  const actionableConnectionUris = resolvedConnectionResultUris(logical.memoryConnections, results);
+  const nextActionUris = uniqueStrings([...actionableConnectionUris, ...results.map(result => result.uri)]).slice(
+    0,
+    NEXT_ACTION_URI_LIMIT,
+  );
+  const confidence = renderConfidence(logical.confidence, actionableConnectionUris.length > 0);
   const omittedResults = logical.results.length - results.length;
   return {
-    ...(logical.confidence === undefined ? {} : {confidence: logical.confidence}),
+    ...(confidence === undefined ? {} : {confidence}),
     ...(logical.memoryScope === undefined ? {} : {memoryScope: logical.memoryScope}),
     ...(memoryConnections === undefined ? {} : {memoryConnections}),
     nextAction: {
       tool: 'read_context',
-      uris: results.slice(0, NEXT_ACTION_URI_LIMIT).map(result => result.uri),
+      uris: nextActionUris,
     },
     output: {
       budgetTokens,
@@ -212,6 +223,43 @@ function renderStructuredContent(
     results,
     ...(warnings.length > 0 ? {warnings} : {}),
   };
+}
+
+function resolvedConnectionResultUris(
+  memoryConnections: RecallMemoryConnectionsResult | undefined,
+  results: readonly RecallMcpResult[],
+): readonly string[] {
+  if (memoryConnections === undefined || results.length === 0) return [];
+  const resultUris = new Set(results.map(result => result.uri));
+  return uniqueStrings(
+    memoryConnections.connections.flatMap(connection =>
+      connection.resolution === 'resolved' &&
+      connection.neighborUri !== undefined &&
+      resultUris.has(connection.neighborUri)
+        ? [connection.neighborUri]
+        : [],
+    ),
+  );
+}
+
+function renderConfidence(
+  confidence: RecallConfidence | undefined,
+  hasActionableConnection: boolean,
+): RecallMcpConfidence | undefined {
+  if (hasActionableConnection) {
+    return {
+      basis: 'explicit-memory-connection',
+      level: 'high',
+      margin: 1,
+      reason: 'Verified one-hop relation; confidence covers navigation only, not entailment.',
+      score: 1,
+    };
+  }
+  return confidence === undefined ? undefined : {...confidence, basis: 'ranked-relevance'};
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)];
 }
 
 function renderMemoryConnections(

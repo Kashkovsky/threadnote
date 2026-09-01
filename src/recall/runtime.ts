@@ -234,19 +234,20 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
         relationTypes: input.relationTypes,
       })
     : undefined;
+  const navigationOnly = input.query.trim().length === 0 && memoryConnections !== undefined;
   const semanticScores = Option.getOrUndefined(semanticResult.scores);
   const rankingUris = [
     ...new Set([
       ...input.passes.flatMap(pass => pass.map(hit => hit.uri.replace(/#.*$/, ''))),
       ...input.exactMatches.map(match => match.uri.replace(/#.*$/, '')),
-      ...(semanticScores?.keys() ?? []),
+      ...(!navigationOnly ? (semanticScores?.keys() ?? []) : []),
       ...(memoryConnections?.candidates.map(candidate => candidate.uri) ?? []),
     ]),
   ];
   const records = yield* input.readRecords(rankingUris);
   const now = new Date(yield* Clock.currentTimeMillis);
   const queryVariants = recallQueryVariants(input.query, input.queryVariants);
-  const indexQueries = [input.query, ...queryVariants];
+  const indexQueries = navigationOnly ? [] : [input.query, ...queryVariants];
   const scopeSets: ReadonlyArray<readonly string[] | undefined> = input.allowedUriScopes?.length
     ? [input.allowedUriScopes]
     : input.preferredUriScopes?.length
@@ -265,7 +266,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       requiredUris: rankingUris,
     })),
   );
-  const workspaceScope = input.workspaceScope?.trim();
+  const workspaceScope = navigationOnly ? undefined : input.workspaceScope?.trim();
   const workspaceIndexSelections = workspaceScope
     ? scopeSets.map(allowedUriScopes => ({
         allowedUriScopes,
@@ -277,7 +278,7 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       }))
     : [];
   const workspaceProject = input.project?.trim() || undefined;
-  const workspaceBranch = input.workspaceBranch?.trim();
+  const workspaceBranch = navigationOnly ? undefined : input.workspaceBranch?.trim();
   const branchIndexSelections = workspaceBranch
     ? scopeSets.map(allowedUriScopes => ({
         allowedUriScopes,
@@ -452,19 +453,21 @@ const prepareRecallSectionsAttempt = Effect.fn('recall.prepareSectionsAttempt')(
       recencyReserve: RECALL_RECENCY_CANDIDATE_RESERVE,
     },
   );
-  const indexedCandidates = yield* applySelectedNativeReranker(
-    config.agentContextHome,
-    input.query,
-    semanticCandidates,
-    input.rerankerCache,
-  ).pipe(
-    Effect.catch(() =>
-      Effect.sync(() => {
-        if (input.rerankerCache) input.rerankerCache.unavailable = true;
-        return applyCachedRerankerScores(semanticCandidates, input.rerankerCache);
-      }),
-    ),
-  );
+  const indexedCandidates = navigationOnly
+    ? semanticCandidates
+    : yield* applySelectedNativeReranker(
+        config.agentContextHome,
+        input.query,
+        semanticCandidates,
+        input.rerankerCache,
+      ).pipe(
+        Effect.catch(() =>
+          Effect.sync(() => {
+            if (input.rerankerCache) input.rerankerCache.unavailable = true;
+            return applyCachedRerankerScores(semanticCandidates, input.rerankerCache);
+          }),
+        ),
+      );
   const expansionCandidates = mergeRecallExpansionCandidates(
     recallIndexCandidateSets,
     rankingUris,

@@ -121,6 +121,7 @@ import {
   recallSelectionAnchorIds,
   recallSelectionQueries,
   selectedRecallCandidateUris,
+  type McpRecallSemanticScoresResult,
 } from '../../recall/runtime.js';
 import {
   McpServerOperationError,
@@ -703,7 +704,7 @@ export function registerSearchTool(
           minimum: RECALL_MCP_RESPONSE_MINIMUM_ESTIMATED_TOKENS,
           maximum: RECALL_MCP_RESPONSE_MAXIMUM_ESTIMATED_TOKENS,
         }),
-        query: McpInput.string('Task query'),
+        query: McpInput.string('Task query; optional when memoryRefs supplies explicit navigation seeds'),
         uri: McpInput.string('Scope subtree'),
         callerCwd: McpInput.string('Absolute workspace cwd'),
         project: McpInput.string('Project + projectless; omit for global'),
@@ -740,10 +741,6 @@ export function registerSearchTool(
       },
       {progress},
     ) => {
-      const checkedQuery = requiredText(query, name, 'query', {query: 'unity-ui-ccc latest handoff'});
-      if (!checkedQuery.ok) {
-        return checkedQuery.error;
-      }
       const checkedUri = optionalResourceUri(uri, name);
       if (!checkedUri.ok) {
         return checkedUri.error;
@@ -768,6 +765,16 @@ export function registerSearchTool(
       } catch (error) {
         return argumentError(errorMessage(error));
       }
+      const normalizedQuery = query?.trim() ?? '';
+      if (!normalizedQuery && memoryConnections === undefined) {
+        return argumentError(
+          [
+            `Threadnote MCP tool "${name}" needs either a non-empty "query" or at least one "memoryRefs" seed.`,
+            'Pass JSON arguments to the tool call.',
+            `Examples: ${name}({"query":"unity-ui-ccc latest handoff"}) or ${name}({"memoryRefs":["threadnote://memory/tn_example"]})`,
+          ].join('\n'),
+        );
+      }
       const scopedUri = checkedUri.value ?? memoryScope?.root;
       if (scopedUri && memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
         return argumentError(`${name} uri must stay within ${memoryScope.root}.`);
@@ -779,7 +786,7 @@ export function registerSearchTool(
           callerCwd,
           explain: explain === true,
           project: project?.trim() || undefined,
-          query: checkedQuery.value,
+          query: normalizedQuery,
           pinnedUri: scopedUri,
           nodeLimit,
           includeArchived: includeArchived === true,
@@ -886,31 +893,37 @@ function runRecallTool(
           }),
         );
     yield* progress.report(RECALL_MCP_PROGRESS.workspaceContext);
+    const query = params.query;
+    const navigationOnly = query.length === 0;
     const workspaceComponent =
-      !params.pinnedUri && !params.workset
+      !navigationOnly && !params.pinnedUri && !params.workset
         ? yield* resolveWorkspaceComponentContext({cwd: params.callerCwd, includeProcessCwd: false})
         : undefined;
     const workspaceBranch =
-      !params.pinnedUri && !params.workset && recallQueryRequestsBranchContext(params.query)
+      !navigationOnly && !params.pinnedUri && !params.workset && recallQueryRequestsBranchContext(query)
         ? yield* resolveWorkspaceBranch({cwd: params.callerCwd, includeProcessCwd: false})
         : undefined;
-    const query = params.query;
-    const projectQuery = yield* enrichRecallQueryWithWorkspaceProjectContext(params.query, {
-      cwd: params.callerCwd,
-      includeProcessCwd: false,
-    });
+    const projectQuery = navigationOnly
+      ? ''
+      : yield* enrichRecallQueryWithWorkspaceProjectContext(query, {
+          cwd: params.callerCwd,
+          includeProcessCwd: false,
+        });
     const explicitProjectName = params.pinnedUri ? undefined : params.project;
     const queryProject = params.pinnedUri
       ? undefined
       : yield* inferProjectFromQuery(config.manifestPath, explicitProjectName ?? params.query);
     const project =
       queryProject ??
-      (params.pinnedUri || explicitProjectName
+      (navigationOnly || params.pinnedUri || explicitProjectName
         ? undefined
         : yield* inferProjectFromQuery(config.manifestPath, projectQuery));
     const inferredProjectMemoryName = params.pinnedUri
       ? undefined
-      : (project?.name ?? (yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
+      : (project?.name ??
+        (navigationOnly
+          ? undefined
+          : yield* resolveWorkspaceRepoName({cwd: params.callerCwd, includeProcessCwd: false})));
     const recallProjectName = explicitProjectName ?? inferredProjectMemoryName;
     const thresholdPolicy =
       params.threshold === undefined
@@ -936,7 +949,9 @@ function runRecallTool(
       ? undefined
       : explicitWorkset
         ? explicitWorkset
-        : yield* inferWorksetFromQuery(config.manifestPath, projectQuery);
+        : navigationOnly
+          ? undefined
+          : yield* inferWorksetFromQuery(config.manifestPath, projectQuery);
     if (workset && workset.projects.length > 0) {
       sections.push(`Workset scope: ${workset.name} (${workset.projects.map(member => member.name).join(', ')})`);
       const alreadyScoped = new Set(
@@ -967,10 +982,12 @@ function runRecallTool(
     );
     const exactMatches = exactLookup.matches;
     let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
-    const environment = (yield* SystemInfo).environment();
-    const effectAiResult = yield* resolveEffectAiConfiguration(config, environment).pipe(Effect.result);
-    const effectAi = Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
-    if (Result.isFailure(effectAiResult)) {
+    const effectAiResult = navigationOnly
+      ? undefined
+      : yield* resolveEffectAiConfiguration(config, (yield* SystemInfo).environment()).pipe(Effect.result);
+    const effectAi =
+      effectAiResult !== undefined && Result.isSuccess(effectAiResult) ? effectAiResult.success : undefined;
+    if (effectAiResult !== undefined && Result.isFailure(effectAiResult)) {
       sections.push(
         `Local AI recall unavailable: ${errorMessage(effectAiResult.failure)}. Deterministic recall continued.`,
       );
@@ -978,40 +995,45 @@ function runRecallTool(
     let hybridMinimumScore = recallHybridMinimumScore(Number(threshold));
     const expansionQueries: string[] = [];
     const recallLimit = params.nodeLimit ?? 12;
-    const semanticRetrieval = yield* withMcpProgressHeartbeat(
-      progress,
-      RECALL_MCP_PROGRESS.semanticRetrieval,
-      withAnonymousTelemetryPhase(
-        'recall.semantic-retrieval',
-        withProductionPhaseTiming(
-          'recall.semantic-retrieval',
-          loadMcpRecallSemanticScoresResult(
-            config,
-            query,
-            recallLimit,
-            eligibility,
-            params.pinnedUri ? [params.pinnedUri] : undefined,
+    const semanticRetrieval: McpRecallSemanticScoresResult = navigationOnly
+      ? {
+          result: {corpusGeneration: Option.none(), scores: Option.none(), warning: Option.none()},
+          status: 'unavailable',
+        }
+      : yield* withMcpProgressHeartbeat(
+          progress,
+          RECALL_MCP_PROGRESS.semanticRetrieval,
+          withAnonymousTelemetryPhase(
+            'recall.semantic-retrieval',
+            withProductionPhaseTiming(
+              'recall.semantic-retrieval',
+              loadMcpRecallSemanticScoresResult(
+                config,
+                query,
+                recallLimit,
+                eligibility,
+                params.pinnedUri ? [params.pinnedUri] : undefined,
+              ),
+              result =>
+                result.status === 'available'
+                  ? 'success'
+                  : result.status === 'unavailable'
+                    ? 'unavailable'
+                    : result.status === 'timed-out'
+                      ? 'timed-out'
+                      : 'failure',
+            ),
+            result =>
+              result.status === 'available'
+                ? 'success'
+                : result.status === 'unavailable'
+                  ? 'unavailable'
+                  : result.status === 'timed-out'
+                    ? 'timed-out'
+                    : 'failure',
           ),
-          result =>
-            result.status === 'available'
-              ? 'success'
-              : result.status === 'unavailable'
-                ? 'unavailable'
-                : result.status === 'timed-out'
-                  ? 'timed-out'
-                  : 'failure',
-        ),
-        result =>
-          result.status === 'available'
-            ? 'success'
-            : result.status === 'unavailable'
-              ? 'unavailable'
-              : result.status === 'timed-out'
-                ? 'timed-out'
-                : 'failure',
-      ),
-      progressTiming.heartbeatMilliseconds,
-    );
+          progressTiming.heartbeatMilliseconds,
+        );
     let semanticResult = semanticRetrieval.result;
     const surfacedSemanticWarnings = new Set<string>();
     const appendSemanticWarning = (result: typeof semanticResult) => {
@@ -1065,7 +1087,7 @@ function runRecallTool(
         progressTiming.heartbeatMilliseconds,
       );
     let recallSections = yield* prepareSections();
-    const shouldAttemptAiExpansion = shouldExpandRecall(recallSections.confidence);
+    const shouldAttemptAiExpansion = !navigationOnly && shouldExpandRecall(recallSections.confidence);
     const indexSelectionCandidates = shouldAttemptAiExpansion
       ? buildRecallIndexSelectionCandidates(recallSections.expansionCandidates, recallProjectName, 24)
       : [];
@@ -1091,18 +1113,17 @@ function runRecallTool(
           )
         : [];
     const needsFallbackExpansion =
-      shouldExpandRecall(recallSections.confidence) &&
+      shouldAttemptAiExpansion &&
       groundedExpansionQueries.length < recallRewriteLimitForConfidence(recallSections.confidence);
-    const expansionVocabulary =
-      needsFallbackExpansion && shouldExpandRecall(recallSections.confidence)
-        ? yield* loadRecallExpansionVocabulary(config, {
-            allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris],
-            eligibility,
-            includeInactive: params.includeArchived,
-            project: recallProjectName,
-            rankedCandidates: recallSections.expansionCandidates,
-          }).pipe(Effect.catch(() => Effect.succeed([])))
-        : [];
+    const expansionVocabulary = needsFallbackExpansion
+      ? yield* loadRecallExpansionVocabulary(config, {
+          allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris],
+          eligibility,
+          includeInactive: params.includeArchived,
+          project: recallProjectName,
+          rankedCandidates: recallSections.expansionCandidates,
+        }).pipe(Effect.catch(() => Effect.succeed([])))
+      : [];
     const fallbackExpansionQueries = needsFallbackExpansion
       ? yield* expandWeakRecallQueryEffect(
           {

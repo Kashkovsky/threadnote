@@ -54,6 +54,8 @@ describe('agent instructions', () => {
       '`recall_context`',
       '`memoryRefs`',
       '`relationTypes`',
+      'pure seed-only navigation',
+      '`explicit-memory-connection`',
       'one-hop expansion',
       'not recursive graph discovery',
       'truncated connection coverage is not evidence',
