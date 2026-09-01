@@ -130,6 +130,44 @@ describe('standalone release workflows', () => {
     }),
   );
 
+  it.effect('keeps the v4.6.0 publication recovery exact, one-shot, and artifact-bound', () =>
+    Effect.gen(function* () {
+      const recovery = yield* readProjectFile('.github/workflows/publish-v4.6.0-recovery.yml');
+
+      expect(recovery).toContain('workflow_dispatch:');
+      expect(recovery).not.toMatch(/^\s+push:\s*$/m);
+      expect(recovery).toContain('group: publish-v4.6.0');
+      expect(recovery).toContain('TAG_COMMIT: 242d0c47fec4d643154415cb69d05036cd4dc834');
+      expect(recovery).toContain('CANDIDATE_COMMIT: 9ac28435659ce421ebc78b302616eaac75112597');
+      expect(recovery).toContain("REHEARSAL_RUN_ID: '33518869399'");
+      expect(recovery).toContain('refs/threadnote-v4.6.0-recovery-tag^{commit}');
+      expect(recovery).toContain('verify-code-memory-link-release-deferment.ts');
+      expect(recovery).toContain('run.conclusion !== "success"');
+      expect(recovery).toContain('Sign nested native code and Bun executable');
+      expect(recovery).toContain('Notarize the exact release payload');
+      expect(recovery).toContain('Verify PowerShell installer and installed runtime');
+      expect(recovery).toContain('artifact.digest !== expected.digest');
+      expect(recovery).toContain('artifact.expired !== false');
+      expect(recovery.match(/sha256:[0-9a-f]{64}/g)).toHaveLength(4);
+      expect(recovery.match(/artifact: release-(?:darwin|windows)-(?:arm64|x64)$/gm)).toHaveLength(4);
+      expect(recovery.match(/ref: 9ac28435659ce421ebc78b302616eaac75112597/g)).toHaveLength(1);
+      expect(recovery).toContain('bun-linux-x64-baseline');
+      expect(recovery).toContain('bun-linux-arm64');
+      expect(recovery).toContain('doctor --dry-run --strict');
+      expect(recovery).toContain('test/e2e/local-bins.e2e.ts');
+      expect(recovery).toContain('actions/download-artifact@v8');
+      expect(recovery).toContain('artifact-ids: ${{ matrix.artifact_id }}');
+      expect(recovery).toContain('digest-mismatch: error');
+      expect(recovery).toContain('merge-multiple: true');
+      expect(recovery.match(/artifact_id: [0-9]+$/gm)).toHaveLength(4);
+      expect(recovery).toContain('run-id: 33518869399');
+      expect(recovery).toContain('needs: [verify, linux, promote-rehearsal]');
+      expect(recovery).toContain('uses: ./.github/workflows/publish-release-assets.yml');
+      expect(recovery).toContain('release_tag: v4.6.0');
+      expect(recovery).toContain('release_sha: 242d0c47fec4d643154415cb69d05036cd4dc834');
+    }),
+  );
+
   it.effect('requires curated versioned notes and prepends them to generated release notes', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
