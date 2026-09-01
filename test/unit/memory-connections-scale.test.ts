@@ -138,6 +138,7 @@ describe('memory-connections one-hop scale contract', () => {
       omittedConnectionReceiptCount: 1,
       projectedConnections: value.projectedConnections.slice(0, -1),
       projectedCoverageConnectionCount: value.projectedConnections.length - 1,
+      projectedCoverageResultCount: value.projectedCoverageResultCount - 1,
       projectedConnectionCoverageTruncated: true,
     });
     const honestlyTruncated = mutateCold(omitProjectedReceipt, 1);
@@ -147,6 +148,18 @@ describe('memory-connections one-hop scale contract', () => {
       mutateCold(value => ({...omitProjectedReceipt(value), projectedConnectionCoverageTruncated: false}), 1),
     );
     expect(missingCoverage.some(failure => failure.startsWith('projected connection coverage accuracy'))).toBe(true);
+
+    const inflatedResultCoverage = failures(
+      mutateCold(value => ({...value, projectedCoverageResultCount: value.projectedCoverageResultCount + 1}), 1),
+    );
+    expect(inflatedResultCoverage.some(failure => failure.startsWith('projected connection coverage accuracy'))).toBe(
+      true,
+    );
+
+    const missingActionableBundle = failures(withProjectedReceiptPrefix(baseline, 1, 0, true));
+    expect(missingActionableBundle.some(failure => failure.startsWith('projected connection coverage accuracy'))).toBe(
+      true,
+    );
 
     const missingAccounting = failures(
       mutateCold(
@@ -220,8 +233,13 @@ describe('memory-connections one-hop scale contract', () => {
         (scenarioIndex, prefixSeed, retainPremise) => {
           const baseline = releaseCapture();
           const connectionCount = baseline.scenarios[scenarioIndex]!.cold.projectedConnections.length;
-          const retainedConnectionCount = prefixSeed % (connectionCount + 1);
-          const capture = withProjectedReceiptPrefix(baseline, scenarioIndex, retainedConnectionCount, retainPremise);
+          const retainedConnectionCount = connectionCount === 0 ? 0 : 1 + (prefixSeed % connectionCount);
+          const capture = withProjectedReceiptPrefix(
+            baseline,
+            scenarioIndex,
+            retainedConnectionCount,
+            connectionCount === 0 ? retainPremise : true,
+          );
           expect(releaseArtifact(capture).gate).toEqual({failures: [], passed: true});
         },
       ),
@@ -309,7 +327,10 @@ describe('memory-connections one-hop scale contract', () => {
         expect(scenario.cold.projectedOutputTruncated).toBe(false);
         expect(scenario.cold.projectedCoverageConnectionCount).toBe(scenario.cold.projectedConnections.length);
         expect(scenario.cold.projectedCoveragePremiseCount).toBe(scenario.cold.projectedPremises.length);
-        expect(scenario.cold.projectedCoverageResultCount).toBe(scenario.cold.returnedMemoryIds.length);
+        expect(scenario.cold.projectedCoverageResultCount).toBe(projectedReceiptBackedResultCount(scenario.cold));
+        if (scenario.cold.returnedMemoryIds.length > 0) {
+          expect(hasActionableProjectedBundle(scenario.cold)).toBe(true);
+        }
         expect(scenario.cold.projectedConnections.length + scenario.cold.omittedConnectionReceiptCount).toBe(
           scenario.expectedMemoryIds.length,
         );
@@ -439,10 +460,41 @@ function withProjectedReceiptPrefix(
     projectedConnections,
     projectedCoverageConnectionCount: projectedConnections.length,
     projectedCoveragePremiseCount: projectedPremises.length,
+    projectedCoverageResultCount: projectedReceiptBackedResultCount({
+      ...scenario.cold,
+      projectedConnections,
+    }),
     projectedConnectionCoverageTruncated:
       scenario.cold.retrievalTruncated || omittedConnectionReceiptCount > 0 || omittedPremiseReceiptCount > 0,
     projectedPremises,
   });
+}
+
+function projectedReceiptBackedResultCount(value: MemoryConnectionsScaleObservationV1): number {
+  const returnedMemoryIds = new Set(value.returnedMemoryIds);
+  return new Set(
+    value.projectedConnections.flatMap(connection =>
+      connection.neighborMemoryId !== null && returnedMemoryIds.has(connection.neighborMemoryId)
+        ? [connection.neighborMemoryId]
+        : [],
+    ),
+  ).size;
+}
+
+function hasActionableProjectedBundle(value: MemoryConnectionsScaleObservationV1): boolean {
+  const returnedMemoryIds = new Set(value.returnedMemoryIds);
+  return value.projectedConnections.some(
+    connection =>
+      connection.resolution === 'resolved' &&
+      (connection.currentness === 'current' || connection.currentness === 'historical') &&
+      connection.neighborMemoryId !== null &&
+      returnedMemoryIds.has(connection.neighborMemoryId) &&
+      value.projectedPremises.some(
+        premise =>
+          premise.requestedOrdinal === connection.requestedOrdinal &&
+          (premise.state === 'current' || premise.state === 'historical'),
+      ),
+  );
 }
 
 function corruptConnectionReceipt(

@@ -1,7 +1,7 @@
 import {TestError} from '../helpers/test-error.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
 import {it as effectIt} from '@effect/vitest';
-import {Cause, Deferred, Effect, Exit, Fiber, FileSystem, Path, PlatformError} from 'effect';
+import {Cause, Clock, Deferred, Duration, Effect, Exit, Fiber, FileSystem, Path, PlatformError, Queue} from 'effect';
 import {TestClock} from 'effect/testing';
 import fc from 'fast-check';
 import {describe, expect} from 'vitest';
@@ -530,15 +530,19 @@ function windowsEntriesAfterLockContention(
     Effect.gen(function* () {
       const {fs, home, path} = yield* ownedTestHome(`windows-contention-${releaseAfterMilliseconds}`);
       const lockPath = path.join(home, 'locks', 'production-log.lock');
+      const retryIntervalMilliseconds = 25;
       const acquired = yield* Deferred.make<void>();
       const contentionObserved = yield* Deferred.make<void>();
       const applicationStarted = yield* Deferred.make<void>();
+      const firstRetrySleepScheduled = yield* Deferred.make<void>();
+      const postReleaseRetrySleeps = yield* Queue.unbounded<void>();
       const release = yield* Deferred.make<void>();
+      let releaseRequested = false;
       const ownerFiber = yield* withExclusiveFileLock(
         fs,
         lockPath,
         {
-          retryIntervalMilliseconds: 25,
+          retryIntervalMilliseconds,
           staleAfterMilliseconds: 30_000,
           waitTimeoutMilliseconds: 20_000,
         },
@@ -562,16 +566,35 @@ function windowsEntriesAfterLockContention(
       });
       const nativeSystem = yield* SystemInfo;
       const windowsSystem = SystemInfo.of({...nativeSystem, platform: 'win32'});
+      const nativeClock = yield* Clock.Clock;
+      const observedClock: Clock.Clock = {
+        ...nativeClock,
+        sleep: duration =>
+          Duration.toMillis(duration) === retryIntervalMilliseconds
+            ? Effect.gen(function* () {
+                const sleepFiber = yield* nativeClock.sleep(duration).pipe(Effect.forkChild({startImmediately: true}));
+                yield* Deferred.succeed(firstRetrySleepScheduled, undefined);
+                if (releaseRequested) {
+                  yield* Queue.offer(postReleaseRetrySleeps, undefined);
+                }
+                return yield* Fiber.join(sleepFiber);
+              })
+            : nativeClock.sleep(duration),
+      };
       const writerFiber = yield* withProductionLogging(
         home,
         {component: 'cli', operation: 'logs'},
         Deferred.succeed(applicationStarted, undefined),
       ).pipe(
+        Effect.provideService(Clock.Clock, observedClock),
         Effect.provideService(FileSystem.FileSystem, observedFs),
         Effect.provideService(SystemInfo, windowsSystem),
         Effect.forkChild({startImmediately: true}),
       );
       yield* Deferred.await(contentionObserved);
+      // The write failure is observed before the lock loop registers its virtual sleep. Wait for that registration so
+      // TestClock cannot advance past asynchronous filesystem cleanup and strand the writer on a later retry deadline.
+      yield* Deferred.await(firstRetrySleepScheduled);
 
       yield* TestClock.adjust(releaseAfterMilliseconds);
       if (options.awaitApplicationStartBeforeRelease === true) {
@@ -579,9 +602,18 @@ function windowsEntriesAfterLockContention(
         // resume the owner before the contender after TestClock's cooperative wake-up and make this boundary racy.
         yield* Deferred.await(applicationStarted);
       }
+      releaseRequested = true;
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(ownerFiber);
-      yield* TestClock.adjust(25);
+      yield* TestClock.adjust(retryIntervalMilliseconds);
+      while (
+        yield* Effect.race(
+          Fiber.await(writerFiber).pipe(Effect.as(false)),
+          Queue.take(postReleaseRetrySleeps).pipe(Effect.as(true)),
+        )
+      ) {
+        yield* TestClock.adjust(retryIntervalMilliseconds);
+      }
       yield* Fiber.join(writerFiber);
 
       return parseEntries(yield* fs.readFileString(productionLogPath(path, home)));
