@@ -162,6 +162,7 @@ const rssObserverCapacityCalibration = Schema.decodeUnknownSync(
   ).text(),
 );
 const benchmarkWorkflow = await Bun.file('.github/workflows/benchmarks.yml').text();
+const releaseGuide = await Bun.file('docs/releasing.md').text();
 const scaleEvaluationSource = await Bun.file('src/evaluation/context-brief-citation-scale.ts').text();
 
 describe('Context Brief citation scale benchmark', () => {
@@ -858,6 +859,9 @@ describe('Context Brief citation scale benchmark', () => {
     expect(command).toContain('--memory-candidates 100000');
     expect(command).toContain(`--samples ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES}`);
     expect(command).toContain(`--warmups ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS}`);
+    expect(releaseGuide).toContain(
+      `memory candidates, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_SAMPLES} samples, exactly ${CONTEXT_BRIEF_CITATION_SCALE_RELEASE_WARMUPS} warmups`,
+    );
     expect(command).toContain('--fail-on-budget');
     expect(benchmarkStep?.env?.THREADNOTE_BENCHMARK_RUNNER_CLASS).toBe(
       CONTEXT_BRIEF_CITATION_SCALE_RELEASE_RUNNER_CLASS,
