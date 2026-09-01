@@ -43,6 +43,11 @@ export interface RecallMemoryLinkSeed {
   readonly requestedOrdinal: number;
 }
 
+/** @internal A receipt-proved stable identity for one live ID-less canonical source. */
+export interface RecallMemoryLinkWitnessedSource extends RecallMemoryLinkSeed {
+  readonly uri: string;
+}
+
 export interface RecallMemoryLinkMatch {
   readonly direction: 'incoming' | 'outgoing';
   readonly relationOrdinal: number;
@@ -75,6 +80,8 @@ export interface RecallMemoryLinkQueryOptions {
   readonly relationTypes?: readonly MemoryRelationType[];
   /** @internal Restricts canonical source edges to memories current at this instant. */
   readonly sourceCurrentAt?: Date;
+  /** @internal Enables an exact-URI outgoing lane only for receipt-witnessed ID-less premises. */
+  readonly witnessedSources?: readonly RecallMemoryLinkWitnessedSource[];
 }
 
 interface RecallMemoryLinkSelectionRow {
@@ -239,6 +246,7 @@ export const selectRecallMemoryLinks = Effect.fn('recall.selectMemoryLinks')(fun
     ),
   );
   const directions = normalizeMemoryLinkDirections(options.directions);
+  const witnessedSourceBySeed = normalizeWitnessedMemoryLinkSources(options.witnessedSources ?? [], seeds);
   for (const direction of directions) {
     const rowsBySeed = new Map<string, RecallMemoryLinkSelectionRow[]>();
     for (let offset = 0; offset < seeds.length; offset += seedQueryBatchSize) {
@@ -257,6 +265,30 @@ export const selectRecallMemoryLinks = Effect.fn('recall.selectMemoryLinks')(fun
         const seedRows = rowsBySeed.get(key) ?? [];
         seedRows.push(row);
         rowsBySeed.set(key, seedRows);
+      }
+      if (direction === 'outgoing') {
+        const witnessedBatch = seedBatch.flatMap(seed => {
+          const witnessed = witnessedSourceBySeed.get(memoryLinkSeedKey(seed.memoryId, seed.requestedOrdinal));
+          return witnessed === undefined ? [] : [witnessed];
+        });
+        const witnessedQuery = buildBoundedWitnessedRecallMemoryLinkRawQueryWithContext(
+          witnessedBatch,
+          selectionContext,
+          scanLimit + 1,
+        );
+        if (witnessedQuery !== undefined) {
+          const witnessedRows = yield* sql.unsafe<RecallMemoryLinkSelectionRow>(
+            witnessedQuery.sql,
+            witnessedQuery.params,
+          );
+          rawRowCount += witnessedRows.length;
+          for (const row of witnessedRows) {
+            const key = memoryLinkSeedKey(row.requested_memory_id, row.requested_ordinal);
+            const seedRows = rowsBySeed.get(key) ?? [];
+            seedRows.push(row);
+            rowsBySeed.set(key, seedRows);
+          }
+        }
       }
     }
     for (const seed of seeds) {
@@ -293,7 +325,15 @@ export const selectRecallMemoryLinks = Effect.fn('recall.selectMemoryLinks')(fun
         for (const [sourcePath, memory] of newlyRead) canonicalMemoryByPath.set(sourcePath, memory);
         const batchResults: RecallMemoryLinkCanonicalSelectionResult[] = batch.map(row => {
           const memory = canonicalMemoryByPath.get(row.source_path);
-          if (!canonicalMemoryLinkSourceMatches(row.source_uri, memory, options)) {
+          const witnessedSource = witnessedSourceBySeed.get(
+            memoryLinkSeedKey(row.requested_memory_id, row.requested_ordinal),
+          );
+          const isWitnessedSource =
+            direction === 'outgoing' &&
+            row.source_memory_id === '' &&
+            witnessedSource?.uri === row.source_uri &&
+            canonicalWitnessedMemoryLinkSourceMatches(row.source_uri, memory, options);
+          if (!isWitnessedSource && !canonicalMemoryLinkSourceMatches(row.source_uri, memory, options)) {
             return {canonicalMismatch: true};
           }
           if (!canonicalMemoryLinkSourceLifecycleMatchesRow(memory, row)) {
@@ -306,7 +346,12 @@ export const selectRecallMemoryLinks = Effect.fn('recall.selectMemoryLinks')(fun
             indexedMemoryLinkMatchesRow(candidate, row),
           );
           if (!link) return {canonicalMismatch: true};
-          verifiedCanonicalRecordsByUri.set(memory.uri, memory);
+          verifiedCanonicalRecordsByUri.set(
+            memory.uri,
+            isWitnessedSource
+              ? {...memory, metadata: {...memory.metadata, memoryId: witnessedSource.memoryId}}
+              : memory,
+          );
           return {
             canonicalMismatch: false,
             match: {
@@ -315,7 +360,7 @@ export const selectRecallMemoryLinks = Effect.fn('recall.selectMemoryLinks')(fun
               relationOrigin: row.relation_origin,
               relationType: row.relation_type,
               requestedOrdinal: seed.requestedOrdinal,
-              sourceMemoryId: row.source_memory_id,
+              sourceMemoryId: isWitnessedSource ? witnessedSource.memoryId : row.source_memory_id,
               sourceUri: row.source_uri,
               ...(row.target_memory_id ? {targetMemoryId: row.target_memory_id} : {}),
             },
@@ -357,6 +402,20 @@ function canonicalMemoryLinkSourceMatches(
   return (
     memory !== undefined &&
     isMemoryId(memory.metadata.memoryId ?? '') &&
+    recallUriMatchesScopes(uri, options.allowedUriScopes) &&
+    (options.eligibility === undefined || recallCandidateIsEligible(options.eligibility, memory.metadata))
+  );
+}
+
+function canonicalWitnessedMemoryLinkSourceMatches(
+  uri: string,
+  memory: ReturnType<typeof parseMemoryDocument>,
+  options: RecallMemoryLinkQueryOptions,
+): memory is NonNullable<ReturnType<typeof parseMemoryDocument>> {
+  return (
+    memory !== undefined &&
+    memory.metadata.memoryId === undefined &&
+    (memory.metadata.status ?? 'active') === 'active' &&
     recallUriMatchesScopes(uri, options.allowedUriScopes) &&
     (options.eligibility === undefined || recallCandidateIsEligible(options.eligibility, memory.metadata))
   );
@@ -414,6 +473,31 @@ function normalizeMemoryLinkSeeds(seeds: readonly RecallMemoryLinkSeed[]): reado
   }
   return [...selected.values()].sort(
     (left, right) => left.requestedOrdinal - right.requestedOrdinal || compareText(left.memoryId, right.memoryId),
+  );
+}
+
+function normalizeWitnessedMemoryLinkSources(
+  sources: readonly RecallMemoryLinkWitnessedSource[],
+  seeds: readonly RecallMemoryLinkSeed[],
+): ReadonlyMap<string, RecallMemoryLinkWitnessedSource> {
+  const allowedSeeds = new Set(seeds.map(seed => memoryLinkSeedKey(seed.memoryId, seed.requestedOrdinal)));
+  const candidates = new Map<string, Map<string, RecallMemoryLinkWitnessedSource>>();
+  for (const source of sources) {
+    const key = memoryLinkSeedKey(source.memoryId, source.requestedOrdinal);
+    if (!allowedSeeds.has(key)) continue;
+    let uri: string;
+    try {
+      uri = parseResourceId(source.uri).canonicalUri;
+    } catch {
+      continue;
+    }
+    if (uri !== source.uri) continue;
+    const byUri = candidates.get(key) ?? new Map<string, RecallMemoryLinkWitnessedSource>();
+    byUri.set(uri, source);
+    candidates.set(key, byUri);
+  }
+  return new Map(
+    [...candidates].flatMap(([key, byUri]) => (byUri.size === 1 ? [[key, [...byUri.values()][0]!] as const] : [])),
   );
 }
 
@@ -508,6 +592,66 @@ function buildBoundedRecallMemoryLinkRawQueryWithContext(
       seed.requestedOrdinal,
       seed.memoryId,
       seed.memoryId,
+      ...context.scope.params,
+      ...context.relationParams,
+      queryLimit,
+    ]),
+    sql: `SELECT * FROM (${selectorQueries.join(' UNION ALL ')}) AS selected_links
+      ORDER BY
+        requested_ordinal,
+        requested_memory_id COLLATE BINARY,
+        relation_type COLLATE BINARY,
+        source_uri COLLATE BINARY,
+        relation_origin COLLATE BINARY,
+        relation_ordinal,
+        target_memory_id COLLATE BINARY,
+        target_locator_digest COLLATE BINARY`,
+  };
+}
+
+function buildBoundedWitnessedRecallMemoryLinkRawQueryWithContext(
+  sources: readonly RecallMemoryLinkWitnessedSource[],
+  context: RecallMemoryLinkSelectionContext,
+  queryLimit: number,
+): RecallMemoryLinkRawSelectionQuery | undefined {
+  if (!Number.isSafeInteger(queryLimit) || queryLimit < 1 || sources.length === 0) return undefined;
+  const selectorQueries = sources.map(
+    () => `SELECT * FROM (
+      SELECT
+        memory_link.source_memory_id,
+        memory_link.target_memory_id,
+        memory_link.target_locator_digest,
+        memory_link.relation_type,
+        memory_link.relation_origin,
+        memory_link.relation_ordinal,
+        document.uri AS source_uri,
+        document.source_path,
+        COALESCE(json_extract(document.candidate_json, '$.status'), 'active') AS source_status,
+        COALESCE(json_extract(document.candidate_json, '$.validFrom'), '') AS source_valid_from,
+        COALESCE(json_extract(document.candidate_json, '$.validTo'), '') AS source_valid_to,
+        ? AS requested_ordinal,
+        ? AS requested_memory_id
+      FROM documents AS document
+      INNER JOIN memory_links AS memory_link ON memory_link.source_document_id = document.id
+      WHERE document.uri = ?
+        AND memory_link.source_memory_id = ''
+        AND ${context.scope.sql}
+        ${context.relationPredicate}
+        AND ${context.sourcePredicate}
+      ORDER BY
+        memory_link.relation_type COLLATE BINARY,
+        memory_link.relation_origin COLLATE BINARY,
+        memory_link.relation_ordinal,
+        memory_link.target_memory_id COLLATE BINARY,
+        memory_link.target_locator_digest COLLATE BINARY
+      LIMIT ?
+    )`,
+  );
+  return {
+    params: sources.flatMap(source => [
+      source.requestedOrdinal,
+      source.memoryId,
+      source.uri,
       ...context.scope.params,
       ...context.relationParams,
       queryLimit,

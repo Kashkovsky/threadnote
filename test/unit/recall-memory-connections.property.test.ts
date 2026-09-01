@@ -3,8 +3,12 @@ import {Effect, FileSystem, Path} from 'effect';
 import * as FC from 'effect/testing/FastCheck';
 import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {ResourceStore} from '../../src/effect/resource-store.js';
 import {readMemoryRecordsByUri} from '../../src/memory/commands.js';
+import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
+import {recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {clearRecallIndexMemoryCache, loadRecallIndexData} from '../../src/recall/index.js';
 import {
   classifyRecallMemoryPremiseState,
@@ -137,6 +141,73 @@ describe('recall memory connection properties', () => {
         expect(incremental.coverage.truncated).toBe(neighborIds.length > 8);
       }).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 8}, timeout: 30_000},
+  );
+
+  effectIt.effect.prop(
+    'deduplicates every ordering of relocation-witnessed explicit premise aliases',
+    {
+      order: FC.uniqueArray(FC.integer({max: 2, min: 0}), {maxLength: 3, minLength: 3}),
+    },
+    ({order}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const store = yield* ResourceStore;
+          const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-connections-alias-property-'});
+          const config = runtimeConfig(home);
+          const location = {account: config.account, home, user: config.user};
+          const memoryId = 'tn_property_relocated_seed';
+          const alias = memoryIdentityAlias(memoryId);
+          const formerUri = `threadnote://user/${config.user}/memories/durable/projects/threadnote/former.md`;
+          const currentUri = `threadnote://user/${config.user}/memories/shared/default/durable/projects/threadnote/current.md`;
+          const content = formatMemoryDocument(
+            'MEMORY',
+            {
+              kind: 'durable',
+              memoryId,
+              project: 'threadnote',
+              schemaVersion: MEMORY_SCHEMA_VERSION,
+              sourceAgentClient: 'property',
+              status: 'active',
+              timestamp: '2026-08-31T00:00:00.000Z',
+              topic: 'relocated-seed',
+              visibility: 'shared',
+            },
+            'Relocated property seed.',
+          );
+          yield* store.write(location, formerUri, content, {mode: 'create'});
+          yield* store.write(location, currentUri, content, {mode: 'create'});
+          yield* recordMemoryRelocation(config, {
+            fromContent: content,
+            fromUri: formerUri,
+            toContent: content,
+            toUri: currentUri,
+          });
+          yield* store.remove(location, formerUri);
+          yield* store.write(location, currentUri, content.replace(`memory_id: ${memoryId}\n`, ''), {mode: 'upsert'});
+          yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+
+          const refs = [alias, currentUri, formerUri] as const;
+          const orderedRefs = order.map(index => refs[index]!);
+          const result = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [`threadnote://user/${config.user}/memories`],
+            memoryRefs: orderedRefs,
+            now: NOW,
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+          });
+
+          expect(result.premises).toEqual([
+            expect.objectContaining({
+              memoryId,
+              requestedOrdinal: 0,
+              requestedRef: orderedRefs[0],
+              state: 'current',
+              uri: currentUri,
+            }),
+          ]);
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer)),
+    {fastCheck: {numRuns: 12}, timeout: 30_000},
   );
 });
 

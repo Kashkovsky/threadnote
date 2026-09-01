@@ -2,15 +2,18 @@ import {it as effectIt} from '@effect/vitest';
 import {Effect, FileSystem, Option, Path} from 'effect';
 import {describe, expect, it} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
+import {ResourceStore} from '../../src/effect/resource-store.js';
 import {readMemoryRecordsByUri} from '../../src/memory/commands.js';
 import {MEMORY_SCHEMA_VERSION} from '../../src/memory/code_citation.js';
 import {formatMemoryDocument, type MemoryMetadata, type MemoryRelation} from '../../src/memory/document.js';
+import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
+import {recordMemoryRelocation} from '../../src/memory/relocation.js';
 import {
   classifyRecallMemoryPremiseState,
   parseRecallMemoryConnectionInput,
   retrieveRecallMemoryConnections,
 } from '../../src/recall/memory_connections.js';
-import {loadRecallMemoryLinks} from '../../src/recall/index.js';
+import {loadRecallIndexData, loadRecallMemoryLinks} from '../../src/recall/index.js';
 import {rankRecallCandidates, type RecallCandidate} from '../../src/recall/rank.js';
 import {prepareRecallSections} from '../../src/recall/runtime.js';
 import {provideTestLayer} from '../helpers/effect-layer.js';
@@ -159,6 +162,141 @@ describe('recall memory connections', () => {
       expect(result.diagnostics).toMatchObject({canonicalRereads: 4, rawLinkRows: 2});
       expect(result.candidates.map(candidate => candidate.memoryId)).not.toContain('tn_second_hop');
     }).pipe(provideTestLayer(ApplicationLayer)),
+  );
+
+  effectIt.effect('uses one relocation witness for stable, current, and former explicit premise references', () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const store = yield* ResourceStore;
+        const home = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-memory-connections-relocation-'});
+        const config = runtimeConfig(home, 'relocation-user');
+        const location = {account: config.account, home, user: config.user};
+        const memoryId = 'tn_relocated_connection_seed';
+        const neighborMemoryId = 'tn_relocation_neighbor';
+        const alias = memoryIdentityAlias(memoryId);
+        const formerUri = `${memoryRoot(config.user)}/durable/projects/threadnote/former.md`;
+        const currentUri = `${memoryRoot(config.user)}/shared/default/durable/projects/threadnote/current.md`;
+        const content = formatMemoryDocument(
+          'MEMORY',
+          {
+            kind: 'durable',
+            memoryId,
+            project: 'threadnote',
+            relations: [{type: 'depends_on', uri: memoryIdentityAlias(neighborMemoryId)}],
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-31T00:00:00.000Z',
+            topic: 'relocated-connection-seed',
+            visibility: 'shared',
+          },
+          'Relocated connection seed.',
+        );
+        yield* store.write(location, formerUri, content, {mode: 'create'});
+        yield* store.write(location, currentUri, content, {mode: 'create'});
+        yield* recordMemoryRelocation(config, {
+          fromContent: content,
+          fromUri: formerUri,
+          toContent: content,
+          toUri: currentUri,
+        });
+        yield* store.remove(location, formerUri);
+        yield* store.write(location, currentUri, content.replace(`memory_id: ${memoryId}\n`, ''), {mode: 'upsert'});
+        yield* writeMemory(fs, path, config, 'relocation-neighbor', neighborMemoryId, [
+          {type: 'related_to', uri: alias},
+        ]);
+        yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+
+        for (const memoryRef of [alias, currentUri, formerUri]) {
+          const result = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [memoryRoot(config.user)],
+            memoryRefs: [memoryRef],
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+          });
+          expect(result.premises).toEqual([
+            expect.objectContaining({memoryId, requestedRef: memoryRef, state: 'current', uri: currentUri}),
+          ]);
+          expect(result.candidates.map(candidate => candidate.memoryId)).toEqual([neighborMemoryId]);
+          expect(result.connections).toHaveLength(2);
+          expect(result.connections).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({direction: 'incoming', neighborMemoryId}),
+              expect.objectContaining({direction: 'outgoing', neighborMemoryId}),
+            ]),
+          );
+        }
+
+        const deduplicated = yield* retrieveRecallMemoryConnections(config, {
+          allowedUriScopes: [memoryRoot(config.user)],
+          memoryRefs: [alias, currentUri, formerUri],
+          readRecords: uris => readMemoryRecordsByUri(config, uris),
+        });
+        expect(deduplicated.premises).toEqual([
+          expect.objectContaining({memoryId, requestedOrdinal: 0, requestedRef: alias, state: 'current'}),
+        ]);
+
+        const superseding = formatMemoryDocument(
+          'MEMORY',
+          {
+            kind: 'durable',
+            memoryId,
+            project: 'threadnote',
+            relations: [
+              {type: 'related_to', uri: memoryIdentityAlias(neighborMemoryId)},
+              {type: 'supersedes', uri: memoryIdentityAlias(neighborMemoryId)},
+            ],
+            schemaVersion: MEMORY_SCHEMA_VERSION,
+            sourceAgentClient: 'codex',
+            status: 'active',
+            timestamp: '2026-08-31T00:00:00.000Z',
+            topic: 'relocated-connection-seed',
+            visibility: 'shared',
+          },
+          'Relocated connection seed.',
+        ).replace(`memory_id: ${memoryId}\n`, '');
+        yield* store.write(location, currentUri, superseding, {mode: 'upsert'});
+        yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+        for (const memoryRef of [alias, currentUri, formerUri]) {
+          const historical = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [memoryRoot(config.user)],
+            includeHistorical: true,
+            memoryRefs: [memoryRef],
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+            relationTypes: ['related_to'],
+          });
+          expect(historical.candidates.map(candidate => candidate.memoryId)).toEqual([neighborMemoryId]);
+          expect(historical.connections).not.toHaveLength(0);
+          expect(historical.connections).toEqual(
+            historical.connections.map(() =>
+              expect.objectContaining({currentness: 'historical', relationType: 'related_to'}),
+            ),
+          );
+
+          const omitted = yield* retrieveRecallMemoryConnections(config, {
+            allowedUriScopes: [memoryRoot(config.user)],
+            memoryRefs: [memoryRef],
+            readRecords: uris => readMemoryRecordsByUri(config, uris),
+            relationTypes: ['related_to'],
+          });
+          expect(omitted.candidates).toEqual([]);
+          expect(omitted.connections).toEqual([]);
+        }
+
+        const conflicting = content.replace(`memory_id: ${memoryId}\n`, 'memory_id: tn_other_live_identity\n');
+        yield* store.write(location, currentUri, conflicting, {mode: 'upsert'});
+        yield* loadRecallIndexData(config, {forceRefresh: true, includeInactive: true});
+        const rejected = yield* retrieveRecallMemoryConnections(config, {
+          allowedUriScopes: [memoryRoot(config.user)],
+          memoryRefs: [alias],
+          readRecords: uris => readMemoryRecordsByUri(config, uris),
+        });
+        expect(rejected.premises).toEqual([expect.objectContaining({memoryId, state: 'unresolved'})]);
+        expect(rejected.connections).toEqual([]);
+        expect(rejected.candidates).toEqual([]);
+      }),
+    ).pipe(provideTestLayer(ApplicationLayer)),
   );
 
   effectIt.effect('counts every bounded selector reread across the repair pass', () =>
