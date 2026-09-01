@@ -36,6 +36,7 @@ import {
   processResourceUsageMaxRssBytes,
   probeAvailableDiskBytes,
   probeRuntimeAvailableDiskBytes,
+  probeWindowsProcessStartIdentity,
   readCanonicalProcessStartIdentity,
   readProcessStartIdentity,
   resolveHomeDirectory,
@@ -322,6 +323,35 @@ describe('SystemInfo disk capacity parsing', () => {
       );
 
       expect(available).toBe(8_192);
+      expect(fallbackInvocations).toBe(1);
+      expect(nativeInvocations).toBe(0);
+    }),
+  );
+
+  effectIt.effect('routes Windows ARM64 capacity probes through the bounded fallback', () =>
+    Effect.gen(function* () {
+      let fallbackInvocations = 0;
+      let nativeInvocations = 0;
+      const available = yield* probeRuntimeAvailableDiskBytes(
+        'C:\\threadnote-arm64-capacity-fixture',
+        'win32',
+        'arm64',
+        {},
+        {
+          fallback: () =>
+            Effect.sync(() => {
+              fallbackInvocations += 1;
+              return 16_384;
+            }),
+          statfs: () =>
+            Effect.sync(() => {
+              nativeInvocations += 1;
+              return {bavail: 1n, bsize: 1n};
+            }),
+        },
+      );
+
+      expect(available).toBe(16_384);
       expect(fallbackInvocations).toBe(1);
       expect(nativeInvocations).toBe(0);
     }),
@@ -730,6 +760,84 @@ describe('SystemInfo process identity', () => {
       ).toBe(true);
     },
     {fastCheck: {numRuns: 200}},
+  );
+
+  effectIt.effect.prop(
+    'keeps the native Windows identity fast path and falls back only when it is unavailable',
+    {
+      nativeAvailable: FC.boolean(),
+      processId: FC.integer({max: 2_147_483_647, min: 1}),
+      ticks: FC.bigInt({max: 9_999_999_999_999_999_999n, min: 0n}),
+    },
+    ({nativeAvailable, processId, ticks}) =>
+      Effect.gen(function* () {
+        let fallbackInvocations = 0;
+        let nativeInvocations = 0;
+        const nativeIdentity = `win32:${ticks}`;
+        const fallbackIdentity = `win32:${ticks + 1n}`;
+        const identity = yield* probeWindowsProcessStartIdentity(
+          processId,
+          {},
+          {
+            fallback: candidate =>
+              Effect.sync(() => {
+                expect(candidate).toBe(processId);
+                fallbackInvocations += 1;
+                return fallbackIdentity;
+              }),
+            native: candidate =>
+              Effect.sync(() => {
+                expect(candidate).toBe(processId);
+                nativeInvocations += 1;
+                return nativeAvailable ? nativeIdentity : undefined;
+              }),
+          },
+        );
+
+        expect(identity).toBe(nativeAvailable ? nativeIdentity : fallbackIdentity);
+        expect(nativeInvocations).toBe(1);
+        expect(fallbackInvocations).toBe(nativeAvailable ? 0 : 1);
+      }),
+    {fastCheck: {numRuns: 100}},
+  );
+
+  effectIt.effect('bounds and fails closed when Windows process identity adapters fail or stall', () =>
+    Effect.gen(function* () {
+      const failed = yield* probeWindowsProcessStartIdentity(
+        42,
+        {},
+        {
+          fallback: () => Effect.fail(new TestError('fallback failed')),
+          native: () => Effect.succeed(undefined),
+        },
+        25,
+      );
+      expect(failed).toBeUndefined();
+
+      let fallbackInterrupted = 0;
+      const stalled = yield* probeWindowsProcessStartIdentity(
+        42,
+        {},
+        {
+          fallback: () =>
+            Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  fallbackInterrupted += 1;
+                }),
+              ),
+            ),
+          native: () => Effect.succeed(undefined),
+        },
+        25,
+      ).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      yield* TestClock.adjust(25);
+
+      expect(yield* Fiber.join(stalled)).toBeUndefined();
+      expect(fallbackInterrupted).toBe(1);
+    }),
   );
 
   effectIt.effect('preserves hostile Darwin legacy observations while canonicalizing the explicit v2 channel', () =>

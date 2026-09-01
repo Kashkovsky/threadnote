@@ -527,6 +527,11 @@ export interface DiskCapacityProbeAdapters {
   readonly statfs: (path: string) => Effect.Effect<unknown, unknown>;
 }
 
+export interface WindowsProcessStartIdentityProbeAdapters {
+  readonly fallback: (processId: number, environment: NodeJS.ProcessEnv) => Effect.Effect<string | undefined, unknown>;
+  readonly native: (processId: number) => Effect.Effect<string | undefined, unknown>;
+}
+
 class NativeStatfsUnavailableError {
   readonly _tag = 'NativeStatfsUnavailableError';
 }
@@ -549,10 +554,10 @@ export function probeRuntimeAvailableDiskBytes(
   adapters: DiskCapacityProbeAdapters,
   timeoutMilliseconds = DISK_QUERY_TIMEOUT_MS,
 ) {
-  // Bun 1.3.14's standalone darwin-x64 runtime has produced unusable native
-  // statfs observations on the exact Intel release runner. Keep the same
-  // bounded, cancellable query contract while using df on that architecture.
-  return platform === 'darwin' && architecture === 'x64'
+  // Bun 1.3.14 standalone runtimes have produced unusable native statfs
+  // observations on these exact release targets. Keep the same bounded,
+  // cancellable query contract while using the platform capacity command.
+  return (platform === 'darwin' && architecture === 'x64') || (platform === 'win32' && architecture === 'arm64')
     ? adapters.fallback(path, platform, environment).pipe(
         Effect.timeoutOrElse({
           duration: timeoutMilliseconds,
@@ -793,7 +798,16 @@ export function readProcessStartIdentity(
     );
   }
   if (platform === 'win32') {
-    return readWindowsProcessStartIdentity(processId);
+    return probeWindowsProcessStartIdentity(
+      processId,
+      environment,
+      {
+        fallback: (candidate, candidateEnvironment) =>
+          readWindowsProcessStartIdentityFallback(candidate, candidateEnvironment, timeoutMilliseconds),
+        native: readWindowsProcessStartIdentity,
+      },
+      timeoutMilliseconds,
+    );
   }
   if (platform !== 'darwin') return Effect.succeed(undefined);
   return readDarwinProcessStartIdentity(processId, environment, timeoutMilliseconds, darwinProcessCommand, output =>
@@ -829,11 +843,61 @@ function readDarwinProcessStartIdentity(
   command: string,
   parseOutput: (output: string) => string | undefined,
 ): Effect.Effect<string | undefined> {
+  return readProcessStartIdentityCommand(
+    [command, '-o', 'lstart=', '-p', String(processId)],
+    environment,
+    timeoutMilliseconds,
+    parseOutput,
+  );
+}
+
+export function probeWindowsProcessStartIdentity(
+  processId: number,
+  environment: NodeJS.ProcessEnv,
+  adapters: WindowsProcessStartIdentityProbeAdapters,
+  timeoutMilliseconds = PROCESS_IDENTITY_QUERY_TIMEOUT_MS,
+): Effect.Effect<string | undefined> {
+  return adapters.native(processId).pipe(
+    Effect.flatMap(identity =>
+      identity === undefined ? adapters.fallback(processId, environment) : Effect.succeed(identity),
+    ),
+    Effect.timeoutOrElse({duration: timeoutMilliseconds, orElse: () => Effect.succeed(undefined)}),
+    Effect.catch(() => Effect.succeed(undefined)),
+  );
+}
+
+function readWindowsProcessStartIdentityFallback(
+  processId: number,
+  environment: NodeJS.ProcessEnv,
+  timeoutMilliseconds: number,
+): Effect.Effect<string | undefined> {
+  return readProcessStartIdentityCommand(
+    [
+      'powershell.exe',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '$process=Get-Process -Id $env:THREADNOTE_PROCESS_ID -ErrorAction SilentlyContinue; ' +
+        'if (-not $process) { exit 3 }; ' +
+        '[Console]::Out.Write($process.StartTime.ToUniversalTime().Ticks)',
+    ],
+    {...environment, THREADNOTE_PROCESS_ID: String(processId)},
+    timeoutMilliseconds,
+    output => parseCanonicalProcessStartIdentityOutput('win32', output),
+  );
+}
+
+function readProcessStartIdentityCommand(
+  command: readonly string[],
+  environment: NodeJS.ProcessEnv,
+  timeoutMilliseconds: number,
+  parseOutput: (output: string) => string | undefined,
+): Effect.Effect<string | undefined> {
   return Effect.acquireUseRelease(
     Effect.try({
       try: () =>
         Bun.spawn({
-          cmd: [command, '-o', 'lstart=', '-p', String(processId)],
+          cmd: [...command],
           env: withoutTelemetrySessionEnvironment(environment),
           killSignal: 'SIGKILL',
           maxBuffer: PROCESS_IDENTITY_QUERY_OUTPUT_LIMIT_BYTES,
