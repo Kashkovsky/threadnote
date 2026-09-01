@@ -1,8 +1,9 @@
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed evaluator verifies an explicit executable boundary. */
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
-import {lstat, readFile, realpath} from 'node:fs/promises';
+import {lstat, mkdtemp, readFile, realpath, rm} from 'node:fs/promises';
 import {resolve} from 'node:path';
+import {tmpdir} from 'node:os';
 import type {CodeMemoryLinkRuntimeIdentityV1} from '../src/evaluation/code-memory-link-attestation.js';
 
 const COMMIT = /^[0-9a-f]{40}$/u;
@@ -53,38 +54,44 @@ export async function verifyCodeMemoryLinkEvaluatedSubject(input: {
 }
 
 async function readVersion(executable: string): Promise<string> {
-  return await new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(executable, ['--version'], {
-      env: {LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', NO_COLOR: '1', PATH: '/usr/bin:/bin'},
-      stdio: ['ignore', 'pipe', 'pipe'],
+  const temporaryRoot = await realpath(tmpdir());
+  const temporaryHome = await mkdtemp(resolve(temporaryRoot, 'threadnote-evaluated-subject-'));
+  try {
+    return await new Promise((resolvePromise, rejectPromise) => {
+      const child = spawn(executable, ['--version'], {
+        env: {HOME: temporaryHome, LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', NO_COLOR: '1', PATH: '/usr/bin:/bin'},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let bytes = 0;
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
+      const collect = (target: Buffer[]) => (value: Uint8Array) => {
+        const chunk = Buffer.from(value);
+        bytes += chunk.byteLength;
+        if (bytes > 64 * 1_024) child.kill('SIGKILL');
+        else target.push(chunk);
+      };
+      child.stdout.on('data', collect(stdout));
+      child.stderr.on('data', collect(stderr));
+      child.once('error', cause => {
+        clearTimeout(timeout);
+        rejectPromise(cause);
+      });
+      child.once('exit', code => {
+        clearTimeout(timeout);
+        if (code !== 0 || bytes > 64 * 1_024) {
+          rejectPromise(new Error('Could not verify the evaluated subject version.'));
+          return;
+        }
+        if (Buffer.concat(stderr).length > 0) {
+          rejectPromise(new Error('Evaluated subject version check emitted stderr.'));
+          return;
+        }
+        resolvePromise(Buffer.concat(stdout).toString('utf8').trim());
+      });
     });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let bytes = 0;
-    const timeout = setTimeout(() => child.kill('SIGKILL'), 10_000);
-    const collect = (target: Buffer[]) => (value: Uint8Array) => {
-      const chunk = Buffer.from(value);
-      bytes += chunk.byteLength;
-      if (bytes > 64 * 1_024) child.kill('SIGKILL');
-      else target.push(chunk);
-    };
-    child.stdout.on('data', collect(stdout));
-    child.stderr.on('data', collect(stderr));
-    child.once('error', cause => {
-      clearTimeout(timeout);
-      rejectPromise(cause);
-    });
-    child.once('exit', code => {
-      clearTimeout(timeout);
-      if (code !== 0 || bytes > 64 * 1_024) {
-        rejectPromise(new Error('Could not verify the evaluated subject version.'));
-        return;
-      }
-      if (Buffer.concat(stderr).length > 0) {
-        rejectPromise(new Error('Evaluated subject version check emitted stderr.'));
-        return;
-      }
-      resolvePromise(Buffer.concat(stdout).toString('utf8').trim());
-    });
-  });
+  } finally {
+    await rm(temporaryHome, {force: true, maxRetries: 3, recursive: true});
+  }
 }
