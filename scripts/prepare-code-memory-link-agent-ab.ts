@@ -205,6 +205,7 @@ interface Options {
   readonly candidateCommit: string;
   readonly codexExecutable: string;
   readonly gitExecutable: string;
+  readonly harnessGovernanceCommit: string;
   readonly modelProvider: string;
   readonly outputRoot: string;
   readonly reasoningEffort: string;
@@ -273,7 +274,7 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
   const sourceRoot = await canonicalDirectory(codeMemoryLinkAgentPreparationSourceRoot(), 'source root');
   await assertCleanSourceCheckout(
     sourceRoot,
-    options.candidateCommit,
+    options.harnessGovernanceCommit,
     options.gitExecutable,
     options.safeExecutablePath,
   );
@@ -350,6 +351,7 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
         candidate: manifest.candidate,
         corpusHash: corpus.corpusHash,
         fixtureHash: sealed.fixture.fixtureHash,
+        harnessGovernanceCommit: manifest.harnessGovernanceCommit,
         manifestHash: manifest.manifestHash,
         suiteHash: sealed.suite.suiteHash,
         version: CODE_MEMORY_LINK_PREPARATION_VERSION,
@@ -363,7 +365,7 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
     await verifySealedBindingsOnDisk(stagingRoot, sealed);
     await assertCleanSourceCheckout(
       sourceRoot,
-      options.candidateCommit,
+      options.harnessGovernanceCommit,
       options.gitExecutable,
       options.safeExecutablePath,
     );
@@ -1145,9 +1147,11 @@ async function createManifest(input: {
     experimentId: `exp_${domainDigest('experiment', {
       candidate: input.candidate.sourceCommit,
       clients: manifestClients,
+      harnessGovernanceCommit: input.options.harnessGovernanceCommit,
       suiteHash: input.sealed.suite.suiteHash,
     }).slice(0, 32)}`,
     fixtureHash: input.sealed.fixture.fixtureHash,
+    harnessGovernanceCommit: input.options.harnessGovernanceCommit,
     judgeVersion: input.sealed.suite.judge.judgeVersion,
     schedule,
     scheduleAlgorithmVersion: CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION,
@@ -1962,7 +1966,7 @@ async function verifySealedBindingsOnDisk(root: string, sealed: CodeMemoryLinkSe
 
 async function assertCleanSourceCheckout(
   sourceRoot: string,
-  candidateCommit: string,
+  expectedCommit: string,
   gitExecutable: string,
   safeExecutablePath: string,
 ): Promise<void> {
@@ -1973,14 +1977,16 @@ async function assertCleanSourceCheckout(
     maxOutputBytes: 64 * 1_024,
     timeoutMilliseconds: 30_000,
   });
-  if (head.stdout.trim() !== candidateCommit) throw new Error('Preparer checkout is not the exact candidate commit.');
+  if (head.stdout.trim() !== expectedCommit) {
+    throw new Error('Preparer checkout is not the exact harness governance commit.');
+  }
   const status = await capture(gitExecutable, ['status', '--porcelain=v1', '--untracked-files=all'], {
     cwd: sourceRoot,
     environment,
     maxOutputBytes: 1 * 1_024 * 1_024,
     timeoutMilliseconds: 30_000,
   });
-  if (status.stdout !== '') throw new Error('Preparer requires one clean exact-candidate checkout.');
+  if (status.stdout !== '') throw new Error('Preparer requires one clean harness governance checkout.');
 }
 
 async function reviewedRuntimeHashes(options: Options): Promise<{
@@ -2197,6 +2203,7 @@ function parseArguments(arguments_: readonly string[]): Options {
     '--candidate-commit',
     '--codex-executable',
     '--git-executable',
+    '--harness-governance-commit',
     '--model-provider',
     '--output',
     '--reasoning-effort',
@@ -2229,6 +2236,11 @@ function parseArguments(arguments_: readonly string[]): Options {
       'Codex executable',
     ),
     gitExecutable: normalizedAbsolute(required(values['--git-executable'], '--git-executable'), 'Git executable'),
+    harnessGovernanceCommit: matching(
+      required(values['--harness-governance-commit'], '--harness-governance-commit'),
+      COMMIT,
+      'harness governance commit',
+    ),
     modelProvider: portable(required(values['--model-provider'], '--model-provider'), 'model provider'),
     outputRoot: normalizedAbsolute(required(values['--output'], '--output'), 'output root'),
     reasoningEffort: matching(

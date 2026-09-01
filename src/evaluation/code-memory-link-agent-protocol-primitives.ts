@@ -27,6 +27,27 @@ export function normalizeJsonValue(value: unknown, label: string, depth = 0): Ca
   return Object.fromEntries(keys.map(key => [key, normalizeJsonValue(object[key], label, depth + 1)]));
 }
 
+export function validateCodeMemoryLinkThreadSettingsUpdateV1(value: unknown, threadId: string): void {
+  const params = record(value, 'thread/settings/updated params');
+  matchingIdentifier(params.threadId, threadId, 'thread/settings/updated thread id');
+  const settings = record(params.threadSettings, 'thread/settings/updated settings');
+  const sandbox = record(settings.sandboxPolicy, 'thread/settings/updated sandbox');
+  if (
+    settings.approvalPolicy !== 'on-request' ||
+    settings.approvalsReviewer !== 'user' ||
+    settings.activePermissionProfile !== null ||
+    sandbox.type !== 'workspaceWrite' ||
+    !Array.isArray(sandbox.writableRoots) ||
+    sandbox.writableRoots.length !== 0 ||
+    sandbox.networkAccess !== false ||
+    sandbox.excludeTmpdirEnvVar !== true ||
+    sandbox.excludeSlashTmp !== true
+  ) {
+    invalid('thread/settings/updated differs from the sealed workspace policy');
+  }
+  boundedText(settings.cwd, 'thread/settings/updated cwd', 4_096);
+}
+
 export function assertSyntheticArtifactContent(
   artifact: {readonly content: string; readonly mediaType: 'application/json' | 'text/plain'},
   label: string,

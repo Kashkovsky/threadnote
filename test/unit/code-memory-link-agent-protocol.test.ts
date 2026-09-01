@@ -403,6 +403,33 @@ describe('Code Memory Link real-agent protocol', () => {
     expect(JSON.parse(empty.content[0]!.text)).toEqual(empty.structuredContent);
   });
 
+  it('treats MCP content object-key order as insignificant while preserving exact content', () => {
+    fc.assert(
+      fc.property(fc.boolean(), textFirst => {
+        const events = traceEvents([100, 200, 300, 400]);
+        const item = eventItem(events, 'item/completed', 'item-memory');
+        const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(contextBriefStructuredContent());
+        const block = canonical.content[0]!;
+        item.result = {
+          ...contextBriefResultPayload(canonical.structuredContent),
+          content: [textFirst ? {text: block.text, type: block.type} : {type: block.type, text: block.text}],
+        };
+
+        expect(projectTrace(events, hiddenRubric(), passingStaticArtifacts()).contextBriefCalls).toHaveLength(1);
+      }),
+      {numRuns: 10},
+    );
+
+    const tampered = traceEvents([100, 200, 300, 400]);
+    eventItem(tampered, 'item/completed', 'item-memory').result = {
+      ...contextBriefResultPayload(),
+      content: [{text: 'different model-visible content', type: 'text'}],
+    };
+    expect(() => projectTrace(tampered, hiddenRubric(), passingStaticArtifacts())).toThrow(
+      /model-visible Context Brief content differs/u,
+    );
+  });
+
   it('treats unrelated claims as non-interfering and rejects same-citation contradictions across the response', () => {
     const currentStatus = fc.constantFrom('exact' as const, 'relocated' as const);
     const receiptStatus = fc.constantFrom(

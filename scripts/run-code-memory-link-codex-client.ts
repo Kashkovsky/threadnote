@@ -40,6 +40,7 @@ import {
 } from './code-memory-link-codex-preflight.js';
 import {loadCodeMemoryLinkCodexSuiteTask} from './code-memory-link-codex-suite.js';
 import {runCodeMemoryLinkAppServerTurn} from './code-memory-link-app-server-client.js';
+import {formatCodeMemoryLinkCodexTerminalReceipt} from './code-memory-link-codex-terminal.js';
 import {
   assertCodeMemoryLinkRepositorySnapshot,
   createCodeMemoryLinkRepositorySnapshot,
@@ -386,11 +387,14 @@ export async function runCodeMemoryLinkCodexClient(environment: Readonly<Record<
     executionFailed = true;
     executionFailure = error;
   }
-  const cleanups = await Promise.allSettled([
+  const nestedCleanups = await Promise.allSettled([
     ...(repositorySnapshot ? [removeCodeMemoryLinkRepositorySnapshot(repositorySnapshot)] : []),
     ...(isolation ? [isolation.dispose()] : []),
-    rm(stagingRoot, {force: true, maxRetries: 3, recursive: true}),
   ]);
+  const cleanups = [
+    ...nestedCleanups,
+    ...(await Promise.allSettled([rm(stagingRoot, {force: true, maxRetries: 3, recursive: true})])),
+  ];
   const cleanupFailures = cleanups.flatMap(result => (result.status === 'rejected' ? [result.reason] : []));
   if (executionFailed) {
     if (cleanupFailures.length > 0) {
@@ -589,9 +593,7 @@ async function main(): Promise<void> {
 
 if (import.meta.main) {
   main().catch(error => {
-    process.stderr.write(
-      `Code Memory Link Codex client failed: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    process.stderr.write(`${formatCodeMemoryLinkCodexTerminalReceipt(error)}\n`);
     process.exitCode = 1;
   });
 }

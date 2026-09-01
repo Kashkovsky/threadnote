@@ -1,7 +1,7 @@
 {
   "anchoredOnlyHiddenTasks": 7,
   "calibrationTasks": 2,
-  "calibrationCorpusHash": "ee6e01357f58a424054946fb474a6c10a06b4c3df0c686d67f56ed8ef6a0731d",
+  "calibrationCorpusHash": "c49d710d01c4f776fe7e2b0499c767be9c549c20c1cd62cf9d1c14cdf1643b06",
   "controlScenarios": [
     "ambiguous",
     "archived",

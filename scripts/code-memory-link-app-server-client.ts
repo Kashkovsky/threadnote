@@ -6,9 +6,11 @@ import {
   assertCodeMemoryLinkPublicAction,
   type CodeMemoryLinkAppServerApprovalReceiptV1,
 } from './code-memory-link-app-server-policy.js';
+import {CodeMemoryLinkCodexTerminalError} from './code-memory-link-codex-terminal.js';
 
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_NAME = 'threadnote_code_memory_link_gate' as const;
 export const CODE_MEMORY_LINK_APP_SERVER_CLIENT_VERSION = '1.0.0' as const;
+export const CODE_MEMORY_LINK_NO_ACTION_BUDGET = Object.freeze({steps: 12, tokens: 32_000});
 
 export interface CodeMemoryLinkAppServerCommand {
   readonly argumentsAfterSubcommand?: readonly string[];
@@ -329,16 +331,25 @@ export async function runCodeMemoryLinkAppServerTurn(
         model: input.expected.model,
         modelProvider: input.expected.modelProvider,
         runtimeWorkspaceRoots: [input.cwd],
-        sandbox: 'read-only',
+        sandbox: 'workspace-write',
       },
       input.timeoutMilliseconds,
     );
     assertEffectiveThread(threadStartResponse, input);
     const thread = record(threadStartResponse.thread, 'thread/start thread');
     const threadId = textValue(thread.id, 'thread id');
+    await client.waitForNotification(event => {
+      if (event.method !== 'mcpServer/startupStatus/updated') return false;
+      const params = record(event.params, 'MCP startup status params');
+      if (params.threadId !== threadId || params.name !== input.proxyServerName) return false;
+      if (params.status === 'failed' || params.status === 'cancelled') {
+        throw new Error('Codex Context Brief proxy did not become ready.');
+      }
+      return params.status === 'ready';
+    }, input.timeoutMilliseconds);
     const inventory = await client.request(
       'mcpServerStatus/list',
-      {detail: 'toolsAndAuthOnly', limit: 100, threadId},
+      {detail: 'full', limit: 100},
       input.timeoutMilliseconds,
     );
     assertOnlyContextBriefProxy(inventory, input.proxyServerName);
@@ -354,8 +365,11 @@ export async function runCodeMemoryLinkAppServerTurn(
         outputSchema: input.outputSchema,
         runtimeWorkspaceRoots: [input.cwd],
         sandboxPolicy: {
+          excludeSlashTmp: true,
+          excludeTmpdirEnvVar: true,
           networkAccess: false,
-          type: 'readOnly',
+          type: 'workspaceWrite',
+          writableRoots: [input.cwd],
         },
         threadId,
       },
@@ -365,7 +379,7 @@ export async function runCodeMemoryLinkAppServerTurn(
     const turn = record(turnStartResponse.turn, 'turn/start turn');
     const turnId = textValue(turn.id, 'turn id');
     await client.waitForNotification(event => {
-      assertWithinTaskBudget(client.events, input.taskBudget);
+      assertCodeMemoryLinkTurnProgress(client.events, input.taskBudget);
       return event.method === 'turn/completed' && record(event.params, 'turn/completed params').threadId === threadId;
     }, input.timeoutMilliseconds);
     client.assertHealthy();
@@ -393,22 +407,70 @@ export function assertWithinTaskBudget(
   budget: {readonly steps: number; readonly tokens: number},
 ): void {
   const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
-  if (usage.length > budget.steps) throw new Error('Codex exceeded the sealed provider inference-step budget.');
+  if (usage.length > budget.steps) {
+    throw new CodeMemoryLinkCodexTerminalError(
+      'provider-step-budget',
+      'Codex exceeded the sealed provider inference-step budget.',
+    );
+  }
   const last = usage.at(-1);
   if (!last) return;
   const params = record(last.params, 'token usage params');
   const tokenUsage = record(params.tokenUsage, 'token usage');
   const total = record(tokenUsage.total, 'total token usage');
   if (!Number.isSafeInteger(total.totalTokens) || (total.totalTokens as number) > budget.tokens) {
-    throw new Error('Codex exceeded the sealed provider token budget.');
+    throw new CodeMemoryLinkCodexTerminalError(
+      'provider-token-budget',
+      'Codex exceeded the sealed provider token budget.',
+    );
   }
 }
 
+export function assertCodeMemoryLinkTurnProgress(
+  events: readonly Record<string, unknown>[],
+  taskBudget: {readonly steps: number; readonly tokens: number},
+): void {
+  assertWithinTaskBudget(events, taskBudget);
+  if (hasStartedFileChange(events)) return;
+  const usage = events.filter(event => event.method === 'thread/tokenUsage/updated');
+  const last = usage.at(-1);
+  const totalTokens = last === undefined ? 0 : totalTokensFromUsageEvent(last);
+  if (
+    usage.length >= CODE_MEMORY_LINK_NO_ACTION_BUDGET.steps ||
+    totalTokens >= CODE_MEMORY_LINK_NO_ACTION_BUDGET.tokens
+  ) {
+    throw new CodeMemoryLinkCodexTerminalError(
+      'no-action-budget',
+      'Codex reached the calibration no-action budget without starting a file change.',
+    );
+  }
+}
+
+function hasStartedFileChange(events: readonly Record<string, unknown>[]): boolean {
+  return events.some(event => {
+    if (event.method !== 'item/started') return false;
+    const params = record(event.params, 'item/started params');
+    return record(params.item, 'item/started item').type === 'fileChange';
+  });
+}
+
+function totalTokensFromUsageEvent(event: Record<string, unknown>): number {
+  const params = record(event.params, 'token usage params');
+  const tokenUsage = record(params.tokenUsage, 'token usage');
+  const total = record(tokenUsage.total, 'total token usage');
+  if (!Number.isSafeInteger(total.totalTokens) || Number(total.totalTokens) < 0) {
+    throw new Error('Codex reported invalid total token usage.');
+  }
+  return Number(total.totalTokens);
+}
+
 export const CODE_MEMORY_LINK_AGENT_BASE_INSTRUCTIONS =
-  'You are an isolated coding agent. Work only in the provided repository and complete the user task.';
+  'You are an isolated coding agent. Use the provided tools to inspect and edit only the supplied repository, perform every requested action, verify the resulting files, and reply only after the task is complete.';
 
 export const CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS = [
-  'Use only the repository, the local shell, and the context_brief MCP tool.',
+  'Use only the repository, the local shell, the built-in file-edit tool, and the context_brief MCP tool.',
+  'Call context_brief directly; never call list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource.',
+  'When the task requires changing a file, you MUST call the built-in apply_patch file-edit tool and complete the edit before replying; a final message alone does not complete the task.',
   'Do not use networking, subagents, external apps, plugins, skills, hooks, or user configuration.',
   'Shell commands may only read, list, or search files inside the repository. Do not inspect environment variables or processes and do not execute repository code; a sealed outer judge performs verification.',
   'Inspect the code before changing it and keep changes scoped.',
@@ -422,12 +484,14 @@ export function assertOnlyContextBriefProxy(inventoryInput: unknown, expectedSer
   }
   const server = record(inventory.data[0], 'MCP server');
   if (server.name !== expectedServerName) throw new Error('Codex MCP inventory contains an unexpected server.');
-  const tools = record(server.tools, 'MCP tools');
-  if (Object.keys(tools).length !== 1 || !('context_brief' in tools)) {
-    throw new Error('Codex MCP inventory must expose only context_brief.');
+  const tools = server.tools === undefined || server.tools === null ? undefined : record(server.tools, 'MCP tools');
+  if (tools && Object.keys(tools).length > 0) {
+    if (Object.keys(tools).length !== 1 || !('context_brief' in tools)) {
+      throw new Error('Codex MCP inventory must expose only context_brief when tool metadata is available.');
+    }
+    const tool = record(tools.context_brief, 'context_brief tool');
+    if (tool.name !== 'context_brief') throw new Error('Codex MCP inventory returned a rerouted tool name.');
   }
-  const tool = record(tools.context_brief, 'context_brief tool');
-  if (tool.name !== 'context_brief') throw new Error('Codex MCP inventory returned a rerouted tool name.');
   if (Array.isArray(server.resources) && server.resources.length > 0)
     throw new Error('Proxy exposed unexpected resources.');
   if (Array.isArray(server.resourceTemplates) && server.resourceTemplates.length > 0) {
@@ -445,14 +509,40 @@ export function assertTraceIsolation(
   },
 ): void {
   let selectedTurnStarted = false;
+  let selectedTurnSettingsUpdated = false;
   for (const event of events) {
     const method = textValue(event.method, 'event method');
-    if (/agent|collab/i.test(method)) throw new Error('Codex attempted an unexpected subagent operation.');
+    if (/(?:^|\/)(?:subagent|collab)(?:\/|$)/iu.test(method)) {
+      throw new Error('Codex attempted an unexpected subagent operation.');
+    }
     if (!ALLOWED_APP_SERVER_NOTIFICATION_METHODS.has(method)) {
       throw new Error(`Codex emitted unexpected app-server notification ${method}.`);
     }
     if (method === 'model/rerouted') throw new Error('Codex rerouted away from the pinned model.');
     if (method === 'turn/started') selectedTurnStarted = true;
+    if (method === 'thread/settings/updated') {
+      const params = record(event.params, 'thread settings update');
+      const settings = record(params.threadSettings, 'thread settings');
+      const sandbox = record(settings.sandboxPolicy, 'thread settings sandbox');
+      if (
+        selectedTurnSettingsUpdated ||
+        params.threadId !== expected.threadId ||
+        settings.cwd !== expected.repositoryRoot ||
+        settings.approvalPolicy !== 'on-request' ||
+        settings.approvalsReviewer !== 'user' ||
+        settings.activePermissionProfile !== null ||
+        sandbox.type !== 'workspaceWrite' ||
+        !Array.isArray(sandbox.writableRoots) ||
+        sandbox.writableRoots.length !== 0 ||
+        sandbox.networkAccess !== false ||
+        sandbox.excludeTmpdirEnvVar !== true ||
+        sandbox.excludeSlashTmp !== true
+      ) {
+        throw new Error('Codex changed the sealed turn settings.');
+      }
+      selectedTurnSettingsUpdated = true;
+      continue;
+    }
     if (method === 'remoteControl/status/changed') {
       if (selectedTurnStarted) throw new Error('Remote-control state changed after the selected turn started.');
       const params = record(event.params, 'remote-control status');
@@ -490,6 +580,7 @@ export function assertTraceIsolation(
     }
   }
   const completed = events.filter(event => event.method === 'turn/completed');
+  if (!selectedTurnSettingsUpdated) throw new Error('Codex did not confirm the sealed turn settings.');
   if (completed.length !== 1) throw new Error('Codex trace must contain exactly one completed turn.');
   const params = record(completed[0]!.params, 'turn/completed params');
   if (params.threadId !== expected.threadId) throw new Error('Completed turn belongs to another thread.');
@@ -519,6 +610,7 @@ const ALLOWED_APP_SERVER_NOTIFICATION_METHODS = new Set([
   'model/verification',
   'remoteControl/status/changed',
   'thread/started',
+  'thread/settings/updated',
   'thread/status/changed',
   'thread/tokenUsage/updated',
   'turn/completed',
@@ -542,7 +634,7 @@ function assertEffectiveThread(response: Record<string, unknown>, input: RunCode
     throw new Error('Codex loaded an unexpected host or repository instruction source.');
   }
   const sandbox = record(response.sandbox, 'effective sandbox');
-  if (sandbox.type !== 'readOnly' || sandbox.networkAccess !== false) {
+  if (sandbox.type !== 'workspaceWrite' || sandbox.networkAccess !== false) {
     throw new Error('Codex app-server did not enforce the no-network workspace sandbox.');
   }
 }

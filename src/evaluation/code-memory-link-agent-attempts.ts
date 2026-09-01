@@ -6,7 +6,15 @@ import type {CodeMemoryLinkAgentAbManifestV1, CodeMemoryLinkAgentAbTrialV1} from
 export const CODE_MEMORY_LINK_AGENT_ATTEMPT_VERSION = 1 as const;
 export const CODE_MEMORY_LINK_AGENT_RETRY_REASONS = [
   'client-execution',
+  'client-no-action-budget',
   'client-output',
+  'client-preflight-isolation',
+  'client-process-exit',
+  'client-provider-step-budget',
+  'client-provider-terminal',
+  'client-provider-token-budget',
+  'client-turn-timeout',
+  'client-unknown-terminal',
   'post-run-verification',
   'receipt-validation',
   'receipt-persistence',
@@ -37,6 +45,7 @@ export interface CodeMemoryLinkAgentAttemptStartedV1 {
 
 export interface CodeMemoryLinkAgentAttemptFailedV1 {
   readonly attemptId: string;
+  readonly diagnosticHash?: string;
   readonly failureKind: Exclude<CodeMemoryLinkAgentRetryReason, 'interrupted-attempt'>;
   readonly previousEventDigest: string;
   readonly type: 'attempt-failed';
@@ -375,11 +384,16 @@ export function parseCodeMemoryLinkAgentAttemptEventV1(value: unknown): CodeMemo
     };
   }
   if (event.type === 'attempt-failed') {
-    exactKeys(event, ['attemptId', 'failureKind', 'previousEventDigest', 'type', 'version'], 'attempt failure');
+    const keys = ['attemptId', 'failureKind', 'previousEventDigest', 'type', 'version'];
+    if ('diagnosticHash' in event) keys.push('diagnosticHash');
+    exactKeys(event, keys, 'attempt failure');
     const failureKind = literal(event.failureKind, CODE_MEMORY_LINK_AGENT_RETRY_REASONS, 'attempt failure kind');
     if (failureKind === 'interrupted-attempt') invalid('an observed failure cannot use the interruption retry reason');
     return {
       attemptId: matching(event.attemptId, ATTEMPT_ID, 'attempt id'),
+      ...('diagnosticHash' in event
+        ? {diagnosticHash: matching(event.diagnosticHash, HASH, 'attempt failure diagnostic')}
+        : {}),
       failureKind,
       previousEventDigest: matching(event.previousEventDigest, HASH, 'previous attempt event digest'),
       type: 'attempt-failed',

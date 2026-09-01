@@ -81,6 +81,8 @@ export interface CodeMemoryLinkAgentAbManifestV1 {
   readonly evaluatorVersion: string;
   readonly experimentId: string;
   readonly fixtureHash: string;
+  /** Clean protocol checkout that governs the harness independently from the evaluated candidate. */
+  readonly harnessGovernanceCommit?: string;
   readonly judgeVersion: string;
   readonly manifestHash: string;
   readonly schedule: readonly CodeMemoryLinkAgentAbScheduleEntryV1[];
@@ -255,6 +257,7 @@ export function codeMemoryLinkAgentAbManifestHash(input: {
   readonly evaluatorVersion: string;
   readonly experimentId: string;
   readonly fixtureHash: string;
+  readonly harnessGovernanceCommit?: string;
   readonly judgeVersion: string;
   readonly schedule: readonly CodeMemoryLinkAgentAbScheduleEntryV1[];
   readonly scheduleAlgorithmVersion: typeof CODE_MEMORY_LINK_AGENT_AB_SCHEDULE_ALGORITHM_VERSION;
@@ -280,6 +283,9 @@ export function codeMemoryLinkAgentAbManifestHash(input: {
     evaluatorVersion: matchingString(input.evaluatorVersion, VERSION_ID, 'manifest evaluator version'),
     experimentId: matchingString(input.experimentId, EXPERIMENT_ID, 'experiment id'),
     fixtureHash: matchingString(input.fixtureHash, HASH, 'manifest fixture hash'),
+    ...(input.harnessGovernanceCommit === undefined
+      ? {}
+      : {harnessGovernanceCommit: matchingString(input.harnessGovernanceCommit, COMMIT, 'harness governance commit')}),
     judgeVersion: matchingString(input.judgeVersion, VERSION_ID, 'manifest judge version'),
     schedule: parseSchedule(input.schedule, clients, tasks, scheduleAlgorithmVersion, scheduleSeed),
     scheduleAlgorithmVersion,
@@ -293,27 +299,25 @@ export function codeMemoryLinkAgentAbManifestHash(input: {
 
 export function parseCodeMemoryLinkAgentAbManifestV1(value: unknown): CodeMemoryLinkAgentAbManifestV1 {
   const manifest = record(value, 'manifest');
-  exactKeys(
-    manifest,
-    [
-      'adjudicationArtifactHash',
-      'assignmentHash',
-      'candidate',
-      'clients',
-      'evaluatorVersion',
-      'experimentId',
-      'fixtureHash',
-      'judgeVersion',
-      'manifestHash',
-      'schedule',
-      'scheduleAlgorithmVersion',
-      'scheduleSeed',
-      'suiteHash',
-      'tasks',
-      'version',
-    ],
-    'manifest',
-  );
+  const keys = [
+    'adjudicationArtifactHash',
+    'assignmentHash',
+    'candidate',
+    'clients',
+    'evaluatorVersion',
+    'experimentId',
+    'fixtureHash',
+    'judgeVersion',
+    'manifestHash',
+    'schedule',
+    'scheduleAlgorithmVersion',
+    'scheduleSeed',
+    'suiteHash',
+    'tasks',
+    'version',
+  ];
+  if ('harnessGovernanceCommit' in manifest) keys.push('harnessGovernanceCommit');
+  exactKeys(manifest, keys, 'manifest');
   if (manifest.version !== CODE_MEMORY_LINK_AGENT_AB_VERSION) invalid('manifest version must be 1');
   const clients = parseManifestClients(manifest.clients);
   const tasks = parseManifestTasks(manifest.tasks);
@@ -331,6 +335,15 @@ export function parseCodeMemoryLinkAgentAbManifestV1(value: unknown): CodeMemory
     evaluatorVersion: matchingString(manifest.evaluatorVersion, VERSION_ID, 'manifest evaluator version'),
     experimentId: matchingString(manifest.experimentId, EXPERIMENT_ID, 'experiment id'),
     fixtureHash: matchingString(manifest.fixtureHash, HASH, 'manifest fixture hash'),
+    ...('harnessGovernanceCommit' in manifest
+      ? {
+          harnessGovernanceCommit: matchingString(
+            manifest.harnessGovernanceCommit,
+            COMMIT,
+            'harness governance commit',
+          ),
+        }
+      : {}),
     judgeVersion: matchingString(manifest.judgeVersion, VERSION_ID, 'manifest judge version'),
     manifestHash: matchingString(manifest.manifestHash, HASH, 'manifest hash'),
     schedule: parseSchedule(manifest.schedule, clients, tasks, scheduleAlgorithmVersion, scheduleSeed),

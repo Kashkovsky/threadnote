@@ -648,6 +648,18 @@ describe('Code Memory Link agent A/B evidence', () => {
     ).toThrow(/unsupported or missing fields/);
   });
 
+  it('binds a protocol-v2 harness commit without invalidating legacy manifests', () => {
+    const {manifestHash: _legacyHash, ...legacyInput} = MANIFEST;
+    const input = {...legacyInput, harnessGovernanceCommit: 'd'.repeat(40)};
+    const protocolV2 = {...input, manifestHash: codeMemoryLinkAgentAbManifestHash(input)};
+
+    expect(parseCodeMemoryLinkAgentAbManifestV1(protocolV2)).toEqual(protocolV2);
+    expect(parseCodeMemoryLinkAgentAbManifestV1(MANIFEST)).toEqual(MANIFEST);
+    expect(() =>
+      parseCodeMemoryLinkAgentAbManifestV1({...protocolV2, harnessGovernanceCommit: 'e'.repeat(40)}),
+    ).toThrow(/manifest hash does not match/u);
+  });
+
   it('binds the reviewed protocol, provider usage, common budgets, and counterbalanced run order', () => {
     const [first] = releaseTrials();
     const clientReported = releaseTrials().map((trial, index) =>

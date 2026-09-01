@@ -35,7 +35,8 @@ describe('Code Memory Link agent attempt ledger', () => {
     fc.assert(
       fc.property(
         fc.constantFrom(...CODE_MEMORY_LINK_AGENT_RETRY_REASONS.filter(reason => reason !== 'interrupted-attempt')),
-        failureKind => {
+        fc.boolean(),
+        (failureKind, includeDiagnostic) => {
           const started = createCodeMemoryLinkAgentAttemptStartedV1({
             approvalCommit: COMMIT,
             assignmentHash: MANIFEST.assignmentHash,
@@ -55,6 +56,7 @@ describe('Code Memory Link agent attempt ledger', () => {
           });
           const failed = createCodeMemoryLinkAgentAttemptFailedV1({
             attemptId: started.attemptId,
+            ...(includeDiagnostic ? {diagnosticHash: HASH} : {}),
             failureKind,
             previousEventDigest: codeMemoryLinkAgentAttemptEventDigest(started),
           });

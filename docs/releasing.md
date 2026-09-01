@@ -181,6 +181,7 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
      --candidate-commit <candidate-sha> \
      --codex-executable <absolute-reviewed-codex-0.144.5> \
      --git-executable <absolute-reviewed-git> \
+     --harness-governance-commit <candidate-sha> \
      --model-provider openai \
      --output <absolute-new-prepared-root> \
      --reasoning-effort medium \

@@ -32,6 +32,7 @@ import {
   record,
   unique,
   uniqueMap,
+  validateCodeMemoryLinkThreadSettingsUpdateV1,
   type CanonicalJsonValue,
 } from './code-memory-link-agent-protocol-primitives.js';
 import * as contextBriefProtocol from './code-memory-link-context-brief-protocol.js';
@@ -391,6 +392,7 @@ const ALLOWED_NON_TURN_METHODS = new Set([
   'mcpServer/startupStatus/updated',
   'remoteControl/status/changed',
   'thread/started',
+  'thread/settings/updated',
   'thread/status/changed',
 ]);
 
@@ -1766,6 +1768,10 @@ function validateNonTurnNotification(
     record(notification.params.status, 'thread/status/changed status');
     return;
   }
+  if (notification.method === 'thread/settings/updated') {
+    validateCodeMemoryLinkThreadSettingsUpdateV1(notification.params, threadId);
+    return;
+  }
   if (notification.method === 'mcpServer/startupStatus/updated') {
     const observedName = boundedText(notification.params.name, 'MCP startup server name', 128);
     if (observedName !== proxyTool.server) {
@@ -1868,7 +1874,8 @@ function parseContextBriefCallResult(item: Record<string, unknown>): {
   const result = record(item.result, 'successful Context Brief result');
   if (!Array.isArray(result.content)) invalid('successful Context Brief result requires MCP content');
   const canonical = contextBriefProtocol.canonicalizeCodeMemoryLinkContextBriefResultV1(result.structuredContent);
-  if (JSON.stringify(result.content) !== JSON.stringify(canonical.content)) {
+  const normalizedContent = normalizeJsonValue(result.content, 'model-visible Context Brief content');
+  if (JSON.stringify(normalizedContent) !== JSON.stringify(canonical.content)) {
     invalid('model-visible Context Brief content differs from its structured content');
   }
   const metadata = record(result._meta, 'successful Context Brief result metadata');

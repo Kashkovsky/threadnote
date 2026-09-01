@@ -57,7 +57,7 @@ lines.on('line', line => {
       runtimeWorkspaceRoots: [params.cwd],
       sandbox: {
         networkAccess: preflightViolation === 'network-enabled',
-        type: preflightViolation === 'writable-sandbox' ? 'workspaceWrite' : 'readOnly',
+        type: preflightViolation === 'read-only-sandbox' ? 'readOnly' : 'workspaceWrite',
       },
       serviceTier: null,
       thread: {id: threadId},
@@ -129,6 +129,25 @@ function emitTurn(responseId: number | undefined, params: Record<string, unknown
     },
   };
   const events = [
+    {
+      method: 'thread/settings/updated',
+      params: {
+        threadId,
+        threadSettings: {
+          activePermissionProfile: null,
+          approvalPolicy: 'on-request',
+          approvalsReviewer: 'user',
+          cwd: params.cwd,
+          sandboxPolicy: {
+            excludeSlashTmp: true,
+            excludeTmpdirEnvVar: true,
+            networkAccess: false,
+            type: 'workspaceWrite',
+            writableRoots: [],
+          },
+        },
+      },
+    },
     {
       method: 'turn/started',
       params: {threadId, turn: {error: null, id: turnId, items: [], status: 'inProgress'}},
