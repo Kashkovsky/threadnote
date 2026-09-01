@@ -491,7 +491,7 @@ threadnote doctor`,
           },
           {
             type: 'note',
-            text: 'Threadnote 4.2 includes a beta Cursor Cloud Agents profile using Dashboard-owned MCP configuration and one exclusive writable memory share. See [Use Threadnote with Cursor Cloud Agents](cursor-cloud-agents/).',
+            text: 'Threadnote supports a Cursor Cloud remote-hybrid profile with local checkout evidence and an explicitly bound organization-operated remote memory share. The legacy 4.2 Git-backed beta remains separate. See [Bootstrap Threadnote for a Cursor organization](cursor-cloud-agents/).',
           },
         ],
       },
