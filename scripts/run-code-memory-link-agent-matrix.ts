@@ -373,7 +373,7 @@ async function runCalibrationSchedule(
     assertCodeMemoryLinkCalibrationPrefixV1(plan, results);
     if (results.length === plan.runs.length) {
       process.stdout.write(
-        `${JSON.stringify({completed: results.length, kind: CODE_MEMORY_LINK_CALIBRATION_KIND, planHash: plan.planHash, version: CODE_MEMORY_LINK_MATRIX_VERSION})}\n`,
+        `${JSON.stringify({kind: CODE_MEMORY_LINK_CALIBRATION_KIND, planHash: plan.planHash, recorded: results.length, version: CODE_MEMORY_LINK_MATRIX_VERSION})}\n`,
       );
       return;
     }
@@ -403,7 +403,7 @@ async function runCalibrationSchedule(
     assertCodeMemoryLinkCalibrationPrefixV1(plan, appended);
     await appendExclusiveLine(resultsPath, results.length, next);
     process.stdout.write(
-      `${JSON.stringify({completed: appended.length, kind: CODE_MEMORY_LINK_CALIBRATION_KIND, runOrder: run.runOrder, version: CODE_MEMORY_LINK_MATRIX_VERSION})}\n`,
+      `${JSON.stringify({kind: CODE_MEMORY_LINK_CALIBRATION_KIND, recorded: appended.length, runOrder: run.runOrder, version: CODE_MEMORY_LINK_MATRIX_VERSION})}\n`,
     );
     if (appended.length < plan.runs.length) await delay(options.pacingMilliseconds);
   }
