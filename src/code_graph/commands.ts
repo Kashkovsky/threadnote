@@ -173,7 +173,7 @@ function renderCodeGraphCliReadState(state: CodeGraphCliReadState): string {
   }
   const readyHint =
     state.snapshot === undefined
-      ? ''
+      ? ' Run graph index, then retry, or rerun with a larger --read-timeout-ms.'
       : ' A ready snapshot remains available; retry with --freshness ready to inspect it without waiting.';
   return (
     `Code graph ${state.freshnessPolicy} read exceeded Threadnote's ` +
