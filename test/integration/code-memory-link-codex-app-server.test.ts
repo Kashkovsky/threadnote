@@ -726,7 +726,7 @@ describe('Code Memory Link Codex app-server transport', () => {
         threadId: 'thr_test',
         threadSettings: {
           activePermissionProfile: null,
-          approvalPolicy: 'on-request',
+          approvalPolicy: 'untrusted',
           approvalsReviewer: 'user',
           cwd: '/public/repository',
           sandboxPolicy: {

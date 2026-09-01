@@ -33,7 +33,7 @@ export function validateCodeMemoryLinkThreadSettingsUpdateV1(value: unknown, thr
   const settings = record(params.threadSettings, 'thread/settings/updated settings');
   const sandbox = record(settings.sandboxPolicy, 'thread/settings/updated sandbox');
   if (
-    settings.approvalPolicy !== 'on-request' ||
+    settings.approvalPolicy !== 'untrusted' ||
     settings.approvalsReviewer !== 'user' ||
     settings.activePermissionProfile !== null ||
     sandbox.type !== 'workspaceWrite' ||

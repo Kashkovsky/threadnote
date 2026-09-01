@@ -324,11 +324,11 @@ export async function runCodeMemoryLinkAppServerTurn(
       'thread/start',
       {
         allowProviderModelFallback: false,
-        approvalPolicy: 'on-request',
+        approvalPolicy: 'untrusted',
         approvalsReviewer: 'user',
         cwd: input.cwd,
         developerInstructions: CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS,
-        environments: [],
+        environments: [localEnvironment(input.cwd)],
         ephemeral: true,
         model: input.expected.model,
         modelProvider: input.expected.modelProvider,
@@ -357,11 +357,11 @@ export async function runCodeMemoryLinkAppServerTurn(
     assertOnlyContextBriefProxy(inventory, input.proxyServerName);
     const turnStartResponse = await client.requestSelectedTurn(
       {
-        approvalPolicy: 'on-request',
+        approvalPolicy: 'untrusted',
         approvalsReviewer: 'user',
         cwd: input.cwd,
         effort: input.expected.reasoningEffort,
-        environments: [],
+        environments: [localEnvironment(input.cwd)],
         input: [{text: input.prompt, type: 'text'}],
         model: input.expected.model,
         outputSchema: input.outputSchema,
@@ -402,6 +402,14 @@ export async function runCodeMemoryLinkAppServerTurn(
   } finally {
     await client.close();
   }
+}
+
+function localEnvironment(cwd: string): {
+  readonly cwd: string;
+  readonly environmentId: 'local';
+  readonly runtimeWorkspaceRoots: readonly [string];
+} {
+  return {cwd, environmentId: 'local', runtimeWorkspaceRoots: [cwd]};
 }
 
 export function assertWithinTaskBudget(
@@ -607,7 +615,7 @@ export function assertTraceIsolation(
         selectedTurnSettingsUpdated ||
         params.threadId !== expected.threadId ||
         settings.cwd !== expected.repositoryRoot ||
-        settings.approvalPolicy !== 'on-request' ||
+        settings.approvalPolicy !== 'untrusted' ||
         settings.approvalsReviewer !== 'user' ||
         settings.activePermissionProfile !== null ||
         sandbox.type !== 'workspaceWrite' ||
@@ -704,7 +712,7 @@ function assertEffectiveThread(response: Record<string, unknown>, input: RunCode
     response.modelProvider !== input.expected.modelProvider ||
     response.reasoningEffort !== input.expected.reasoningEffort ||
     response.cwd !== input.cwd ||
-    response.approvalPolicy !== 'on-request' ||
+    response.approvalPolicy !== 'untrusted' ||
     response.approvalsReviewer !== 'user'
   ) {
     throw new Error('Codex app-server did not honor the pinned model, provider, effort, cwd, or approval policy.');
