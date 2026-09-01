@@ -106,6 +106,8 @@ describe('Code Memory Link sequential matrix', () => {
         approvalCommit: '7'.repeat(40),
         attemptsPath: `${trials}.attempts.jsonl`,
         candidateCommit: '8'.repeat(40),
+        candidateExecutable: '/opt/threadnote/4.6.0/threadnote',
+        candidateExecutableSha256: '9'.repeat(64),
         evidencePath: evidence,
         mode: 'release',
         pacingMilliseconds: 0,

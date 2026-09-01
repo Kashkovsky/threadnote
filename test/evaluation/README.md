@@ -149,6 +149,8 @@ bun run eval:code-memory-link-agent-prepare -- \
   --auth-source <absolute-codex-auth-source> \
   --bun-executable <absolute-reviewed-bun> \
   --candidate-commit <exact-40-character-sha> \
+  --candidate-executable <absolute-canonical-evaluated-threadnote> \
+  --candidate-executable-sha256 <64-lowercase-hex> \
   --codex-executable <absolute-reviewed-codex-0.144.5> \
   --git-executable <absolute-reviewed-git> \
   --harness-governance-commit <exact-clean-harness-sha> \
@@ -177,6 +179,8 @@ bun run eval:code-memory-link-agent-matrix -- \
   --root <absolute-prepared-root> \
   --approval-commit <manifest-approval-sha> \
   --candidate-commit <exact-40-character-sha> \
+  --candidate-executable <absolute-canonical-evaluated-threadnote> \
+  --candidate-executable-sha256 <64-lowercase-hex> \
   --trials <absolute-trials.jsonl> \
   --attempts <absolute-trials.jsonl.attempts.jsonl> \
   --evidence <absolute-trials.jsonl.evidence.jsonl>
@@ -239,6 +243,8 @@ bun run eval:code-memory-link-agent-trial -- \
   --assignment artifacts/code-memory-link-agent-ab-assignment.json \
   --attempts artifacts/code-memory-link-agent-ab-trials.jsonl.attempts.jsonl \
   --candidate-commit <exact-40-character-sha> \
+  --candidate-executable <absolute-canonical-evaluated-threadnote> \
+  --candidate-executable-sha256 <64-lowercase-hex> \
   --evidence artifacts/code-memory-link-agent-ab-trials.jsonl.evidence.jsonl \
   --manifest artifacts/code-memory-link-agent-ab-manifest.json \
   --client-id <opaque-rostered-client-id> \
@@ -259,8 +265,9 @@ adjudication artifact, a common hidden-task budget, and the frozen `sha256-count
 per-run nonces.
 The scorer re-derives the randomized block order and blind-arm order from the seed and balances positions separately for
 hidden and negative-control tasks. External trials must match that schedule and carry provider-reported token
-accounting plus unique provider-usage and adjudication hashes. The trial harness resolves the canonical managed
-executable, verifies the selected client's descriptor against the command bytes, arguments, implementation artifacts,
+accounting plus unique provider-usage and adjudication hashes. The trial harness verifies the explicit canonical
+evaluated executable against its preregistered SHA-256 and commit-bearing version before and after every run. It
+verifies the selected client's descriptor against the command bytes, arguments, implementation artifacts,
 and configuration before and after execution, and passes the exact candidate path and identity to that client. The
 single JSONL ledger must be a contiguous frozen-schedule prefix; every receipt includes the digest of its predecessor.
 The explicit attempts ledger must use the canonical `<trials>.attempts.jsonl` sibling name. A heartbeat-backed

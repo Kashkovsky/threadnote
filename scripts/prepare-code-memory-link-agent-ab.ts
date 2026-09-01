@@ -92,7 +92,7 @@ import {parseMemoryDocument, type MemoryRecord} from '../src/memory/document.js'
 import {MEMORY_SCHEMA_VERSION} from '../src/memory/code_citation.js';
 import {parseContextBriefV1} from '../src/context_brief/projector.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
-import {resolveManagedDevelopmentExecutableForSource} from './development-runtime.js';
+import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
 import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import {scriptArguments} from './effect/script.js';
 import {loadCodeMemoryLinkCodexSuiteTask} from './code-memory-link-codex-suite.js';
@@ -203,6 +203,8 @@ interface Options {
   readonly authSource: string;
   readonly bunExecutable: string;
   readonly candidateCommit: string;
+  readonly candidateExecutable: string;
+  readonly candidateExecutableSha256: string;
   readonly codexExecutable: string;
   readonly gitExecutable: string;
   readonly harnessGovernanceCommit: string;
@@ -256,14 +258,19 @@ interface ProtocolTaskAssembly {
 
 const program = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
-  const resolved = yield* resolveManagedDevelopmentExecutableForSource(options.candidateCommit);
   yield* Effect.tryPromise({
-    try: () =>
-      prepareCodeMemoryLinkAgentAb(options, {
-        executable: resolved.executable,
-        executableSha256: resolved.evidence.executableSha256,
-        sourceCommit: resolved.evidence.sourceCommit,
-      }),
+    try: async () => {
+      const subject = await verifyCodeMemoryLinkEvaluatedSubject({
+        executable: options.candidateExecutable,
+        executableSha256: options.candidateExecutableSha256,
+        sourceCommit: options.candidateCommit,
+      });
+      await prepareCodeMemoryLinkAgentAb(options, {
+        executable: subject.executable,
+        executableSha256: subject.identity.executableSha256,
+        sourceCommit: subject.identity.sourceCommit,
+      });
+    },
     catch: cause => new ScriptError('Could not prepare the Code Memory Link sealed agent experiment.', {cause}),
   });
 });
@@ -2201,6 +2208,8 @@ function parseArguments(arguments_: readonly string[]): Options {
     '--auth-source',
     '--bun-executable',
     '--candidate-commit',
+    '--candidate-executable',
+    '--candidate-executable-sha256',
     '--codex-executable',
     '--git-executable',
     '--harness-governance-commit',
@@ -2231,6 +2240,15 @@ function parseArguments(arguments_: readonly string[]): Options {
     authSource: normalizedAbsolute(required(values['--auth-source'], '--auth-source'), 'auth source'),
     bunExecutable: normalizedAbsolute(required(values['--bun-executable'], '--bun-executable'), 'Bun executable'),
     candidateCommit,
+    candidateExecutable: normalizedAbsolute(
+      required(values['--candidate-executable'], '--candidate-executable'),
+      'candidate executable',
+    ),
+    candidateExecutableSha256: matching(
+      required(values['--candidate-executable-sha256'], '--candidate-executable-sha256'),
+      HASH,
+      'candidate executable hash',
+    ),
     codexExecutable: normalizedAbsolute(
       required(values['--codex-executable'], '--codex-executable'),
       'Codex executable',
