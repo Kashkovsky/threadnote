@@ -378,6 +378,8 @@ export function buildCodeMemoryLinkCodexConfig(input: {
     '',
     '[features]',
     'apps = false',
+    'code_mode = true',
+    'code_mode_only = true',
     'plugins = false',
     'hooks = false',
     'multi_agent = false',
