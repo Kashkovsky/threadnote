@@ -15,6 +15,8 @@ export const CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE_RELEASE_METADATA_SHA25
   '48a60f7951200f591909a305fc89de8265d428c5905d90d020d007cdd36f40e4';
 export const CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE_VERSION =
   '4.6.0-local.g9ac28435659ce421ebc78b302616eaac75112597';
+export const CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT = '3d260ca72adc8b6493e75fa17d809ffcee89b3d4';
+export const CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE = '6fbc9e5b6dcaed8cdf75e9c6786511d63c20ed68';
 
 const COMMIT = /^[0-9a-f]{40}$/u;
 const MAXIMUM_GIT_OUTPUT_BYTES = 1_048_576;
@@ -69,6 +71,7 @@ export interface CodeMemoryLinkReleaseDefermentGovernanceChange {
 export interface CodeMemoryLinkReleaseDefermentResolution {
   readonly candidate: CodeMemoryLinkReleaseDefermentCandidateV1;
   readonly governanceCommit: string;
+  readonly initialGovernanceCommit: typeof CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT;
   readonly waiverPath: string;
 }
 
@@ -165,6 +168,8 @@ export function parseCodeMemoryLinkReleaseDefermentV1(input: {
 export function assertCodeMemoryLinkReleaseDefermentGovernance(input: {
   readonly changes: readonly CodeMemoryLinkReleaseDefermentGovernanceChange[];
   readonly governanceCommit: string;
+  readonly initialGovernanceParentCommit: string;
+  readonly initialGovernanceTree: string;
   readonly packageVersion: string;
   readonly parentCommit: string;
   readonly waiver: CodeMemoryLinkReleaseDefermentV1;
@@ -172,10 +177,12 @@ export function assertCodeMemoryLinkReleaseDefermentGovernance(input: {
 }): CodeMemoryLinkReleaseDefermentResolution {
   if (!COMMIT.test(input.governanceCommit)) invalid('governance commit is invalid');
   if (
-    input.parentCommit !== CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE_COMMIT ||
+    input.parentCommit !== CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT ||
+    input.initialGovernanceParentCommit !== CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE_COMMIT ||
+    input.initialGovernanceTree !== CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE ||
     input.waiver.candidate.commit !== CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE_COMMIT
   ) {
-    invalid('deferment governance must be exactly one commit after the fixed qualified candidate C');
+    invalid('deferment governance must be the exact bounded CI correction after the fixed qualified candidate C');
   }
   if (input.packageVersion !== RELEASE_VERSION) invalid('tracked package version differs from the deferred release');
   if (input.waiverPath !== codeMemoryLinkReleaseDefermentPath(CODE_MEMORY_LINK_RELEASE_DEFERMENT_TAG)) {
@@ -195,6 +202,7 @@ export function assertCodeMemoryLinkReleaseDefermentGovernance(input: {
   return {
     candidate: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE,
     governanceCommit: input.governanceCommit,
+    initialGovernanceCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
     waiverPath: input.waiverPath,
   };
 }
@@ -213,12 +221,39 @@ export async function resolveCodeMemoryLinkReleaseDeferment(input: {
     invalid('deferment governance must have exactly one parent');
   }
   const expectedPaths = governancePaths(input.waiverPath);
-  const [source, packageSource, changeSource, trackedSource] = await Promise.all([
-    git(input.repositoryRoot, ['show', `${governanceCommit}:${input.waiverPath}`]),
-    git(input.repositoryRoot, ['show', `${governanceCommit}:package.json`]),
-    git(input.repositoryRoot, ['diff', '--name-status', '--no-renames', parentCommit, governanceCommit]),
-    git(input.repositoryRoot, ['ls-tree', '-z', governanceCommit, '--', ...expectedPaths]),
-  ]);
+  const [source, packageSource, changeSource, trackedSource, initialParentSource, initialGovernanceTree] =
+    await Promise.all([
+      git(input.repositoryRoot, ['show', `${governanceCommit}:${input.waiverPath}`]),
+      git(input.repositoryRoot, ['show', `${governanceCommit}:package.json`]),
+      git(input.repositoryRoot, [
+        'diff',
+        '--name-status',
+        '--no-renames',
+        CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE_COMMIT,
+        governanceCommit,
+      ]),
+      git(input.repositoryRoot, ['ls-tree', '-z', governanceCommit, '--', ...expectedPaths]),
+      git(input.repositoryRoot, [
+        'rev-list',
+        '--parents',
+        '-n',
+        '1',
+        CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
+      ]),
+      git(input.repositoryRoot, [
+        'rev-parse',
+        `${CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT}^{tree}`,
+      ]),
+    ]);
+  const initialParents = initialParentSource.trim().split(/\s+/u);
+  const initialGovernanceParentCommit = initialParents[1];
+  if (
+    initialParents.length !== 2 ||
+    initialParents[0] !== CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT ||
+    initialGovernanceParentCommit === undefined
+  ) {
+    invalid('initial deferment governance must have exactly one parent');
+  }
   const waiver = parseCodeMemoryLinkReleaseDefermentV1({
     expectedReleaseTag: input.releaseTag,
     repositoryPath: input.waiverPath,
@@ -235,6 +270,8 @@ export async function resolveCodeMemoryLinkReleaseDeferment(input: {
   return assertCodeMemoryLinkReleaseDefermentGovernance({
     changes,
     governanceCommit,
+    initialGovernanceParentCommit,
+    initialGovernanceTree: initialGovernanceTree.trim(),
     packageVersion: packageValue.version,
     parentCommit,
     waiver,
@@ -387,7 +424,11 @@ async function main(): Promise<void> {
             status: 'deferred',
           },
           gate: {status: 'passed'},
-          governance: {commit: resolution.governanceCommit, waiverPath: resolution.waiverPath},
+          governance: {
+            commit: resolution.governanceCommit,
+            initialCommit: resolution.initialGovernanceCommit,
+            waiverPath: resolution.waiverPath,
+          },
           type: 'code-memory-link-release-deferment-evidence',
           version: 1,
         },

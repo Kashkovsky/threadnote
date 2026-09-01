@@ -3,6 +3,8 @@ import {describe, expect, it} from 'vitest';
 import {
   assertCodeMemoryLinkReleaseDefermentGovernance,
   CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE,
+  CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
+  CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE,
   codeMemoryLinkReleaseDefermentPath,
   parseCodeMemoryLinkReleaseDefermentV1,
   type CodeMemoryLinkReleaseDefermentGovernanceChange,
@@ -43,19 +45,22 @@ describe('Code Memory Link 4.6 release deferment', () => {
     expect(() => codeMemoryLinkReleaseDefermentPath('v4.6.1')).toThrow(/only for v4\.6\.0/u);
   });
 
-  it('binds one governance commit to the qualified candidate and four exact 100644 non-runtime paths', () => {
+  it('binds one bounded CI correction to the qualified candidate and four cumulative 100644 non-runtime paths', () => {
     expect(
       assertCodeMemoryLinkReleaseDefermentGovernance({
         changes: changes(),
         governanceCommit: GOVERNANCE,
+        initialGovernanceParentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
+        initialGovernanceTree: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE,
         packageVersion: '4.6.0',
-        parentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
+        parentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
         waiver: waiver(),
         waiverPath: WAIVER_PATH,
       }),
     ).toEqual({
       candidate: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE,
       governanceCommit: GOVERNANCE,
+      initialGovernanceCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
       waiverPath: WAIVER_PATH,
     });
     expect(() =>
@@ -64,12 +69,26 @@ describe('Code Memory Link 4.6 release deferment', () => {
           change.path === '.github/workflows/publish.yml' ? {...change, mode: '100755'} : change,
         ),
         governanceCommit: GOVERNANCE,
+        initialGovernanceParentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
+        initialGovernanceTree: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE,
+        packageVersion: '4.6.0',
+        parentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
+        waiver: waiver(),
+        waiverPath: WAIVER_PATH,
+      }),
+    ).toThrow(/executable path/u);
+    expect(() =>
+      assertCodeMemoryLinkReleaseDefermentGovernance({
+        changes: changes(),
+        governanceCommit: GOVERNANCE,
+        initialGovernanceParentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
+        initialGovernanceTree: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE,
         packageVersion: '4.6.0',
         parentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
         waiver: waiver(),
         waiverPath: WAIVER_PATH,
       }),
-    ).toThrow(/executable path/u);
+    ).toThrow(/exact bounded CI correction/u);
   });
 
   it('rejects every generated extra governance path', () => {
@@ -84,8 +103,10 @@ describe('Code Memory Link 4.6 release deferment', () => {
             assertCodeMemoryLinkReleaseDefermentGovernance({
               changes: [...changes(), {mode: '100644', path: repositoryPath, status: 'A'}],
               governanceCommit: GOVERNANCE,
+              initialGovernanceParentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
+              initialGovernanceTree: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_TREE,
               packageVersion: '4.6.0',
-              parentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_CANDIDATE.commit,
+              parentCommit: CODE_MEMORY_LINK_RELEASE_DEFERMENT_INITIAL_GOVERNANCE_COMMIT,
               waiver: waiver(),
               waiverPath: WAIVER_PATH,
             }),

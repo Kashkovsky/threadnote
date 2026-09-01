@@ -119,11 +119,13 @@ jobs:
             echo "::error::Exact release governance G must descend from candidate C."
             exit 1
           fi
-          printf 'candidate_commit=%s\n' "$candidate_commit" >> "$GITHUB_OUTPUT"
-          printf 'candidate_receipt=%s\n' "$candidate_receipt" >> "$GITHUB_OUTPUT"
-          printf 'deferment=%s\n' "$deferment" >> "$GITHUB_OUTPUT"
-          printf 'descriptor=%s\n' "$descriptor" >> "$GITHUB_OUTPUT"
-          printf 'evidence_kind=%s\n' "$evidence_kind" >> "$GITHUB_OUTPUT"
+          {
+            printf 'candidate_commit=%s\n' "$candidate_commit"
+            printf 'candidate_receipt=%s\n' "$candidate_receipt"
+            printf 'deferment=%s\n' "$deferment"
+            printf 'descriptor=%s\n' "$descriptor"
+            printf 'evidence_kind=%s\n' "$evidence_kind"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and install exact Code Memory Link candidate C
         if: github.event_name == 'push'
