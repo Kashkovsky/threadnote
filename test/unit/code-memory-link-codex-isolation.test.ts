@@ -53,13 +53,17 @@ describe('Code Memory Link Codex isolation', () => {
     expect(generated).toContain('enabled_tools = ["context_brief"]');
     expect(generated).toContain('args = ["/reviewed/proxy.bundle.js"]');
     expect(generated).toContain('inherit = "none"');
-    expect(generated).toContain('sandbox_mode = "read-only"');
+    expect(generated).toContain('sandbox_mode = "workspace-write"');
     expect(generated).toContain('web_search = false');
     expect(generated).toContain('persistence = "none"');
     expect(generated).toContain('apps = false');
     expect(generated).toContain('plugins = false');
     expect(generated).toContain('hooks = false');
     expect(generated).toContain('multi_agent = false');
+    expect(generated).toContain('non_prefixed_mcp_tool_names = true');
+    expect(generated).toContain('suppress_unstable_features_warning = true');
+    expect(generated).not.toContain('[agents]');
+    expect(generated).not.toContain('view_image');
     expect(generated).not.toContain('THREADNOTE_');
     expect(generated).not.toContain('/sealed/suite');
     expect(generated).not.toContain('auth.json');

@@ -7,6 +7,7 @@ import fixture from '../evaluation/fixtures/code-memory-link-agent-suite-v1/fixt
 import {recallLexicalTerms} from '../../src/recall/tokenize.js';
 import {
   assertCodeMemoryLinkAgentSuiteCorpusV1,
+  CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET,
   CODE_MEMORY_LINK_AGENT_SUITE_ANCHORED_ONLY_HIDDEN_TASKS,
   CODE_MEMORY_LINK_AGENT_SUITE_CALIBRATION_TASKS,
   CODE_MEMORY_LINK_AGENT_SUITE_HIDDEN_TASKS,
@@ -41,6 +42,8 @@ describe('Code Memory Link sealed agent corpus', () => {
       CODE_MEMORY_LINK_AGENT_SUITE_ANCHORED_ONLY_HIDDEN_TASKS,
     );
     expect(corpus.calibrationTasks).toHaveLength(CODE_MEMORY_LINK_AGENT_SUITE_CALIBRATION_TASKS);
+    expect(corpus.calibrationTasks.every(task => task.budget === CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET)).toBe(true);
+    expect(corpus.releaseTasks.every(task => task.budget.tokens === 16_000)).toBe(true);
     expect(new Set(corpus.releaseTasks.map(task => task.taskId))).not.toContain(corpus.calibrationTasks[0]!.taskId);
     expect(fixture).toMatchObject({
       anchoredOnlyHiddenTasks: 7,

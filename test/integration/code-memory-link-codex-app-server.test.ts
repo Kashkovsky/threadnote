@@ -4,6 +4,7 @@ import {tmpdir} from '../helpers/node-os.js';
 import {join} from '../helpers/node-path.js';
 import {afterEach, describe, expect, it} from 'vitest';
 import {
+  assertOnlyContextBriefProxy,
   assertTraceIsolation,
   runCodeMemoryLinkAppServerTurn,
 } from '../../scripts/code-memory-link-app-server-client.js';
@@ -535,7 +536,7 @@ describe('Code Memory Link Codex app-server transport', () => {
 
   it.each([
     ['instruction-source', /unexpected host or repository instruction source/u],
-    ['writable-sandbox', /did not enforce the no-network workspace sandbox/u],
+    ['read-only-sandbox', /did not enforce the no-network workspace sandbox/u],
     ['network-enabled', /did not enforce the no-network workspace sandbox/u],
     ['wrong-cwd', /did not honor the pinned model, provider, effort, cwd, or approval policy/u],
     ['wrong-approval', /did not honor the pinned model, provider, effort, cwd, or approval policy/u],
@@ -686,6 +687,62 @@ describe('Code Memory Link Codex app-server transport', () => {
         expected,
       ),
     ).toThrow('read-only allowlist');
+  });
+
+  it('accepts lossy one-server inventory while preserving topology and routing checks', () => {
+    for (const server of [
+      {name: 'context_brief_gate', resourceTemplates: [], resources: [], tools: {}},
+      {name: 'context_brief_gate', resourceTemplates: [], resources: []},
+    ]) {
+      expect(() => assertOnlyContextBriefProxy({data: [server], nextCursor: null}, 'context_brief_gate')).not.toThrow();
+    }
+    expect(() =>
+      assertOnlyContextBriefProxy(
+        {data: [{name: 'threadnote', resourceTemplates: [], resources: [], tools: {}}], nextCursor: null},
+        'context_brief_gate',
+      ),
+    ).toThrow(/unexpected server/u);
+  });
+
+  it('allows ordinary agent-message deltas but rejects actual subagent and collaboration methods', () => {
+    const expected = {
+      proxyServerName: 'context_brief_gate',
+      repositoryRoot: '/public/repository',
+      threadId: 'thr_test',
+      turnId: 'turn_test',
+    };
+    const settings = {
+      method: 'thread/settings/updated',
+      params: {
+        threadId: 'thr_test',
+        threadSettings: {
+          activePermissionProfile: null,
+          approvalPolicy: 'on-request',
+          approvalsReviewer: 'user',
+          cwd: '/public/repository',
+          sandboxPolicy: {
+            excludeSlashTmp: true,
+            excludeTmpdirEnvVar: true,
+            networkAccess: false,
+            type: 'workspaceWrite',
+            writableRoots: [],
+          },
+        },
+      },
+    };
+    const completed = {
+      method: 'turn/completed',
+      params: {threadId: 'thr_test', turn: {id: 'turn_test', status: 'completed'}},
+    };
+
+    expect(() =>
+      assertTraceIsolation([settings, {method: 'item/agentMessage/delta', params: {}}, completed], expected),
+    ).not.toThrow();
+    for (const method of ['item/subagent/started', 'collab/started']) {
+      expect(() => assertTraceIsolation([settings, {method, params: {}}, completed], expected)).toThrow(
+        /unexpected subagent operation/u,
+      );
+    }
   });
 
   it('binds usefulness to the earliest successfully completed qualifying action start', () => {

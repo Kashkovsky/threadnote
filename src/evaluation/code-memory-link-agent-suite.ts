@@ -13,6 +13,7 @@ export const CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT = 'local' as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_AGENT_ID = 'agent-gate' as const;
 
 export const CODE_MEMORY_LINK_AGENT_SUITE_BUDGET = Object.freeze({steps: 48, tokens: 16_000});
+export const CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET = Object.freeze({steps: 48, tokens: 192_000});
 
 export type CodeMemoryLinkAgentSuiteTaskKind = 'hidden-constraint' | 'negative-control';
 export type CodeMemoryLinkAgentSuiteRetrievalClass = 'anchored-only' | 'code-authoritative-control' | 'lexical';
@@ -47,7 +48,7 @@ export interface CodeMemoryLinkAgentSuiteMemorySeedV1 {
 
 export interface CodeMemoryLinkAgentSuiteTaskDefinitionV1 {
   readonly answer: string;
-  readonly budget: typeof CODE_MEMORY_LINK_AGENT_SUITE_BUDGET;
+  readonly budget: {readonly steps: number; readonly tokens: number};
   readonly calibration: boolean;
   readonly controlScenario: CodeMemoryLinkAgentSuiteControlScenario | null;
   readonly cue: string;
@@ -261,7 +262,7 @@ function hiddenTask(seed: HiddenSeed, calibration: boolean): CodeMemoryLinkAgent
     seed.retrievalClass === 'lexical' ? `${cue}=${answer}` : `${opaqueAtom('hidden-binding', seed.slug)}=${answer}`;
   return {
     answer,
-    budget: CODE_MEMORY_LINK_AGENT_SUITE_BUDGET,
+    budget: calibration ? CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET : CODE_MEMORY_LINK_AGENT_SUITE_BUDGET,
     calibration,
     controlScenario: null,
     cue,
@@ -415,10 +416,10 @@ function controlMemorySeeds(
 function assertTask(task: CodeMemoryLinkAgentSuiteTaskDefinitionV1): void {
   if (task.version !== CODE_MEMORY_LINK_AGENT_SUITE_DEFINITION_VERSION) invalid('task version differs');
   if (task.taskId !== taskIdFor(task.slug)) invalid(`task id differs for ${task.slug}`);
-  if (
-    task.budget.steps !== CODE_MEMORY_LINK_AGENT_SUITE_BUDGET.steps ||
-    task.budget.tokens !== CODE_MEMORY_LINK_AGENT_SUITE_BUDGET.tokens
-  ) {
+  const expectedBudget = task.calibration
+    ? CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET
+    : CODE_MEMORY_LINK_AGENT_SUITE_BUDGET;
+  if (task.budget.steps !== expectedBudget.steps || task.budget.tokens !== expectedBudget.tokens) {
     invalid(`task budget differs for ${task.slug}`);
   }
   if (!task.prompt.trim() || new TextEncoder().encode(task.prompt).byteLength > 16 * 1_024) {

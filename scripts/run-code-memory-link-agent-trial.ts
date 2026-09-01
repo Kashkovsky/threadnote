@@ -64,26 +64,34 @@ import {readJsonFile, scriptArguments} from './effect/script.js';
 import {ApplicationLayer} from '../src/effect/runtime.js';
 import {verifyApprovalCheckout} from './verify-code-memory-link-release.js';
 import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
+import {
+  createCodeMemoryLinkCodexTerminalReceipt,
+  parseCodeMemoryLinkCodexTerminalReceipt,
+  type CodeMemoryLinkCodexTerminalKind,
+} from './code-memory-link-codex-terminal.js';
 
 const program = Effect.gen(function* () {
   const options = parseArguments(yield* scriptArguments());
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const sourceRoot = yield* path.fromFileUrl(new URL('../', import.meta.url));
-  const [assignmentInput, descriptorInput, manifestInput, governance] = yield* Effect.all(
+  const [assignmentInput, descriptorInput, manifestInput] = yield* Effect.all(
     [
       readJsonFile(options.assignmentPath),
       readJsonFile(options.clientDescriptorPath),
       readJsonFile(options.manifestPath),
-      verifyApprovalCheckout(sourceRoot, options.candidateCommit),
     ],
-    {concurrency: 4},
+    {concurrency: 3},
   );
   const assignment = parseCodeMemoryLinkAgentAbAssignmentV1(assignmentInput);
   const manifest = parseCodeMemoryLinkAgentAbManifestV1(manifestInput);
   if (manifest.candidate.commit !== options.candidateCommit) {
     return yield* Effect.fail(new ScriptError('The trial manifest does not name --candidate-commit.'));
   }
+  if (manifest.harnessGovernanceCommit === undefined) {
+    return yield* Effect.fail(new ScriptError('The trial manifest does not bind a protocol-v2 harness commit.'));
+  }
+  const governance = yield* verifyApprovalCheckout(sourceRoot, manifest.harnessGovernanceCommit);
   if (governance.commit !== options.approvalCommit) {
     return yield* Effect.fail(
       new ScriptError('The trial runner requires the exact clean reviewed --approval-commit checkout.'),
@@ -236,6 +244,7 @@ const program = Effect.gen(function* () {
       );
 
       let failureKind: Exclude<CodeMemoryLinkAgentRetryReason, 'interrupted-attempt'> = 'client-execution';
+      let failureDiagnosticHash: string | undefined;
       let pendingCommitPublicationStarted = false;
       const attempt = yield* Effect.gen(function* () {
         const command = yield* Effect.tryPromise({
@@ -283,11 +292,19 @@ const program = Effect.gen(function* () {
                 THREADNOTE_CODE_MEMORY_LINK_CLIENT_CONFIG: collectedBefore.configuration,
               },
               label: 'Reviewed Code Memory Link client',
+              allowFailure: true,
               maxOutputBytes: 8 * 1024 * 1024,
               timeoutMilliseconds: options.timeoutMilliseconds,
             }),
           catch: cause => new ScriptError('The reviewed external client process boundary failed.', {cause}),
         });
+        if (command.exitCode !== 0) {
+          const terminal = parseCodeMemoryLinkCodexTerminalReceipt(command.stderr);
+          const receipt = terminal ?? createCodeMemoryLinkCodexTerminalReceipt('process-exit');
+          failureKind = retryReasonForTerminalKind(receipt.kind);
+          failureDiagnosticHash = receipt.diagnosticHash;
+          return yield* Effect.fail(new ScriptError(`The reviewed external client terminated with ${receipt.kind}.`));
+        }
         failureKind = 'client-output';
         const clientOutput = yield* Effect.try({
           try: () => parseCodeMemoryLinkAgentClientOutputV1(JSON.parse(command.stdout) as unknown),
@@ -299,7 +316,7 @@ const program = Effect.gen(function* () {
           [
             verifyManagedDevelopmentRuntimeForSource(options.candidateCommit),
             collectCodeMemoryLinkClientImplementation(options),
-            verifyApprovalCheckout(sourceRoot, options.candidateCommit),
+            verifyApprovalCheckout(sourceRoot, manifest.harnessGovernanceCommit),
           ],
           {concurrency: 3},
         );
@@ -364,6 +381,7 @@ const program = Effect.gen(function* () {
         if (pendingCommitPublicationStarted) return yield* Effect.failCause(attempt.cause);
         const failed = createCodeMemoryLinkAgentAttemptFailedV1({
           attemptId,
+          ...(failureDiagnosticHash === undefined ? {} : {diagnosticHash: failureDiagnosticHash}),
           failureKind,
           previousEventDigest: codeMemoryLinkAgentAttemptEventDigest(started),
         });
@@ -384,6 +402,29 @@ const program = Effect.gen(function* () {
     }),
   );
 });
+
+function retryReasonForTerminalKind(
+  kind: CodeMemoryLinkCodexTerminalKind,
+): Exclude<CodeMemoryLinkAgentRetryReason, 'interrupted-attempt'> {
+  switch (kind) {
+    case 'no-action-budget':
+      return 'client-no-action-budget';
+    case 'preflight-isolation':
+      return 'client-preflight-isolation';
+    case 'process-exit':
+      return 'client-process-exit';
+    case 'provider-step-budget':
+      return 'client-provider-step-budget';
+    case 'provider-terminal':
+      return 'client-provider-terminal';
+    case 'provider-token-budget':
+      return 'client-provider-token-budget';
+    case 'turn-timeout':
+      return 'client-turn-timeout';
+    case 'unknown':
+      return 'client-unknown-terminal';
+  }
+}
 
 interface Options {
   readonly approvalCommit: string;
