@@ -1,0 +1,232 @@
+{
+  "type": "threadnote-windows-native-hosted-query-quantile-calibration",
+  "version": 1,
+  "createdAt": "2026-09-01T02:03:27.392Z",
+  "observationOrder": "reverse-chronological within recentHostedControls",
+  "fixture": {
+    "architecture": "x64",
+    "fixtureHash": "c4c45a6bcc25517df1fdae711f19f4989e13fde6b4763d596d547c6757230e7d",
+    "operatingSystem": "Windows 10.0.26100",
+    "runnerClass": "github-hosted-windows-x64",
+    "runtime": "bun/1.3.14",
+    "runtimePlatform": "win32"
+  },
+  "governedInputs": {
+    "additionalToleranceRatio": 0,
+    "hotQueryP50MillisecondsMaximum": 750,
+    "hotQueryP95MillisecondsMaximum": 1000,
+    "hotQueryProcessCpuP95MillisecondsMaximum": 500,
+    "hotQueryWallP95ToleranceRatioMaximum": 0.05,
+    "previousSamples": 25,
+    "productionPercentileQuantile": 0.95,
+    "previousP95ExcludedUpperOrderStatistics": 1,
+    "prospectiveP95ExcludedUpperOrderStatistics": 4,
+    "prospectiveSamples": 100
+  },
+  "candidateFailure": {
+    "archiveDigest": "sha256:d7803cbe24e19bc38b18458be06d247f4685fca2a97f1cc4736118f7119b3c05",
+    "artifactId": 9783169868,
+    "conclusion": "failure",
+    "createdAt": "2026-09-01T02:03:27.392Z",
+    "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+    "headSha": "1ce43969b08a772cb19e712eb71d7d34c38b7b66",
+    "jobId": 99710382411,
+    "measurements": {
+      "hotQueryMaximumMilliseconds": 1488.6307,
+      "hotQueryP50Milliseconds": 752.8591,
+      "hotQueryP95Milliseconds": 1325.9255,
+      "hotQueryProcessCpuMaximumMilliseconds": 298,
+      "hotQueryProcessCpuP50Milliseconds": 218,
+      "hotQueryProcessCpuP95Milliseconds": 296,
+      "samples": 25
+    },
+    "rawJsonSha256": "eb2a535dd1c60335202b52db7a6fc819c5612108809961c8cde7de92c45b7949",
+    "runId": 33460824382,
+    "runnerIdentity": "runner-2641491da37430b5",
+    "sourceTreeSha": "b4a5f22dbe90284d4ec6c7da7a216be4f1627ad3"
+  },
+  "recentHostedControls": [
+    {
+      "archiveDigest": "sha256:8b61d95aed8c68cf5b45489df84cb9683d9bde1a9e003c8e629ac786fa91156a",
+      "artifactId": 9782882422,
+      "conclusion": "success",
+      "createdAt": "2026-09-01T01:49:19.271Z",
+      "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "headSha": "a4969ac636e905ea4cb6f03529ff2a132c5d5eb5",
+      "jobId": 99707838865,
+      "measurements": {
+        "hotQueryMaximumMilliseconds": 523.1797,
+        "hotQueryP50Milliseconds": 459.933,
+        "hotQueryP95Milliseconds": 506.1142,
+        "hotQueryProcessCpuMaximumMilliseconds": 235,
+        "hotQueryProcessCpuP50Milliseconds": 188,
+        "hotQueryProcessCpuP95Milliseconds": 234,
+        "samples": 25
+      },
+      "rawJsonSha256": "eadde585d3be9103f6e2776d914d8abf64e4e0b1cc1b6de13c1c8e26a17fab4a",
+      "role": "identical-tree-control",
+      "runId": 33459952495,
+      "runnerIdentity": "runner-a50195b86f01eb0d",
+      "sourceTreeSha": "b4a5f22dbe90284d4ec6c7da7a216be4f1627ad3"
+    },
+    {
+      "archiveDigest": "sha256:e63fad62f6c228184c95bc325e2855652c669328dbb5dba576656685584d6c91",
+      "artifactId": 9781805626,
+      "conclusion": "success",
+      "createdAt": "2026-09-01T01:01:13.168Z",
+      "cpu": "AMD64 Family 25 Model 17 Stepping 1, AuthenticAMD",
+      "headSha": "c8cc6a2264daee7ad2bba1d7fa93886a3e62f025",
+      "jobId": 99698563951,
+      "measurements": {
+        "hotQueryMaximumMilliseconds": 589.6781,
+        "hotQueryP50Milliseconds": 523.9516,
+        "hotQueryP95Milliseconds": 585.9893,
+        "hotQueryProcessCpuMaximumMilliseconds": 280,
+        "hotQueryProcessCpuP50Milliseconds": 203,
+        "hotQueryProcessCpuP95Milliseconds": 251,
+        "samples": 25
+      },
+      "rawJsonSha256": "223174828f6e8678a70ea0cc6d1c09843d9b7b88569c03b632620ce38132a911",
+      "role": "recent-hosted-control",
+      "runId": 33456858210,
+      "runnerIdentity": "runner-2fde0b6b9dad0c8f",
+      "sourceTreeSha": "4e9009d0c0b46ed61e2175497f9ddcc8faf668dd"
+    },
+    {
+      "archiveDigest": "sha256:bc676c05f4a628da1225e52c5d580ff69cc7023a16b0083f195832dbf2b75a3f",
+      "artifactId": 9781226672,
+      "conclusion": "success",
+      "createdAt": "2026-09-01T00:35:18.540Z",
+      "cpu": "Intel64 Family 6 Model 173 Stepping 1, GenuineIntel",
+      "headSha": "9126348fdce549b54036223f667efb24c4cfc123",
+      "jobId": 99692956882,
+      "measurements": {
+        "hotQueryMaximumMilliseconds": 4640.2379,
+        "hotQueryP50Milliseconds": 387.3226,
+        "hotQueryP95Milliseconds": 592.0333,
+        "hotQueryProcessCpuMaximumMilliseconds": 234,
+        "hotQueryProcessCpuP50Milliseconds": 155,
+        "hotQueryProcessCpuP95Milliseconds": 220,
+        "samples": 25
+      },
+      "rawJsonSha256": "d50b787427b3a04da42eb00bf1460079deae0306dd955fb0c00a1a87d4f12ae0",
+      "role": "recent-hosted-control",
+      "runId": 33454986359,
+      "runnerIdentity": "runner-ecd7cb6dc9dd977c",
+      "sourceTreeSha": "64a6b2d1910a28d5d27075143b9892b11c460da3"
+    },
+    {
+      "archiveDigest": "sha256:fe9285919b2f7d5ddc2757d512bd96e99e4ad783a2fdd8eb9106c98a9c987b0d",
+      "artifactId": 9780875526,
+      "conclusion": "success",
+      "createdAt": "2026-09-01T00:19:56.503Z",
+      "cpu": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
+      "headSha": "70d8e525931df343cc466f11c65cafa423d53d73",
+      "jobId": 99690084834,
+      "measurements": {
+        "hotQueryMaximumMilliseconds": 1128.7732,
+        "hotQueryP50Milliseconds": 376.8441,
+        "hotQueryP95Milliseconds": 883.9018,
+        "hotQueryProcessCpuMaximumMilliseconds": 249,
+        "hotQueryProcessCpuP50Milliseconds": 156,
+        "hotQueryProcessCpuP95Milliseconds": 218,
+        "samples": 25
+      },
+      "rawJsonSha256": "dcf986847dfd20e024b81319b79f627a9dbd46860a9f84959ee364f6d6bc6f47",
+      "role": "recent-hosted-control",
+      "runId": 33454049206,
+      "runnerIdentity": "runner-4112dc45bacb075a",
+      "sourceTreeSha": "64a6b2d1910a28d5d27075143b9892b11c460da3"
+    },
+    {
+      "archiveDigest": "sha256:2b3d27c23883d36f3fe97d6ac467e2d52067900a77bab3a87fea4d7bafb0a9ef",
+      "artifactId": 9780212185,
+      "conclusion": "success",
+      "createdAt": "2026-08-31T23:50:54.207Z",
+      "cpu": "AMD64 Family 25 Model 1 Stepping 1, AuthenticAMD",
+      "headSha": "55c9fecf0e2808e580f544c4a6a6b3b734b74c20",
+      "jobId": 99683952761,
+      "measurements": {
+        "hotQueryMaximumMilliseconds": 449.1413,
+        "hotQueryP50Milliseconds": 376.259,
+        "hotQueryP95Milliseconds": 443.2119,
+        "hotQueryProcessCpuMaximumMilliseconds": 281,
+        "hotQueryProcessCpuP50Milliseconds": 188,
+        "hotQueryProcessCpuP95Milliseconds": 266,
+        "samples": 25
+      },
+      "rawJsonSha256": "e8e41012cd87089ade224f088fe6ec63a143c42252877afb677a32a04a051eec",
+      "role": "recent-hosted-control",
+      "runId": 33452060622,
+      "runnerIdentity": "runner-c996a05676729521",
+      "sourceTreeSha": "75cebc848d14883c01679c6d751295823d5e7f3f"
+    },
+    {
+      "archiveDigest": "sha256:531353d5d3da437a125bbc09ce702772e510f7192142e68a2861953ac33ec64c",
+      "artifactId": 9779706009,
+      "conclusion": "success",
+      "createdAt": "2026-08-31T23:29:17.250Z",
+      "cpu": "Intel64 Family 6 Model 207 Stepping 2, GenuineIntel",
+      "headSha": "ada8afe9e2d5730de640b40f81e4a8bdd75f5e42",
+      "jobId": 99679696929,
+      "measurements": {
+        "hotQueryMaximumMilliseconds": 384.2338,
+        "hotQueryP50Milliseconds": 360.6885,
+        "hotQueryP95Milliseconds": 377.8,
+        "hotQueryProcessCpuMaximumMilliseconds": 282,
+        "hotQueryProcessCpuP50Milliseconds": 187,
+        "hotQueryProcessCpuP95Milliseconds": 266,
+        "samples": 25
+      },
+      "rawJsonSha256": "bf9437a67031eedc9cb6992a8a9776172d36dbd04aaa266c789dd8cd5ad180a0",
+      "role": "recent-hosted-control",
+      "runId": 33450699839,
+      "runnerIdentity": "runner-7b33a7346bb2db2a",
+      "sourceTreeSha": "88018183ef2776e4899e753a6be8e41c49f4c8c6"
+    }
+  ],
+  "recentHostedSummary": {
+    "observationCount": 6,
+    "hotQueryP50Milliseconds": {
+      "maximum": 523.9516,
+      "minimum": 360.6885,
+      "upperMiddle": 387.3226
+    },
+    "hotQueryP95Milliseconds": {
+      "maximum": 883.9018,
+      "minimum": 377.8,
+      "upperMiddle": 585.9893
+    },
+    "hotQueryProcessCpuP95Milliseconds": {
+      "maximum": 266,
+      "minimum": 218,
+      "upperMiddle": 251
+    }
+  },
+  "adjacentHundredSampleMethodControl": {
+    "archiveDigest": "sha256:83a2039443e6fcc8a45ae2e3ef779a29a167e000c2e038a0ce0d7d4a8e6cbe16",
+    "artifactId": 9783228149,
+    "conclusion": "success",
+    "createdAt": "2026-09-01T02:06:16.722Z",
+    "fixtureHash": "generated-code-graph-v1:10000",
+    "headSha": "1ce43969b08a772cb19e712eb71d7d34c38b7b66",
+    "jobId": 99710382464,
+    "measurements": {
+      "hotQueryMaximumMilliseconds": 495.2508,
+      "hotQueryP50Milliseconds": 374.4869,
+      "hotQueryP95Milliseconds": 426.8328,
+      "hotQueryProcessCpuMaximumMilliseconds": 297,
+      "hotQueryProcessCpuP50Milliseconds": 202,
+      "hotQueryProcessCpuP95Milliseconds": 281,
+      "samples": 100
+    },
+    "rawJsonSha256": "b0ef78d10366239ca57eb1c8298edbc3e9e0ac3e5d7187d1ac394e1d1a4b1bdf",
+    "runId": 33460824382,
+    "scope": "method-control-only-different-10k-fixture-and-runner",
+    "sourceTreeSha": "b4a5f22dbe90284d4ec6c7da7a216be4f1627ad3"
+  },
+  "releaseRequirement": {
+    "prospectiveNativeHostedObservationRequired": true,
+    "thresholdsChanged": false
+  }
+}
