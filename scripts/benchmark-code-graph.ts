@@ -7828,6 +7828,7 @@ export function enforceCodeGraphBenchmarkBudget(
     readonly developmentPerformance?: unknown;
     readonly developmentPerformanceByPlatform?: Readonly<Record<string, unknown>>;
     readonly scalePerformance?: Readonly<Record<string, unknown>>;
+    readonly scalePerformanceByRunnerClass?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
     readonly vectorPerformance?: unknown;
     readonly vectorScalePerformance?: Readonly<Record<string, unknown>>;
   };
@@ -7840,6 +7841,7 @@ export function enforceCodeGraphBenchmarkBudget(
         ? record.developmentPerformance
         : record.scalePerformance?.[String(scaleSymbols)];
   const runtimePlatform = artifact.metadata.runtimePlatform;
+  const runnerClass = artifact.metadata.runnerClass;
   const platformOverride =
     artifact.metadata.vectorEnabled !== true &&
     scaleSymbols === undefined &&
@@ -7848,9 +7850,20 @@ export function enforceCodeGraphBenchmarkBudget(
     record.developmentPerformanceByPlatform[runtimePlatform] !== null
       ? record.developmentPerformanceByPlatform[runtimePlatform]
       : undefined;
+  const runnerScalePerformance =
+    typeof runnerClass === 'string' ? record.scalePerformanceByRunnerClass?.[runnerClass] : undefined;
+  const runnerScaleOverride =
+    artifact.metadata.vectorEnabled !== true &&
+    scaleSymbols !== undefined &&
+    typeof runnerClass === 'string' &&
+    benchmarkRunnerClassMatchesArtifact(runnerClass, runtimePlatform, artifact.environment.architecture) &&
+    typeof runnerScalePerformance?.[String(scaleSymbols)] === 'object' &&
+    runnerScalePerformance[String(scaleSymbols)] !== null
+      ? runnerScalePerformance[String(scaleSymbols)]
+      : undefined;
   const selected =
-    typeof baseSelected === 'object' && baseSelected !== null && platformOverride !== undefined
-      ? {...baseSelected, ...platformOverride}
+    typeof baseSelected === 'object' && baseSelected !== null
+      ? {...baseSelected, ...(platformOverride ?? {}), ...(runnerScaleOverride ?? {})}
       : baseSelected;
   if (typeof selected !== 'object' || selected === null) {
     throw new ScriptError(
@@ -7956,6 +7969,17 @@ export function enforceCodeGraphBenchmarkBudget(
     }
   }
   if (failures.length > 0) throw new ScriptError(`Code graph performance budget failed: ${failures.join('; ')}`);
+}
+
+function benchmarkRunnerClassMatchesArtifact(
+  runnerClass: string,
+  runtimePlatform: boolean | number | string | undefined,
+  architecture: string,
+): boolean {
+  const hosted = /^github-hosted-(linux|macos|windows)-(arm64|x64)$/u.exec(runnerClass);
+  if (hosted === null) return true;
+  const platform = hosted[1] === 'windows' ? 'win32' : hosted[1] === 'macos' ? 'darwin' : 'linux';
+  return runtimePlatform === platform && architecture.toLowerCase() === hosted[2];
 }
 
 function processPeakRssBytes(): number {

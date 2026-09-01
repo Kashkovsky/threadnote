@@ -352,10 +352,13 @@ jobs:
       - run: bun install --frozen-lockfile
 
       - name: Gate 10k-symbol indexing and queries
+        env:
+          THREADNOTE_BENCHMARK_RUNNER_CLASS: github-hosted-${{ matrix.os }}-${{ runner.arch }}
+          THREADNOTE_BENCHMARK_RUNNER_ID: ${{ runner.name }}
         run: >-
           bun run bench:code-graph --
           --scale-symbols 10000
-          --samples 10
+          --samples 25
           --warmups 2
           --fail-on-budget
           --output artifacts/code-graph-10k-${{ runner.os }}-${{ runner.arch }}.json
