@@ -188,11 +188,6 @@ export interface CodeMemoryLinkCalibrationPlanV1 {
     readonly runOrder: number;
     readonly taskId: string;
   }[];
-  readonly sealedSuite: {
-    readonly layoutArtifactId: string;
-    readonly rootSource: 'calibration/sealed';
-    readonly suiteHash: string;
-  };
   readonly tasks: readonly {
     readonly packet: CodeMemoryLinkTaskPacketV1;
     readonly preflightExpectedCitationDigests: readonly string[];
@@ -328,12 +323,6 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
       judgeProgram,
       tasks: releasePrepared,
     });
-    const calibrationSealed = assembleCodeMemoryLinkSealedSuiteV1({
-      corpusHash: corpus.calibrationCorpusHash,
-      judgeProgram,
-      namespace: 'calibration',
-      tasks: calibrationPrepared,
-    });
     const outputFiles = new Map(sealed.files);
     const binaryFiles = new Map<string, PreparedBinaryFile>();
     const clients = await prepareClients({
@@ -355,10 +344,6 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
     });
     const calibration = assembleCalibrationPlanV1({
       clients: clients.map(client => client.clientId),
-      sealedSuite: {
-        layoutArtifactId: String(calibrationSealed.adapter.layoutArtifactId),
-        suiteHash: calibrationSealed.suite.suiteHash,
-      },
       tasks: calibrationPrepared,
     });
     addFile(outputFiles, 'assignment.json', jsonFile(assignment));
@@ -381,9 +366,6 @@ export async function prepareCodeMemoryLinkAgentAb(options: Options, candidate: 
     );
     addFile(outputFiles, 'clients.json', jsonFile({clients, version: CODE_MEMORY_LINK_PREPARATION_VERSION}));
     for (const [path, content] of calibration.files) addFile(outputFiles, path, content);
-    for (const [path, content] of calibrationSealed.files) {
-      addFile(outputFiles, `calibration/sealed/${path}`, content);
-    }
     addFile(outputFiles, 'calibration/plan.json', jsonFile(calibration.plan));
     await writePreparedFiles(stagingRoot, outputFiles, binaryFiles);
     await verifyPreparedTree(stagingRoot, outputFiles, binaryFiles);
@@ -457,28 +439,17 @@ export function codeMemoryLinkAgentPreparedMemoryDestinationMatches(
 export function assembleCodeMemoryLinkSealedSuiteV1(input: {
   readonly corpusHash: string;
   readonly judgeProgram: string;
-  readonly namespace?: 'calibration' | 'release';
   readonly tasks: readonly CodeMemoryLinkPreparedTaskV1[];
 }): CodeMemoryLinkSealedAssemblyV1 {
-  const namespace = input.namespace ?? 'release';
   const releaseDefinitions = input.tasks.map(task => task.definition).sort(compareTasksById);
-  const expectedCorpusHash =
-    namespace === 'release'
-      ? codeMemoryLinkAgentSuiteCorpusHashV1({
-          releaseTasks: releaseDefinitions,
-          version: CODE_MEMORY_LINK_AGENT_SUITE_DEFINITION_VERSION,
-        })
-      : codeMemoryLinkAgentSuiteCalibrationCorpusHashV1({
-          calibrationTasks: releaseDefinitions,
-          version: CODE_MEMORY_LINK_AGENT_SUITE_DEFINITION_VERSION,
-        });
-  if (
-    input.tasks.some(task => task.definition.calibration !== (namespace === 'calibration')) ||
-    input.corpusHash !== expectedCorpusHash
-  ) {
-    throw new Error(`${namespace} task definitions do not match the supplied ${namespace}-only corpus hash.`);
+  const expectedCorpusHash = codeMemoryLinkAgentSuiteCorpusHashV1({
+    releaseTasks: releaseDefinitions,
+    version: CODE_MEMORY_LINK_AGENT_SUITE_DEFINITION_VERSION,
+  });
+  if (input.tasks.some(task => task.definition.calibration) || input.corpusHash !== expectedCorpusHash) {
+    throw new Error('Release task definitions do not match the supplied release-only corpus hash.');
   }
-  const protocol = assembleProtocolTasks(input.tasks, namespace);
+  const protocol = assembleProtocolTasks(input.tasks, 'release');
   const taskPackets = protocol.packets;
   const rubrics = protocol.rubrics;
   const manifestTasks = taskPackets.map(packet => {
@@ -624,7 +595,6 @@ export function assembleCodeMemoryLinkSealedSuiteV1(input: {
 
 export function assembleCalibrationPlanV1(input: {
   readonly clients: readonly string[];
-  readonly sealedSuite: {readonly layoutArtifactId: string; readonly suiteHash: string};
   readonly tasks: readonly CodeMemoryLinkPreparedTaskV1[];
 }): {readonly files: ReadonlyMap<string, string>; readonly plan: CodeMemoryLinkCalibrationPlanV1} {
   if (input.tasks.length !== 2 || input.tasks.some(task => !task.definition.calibration)) {
@@ -670,11 +640,6 @@ export function assembleCalibrationPlanV1(input: {
     kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
     releaseLedgerCompatible: false as const,
     runs,
-    sealedSuite: {
-      layoutArtifactId: matching(input.sealedSuite.layoutArtifactId, /^art_[0-9a-f]{16,64}$/u, 'layout'),
-      rootSource: 'calibration/sealed' as const,
-      suiteHash: matchingHash(input.sealedSuite.suiteHash, 'calibration suite hash'),
-    },
     tasks,
     version: CODE_MEMORY_LINK_CALIBRATION_PLAN_VERSION,
   };

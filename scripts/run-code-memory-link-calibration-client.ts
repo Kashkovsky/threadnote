@@ -1,10 +1,9 @@
 #!/usr/bin/env bun
 
 /* oxlint-disable threadnote/no-node-runtime, effecttsgo/node-builtin-import -- This reviewed calibration adapter owns explicit process and filesystem boundaries. */
-import {lstat, mkdir, readFile, realpath, rm, stat, writeFile} from 'node:fs/promises';
+import {lstat, mkdir, readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {dirname, join, resolve} from 'node:path';
 import {parseCodeMemoryLinkAgentAbManifestV1} from '../src/evaluation/code-memory-link-agent-ab.js';
-import {parseCodeMemoryLinkAgentClientOutputV1} from '../src/evaluation/code-memory-link-agent-evidence.js';
 import {
   codeMemoryLinkArmPacketHashV1,
   deriveCodeMemoryLinkCodexAppServerProjectionV1,
@@ -14,15 +13,20 @@ import {
   codeMemoryLinkCodexRunBindingHashV1,
 } from '../src/evaluation/code-memory-link-codex-evidence.js';
 import {sha256HexSync} from '../src/crypto/sha256.js';
-import {
-  parseCodeMemoryLinkCodexClientConfigV1,
-  projectCodeMemoryLinkCodexClientConfigV1,
-} from './code-memory-link-codex-isolation.js';
-import {parseCodeMemoryLinkCodexTerminalReceipt} from './code-memory-link-codex-terminal.js';
+import {CODE_MEMORY_LINK_AGENT_SUITE_PROJECT} from '../src/evaluation/code-memory-link-agent-suite.js';
+import {parseCodeMemoryLinkCodexClientConfigV1} from './code-memory-link-codex-isolation.js';
+import {classifyCodeMemoryLinkCodexTerminal} from './code-memory-link-codex-terminal.js';
 import {verifyCodeMemoryLinkEvaluatedSubject} from './code-memory-link-evaluated-subject.js';
-import {CODE_MEMORY_LINK_CALIBRATION_KIND} from './prepare-code-memory-link-agent-ab.js';
+import {
+  CODE_MEMORY_LINK_CALIBRATION_KIND,
+  type CodeMemoryLinkCalibrationPlanV1,
+} from './prepare-code-memory-link-agent-ab.js';
 import {parseCalibrationPlan, parseClientRegistry} from './run-code-memory-link-agent-matrix.js';
-import {captureCodeMemoryLinkProcessGroup} from './code-memory-link-process-boundary.js';
+import {runCodeMemoryLinkCodexExecutionTask} from './run-code-memory-link-codex-client.js';
+import {
+  loadCodeMemoryLinkCodexSuiteTask,
+  type CodeMemoryLinkVerifiedArtifactV1,
+} from './code-memory-link-codex-suite.js';
 
 const HASH = /^[0-9a-f]{64}$/u;
 const COMMIT = /^[0-9a-f]{40}$/u;
@@ -104,117 +108,117 @@ async function main(): Promise<void> {
     throw new Error('Calibration subject differs from the prepared candidate.');
   }
   const baseConfig = parseCodeMemoryLinkCodexClientConfigV1(await readJson(client.clientConfigurationPath));
-  const config = parseCodeMemoryLinkCodexClientConfigV1({
-    ...baseConfig,
-    sealedSuite: {
-      layoutArtifactId: plan.sealedSuite.layoutArtifactId,
-      root: joinRoot(preparedRoot, plan.sealedSuite.rootSource),
-    },
+  const releaseTask = await loadCodeMemoryLinkCodexSuiteTask({
+    expectedLayoutArtifactId: baseConfig.sealedSuite.layoutArtifactId,
+    expectedSuiteHash: manifest.suiteHash,
+    root: baseConfig.sealedSuite.root,
+    taskId: manifest.tasks[0]!.taskId,
   });
-  const configPath = join(calibrationRoot, `client-${environment.runOrder}.config.json`);
-  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+  const blind = blindArm(environment.arm);
+  const runNonce = opaqueId('run', `${environment.planHash}:${environment.runOrder}:run`);
+  const invocationNonce = opaqueId('inv', `${environment.planHash}:${environment.runOrder}:invocation`);
+  const armPacketHash = codeMemoryLinkArmPacketHashV1({
+    assignmentHash: environment.planHash,
+    blindLabel: blind.label,
+    fixtureHash: plan.fixture.fixtureHash,
+    packetHash: task.packet.packetHash,
+    policy: environment.arm,
+    rubricHash: task.rubric.rubricHash,
+    runNonce,
+    taskId: environment.taskId,
+    taskKind: task.packet.taskKind,
+    version: 1,
+  });
+  const runBindingHash = codeMemoryLinkCodexRunBindingHashV1({
+    armPacketHash,
+    candidateExecutableSha256: subject.identity.executableSha256,
+    clientExecutionHash: client.implementationDescriptorHash,
+    invocationNonceDigest: codeMemoryLinkCodexInvocationNonceDigestV1(invocationNonce),
+    manifestHash: environment.planHash,
+    runNonce,
+    suiteHash: plan.calibrationCorpusHash,
+    taskId: environment.taskId,
+  });
+  const clientEnvironment = {
+    THREADNOTE_CODE_MEMORY_LINK_APPROVAL_COMMIT: manifest.harnessGovernanceCommit,
+    THREADNOTE_CODE_MEMORY_LINK_ARM: environment.arm,
+    THREADNOTE_CODE_MEMORY_LINK_ARM_POSITION: String(blind.position),
+    THREADNOTE_CODE_MEMORY_LINK_ASSIGNMENT_HASH: environment.planHash,
+    THREADNOTE_CODE_MEMORY_LINK_BLIND_LABEL: blind.label,
+    THREADNOTE_CODE_MEMORY_LINK_BUDGET_STEPS: String(task.packet.budget.steps),
+    THREADNOTE_CODE_MEMORY_LINK_BUDGET_TOKENS: String(task.packet.budget.tokens),
+    THREADNOTE_CODE_MEMORY_LINK_CANDIDATE_COMMIT: subject.identity.sourceCommit,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_CONFIGURATION_PROJECTION_HASH: client.descriptor.configurationProjectionHash,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_DESCRIPTOR_HASH: client.implementationDescriptorHash,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_ENVIRONMENT_POLICY_HASH: client.descriptor.environmentPolicyHash,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_EXECUTION_BUNDLE_HASH: client.descriptor.executionBundleHash,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_EXPECTED_PROJECTION_HASH: client.descriptor.expectedClientProjectionHash,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_ID: environment.clientId,
+    THREADNOTE_CODE_MEMORY_LINK_EXECUTABLE: subject.executable,
+    THREADNOTE_CODE_MEMORY_LINK_EXECUTABLE_SHA256: subject.identity.executableSha256,
+    THREADNOTE_CODE_MEMORY_LINK_FIXTURE_HASH: plan.fixture.fixtureHash,
+    THREADNOTE_CODE_MEMORY_LINK_INVOCATION_NONCE: invocationNonce,
+    THREADNOTE_CODE_MEMORY_LINK_MANIFEST_HASH: environment.planHash,
+    THREADNOTE_CODE_MEMORY_LINK_PACKET_HASH: task.packet.packetHash,
+    THREADNOTE_CODE_MEMORY_LINK_RUBRIC_HASH: task.rubric.rubricHash,
+    THREADNOTE_CODE_MEMORY_LINK_RUN_NONCE: runNonce,
+    THREADNOTE_CODE_MEMORY_LINK_RUN_BINDING_HASH: runBindingHash,
+    THREADNOTE_CODE_MEMORY_LINK_RUN_ORDER: String(environment.runOrder),
+    THREADNOTE_CODE_MEMORY_LINK_SUITE_HASH: plan.calibrationCorpusHash,
+    THREADNOTE_CODE_MEMORY_LINK_TASK_ID: environment.taskId,
+    THREADNOTE_CODE_MEMORY_LINK_TASK_KIND: task.packet.taskKind,
+    THREADNOTE_CODE_MEMORY_LINK_CLIENT_CONFIG: client.clientConfigurationPath,
+  };
+  let diagnostic: CalibrationDiagnosticV1;
   try {
-    const blind = blindArm(environment.arm);
-    const runNonce = opaqueId('run', `${environment.planHash}:${environment.runOrder}:run`);
-    const invocationNonce = opaqueId('inv', `${environment.planHash}:${environment.runOrder}:invocation`);
-    const armPacketHash = codeMemoryLinkArmPacketHashV1({
-      assignmentHash: environment.planHash,
-      blindLabel: blind.label,
+    const output = await runCodeMemoryLinkCodexExecutionTask(clientEnvironment, baseConfig, {
+      fixture: await calibrationFixture(plan, environment.taskId, calibrationRoot),
       fixtureHash: plan.fixture.fixtureHash,
-      packetHash: task.packet.packetHash,
-      policy: environment.arm,
-      rubricHash: task.rubric.rubricHash,
-      runNonce,
-      taskId: environment.taskId,
-      taskKind: task.packet.taskKind,
-      version: 1,
-    });
-    const runBindingHash = codeMemoryLinkCodexRunBindingHashV1({
-      armPacketHash,
-      candidateExecutableSha256: subject.identity.executableSha256,
-      clientExecutionHash: client.implementationDescriptorHash,
-      invocationNonceDigest: codeMemoryLinkCodexInvocationNonceDigestV1(invocationNonce),
-      manifestHash: environment.planHash,
-      runNonce,
-      suiteHash: plan.sealedSuite.suiteHash,
-      taskId: environment.taskId,
-    });
-    const command = await captureCodeMemoryLinkProcessGroup({
-      allowFailure: true,
-      arguments: client.clientArguments,
-      command: client.clientCommand,
-      cwd: calibrationRoot,
-      environment: {
-        HOME: '/nonexistent',
-        LANG: 'C.UTF-8',
-        LC_ALL: 'C.UTF-8',
-        NO_COLOR: '1',
-        PATH: dirname(client.clientCommand),
-        TMPDIR: calibrationRoot,
-        THREADNOTE_CODE_MEMORY_LINK_APPROVAL_COMMIT: manifest.harnessGovernanceCommit,
-        THREADNOTE_CODE_MEMORY_LINK_ARM: environment.arm,
-        THREADNOTE_CODE_MEMORY_LINK_ARM_POSITION: String(blind.position),
-        THREADNOTE_CODE_MEMORY_LINK_ASSIGNMENT_HASH: environment.planHash,
-        THREADNOTE_CODE_MEMORY_LINK_BLIND_LABEL: blind.label,
-        THREADNOTE_CODE_MEMORY_LINK_BUDGET_STEPS: String(task.packet.budget.steps),
-        THREADNOTE_CODE_MEMORY_LINK_BUDGET_TOKENS: String(task.packet.budget.tokens),
-        THREADNOTE_CODE_MEMORY_LINK_CANDIDATE_COMMIT: subject.identity.sourceCommit,
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_CONFIGURATION_PROJECTION_HASH: sha256HexSync(
-          `${JSON.stringify(projectCodeMemoryLinkCodexClientConfigV1(config))}\n`,
-        ),
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_DESCRIPTOR_HASH: client.implementationDescriptorHash,
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_ENVIRONMENT_POLICY_HASH: client.descriptor.environmentPolicyHash,
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_EXECUTION_BUNDLE_HASH: client.descriptor.executionBundleHash,
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_EXPECTED_PROJECTION_HASH: client.descriptor.expectedClientProjectionHash,
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_ID: environment.clientId,
-        THREADNOTE_CODE_MEMORY_LINK_EXECUTABLE: subject.executable,
-        THREADNOTE_CODE_MEMORY_LINK_EXECUTABLE_SHA256: subject.identity.executableSha256,
-        THREADNOTE_CODE_MEMORY_LINK_FIXTURE_HASH: plan.fixture.fixtureHash,
-        THREADNOTE_CODE_MEMORY_LINK_INVOCATION_NONCE: invocationNonce,
-        THREADNOTE_CODE_MEMORY_LINK_MANIFEST_HASH: environment.planHash,
-        THREADNOTE_CODE_MEMORY_LINK_PACKET_HASH: task.packet.packetHash,
-        THREADNOTE_CODE_MEMORY_LINK_RUBRIC_HASH: task.rubric.rubricHash,
-        THREADNOTE_CODE_MEMORY_LINK_RUN_NONCE: runNonce,
-        THREADNOTE_CODE_MEMORY_LINK_RUN_BINDING_HASH: runBindingHash,
-        THREADNOTE_CODE_MEMORY_LINK_RUN_ORDER: String(environment.runOrder),
-        THREADNOTE_CODE_MEMORY_LINK_SUITE_HASH: plan.sealedSuite.suiteHash,
-        THREADNOTE_CODE_MEMORY_LINK_TASK_ID: environment.taskId,
-        THREADNOTE_CODE_MEMORY_LINK_TASK_KIND: task.packet.taskKind,
-        THREADNOTE_CODE_MEMORY_LINK_CLIENT_CONFIG: configPath,
-      },
-      label: 'Reviewed Code Memory Link calibration client',
-      maxOutputBytes: 8 * 1_024 * 1_024,
-      timeoutMilliseconds: baseConfig.limits.turnTimeoutMilliseconds,
-    });
-    const diagnostic =
-      command.exitCode === 0
-        ? completedDiagnostic(environment, command.stdout)
-        : terminalDiagnostic(environment, command.stderr);
-    await verifyCodeMemoryLinkEvaluatedSubject({
-      executable: options.candidateExecutable,
-      executableSha256: options.candidateExecutableSha256,
-      sourceCommit: options.candidateCommit,
-    });
-    await appendDiagnostic(options.diagnosticsPath, diagnostic, environment.runOrder);
-    process.stdout.write(
-      `${JSON.stringify({
-        arm: environment.arm,
-        clientId: environment.clientId,
-        diagnosticsHash: diagnostic.diagnosticHash,
-        kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
-        planHash: environment.planHash,
-        runOrder: environment.runOrder,
+      judge: releaseTask.judge,
+      mappedTask: {
+        packetHash: task.packet.packetHash,
+        packetSource: `calibration/tasks/${environment.taskId}/packet.json`,
+        preflightCodeRefs: ['policy.json'],
+        preflightExpectedCitationDigests: task.preflightExpectedCitationDigests,
+        preflightExpectedResponses: task.preflightExpectedResponses,
+        preflightExpectedSelectedMemories: task.preflightExpectedSelectedMemories,
+        project: CODE_MEMORY_LINK_AGENT_SUITE_PROJECT,
+        rubricHash: task.rubric.rubricHash,
+        rubricSource: `calibration/tasks/${environment.taskId}/rubric.json`,
         taskId: environment.taskId,
-        version: 1,
-      })}\n`,
-    );
-  } finally {
-    await rm(configPath, {force: true});
+        taskKind: task.packet.taskKind,
+      },
+      rubric: task.rubric,
+      taskPacket: task.packet,
+    });
+    diagnostic = completedDiagnostic(environment, output);
+  } catch (cause) {
+    diagnostic = terminalDiagnostic(environment, cause);
   }
+  await verifyCodeMemoryLinkEvaluatedSubject({
+    executable: options.candidateExecutable,
+    executableSha256: options.candidateExecutableSha256,
+    sourceCommit: options.candidateCommit,
+  });
+  await appendDiagnostic(options.diagnosticsPath, diagnostic, environment.runOrder);
+  process.stdout.write(
+    `${JSON.stringify({
+      arm: environment.arm,
+      clientId: environment.clientId,
+      diagnosticsHash: diagnostic.diagnosticHash,
+      kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
+      planHash: environment.planHash,
+      runOrder: environment.runOrder,
+      taskId: environment.taskId,
+      version: 1,
+    })}\n`,
+  );
 }
 
-function completedDiagnostic(environment: CalibrationEnvironment, stdout: string): CalibrationDiagnosticV1 {
-  const output = parseCodeMemoryLinkAgentClientOutputV1(JSON.parse(stdout) as unknown);
+function completedDiagnostic(
+  environment: CalibrationEnvironment,
+  output: Awaited<ReturnType<typeof runCodeMemoryLinkCodexExecutionTask>>,
+): CalibrationDiagnosticV1 {
   const projection = deriveCodeMemoryLinkCodexAppServerProjectionV1({
     evidence: output.rawEvidence.appServer,
     rubric: output.rawEvidence.rubric,
@@ -231,8 +235,7 @@ function completedDiagnostic(environment: CalibrationEnvironment, stdout: string
   });
 }
 
-function terminalDiagnostic(environment: CalibrationEnvironment, stderr: string): CalibrationDiagnosticV1 {
-  const terminal = parseCodeMemoryLinkCodexTerminalReceipt(stderr);
+function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown): CalibrationDiagnosticV1 {
   return sealDiagnostic({
     environment,
     evidenceHash: null,
@@ -240,9 +243,47 @@ function terminalDiagnostic(environment: CalibrationEnvironment, stderr: string)
     firstUsefulMemoryUse: false,
     status: 'terminal',
     taskPassed: null,
-    terminalKind: terminal?.kind ?? 'process-exit',
+    terminalKind: classifyCodeMemoryLinkCodexTerminal(cause),
     totalTaskUsage: null,
   });
+}
+
+async function calibrationFixture(
+  plan: CodeMemoryLinkCalibrationPlanV1,
+  taskId: string,
+  root: string,
+): Promise<{
+  readonly repository: readonly CodeMemoryLinkVerifiedArtifactV1[];
+  readonly threadnoteHome: readonly CodeMemoryLinkVerifiedArtifactV1[];
+}> {
+  const artifacts = new Map(plan.fixture.artifacts.map(artifact => [artifact.artifactId, artifact]));
+  const loaded = await Promise.all(
+    plan.fixtureFiles
+      .filter(mapping => mapping.taskId === taskId)
+      .map(async mapping => {
+        const descriptor = artifacts.get(mapping.artifactId);
+        if (!descriptor) throw new Error('Calibration fixture mapping is outside the artifact roster.');
+        const bytes = new Uint8Array(await readFile(joinRoot(root, mapping.source)));
+        if (sha256HexSync(bytes) !== descriptor.sha256) {
+          throw new Error('Calibration fixture bytes differ from the content-addressed plan.');
+        }
+        return {
+          artifact: {
+            artifactId: mapping.artifactId,
+            bytes,
+            destination: mapping.destination,
+            sha256: descriptor.sha256,
+          } satisfies CodeMemoryLinkVerifiedArtifactV1,
+          scope: mapping.scope,
+        };
+      }),
+  );
+  const repository = loaded.filter(item => item.scope === 'repository').map(item => item.artifact);
+  if (repository.length === 0) throw new Error('Calibration task has no repository fixture.');
+  return {
+    repository,
+    threadnoteHome: loaded.filter(item => item.scope === 'threadnote-home').map(item => item.artifact),
+  };
 }
 
 function sealDiagnostic(input: {

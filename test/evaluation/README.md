@@ -228,9 +228,10 @@ bun run eval:code-memory-link-agent-matrix -- \
   --calibration-results <absolute-results.calibration.jsonl>
 ```
 
-The reviewed calibration client runs the exact rostered client against the separately sealed calibration suite. It
-retains only bounded usage, terminal-kind, file-change, memory-use, pass/fail, and evidence-hash diagnostics in the
-separate diagnostics ledger; neither calibration file is compatible with the governed release ledgers.
+The reviewed calibration client runs the rostered model configuration through the same execution core against the
+separately content-addressed calibration task and fixture plan. It retains only bounded usage, terminal-kind,
+file-change, memory-use, pass/fail, and evidence-hash diagnostics in the separate diagnostics ledger; neither
+calibration file is compatible with the governed release ledgers.
 
 `bun run eval:code-memory-link-codex-client` is the exact rostered Codex entrypoint. It accepts no CLI arguments and is
 invoked only by the governed trial harness, which supplies all trusted suite, assignment, budget, and ledger bindings

@@ -546,7 +546,6 @@ describe('Code Memory Link sealed preparation', () => {
     const corpus = createCodeMemoryLinkAgentSuiteCorpusV1();
     const calibration = assembleCalibrationPlanV1({
       clients: [`cli_${'1'.repeat(32)}`, `cli_${'2'.repeat(32)}`],
-      sealedSuite: {layoutArtifactId: `art_${'3'.repeat(32)}`, suiteHash: '4'.repeat(64)},
       tasks: corpus.calibrationTasks.map(preparedTask),
     });
     const release = assemble(releaseTasks());
