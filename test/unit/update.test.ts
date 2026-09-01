@@ -315,6 +315,48 @@ describe('standalone release selection', () => {
       expect(commands.join('\n')).not.toContain('spctl');
     }),
   );
+
+  effectIt.effect('accepts only an explicitly declared unsigned official Windows release', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const baseSystem = yield* SystemInfo;
+          const releaseRoot = yield* fs.makeTempDirectoryScoped({prefix: 'threadnote-windows-signature-policy-'});
+          yield* fs.writeFileString(
+            path.join(releaseRoot, 'release.json'),
+            `${JSON.stringify({codeSignature: 'unsigned'})}\n`,
+          );
+          const windowsSystem = SystemInfo.of({...baseSystem, architecture: 'x64', platform: 'win32'});
+          const commandExecutor = CommandExecutor.of({
+            execute: () => Effect.die('unsigned Windows verification must not execute a signature command'),
+            executeStreaming: () => Effect.die('not used'),
+          });
+          const accepted = yield* captureConsole(
+            verifyOfficialPlatformSignature(fs, path, releaseRoot, OFFICIAL_RELEASE_SOURCE, windowsSystem).pipe(
+              Effect.provideService(CommandExecutor, commandExecutor),
+            ),
+          );
+          yield* fs.writeFileString(
+            path.join(releaseRoot, 'release.json'),
+            `${JSON.stringify({codeSignature: 'authenticode'})}\n`,
+          );
+          const rejected = yield* verifyOfficialPlatformSignature(
+            fs,
+            path,
+            releaseRoot,
+            OFFICIAL_RELEASE_SOURCE,
+            windowsSystem,
+          ).pipe(Effect.provideService(CommandExecutor, commandExecutor), Effect.flip);
+          return {accepted: accepted.output, rejected: String(rejected)};
+        }),
+      ).pipe(provideTestLayer(ApplicationLayer));
+
+      expect(result.accepted).toContain('This Windows release is unsigned');
+      expect(result.rejected).toContain('Release signature policy is invalid for Windows');
+    }),
+  );
 });
 
 describe('update notifications', () => {
@@ -1068,8 +1110,10 @@ describe('standalone updater', () => {
         expect(result.signatureCommands.join('\n')).toContain('libfixture.so');
         expect(result.signatureCommands.join('\n')).not.toContain('spctl');
       }
-      if (result.platform === 'win32')
-        expect(result.signatureCommands.join('\n')).toContain('Get-AuthenticodeSignature');
+      if (result.platform === 'win32') {
+        expect(result.signatureCommands).toHaveLength(0);
+        expect(result.captured.output).toContain('This Windows release is unsigned');
+      }
       if (result.platform === 'linux') expect(result.signatureCommands).toHaveLength(0);
       expect(result.captured.output).toContain(`Installed standalone Threadnote ${RELEASE_VERSION}`);
       expect(result.captured.output).toContain('Update complete.');
@@ -2237,6 +2281,12 @@ function writeReleaseArchive(
               manifest: 'assets/code-graph/manifest.json',
               version: 1,
             },
+            codeSignature:
+              executableName === 'threadnote.exe'
+                ? 'unsigned'
+                : process.platform === 'darwin'
+                  ? 'developer-id'
+                  : 'none',
             executable: executableName,
             nativeRuntime: 'runtime/node-llama-cpp.js',
             nativeRuntimePackage: '@node-llama-cpp/test',

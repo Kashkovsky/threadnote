@@ -27,9 +27,10 @@ CI bytecode-compiles the exact standalone entrypoint for all eight Bun base targ
 - Linux arm64 and x64 with musl
 - Windows arm64 and x64
 
-Threadnote 4 publishes four archives: macOS and glibc Linux for arm64 and x64. The two musl executables and both
-Windows executables remain compile gates only. Musl lacks a distinct compatible bundled local-inference payload, and
-Windows publication is disabled until Authenticode signing is approved and verified. Every enabled native release
+Threadnote 4.6 publishes six archives: macOS, glibc Linux, and Windows for arm64 and x64. The two musl executables
+remain compile gates only because musl lacks a distinct compatible bundled local-inference payload. Windows archives
+are explicitly unsigned until Authenticode signing is approved; publication and installation require an immutable
+GitHub release plus the archive's SHA-256 checksum, and the installer warns before activation. Every native release
 runner installs the core GGUF model and produces a real embedding with its exact `dist/` payload before signing or
 archiving. The same payload must contain the pinned Tree-sitter runtime, Java/Kotlin/Swift grammar WASM, source/ABI/
 version/checksum manifest, and all four parser licenses. Source checks, archive smoke tests, and updater validation each
@@ -48,10 +49,11 @@ the exact `dist/` payload to Apple notarization, waits for acceptance, and verif
 Only then does it create the release archive and checksum. `spctl` app assessment is not used because Threadnote is a
 standalone command-line executable rather than an application bundle.
 
-The dormant Windows release jobs retain the previous native build and Azure signing implementation for future work,
-but both jobs are hard-disabled and are not publication dependencies. No Windows 4 archive is created. Re-enabling
-Windows requires an approved Authenticode provider, a reviewed ownership policy for bundled upstream `.dll` and `.node`
-files, and clean-machine x64 and arm64 verification. Linux artifacts are protected by the immutable GitHub release and
+Windows x64 and arm64 build, strict-doctor, real-embedding, archive, and clean-machine installer verification are
+publication dependencies. Their release metadata declares the payload unsigned, and official installers reject a
+Windows archive that omits or contradicts that policy. The dormant Azure Authenticode job remains hard-disabled for a
+future signed release. Enabling it still requires an approved provider and a reviewed ownership policy for bundled
+upstream `.dll` and `.node` files. Linux and Windows artifacts are protected by the immutable GitHub release and
 checksums but are not OS code-signed.
 
 ## Publishing
@@ -376,14 +378,15 @@ every release preserves a curated summary even when the release branch has no me
 ## Testing Apple signing without publishing
 
 Use the manual `workflow_dispatch` entry for `Publish standalone release` to exercise the release build on both macOS
-architectures. A manual run executes source verification, builds the exact standalone payloads, imports the Developer
-ID certificate, signs and verifies every Mach-O file, submits the payloads to Apple's notary service, assesses them
-through notarization acceptance, and uploads the signed archives as private workflow artifacts. Linux, Windows, and
-the GitHub Release job are tag-only and stay skipped, so the test cannot publish a release.
+and Windows architectures. A manual run executes source verification; builds the exact standalone payloads; runs
+strict doctor and real-embedding checks; signs, verifies, and notarizes the macOS payloads; and uploads the macOS and
+unsigned Windows archives as private workflow artifacts. Linux and the GitHub Release job are tag-only and stay
+skipped, so the test cannot publish a release.
 
 The manual trigger must first exist on the repository's default branch. After it is merged, open **Actions**,
 select **Publish standalone release**, choose **Run workflow**, and select the branch to test. Do not create a version
-tag for a signing test. The disabled Windows jobs remain skipped for both manual and tag-triggered runs.
+tag for a signing or Windows packaging test. The dormant Windows Authenticode job remains skipped for both manual and
+tag-triggered runs.
 
 ## Moving users from Threadnote 3
 
@@ -395,7 +398,7 @@ OpenViking tool installations before writing the standalone launcher; it preserv
 rollback. The streamed form is
 `curl -fsSL https://raw.githubusercontent.com/Kashkovsky/threadnote/main/scripts/install.sh | sh`. Once v4
 is installed, `threadnote update` handles later stable and beta 4.x releases directly from immutable GitHub Releases.
-The PowerShell bootstrap also accepts `-Beta`, ready for use after Windows publishing is re-enabled.
+The PowerShell bootstrap also accepts `-Beta` for the inclusive preview channel.
 
 ## Required GitHub secrets
 

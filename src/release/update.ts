@@ -433,20 +433,19 @@ export const verifyOfficialPlatformSignature = Effect.fn('update.verifyOfficialP
     );
     return;
   }
-  const script = [
-    "$files=@((Get-Item -LiteralPath $env:THREADNOTE_SIGNED_EXECUTABLE)) + @(Get-ChildItem -LiteralPath $env:THREADNOTE_SIGNED_RUNTIME -Recurse -File | Where-Object { $_.Extension -in '.dll','.node' })",
-    'foreach($file in $files){',
-    '  $signature=Get-AuthenticodeSignature -LiteralPath $file.FullName',
-    '  if($signature.Status -ne \'Valid\'){ throw "Invalid Authenticode signature for $($file.FullName): $($signature.Status)" }',
-    '}',
-  ].join('; ');
-  yield* runCommandEffect('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: {
-      ...system.environment(),
-      THREADNOTE_SIGNED_EXECUTABLE: executable,
-      THREADNOTE_SIGNED_RUNTIME: path.join(releaseRoot, 'runtime'),
-    },
-  }).pipe(Effect.mapError(cause => new UpdateOperationError('Release Authenticode validation failed.', {cause})));
+  const metadataContent = yield* fs
+    .readFileString(path.join(releaseRoot, 'release.json'))
+    .pipe(Effect.mapError(cause => new UpdateOperationError('Release signature policy is invalid.', {cause})));
+  const metadata = yield* Effect.try({
+    try: () => JSON.parse(metadataContent) as unknown,
+    catch: cause => new UpdateOperationError('Release signature policy is invalid.', {cause}),
+  });
+  if (!isJsonObject(metadata) || metadata.codeSignature !== 'unsigned') {
+    return yield* Effect.fail(new UpdateOperationError('Release signature policy is invalid for Windows.'));
+  }
+  yield* Console.log(
+    warning('This Windows release is unsigned. Its immutable GitHub release and SHA-256 checksum were verified.'),
+  );
 });
 
 const findFilesRecursively = Effect.fn('update.findFilesRecursively')(function* (

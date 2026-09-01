@@ -346,9 +346,7 @@ jobs:
           if-no-files-found: error
 
   windows-build:
-    name: Windows build · ${{ matrix.architecture }} · disabled
-    # Windows 4 release artifacts stay unavailable until Authenticode signing is approved and verified.
-    if: ${{ false }}
+    name: Windows · ${{ matrix.architecture }} · unsigned
     needs: verify
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -396,10 +394,23 @@ jobs:
       - name: Produce a real embedding with the release payload
         run: bun --bun vitest run --config vitest.e2e.config.ts test/e2e/local-bins.e2e.ts
 
+      - name: Verify PowerShell installer and installed runtime
+        run: bun --bun vitest run --config vitest.windows-e2e.config.ts
+
+      - run: bun run archive:release
+        env:
+          THREADNOTE_RELEASE_TARGET: windows-${{ matrix.architecture }}
+
       - uses: actions/upload-artifact@v7
         with:
           name: unsigned-windows-${{ matrix.architecture }}
           path: dist/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-${{ matrix.architecture }}
+          path: artifacts/
           if-no-files-found: error
 
   windows-sign:
@@ -484,8 +495,9 @@ jobs:
       github.event_name == 'push' &&
       needs.verify.result == 'success' &&
       needs.linux.result == 'success' &&
-      needs.macos.result == 'success'
-    needs: [verify, linux, macos]
+      needs.macos.result == 'success' &&
+      needs.windows-build.result == 'success'
+    needs: [verify, linux, macos, windows-build]
     permissions:
       contents: write
     uses: ./.github/workflows/publish-release-assets.yml

@@ -452,7 +452,7 @@ threadnote doctor`,
           },
           {
             type: 'warning',
-            text: 'Official Threadnote 4 Windows archives are temporarily paused until Authenticode signing and clean-machine verification are enabled. Threadnote will not publish an unsigned official Windows archive.',
+            text: 'Threadnote 4.6 publishes unsigned Windows x64 and arm64 archives. The PowerShell installer verifies the immutable GitHub release and SHA-256 checksum and warns before activation; Windows may still show a SmartScreen warning.',
           },
           {
             type: 'note',
