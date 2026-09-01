@@ -686,9 +686,13 @@ shared-runner latency is machine-independent.
 The native GitHub-hosted Windows x64 query gate uses three fixed independent runner replicas with 100 post-warmup
 samples each; Linux, macOS, and local Windows retain one 25-sample run. At least two Windows replicas must pass the
 entire ordinary performance budget. Every replica retains exact work/parity, RSS, disk, 750 ms p50, and 500 ms hot CPU
-guards while also passing the 1,900 ms hot-p95 fuse, two-times fuses over every other resolved Windows wall-clock
-ceiling, and the 400 ms whole-graph-analysis CPU companion. The runner is the experimental unit: the gate never pools
-300 queries and never adaptively retries. The retained rationale and artifact provenance are in
+guards while also passing the 1,900 ms hot-p95 fuse, two-times fuses over the resolved cold-index, one-file-index, and
+whole-graph-analysis Windows wall ceilings, and the 400 ms whole-graph-analysis CPU companion. Nested cold and one-file
+materialization use the corresponding enclosing safety ceiling, with `nested maximum <= enclosing maximum` enforced
+as a fail-closed invariant, while every replica also remains below independent `3,000 ms` cold-materialization and
+`200 ms` one-file-materialization process-CPU maxima; their tighter 8 s and 4 s ordinary wall ceilings remain required
+on at least two replicas. The runner is the experimental unit: the gate never pools 300 queries and never adaptively
+retries. The retained rationale, failed candidate-C nested-tail evidence, and artifact provenance are in
 `baselines/code-graph-v1/windows-native-hosted-replica-calibration-v1.{json,md}`; a release candidate must pass one
 prospective three-runner set.
 

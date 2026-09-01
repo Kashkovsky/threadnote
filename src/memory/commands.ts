@@ -1027,22 +1027,19 @@ export const readMemoryRecordsByUri = Effect.fn('memory.readMemoryRecordsByUri')
   config: RuntimeConfig,
   uris: readonly string[],
 ) {
-  const records: MemoryRecord[] = [];
-  for (const uri of uris) {
-    const localPath = yield* localMemoryPathForUri(config, uri);
-    if (!localPath) {
-      continue;
-    }
-    const content = yield* readTextIfExists(localPath);
-    if (!content) {
-      continue;
-    }
-    const record = parseMemoryDocument(uri, content);
-    if (record) {
-      records.push(record);
-    }
-  }
-  return records;
+  const records = yield* Effect.forEach(
+    uris,
+    uri =>
+      Effect.gen(function* () {
+        const localPath = yield* localMemoryPathForUri(config, uri);
+        if (!localPath) return undefined;
+        const content = yield* readTextIfExists(localPath);
+        if (!content) return undefined;
+        return parseMemoryDocument(uri, content);
+      }),
+    {concurrency: 16},
+  );
+  return records.filter((record): record is MemoryRecord => record !== undefined);
 });
 
 const localMemoryDirectoryForCompact = Effect.fn('memory.localMemoryDirectoryForCompact')(function* (

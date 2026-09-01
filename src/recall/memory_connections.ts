@@ -76,6 +76,7 @@ export interface RecallMemoryConnectionCoverageV1 {
 export interface RecallMemoryConnectionDiagnostics {
   readonly canonicalMismatches: number;
   readonly canonicalRereads: number;
+  readonly currentnessTruncatedMemoryIds?: readonly string[];
   readonly rawLinkRows: number;
   readonly refreshRepairs: number;
   readonly truncatedSeedOrdinals: readonly number[];
@@ -117,6 +118,8 @@ interface ResolvedRequestedPremise {
 }
 
 const CONNECTION_RECEIPT_LIMIT = 32;
+const CONNECTION_CANDIDATE_LIMIT = 64;
+const ACTIVE_SUPERSEDER_PROOF_LIMIT_PER_MEMORY = 2;
 const RELATION_PRIORITY: Readonly<Record<MemoryRelationType, number>> = {
   depends_on: 1,
   evidence_for: 0,
@@ -210,6 +213,7 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
     .map(ref => parseResourceId(ref).canonicalUri)
     .filter(ref => memoryIdFromIdentityAlias(ref) === undefined && recallUriMatchesScopes(ref, input.allowedUriScopes));
   const requestedRecords = yield* input.readRecords(requestedCanonicalUris);
+  const canonicalRecordByUri = new Map(requestedRecords.map(record => [record.uri, record] as const));
   const requestedRecordByUri = new Map(
     requestedRecords.filter(record => authorizedRecord(record, input)).map(record => [record.uri, record] as const),
   );
@@ -237,7 +241,14 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
         });
   const premiseCandidatesById = groupCandidatesByMemoryId(premiseIndex?.candidates ?? []);
   const premiseCandidateUris = [...new Set((premiseIndex?.candidates ?? []).flatMap(candidateUrisForRead))];
-  const premiseLiveRecords = premiseCandidateUris.length === 0 ? [] : yield* input.readRecords(premiseCandidateUris);
+  const unreadPremiseCandidateUris = premiseCandidateUris.filter(uri => !canonicalRecordByUri.has(uri));
+  const newlyReadPremiseRecords =
+    unreadPremiseCandidateUris.length === 0 ? [] : yield* input.readRecords(unreadPremiseCandidateUris);
+  for (const record of newlyReadPremiseRecords) canonicalRecordByUri.set(record.uri, record);
+  const premiseLiveRecords = premiseCandidateUris.flatMap(uri => {
+    const record = canonicalRecordByUri.get(uri);
+    return record ? [record] : [];
+  });
   const verifiedPremises = verifyLiveRecallCandidates(premiseIndex?.candidates ?? [], premiseLiveRecords, input);
   const premiseSeeds = requestedPremises.flatMap(({memoryId}, requestedOrdinal) => {
     return memoryId && verifiedPremises.liveCandidateById.has(memoryId) && !verifiedPremises.conflictIds.has(memoryId)
@@ -246,7 +257,7 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
   });
 
   let canonicalMismatches = 0;
-  let canonicalRereads = requestedCanonicalUris.length + premiseCandidateUris.length;
+  let canonicalRereads = requestedCanonicalUris.length + unreadPremiseCandidateUris.length;
   let rawLinkRows = 0;
   let refreshRepairs = 0;
   let truncatedSeedOrdinals: readonly number[] = [];
@@ -257,13 +268,18 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
           allowedUriScopes: input.allowedUriScopes,
           eligibility: input.eligibility,
           includeInactive: true,
-          limit: 64,
+          // Preserve bounded canonical backfill within each selector lane.
+          // Multi-premise global exhaustion remains explicit in coverage.
+          limit: CONNECTION_CANDIDATE_LIMIT,
           memorySeeds: premiseSeeds,
           onCanonicalMismatch: count => {
             canonicalMismatches += count;
           },
           onCanonicalReread: count => {
             canonicalRereads += count;
+          },
+          onCanonicalRecords: records => {
+            for (const record of records) canonicalRecordByUri.set(record.uri, record);
           },
           onRawRows: count => {
             rawLinkRows += count;
@@ -289,8 +305,15 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
           validateNow: true,
         });
   const candidateUris = [...new Set((index?.candidates ?? []).flatMap(candidateUrisForRead))];
-  canonicalRereads += candidateUris.length;
-  const liveRecords = candidateUris.length === 0 ? [] : yield* input.readRecords(candidateUris);
+  const unreadCandidateUris = candidateUris.filter(uri => !canonicalRecordByUri.has(uri));
+  canonicalRereads += unreadCandidateUris.length;
+  const newlyReadCandidateRecords =
+    unreadCandidateUris.length === 0 ? [] : yield* input.readRecords(unreadCandidateUris);
+  for (const record of newlyReadCandidateRecords) canonicalRecordByUri.set(record.uri, record);
+  const liveRecords = candidateUris.flatMap(uri => {
+    const record = canonicalRecordByUri.get(uri);
+    return record ? [record] : [];
+  });
   const verifiedCandidates = verifyLiveRecallCandidates(index?.candidates ?? [], liveRecords, input);
   const liveCandidateById = verifiedCandidates.liveCandidateById;
   const conflictIds = verifiedCandidates.conflictIds;
@@ -312,14 +335,17 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
   );
 
   const currentnessIds = [...new Set([...finalPremiseSeeds.map(seed => seed.memoryId), ...verifiedLinkedMemoryIds])];
+  let currentnessTruncatedOrdinals: readonly number[] = [];
   const supersederLinks =
     currentnessIds.length === 0
       ? []
       : yield* loadRecallMemoryLinks(config, {
           allowedUriScopes: input.allowedUriScopes,
           eligibility: input.eligibility,
+          directions: ['incoming'],
           includeInactive: true,
-          limit: 64,
+          limit: currentnessIds.length * ACTIVE_SUPERSEDER_PROOF_LIMIT_PER_MEMORY,
+          limitPerSeed: ACTIVE_SUPERSEDER_PROOF_LIMIT_PER_MEMORY,
           memorySeeds: currentnessIds.map((memoryId, requestedOrdinal) => ({memoryId, requestedOrdinal})),
           onCanonicalMismatch: count => {
             canonicalMismatches += count;
@@ -327,14 +353,29 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
           onCanonicalReread: count => {
             canonicalRereads += count;
           },
+          onCanonicalRecords: records => {
+            for (const record of records) canonicalRecordByUri.set(record.uri, record);
+          },
           onRawRows: count => {
             rawLinkRows += count;
           },
           onRefreshRepair: () => {
             refreshRepairs += 1;
           },
+          onSearchTruncated: ordinals => {
+            currentnessTruncatedOrdinals = [...new Set([...currentnessTruncatedOrdinals, ...ordinals])].sort(
+              (a, b) => a - b,
+            );
+          },
           relationTypes: ['supersedes'],
+          sourceCurrentAt: now,
         });
+  const currentnessTruncatedMemoryIds = new Set(
+    currentnessTruncatedOrdinals.flatMap(ordinal => {
+      const memoryId = currentnessIds[ordinal];
+      return memoryId === undefined ? [] : [memoryId];
+    }),
+  );
   const missingSupersederIds = [
     ...new Set(
       supersederLinks
@@ -352,8 +393,15 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
       validateNow: true,
     });
     const supersederUris = [...new Set(supersederIndex.candidates.flatMap(candidateUrisForRead))];
-    canonicalRereads += supersederUris.length;
-    const supersederRecords = supersederUris.length === 0 ? [] : yield* input.readRecords(supersederUris);
+    const unreadSupersederUris = supersederUris.filter(uri => !canonicalRecordByUri.has(uri));
+    canonicalRereads += unreadSupersederUris.length;
+    const newlyReadSupersederRecords =
+      unreadSupersederUris.length === 0 ? [] : yield* input.readRecords(unreadSupersederUris);
+    for (const record of newlyReadSupersederRecords) canonicalRecordByUri.set(record.uri, record);
+    const supersederRecords = supersederUris.flatMap(uri => {
+      const record = canonicalRecordByUri.get(uri);
+      return record ? [record] : [];
+    });
     const verifiedSuperseders = verifyLiveRecallCandidates(supersederIndex.candidates, supersederRecords, input);
     for (const memoryId of verifiedSuperseders.conflictIds) {
       conflictIds.add(memoryId);
@@ -377,9 +425,17 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
     if (conflictIds.has(memoryId)) return 'conflicted';
     const candidate = liveCandidateById.get(memoryId);
     if (!candidate) return 'unresolved';
-    return classifyRecallMemoryPremiseState(
+    const activeSupersederCount = activeSupersedersByTarget.get(memoryId)?.size ?? 0;
+    if (
+      currentnessTruncatedMemoryIds.has(memoryId) &&
+      candidateIsCurrentlyActive(candidate, now) &&
+      activeSupersederCount < ACTIVE_SUPERSEDER_PROOF_LIMIT_PER_MEMORY
+    ) {
+      return 'unresolved';
+    }
+    const state = classifyRecallMemoryPremiseState(
       {
-        activeSupersederCount: activeSupersedersByTarget.get(memoryId)?.size ?? 0,
+        activeSupersederCount,
         identityConflict: candidate.identityConflict,
         resolved: true,
         status: candidate.status,
@@ -388,6 +444,7 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
       },
       now,
     );
+    return state;
   };
 
   const premises = requestedPremises.map(({memoryId, requestedRef}, requestedOrdinal): RecallMemoryPremiseReceiptV1 => {
@@ -427,6 +484,7 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
     .map(connection => connection.receipt);
   const truncated =
     truncatedSeedOrdinals.length > 0 ||
+    currentnessTruncatedMemoryIds.size > 0 ||
     fairConnections.length > selectedConnections.length ||
     selectedIds.size <
       new Set(
@@ -448,6 +506,9 @@ export const retrieveRecallMemoryConnections = Effect.fn('recall.retrieveMemoryC
     diagnostics: {
       canonicalMismatches,
       canonicalRereads,
+      ...(currentnessTruncatedMemoryIds.size > 0
+        ? {currentnessTruncatedMemoryIds: [...currentnessTruncatedMemoryIds].sort(compareCodeUnits)}
+        : {}),
       rawLinkRows,
       refreshRepairs,
       truncatedSeedOrdinals,

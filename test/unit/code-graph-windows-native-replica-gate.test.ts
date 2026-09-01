@@ -12,6 +12,36 @@ const Sha256 = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const GitObjectId = Schema.String.check(Schema.isPattern(/^[0-9a-f]{40}$/u));
 const Positive = Schema.Number.check(Schema.isGreaterThan(0));
 const PositiveInteger = Schema.Int.check(Schema.isGreaterThan(0));
+const CalibrationReplicaFields = {
+  archiveSha256: Sha256,
+  artifactId: PositiveInteger,
+  createdAt: Schema.String,
+  environment: Schema.Struct({
+    architecture: Schema.Literal('x64'),
+    cpu: Schema.String,
+    memoryBytes: PositiveInteger,
+    operatingSystem: Schema.String,
+  }),
+  jobId: PositiveInteger,
+  processCpuMilliseconds: Schema.Struct({
+    coldMaterialization: Positive,
+    hotQueryP95: Positive,
+    oneFileMaterialization: Positive,
+    wholeGraphAnalysisP95: Positive,
+  }),
+  rawJsonSha256: Sha256,
+  replica: PositiveInteger,
+  runnerIdentity: Schema.String,
+  wallMilliseconds: Schema.Struct({
+    coldIndex: Positive,
+    coldMaterialization: Positive,
+    hotQueryP50: Positive,
+    hotQueryP95: Positive,
+    oneFileIndex: Positive,
+    oneFileMaterialization: Positive,
+    wholeGraphAnalysisP95: Positive,
+  }),
+} as const;
 const calibration = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -22,6 +52,35 @@ const calibration = Schema.decodeUnknownSync(
         wallP95Ratio: Positive,
       }),
       fixtureHash: Sha256,
+      nestedMaterializationOutlier: Schema.Struct({
+        aggregateArtifactId: PositiveInteger,
+        aggregateArtifactSha256: Sha256,
+        aggregateJobId: PositiveInteger,
+        aggregateJsonSha256: Sha256,
+        commit: GitCommit,
+        expected: Schema.Struct({
+          coldMaterializationProcessCpuObservedMaximum: Positive,
+          oneFileMaterializationProcessCpuObservedMaximum: Positive,
+          ordinaryPasses: Schema.Literal(2),
+          safetyPassesAfterCorrection: Schema.Literal(3),
+          safetyPassesBeforeCorrection: Schema.Literal(2),
+        }),
+        outlierDiagnostics: Schema.Struct({
+          coldMaterializationProcessCpuMilliseconds: Positive,
+          coldMaterializationWallToCpuRatio: Positive,
+          coldMaximumProgressHeartbeatGapMilliseconds: Positive,
+          sameOverlayReferenceIndexMilliseconds: Positive,
+          sameOverlayReferenceMaterializationMilliseconds: Positive,
+        }),
+        replicas: Schema.Array(
+          Schema.Struct({
+            ...CalibrationReplicaFields,
+            classification: Schema.Literals(['ordinary-pass', 'scheduler-storage-tail']),
+          }),
+        ),
+        sourceTree: GitObjectId,
+        workflowRun: PositiveInteger,
+      }),
       observations: Schema.Array(
         Schema.Struct({
           archiveSha256: Sha256,
@@ -45,41 +104,19 @@ const calibration = Schema.decodeUnknownSync(
         }),
         replicas: Schema.Array(
           Schema.Struct({
-            archiveSha256: Sha256,
-            artifactId: PositiveInteger,
+            ...CalibrationReplicaFields,
             classification: Schema.Literals(['ordinary-pass', 'scheduler-wall-tail']),
-            createdAt: Schema.String,
-            environment: Schema.Struct({
-              architecture: Schema.Literal('x64'),
-              cpu: Schema.String,
-              memoryBytes: PositiveInteger,
-              operatingSystem: Schema.String,
-            }),
-            jobId: PositiveInteger,
-            processCpuMilliseconds: Schema.Struct({
-              hotQueryP95: Positive,
-              wholeGraphAnalysisP95: Positive,
-            }),
-            rawJsonSha256: Sha256,
-            replica: PositiveInteger,
-            runnerIdentity: Schema.String,
-            wallMilliseconds: Schema.Struct({
-              coldIndex: Positive,
-              coldMaterialization: Positive,
-              hotQueryP50: Positive,
-              hotQueryP95: Positive,
-              oneFileIndex: Positive,
-              oneFileMaterialization: Positive,
-              wholeGraphAnalysisP95: Positive,
-            }),
           }),
         ),
         sourceTree: GitObjectId,
         workflowRun: PositiveInteger,
       }),
       policy: Schema.Struct({
+        coldMaterializationProcessCpuMillisecondsMaximum: Schema.Literal(3000),
         hardWallP95MillisecondsMaximum: Schema.Literal(1900),
         headroomRatio: Schema.Literal(0.1),
+        nestedMaterializationUsesEnclosingSafetyCeiling: Schema.Literal(true),
+        oneFileMaterializationProcessCpuMillisecondsMaximum: Schema.Literal(200),
         ordinaryPassesMinimum: Schema.Literal(2),
         ordinaryWallP95MillisecondsMaximum: Schema.Literal(1050),
         replicas: Schema.Literal(3),
@@ -191,6 +228,62 @@ describe('hosted Windows native replica adjudication', () => {
     );
   });
 
+  it('replays the candidate-C nested materialization tail under the enclosing phase safety contract', () => {
+    const candidate = calibration.nestedMaterializationOutlier;
+    expect(candidate.replicas.map(replica => replica.replica)).toEqual([1, 2, 3]);
+    expect(new Set(candidate.replicas.map(replica => replica.artifactId)).size).toBe(3);
+    expect(new Set(candidate.replicas.map(replica => replica.rawJsonSha256)).size).toBe(3);
+    expect(candidate.replicas.filter(replica => replica.wallMilliseconds.coldMaterialization <= 16_000)).toHaveLength(
+      candidate.expected.safetyPassesBeforeCorrection,
+    );
+    const observedColdMaterializationCpuMaximum = Math.max(
+      ...candidate.replicas.map(replica => replica.processCpuMilliseconds.coldMaterialization),
+    );
+    const observedOneFileMaterializationCpuMaximum = Math.max(
+      ...candidate.replicas.map(replica => replica.processCpuMilliseconds.oneFileMaterialization),
+    );
+    expect(observedColdMaterializationCpuMaximum).toBe(candidate.expected.coldMaterializationProcessCpuObservedMaximum);
+    expect(observedOneFileMaterializationCpuMaximum).toBe(
+      candidate.expected.oneFileMaterializationProcessCpuObservedMaximum,
+    );
+    expect(Math.ceil((observedColdMaterializationCpuMaximum * 1.5) / 1_000) * 1_000).toBe(
+      calibration.policy.coldMaterializationProcessCpuMillisecondsMaximum,
+    );
+    expect(Math.ceil((observedOneFileMaterializationCpuMaximum * 1.5) / 100) * 100).toBe(
+      calibration.policy.oneFileMaterializationProcessCpuMillisecondsMaximum,
+    );
+
+    const outlier = candidate.replicas.find(replica => replica.classification === 'scheduler-storage-tail');
+    if (outlier === undefined) throw new Error('Nested materialization outlier is missing.');
+    expect(outlier.wallMilliseconds.coldMaterialization).toBeLessThan(outlier.wallMilliseconds.coldIndex);
+    expect(
+      outlier.wallMilliseconds.coldMaterialization /
+        candidate.outlierDiagnostics.coldMaterializationProcessCpuMilliseconds,
+    ).toBeCloseTo(candidate.outlierDiagnostics.coldMaterializationWallToCpuRatio, 12);
+    expect(
+      outlier.wallMilliseconds.coldMaterialization /
+        candidate.outlierDiagnostics.sameOverlayReferenceMaterializationMilliseconds,
+    ).toBeGreaterThan(10);
+    expect(candidate.outlierDiagnostics.sameOverlayReferenceIndexMilliseconds).toBeLessThan(
+      outlier.wallMilliseconds.coldIndex,
+    );
+
+    const result = adjudicateCodeGraphWindowsReplicas(calibratedReplicaInputs(candidate), budget, candidate.commit);
+    expect(result.gate).toEqual({failures: [], passed: true});
+    expect(result.policy.nestedMaterializationUsesEnclosingSafetyCeiling).toBe(true);
+    expect(result.replicas.filter(replica => replica.ordinaryPassed)).toHaveLength(candidate.expected.ordinaryPasses);
+    expect(result.replicas.filter(replica => replica.safetyPassed)).toHaveLength(
+      candidate.expected.safetyPassesAfterCorrection,
+    );
+    expect(result.replicas.map(replica => replica.ordinaryPassed)).toEqual([false, true, true]);
+    expect(result.replicas.map(replica => replica.coldMaterializationProcessCpu.maximum)).toEqual(
+      candidate.replicas.map(replica => replica.processCpuMilliseconds.coldMaterialization),
+    );
+    expect(result.replicas.map(replica => replica.oneFileMaterializationProcessCpu.maximum)).toEqual(
+      candidate.replicas.map(replica => replica.processCpuMilliseconds.oneFileMaterialization),
+    );
+  });
+
   it('rejects two ordinary tails and any single safety-fuse breach', () => {
     expect(adjudicate(replicas([1050, 1050.000_001, 1050.000_001])).gate.failures).toContain(
       'ordinary performance budget passed 1/3; required 2',
@@ -213,12 +306,10 @@ describe('hosted Windows native replica adjudication', () => {
     expect(result.gate.failures).toContain('ordinary performance budget passed 1/3; required 2');
   });
 
-  it('applies two-times safety fuses to every other governed Windows wall clock', () => {
+  it('applies two-times safety fuses to enclosing and independent governed Windows wall clocks', () => {
     const cases = [
       ['cold-index', 30_000],
-      ['cold-materialization', 16_000],
       ['one-file-reindex-index', 20_000],
-      ['one-file-reindex-materialization', 8_000],
       ['whole-graph-structural-analysis', 4_000],
     ] as const;
     for (const [measurementName, safetyMaximum] of cases) {
@@ -237,6 +328,43 @@ describe('hosted Windows native replica adjudication', () => {
       const result = adjudicate([aboveBoundary, ...inputs.slice(1)]);
       expect(result.gate.failures).toEqual(
         expect.arrayContaining([expect.stringContaining('replica 1 safety budget')]),
+      );
+    }
+  });
+
+  it('uses each enclosing phase safety ceiling for nested materialization and rejects invalid nesting', () => {
+    for (const [enclosingName, materializationName, safetyMaximum] of [
+      ['cold-index', 'cold-materialization', 30_000],
+      ['one-file-reindex-index', 'one-file-reindex-materialization', 20_000],
+    ] as const) {
+      const inputs = replicas();
+      const first = inputs[0];
+      if (first === undefined) throw new Error('Replica fixture is missing.');
+      const atBoundary = replaceAllStatistics(
+        replaceAllStatistics(first.artifact, enclosingName, safetyMaximum),
+        materializationName,
+        safetyMaximum,
+      );
+      expect(adjudicate([{...first, artifact: atBoundary}, ...inputs.slice(1)]).gate.passed).toBe(true);
+
+      const aboveBoundary = replaceAllStatistics(
+        replaceAllStatistics(first.artifact, enclosingName, safetyMaximum + 0.000_001),
+        materializationName,
+        safetyMaximum + 0.000_001,
+      );
+      expect(adjudicate([{...first, artifact: aboveBoundary}, ...inputs.slice(1)]).gate.failures).toEqual(
+        expect.arrayContaining([expect.stringContaining('replica 1 safety budget')]),
+      );
+
+      const invalidNesting = replaceAllStatistics(
+        replaceAllStatistics(first.artifact, enclosingName, 2_000),
+        materializationName,
+        2_000.000_001,
+      );
+      const result = adjudicate([{...first, artifact: invalidNesting}, ...inputs.slice(1)]);
+      expect(result.gate.passed).toBe(false);
+      expect(result.gate.failures).toContain(
+        `replica 1 ${materializationName} maximum 2000.000001 exceeds enclosing ${enclosingName} maximum 2000`,
       );
     }
   });
@@ -268,6 +396,62 @@ describe('hosted Windows native replica adjudication', () => {
         expect(result.replicas[0]?.ordinaryPassed, `${name} ${label} ordinary classification`).toBe(false);
         expect(result.replicas[0]?.safetyPassed, `${name} ${label} safety classification`).toBe(false);
         expect(result.gate.failures, `${name} ${label} diagnostic`).toContain(`replica 1 ${expected}`);
+      }
+    }
+  });
+
+  it('fails closed immediately above each nested materialization process-CPU companion', () => {
+    for (const [name, maximum, outputField] of [
+      ['cold-materialization-process-cpu-n1', 3_000, 'coldMaterializationProcessCpu'],
+      ['one-file-reindex-materialization-process-cpu-n1', 200, 'oneFileMaterializationProcessCpu'],
+    ] as const) {
+      const inputs = replicas();
+      const first = inputs[0];
+      if (first === undefined) throw new Error('Replica fixture is missing.');
+      const atBoundary = {
+        ...first,
+        artifact: replaceAllStatistics(first.artifact, name, maximum),
+      };
+      const accepted = adjudicate([atBoundary, ...inputs.slice(1)]);
+      expect(accepted.gate.passed, `${name} boundary`).toBe(true);
+      expect(accepted.replicas[0]?.[outputField].maximum).toBe(maximum);
+
+      const aboveBoundary = {
+        ...first,
+        artifact: replaceAllStatistics(first.artifact, name, maximum + 0.000_001),
+      };
+      const rejected = adjudicate([aboveBoundary, ...inputs.slice(1)]);
+      expect(rejected.gate.passed, `${name} epsilon`).toBe(false);
+      expect(rejected.replicas[0]?.safetyPassed).toBe(false);
+      expect(rejected.gate.failures).toContain(
+        `replica 1 safety budget: ${name} maximum ${maximum + 0.000_001} exceeds ${maximum}`,
+      );
+    }
+  });
+
+  it('rejects invalid units and cardinalities for nested materialization process-CPU companions', () => {
+    for (const name of [
+      'cold-materialization-process-cpu-n1',
+      'one-file-reindex-materialization-process-cpu-n1',
+    ] as const) {
+      for (const [label, mutate, expected] of [
+        [
+          'unit',
+          (value: BenchmarkMeasurementV1): BenchmarkMeasurementV1 => ({...value, unit: 'bytes'}),
+          `${name} measurement must use milliseconds`,
+        ],
+        ['samples', (value: BenchmarkMeasurementV1) => ({...value, samples: 2}), `${name} samples 2; expected 1`],
+      ] as const) {
+        const inputs = replicas();
+        const first = inputs[0];
+        if (first === undefined) throw new Error('Replica fixture is missing.');
+        const result = adjudicate([
+          {...first, artifact: replaceMeasurement(first.artifact, name, mutate)},
+          ...inputs.slice(1),
+        ]);
+        expect(result.gate.passed, `${name} ${label}`).toBe(false);
+        expect(result.replicas[0]?.safetyPassed, `${name} ${label} safety classification`).toBe(false);
+        expect(result.gate.failures, `${name} ${label} diagnostic`).toContain(`replica 1 safety budget: ${expected}`);
       }
     }
   });
@@ -466,12 +650,10 @@ describe('hosted Windows native replica adjudication', () => {
     );
   });
 
-  it('accepts exactly scheduler-sensitive secondary walls within their fixed safety multipliers', () => {
+  it('accepts exactly scheduler-sensitive independent walls within their fixed safety multipliers', () => {
     const safetyFuses = [
       ['cold-index', 30_000],
-      ['cold-materialization', 16_000],
       ['one-file-reindex-index', 20_000],
-      ['one-file-reindex-materialization', 8_000],
       ['whole-graph-structural-analysis', 4_000],
     ] as const;
     fc.assert(
@@ -488,6 +670,55 @@ describe('hosted Windows native replica adjudication', () => {
             artifact: replaceAllStatistics(first.artifact, measurementName, value),
           };
           expect(adjudicate([mutated, ...inputs.slice(1)]).gate.passed).toBe(value <= safetyMaximum);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('accepts nested materialization exactly when it remains within its enclosing safe phase', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(
+          ['cold-index', 'cold-materialization', 30_000] as const,
+          ['one-file-reindex-index', 'one-file-reindex-materialization', 20_000] as const,
+        ),
+        fc.double({max: 33_000, min: 1, noDefaultInfinity: true, noNaN: true}),
+        fc.double({max: 33_000, min: 1, noDefaultInfinity: true, noNaN: true}),
+        ([enclosingName, materializationName, safetyMaximum], enclosing, materialization) => {
+          const inputs = replicas();
+          const first = inputs[0];
+          if (first === undefined) throw new Error('Replica fixture is missing.');
+          const mutated = replaceAllStatistics(
+            replaceAllStatistics(first.artifact, enclosingName, enclosing),
+            materializationName,
+            materialization,
+          );
+          const expected = enclosing <= safetyMaximum && materialization <= enclosing;
+          expect(adjudicate([{...first, artifact: mutated}, ...inputs.slice(1)]).gate.passed).toBe(expected);
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('accepts nested materialization process CPU exactly within each independent companion', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(
+          ['cold-materialization-process-cpu-n1', 3_000] as const,
+          ['one-file-reindex-materialization-process-cpu-n1', 200] as const,
+        ),
+        fc.double({max: 3_300, min: 1, noDefaultInfinity: true, noNaN: true}),
+        ([measurementName, safetyMaximum], processCpuMaximum) => {
+          const inputs = replicas();
+          const first = inputs[0];
+          if (first === undefined) throw new Error('Replica fixture is missing.');
+          const mutated = {
+            ...first,
+            artifact: replaceAllStatistics(first.artifact, measurementName, processCpuMaximum),
+          };
+          expect(adjudicate([mutated, ...inputs.slice(1)]).gate.passed).toBe(processCpuMaximum <= safetyMaximum);
         },
       ),
       {numRuns: 100},
@@ -550,8 +781,16 @@ function replicas(walls: Triple = [500, 600, 700]): readonly CodeGraphWindowsRep
 }
 
 function prospectiveReplicaInputs(): readonly CodeGraphWindowsReplicaInput[] {
-  const prospective = calibration.prospectiveReplicaSet;
-  return prospective.replicas.map(replica => {
+  return calibratedReplicaInputs(calibration.prospectiveReplicaSet);
+}
+
+type CalibratedReplicaSet = {
+  readonly commit: string;
+  readonly replicas: readonly Omit<(typeof calibration.prospectiveReplicaSet.replicas)[number], 'classification'>[];
+};
+
+function calibratedReplicaInputs(replicaSet: CalibratedReplicaSet): readonly CodeGraphWindowsReplicaInput[] {
+  return replicaSet.replicas.map(replica => {
     let replay = artifact(replica.replica, replica.wallMilliseconds.hotQueryP95);
     replay = {
       ...replay,
@@ -559,7 +798,7 @@ function prospectiveReplicaInputs(): readonly CodeGraphWindowsReplicaInput[] {
       environment: {
         ...replay.environment,
         architecture: replica.environment.architecture,
-        commit: prospective.commit,
+        commit: replicaSet.commit,
         cpu: replica.environment.cpu,
         memoryBytes: replica.environment.memoryBytes,
         operatingSystem: replica.environment.operatingSystem,
@@ -568,11 +807,21 @@ function prospectiveReplicaInputs(): readonly CodeGraphWindowsReplicaInput[] {
     };
     replay = replaceAllStatistics(replay, 'cold-index', replica.wallMilliseconds.coldIndex);
     replay = replaceAllStatistics(replay, 'cold-materialization', replica.wallMilliseconds.coldMaterialization);
+    replay = replaceAllStatistics(
+      replay,
+      'cold-materialization-process-cpu-n1',
+      replica.processCpuMilliseconds.coldMaterialization,
+    );
     replay = replaceAllStatistics(replay, 'one-file-reindex-index', replica.wallMilliseconds.oneFileIndex);
     replay = replaceAllStatistics(
       replay,
       'one-file-reindex-materialization',
       replica.wallMilliseconds.oneFileMaterialization,
+    );
+    replay = replaceAllStatistics(
+      replay,
+      'one-file-reindex-materialization-process-cpu-n1',
+      replica.processCpuMilliseconds.oneFileMaterialization,
     );
     replay = replaceMeasurement(replay, 'hot-exact-lexical-query', value => ({
       ...value,
@@ -621,8 +870,10 @@ function artifact(replica: number, wallP95: number): BenchmarkArtifactV1 {
     measurements: [
       measurement('cold-index', 1_000),
       measurement('cold-materialization', 1_000),
+      measurement('cold-materialization-process-cpu-n1', 1_000),
       measurement('one-file-reindex-index', 1_000),
       measurement('one-file-reindex-materialization', 1_000),
+      measurement('one-file-reindex-materialization-process-cpu-n1', 100),
       {
         ...measurement('hot-exact-lexical-query', wallP95, 100),
         maximum: Math.max(wallP95, 700),

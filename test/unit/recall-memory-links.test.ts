@@ -5,7 +5,11 @@ import {describe, expect} from 'vitest';
 import {ApplicationLayer} from '../../src/effect/runtime.js';
 import {formatMemoryDocument, type MemoryMetadata} from '../../src/memory/document.js';
 import {memoryIdentityAlias} from '../../src/memory/identity_alias.js';
-import {MAX_INDEXED_MEMORY_LINKS_PER_SOURCE, memoryLinkLocatorDigest} from '../../src/recall/memory_links.js';
+import {
+  buildBoundedRecallMemoryLinkRawQuery,
+  MAX_INDEXED_MEMORY_LINKS_PER_SOURCE,
+  memoryLinkLocatorDigest,
+} from '../../src/recall/memory_links.js';
 import {
   clearRecallIndexMemoryCache,
   expireRecallIndexValidation,
@@ -116,6 +120,15 @@ describe('recall memory links', () => {
       ]);
       expect(schema.targetIndex[0]).toBe('target_memory_id');
       expect(schema.locatorIndex[0]).toBe('target_locator_digest');
+      const plans = yield* Effect.sync(() => inspectBoundedMemoryLinkPlans(home, user));
+      expect(plans.incoming).toMatch(/SEARCH memory_link USING (?:COVERING )?INDEX memory_links_target/u);
+      expect(plans.outgoing).toMatch(/SEARCH memory_link USING (?:COVERING )?INDEX memory_links_source/u);
+      expect(plans.currentness).toMatch(/SEARCH memory_link USING (?:COVERING )?INDEX memory_links_target/u);
+      expect(`${plans.incoming}\n${plans.outgoing}\n${plans.currentness}`).not.toMatch(
+        /\bSCAN memory_link\b|ranked_links/u,
+      );
+      expect(plans.currentnessSql).toContain('AS source_valid_from');
+      expect(plans.currentnessParams).not.toContain('2026-08-31T12:00:00.000Z');
       const storedSelectors = rows.map(({source_uri: _sourceUri, ...row}) => row);
       expect(JSON.stringify(storedSelectors)).not.toContain('threadnote://');
       expect(JSON.stringify(storedSelectors)).not.toContain('source body');
@@ -369,6 +382,59 @@ function inspectMemoryLinkSchema(home: string) {
       locatorIndex: columns('memory_links_locator'),
       sourceIndex: columns('memory_links_source'),
       targetIndex: columns('memory_links_target'),
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function inspectBoundedMemoryLinkPlans(home: string, user: string) {
+  const options = {allowedUriScopes: [`threadnote://user/${user}/memories`], includeInactive: false};
+  const incoming = buildBoundedRecallMemoryLinkRawQuery(
+    'incoming',
+    [
+      {memoryId: 'tn_alias_target', requestedOrdinal: 0},
+      {memoryId: 'tn_reference_target', requestedOrdinal: 1},
+    ],
+    options,
+    5,
+  );
+  const outgoing = buildBoundedRecallMemoryLinkRawQuery(
+    'outgoing',
+    [
+      {memoryId: 'tn_source', requestedOrdinal: 0},
+      {memoryId: 'tn_legacy_target', requestedOrdinal: 1},
+    ],
+    options,
+    5,
+  );
+  const currentness = buildBoundedRecallMemoryLinkRawQuery(
+    'incoming',
+    [{memoryId: 'tn_superseded_target', requestedOrdinal: 0}],
+    {
+      allowedUriScopes: [`threadnote://user/${user}/memories`],
+      includeInactive: true,
+      sourceCurrentAt: new Date('2026-08-31T12:00:00.000Z'),
+    },
+    3,
+  );
+  if (incoming === undefined || outgoing === undefined || currentness === undefined) {
+    throw new Error('Bounded memory-link query was not built.');
+  }
+  const database = new Database(`${home}/indexes/lexical/${recallIndexDatabaseFilename(false)}`, {readonly: true});
+  try {
+    const plan = (query: NonNullable<typeof incoming>) =>
+      database
+        .query<{readonly detail: string}, Array<number | string>>(`EXPLAIN QUERY PLAN ${query.sql}`)
+        .all(...query.params)
+        .map(row => row.detail)
+        .join('\n');
+    return {
+      currentness: plan(currentness),
+      currentnessParams: currentness.params,
+      currentnessSql: currentness.sql,
+      incoming: plan(incoming),
+      outgoing: plan(outgoing),
     };
   } finally {
     database.close();

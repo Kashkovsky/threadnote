@@ -132,6 +132,9 @@ describe('recall memory connection properties', () => {
         expect(incremental.candidates).toHaveLength(Math.min(8, neighborIds.length));
         expect(new Set(incremental.candidates.map(value => value.memoryId)).size).toBe(incremental.candidates.length);
         expect(incremental.candidates.map(value => value.memoryId)).not.toContain('tn_topical_noise');
+        expect(incremental.diagnostics.canonicalRereads).toBe(neighborIds.length + 2);
+        expect(incremental.diagnostics.rawLinkRows).toBe(neighborIds.length);
+        expect(incremental.coverage.truncated).toBe(neighborIds.length > 8);
       }).pipe(provideTestLayer(ApplicationLayer)),
     {fastCheck: {numRuns: 8}, timeout: 30_000},
   );
