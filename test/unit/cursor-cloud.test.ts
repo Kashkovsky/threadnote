@@ -8,6 +8,7 @@ import {
   cursorCloudMemoryEndpoint,
   cursorCloudMemoryRoot,
   cursorCloudRemoteShareId,
+  cursorCloudRuntimeConfig,
   normalizeCursorCloudTeams,
   planCursorCloudBootstrap,
 } from '../../src/cursor/cloud.js';
@@ -71,6 +72,35 @@ describe('Cursor Cloud profile', () => {
         (teams, order) => {
           const reordered = order.map(index => teams[index % teams.length]!).concat(teams);
           expect(normalizeCursorCloudTeams(reordered)).toEqual([...teams].sort());
+        },
+      ),
+      {numRuns: 100},
+    );
+  });
+
+  it('preserves a saved Personal Cursor Cloud identity unless a command explicitly overrides it', () => {
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[a-z][a-z0-9]{0,20}$/u),
+        fc.stringMatching(/^[a-z][a-z0-9]{0,20}$/u),
+        fc.stringMatching(/^[a-z][a-z0-9]{0,20}$/u),
+        (savedUser, savedAgent, overrideUser) => {
+          const savedRuntime: RuntimeConfig = {
+            ...runtime,
+            agentId: savedAgent,
+            agentIdSource: 'cursor-cloud-profile',
+            user: savedUser,
+            userSource: 'cursor-cloud-profile',
+          };
+          expect(cursorCloudRuntimeConfig(savedRuntime, {})).toMatchObject({
+            agentId: savedAgent,
+            user: savedUser,
+          });
+          expect(cursorCloudRuntimeConfig(savedRuntime, {user: overrideUser})).toMatchObject({
+            agentId: savedAgent,
+            user: overrideUser,
+            userSource: 'cursor-cloud-command',
+          });
         },
       ),
       {numRuns: 100},

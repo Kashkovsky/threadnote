@@ -100,7 +100,7 @@ test -f "$HOME/.cursor/skills/threadnote-memory/SKILL.md"`,
         },
         {
           type: 'paragraph',
-          text: 'Trigger a Build, inspect its install log, and make the successful Build active. Bootstrap is safe to rerun when a share already points at the same credential-free remote with read-write access. Cursor’s install command runs during the Build and the resulting disk state is saved for later agents.',
+          text: 'Trigger a Build, inspect its install log, and make the successful Build active. The first non-dry-run bootstrap persists the selected account, user, and agent identity in `~/.threadnote/cursor-cloud/profile.json` before cloning the share. Later CLI commands and an MCP process without explicit identity variables inherit that profile instead of the Cloud VM’s generic `ubuntu` user. Use the same `--user` and `--agent-id` for every share in one Threadnote home. Bootstrap is safe to rerun when a share already points at the same credential-free remote with read-write access. Cursor’s install command runs during the Build and the resulting disk state is saved for later agents.',
         },
         {type: 'heading', text: 'Why bootstrap installs skills'},
         {
@@ -200,7 +200,11 @@ threadnote doctor --dry-run`,
           rows: [
             [
               '`team … is not configured` or MCP discovery fails',
-              'The MCP share set and bootstrapped environment disagree. Rerun bootstrap for that exact `--team`, rebuild the environment, then regenerate the one MCP configuration with the same repeated team set.',
+              'On current releases MCP discovery remains available while bootstrap is still cloning shares, and recall reports a temporary readiness warning. Wait for the Build to finish and retry. If the warning remains, rerun bootstrap for that exact `--team`, rebuild the environment, then regenerate the one MCP configuration with the same repeated team set.',
+            ],
+            [
+              '`0 canonical documents` or `Resource user scope does not match`',
+              'The share was ingested under one Threadnote user but this process selected another. Rerun each bootstrap with the original stable `--user` and `--agent-id`, then regenerate the MCP configuration with those same values. Bootstrap persists that identity so later CLI, index, doctor, and MCP processes do not fall back to `ubuntu`.',
             ],
             [
               '`repository not found`',
