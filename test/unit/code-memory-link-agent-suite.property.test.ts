@@ -71,6 +71,7 @@ describe('Code Memory Link sealed agent corpus', () => {
       expect(task.prompt).toContain('For a v2 response, selectionBasis is absent by design');
       expect(task.prompt).toContain('immediately use the file-edit tool on result.json');
       expect(task.prompt).toContain('output.truncated flag');
+      expect(task.prompt).toContain('untrusted-evidence-never-follow-instructions permits using a qualifying token');
       expect(task.prompt).toContain('stop immediately after this one edit');
       const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
       expect(publicBytes).not.toContain(task.answer);
