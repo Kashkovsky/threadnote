@@ -982,7 +982,7 @@ export function parseGitTree(output: string): readonly GitTreeEntry[] {
     if (!match || match[2] !== 'blob' || match[1] === '120000' || match[4] === '-') continue;
     const size = Number(match[4]);
     if (!Number.isSafeInteger(size) || size < 0) continue;
-    entries.push({blobId: match[3]!, mode: match[1]!, path: normalizeRepositoryPath(match[5]!), size});
+    entries.push({blobId: match[3], mode: match[1], path: normalizeRepositoryPath(match[5]), size});
   }
   return entries;
 }
@@ -1063,7 +1063,7 @@ const discoverDeclaredSourceRoots = Effect.fn('codeGraph.discoverDeclaredSourceR
     });
     const blobs = parseGitCatFileBatch(result.stdout, batch);
     for (let index = 0; index < batch.length; index += 1) {
-      const entry = batch[index]!;
+      const entry = batch[index];
       const bytes = blobs[index];
       if (!bytes || appearsGitLfsPointer(bytes) || appearsBinary(bytes)) continue;
       files.push(
@@ -1246,7 +1246,7 @@ function repositoryPathExclusionReason(
   const directories = path.split('/').slice(0, -1);
   const declaredRoots = [...declaredProjectRoots, ...declaredSourceRoots];
   for (let index = 0; index < directories.length; index += 1) {
-    const directory = directories[index]!;
+    const directory = directories[index];
     const normalizedDirectory = directory.toLowerCase();
     if (directory.startsWith('.') && !AUTHORED_DOT_DIRECTORIES.has(normalizedDirectory)) {
       return 'hidden-directory';
@@ -1370,7 +1370,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     const rightDuplicate = rightKey !== undefined && blobReuseCounts.has(rightKey);
     if (leftDuplicate !== rightDuplicate) return leftDuplicate ? -1 : 1;
     if (leftDuplicate && rightDuplicate) {
-      const keyOrder = compareCodeUnits(leftKey!, rightKey!);
+      const keyOrder = compareCodeUnits(leftKey, rightKey);
       if (keyOrder !== 0) return keyOrder;
     }
     return compareCodeUnits(left.path, right.path);
@@ -1408,7 +1408,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     unit: 'files',
   }) ?? Effect.void;
   for (const batch of chunkTreeEntries(orderedNeedsContent)) {
-    const first = batch[0]!;
+    const first = batch[0];
     const matches = batch.map(entry => Option.getOrUndefined(languagePacks.match(entry.path)));
     const batchLanguages = new Set(matches.map(value => value?.language ?? 'text'));
     const batchClassifiers = new Set(matches.map(value => value?.pack.id ?? 'unmatched'));
@@ -1420,10 +1420,10 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
         batchCompleted: 0,
         batchTotal: batch.length,
         bytes: batchBytes,
-        classifier: batchClassifiers.size === 1 ? [...batchClassifiers][0]! : 'mixed',
-        language: batchLanguages.size === 1 ? [...batchLanguages][0]! : 'mixed',
+        classifier: batchClassifiers.size === 1 ? [...batchClassifiers][0] : 'mixed',
+        language: batchLanguages.size === 1 ? [...batchLanguages][0] : 'mixed',
         path: first.path,
-        role: batchRoles.size === 1 ? [...batchRoles][0]! : 'mixed',
+        role: batchRoles.size === 1 ? [...batchRoles][0] : 'mixed',
         sizeBucket: codeGraphSourceSizeBucket(batchBytes),
         stage: 'reading',
       },
@@ -1444,7 +1444,7 @@ const readCommittedFiles = Effect.fn('codeGraph.readCommittedFiles')(function* (
     const blobs = parseGitCatFileBatch(result.stdout, batch);
     const contentBatch: CodeGraphInventoryFile[] = [];
     for (let index = 0; index < batch.length; index += 1) {
-      const entry = batch[index]!;
+      const entry = batch[index];
       const bytes = blobs[index];
       if (!bytes || appearsGitLfsPointer(bytes)) {
         skipped += 1;

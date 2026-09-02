@@ -460,7 +460,7 @@ function loadProjectionFence(sql: SqlClient.SqlClient, snapshotId: string) {
     if (rows.length !== 1) {
       return yield* projectionFailure('The selected snapshot is not a complete reusable checkpoint root.');
     }
-    return rows[0]!;
+    return rows[0];
   });
 }
 

@@ -563,7 +563,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
       });
       const encoded = encodeStoredCodeGraphFact(bounded);
       const shardId = materializedFileShardIdentity(
-        files[0]!.content_hash,
+        files[0].content_hash,
         extractorSet,
         record.cacheIdentity,
         record.path,
@@ -572,7 +572,7 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
         INSERT INTO materialized_file_shards (
           id, content_hash, extractor_set, derivation_identity, path_hint, facts_json, created_at, last_used_at
         ) VALUES (
-          ${shardId}, ${files[0]!.content_hash}, ${extractorSet}, ${record.cacheIdentity}, ${record.path},
+          ${shardId}, ${files[0].content_hash}, ${extractorSet}, ${record.cacheIdentity}, ${record.path},
           ${encoded.json}, ${now}, ${now}
         )
         ON CONFLICT(id) DO NOTHING
@@ -589,13 +589,13 @@ const stageCheckpointSupplementalRecord = Effect.fn('codeGraph.stageCheckpointSu
       `;
       const storedMetadataMatches =
         stored.length === 1 &&
-        stored[0]?.content_hash === files[0]!.content_hash &&
+        stored[0]?.content_hash === files[0].content_hash &&
         stored[0]?.extractor_set === extractorSet &&
         stored[0]?.derivation_identity === record.cacheIdentity &&
         stored[0]?.path_hint === record.path;
       if (
         !storedMetadataMatches ||
-        !checkpointStoredFactMatches(stored[0]!.facts_json, encoded.json, bounded.facts, record.path)
+        !checkpointStoredFactMatches(stored[0].facts_json, encoded.json, bounded.facts, record.path)
       ) {
         return yield* Effect.fail(invalid(`Checkpoint file fact ${record.path} conflicts with cached content.`));
       }
@@ -860,13 +860,7 @@ export const stageCheckpointImportRecordPage = Effect.fn('codeGraph.stageCheckpo
     monikers.map(checkpointMoniker),
   );
   for (const record of records) {
-    yield* stageCheckpointSupplementalRecord(
-      sql,
-      snapshotId,
-      authority[0]!.extractor_set as string,
-      record,
-      completedAt,
-    );
+    yield* stageCheckpointSupplementalRecord(sql, snapshotId, authority[0].extractor_set, record, completedAt);
   }
   yield* sql`
     INSERT INTO checkpoint_import_batches (

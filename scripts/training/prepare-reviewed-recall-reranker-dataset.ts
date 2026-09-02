@@ -42,7 +42,7 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   let groups: string | undefined;
   let output: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--draft') draft = resolve(required(args[++index], argument));
     else if (argument === '--groups') groups = resolve(required(args[++index], argument));
     else if (argument === '--output') output = resolve(required(args[++index], argument));

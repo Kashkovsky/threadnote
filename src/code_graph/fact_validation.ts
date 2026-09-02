@@ -167,10 +167,7 @@ function parseSpan(value: unknown, label: string): CodeGraphSpan {
   positiveInteger(input.endColumn, `${label} end column`);
   positiveInteger(input.endLine, `${label} end line`);
   positiveInteger(input.line, `${label} line`);
-  if (
-    (input.endLine as number) < (input.line as number) ||
-    (input.endLine === input.line && (input.endColumn as number) < (input.column as number))
-  ) {
+  if (input.endLine < input.line || (input.endLine === input.line && input.endColumn < input.column)) {
     throw new CodeGraphFactValidationError(`${label} ends before it starts.`);
   }
   return input as unknown as CodeGraphSpan;

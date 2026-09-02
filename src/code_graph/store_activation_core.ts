@@ -293,7 +293,7 @@ const copyPersistentActivationRows = Effect.fn('codeGraph.copyPersistentActivati
           onNone: () => '',
           onSome: () =>
             spec.keyColumns.length === 1
-              ? `WHERE ${spec.keyColumns[0]!} > ?`
+              ? `WHERE ${spec.keyColumns[0]} > ?`
               : `WHERE (${spec.keyColumns.join(', ')}) > (${spec.keyColumns.map(() => '?').join(', ')})`,
         });
         const parameters = [snapshotId, ...Option.getOrElse(cursor, () => []), batchRows];
@@ -339,12 +339,12 @@ const copyPersistentActivationRows = Effect.fn('codeGraph.copyPersistentActivati
             onNone: () => '',
             onSome: () =>
               spec.keyColumns.length === 1
-                ? `${spec.keyColumns[0]!} > ? AND `
+                ? `${spec.keyColumns[0]} > ? AND `
                 : `(${spec.keyColumns.join(', ')}) > (${spec.keyColumns.map(() => '?').join(', ')}) AND `,
           });
           const upperPredicate =
             spec.keyColumns.length === 1
-              ? `${spec.keyColumns[0]!} <= ?`
+              ? `${spec.keyColumns[0]} <= ?`
               : `(${spec.keyColumns.join(', ')}) <= (${spec.keyColumns.map(() => '?').join(', ')})`;
           const tallyRows = yield* sql.unsafe<{readonly count: number}>(
             `SELECT COUNT(*) AS count

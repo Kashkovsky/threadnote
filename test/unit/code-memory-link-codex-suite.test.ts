@@ -39,7 +39,7 @@ describe('Code Memory Link Codex sealed-suite loader', () => {
 
     expect(loaded.taskPacket.taskId).toBe(corpus.taskId);
     expect(loaded.fixture.repository).toHaveLength(1);
-    expect(new TextDecoder().decode(loaded.fixture.repository[0]!.bytes)).toContain(corpus.taskId);
+    expect(new TextDecoder().decode(loaded.fixture.repository[0].bytes)).toContain(corpus.taskId);
     expect(loaded.layout.tasks).toHaveLength(28);
     expect(loaded.judge.programArtifact.sha256).toBe(corpus.programSha256);
   });
@@ -77,7 +77,7 @@ describe('Code Memory Link Codex sealed-suite loader', () => {
     fc.assert(
       fc.property(fc.string({minLength: 1, maxLength: 32}), suffix => {
         const value = minimalLayout();
-        value.fixtureFiles[0]!.destination = `../${suffix || 'escape'}`;
+        value.fixtureFiles[0].destination = `../${suffix || 'escape'}`;
         expect(() => parseCodeMemoryLinkCodexSuiteLayoutV1(value)).toThrow();
       }),
       {numRuns: 40},
@@ -86,13 +86,13 @@ describe('Code Memory Link Codex sealed-suite loader', () => {
 
   it('requires an exact sorted selected-memory identity/content roster', () => {
     const value = minimalLayout();
-    value.tasks[0]!.preflightExpectedSelectedMemories = [
+    value.tasks[0].preflightExpectedSelectedMemories = [
       {contentSha256: '2'.repeat(64), memoryIdDigest: '1'.repeat(64)},
       {contentSha256: '4'.repeat(64), memoryIdDigest: '3'.repeat(64)},
     ];
-    expect(parseCodeMemoryLinkCodexSuiteLayoutV1(value).tasks[0]!.preflightExpectedSelectedMemories).toHaveLength(2);
+    expect(parseCodeMemoryLinkCodexSuiteLayoutV1(value).tasks[0].preflightExpectedSelectedMemories).toHaveLength(2);
 
-    value.tasks[0]!.preflightExpectedSelectedMemories = [
+    value.tasks[0].preflightExpectedSelectedMemories = [
       {contentSha256: '4'.repeat(64), memoryIdDigest: '3'.repeat(64)},
       {contentSha256: '2'.repeat(64), memoryIdDigest: '1'.repeat(64)},
     ];
@@ -173,11 +173,11 @@ async function writeCorpus(root: string): Promise<WrittenCorpus> {
       packetHash: packet.packetHash,
       packetSource: `packets/${index.toString().padStart(2, '0')}.json`,
       preflightCodeRefs: ['src/task.ts'],
-      preflightExpectedCitationDigests: rubrics[index]!.goldCitationDigests,
+      preflightExpectedCitationDigests: rubrics[index].goldCitationDigests,
       preflightExpectedResponses: responseProjections(),
       preflightExpectedSelectedMemories: [],
       project: 'code-memory-link',
-      rubricHash: rubrics[index]!.rubricHash,
+      rubricHash: rubrics[index].rubricHash,
       rubricSource: `rubrics/${index.toString().padStart(2, '0')}.json`,
       taskId: packet.taskId,
       taskKind: packet.taskKind,
@@ -202,7 +202,7 @@ async function writeCorpus(root: string): Promise<WrittenCorpus> {
     suiteId: `sui_${'1'.repeat(16)}`,
     tasks: packets.map((packet, index) => ({
       packetHash: packet.packetHash,
-      rubricHash: rubrics[index]!.rubricHash,
+      rubricHash: rubrics[index].rubricHash,
       taskId: packet.taskId,
       taskKind: packet.taskKind,
     })),
@@ -215,7 +215,7 @@ async function writeCorpus(root: string): Promise<WrittenCorpus> {
     programSha256: sha256(program),
     root,
     suiteHash: suite.suiteHash,
-    taskId: packets[0]!.taskId,
+    taskId: packets[0].taskId,
   };
 }
 

@@ -497,7 +497,7 @@ function normalizeWitnessedMemoryLinkSources(
     candidates.set(key, byUri);
   }
   return new Map(
-    [...candidates].flatMap(([key, byUri]) => (byUri.size === 1 ? [[key, [...byUri.values()][0]!] as const] : [])),
+    [...candidates].flatMap(([key, byUri]) => (byUri.size === 1 ? [[key, [...byUri.values()][0]] as const] : [])),
   );
 }
 

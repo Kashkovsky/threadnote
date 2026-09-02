@@ -97,7 +97,7 @@ export function embeddingContextBenchmarkSchedule(rounds: number): readonly (rea
   if (!Number.isSafeInteger(rounds) || rounds < 4 || rounds > 16 || rounds % 4 !== 0) {
     throw new ScriptError('--rounds must be one of 4, 8, 12, or 16.');
   }
-  return Array.from({length: rounds}, (_, index) => WILLIAMS_ORDER[index % WILLIAMS_ORDER.length]!);
+  return Array.from({length: rounds}, (_, index) => WILLIAMS_ORDER[index % WILLIAMS_ORDER.length]);
 }
 
 export function parseEmbeddingContextBenchmarkArguments(args: readonly string[]): EmbeddingContextBenchmarkOptions {
@@ -106,7 +106,7 @@ export function parseEmbeddingContextBenchmarkArguments(args: readonly string[])
   let resume = false;
   let rounds = DEFAULT_ROUNDS;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     const value = () => {
       const candidate = args[++index]?.trim();
       if (!candidate) throw new ScriptError(`${argument} requires a value.`);
@@ -187,12 +187,12 @@ export function summarizeEmbeddingContextArtifacts(
     }),
   );
   const candidate = ([1, 2, 4, 8] as const).reduce((winner, contexts) =>
-    summaries[String(contexts)]!.coldIndexMilliseconds.median < summaries[String(winner)]!.coldIndexMilliseconds.median
+    summaries[String(contexts)].coldIndexMilliseconds.median < summaries[String(winner)].coldIndexMilliseconds.median
       ? contexts
       : winner,
   );
-  const candidateSummary = summaries[String(candidate)]!;
-  const baselineSummary = summaries['1']!;
+  const candidateSummary = summaries[String(candidate)];
+  const baselineSummary = summaries['1'];
   const roundWinsAgainstOne =
     candidate === 1
       ? 0
@@ -447,8 +447,8 @@ function validateThreadPlan(artifact: BenchmarkArtifactV1, path: string, context
     threads.length !== contexts ||
     threads.some(value => !Number.isSafeInteger(value) || value < 1) ||
     threads.reduce((sum, value) => sum + value, 0) !== cpuMathCores ||
-    threads.some((value, index) => index > 0 && value > threads[index - 1]!) ||
-    threads[0]! - threads.at(-1)! > 1
+    threads.some((value, index) => index > 0 && value > threads[index - 1]) ||
+    threads[0] - threads.at(-1)! > 1
   ) {
     throw new ScriptError(`Embedding benchmark artifact ${path} has an invalid CPU-thread partition.`);
   }
@@ -509,11 +509,11 @@ function distribution(values: readonly number[]): DistributionSummary {
     throw new ScriptError('Embedding benchmark distribution is empty or invalid.');
   }
   const sorted = [...values].sort((left, right) => left - right);
-  const percentile = (quantile: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))]!;
+  const percentile = (quantile: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))];
   return {
     maximum: sorted.at(-1)!,
     median: percentile(0.5),
-    minimum: sorted[0]!,
+    minimum: sorted[0],
     p25: percentile(0.25),
     p75: percentile(0.75),
   };

@@ -132,7 +132,7 @@ export function takeCodeGraphExtractionWindow<Group extends CodeGraphExtractionC
   const remaining: Group[] = [];
   let selectedFiles = 0;
   for (let index = 0; index < groups.length; index += 1) {
-    const group = groups[index]!;
+    const group = groups[index];
     if (group.files.length === 0) throw new Error('Code graph extraction group is empty.');
     const available = maximumFiles - selectedFiles;
     if (available === 0) {
@@ -159,7 +159,7 @@ function estimateGroup<Group extends CodeGraphExtractionCostGroup>(
   if (group.files.length === 0) throw new Error('Code graph extraction group is empty.');
   const representative = [...group.files].sort(
     (left, right) => fileWorkUnits(right) - fileWorkUnits(left) || compareCodeUnits(left.path, right.path),
-  )[0]!;
+  )[0];
   const staticWorkUnits = fileWorkUnits(representative);
   const aggregate = byClass.get(costClass(representative)) ?? (global.workUnits > 0 ? global : undefined);
   const estimatedRequestMicroseconds =

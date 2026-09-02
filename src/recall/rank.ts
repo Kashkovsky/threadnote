@@ -407,7 +407,7 @@ export function deduplicateLogicalRecallCandidates(candidates: readonly RecallCa
     let root = index;
     while (parents[root] !== root) root = parents[root]!;
     while (parents[index] !== index) {
-      const next = parents[index]!;
+      const next = parents[index];
       parents[index] = root;
       index = next;
     }
@@ -433,7 +433,7 @@ export function deduplicateLogicalRecallCandidates(candidates: readonly RecallCa
   });
   for (const indices of indicesByLegacyKey.values()) {
     const memoryIds = new Set(
-      indices.flatMap(index => (candidates[index]?.memoryId ? [candidates[index]!.memoryId!] : [])),
+      indices.flatMap(index => (candidates[index]?.memoryId ? [candidates[index].memoryId] : [])),
     );
     if (memoryIds.size > 1) continue;
     const first = indices[0];

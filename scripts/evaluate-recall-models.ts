@@ -98,11 +98,11 @@ const evaluateModels = Effect.gen(function* () {
             manifest: embedding,
             modelPath: paths.get(embedding.id)!,
           });
-          const normalizedQuery = normalizeVector(queryVector!);
+          const normalizedQuery = normalizeVector(queryVector);
           semantic = new Map(
             fixture.documents.map((document, index) => [
               document.uri,
-              Math.max(0, dot(normalizedQuery, normalizedDocuments[index]!)),
+              Math.max(0, dot(normalizedQuery, normalizedDocuments[index])),
             ]),
           );
         }
@@ -204,7 +204,7 @@ function builtinManifest(id: string, role: 'embedding' | 'reranker'): LocalModel
 
 function dot(left: readonly number[], right: readonly number[]): number {
   let score = 0;
-  for (let index = 0; index < left.length; index += 1) score += left[index]! * right[index]!;
+  for (let index = 0; index < left.length; index += 1) score += left[index] * right[index];
   return score;
 }
 
@@ -233,7 +233,7 @@ function parseArguments(args: readonly string[], resolve: (value: string) => str
   let rerankerPath: string | undefined;
   let summaryOutput: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--baseline') baseline = resolve(required(args[++index], argument));
     else if (argument === '--embedding') embedding = required(args[++index], argument);
     else if (argument === '--fail-on-regression') failOnRegression = true;

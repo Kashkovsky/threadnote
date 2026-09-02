@@ -670,7 +670,7 @@ export function makeMcpCancellationCompatibleProtocol(
           : handling.pipe(Effect.provideService(CurrentMcpProgressRequestAssociation, progressAssociation));
       }),
     send: (clientId, response, transferables) => {
-      const mcpResponse = response as RpcMessage.FromServerEncoded | RpcMessage.RequestEncoded;
+      const mcpResponse = response;
       const outgoingProgressPayload =
         mcpResponse._tag === 'Request' &&
         mcpResponse.tag === 'notifications/progress' &&

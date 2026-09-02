@@ -115,7 +115,7 @@ export function parseOrdinaryVectorPhaseCursor(cursorToken: string | undefined):
   if (match === null) return undefined;
   const [, seal, payload] = match;
   if (sha256HexSync(`code-graph-ordinary-vector-cursor-v1\n${payload}`) !== seal) return undefined;
-  const decoded = Encoding.decodeBase64UrlString(payload!);
+  const decoded = Encoding.decodeBase64UrlString(payload);
   if (!Result.isSuccess(decoded) || Encoding.encodeBase64Url(decoded.success) !== payload) return undefined;
   let raw: unknown;
   try {
@@ -178,7 +178,7 @@ function decodeOrdinaryVectorCursorPayload(raw: unknown): OrdinaryVectorPhaseCur
   return {
     digest: candidate.d,
     models,
-    ...(candidate.n === undefined ? {} : {nextModelName: candidate.n as string}),
+    ...(candidate.n === undefined ? {} : {nextModelName: candidate.n}),
     roundDeferred: candidate.x === 1,
     roundProgressed: candidate.p === 1,
   };

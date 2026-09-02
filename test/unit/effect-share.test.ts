@@ -290,7 +290,7 @@ describe('Effect share transaction', () => {
         'Shared repository auto-sync used the local snapshot because the repository lock was stale or unverifiable; run threadnote doctor --dry-run if this warning persists.',
       ],
     });
-    expect(result.warnings[0]!.length).toBeLessThan(200);
+    expect(result.warnings[0].length).toBeLessThan(200);
     expect(automaticReadEntered).toBe(false);
   });
 

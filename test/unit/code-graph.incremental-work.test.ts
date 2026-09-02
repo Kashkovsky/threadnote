@@ -48,7 +48,7 @@ describe('incremental rewrite work', () => {
         const expected =
           value.length >= 1 &&
           value.length <= CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BATCHES &&
-          value.every((batch, index) => batch.length > 0 && batchBytes[index]! <= maximumBatchBytes) &&
+          value.every((batch, index) => batch.length > 0 && batchBytes[index] <= maximumBatchBytes) &&
           factBytes.every(bytes => Number.isSafeInteger(bytes) && bytes > 0 && bytes <= maximumBatchBytes) &&
           batchBytes.reduce((total, bytes) => total + bytes, 0) <= CODE_GRAPH_INCREMENTAL_REWRITE_MAX_FACT_BYTES;
         expect(codeGraphIncrementalFactBatchesFitBudget(value)).toBe(expected);

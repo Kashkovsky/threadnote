@@ -139,7 +139,7 @@ const collectBindings = Effect.fn('codeMemoryLinkClientImplementation.collectBin
 function exactlyOneRole(bindings: readonly CollectedBinding[], role: string): CollectedBinding {
   const matching = bindings.filter(binding => binding.role === role);
   if (matching.length !== 1) throw new ScriptError(`Client implementation requires exactly one ${role} binding.`);
-  return matching[0]!;
+  return matching[0];
 }
 
 const canonicalClientFile = Effect.fn('codeMemoryLinkClientImplementation.canonicalFile')(function* (

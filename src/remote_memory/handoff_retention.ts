@@ -214,8 +214,8 @@ export class RemoteHandoffRetentionWorker {
       if (result.length >= limit) break;
     }
     if (lastScanned && shares.length > 0) {
-      const index = shares.findIndex(share => shareKey(share) === shareKey(lastScanned!));
-      this.nextShareKey = shareKey(shares[(index + 1) % shares.length]!);
+      const index = shares.findIndex(share => shareKey(share) === shareKey(lastScanned));
+      this.nextShareKey = shareKey(shares[(index + 1) % shares.length]);
     }
     return result;
   }

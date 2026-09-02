@@ -702,7 +702,7 @@ export function judgeCodeMemoryLinkTaskV1(input: {
       satisfied: constraints.filter(predicate => matches.get(predicate.predicateId) === true).length,
       total: constraints.length,
     },
-    memoryExclusiveSatisfied: memoryExclusive.length === 1 && matches.get(memoryExclusive[0]!.predicateId) === true,
+    memoryExclusiveSatisfied: memoryExclusive.length === 1 && matches.get(memoryExclusive[0].predicateId) === true,
     observationHash: observation.observationHash,
     qualifyingActionItemDigest,
     qualifyingActionQualified,
@@ -1358,7 +1358,7 @@ function collectTraceState(
 } {
   const starts = notifications.filter(event => event.method === 'turn/started');
   if (starts.length !== 1) invalid('app-server trace requires exactly one turn/started notification');
-  const started = starts[0]!;
+  const started = starts[0];
   matchingIdentifier(started.params.threadId, threadId, 'turn/started thread id');
   const startedTurn = record(started.params.turn, 'turn/started turn');
   const turnId = boundedText(startedTurn.id, 'turn id', 256);
@@ -1455,7 +1455,7 @@ function summarizePreTurn(
   if (remote.length !== 1 || thread.length !== 1 || !turn) {
     invalid('trace requires exactly one disabled remote-control status and one thread start before the selected turn');
   }
-  if (!(remote[0]!.eventIndex < thread[0]!.eventIndex && thread[0]!.eventIndex < turn.eventIndex)) {
+  if (!(remote[0].eventIndex < thread[0].eventIndex && thread[0].eventIndex < turn.eventIndex)) {
     invalid('pre-turn evidence must order disabled remote control before thread start and selected turn');
   }
   return {
@@ -1477,7 +1477,7 @@ function buildTraceCheckpoints(
   const usageByEvent = new Map(state.usage.map(entry => [entry.eventIndex, entry]));
   const checkpoints: CodeMemoryLinkCodexTraceCheckpointV1[] = [];
   const append = (checkpoint: CodeMemoryLinkCodexTraceCheckpointWithoutOrdinalV1): void => {
-    checkpoints.push({...checkpoint, ordinal: checkpoints.length + 1} as CodeMemoryLinkCodexTraceCheckpointV1);
+    checkpoints.push({...checkpoint, ordinal: checkpoints.length + 1});
   };
   for (const notification of notifications) {
     if (ALLOWED_NON_TURN_METHODS.has(notification.method) || notification.method === 'model/rerouted') continue;
@@ -1687,7 +1687,7 @@ function deriveProjectionFromEvidence(
   if (useful && !usage.some(entry => entry.step > useful.associatedStep)) {
     invalid('a useful Context Brief call must be followed by a later provider inference');
   }
-  const contextBriefProtocolAdhered = callProjections.length === 1 && callProjections[0]!.succeeded;
+  const contextBriefProtocolAdhered = callProjections.length === 1 && callProjections[0].succeeded;
   const itemCounts = Object.fromEntries(ALLOWED_ITEM_TYPES.map(type => [type, 0])) as Record<AllowedItemType, number>;
   for (const item of completed) itemCounts[item.type] += 1;
   const providerUsageHash = protocolDigest('provider-usage', {
@@ -1733,7 +1733,7 @@ function qualifyingActionFromEvidence(
   if (judgment.qualifyingActionItemDigest === null) return null;
   const matching = completed.filter(item => item.digest === judgment.qualifyingActionItemDigest);
   if (matching.length !== 1) invalid('static qualifying action does not identify exactly one retained completed item');
-  const action = matching[0]!;
+  const action = matching[0];
   if (!(rubric.qualifyingActionItemTypes as readonly string[]).includes(action.type) || action.status !== 'completed') {
     invalid('static qualifying action is not a successfully completed item of the sealed type');
   }

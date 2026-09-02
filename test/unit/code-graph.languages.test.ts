@@ -156,7 +156,7 @@ describe('polyglot code graph language packs', () => {
           concurrency: 'unbounded',
         },
       );
-      const byLanguage = new Map(facts.map((value, index) => [inventoryFile(samples[index]![0], '').language, value]));
+      const byLanguage = new Map(facts.map((value, index) => [inventoryFile(samples[index][0], '').language, value]));
       expect(byLanguage.get('python')?.symbols.map(symbol => [symbol.kind, symbol.qualifiedName])).toEqual(
         expect.arrayContaining([
           ['class', 'Greeter'],

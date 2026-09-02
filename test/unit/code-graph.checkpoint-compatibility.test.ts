@@ -25,7 +25,7 @@ describe('code graph checkpoint compatibility', () => {
     const actual = codeGraphCheckpointAbiInputV1(provenance.slice(0, 1));
     const unavailable = {
       ...actual,
-      languagePacks: [{...actual.languagePacks[0]!, id: 'future-pack'}],
+      languagePacks: [{...actual.languagePacks[0], id: 'future-pack'}],
     };
     const changed = {...actual, workspaceModelVersion: 'future-workspace-model'};
 

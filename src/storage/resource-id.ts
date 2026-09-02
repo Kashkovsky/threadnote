@@ -25,8 +25,8 @@ export function parseResourceId(input: string): ResourceId {
   const trimmed = input.trim();
   const match = RESOURCE_ID_PATTERN.exec(trimmed);
   if (!match) return invalid(input, 'expected threadnote:// URI syntax (legacy viking:// aliases are accepted)');
-  const inputScheme = match[1]!.toLowerCase() as ResourceIdScheme;
-  const namespace = decodeSegment(match[2]!, input, 'namespace');
+  const inputScheme = match[1].toLowerCase() as ResourceIdScheme;
+  const namespace = decodeSegment(match[2], input, 'namespace');
   const rawPath = match[3] ?? '';
   if (match[4] !== undefined) return invalid(input, 'query parameters are not supported');
   if (rawPath && !rawPath.startsWith('/')) return invalid(input, 'resource path must start with /');

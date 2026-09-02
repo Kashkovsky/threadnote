@@ -204,8 +204,8 @@ export const readCodeGraphCitationSources = Effect.fn('codeGraph.readCitationSou
           : new CodeGraphCitationSourceError('Could not parse cited source batch.', {cause}),
     });
     for (let index = 0; index < batch.length; index += 1) {
-      const observation = batch[index]!;
-      const bytes = blobs[index]!;
+      const observation = batch[index];
+      const bytes = blobs[index];
       if (codeGraphFileContentHashMatchesBytes(observation.expectedContentHash, input.objectFormat, bytes)) {
         resolved.set(codeGraphCitationSourceKey(observation), bytes);
       }
@@ -245,19 +245,19 @@ function parseBatchCheck(
   }
   const observations: CommitBlobObservation[] = [];
   for (let index = 0; index < sources.length; index += 1) {
-    const source = sources[index]!;
-    const match = /^([0-9a-f]+) blob (\d+)$/u.exec(lines[index]!);
+    const source = sources[index];
+    const match = /^([0-9a-f]+) blob (\d+)$/u.exec(lines[index]);
     if (!match) continue;
     const size = Number(match[2]);
     if (
       !Number.isSafeInteger(size) ||
       size < 0 ||
       size > CODE_GRAPH_CITATION_SOURCE_MAXIMUM_FILE_BYTES ||
-      codeGraphCommittedContentHash(objectFormat, match[1]!) !== source.expectedContentHash
+      codeGraphCommittedContentHash(objectFormat, match[1]) !== source.expectedContentHash
     ) {
       continue;
     }
-    observations.push({...source, blobId: match[1]!, size});
+    observations.push({...source, blobId: match[1], size});
   }
   return observations;
 }

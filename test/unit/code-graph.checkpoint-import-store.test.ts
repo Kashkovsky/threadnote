@@ -444,7 +444,7 @@ describe('code graph checkpoint import store', () => {
                   ...header.reuse!,
                   inventory: {
                     ...header.reuse!.inventory!,
-                    attributionFiles: [{...header.reuse!.inventory!.attributionFiles[0]!, contentHash: 'f'.repeat(64)}],
+                    attributionFiles: [{...header.reuse!.inventory!.attributionFiles[0], contentHash: 'f'.repeat(64)}],
                   },
                 },
               }),
@@ -460,8 +460,8 @@ describe('code graph checkpoint import store', () => {
                     ...header.reuse!.inventory!,
                     attributionFiles: [
                       {
-                        ...header.reuse!.inventory!.attributionFiles[0]!,
-                        blobSize: header.reuse!.inventory!.attributionFiles[0]!.blobSize + 1,
+                        ...header.reuse!.inventory!.attributionFiles[0],
+                        blobSize: header.reuse!.inventory!.attributionFiles[0].blobSize + 1,
                       },
                     ],
                   },

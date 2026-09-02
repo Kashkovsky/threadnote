@@ -145,7 +145,7 @@ const smokeSelfContained = Effect.scoped(
       {concurrency: 1},
     );
     for (const [index, expected] of ['java', 'KotlinApp', 'typescriptHelper', 'swiftBoot'].entries()) {
-      if (!graphOperations[index]!.includes(expected)) {
+      if (!graphOperations[index].includes(expected)) {
         return yield* Effect.fail(
           new ScriptError(`Standalone graph operation ${index + 1} missed ${expected}:\n${graphOperations[index]}`),
         );

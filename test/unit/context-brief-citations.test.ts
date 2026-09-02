@@ -570,7 +570,7 @@ describe('Context Brief code-citation classification', () => {
         commitId: 'a'.repeat(40),
         ordinal: index,
         projectionDigest: `projection-${index}`,
-        repositoryId: repositoryIds[index]!,
+        repositoryId: repositoryIds[index],
         repositoryKey: project.name,
         snapshotDigest: `snapshot-digest-${index}`,
         snapshotId: `cgsn_${index.toString(16).padStart(40, '0')}`,

@@ -428,32 +428,32 @@ function languageDefinition(
 
 function powershellImport(value: string) {
   const match = /(?:^|\s)(?:Import-Module|using\s+module)\s+["']?([^\s"';]+)/i.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function dartImport(value: string) {
   const match = /\b(?:import|export)\s+["']([^"']+)["']/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function quotedImport(value: string) {
   const match = /["']([^"']+)["']/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function luaImport(value: string) {
   const match = /\brequire\s*\(?\s*["']([^"']+)["']/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function scalaImport(value: string) {
   const match = /^\s*import\s+([^\s;{]+)(?:\s*\{[^}]*\})?/.exec(value);
-  return match ? simpleImport(match[1]!.replace(/\.(?:_|\*)$/, '')) : Option.none();
+  return match ? simpleImport(match[1].replace(/\.(?:_|\*)$/, '')) : Option.none();
 }
 
 function elixirImport(value: string) {
   const match = /^\s*(?:alias|import|require|use)\s+([A-Z][\w.]*)/.exec(value);
-  return match ? simpleImport(match[1]!, match[1]!.split('.').at(-1)) : Option.none();
+  return match ? simpleImport(match[1], match[1].split('.').at(-1)) : Option.none();
 }
 
 function elixirDeclarationKind(node: Node): string {
@@ -475,12 +475,12 @@ function elixirDeclarationName(node: Node): string {
 
 function zigImport(value: string) {
   const match = /@import\s*\(\s*["']([^"']+)["']\s*\)/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function juliaImport(value: string) {
   const match = /^\s*(?:using|import)\s+([\w.]+)/.exec(value);
-  return match ? simpleImport(match[1]!, match[1]!.split('.').at(-1)) : Option.none();
+  return match ? simpleImport(match[1], match[1].split('.').at(-1)) : Option.none();
 }
 
 function juliaDeclarationName(declaration: Node, fallback: Node): string {
@@ -492,14 +492,14 @@ function juliaDeclarationName(declaration: Node, fallback: Node): string {
 
 function objectiveCImport(value: string) {
   const include = /#\s*(?:import|include)\s*[<"]([^>"]+)[>"]/.exec(value);
-  if (include) return simpleImport(include[1]!);
+  if (include) return simpleImport(include[1]);
   const module = /@import\s+([\w.]+)/.exec(value);
-  return module ? simpleImport(module[1]!) : Option.none();
+  return module ? simpleImport(module[1]) : Option.none();
 }
 
 function systemVerilogImport(value: string) {
   const match = /\bimport\s+([A-Za-z_]\w*)::/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function objectiveCMethodName(node: Node): string {

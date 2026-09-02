@@ -268,7 +268,7 @@ export function assertMemoryDocumentSchemaWritable(content: string): void {
   if (schemaLines.length !== 1) {
     throw new Error('Memory schema_version header must appear exactly once before rewriting.');
   }
-  const line = schemaLines[0]!;
+  const line = schemaLines[0];
   const rawVersion = line.slice(line.indexOf(':') + 1).trim();
   const schemaVersion = parseSchemaVersion(rawVersion);
   if (schemaVersion === undefined) {

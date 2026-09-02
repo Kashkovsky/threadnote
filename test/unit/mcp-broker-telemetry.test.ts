@@ -70,7 +70,7 @@ describe('MCP broker anonymous telemetry', () => {
     return Effect.gen(function* () {
       yield* emitMcpBrokerFailureEvent(invalid);
 
-      const attributes = spanAttributes(capture.spans[0]!);
+      const attributes = spanAttributes(capture.spans[0]);
       expect(attributes).toMatchObject({'threadnote.operation': 'mcp-broker.unknown'});
       const serialized = JSON.stringify(attributes);
       expect(serialized).not.toContain('/Users/private');

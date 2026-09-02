@@ -217,7 +217,7 @@ export function searchDocs(index: DocsSearchIndex, value: string, limit = 12): r
     .map(entry => {
       const bestTermScores = new Map(terms.map(term => [term, 0]));
       let bestPhraseScore = 0;
-      let bestField = entry.fields.find(candidate => candidate.kind === 'summary') ?? entry.fields[0]!;
+      let bestField = entry.fields.find(candidate => candidate.kind === 'summary') ?? entry.fields[0];
       let bestFieldScore = -1;
       const matchedTerms = new Set<string>();
 

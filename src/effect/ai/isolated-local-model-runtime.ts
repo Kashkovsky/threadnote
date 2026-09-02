@@ -663,7 +663,7 @@ function spawnBunWorker(options: LocalModelWorkerSpawnOptions): LocalModelWorker
     stderr: child.stderr as ReadableStream<Uint8Array>,
     stdout: child.stdout as ReadableStream<Uint8Array>,
     write: async line => {
-      input.write(line);
+      await input.write(line);
       await input.flush();
     },
   };
@@ -955,7 +955,7 @@ function decodeEmbeddingContextPlanDiagnostics(
   }
   return Option.some({
     effectiveContexts: value.effectiveContexts as number,
-    ...(value.modelGpuLayers === undefined ? {} : {modelGpuLayers: value.modelGpuLayers as number}),
+    ...(value.modelGpuLayers === undefined ? {} : {modelGpuLayers: value.modelGpuLayers}),
     requestedContexts: value.requestedContexts as number,
     threadCounts: value.threadCounts as number[],
   });

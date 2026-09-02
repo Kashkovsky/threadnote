@@ -65,11 +65,11 @@ describe('cased recall identifiers', () => {
     const segment = fc.array(lowerLetter, {maxLength: 8, minLength: 2}).map(characters => characters.join(''));
     const camelIdentifier = fc
       .array(segment, {maxLength: 4, minLength: 2})
-      .map(([first, ...rest]) => `${first}${rest.map(part => `${part[0]!.toUpperCase()}${part.slice(1)}`).join('')}`);
+      .map(([first, ...rest]) => `${first}${rest.map(part => `${part[0].toUpperCase()}${part.slice(1)}`).join('')}`);
 
     fc.assert(
       fc.property(camelIdentifier, identifier => {
-        const caseMutation = `${identifier[0]!.toUpperCase()}${identifier.slice(1)}`;
+        const caseMutation = `${identifier[0].toUpperCase()}${identifier.slice(1)}`;
         expect(hasExactCasedCodeIdentifierMatch(`Where is ${identifier}?`, [identifier])).toBe(true);
         expect(hasExactCasedCodeIdentifierMatch(`Where is ${caseMutation}?`, [identifier])).toBe(false);
         expect(hasExactCasedCodeIdentifierMatch(`Where is ${identifier}Extra?`, [identifier])).toBe(false);

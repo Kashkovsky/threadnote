@@ -369,7 +369,7 @@ export function summarizeContextBriefCitationTelemetry(
     unknownCitations,
     ...(unknownCitations === 0
       ? {}
-      : {unknownReason: unknownReasons.size === 1 ? [...unknownReasons][0]! : ('mixed' as const)}),
+      : {unknownReason: unknownReasons.size === 1 ? [...unknownReasons][0] : ('mixed' as const)}),
   };
 }
 

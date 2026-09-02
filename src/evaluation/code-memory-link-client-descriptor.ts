@@ -57,7 +57,7 @@ export function assertCodeMemoryLinkClientImplementationBinding(input: {
   if (new Set(rosterHashes).size !== rosterHashes.length) invalid('roster descriptor hashes must be unique');
   const matchingClients = input.roster.filter(entry => entry.clientId === input.clientId);
   if (matchingClients.length !== 1) invalid('client id must identify exactly one roster entry');
-  if (matchingClients[0]!.implementationDescriptorHash !== descriptorHash) {
+  if (matchingClients[0].implementationDescriptorHash !== descriptorHash) {
     invalid('invoked implementation descriptor does not match the selected client id');
   }
   return descriptorHash;
@@ -130,7 +130,7 @@ function bindings(value: unknown, label: string): readonly CodeMemoryLinkClientA
       sha256: matchingHash(binding.sha256, `${label} binding`),
     };
   });
-  if (parsed.some((entry, index) => index > 0 && parsed[index - 1]!.role >= entry.role)) {
+  if (parsed.some((entry, index) => index > 0 && parsed[index - 1].role >= entry.role)) {
     invalid(`client ${label} bindings must have unique roles in canonical order`);
   }
   if (new Set(parsed.map(entry => entry.pathDigest)).size !== parsed.length) {
@@ -145,7 +145,7 @@ function exactlyOneRole(
 ): CodeMemoryLinkClientArtifactBindingV2 {
   const matching = bindings.filter(binding => binding.role === role);
   if (matching.length !== 1) invalid(`client descriptor requires exactly one ${role} binding`);
-  return matching[0]!;
+  return matching[0];
 }
 
 function digest(value: unknown): string {

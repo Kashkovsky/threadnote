@@ -70,7 +70,7 @@ describe('code graph repository-attribution properties', () => {
         expected.filter((_, index) => scenario.hitMask[index % scenario.hitMask.length]).map(file => file.path),
       );
       const merged = rawBatches.flatMap((batch, index) => {
-        const canonical = canonicalBatches[index]!;
+        const canonical = canonicalBatches[index];
         return canonical.every(file => hitPaths.has(file.path)) ? canonical : attributeBatch(batch);
       });
 

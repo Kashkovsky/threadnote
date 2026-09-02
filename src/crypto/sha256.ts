@@ -31,25 +31,25 @@ export function sha256HexSync(value: string | Uint8Array): string {
       words[index] = view.getUint32(offset + index * 4, false);
     }
     for (let index = 16; index < 64; index += 1) {
-      const left = words[index - 15]!;
-      const right = words[index - 2]!;
+      const left = words[index - 15];
+      const right = words[index - 2];
       const sigma0 = rotateRight(left, 7) ^ rotateRight(left, 18) ^ (left >>> 3);
       const sigma1 = rotateRight(right, 17) ^ rotateRight(right, 19) ^ (right >>> 10);
-      words[index] = (words[index - 16]! + sigma0 + words[index - 7]! + sigma1) >>> 0;
+      words[index] = (words[index - 16] + sigma0 + words[index - 7] + sigma1) >>> 0;
     }
 
-    let a = state[0]!;
-    let b = state[1]!;
-    let c = state[2]!;
-    let d = state[3]!;
-    let e = state[4]!;
-    let f = state[5]!;
-    let g = state[6]!;
-    let h = state[7]!;
+    let a = state[0];
+    let b = state[1];
+    let c = state[2];
+    let d = state[3];
+    let e = state[4];
+    let f = state[5];
+    let g = state[6];
+    let h = state[7];
     for (let index = 0; index < 64; index += 1) {
       const sum1 = rotateRight(e, 6) ^ rotateRight(e, 11) ^ rotateRight(e, 25);
       const choice = (e & f) ^ (~e & g);
-      const temporary1 = (h + sum1 + choice + ROUND_CONSTANTS[index]! + words[index]!) >>> 0;
+      const temporary1 = (h + sum1 + choice + ROUND_CONSTANTS[index] + words[index]) >>> 0;
       const sum0 = rotateRight(a, 2) ^ rotateRight(a, 13) ^ rotateRight(a, 22);
       const majority = (a & b) ^ (a & c) ^ (b & c);
       const temporary2 = (sum0 + majority) >>> 0;
@@ -62,14 +62,14 @@ export function sha256HexSync(value: string | Uint8Array): string {
       b = a;
       a = (temporary1 + temporary2) >>> 0;
     }
-    state[0] = (state[0]! + a) >>> 0;
-    state[1] = (state[1]! + b) >>> 0;
-    state[2] = (state[2]! + c) >>> 0;
-    state[3] = (state[3]! + d) >>> 0;
-    state[4] = (state[4]! + e) >>> 0;
-    state[5] = (state[5]! + f) >>> 0;
-    state[6] = (state[6]! + g) >>> 0;
-    state[7] = (state[7]! + h) >>> 0;
+    state[0] = (state[0] + a) >>> 0;
+    state[1] = (state[1] + b) >>> 0;
+    state[2] = (state[2] + c) >>> 0;
+    state[3] = (state[3] + d) >>> 0;
+    state[4] = (state[4] + e) >>> 0;
+    state[5] = (state[5] + f) >>> 0;
+    state[6] = (state[6] + g) >>> 0;
+    state[7] = (state[7] + h) >>> 0;
   }
   return [...state].map(word => word.toString(16).padStart(8, '0')).join('');
 }

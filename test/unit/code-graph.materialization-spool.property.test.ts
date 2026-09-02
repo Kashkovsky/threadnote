@@ -65,7 +65,7 @@ describe('code graph materialization spool', () => {
       );
       expect(new Set(pages.map(page => page.afterRowid)).size).toBe(pages.length);
       if (pages.length > 0) {
-        expect(pages[0]!.afterRowid).toBe(Math.floor(pages.length / 2) * pageRows);
+        expect(pages[0].afterRowid).toBe(Math.floor(pages.length / 2) * pageRows);
       }
     },
     {fastCheck: {numRuns: 100}},

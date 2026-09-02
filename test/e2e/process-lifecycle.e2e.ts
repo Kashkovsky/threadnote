@@ -74,7 +74,7 @@ async function startLifecycleMcpClient(): Promise<LifecycleMcpClient> {
       THREADNOTE_MCP_TOOLSET: 'core',
       THREADNOTE_USER: 'e2e-user',
       USERPROFILE: userHome,
-    } as Record<string, string>,
+    },
     stderr: 'pipe',
   });
   const client = new Client({name: 'threadnote-lifecycle-e2e', version: '4.0.0'});

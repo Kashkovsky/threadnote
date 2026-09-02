@@ -62,7 +62,9 @@ export function makeQueuedCliWriter(open: () => CliOutputSink) {
   };
   const flush = async (): Promise<void> => {
     await tail;
-    if (failure !== undefined) throw failure;
+    if (failure !== undefined) {
+      throw failure instanceof Error ? failure : new Error('Could not finish writing CLI output.', {cause: failure});
+    }
   };
   return {
     drain: async (): Promise<void> => {

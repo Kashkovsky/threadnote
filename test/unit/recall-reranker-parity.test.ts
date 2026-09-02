@@ -49,8 +49,8 @@ describe('recall reranker Python/native parity', () => {
           {
             ...fixture.groups[0],
             candidates: [
-              {...fixture.groups[0]!.candidates[0], pythonScore: Number.NaN},
-              ...fixture.groups[0]!.candidates.slice(1),
+              {...fixture.groups[0].candidates[0], pythonScore: Number.NaN},
+              ...fixture.groups[0].candidates.slice(1),
             ],
           },
         ],

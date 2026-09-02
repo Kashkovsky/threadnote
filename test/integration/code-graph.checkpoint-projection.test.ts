@@ -75,7 +75,7 @@ describe('code graph checkpoint projection', () => {
         expect(oneRowPages).toEqual(maximumPages);
         for (let index = 1; index < oneRowPages.records.length; index += 1) {
           expect(
-            compareCodeGraphCheckpointRecords(oneRowPages.records[index - 1]!, oneRowPages.records[index]!),
+            compareCodeGraphCheckpointRecords(oneRowPages.records[index - 1], oneRowPages.records[index]),
           ).toBeLessThan(0);
         }
         expect(oneRowPages.metadata.reuse?.inventory).toBeDefined();

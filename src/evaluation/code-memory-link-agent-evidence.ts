@@ -115,7 +115,7 @@ export function assertCodeMemoryLinkAgentEvidenceLedgerV1(input: {
   let previousEvidenceDigest: string | null = null;
 
   for (const [index, trial] of input.trials.entries()) {
-    const receipt = receipts[index]!;
+    const receipt = receipts[index];
     const raw = receipt.rawEvidence;
     const binding = raw.bindings;
     const task = input.manifest.tasks.find(candidate => candidate.taskId === trial.taskId);
@@ -189,7 +189,7 @@ export function assertCodeMemoryLinkAgentEvidenceLedgerV1(input: {
         : binding.arm === 'task-only'
           ? task.expectedResponseHashes.taskOnly
           : task.expectedResponseHashes.noMemory;
-    if (contextCalls.length !== 1 || contextCalls[0]!.proxyReceipt?.responseHash !== expectedResponseHash) {
+    if (contextCalls.length !== 1 || contextCalls[0].proxyReceipt?.responseHash !== expectedResponseHash) {
       invalid(`evidence receipt ${index} model-visible response differs from the preregistered arm projection`);
     }
 

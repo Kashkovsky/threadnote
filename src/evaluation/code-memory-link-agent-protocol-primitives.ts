@@ -211,12 +211,12 @@ export function literal<const T extends readonly string[]>(value: unknown, allow
   if (typeof value !== 'string' || !(allowed as readonly string[]).includes(value)) {
     invalid(`${label} must be one of ${allowed.join(', ')}`);
   }
-  return value as T[number];
+  return value;
 }
 
 export function canonicalUnique(values: readonly string[], label: string): void {
   unique(values, label);
-  if (values.some((value, index) => index > 0 && value <= values[index - 1]!)) {
+  if (values.some((value, index) => index > 0 && value <= values[index - 1])) {
     invalid(`${label} must use canonical ascending order`);
   }
 }

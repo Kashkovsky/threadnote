@@ -494,7 +494,7 @@ export function parseReleaseChecksum(content: string, artifactName: string): str
   if (!match || (match[2] !== undefined && match[2] !== artifactName)) {
     throw new UpdateOperationError(`Invalid checksum document for ${artifactName}.`);
   }
-  return match[1]!.toLowerCase();
+  return match[1].toLowerCase();
 }
 
 const validateExtractedRelease = Effect.fn('update.validateExtractedRelease')(function* (

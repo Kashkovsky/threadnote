@@ -222,7 +222,7 @@ export function buildCursorCloudMcpConfig(
     env: {
       THREADNOTE_ACCOUNT: profile.account,
       THREADNOTE_AGENT_ID: profile.agentId,
-      THREADNOTE_CURSOR_CLOUD_TEAM: teams[0]!,
+      THREADNOTE_CURSOR_CLOUD_TEAM: teams[0],
       ...(teams.length === 1 ? {} : {THREADNOTE_CURSOR_CLOUD_TEAMS: JSON.stringify(teams)}),
       THREADNOTE_MCP_TOOLSET: CURSOR_CLOUD_PERSONAL_MCP_TOOLSET,
       THREADNOTE_USER: profile.user,
@@ -525,13 +525,13 @@ export const runCursorCloudVerify = Effect.fn('cursorCloud.verify')(function* (
   for (const share of shares) checks.push({detail: share.root, name: `memory root ${share.team}`, status: 'ok'});
   const receipt: CursorCloudVerifyReceiptV2 = {
     checks,
-    memoryRoot: firstShare!.root,
+    memoryRoot: firstShare.root,
     memoryRoots: shares.map(share => share.root),
     profile: 'shared-read-write',
     provider: 'cursor-cloud',
     shares,
     status: checks.some(check => check.status === 'fail') ? 'fail' : 'ok',
-    team: firstShare!.team,
+    team: firstShare.team,
     teams,
     version: 2,
   };

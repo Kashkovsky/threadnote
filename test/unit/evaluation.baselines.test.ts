@@ -288,7 +288,7 @@ describe('reviewed current recall quality baseline', () => {
     const reviewed = baseline.reviewedContractFailures ?? [];
     expect(exceedsReviewedContractFailureLimit(reviewed, baseline)).toBe(false);
     expect(exceedsReviewedContractFailureLimit([...reviewed.slice(1), 'new-query: new failure'], baseline)).toBe(true);
-    expect(exceedsReviewedContractFailureLimit([...reviewed, reviewed[0]!], baseline)).toBe(true);
+    expect(exceedsReviewedContractFailureLimit([...reviewed, reviewed[0]], baseline)).toBe(true);
     expect(exceedsReviewedContractFailureLimit([])).toBe(false);
     expect(exceedsReviewedContractFailureLimit(['new-query: new failure'])).toBe(true);
   });

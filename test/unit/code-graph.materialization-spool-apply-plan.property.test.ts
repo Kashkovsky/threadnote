@@ -18,7 +18,7 @@ it.prop(
   ({lexicalTermCount, rowCounts}) => {
     const surfaces = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.map((surface, index) => ({
       name: surface.name,
-      rowCount: rowCounts[index]!,
+      rowCount: rowCounts[index],
     }));
     const plan = codeGraphMaterializationSpoolApplyPlan({
       batches: [],

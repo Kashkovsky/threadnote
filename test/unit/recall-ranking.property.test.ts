@@ -75,7 +75,7 @@ const recallCandidatesArbitrary = FC.uniqueArray(
       title: 'Alpha retry policy',
       topic: 'alpha-retry-policy',
     },
-    kind: MEMORY_KINDS[spec.kindIndex]!,
+    kind: MEMORY_KINDS[spec.kindIndex],
     reranker: spec.rerankerPercent / 100,
     semantic: spec.semanticPercent / 100,
     status: 'active',
@@ -133,7 +133,7 @@ function recallPasses(documents: readonly RecallDocumentSpec[]): readonly (reado
   const passes: RecallHit[][] = [[], [], []];
   for (const document of documents) {
     recallDocumentHits(document).forEach((hit, index) => {
-      passes[(document.passOffset + index) % passes.length]!.push(hit);
+      passes[(document.passOffset + index) % passes.length].push(hit);
     });
   }
   return passes;
@@ -144,7 +144,7 @@ function mergeOracle(documents: readonly RecallDocumentSpec[]): readonly RecallH
     .map((document): RecallHit => {
       const winner = [...recallDocumentHits(document)].sort(
         (left, right) => right.score - left.score || compareCodeUnits(left.uri, right.uri),
-      )[0]!;
+      )[0];
       return {...winner, uri: winner.uri.replace(/#.*$/, '')};
     })
     .sort(
@@ -296,7 +296,7 @@ describe('recall ranking properties', () => {
 
       expect(forward).toEqual(reverse);
       expect(forward.results.map(result => result.candidate.uri)).toEqual([newer.uri, older.uri]);
-      expect(forward.results[0]!.finalScore).toBeGreaterThan(forward.results[1]!.finalScore);
+      expect(forward.results[0].finalScore).toBeGreaterThan(forward.results[1].finalScore);
     },
     {fastCheck: {numRuns: 100}},
   );
@@ -332,7 +332,7 @@ describe('recall ranking properties', () => {
       expect(deduplicateLogicalRecallCandidates(forward)).toEqual(forward);
       expect(forward).toHaveLength(1);
       expect(forward[0]?.memoryId).toBe('tn_package_scope');
-      expect([forward[0]!.uri, ...(forward[0]!.equivalentUris ?? [])].sort(compareCodeUnits)).toEqual(
+      expect([forward[0].uri, ...(forward[0].equivalentUris ?? [])].sort(compareCodeUnits)).toEqual(
         aliases.map(candidate => candidate.uri).sort(compareCodeUnits),
       );
     },
@@ -379,7 +379,7 @@ describe('recall ranking properties', () => {
           title: 'Code graph snapshot lease',
           topic: 'code-graph-snapshot-lease',
         },
-        kind: MEMORY_KINDS[demotionCase.kindIndex]!,
+        kind: MEMORY_KINDS[demotionCase.kindIndex],
         reranker: demotionCase.rerankerPercent / 100,
         semantic: demotionCase.semanticPercent / 100,
         status: 'active',
@@ -388,7 +388,7 @@ describe('recall ranking properties', () => {
         trust,
         uri,
       });
-      const trusted = candidate(TRUSTED_LEVELS[demotionCase.trustedIndex]!, 'threadnote://a-trusted.md');
+      const trusted = candidate(TRUSTED_LEVELS[demotionCase.trustedIndex], 'threadnote://a-trusted.md');
       const untrusted = candidate('untrusted', 'threadnote://a-trusted.md');
       const context = {now: FIXED_NOW, project: 'threadnote'};
       const trustedAlone = rankRecallCandidates(demotionCase.query, [trusted], context).results[0];
@@ -528,7 +528,7 @@ describe('recall ranking properties', () => {
         snippet: `distinct payload ${label}`,
         uri: `${documentUri}#${label}`,
       }));
-      const expectedSource = [...hits].sort((left, right) => compareCodeUnits(left.uri, right.uri))[0]!;
+      const expectedSource = [...hits].sort((left, right) => compareCodeUnits(left.uri, right.uri))[0];
       const expected = {...expectedSource, uri: documentUri};
 
       expect(mergeRecallHits([hits])).toEqual([expected]);

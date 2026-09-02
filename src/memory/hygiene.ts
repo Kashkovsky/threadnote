@@ -212,7 +212,7 @@ export function buildCompactPlan(records: readonly MemoryRecord[], options: Comp
       if (duplicateGroup.length < 2) {
         continue;
       }
-      const metadataReference = duplicateGroup[0]!;
+      const metadataReference = duplicateGroup[0];
       if (!duplicateGroup.every(record => hasEquivalentMemoryMetadata(record, metadataReference))) {
         for (const record of duplicateGroup) {
           duplicateMetadataConflictUris.add(record.uri);
@@ -621,9 +621,9 @@ function stripHygieneSources(body: string): string {
 
 function preferredKeepRecord(records: readonly MemoryRecord[], topic?: string): MemoryRecord {
   const newestFirst = sortedNewestFirst(records);
-  const newestTimestamp = timestampMs(newestFirst[0] ?? records[0]!);
+  const newestTimestamp = timestampMs(newestFirst[0] ?? records[0]);
   const equallyNew = newestFirst.filter(record => timestampMs(record) === newestTimestamp);
-  return equallyNew.find(record => isStableRecord(record, topic)) ?? equallyNew[0] ?? records[0]!;
+  return equallyNew.find(record => isStableRecord(record, topic)) ?? equallyNew[0] ?? records[0];
 }
 
 function isStableRecord(record: MemoryRecord, topic?: string): boolean {

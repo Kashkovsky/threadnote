@@ -505,10 +505,7 @@ export function parseCodeGraphCheckpointRecordV1(value: unknown): CodeGraphCheck
       }
       literal(input.factRole, 'materialized', 'File-fact role');
       repositoryPath(input.path, 'File-fact path');
-      if (
-        input.cacheIdentity !==
-        codeGraphCheckpointFileFactCacheIdentity(parseFileFacts(input.facts, input.path as string))
-      ) {
+      if (input.cacheIdentity !== codeGraphCheckpointFileFactCacheIdentity(parseFileFacts(input.facts, input.path))) {
         throw new CodeGraphCheckpointSchemaError('File-fact cache identity does not match its payload.');
       }
       break;
@@ -715,7 +712,7 @@ export function compareCodeGraphCheckpointRecordOrderKeys(
   const kind = RECORD_KIND_ORDER.get(left.kind)! - RECORD_KIND_ORDER.get(right.kind)!;
   if (kind !== 0) return kind;
   for (let index = 0; index < left.identity.length; index += 1) {
-    const order = compareUtf8(left.identity[index]!, right.identity[index]!);
+    const order = compareUtf8(left.identity[index], right.identity[index]);
     if (order !== 0) return order;
   }
   return left.identity.length - right.identity.length;
@@ -778,7 +775,7 @@ function parseAbi(value: unknown): CodeGraphCheckpointAbiV1 {
   exactKeys(input, ['algorithm', 'digest', 'input'], [], 'Checkpoint ABI');
   literal(input.algorithm, 'sha256', 'Checkpoint ABI algorithm');
   sha256(input.digest, 'Checkpoint ABI digest');
-  return {algorithm: 'sha256', digest: input.digest as string, input: parseAbiInput(input.input)};
+  return {algorithm: 'sha256', digest: input.digest, input: parseAbiInput(input.input)};
 }
 
 function parseLanguagePack(value: unknown): CodeGraphCheckpointLanguagePackV1 {
@@ -1211,10 +1208,7 @@ function parseSpan(value: unknown, label: string): CodeGraphCheckpointSpanV1 {
   positiveInteger(input.endColumn, `${label} end column`);
   positiveInteger(input.endLine, `${label} end line`);
   positiveInteger(input.line, `${label} line`);
-  if (
-    (input.endLine as number) < (input.line as number) ||
-    (input.endLine === input.line && (input.endColumn as number) < (input.column as number))
-  ) {
+  if (input.endLine < input.line || (input.endLine === input.line && input.endColumn < input.column)) {
     throw new CodeGraphCheckpointSchemaError(`${label} ends before it starts.`);
   }
   return input as unknown as CodeGraphCheckpointSpanV1;
@@ -1404,7 +1398,7 @@ function compareUtf8(left: string, right: string): number {
   const rightBytes = UTF8.encode(right);
   const length = Math.min(leftBytes.byteLength, rightBytes.byteLength);
   for (let index = 0; index < length; index += 1) {
-    const difference = leftBytes[index]! - rightBytes[index]!;
+    const difference = leftBytes[index] - rightBytes[index];
     if (difference !== 0) return difference;
   }
   return leftBytes.byteLength - rightBytes.byteLength;

@@ -279,7 +279,7 @@ export function readyQueryPercentile(values: readonly number[], quantile: number
   assert(values.length > 0, 'Ready-query percentile requires at least one sample.');
   assert(Number.isFinite(quantile) && quantile > 0 && quantile <= 1, 'Ready-query percentile is invalid.');
   const sorted = [...values].sort((left, right) => left - right);
-  return sorted[Math.ceil(sorted.length * quantile) - 1]!;
+  return sorted[Math.ceil(sorted.length * quantile) - 1];
 }
 
 function validateSource(source: ReadyQueryEvidenceV1['source'] | undefined): void {
@@ -559,24 +559,24 @@ function validateSeries(
   }
   const expectedDigest = kind === 'exact' ? primary?.exactDigest : primary?.deferredDigest;
   for (let index = 0; index < samples.length; index += 1) {
-    const queue = series.queueLatencyMilliseconds[index]!;
-    const service = series.serviceMilliseconds[index]!;
-    const unattributed = series.unattributedMilliseconds[index]!;
+    const queue = series.queueLatencyMilliseconds[index];
+    const service = series.serviceMilliseconds[index];
+    const unattributed = series.unattributedMilliseconds[index];
     validateFiniteSeries([samples[index]!, queue, service, unattributed], `${kind} timing`);
-    assert(closeEnough(samples[index]!, queue + service), `${kind} end-to-end timing does not include queue latency.`);
+    assert(closeEnough(samples[index], queue + service), `${kind} end-to-end timing does not include queue latency.`);
     assert(kind === 'deferred' || queue === 0, 'Sequential exact queries cannot report queue latency.');
-    const attributed = [...stageMap.values()].reduce((sum, stage) => sum + stage.durationMilliseconds[index]!, 0);
+    const attributed = [...stageMap.values()].reduce((sum, stage) => sum + stage.durationMilliseconds[index], 0);
     assert(closeEnough(service, attributed + unattributed), `${kind} stage timing does not reconcile.`);
     assert(series.resultDigests[index] === expectedDigest, `${kind} result digest parity failed.`);
     assert(series.snapshotDigests[index] === artifact.snapshot.idSha256, `${kind} snapshot binding failed.`);
     assertFiniteRange(
-      series.structuredResponseBytes[index]!,
+      series.structuredResponseBytes[index],
       1,
       READY_QUERY_RESPONSE_BYTES_MAXIMUM,
       `${kind} structured response bytes`,
     );
     assertFiniteRange(
-      series.textResponseBytes[index]!,
+      series.textResponseBytes[index],
       1,
       READY_QUERY_RESPONSE_BYTES_MAXIMUM,
       `${kind} text response bytes`,

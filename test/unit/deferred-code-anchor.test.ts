@@ -158,9 +158,9 @@ describe('deferred code-anchor outbox', () => {
         yield* discardOtherDeferredCodeAnchorIntents(fixture.config, MEMORY_URI, second.intentId);
         const remaining = yield* fixtureIntentPaths(fixture);
         expect(remaining).toHaveLength(1);
-        expect(yield* fixture.fs.readFileString(remaining[0]!)).toContain(second.intentId);
+        expect(yield* fixture.fs.readFileString(remaining[0])).toContain(second.intentId);
 
-        const shardedPath = remaining[0]!;
+        const shardedPath = remaining[0];
         const shardedName = fixture.path.basename(shardedPath);
         const legacyDuplicateName = `${yield* sha256Hex(MEMORY_URI)}-${second.intentId}.json`;
         yield* fixture.fs.writeFileString(
@@ -354,7 +354,7 @@ describe('deferred code-anchor outbox', () => {
               graphReads += 1;
               throw new Error('unexpected graph read');
             }),
-        } as Parameters<typeof CodeGraphQueryService.of>[0]);
+        });
         const unreadableStore = ResourceStore.of({
           ...store,
           read: (location, uri) =>
@@ -421,7 +421,7 @@ describe('deferred code-anchor outbox', () => {
           request: deferredWorksetRequest(fixture.repository, ['src/workset.ts'], 'platform'),
         });
         const [intentPath] = yield* fixtureIntentPaths(fixture);
-        const name = fixture.path.basename(intentPath!);
+        const name = fixture.path.basename(intentPath);
         expect(name).toMatch(/^[a-f0-9]{32}-tnca_[a-f0-9]{32}-b[a-f0-9]{32}\.json$/u);
         expect(new TextEncoder().encode(name).byteLength).toBeLessThanOrEqual(131);
         const representativeWindowsOutbox =
@@ -431,7 +431,7 @@ describe('deferred code-anchor outbox', () => {
         expect(new TextEncoder().encode(`${representativeWindowsOutbox}${name}`).byteLength).toBeLessThanOrEqual(260);
         expect(name).not.toContain('platform');
         expect(name).not.toContain('src/workset.ts');
-        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
@@ -447,7 +447,7 @@ describe('deferred code-anchor outbox', () => {
         ).toMatchObject({matchedCount: 0, scannedCount: 0, state: 'completed'});
 
         const digest = yield* sha256Hex(MEMORY_URI);
-        yield* fixture.fs.rename(intentPath!, fixture.path.join(fixture.outbox, `${digest}.json`));
+        yield* fixture.fs.rename(intentPath, fixture.path.join(fixture.outbox, `${digest}.json`));
         expect(
           yield* finalizeDeferredCodeAnchorsForRoute(
             fixture.config,
@@ -534,7 +534,7 @@ describe('deferred code-anchor outbox', () => {
             })),
           ),
         );
-        const preferred = addressed[addressed.length - 1]!.intent;
+        const preferred = addressed[addressed.length - 1].intent;
         const route: DeferredCodeAnchorFinalizationRoute = {
           callerCwd: fixture.repository,
           kind: 'repository',
@@ -604,7 +604,7 @@ describe('deferred code-anchor outbox', () => {
             ),
           ),
         );
-        const preferred = addressed[4]!;
+        const preferred = addressed[4];
         const route: DeferredCodeAnchorFinalizationRoute = {
           callerCwd: fixture.repository,
           kind: 'repository',
@@ -659,7 +659,7 @@ describe('deferred code-anchor outbox', () => {
         });
         yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
         const [intentPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
@@ -709,7 +709,7 @@ describe('deferred code-anchor outbox', () => {
         });
         yield* store.write(resourceStoreLocation(fixture.config), MEMORY_URI, content, {mode: 'create'});
         const [intentPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
@@ -793,7 +793,7 @@ describe('deferred code-anchor outbox', () => {
           .index({cwd: fixture.repository, ensureVectors: false, threadnoteHome: fixture.config.agentContextHome})
           .pipe(TestClock.withLive);
         const [intentPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
@@ -847,11 +847,11 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/orphan.ts']),
         });
         const [intentPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
-        yield* fixture.fs.remove(intentPath!, {force: true});
+        yield* fixture.fs.remove(intentPath, {force: true});
         const markersBefore = (yield* fixture.fs.readDirectory(fixture.outbox, {recursive: true})).filter(name =>
           name.endsWith('.ref'),
         );
@@ -887,7 +887,7 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/later-page.ts']),
         });
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
-        const pendingContent = yield* fixture.fs.readFileString(pendingPath!);
+        const pendingContent = yield* fixture.fs.readFileString(pendingPath);
         const intent = JSON.parse(pendingContent) as {repositoryId: string; worktreeId: string};
         const markerPath = yield* fixtureRepositoryRouteMarkerPath(fixture);
         const laneRoot = fixture.path.dirname(markerPath);
@@ -948,7 +948,7 @@ describe('deferred code-anchor outbox', () => {
         for (let opportunity = 0; opportunity < 8; opportunity += 1) {
           receipts.push(yield* finalizeDeferredCodeAnchorsForRoute(fixture.config, route, {limit: 1}));
           if (
-            !(yield* fixture.fs.exists(pendingPath!)) &&
+            !(yield* fixture.fs.exists(pendingPath)) &&
             !(yield* fixture.fs.exists(mismatchedMarkerPath)) &&
             !(yield* Effect.forEach(poisonedMarkers, marker => fixture.fs.exists(marker), {concurrency: 4})).some(
               Boolean,
@@ -966,7 +966,7 @@ describe('deferred code-anchor outbox', () => {
         expect(
           (yield* Effect.forEach(poisonedMarkers, marker => fixture.fs.exists(marker), {concurrency: 4})).some(Boolean),
         ).toBe(false);
-        expect(yield* fixture.fs.exists(pendingPath!)).toBe(false);
+        expect(yield* fixture.fs.exists(pendingPath)).toBe(false);
         const quarantineRoot = fixture.path.join(fixture.path.dirname(laneRoot), '.quarantine-v1');
         const quarantined = yield* fixture.fs.readDirectory(quarantineRoot, {recursive: true});
         expect(quarantined.filter(entry => fixture.path.basename(entry) === 'entry')).toHaveLength(
@@ -1000,7 +1000,7 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/later-lane.ts']),
         });
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
@@ -1021,7 +1021,7 @@ describe('deferred code-anchor outbox', () => {
           }),
         ).toMatchObject({conflictCount: 1, matchedCount: 1, scannedCount: 1, state: 'completed'});
         expect(yield* fixture.fs.exists(poisonedMarker)).toBe(false);
-        expect(yield* fixture.fs.exists(pendingPath!)).toBe(false);
+        expect(yield* fixture.fs.exists(pendingPath)).toBe(false);
       }),
     ).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
   );
@@ -1193,7 +1193,7 @@ describe('deferred code-anchor outbox', () => {
         const exactQuery = CodeGraphQueryService.of({
           ...originalQuery,
           status: () => Effect.succeed(exactStatus),
-        } as Parameters<typeof CodeGraphQueryService.of>[0]);
+        });
         const emptyGraphStore = CodeGraphStore.of({
           acquireSnapshotLease: () => Effect.succeed('fixture-lease'),
           effectiveSnapshotCitationEvidence: (
@@ -1285,14 +1285,11 @@ describe('deferred code-anchor outbox', () => {
         const [intentPath] = (yield* fixtureIntentPaths(fixture)).filter(path =>
           path.includes(`${fixture.path.sep}i${fixture.path.sep}`),
         );
-        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(intentPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
-        yield* fixture.fs.rename(
-          intentPath!,
-          fixture.path.join(fixture.outbox, `${yield* sha256Hex(MEMORY_URI)}.json`),
-        );
+        yield* fixture.fs.rename(intentPath, fixture.path.join(fixture.outbox, `${yield* sha256Hex(MEMORY_URI)}.json`));
         const route: DeferredCodeAnchorFinalizationRoute = {
           callerCwd: fixture.repository,
           kind: 'repository',
@@ -1330,7 +1327,7 @@ describe('deferred code-anchor outbox', () => {
           });
           const [pendingPath] = yield* fixtureIntentPaths(fixture);
           const itemRoot = fixture.path.join(fixture.outbox, 'i');
-          const ancestor = boundary === 'i' ? itemRoot : fixture.path.dirname(pendingPath!);
+          const ancestor = boundary === 'i' ? itemRoot : fixture.path.dirname(pendingPath);
           const outside = fixture.path.join(fixture.config.agentContextHome, `outside-${boundary}-items`);
           yield* fixture.fs.rename(ancestor, outside);
           const sentinel = fixture.path.join(outside, 'outside-sentinel.txt');
@@ -1361,7 +1358,7 @@ describe('deferred code-anchor outbox', () => {
           });
           const [pendingPath] = yield* fixtureIntentPaths(fixture);
           const itemRoot = fixture.path.join(fixture.outbox, 'i');
-          const ancestor = boundary === 'i' ? itemRoot : fixture.path.dirname(pendingPath!);
+          const ancestor = boundary === 'i' ? itemRoot : fixture.path.dirname(pendingPath);
           const sentinel = fixture.path.join(ancestor, 'outside-sentinel.txt');
           yield* fixture.fs.writeFileString(sentinel, `${boundary}-mode-sentinel\n`, {mode: 0o600});
           yield* fixture.fs.chmod(ancestor, 0o755);
@@ -1387,7 +1384,7 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/private.ts']),
         });
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
-        yield* fixture.fs.chmod(pendingPath!, 0o644);
+        yield* fixture.fs.chmod(pendingPath, 0o644);
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
         expect(receipt).toMatchObject({
@@ -1411,8 +1408,8 @@ describe('deferred code-anchor outbox', () => {
         });
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
         const movedPath = fixture.path.join(fixture.config.agentContextHome, 'outside-intent.json');
-        yield* fixture.fs.rename(pendingPath!, movedPath);
-        yield* fixture.fs.symlink(movedPath, pendingPath!);
+        yield* fixture.fs.rename(pendingPath, movedPath);
+        yield* fixture.fs.symlink(movedPath, pendingPath);
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
         expect(receipt).toMatchObject({
@@ -1457,7 +1454,7 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/route-ancestor-link.ts']),
         });
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as {
+        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as {
           repositoryId: string;
           worktreeId: string;
         };
@@ -1494,9 +1491,9 @@ describe('deferred code-anchor outbox', () => {
           request: deferredRequest(fixture.repository, ['src/tampered.ts']),
         });
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
-        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as Record<string, unknown>;
+        const intent = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as Record<string, unknown>;
         intent.memoryUri = 'threadnote://user/tester/memories/durable/projects/threadnote/other.md';
-        yield* fixture.fs.writeFileString(pendingPath!, `${JSON.stringify(intent)}\n`, {mode: 0o600});
+        yield* fixture.fs.writeFileString(pendingPath, `${JSON.stringify(intent)}\n`, {mode: 0o600});
 
         const receipt = yield* finalizeDeferredCodeAnchors(fixture.config);
         expect(receipt).toMatchObject({
@@ -1521,20 +1518,20 @@ describe('deferred code-anchor outbox', () => {
           });
         yield* stage();
         const [pendingPath] = yield* fixtureIntentPaths(fixture);
-        const callerTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as Record<string, unknown>;
+        const callerTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as Record<string, unknown>;
         callerTamper.callerCwd = fixture.config.agentContextHome;
-        yield* fixture.fs.writeFileString(pendingPath!, `${JSON.stringify(callerTamper)}\n`, {mode: 0o600});
+        yield* fixture.fs.writeFileString(pendingPath, `${JSON.stringify(callerTamper)}\n`, {mode: 0o600});
         expect(yield* finalizeDeferredCodeAnchors(fixture.config)).toMatchObject({
           failedCount: 1,
           items: [{code: 'invalid-intent', state: 'failed'}],
         });
 
         yield* stage();
-        const recoveryTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath!)) as {
+        const recoveryTamper = JSON.parse(yield* fixture.fs.readFileString(pendingPath)) as {
           recovery: {observedGraph: {stale: boolean}};
         };
         recoveryTamper.recovery.observedGraph.stale = false;
-        yield* fixture.fs.writeFileString(pendingPath!, `${JSON.stringify(recoveryTamper)}\n`, {mode: 0o600});
+        yield* fixture.fs.writeFileString(pendingPath, `${JSON.stringify(recoveryTamper)}\n`, {mode: 0o600});
         expect(yield* finalizeDeferredCodeAnchors(fixture.config)).toMatchObject({
           failedCount: 1,
           items: [{code: 'invalid-intent', state: 'failed'}],

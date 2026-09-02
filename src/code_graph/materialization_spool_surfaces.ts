@@ -159,7 +159,7 @@ export function assertCodeGraphMaterializationSpoolSurfaceState(
     ).map(row => row.name),
   );
   for (let index = 0; index < CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length; index += 1) {
-    const name = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!.name;
+    const name = CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index].name;
     const raw = `materialization_raw_${name}`;
     const ordered = `materialization_ordered_${name}`;
     const expectsOrdered = stage === 'ready' || (stage === 'sorting' && index < sortedSurfaceCount);

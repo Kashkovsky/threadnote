@@ -182,7 +182,7 @@ export default function DocsPage() {
     0,
     articles.findIndex(({article}) => article.id === activeId),
   );
-  const activeEntry = articles[activeIndex] ?? articles[0]!;
+  const activeEntry = articles[activeIndex] ?? articles[0];
 
   const restoreFocus = useCallback((target: HTMLElement | null): void => {
     window.requestAnimationFrame(() => {

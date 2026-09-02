@@ -644,7 +644,7 @@ describe('code graph release evidence', () => {
       measurements: artifact.measurements.map(measurement =>
         values[measurement.name] === undefined
           ? measurement
-          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]!]),
+          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]]),
       ),
     });
 
@@ -956,7 +956,7 @@ describe('code graph release evidence', () => {
       measurements: artifact.measurements.map(measurement =>
         values[measurement.name] === undefined
           ? measurement
-          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]!]),
+          : benchmarkMeasurement(measurement.name, measurement.unit, [values[measurement.name]]),
       ),
     });
 
@@ -1104,13 +1104,13 @@ describe('code graph release evidence', () => {
       ),
     ).toEqual(ratchet);
     expect(ratchet.environment).toEqual({
-      architecture: artifacts[0]!.environment.architecture,
+      architecture: artifacts[0].environment.architecture,
       dirty: false,
-      fixtureHash: artifacts[0]!.environment.fixtureHash,
-      node: artifacts[0]!.environment.node,
-      packageManager: artifacts[0]!.environment.packageManager,
-      runner: artifacts[0]!.environment.runner,
-      runnerVersion: artifacts[0]!.environment.runnerVersion,
+      fixtureHash: artifacts[0].environment.fixtureHash,
+      node: artifacts[0].environment.node,
+      packageManager: artifacts[0].environment.packageManager,
+      runner: artifacts[0].environment.runner,
+      runnerVersion: artifacts[0].environment.runnerVersion,
     });
     fc.assert(
       fc.property(fc.array(fc.stringMatching(/^[0-9a-f]{64}$/u), {maxLength: 6, minLength: 6}), rebuildDigests => {
@@ -1118,8 +1118,8 @@ describe('code graph release evidence', () => {
           ...artifact,
           metadata: {
             ...artifact.metadata,
-            benchmarkValidatedManagedExecutableSha256: rebuildDigests[index * 2]!,
-            benchmarkValidatedManagedPayloadManifestSha256: rebuildDigests[index * 2 + 1]!,
+            benchmarkValidatedManagedExecutableSha256: rebuildDigests[index * 2],
+            benchmarkValidatedManagedPayloadManifestSha256: rebuildDigests[index * 2 + 1],
           },
         }));
         expect(createCodeGraphProductionRatchet(rebuilt)).toEqual(ratchet);
@@ -1130,9 +1130,9 @@ describe('code graph release evidence', () => {
       createCodeGraphProductionRatchet([
         ...artifacts.slice(0, 2),
         {
-          ...artifacts[2]!,
+          ...artifacts[2],
           metadata: {
-            ...artifacts[2]!.metadata,
+            ...artifacts[2].metadata,
             benchmarkValidatedManagedReleaseMetadataSha256: 'f'.repeat(64),
           },
         },
@@ -1189,7 +1189,7 @@ describe('code graph release evidence', () => {
             measurements: artifact.measurements.map(measurement =>
               registrations[measurement.name] === undefined
                 ? measurement
-                : benchmarkMeasurement(measurement.name, measurement.unit, [registrations[measurement.name]!]),
+                : benchmarkMeasurement(measurement.name, measurement.unit, [registrations[measurement.name]]),
             ),
           }));
           const variedRatchet = createCodeGraphProductionRatchet(varied);
@@ -1208,8 +1208,8 @@ describe('code graph release evidence', () => {
     fc.assert(
       fc.property(fc.integer({max: 10_000, min: 1}), samplerCount => {
         const observed = {
-          ...artifacts[0]!,
-          measurements: artifacts[0]!.measurements.map(measurement =>
+          ...artifacts[0],
+          measurements: artifacts[0].measurements.map(measurement =>
             measurement.name === 'hosted-sampler-samples-n1'
               ? benchmarkMeasurement(measurement.name, measurement.unit, [samplerCount])
               : measurement,
@@ -1220,8 +1220,8 @@ describe('code graph release evidence', () => {
       {numRuns: 30},
     );
     const missingCoverage = {
-      ...artifacts[0]!,
-      measurements: artifacts[0]!.measurements.map(measurement =>
+      ...artifacts[0],
+      measurements: artifacts[0].measurements.map(measurement =>
         measurement.name === 'hosted-sampler-samples-n1'
           ? benchmarkMeasurement(measurement.name, measurement.unit, [0])
           : measurement,
@@ -1269,10 +1269,10 @@ describe('code graph release evidence', () => {
     ]) {
       const governedLimit = ratchet.measurements[governedName];
       expect(governedLimit, governedName).toBeDefined();
-      const maximum = governedLimit!.maximum ?? governedLimit!.p95Maximum!;
+      const maximum = governedLimit.maximum ?? governedLimit.p95Maximum!;
       const regression = {
-        ...artifacts[0]!,
-        measurements: artifacts[0]!.measurements.map(measurement =>
+        ...artifacts[0],
+        measurements: artifacts[0].measurements.map(measurement =>
           measurement.name === governedName
             ? benchmarkMeasurement(measurement.name, measurement.unit, [maximum + 1])
             : measurement,
@@ -1280,7 +1280,7 @@ describe('code graph release evidence', () => {
       };
       expect(() => enforceCodeGraphBenchmarkRatchet(regression, ratchet)).toThrow(new RegExp(governedName));
     }
-    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0]!.measurements.length - 8);
+    expect(Object.keys(ratchet.measurements)).toHaveLength(artifacts[0].measurements.length - 8);
     expect(Object.keys(ratchet.measurements).some(name => name.includes('-progress-external-'))).toBe(false);
     expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-boundary-rss-n1'))).toBe(false);
     expect(
@@ -1288,11 +1288,11 @@ describe('code graph release evidence', () => {
     ).toBe(false);
     expect(Object.keys(ratchet.measurements).some(name => name.endsWith('-filesystem-available-n1'))).toBe(false);
     expect(ratchet.measurements['cold-external-rss-peak-observed-n1']).toBeDefined();
-    expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0]!, ratchet)).not.toThrow();
+    expect(() => enforceCodeGraphBenchmarkRatchet(artifacts[0], ratchet)).not.toThrow();
     for (const name of nonIncreasingWorkMeasurements) {
       const withWork = (value: number): BenchmarkArtifactV1 => ({
-        ...artifacts[0]!,
-        measurements: artifacts[0]!.measurements.map(measurement =>
+        ...artifacts[0],
+        measurements: artifacts[0].measurements.map(measurement =>
           measurement.name === name ? benchmarkMeasurement(name, 'count', [value]) : measurement,
         ),
       });
@@ -1302,13 +1302,13 @@ describe('code graph release evidence', () => {
     fc.assert(
       fc.property(fc.integer({max: 200 * 1_073_741_824, min: 20 * 1_073_741_824}), availableBytes => {
         const expandedCapacity = {
-          ...artifacts[0]!,
+          ...artifacts[0],
           metadata: {
-            ...artifacts[0]!.metadata,
+            ...artifacts[0].metadata,
             benchmarkPrimaryAvailableBytesAtStart: availableBytes,
             benchmarkReferenceAvailableBytesAtStart: availableBytes,
           },
-          measurements: artifacts[0]!.measurements.map(measurement =>
+          measurements: artifacts[0].measurements.map(measurement =>
             measurement.name.endsWith('-filesystem-available-n1')
               ? benchmarkMeasurement(measurement.name, measurement.unit, [availableBytes])
               : measurement,
@@ -1321,9 +1321,9 @@ describe('code graph release evidence', () => {
     expect(() =>
       enforceCodeGraphBenchmarkRatchet(
         {
-          ...artifacts[0]!,
+          ...artifacts[0],
           measurements: [
-            ...artifacts[0]!.measurements,
+            ...artifacts[0].measurements,
             benchmarkMeasurement('future-stable-production-metric', 'count', [1]),
           ],
         },
@@ -1385,7 +1385,7 @@ describe('code graph release evidence', () => {
       measurements: artifact.measurements.map(measurement =>
         measurementValues[measurement.name] === undefined
           ? measurement
-          : benchmarkMeasurement(measurement.name, measurement.unit, [measurementValues[measurement.name]!]),
+          : benchmarkMeasurement(measurement.name, measurement.unit, [measurementValues[measurement.name]]),
       ),
       metadata: {
         ...artifact.metadata,
@@ -1399,19 +1399,19 @@ describe('code graph release evidence', () => {
     const sandwichStart = Date.parse('2026-08-28T00:00:00.000Z');
     const sandwichTime = (minutes: number) => new Date(sandwichStart + minutes * 60_000).toISOString();
     const pairedInitialCandidateArtifact = pairedArtifact(
-      githubHostedArtifacts[0]!,
+      githubHostedArtifacts[0],
       candidateCommit,
       {'cold-index': 1_200},
       sandwichTime(0),
     );
     const pairedControlArtifact = pairedArtifact(
-      githubHostedArtifacts[0]!,
+      githubHostedArtifacts[0],
       controlCommit,
       {'cold-index': 1_000},
       sandwichTime(10),
     );
     const noisyCandidate = pairedArtifact(
-      githubHostedArtifacts[0]!,
+      githubHostedArtifacts[0],
       candidateCommit,
       {'cold-index': 1_200},
       sandwichTime(20),
@@ -1423,9 +1423,9 @@ describe('code graph release evidence', () => {
       initialCandidateArtifact: pairedInitialCandidateArtifact,
     };
     const sandwichCandidate = (measurementValues: Readonly<Record<string, number>>) =>
-      pairedArtifact(githubHostedArtifacts[0]!, candidateCommit, measurementValues, sandwichTime(20));
+      pairedArtifact(githubHostedArtifacts[0], candidateCommit, measurementValues, sandwichTime(20));
     const sandwichControl = (measurementValues: Readonly<Record<string, number>>) =>
-      pairedArtifact(githubHostedArtifacts[0]!, controlCommit, measurementValues, sandwichTime(10));
+      pairedArtifact(githubHostedArtifacts[0], controlCommit, measurementValues, sandwichTime(10));
     const sandwichEvidence = (
       initialMeasurementValues: Readonly<Record<string, number>>,
       controlArtifact = pairedControlArtifact,
@@ -1434,7 +1434,7 @@ describe('code graph release evidence', () => {
       expectedCandidateCommit: candidateCommit,
       expectedCommit: controlCommit,
       initialCandidateArtifact: pairedArtifact(
-        githubHostedArtifacts[0]!,
+        githubHostedArtifacts[0],
         candidateCommit,
         initialMeasurementValues,
         sandwichTime(0),
@@ -1693,11 +1693,11 @@ describe('code graph release evidence', () => {
       measurements: {
         ...githubHostedRatchet.measurements,
         'cold-process-peak-rss': {
-          ...githubHostedRatchet.measurements['cold-process-peak-rss']!,
+          ...githubHostedRatchet.measurements['cold-process-peak-rss'],
           p95Maximum: 1_223_690_240,
         },
         'incremental-process-peak-rss': {
-          ...githubHostedRatchet.measurements['incremental-process-peak-rss']!,
+          ...githubHostedRatchet.measurements['incremental-process-peak-rss'],
           p95Maximum: 1_223_690_240,
         },
       },
@@ -1715,7 +1715,7 @@ describe('code graph release evidence', () => {
         const linearControl = sandwichControl({'cold-index': controlValue});
         const linearCandidate = (value: number) =>
           pairedArtifact(
-            githubHostedArtifacts[0]!,
+            githubHostedArtifacts[0],
             candidateCommit,
             {'cold-index': value},
             sandwichTime(remeasuredMinute),
@@ -1765,7 +1765,7 @@ describe('code graph release evidence', () => {
         sandwichEvidence({'one-file-reindex-index': 30_000}, sandwichControl({'one-file-reindex-index': 30_000})),
       ),
     ).toThrow(/objective one-file-reindex-index has not been attained/u);
-    const oneFileIndexObjective = githubHostedRatchet.measurements['one-file-reindex-index']!.p95Maximum!;
+    const oneFileIndexObjective = githubHostedRatchet.measurements['one-file-reindex-index'].p95Maximum!;
     expect(() =>
       enforceCodeGraphBenchmarkRatchet(
         sandwichCandidate({'one-file-reindex-index': oneFileIndexObjective - 1}),
@@ -1876,7 +1876,7 @@ describe('code graph release evidence', () => {
     ] as const;
     fc.assert(
       fc.property(fc.constantFrom(...invariantGuardNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
-        const limit = githubHostedRatchet.measurements[name]!;
+        const limit = githubHostedRatchet.measurements[name];
         const upperBound = limit.maximum ?? limit.p95Maximum;
         expect(upperBound, name).toBeDefined();
         const candidate = sandwichCandidate({
@@ -1891,7 +1891,7 @@ describe('code graph release evidence', () => {
     );
     fc.assert(
       fc.property(fc.constantFrom(...invariantGuardNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
-        const limit = githubHostedRatchet.measurements[name]!;
+        const limit = githubHostedRatchet.measurements[name];
         const upperBound = limit.maximum ?? limit.p95Maximum;
         expect(upperBound, name).toBeDefined();
         const initialOnlyRegression = sandwichEvidence({
@@ -1912,7 +1912,7 @@ describe('code graph release evidence', () => {
     ] as const;
     fc.assert(
       fc.property(fc.constantFrom(...cumulativeWorkTimingNames), fc.integer({max: 10_000, min: 1}), (name, delta) => {
-        const limit = githubHostedRatchet.measurements[name]!;
+        const limit = githubHostedRatchet.measurements[name];
         expect(limit.p95Maximum, name).toBeDefined();
         const regressedValue = limit.p95Maximum! + delta;
         const regressedControl = sandwichControl({[name]: regressedValue});
@@ -1940,7 +1940,7 @@ describe('code graph release evidence', () => {
         fc.constantFrom(...hostedStorageWallTimingNames),
         fc.integer({max: 10_000, min: 1}),
         (name, delta) => {
-          const limit = githubHostedRatchet.measurements[name]!;
+          const limit = githubHostedRatchet.measurements[name];
           expect(limit.p95Maximum, name).toBeDefined();
           const controlValue = limit.p95Maximum! + delta;
           const control = sandwichControl({[name]: controlValue});
@@ -1961,17 +1961,17 @@ describe('code graph release evidence', () => {
     expect(
       createCodeGraphProductionRatchet(
         githubHostedArtifacts.map((artifact, index) => {
-          const filesystem = ['overlayfs', 'ext4', 'unknown'][index]!;
+          const filesystem = ['overlayfs', 'ext4', 'unknown'][index];
           return {
             ...artifact,
             metadata: {
               ...artifact.metadata,
               benchmarkDiskFilesystem: filesystem,
-              benchmarkDiskLocation: ['unknown', 'virtual-or-network', 'external'][index]!,
-              benchmarkDiskMedium: ['virtual-or-network', 'rotational', 'unknown'][index]!,
+              benchmarkDiskLocation: ['unknown', 'virtual-or-network', 'external'][index],
+              benchmarkDiskMedium: ['virtual-or-network', 'rotational', 'unknown'][index],
               benchmarkReferenceDiskFilesystem: filesystem,
-              benchmarkReferenceDiskLocation: ['virtual-or-network', 'unknown', 'external'][index]!,
-              benchmarkReferenceDiskMedium: ['unknown', 'solid-state', 'rotational'][index]!,
+              benchmarkReferenceDiskLocation: ['virtual-or-network', 'unknown', 'external'][index],
+              benchmarkReferenceDiskMedium: ['unknown', 'solid-state', 'rotational'][index],
             },
           };
         }),
@@ -1986,9 +1986,9 @@ describe('code graph release evidence', () => {
           expect(() =>
             enforceCodeGraphBenchmarkRatchet(
               {
-                ...githubHostedArtifacts[0]!,
+                ...githubHostedArtifacts[0],
                 metadata: {
-                  ...githubHostedArtifacts[0]!.metadata,
+                  ...githubHostedArtifacts[0].metadata,
                   benchmarkDiskFilesystem: filesystem,
                   benchmarkDiskLocation: location,
                   benchmarkDiskMedium: medium,
@@ -2021,12 +2021,12 @@ describe('code graph release evidence', () => {
             ...artifact,
             metadata: {
               ...artifact.metadata,
-              benchmarkDiskFilesystem: observations[index]!.filesystem,
-              benchmarkDiskLocation: observations[index]!.location,
-              benchmarkDiskMedium: observations[index]!.medium,
-              benchmarkReferenceDiskFilesystem: observations[index]!.filesystem,
-              benchmarkReferenceDiskLocation: observations[index]!.referenceLocation,
-              benchmarkReferenceDiskMedium: observations[index]!.referenceMedium,
+              benchmarkDiskFilesystem: observations[index].filesystem,
+              benchmarkDiskLocation: observations[index].location,
+              benchmarkDiskMedium: observations[index].medium,
+              benchmarkReferenceDiskFilesystem: observations[index].filesystem,
+              benchmarkReferenceDiskLocation: observations[index].referenceLocation,
+              benchmarkReferenceDiskMedium: observations[index].referenceMedium,
             },
           }));
           expect(createCodeGraphProductionRatchet(rebuilt)).toEqual(githubHostedRatchet);
@@ -2079,10 +2079,10 @@ describe('code graph release evidence', () => {
       ),
     ).toThrow(/governed storage evidence/);
 
-    const limit = ratchet.measurements['cold-index']!.p95Maximum!;
+    const limit = ratchet.measurements['cold-index'].p95Maximum!;
     const regressed = {
-      ...artifacts[0]!,
-      measurements: artifacts[0]!.measurements.map(measurement =>
+      ...artifacts[0],
+      measurements: artifacts[0].measurements.map(measurement =>
         measurement.name === 'cold-index'
           ? benchmarkMeasurement(measurement.name, measurement.unit, [limit + 1])
           : measurement,
@@ -2092,8 +2092,8 @@ describe('code graph release evidence', () => {
     fc.assert(
       fc.property(fc.integer({max: 1_000, min: 2}), changedFileRows => {
         const nondeterministic = {
-          ...artifacts[2]!,
-          measurements: artifacts[2]!.measurements.map(measurement =>
+          ...artifacts[2],
+          measurements: artifacts[2].measurements.map(measurement =>
             measurement.name === 'cold-materialized-file-rows'
               ? benchmarkMeasurement(measurement.name, measurement.unit, [changedFileRows])
               : measurement,
@@ -2109,8 +2109,8 @@ describe('code graph release evidence', () => {
       createCodeGraphProductionRatchet([
         ...artifacts.slice(0, 2),
         {
-          ...artifacts[2]!,
-          metadata: {...artifacts[2]!.metadata, benchmarkPrimaryAvailableBytesAtStart: 119 * 1_073_741_824},
+          ...artifacts[2],
+          metadata: {...artifacts[2].metadata, benchmarkPrimaryAvailableBytesAtStart: 119 * 1_073_741_824},
         },
       ]),
     ).toThrow(/governed storage evidence/);
@@ -2395,7 +2395,7 @@ describe('code graph release evidence', () => {
       readonly vectorPerformance: PerformanceBudget;
       readonly vectorScalePerformance: Readonly<Record<string, PerformanceBudget>>;
     };
-    const budget = budgets.vectorScalePerformance['10000']!;
+    const budget = budgets.vectorScalePerformance['10000'];
     const guardedMeasurements = [
       ['cold-materialization', 'coldMaterializationP95MillisecondsMaximum'],
       ['one-file-reindex-index', 'oneFileIncrementalP95MillisecondsMaximum'],
@@ -3184,7 +3184,7 @@ describe('code graph release evidence', () => {
         string,
         Record<'path' | 'query' | 'stableNodeId', string>
       >;
-      sensitiveControls.java![field] = value;
+      sensitiveControls.java[field] = value;
       expect(() =>
         assertExternalPerformanceEvidence({
           ...artifact,
@@ -3240,12 +3240,12 @@ describe('code graph release evidence', () => {
     const releaseEvidence = load(readFileSync('.github/workflows/release-evidence.yml', 'utf8')) as BenchmarkWorkflow;
     expect(workflow.on.push).toBeUndefined();
 
-    const scheduled = workflow.jobs['code-graph-production-large']!;
+    const scheduled = workflow.jobs['code-graph-production-large'];
     expect(scheduled.if).toContain("github.event_name == 'schedule'");
     expect(scheduled.if).toContain('inputs.include_production_large');
     expect(scheduled.uses).toBe('./.github/workflows/production-large-evidence.yml');
 
-    const releaseGate = releaseEvidence.jobs['production-large-evidence']!;
+    const releaseGate = releaseEvidence.jobs['production-large-evidence'];
     expect(releaseGate.needs).toBeUndefined();
     expect(releaseGate.uses).toBe('./.github/workflows/production-large-evidence.yml');
     expect(releaseGate.with).toMatchObject({
@@ -3253,7 +3253,7 @@ describe('code graph release evidence', () => {
       release_ref: '${{ github.ref }}',
       release_sha: '${{ github.sha }}',
     });
-    const publisher = publish.jobs['publish-release']!;
+    const publisher = publish.jobs['publish-release'];
     expect(publisher.needs).toEqual(['verify', 'linux', 'macos', 'windows-build']);
     expect(publisher.if).toContain("needs.windows-build.result == 'success'");
     expect(publisher.if).not.toContain('needs.windows-sign');
@@ -3262,7 +3262,7 @@ describe('code graph release evidence', () => {
     expect(publish.jobs['publish-evidence-gated']).toBeUndefined();
     expect(publish.jobs['production-large-evidence']).toBeUndefined();
 
-    const production = evidence.jobs['code-graph-production-large']!;
+    const production = evidence.jobs['code-graph-production-large'];
     const checkout = production.steps?.find(step => step.uses === 'actions/checkout@v7');
     expect(checkout?.with).toMatchObject({
       'fetch-depth': 1,

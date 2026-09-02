@@ -267,7 +267,7 @@ async function sqliteStorage(path: string): Promise<{databaseBytes: number; tota
   const sizes = await Promise.all(
     [path, `${path}-wal`, `${path}-shm`].map(async file => ((await Bun.file(file).exists()) ? Bun.file(file).size : 0)),
   );
-  return {databaseBytes: sizes[0]!, totalBytes: sizes.reduce((total, size) => total + size, 0)};
+  return {databaseBytes: sizes[0], totalBytes: sizes.reduce((total, size) => total + size, 0)};
 }
 
 function positiveInteger(value: string, description: string): number {

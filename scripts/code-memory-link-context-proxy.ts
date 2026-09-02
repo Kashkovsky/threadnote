@@ -202,7 +202,7 @@ export async function runCodeMemoryLinkContextBriefCandidate(
   return {
     content: canonical.content,
     structuredContent: canonical.structuredContent,
-    text: canonical.content[0]!.text,
+    text: canonical.content[0].text,
   };
 }
 
@@ -251,7 +251,7 @@ export function canonicalEmptyContextBrief(): CodeMemoryLinkContextProxyCandidat
   return {
     content: canonical.content,
     structuredContent: canonical.structuredContent,
-    text: canonical.content[0]!.text,
+    text: canonical.content[0].text,
   };
 }
 

@@ -365,7 +365,7 @@ function selectedMemoryRecords(
   return Array.from({length: prepared.profile.selectedMemories}, (_, memoryOrdinal) => {
     const citations = Array.from({length: citationsPerMemory}, (_, citationOrdinal) => {
       const index = memoryOrdinal * citationsPerMemory + citationOrdinal;
-      const repository = prepared.repositories[index % prepared.profile.citedRepositories]!;
+      const repository = prepared.repositories[index % prepared.profile.citedRepositories];
       const repositoryPath = citationRepositoryPath(prepared.profile.id, token, index);
       return createMemoryCodeCitation({
         extractorSet: EXTRACTOR_SET,

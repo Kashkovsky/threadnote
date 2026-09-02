@@ -699,7 +699,7 @@ const resolveRequestedPremises = Effect.fn('recall.resolveRequestedConnectionPre
       ),
     ];
     if (candidateIds.length !== 1) continue;
-    const resolution = classifyMemoryIdentityCandidates(witnesses, candidateIds[0]!, input.allowedUriScopes);
+    const resolution = classifyMemoryIdentityCandidates(witnesses, candidateIds[0], input.allowedUriScopes);
     const witness =
       resolution.state === 'resolved' && resolution.uri === fallback.record.uri
         ? witnesses.find(

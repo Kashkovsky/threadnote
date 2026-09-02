@@ -731,15 +731,15 @@ describe('code graph external benchmark harness', () => {
       artifacts.map((item, itemIndex) => (itemIndex === index ? {...item, artifact} : item));
     expect(() =>
       summarizeEmbeddingContextArtifacts(
-        replace(0, {...artifacts[0]!.artifact, environment: {...artifacts[0]!.artifact.environment, dirty: true}}),
+        replace(0, {...artifacts[0].artifact, environment: {...artifacts[0].artifact.environment, dirty: true}}),
         schedule,
       ),
     ).toThrow('dirty source');
     expect(() =>
       summarizeEmbeddingContextArtifacts(
         replace(1, {
-          ...artifacts[1]!.artifact,
-          metadata: {...artifacts[1]!.artifact.metadata, embeddingContextPoolSizeEffective: 1},
+          ...artifacts[1].artifact,
+          metadata: {...artifacts[1].artifact.metadata, embeddingContextPoolSizeEffective: 1},
         }),
         schedule,
       ),
@@ -747,8 +747,8 @@ describe('code graph external benchmark harness', () => {
     expect(() =>
       summarizeEmbeddingContextArtifacts(
         replace(2, {
-          ...artifacts[2]!.artifact,
-          metadata: {...artifacts[2]!.artifact.metadata, coldVectorMappingDigest: 'different'},
+          ...artifacts[2].artifact,
+          metadata: {...artifacts[2].artifact.metadata, coldVectorMappingDigest: 'different'},
         }),
         schedule,
       ),
@@ -756,8 +756,8 @@ describe('code graph external benchmark harness', () => {
     expect(() =>
       summarizeEmbeddingContextArtifacts(
         replace(3, {
-          ...artifacts[3]!.artifact,
-          measurements: artifacts[3]!.artifact.measurements.map(item =>
+          ...artifacts[3].artifact,
+          measurements: artifacts[3].artifact.measurements.map(item =>
             item.name === 'cold-external-process-tree-failures-n1'
               ? benchmarkMeasurement(item.name, 'count', [1])
               : item,
@@ -769,8 +769,8 @@ describe('code graph external benchmark harness', () => {
     expect(() =>
       summarizeEmbeddingContextArtifacts(
         replace(1, {
-          ...artifacts[1]!.artifact,
-          metadata: {...artifacts[1]!.artifact.metadata, embeddingContextThreadCounts: '8'},
+          ...artifacts[1].artifact,
+          metadata: {...artifacts[1].artifact.metadata, embeddingContextThreadCounts: '8'},
         }),
         schedule,
       ),
@@ -778,9 +778,9 @@ describe('code graph external benchmark harness', () => {
     expect(() =>
       summarizeEmbeddingContextArtifacts(
         replace(1, {
-          ...artifacts[1]!.artifact,
+          ...artifacts[1].artifact,
           metadata: {
-            ...artifacts[1]!.artifact.metadata,
+            ...artifacts[1].artifact.metadata,
             environmentOverrides: JSON.stringify({
               THREADNOTE_CODE_GRAPH_PARSER_WORKERS: '2',
               THREADNOTE_EMBEDDING_CONTEXTS: '2',

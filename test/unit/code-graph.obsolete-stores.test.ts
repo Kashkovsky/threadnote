@@ -45,7 +45,7 @@ describe('obsolete code graph stores', () => {
     const inventory = await runEffect(inspectObsoleteCodeGraphStores(home));
     expect(inventory).toMatchObject({bytes: expectedBytes, fileCount: 3, unsafeEntryCount: 0});
     expect(inventory.checkouts).toEqual([expect.objectContaining({bytes: expectedBytes, checkoutId, versions: [2]})]);
-    expect(inventory.checkouts[0]!.files.map(file => [file.fileName, file.bytes])).toEqual([
+    expect(inventory.checkouts[0].files.map(file => [file.fileName, file.bytes])).toEqual([
       ['graph-v2.sqlite', databaseBytes],
       ['graph-v2.sqlite-shm', shmBytes],
       ['graph-v2.sqlite-wal', walBytes],

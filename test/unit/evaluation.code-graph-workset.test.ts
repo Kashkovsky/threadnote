@@ -264,7 +264,7 @@ describe('code graph workset evaluation contract', () => {
   it('detects a delivered cross-repository authoritative edge outside the reviewed allowlist', () => {
     const observations = perfectObservations(fixture);
     const observationIndex = observations.findIndex(observation => observation.execution === 'executed');
-    const observation = observations[observationIndex]!;
+    const observation = observations[observationIndex];
     const contaminated = observations.map((candidate, index) =>
       index === observationIndex
         ? {...observation, authoritativeEdges: [...observation.authoritativeEdges, unexpectedEdge]}
@@ -328,12 +328,12 @@ describe('code graph workset evaluation contract', () => {
     expect(() =>
       evaluateCodeGraphWorksetObservations(fixture, [
         ...observations.slice(0, unsupportedIndex),
-        {...observations[unsupportedIndex]!, edges: [importEdge]},
+        {...observations[unsupportedIndex], edges: [importEdge]},
         ...observations.slice(unsupportedIndex + 1),
       ]),
     ).toThrow(/cannot fabricate execution evidence/);
 
-    const executed = observations[executedIndex]!;
+    const executed = observations[executedIndex];
     expect(() =>
       evaluateCodeGraphWorksetObservations(fixture, [
         ...observations.slice(0, executedIndex),
@@ -362,7 +362,7 @@ describe('code graph workset evaluation contract', () => {
       ]),
     ).toThrow(/Structured and text response bytes must sum to total response bytes/);
 
-    expect(() => evaluateCodeGraphWorksetObservations(fixture, [...observations, observations[0]!])).toThrow(
+    expect(() => evaluateCodeGraphWorksetObservations(fixture, [...observations, observations[0]])).toThrow(
       /size\/sample\/query identities must be unique/,
     );
   });
@@ -457,9 +457,7 @@ describe('code graph workset evaluation contract', () => {
                     worktreeObservationCount: 0,
                   } satisfies CodeGraphWorksetEvaluationObservationV1;
                 }
-                const reportedNoAnswer = entry.answerable
-                  ? !symbolHit[index] && !edgeHit[index]
-                  : repositoryHit[index]!;
+                const reportedNoAnswer = entry.answerable ? !symbolHit[index] && !edgeHit[index] : repositoryHit[index];
                 const returnedSymbol = entry.answerable
                   ? symbolHit[index]
                     ? entry.expectedSymbols
@@ -478,7 +476,7 @@ describe('code graph workset evaluation contract', () => {
                   execution: 'executed',
                   measurement: {
                     catalogBytesRead: index,
-                    completionMilliseconds: completionTimes[index]!,
+                    completionMilliseconds: completionTimes[index],
                     estimatedTokenCount: index,
                     evidenceCardCount,
                     representativeTokenCounts: [{count: index, tokenizer: 'test'}],
@@ -488,7 +486,7 @@ describe('code graph workset evaluation contract', () => {
                     responseUtf8Bytes: index * 3,
                     structuredResponseUtf8Bytes: index,
                     textResponseUtf8Bytes: index * 2,
-                    ...(evidenceCardCount > 0 ? {timeToFirstEvidenceCardMilliseconds: completionTimes[index]!} : {}),
+                    ...(evidenceCardCount > 0 ? {timeToFirstEvidenceCardMilliseconds: completionTimes[index]} : {}),
                     timeToFirstEvidenceSemantics: 'buffered-response',
                   },
                   queryId: entry.id,

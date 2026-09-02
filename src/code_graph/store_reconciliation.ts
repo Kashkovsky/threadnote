@@ -672,7 +672,7 @@ const markSnapshotLeaseRetirementBaton = Effect.fn('codeGraph.markSnapshotLeaseR
     [snapshotId, now],
   );
   if (rows.length === 0) return 0;
-  const lease = decodeSnapshotLeaseManifest(rows[0]!);
+  const lease = decodeSnapshotLeaseManifest(rows[0]);
   const rowid = rows[0]?.lease_rowid;
   if (
     lease === undefined ||
@@ -958,7 +958,7 @@ const claimRemovedViewCleanupCandidates = Effect.fn('codeGraph.claimRemovedViewC
         }
         claimed.push({...entry, nextAttemptAt, revision: entry.revision + 1, updatedAt: claimedAt});
       }
-      return claimed as readonly CodeGraphRemovedViewCleanupEntry[];
+      return claimed;
     }),
   );
 });

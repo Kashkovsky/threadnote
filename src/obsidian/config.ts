@@ -355,7 +355,7 @@ function memoryKinds(value: unknown, label: string): readonly MemoryKind[] {
   ) {
     throw new ObsidianConfigurationError(`${label} contains an unsupported memory kind.`);
   }
-  return values as readonly MemoryKind[];
+  return values;
 }
 
 function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] {
@@ -363,7 +363,7 @@ function memoryStatuses(value: unknown, label: string): readonly MemoryStatus[] 
   if (!values.every(item => item === 'active' || item === 'archived' || item === 'expired' || item === 'superseded')) {
     throw new ObsidianConfigurationError(`${label} contains an unsupported memory status.`);
   }
-  return values as readonly MemoryStatus[];
+  return values;
 }
 
 function selectedMemoryUris(value: unknown, label: string): readonly string[] {

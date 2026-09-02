@@ -66,7 +66,7 @@ describe('removed code graph view cleanup state-machine properties', () => {
 
             const [claimed] = yield* store.claimRemovedViewCleanupCandidates(databasePath, Date.now(), 1);
             expect(claimed).toBeDefined();
-            let current = claimed!;
+            let current = claimed;
             let stale: CodeGraphRemovedViewCleanupEntry | undefined;
             const immutable = immutableIdentity(current);
 
@@ -219,7 +219,7 @@ function modeledTransition(
       update: {
         attempts: 0,
         nextAttemptAt: entry.nextAttemptAt,
-        phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 1]!,
+        phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 1],
         updatedAt: timestamp,
       },
       valid: true,
@@ -243,7 +243,7 @@ function modeledTransition(
       update: {
         attempts: 0,
         nextAttemptAt: entry.nextAttemptAt,
-        phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 2]!,
+        phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 2],
         updatedAt: timestamp,
       },
       valid: false,
@@ -456,7 +456,7 @@ function advanceToComplete(
       const update: CodeGraphRemovedViewCleanupUpdate = {
         attempts: 0,
         nextAttemptAt: entry.nextAttemptAt,
-        phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 1]!,
+        phase: CODE_GRAPH_REMOVED_VIEW_CLEANUP_PHASES[phaseIndex + 1],
         updatedAt: nextTimestamp(entry),
       };
       const result = yield* store.updateRemovedViewCleanup(databasePath, entry, update);

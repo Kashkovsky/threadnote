@@ -243,7 +243,7 @@ function compactSwiftPackage(content: string): string | undefined {
     const body = content.slice(match.index, starts[index + 1]?.index ?? content.length);
     const path = /\bpath\s*:\s*"([^"]+)"/.exec(body)?.[1];
     const dependencies = /\bdependencies\s*:\s*\[([\s\S]*?)\]/.exec(body)?.[1] ?? '';
-    const names = [...dependencies.matchAll(/"([^"]+)"/g)].map(value => value[1]!);
+    const names = [...dependencies.matchAll(/"([^"]+)"/g)].map(value => value[1]);
     return `.${match[1]}(name: ${JSON.stringify(match[2])}, dependencies: [${names
       .map(name => JSON.stringify(name))
       .join(', ')}]${path ? `, path: ${JSON.stringify(path)}` : ''})`;
@@ -253,7 +253,7 @@ function compactSwiftPackage(content: string): string | undefined {
 
 function compactXcodeProject(content: string): string {
   const targets = [...content.matchAll(/isa\s*=\s*PBXNativeTarget;[\s\S]*?\bname\s*=\s*"?([^";\n]+)"?;/g)].map(match =>
-    match[1]!.trim(),
+    match[1].trim(),
   );
   return `${targets.map(target => `isa = PBXNativeTarget; name = ${JSON.stringify(target)};`).join('\n')}\n`;
 }
@@ -264,7 +264,7 @@ function compactXmlTag(content: string, tag: string): string | undefined {
 
 function compactXmlTags(content: string, tag: string): readonly string[] {
   return [...content.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*([^<]+?)\\s*</${tag}>`, 'gi'))].map(match =>
-    match[1]!.trim(),
+    match[1].trim(),
   );
 }
 

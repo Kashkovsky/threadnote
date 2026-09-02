@@ -107,7 +107,7 @@ export function releaseHeadlineFromSummary(summary: string): string {
   if (!sentence) throw new ScriptError('The release-note opening summary must contain a complete first sentence.');
   const withoutProductVersion = sentence.replace(/^Threadnote\s+\d+(?:\.\d+){0,2}\s+/u, '');
   const withoutCopula = withoutProductVersion.replace(/^is\s+/u, '');
-  const headline = withoutCopula ? `${withoutCopula[0]!.toUpperCase()}${withoutCopula.slice(1)}` : sentence;
+  const headline = withoutCopula ? `${withoutCopula[0].toUpperCase()}${withoutCopula.slice(1)}` : sentence;
   if (!headline.trim()) throw new ScriptError('The release-note opening sentence must contain a social-card headline.');
   if (headline.length > releaseHeadlineMaximumLength) {
     throw new ScriptError(

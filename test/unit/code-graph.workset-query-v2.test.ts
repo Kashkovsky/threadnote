@@ -290,7 +290,7 @@ describe('code graph Workset Search V2 core', () => {
           nodes: [
             ...graph.nodes,
             {
-              ...graph.nodes[0]!,
+              ...graph.nodes[0],
               id: protobufBridgeNodeId(0),
               language: 'protobuf',
               name: 'session.proto',
@@ -382,7 +382,7 @@ describe('code graph Workset Search V2 core', () => {
       Effect.gen(function* () {
         const fixture = makeFixture(2);
         const bridge = protobufBridge(fixture.input.published);
-        const firstRepository = fixture.router.repositories[0]!;
+        const firstRepository = fixture.router.repositories[0];
         const routed = {
           ...fixture,
           input: {...fixture.input, evidenceCards: 4},
@@ -604,7 +604,7 @@ function withNodesPerGraph(fixture: Fixture, nodesPerGraph: number): Fixture {
           nodes: [
             ...graph.nodes,
             ...Array.from({length: nodesPerGraph - graph.nodes.length}, (_, offset) => ({
-              ...graph.nodes[0]!,
+              ...graph.nodes[0],
               id: `cgs_${digest(`secondary-node-${index}-${offset}`).slice(0, 32)}`,
               name: `SecondaryService${index}_${offset}`,
               path: `src/secondary-service-${index}-${offset}.ts`,
@@ -681,8 +681,8 @@ function protobufBridge(
   sourceIndex = 0,
   targetIndex = 1,
 ): CodeGraphCrossRepositoryBridgeV1 {
-  const source = published.members[sourceIndex]!;
-  const target = published.members[targetIndex]!;
+  const source = published.members[sourceIndex];
+  const target = published.members[targetIndex];
   const moniker = (role: 'import' | 'export', repository: number) =>
     codeGraphProtobufMoniker({
       evidence: {
@@ -707,7 +707,7 @@ function protobufBridge(
       repositoryKey: target.repositoryKey,
       snapshotId: target.snapshotId,
     },
-  ]).bridges[0]!;
+  ]).bridges[0];
 }
 
 function protobufBridgeNodeId(repository: number): string {

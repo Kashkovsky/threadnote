@@ -15,14 +15,14 @@ const categories: Array<{id: 'all' | ProTip['category']; label: string}> = [
 
 export default function ProTipsPage() {
   const [category, setCategory] = useState<(typeof categories)[number]['id']>('all');
-  const [activeId, setActiveId] = useState(proTips[0]!.id);
+  const [activeId, setActiveId] = useState(proTips[0].id);
   const activeHeadingRef = useRef<HTMLHeadingElement>(null);
   const shouldFocusActiveRef = useRef(false);
   const visibleTips = useMemo(
     () => (category === 'all' ? proTips : proTips.filter(tip => tip.category === category)),
     [category],
   );
-  const active = proTips.find(tip => tip.id === activeId) ?? visibleTips[0] ?? proTips[0]!;
+  const active = proTips.find(tip => tip.id === activeId) ?? visibleTips[0] ?? proTips[0];
 
   const chooseCategory = (next: typeof category) => {
     shouldFocusActiveRef.current = true;

@@ -158,7 +158,7 @@ describe('code graph indexer properties', () => {
     const identity = {headCommit: 'a'.repeat(40), repositoryId: 'b'.repeat(64), worktreeId: 'c'.repeat(64)};
     const files = [{contentHash: 'd'.repeat(64), path: 'src/index.ts', source: 'commit'}];
     const extractorSet = 'extractor-set';
-    const inventory = `${files[0]!.path}\0${files[0]!.contentHash}\0${files[0]!.source}`;
+    const inventory = `${files[0].path}\0${files[0].contentHash}\0${files[0].source}`;
     const expected = sha256HexSync(
       `snapshot-v2\nlexical-storage:${CODE_GRAPH_LEXICAL_COMPACT_FORMAT_VERSION}\n${identity.repositoryId}\nshared-commit\n${identity.headCommit}\nclean\n${extractorSet}\n${inventory}`,
     ).slice(0, 40);
@@ -306,8 +306,8 @@ describe('code graph indexer properties', () => {
           ).not.toBe(derivation);
           expect(
             materializedBatchShardDerivationIdentity('extractor', 'workspace', envelope, [
-              {...batch[0]!, contentHash: `${batch[0]!.contentHash}0`},
-              batch[1]!,
+              {...batch[0], contentHash: `${batch[0].contentHash}0`},
+              batch[1],
             ]),
           ).not.toBe(derivation);
           expect(
@@ -418,7 +418,7 @@ describe('code graph indexer properties', () => {
             ).toBe(true);
           }
           for (let index = 0; index < groups.length - 1; index += 1) {
-            const combined = [...groups[index]!, ...groups[index + 1]!];
+            const combined = [...groups[index], ...groups[index + 1]];
             const factBytes = combined.reduce((total, value) => total + value.factBytes, 0);
             const fileCount = combined.reduce((total, value) => total + value.fileCount, 0);
             const sourceBytes = combined.reduce((total, value) => total + value.sourceBytes, 0);

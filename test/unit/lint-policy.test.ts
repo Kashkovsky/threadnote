@@ -6,7 +6,7 @@ import {
   isNodeBuiltinSpecifier,
   isNodeEffectPackageSpecifier,
 } from '../../config/lint/threadnote-plugin.js';
-import {LINT_TARGETS, STRICT_LINT_ARGUMENTS, lint} from '../../scripts/lint.js';
+import {changedTypeScriptLines, LINT_TARGETS, STRICT_LINT_ARGUMENTS, lint} from '../../scripts/lint.js';
 
 describe('lint policy', () => {
   it('enforces every official Effect anti-pattern rule for the full repository', async () => {
@@ -45,6 +45,21 @@ describe('lint policy', () => {
 
     expect(hook).toContain('bun run precommit');
     expect(packageJson.scripts?.precommit).toMatch(/^bun run lint(?:\s|&&)/);
+  });
+
+  it('tracks only added TypeScript lines for the unsafe-assertion regression gate', () => {
+    const changed = changedTypeScriptLines(
+      [
+        'diff --git a/src/example.ts b/src/example.ts',
+        '+++ b/src/example.ts',
+        '@@ -4,2 +4,3 @@',
+        ' keep();',
+        '-old();',
+        '+next();',
+        '+added();',
+      ].join('\n'),
+    );
+    expect([...(changed.get('src/example.ts') ?? [])]).toEqual([5, 6]);
   });
 
   it.prop('recognizes every explicit node: import as Node-specific', {specifier: FC.string()}, ({specifier}) => {

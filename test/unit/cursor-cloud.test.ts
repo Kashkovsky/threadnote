@@ -70,7 +70,7 @@ describe('Cursor Cloud profile', () => {
         fc.uniqueArray(fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u), {maxLength: 12, minLength: 1}),
         fc.array(fc.nat(), {maxLength: 24}),
         (teams, order) => {
-          const reordered = order.map(index => teams[index % teams.length]!).concat(teams);
+          const reordered = order.map(index => teams[index % teams.length]).concat(teams);
           expect(normalizeCursorCloudTeams(reordered)).toEqual([...teams].sort());
         },
       ),

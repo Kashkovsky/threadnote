@@ -699,7 +699,7 @@ esac
         1,
       );
     } finally {
-      server.stop(true);
+      await server.stop(true);
     }
   } finally {
     await rm(root, {force: true, recursive: true});

@@ -298,8 +298,8 @@ describe('code graph analysis', () => {
           relationshipCount: 12,
         }),
       ]);
-      expect(first.relationshipGroups[0]!.id).toMatch(/^cgrg_[a-f0-9]{32}$/);
-      expect(first.relationshipGroups[0]!.members).toHaveLength(3);
+      expect(first.relationshipGroups[0].id).toMatch(/^cgrg_[a-f0-9]{32}$/);
+      expect(first.relationshipGroups[0].members).toHaveLength(3);
       expect(second.relationshipGroups).toEqual(first.relationshipGroups);
       expect(first.suggestedQuestions).toContain(
         'Why does dispatcher fan out across 12 relationships, and which responsibilities can be separated?',
@@ -312,7 +312,7 @@ describe('code graph analysis', () => {
       const symbols = Array.from({length: 50}, (_, index) =>
         analysisSymbol(`node-${index.toString().padStart(2, '0')}`, '@acme/app', `src/${index}.ts`),
       );
-      const edges = symbols.slice(1).map((symbol, index) => analysisEdge(`edge-${index}`, symbols[0]!, symbol));
+      const edges = symbols.slice(1).map((symbol, index) => analysisEdge(`edge-${index}`, symbols[0], symbol));
       const observation: AnalysisPagingObservation = {edgePageLimits: [], symbolPageLimits: []};
       const result = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, edges, observation), {
         budget: {pageSize: 7},
@@ -342,7 +342,7 @@ describe('code graph analysis', () => {
       );
       const edges = symbols
         .slice(1)
-        .map((symbol, index) => analysisEdge(`scale-edge-${index.toString().padStart(5, '0')}`, symbols[0]!, symbol));
+        .map((symbol, index) => analysisEdge(`scale-edge-${index.toString().padStart(5, '0')}`, symbols[0], symbol));
       const observation: AnalysisPagingObservation = {edgePageLimits: [], symbolPageLimits: []};
       const result = yield* analyzeCodeGraph(pagedAnalysisStore(symbols, edges, observation), {
         budget: {pageSize: 128},
@@ -437,7 +437,7 @@ describe('code graph analysis', () => {
         analysisSymbol(`node-${index}`, `package-${index % 2}`, `src/${index}.ts`),
       );
       const edges = symbols.map((symbol, index) =>
-        analysisEdge(`edge-${index}`, symbol, symbols[(index + 1) % symbols.length]!),
+        analysisEdge(`edge-${index}`, symbol, symbols[(index + 1) % symbols.length]),
       );
       const observation: AnalysisPagingObservation = {edgePageLimits: [], symbolPageLimits: []};
 

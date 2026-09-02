@@ -1581,7 +1581,7 @@ describe('Threadnote MCP toolsets', () => {
           canonicalMemoryContent(names[2], 'third resource'),
         ];
         for (const [index, name] of names.entries()) {
-          await writeCanonicalMemory(fixture.home, `${name}.md`, contents[index]!);
+          await writeCanonicalMemory(fixture.home, `${name}.md`, contents[index]);
         }
 
         const resources: number[] = [];
@@ -2862,7 +2862,7 @@ describe('Threadnote MCP toolsets', () => {
           expect(deferredMemory?.metadata.codeCitations).toBeUndefined();
           const pendingNames = await listDeferredCodeAnchorIntentRelativePaths(pendingRoot);
           expect(pendingNames).toHaveLength(1);
-          expect(await readFile(join(pendingRoot, pendingNames[0]!), 'utf8')).toContain('src/index.ts');
+          expect(await readFile(join(pendingRoot, pendingNames[0]), 'utf8')).toContain('src/index.ts');
           const privateOutboxRecall = await client.callTool(
             {
               arguments: {callerCwd: repository, project: 'threadnote', query: 'src/index.ts'},
@@ -3755,7 +3755,7 @@ describe('Threadnote MCP toolsets', () => {
         expect(existsSync(validPath)).toBe(false);
         const archivedFiles = await readdir(archivedDirectory);
         expect(archivedFiles).toHaveLength(1);
-        const archivedPath = join(archivedDirectory, archivedFiles[0]!);
+        const archivedPath = join(archivedDirectory, archivedFiles[0]);
         const archivedContent = await readFile(archivedPath, 'utf8');
         const archived = parseMemoryDocument(
           `threadnote://user/test-user/memories/handoffs/archived/threadnote/${archivedFiles[0]}`,

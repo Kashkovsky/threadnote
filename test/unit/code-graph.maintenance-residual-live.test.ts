@@ -121,7 +121,7 @@ describe('live removed-view residual maintenance', () => {
         expect(observedBuildSidecarRetirement).toBe(true);
         expect(pointerCounts[0]).toBe(1);
         expect(pointerCounts.at(-1)).toBe(0);
-        expect(pointerCounts.every((count, index) => index === 0 || count <= pointerCounts[index - 1]!)).toBe(true);
+        expect(pointerCounts.every((count, index) => index === 0 || count <= pointerCounts[index - 1])).toBe(true);
         const completedVectorState = readVectorCounts(fixture.vectorDatabasePath!);
         expect(completedVectorState).toEqual({generations: 0, pointers: 0, retirements: 0, vectors: 0});
         expect(buildStatusExists(fixture.home)).toBe(false);

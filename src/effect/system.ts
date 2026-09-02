@@ -1025,7 +1025,7 @@ function spawnWindowsDiskCapacityWorker(
     kill: () => child.kill('SIGKILL'),
     stdout: child.stdout,
     write: async line => {
-      input.write(line);
+      await input.write(line);
       await input.flush();
     },
   };

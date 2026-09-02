@@ -277,9 +277,7 @@ export const ContextBriefCitationEvaluationFixtureSchemaV1 = Schema.Struct({
 
 /** Decode an offline fixture and enforce the hard Context Brief and benchmark bounds. */
 export function parseContextBriefCitationEvaluationFixtureV1(value: unknown): ContextBriefCitationEvaluationFixtureV1 {
-  const fixture = Schema.decodeUnknownSync(ContextBriefCitationEvaluationFixtureSchemaV1)(
-    value,
-  ) as ContextBriefCitationEvaluationFixtureV1;
+  const fixture = Schema.decodeUnknownSync(ContextBriefCitationEvaluationFixtureSchemaV1)(value);
   if (
     fixture.scenarios.length === 0 ||
     fixture.scenarios.length > CONTEXT_BRIEF_CITATION_EVALUATION_MAXIMUM_SCENARIOS
@@ -358,7 +356,7 @@ export function parseContextBriefCitationEvaluationFixtureV1(value: unknown): Co
     ) {
       throw new Error(`Citation evaluation equivalence group ${key} requires one clean and one incremental scenario.`);
     }
-    if (expectedOutcomeIdentity(scenarios[0]!) !== expectedOutcomeIdentity(scenarios[1]!)) {
+    if (expectedOutcomeIdentity(scenarios[0]) !== expectedOutcomeIdentity(scenarios[1])) {
       throw new Error(`Citation evaluation equivalence group ${key} must compare identical truth.`);
     }
   }

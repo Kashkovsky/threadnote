@@ -385,9 +385,9 @@ export function parseCodeGraphGitStatusCacheReceipt(value: string): CodeGraphGit
     }
     return {
       indexBytes: candidate.indexBytes!,
-      sourceIndexDevice: candidate.sourceIndexDevice!,
-      sourceIndexInode: candidate.sourceIndexInode!,
-      sourceIndexModifiedAtMilliseconds: candidate.sourceIndexModifiedAtMilliseconds!,
+      sourceIndexDevice: candidate.sourceIndexDevice,
+      sourceIndexInode: candidate.sourceIndexInode,
+      sourceIndexModifiedAtMilliseconds: candidate.sourceIndexModifiedAtMilliseconds,
       ...(candidate.sourceIndexSemanticSha256 === undefined
         ? {}
         : {sourceIndexSemanticSha256: candidate.sourceIndexSemanticSha256}),

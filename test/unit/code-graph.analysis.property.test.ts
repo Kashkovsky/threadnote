@@ -46,8 +46,8 @@ describe('code graph analysis properties', () => {
       );
       const uniqueEdges = new Map<string, CodeGraphEdge>();
       for (const [index, raw] of fixture.rawEdges.entries()) {
-        const source = symbols[raw.source % symbols.length]!;
-        const target = symbols[raw.target % symbols.length]!;
+        const source = symbols[raw.source % symbols.length];
+        const target = symbols[raw.target % symbols.length];
         const key = `${source.id}:${raw.relation}:${target.id}`;
         if (!uniqueEdges.has(key)) {
           uniqueEdges.set(key, analysisEdge(`edge-${index.toString().padStart(3, '0')}`, source, target, raw.relation));
@@ -112,8 +112,8 @@ describe('code graph analysis properties', () => {
       );
       const uniqueEdges = new Map<string, CodeGraphEdge>();
       for (const [index, raw] of fixture.rawEdges.entries()) {
-        const source = symbols[raw.source % symbols.length]!;
-        const target = symbols[raw.target % symbols.length]!;
+        const source = symbols[raw.source % symbols.length];
+        const target = symbols[raw.target % symbols.length];
         const key = `${source.id}:${raw.relation}:${target.id}`;
         if (!uniqueEdges.has(key)) {
           uniqueEdges.set(key, analysisEdge(`edge-${index.toString().padStart(3, '0')}`, source, target, raw.relation));
@@ -192,7 +192,7 @@ function isCohesive(relation: CodeGraphEdge['relation']): boolean {
 }
 
 function isSorted<Value>(values: readonly Value[], compare: (left: Value, right: Value) => number): boolean {
-  return values.every((value, index) => index === 0 || compare(values[index - 1]!, value) <= 0);
+  return values.every((value, index) => index === 0 || compare(values[index - 1], value) <= 0);
 }
 
 function compareHubOrder(

@@ -173,7 +173,7 @@ describe('cross-repository graph runtime safety', () => {
       runRuntime(
         findCodeGraphWorksetPath(config, {
           from: `cgp_${'a'.repeat(32)}`,
-          to: `${fixture.members[0]!.repositoryKey}:cgp_${'b'.repeat(32)}`,
+          to: `${fixture.members[0].repositoryKey}:cgp_${'b'.repeat(32)}`,
           worksetName: 'engineering',
         }),
       ),
@@ -183,7 +183,7 @@ describe('cross-repository graph runtime safety', () => {
       runRuntime(
         findCodeGraphWorksetPath(config, {
           from: `unknown:cgp_${'a'.repeat(32)}`,
-          to: `${fixture.members[0]!.repositoryKey}:cgp_${'b'.repeat(32)}`,
+          to: `${fixture.members[0].repositoryKey}:cgp_${'b'.repeat(32)}`,
           worksetName: 'engineering',
         }),
       ),
@@ -207,7 +207,7 @@ describe('cross-repository graph runtime safety', () => {
       runRuntime(
         findCodeGraphWorksetPath(config, {
           from: ref,
-          to: `${fixture.members[0]!.repositoryKey}:cgp_${'b'.repeat(32)}`,
+          to: `${fixture.members[0].repositoryKey}:cgp_${'b'.repeat(32)}`,
           worksetName: 'engineering',
         }),
       ),
@@ -223,7 +223,7 @@ describe('cross-repository graph runtime safety', () => {
       Effect.succeed({
         nodeId: `cgs_${'d'.repeat(32)}`,
         ref,
-        repositoryId: fixture.members[0]!.repositoryId,
+        repositoryId: fixture.members[0].repositoryId,
       }),
     );
     mocks.projectionContainsNode.mockReturnValue(Effect.succeed(false));
@@ -232,7 +232,7 @@ describe('cross-repository graph runtime safety', () => {
       runRuntime(
         findCodeGraphWorksetPath(config, {
           from: ref,
-          to: `${fixture.members[1]!.repositoryKey}:cgp_${'b'.repeat(32)}`,
+          to: `${fixture.members[1].repositoryKey}:cgp_${'b'.repeat(32)}`,
           worksetName: 'engineering',
         }),
       ),
@@ -268,7 +268,7 @@ describe('cross-repository graph runtime safety', () => {
   it('rejects a drifted query-neighbor bridge page instead of degrading it into evidence', async () => {
     const fixture = runtimeFixture(2);
     configureRuntimeMocks(fixture);
-    const bridge = packageBridgeForMembers('orders', fixture.members[0]!, fixture.members[1]!);
+    const bridge = packageBridgeForMembers('orders', fixture.members[0], fixture.members[1]);
     mocks.readBridgeSummary.mockReturnValue(Effect.succeed(completeBridgeSummary(1)));
     mocks.readRepositoryBridgePage.mockReturnValue(
       Effect.succeed(bridgePage({bridges: [bridge], digest: digest('replacement-runtime-set'), totalBridges: 1})),
@@ -297,12 +297,12 @@ describe('cross-repository graph runtime safety', () => {
 
   it('suppresses a protobuf bridge relationship when either endpoint snapshot is unusable', () => {
     const fixture = runtimeFixture(2);
-    const bridge = protobufBridgeForMembers(fixture.members[0]!, fixture.members[1]!);
+    const bridge = protobufBridgeForMembers(fixture.members[0], fixture.members[1]);
     if (bridge.source.reference.kind !== 'qualified-ref') throw new TestError('Invalid protobuf fixture source.');
-    const card = evidenceCard(bridge.source.reference.ref, fixture.members[0]!.repositoryKey);
+    const card = evidenceCard(bridge.source.reference.ref, fixture.members[0].repositoryKey);
 
     expect(
-      attachCodeGraphWorksetBridgeRelationships([card], [bridge], new Set([fixture.members[0]!.repositoryKey]))[0]
+      attachCodeGraphWorksetBridgeRelationships([card], [bridge], new Set([fixture.members[0].repositoryKey]))[0]
         ?.relationships,
     ).toEqual([]);
     expect(
@@ -410,7 +410,7 @@ function runtimeFixture(memberCount: number): RuntimeFixture {
       members,
       worksetName: 'engineering',
     },
-    statuses: new Map(projects.map((project, index) => [project.path, memberStatus(members[index]!)])),
+    statuses: new Map(projects.map((project, index) => [project.path, memberStatus(members[index])])),
     workset: {name: 'engineering', projects, unresolvedProjects: []},
   };
 }

@@ -74,8 +74,8 @@ export const appendPersistentMaterializationSpoolFactBatches = Effect.fn(
   const preparation = preparePersistedFullFactCapacity(batches);
   const prepared: PreparedSpoolBatch[] = [];
   for (let index = 0; index < batches.length; index += 1) {
-    const batch = batches[index]!;
-    const full = preparation.batches[index]!;
+    const batch = batches[index];
+    const full = preparation.batches[index];
     const partition = yield* Effect.try({
       try: () => partitionPersistedReferenceEdges(batch.edges, full.boundedReferences),
       catch: () => new CodeGraphStoreError('Persistent materialization spool edges could not be partitioned.'),
@@ -123,7 +123,7 @@ export const appendPersistentMaterializationSpoolFactBatches = Effect.fn(
   });
   yield* persistentCapacityProtector ? persistentCapacityProtector(preparation.capacity, append) : append;
   for (const [index, entry] of prepared.entries()) {
-    const batch = batches[index]!;
+    const batch = batches[index];
     const observer = observerForBatch(batch.batchIndex);
     for (const [stage, rows] of [
       ['validating', 3],
@@ -304,9 +304,9 @@ const persistentSpoolHeader = Effect.fn('codeGraph.persistentSpoolHeader')(funct
   }
   return {
     checkoutId: context.checkoutId,
-    extractorSet: rows[0]!.extractor_set,
-    graphContentId: rows[0]!.graph_content_id,
-    repositoryId: rows[0]!.repository_id,
+    extractorSet: rows[0].extractor_set,
+    graphContentId: rows[0].graph_content_id,
+    repositoryId: rows[0].repository_id,
     snapshotId,
   };
 });

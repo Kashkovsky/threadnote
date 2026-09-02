@@ -14,12 +14,12 @@ describe('code graph workspace compatibility properties', () => {
           index === changedIndex
             ? {
                 ...value,
-                dependencies: [projects[dependencyIndex]!.id],
+                dependencies: [projects[dependencyIndex].id],
                 dependencyDetails: [
                   {
                     evidence: `${value.root}/BUILD.bazel`,
                     provenance: 'declared' as const,
-                    targetId: projects[dependencyIndex]!.id,
+                    targetId: projects[dependencyIndex].id,
                   },
                 ],
               }
@@ -28,7 +28,7 @@ describe('code graph workspace compatibility properties', () => {
 
         expect(
           assessCodeGraphWorkspaceCompatibility(workspace('base', projects), workspace('current', changed)),
-        ).toEqual({mode: 'project-closure', seedProjectIds: [projects[changedIndex]!.id]});
+        ).toEqual({mode: 'project-closure', seedProjectIds: [projects[changedIndex].id]});
       }),
       {numRuns: 100},
     );

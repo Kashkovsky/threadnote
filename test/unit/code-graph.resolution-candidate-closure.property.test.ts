@@ -67,7 +67,7 @@ describe('resolution-candidate closure', () => {
         expect(page.factBytes).toBe(page.files.reduce((total, file) => total + bytesByPath.get(file.path)!, 0));
         if (page.factBytes > pageMaximumFactBytes) {
           expect(page.files).toHaveLength(1);
-          expect(bytesByPath.get(page.files[0]!.path)).toBeGreaterThan(pageMaximumFactBytes);
+          expect(bytesByPath.get(page.files[0].path)).toBeGreaterThan(pageMaximumFactBytes);
         }
       }
 
@@ -579,8 +579,8 @@ describe('resolution-candidate closure', () => {
     expect(
       planProjectResolutionCandidateScan({
         bytesByPath: new Map([
-          [overflowFiles[0]!.path, PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES],
-          [overflowFiles[1]!.path, 1],
+          [overflowFiles[0].path, PROJECT_RESOLUTION_CANDIDATE_SCAN_MAX_FACT_BYTES],
+          [overflowFiles[1].path, 1],
         ]),
         files: overflowFiles,
       }),
@@ -900,14 +900,14 @@ describe('resolution-candidate closure', () => {
       const aliases = Array.from({length: count}, (_, index) => lookup('typescript', `alias-${index}`));
       const candidates = Array.from({length: count}, (_, index) => lookup('typescript', `candidate-${index}`));
       const reexport = {aliases, candidates, sourcePath: 'broad-barrel.ts'};
-      const closure = resolutionCandidateLookupKeyClosure([candidates[0]!], [reexport], count + 1);
+      const closure = resolutionCandidateLookupKeyClosure([candidates[0]], [reexport], count + 1);
 
       expect(closure.mode).toBe('eligible');
       if (closure.mode === 'eligible') expect(closure.identities.size).toBe(count + 1);
 
       const scanned = yield* scanProjectResolutionCandidateClosure({
         additionalReexports: [reexport],
-        initialLookupKeys: [candidates[0]!],
+        initialLookupKeys: [candidates[0]],
         loadPage: () => Effect.die('empty scan plan must not load a page'),
         maximumSelectedFiles: 0,
         plan: eligiblePlan([], 1),
@@ -925,7 +925,7 @@ describe('resolution-candidate closure', () => {
         assessResolutionCandidateReexportSafety({
           directAliasSymbolConflictIdentities: new Set(),
           reexports: [{aliases: parsedAliases, candidates: parsedCandidates, sourcePath: 'broad-barrel.ts'}],
-          safetyAliasLookupIdentities: new Set([lookupIdentity(parsedAliases[0]!)]),
+          safetyAliasLookupIdentities: new Set([lookupIdentity(parsedAliases[0])]),
           stagedAliasLookupIdentities: new Set(),
         }),
       ).toEqual({mode: 'fallback', reason: 'non-functional-alias'});
@@ -935,7 +935,7 @@ describe('resolution-candidate closure', () => {
   effectIt('rewrites a selected consumer to the terminal so it consumes no additional delta pass', () => {
     const chain = reexportChain(CODE_GRAPH_RESOLUTION_PASS_MAXIMUM);
     const consumerPath = 'consumer.ts';
-    const consumer = facts(consumerPath, [reference(consumerPath, [[chain[0]!.alias]])]);
+    const consumer = facts(consumerPath, [reference(consumerPath, [[chain[0].alias]])]);
     const provenance: CodeGraphReusableReexport[] = chain.map(value => ({
       importedName: value.targetName,
       localName: value.aliasName,
@@ -1174,7 +1174,7 @@ function reexportChain(length: number): readonly ReexportChainEntry[] {
 }
 
 function reexportSafety(chain: readonly ReexportChainEntry[], stagedAliases: readonly string[]) {
-  const safetyAliasLookupIdentities = new Set([lookupIdentity(lookup('typescript', chain[0]!.alias))]);
+  const safetyAliasLookupIdentities = new Set([lookupIdentity(lookup('typescript', chain[0].alias))]);
   return assessResolutionCandidateReexportSafety({
     directAliasSymbolConflictIdentities: new Set(),
     reexports: chain.map(value => value.keys),

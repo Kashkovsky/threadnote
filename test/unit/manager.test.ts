@@ -333,8 +333,8 @@ async function seedManagerGraph(config: RuntimeConfig, snapshotId = MANAGER_GRAP
     graphEdge('app-view', 'app', 'App', 'view', 'renderView', 'calls'),
     graphEdge('app-api', 'app', 'App', 'api', 'createApi', 'imports'),
     ...Array.from({length: 1_600}, (_, index) => {
-      const source = generatedSymbols[index % generatedSymbols.length]!;
-      const target = generatedSymbols[(index * 17 + 1) % generatedSymbols.length]!;
+      const source = generatedSymbols[index % generatedSymbols.length];
+      const target = generatedSymbols[(index * 17 + 1) % generatedSymbols.length];
       return graphEdge(`generated-edge-${index}`, source.id, source.name, target.id, target.name, 'calls');
     }),
   ];
@@ -2896,7 +2896,7 @@ describe('manager http API', () => {
           readonly views: readonly {readonly id: string; readonly snapshot: {readonly id: string}}[];
         }[];
       };
-      const view = catalog.repositories[0]!.views[0]!;
+      const view = catalog.repositories[0].views[0];
       const originalSnapshotId = view.snapshot.id;
       expect(originalSnapshotId).toBe(MANAGER_GRAPH_SNAPSHOT_ID);
       const replacementSnapshotId = await promoteManagerGraphReplacement(config);

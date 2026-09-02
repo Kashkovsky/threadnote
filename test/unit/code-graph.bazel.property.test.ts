@@ -23,7 +23,7 @@ const permutedFiles = FC.array(FC.integer({max: 10_000, min: -10_000}), {
   minLength: files.length,
 }).map(priorities =>
   files
-    .map((file, index) => ({file, index, priority: priorities[index]!}))
+    .map((file, index) => ({file, index, priority: priorities[index]}))
     .sort((left, right) => left.priority - right.priority || left.index - right.index)
     .map(item => item.file),
 );

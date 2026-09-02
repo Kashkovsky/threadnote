@@ -39,7 +39,7 @@ describe('anonymous telemetry agent sessions', () => {
         });
         const child = withAgentSessionEnvironment(inherited, {consentGeneration, id: sessionId}, 'mcp-server');
         const changedBytes = Uint8Array.from(bytes);
-        changedBytes[0] = changedBytes[0]! ^ 0xff;
+        changedBytes[0] = changedBytes[0] ^ 0xff;
 
         expect(sessionId).toMatch(/^tns_[\da-f]{32}$/u);
         expect(anonymousAgentSessionId(changedBytes)).not.toBe(sessionId);
@@ -66,8 +66,8 @@ describe('anonymous telemetry agent sessions', () => {
           const first = deriveConsentedAgentSessionPseudonym(input);
           const second = deriveConsentedAgentSessionPseudonym(input);
           const changedSalt = Uint8Array.from(consentSalt);
-          changedSalt[0] = changedSalt[0]! ^ 0xff;
-          const otherProvider = providers[(providers.indexOf(provider) + 1) % providers.length]!;
+          changedSalt[0] = changedSalt[0] ^ 0xff;
+          const otherProvider = providers[(providers.indexOf(provider) + 1) % providers.length];
 
           expect(first).toBe(second);
           expect(first).toMatch(/^tns_[\da-f]{32}$/u);

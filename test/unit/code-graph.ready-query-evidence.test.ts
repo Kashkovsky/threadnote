@@ -53,7 +53,7 @@ describe('large ready-query evidence', () => {
     expect(() =>
       parseReadyQueryEvidenceV1({
         ...artifact,
-        controls: [{...artifact.controls[0]!, query: 'private symbol'}, ...artifact.controls.slice(1)],
+        controls: [{...artifact.controls[0], query: 'private symbol'}, ...artifact.controls.slice(1)],
       }),
     ).toThrow('control java-progress-manager contains unknown or missing fields');
     expect(() =>
@@ -64,7 +64,7 @@ describe('large ready-query evidence', () => {
           deferred: {
             ...artifact.measurements.deferred,
             stages: [
-              {...artifact.measurements.deferred.stages[0]!, repositoryId: 'private-id'},
+              {...artifact.measurements.deferred.stages[0], repositoryId: 'private-id'},
               ...artifact.measurements.deferred.stages.slice(1),
             ],
           },
@@ -81,7 +81,7 @@ describe('large ready-query evidence', () => {
     expect(() =>
       parseReadyQueryEvidenceV1({
         ...artifact,
-        controls: [{...artifact.controls[0]!, exactTextResponseBytes: 0}, ...artifact.controls.slice(1)],
+        controls: [{...artifact.controls[0], exactTextResponseBytes: 0}, ...artifact.controls.slice(1)],
       }),
     ).toThrow('response bytes is out of range');
     expect(() =>
@@ -261,7 +261,7 @@ describe('large ready-query evidence', () => {
         (latency, order) => {
           const artifact = validArtifact();
           const multiset = [...Array.from({length: SAMPLES - 2}, () => latency - 1), latency, latency];
-          const values = order.map(index => multiset[index]!);
+          const values = order.map(index => multiset[index]);
           artifact.measurements.deferred = timingSeries('deferred', values);
           if (latency <= 500) expect(() => parseReadyQueryEvidenceV1(artifact)).not.toThrow();
           else expect(() => parseReadyQueryEvidenceV1(artifact)).toThrow('Deferred ready-query p95 exceeds 500 ms');
@@ -275,12 +275,12 @@ describe('large ready-query evidence', () => {
     fc.assert(
       fc.property(permutation(READY_QUERY_CONTROLS.length), permutation(4), (controlOrder, stageOrder) => {
         const artifact = validArtifact();
-        artifact.controls = controlOrder.map(index => artifact.controls[index]!);
-        artifact.measurements.deferred.stages = stageOrder.map(index => artifact.measurements.deferred.stages[index]!);
-        artifact.measurements.exact.stages = stageOrder.map(index => artifact.measurements.exact.stages[index]!);
+        artifact.controls = controlOrder.map(index => artifact.controls[index]);
+        artifact.measurements.deferred.stages = stageOrder.map(index => artifact.measurements.deferred.stages[index]);
+        artifact.measurements.exact.stages = stageOrder.map(index => artifact.measurements.exact.stages[index]);
         expect(() => parseReadyQueryEvidenceV1(artifact)).not.toThrow();
 
-        artifact.controls = [...artifact.controls.slice(0, -1), artifact.controls[0]!];
+        artifact.controls = [...artifact.controls.slice(0, -1), artifact.controls[0]];
         expect(() => parseReadyQueryEvidenceV1(artifact)).toThrow('controls are incomplete');
       }),
       {numRuns: 20},

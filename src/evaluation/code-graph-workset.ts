@@ -751,7 +751,7 @@ export function evaluateCodeGraphWorksetObservations(
     }
   }
   for (const [groupKey, group] of groups) {
-    const size = group[0]!.worksetSize;
+    const size = group[0].worksetSize;
     const expectedQueryIds = new Set(
       fixture.queries.filter(query => query.sizes.includes(size)).map(query => query.id),
     );
@@ -904,7 +904,7 @@ function evaluateCodeGraphWorksetMetricSet(
           : [measurement.timeToFirstEvidenceCardMilliseconds],
       ),
     ),
-    timeToFirstEvidenceSemantics: [...firstEvidenceSemantics][0]!,
+    timeToFirstEvidenceSemantics: [...firstEvidenceSemantics][0],
     totals: totalMeasurements(measurements),
     unsupportedOperationQueries: observations.length - executed.length,
     unsupportedOperations: [...unsupportedOperations]

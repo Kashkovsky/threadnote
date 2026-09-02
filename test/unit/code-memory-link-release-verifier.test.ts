@@ -838,7 +838,7 @@ function mutateRuntime(
     target: 'bun-darwin-x64',
     version: `${runtime.version}.changed`,
   };
-  return {...runtime, [field]: replacements[field]} as DevelopmentRuntimeEvidence;
+  return {...runtime, [field]: replacements[field]};
 }
 
 function approvalJson(

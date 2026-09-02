@@ -437,7 +437,7 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
     const excluded = fileIndex < profile.activeWorkspaceExcludedSourceFiles;
     const roots = excluded ? excludedWorkspaces : includedWorkspaces;
     const relativeIndex = excluded ? fileIndex : fileIndex - profile.activeWorkspaceExcludedSourceFiles;
-    const workspace = roots[relativeIndex % roots.length]!;
+    const workspace = roots[relativeIndex % roots.length];
     const extension = fileIndex < profile.classMix.tsxSourceFiles ? 'tsx' : 'ts';
     const ordinalKey = `${workspace}\0${extension}`;
     const ordinal = sourceOrdinals.get(ordinalKey) ?? 0;
@@ -501,7 +501,7 @@ export const prepareProductionCodeGraphFixture = Effect.fn('codeGraphFixture.pre
     15 * 60_000,
   );
   const incremental =
-    sourceLocations.find(location => !isActiveWorkspaceExcludedRoot(location.workspace)) ?? sourceLocations[0]!;
+    sourceLocations.find(location => !isActiveWorkspaceExcludedRoot(location.workspace)) ?? sourceLocations[0];
   const lastSource = sourceLocations.at(-1)!;
   const incrementalSourcePath = path.join(
     incremental.workspace,
@@ -751,7 +751,7 @@ function writeProductionHeavyJsonFiles(
         index =>
           fs.writeFileString(
             path.join(root, `payload-${String(index).padStart(4, '0')}.json`),
-            variants[index % variants.length]!,
+            variants[index % variants.length],
           ),
         {concurrency: 8, discard: true},
       ),

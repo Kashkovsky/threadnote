@@ -883,7 +883,7 @@ function selectProjectionSnapshot(
     if (rows.length !== 1) {
       return yield* Effect.fail(missing('The selected snapshot is no longer an active ready worktree view.'));
     }
-    return rows[0]!;
+    return rows[0];
   });
 }
 
@@ -909,7 +909,7 @@ function selectExtractorGeneration(sql: SqlClient.SqlClient, snapshotId: string)
     if (rows.length !== 1) {
       return yield* Effect.fail(corrupt('The ready snapshot has no unique extractor-generation receipt.'));
     }
-    const generation = safeCount(rows[0]!.generation, 'extractor generation');
+    const generation = safeCount(rows[0].generation, 'extractor generation');
     if (generation < 1) return yield* Effect.fail(corrupt('The ready snapshot extractor generation is invalid.'));
     return generation;
   });
@@ -919,7 +919,7 @@ function selectCount(sql: SqlClient.SqlClient, statement: string, parameters: re
   return Effect.gen(function* () {
     const rows = yield* sql.unsafe<CountRow>(statement, parameters);
     if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} is unavailable.`));
-    return safeCount(rows[0]!.count, label);
+    return safeCount(rows[0].count, label);
   });
 }
 
@@ -1156,7 +1156,7 @@ function selectTemporaryRowCount(sql: SqlClient.SqlClient, table: string, label:
     }
     const rows = yield* sql.unsafe<CountRow>(`SELECT COUNT(*) AS count FROM temp.${table}`);
     if (rows.length !== 1) return yield* Effect.fail(corrupt(`The ${label} count is unavailable.`));
-    return safeCount(rows[0]!.count, `${label} count`);
+    return safeCount(rows[0].count, `${label} count`);
   });
 }
 

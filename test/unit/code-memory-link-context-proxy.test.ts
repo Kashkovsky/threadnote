@@ -65,7 +65,7 @@ describe('Code Memory Link context proxy', () => {
     });
     expect(runCandidate).not.toHaveBeenCalled();
     expect(result.content).toHaveLength(1);
-    expect(JSON.parse(result.content[0]!.text)).toEqual({
+    expect(JSON.parse(result.content[0].text)).toEqual({
       evidenceCount: 0,
       state: 'empty',
       type: 'code-memory-link-context-brief-proxy',
@@ -82,7 +82,7 @@ describe('Code Memory Link context proxy', () => {
       async () => candidateResult('anchored'),
     );
 
-    expect(normalized.text).toBe(normalized.content[0]!.text);
+    expect(normalized.text).toBe(normalized.content[0].text);
     expect(normalized.text).not.toContain('stale-runner-channel');
     expect(parseContextBriefAgentViewText(normalized.text)).toMatchObject({briefVersion: 3, version: 1});
     expect(

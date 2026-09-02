@@ -453,7 +453,7 @@ const writeMaterializedShardCacheRows = Effect.fn('codeGraph.writeMaterializedSh
       continue;
     }
     if (collisionIndex === 0) {
-      if (yield* repairMaterializedShardCacheRow(input, pending[0]!)) {
+      if (yield* repairMaterializedShardCacheRow(input, pending[0])) {
         pending = pending.slice(1);
       }
       continue;
@@ -468,7 +468,7 @@ const writeNormalMaterializedShardCacheRows = Effect.fn('codeGraph.writeNormalMa
   input: MaterializedShardCacheWriteInput,
   rows: readonly PlannedMaterializedShardCacheRow[],
 ) {
-  const chunk = planCodeGraphCacheCapacityChunks('cache materialized code graph file shards', rows)[0]!;
+  const chunk = planCodeGraphCacheCapacityChunks('cache materialized code graph file shards', rows)[0];
   return yield* input
     .persistentCapacityProtector(
       chunk.boundary,

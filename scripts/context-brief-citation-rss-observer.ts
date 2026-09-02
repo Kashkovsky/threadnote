@@ -382,7 +382,7 @@ export function applyContextBriefCitationRssRequest(
       invalid('RSS observer observation ID was reused.');
     }
     const attempted = requiredBarrierSample(current, barrierSample);
-    const sample = attempted.sample!;
+    const sample = attempted.sample;
     state = {
       ...current,
       active: {
@@ -580,7 +580,7 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
   );
   const telemetry = samplerProcessTelemetryContract(
     system.platform,
-    initial.sample!.rootStartIdentity,
+    initial.sample.rootStartIdentity,
     options.intervalMilliseconds,
   );
   if (
@@ -594,7 +594,7 @@ export const runContextBriefCitationRssObserverMode = Effect.fn('contextBriefCit
     intervalMilliseconds: options.intervalMilliseconds,
     observerExcluded: true,
     rootIdentityValidation: telemetry.parentIdentityValidation,
-    rootStartIdentity: initial.sample!.rootStartIdentity,
+    rootStartIdentity: initial.sample.rootStartIdentity,
     samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     scope: 'recursive-process-tree',
     source: telemetry.source,
@@ -848,22 +848,21 @@ function observationTotals(
   };
 }
 
-function parseObserverContract(value: Readonly<Record<string, unknown>>) {
+function parseObserverContract(
+  value: Readonly<Record<string, unknown>>,
+): Omit<ContextBriefCitationRssReadyV2, 'state'> {
   if (value.version !== ARTIFACT_VERSION) invalid('RSS observer evidence version is invalid.');
   if (value.scope !== 'recursive-process-tree' || value.observerExcluded !== true) {
     invalid('RSS observer scope is invalid.');
   }
   const intervalMilliseconds = positiveSafeInteger(value.intervalMilliseconds, 'RSS observer interval');
   if (intervalMilliseconds < 10 || intervalMilliseconds > 1_000) invalid('RSS observer interval is out of bounds.');
-  const source = value.source;
-  const rootIdentityValidation = value.rootIdentityValidation;
-  if (
-    (source !== 'linux-proc' && source !== 'darwin-ps') ||
-    (source === 'linux-proc' && rootIdentityValidation !== 'linux-proc-starttime') ||
-    (source === 'darwin-ps' && rootIdentityValidation !== 'darwin-ps-lstart')
-  ) {
-    invalid('RSS observer source and root identity validation do not match.');
-  }
+  const sourceAndIdentity =
+    value.source === 'linux-proc' && value.rootIdentityValidation === 'linux-proc-starttime'
+      ? {rootIdentityValidation: 'linux-proc-starttime' as const, source: 'linux-proc' as const}
+      : value.source === 'darwin-ps' && value.rootIdentityValidation === 'darwin-ps-lstart'
+        ? {rootIdentityValidation: 'darwin-ps-lstart' as const, source: 'darwin-ps' as const}
+        : invalid('RSS observer source and root identity validation do not match.');
   const rootStartIdentity = boundedText(value.rootStartIdentity, 'RSS observer root identity', 128);
   if (value.samplingSchedule !== CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE) {
     invalid('RSS observer sampling schedule is invalid.');
@@ -871,11 +870,10 @@ function parseObserverContract(value: Readonly<Record<string, unknown>>) {
   return {
     intervalMilliseconds,
     observerExcluded: true as const,
-    rootIdentityValidation: rootIdentityValidation as ContextBriefCitationRssRootIdentityValidation,
+    ...sourceAndIdentity,
     rootStartIdentity,
     samplingSchedule: CONTEXT_BRIEF_CITATION_RSS_SAMPLING_SCHEDULE,
     scope: 'recursive-process-tree' as const,
-    source: source as ContextBriefCitationRssSource,
     version: ARTIFACT_VERSION,
   };
 }

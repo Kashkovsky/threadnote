@@ -132,7 +132,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
   private async portableRows(shareId: string): Promise<readonly PortableRecordRow[]> {
     const tenantId = await this.controlPlane.tenantForShare(shareId);
     if (!tenantId) throw new Error('The remote memory share does not exist or is inactive.');
-    return (await this.sql.begin(async transaction => {
+    return await this.sql.begin(async transaction => {
       await setTenant(transaction, tenantId);
       return transaction<PortableRecordRow[]>`
         SELECT h.canonical_uri, h.kind, h.project, h.topic, r.markdown_body, r.content_hash,
@@ -148,7 +148,7 @@ export class PostgresRemoteMemoryOperatorAdapter implements RemoteMemoryOperator
         GROUP BY h.canonical_uri, h.kind, h.project, h.topic, r.markdown_body, r.content_hash
         ORDER BY h.canonical_uri
       `;
-    })) as readonly PortableRecordRow[];
+    });
   }
 
   private async withTenant<A>(tenantId: string, use: (transaction: TransactionSql) => Promise<A>): Promise<A> {

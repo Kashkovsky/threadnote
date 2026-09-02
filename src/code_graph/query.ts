@@ -1836,7 +1836,7 @@ const observePostPromotionOnce = Effect.fn('codeGraph.observePostPromotionOnce')
   }
   const records = result.value.stdout.slice(0, -1).split('\0');
   const headRecords = records.filter(record => record.startsWith('# branch.oid '));
-  const headCommit = headRecords.length === 1 ? headRecords[0]!.slice('# branch.oid '.length) : undefined;
+  const headCommit = headRecords.length === 1 ? headRecords[0].slice('# branch.oid '.length) : undefined;
   const expectedLength = identity.objectFormat === 'sha256' ? 64 : 40;
   if (headCommit === undefined || !new RegExp(`^[0-9a-f]{${expectedLength}}$`).test(headCommit)) {
     return {headCommit: undefined, overlay: undefined};

@@ -116,7 +116,7 @@ function decodeCursorPayload(value: unknown): RemoteMemoryReadCursorState | unde
     mode: input.m === 'c' ? 'content' : 'outline',
     position: {characterOffset: input.o, resourceIndex: 0},
     revision: input.r,
-    ...(input.s === undefined ? {} : {section: input.s as string}),
+    ...(input.s === undefined ? {} : {section: input.s}),
     uri: input.u,
   };
 }

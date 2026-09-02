@@ -429,9 +429,7 @@ async function* ndjsonLines(input: AsyncIterable<Uint8Array>): AsyncGenerator<st
 function parseJsonRpcEnvelope(line: string): JsonRpcEnvelope | undefined {
   try {
     const value = JSON.parse(line) as unknown;
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? (value as JsonRpcEnvelope)
-      : undefined;
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
   } catch {
     return undefined;
   }

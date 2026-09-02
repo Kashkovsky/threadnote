@@ -130,8 +130,8 @@ export const hydrateCodeGraphCheckpointReusableBaseReceipt = Effect.fn(
       try: () => parseGitCatFileBatch(result.stdout, batch),
     });
     for (let index = 0; index < batch.length; index += 1) {
-      const declared = batch[index]!;
-      const bytes = blobs[index]!;
+      const declared = batch[index];
+      const bytes = blobs[index];
       const sourceContent = decodeUtf8(bytes);
       const retained =
         sourceContent === undefined

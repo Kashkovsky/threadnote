@@ -489,11 +489,11 @@ export function createCodeGraphHeavyTailRatchet(
 ): CodeGraphHeavyTailRatchet {
   if (artifacts.length < 3) throw new ScriptError('Heavy-tail ratchet generation requires at least three artifacts.');
   const standards = artifacts.map(artifact => parseBenchmarkArtifactV1(artifact.ratchetArtifact));
-  const first = standards[0]!;
-  const generationIdentity = governedHeavyTailRatchetGenerationIdentity(artifacts[0]!, first);
+  const first = standards[0];
+  const generationIdentity = governedHeavyTailRatchetGenerationIdentity(artifacts[0], first);
   const firstNames = first.measurements.map(measurement => measurement.name).sort();
   for (let index = 1; index < standards.length; index += 1) {
-    const artifact = standards[index]!;
+    const artifact = standards[index];
     const names = artifact.measurements.map(measurement => measurement.name).sort();
     if (
       artifact.suite !== first.suite ||
@@ -511,7 +511,7 @@ export function createCodeGraphHeavyTailRatchet(
     ) {
       throw new ScriptError('Heavy-tail ratchet artifacts do not share one governed runner and fixture contract.');
     }
-    if (governedHeavyTailRatchetGenerationIdentity(artifacts[index]!, artifact) !== generationIdentity) {
+    if (governedHeavyTailRatchetGenerationIdentity(artifacts[index], artifact) !== generationIdentity) {
       throw new ScriptError('Heavy-tail ratchet artifacts do not share one exact source/runtime/storage contract.');
     }
   }
@@ -521,7 +521,7 @@ export function createCodeGraphHeavyTailRatchet(
   const measurements: Record<string, HeavyTailMeasurementRatchet> = {};
   for (const name of firstNames) {
     const samples = standards.map(artifact => artifact.measurements.find(measurement => measurement.name === name)!);
-    const unit = samples[0]!.unit;
+    const unit = samples[0].unit;
     if (samples.some(sample => sample.unit !== unit || sample.samples !== 1)) {
       throw new ScriptError(`Heavy-tail ratchet measurement ${name} has inconsistent samples or units.`);
     }
@@ -1138,7 +1138,7 @@ export function parseCodeGraphHeavyTailBenchmarkArguments(
   let smoke = false;
   let workers: number | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--child') child = true;
     else if (argument === '--governed') governed = true;
     else if (argument === '--home') home = required(args[++index], argument);
@@ -1226,8 +1226,8 @@ function validExtractionUtilization(value: unknown, workerCount: number): value 
     nonNegativeInteger(extraction.peakConcurrency) &&
     nonNegativeNumber(extraction.requestMilliseconds) &&
     extraction.averageConcurrency <= workerCount + 1e-6 &&
-    extraction.peakConcurrency! <= workerCount &&
-    extraction.requestMilliseconds + 1e-6 >= extraction.activeWallMilliseconds!
+    extraction.peakConcurrency <= workerCount &&
+    extraction.requestMilliseconds + 1e-6 >= extraction.activeWallMilliseconds
   );
 }
 
@@ -1244,8 +1244,8 @@ function validLanguageTelemetry(value: unknown): value is HeavyTailLanguageTelem
     nonNegativeInteger(language.relations) &&
     nonNegativeInteger(language.sourceBytes) &&
     nonNegativeInteger(language.symbols) &&
-    language.degradedFiles! <= language.files! &&
-    language.requestMilliseconds! + 1e-6 >= language.parseMilliseconds!
+    language.degradedFiles <= language.files &&
+    language.requestMilliseconds + 1e-6 >= language.parseMilliseconds
   );
 }
 
@@ -1259,7 +1259,7 @@ function validSlowFile(value: unknown): value is HeavyTailSlowFile {
     nonNegativeNumber(file.parseMilliseconds) &&
     typeof file.path === 'string' &&
     nonNegativeNumber(file.requestMilliseconds) &&
-    file.requestMilliseconds! + 1e-6 >= file.parseMilliseconds!
+    file.requestMilliseconds + 1e-6 >= file.parseMilliseconds
   );
 }
 

@@ -33,11 +33,11 @@ describe('session-start recall queue', () => {
     const uris = Array.from({length: 6}, (_, index) => `threadnote://resources/repos/p/${index}.md`);
     const rendered = renderSessionStartRecallQueue(
       'p',
-      [line(1, uris[0]!), line(2, uris[0]!), ...uris.slice(1).map((uri, index) => line(index + 3, uri))].join('\n'),
+      [line(1, uris[0]), line(2, uris[0]), ...uris.slice(1).map((uri, index) => line(index + 3, uri))].join('\n'),
     );
 
     expect(rendered.match(/\[unread\]/g)).toHaveLength(5);
-    expect(rendered.indexOf(uris[0]!)).toBeLessThan(rendered.indexOf(uris[1]!));
+    expect(rendered.indexOf(uris[0])).toBeLessThan(rendered.indexOf(uris[1]));
     expect(rendered).not.toContain(uris[5]);
   });
 

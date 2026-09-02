@@ -633,7 +633,7 @@ const parsePackManifest = Effect.fn('share.parsePackManifest')(function* (raw: s
       );
     }
   }
-  return {
+  const manifest: PackManifest = {
     agent,
     deps: {
       cli: stringArray(depsValue.cli),
@@ -646,7 +646,8 @@ const parsePackManifest = Effect.fn('share.parsePackManifest')(function* (raw: s
     name,
     pathRewrites,
     skills,
-  } as PackManifest;
+  };
+  return manifest;
 });
 
 // Resolves manifest skill + include entries into a flat, deduplicated member

@@ -40,7 +40,7 @@ describe('code graph view removal state-machine properties', () => {
             const checkoutId = 'a'.repeat(64);
             const repositoryId = 'b'.repeat(64);
             const databasePath = join(root, 'indexes', 'code-graph', 'repositories', checkoutId, 'graph-v3.sqlite');
-            const pointers = new Map(WORKTREE_IDS.map((worktreeId, index) => [worktreeId, SNAPSHOT_IDS[index]!]));
+            const pointers = new Map(WORKTREE_IDS.map((worktreeId, index) => [worktreeId, SNAPSHOT_IDS[index]]));
             const tombstones = new Map<string, string>();
             const store = yield* CodeGraphStore;
             yield* store.initialize(databasePath);
@@ -52,7 +52,7 @@ describe('code graph view removal state-machine properties', () => {
             );
 
             for (const event of events) {
-              const worktreeId = WORKTREE_IDS[event.worktree]!;
+              const worktreeId = WORKTREE_IDS[event.worktree];
               const snapshotId = SNAPSHOT_IDS[event.snapshot] ?? MISSING_SNAPSHOT_ID;
               if (event.kind === 'promote' && snapshotId !== MISSING_SNAPSHOT_ID) {
                 yield* store.promote(databasePath, identity(root, checkoutId, repositoryId, worktreeId), snapshotId);

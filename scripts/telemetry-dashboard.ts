@@ -669,7 +669,7 @@ function validateExactPermissions(
       scopes.some(scope => typeof scope !== 'string') ||
       scopes.length !== expectedScopes.length ||
       new Set(scopes).size !== scopes.length ||
-      expectedScopes.some(scope => !scopes.includes(scope as string))
+      expectedScopes.some(scope => !scopes.includes(scope))
     ) {
       throw new ScriptError(`Grafana dashboard ${actor} is missing a required exact-target permission.`);
     }

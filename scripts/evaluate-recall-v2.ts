@@ -105,7 +105,7 @@ function parseArguments(args: readonly string[]): EvaluationOptions {
   let outputPath: string | undefined;
   let seed = 0x4_00_00;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--documents') documentCount = positiveInteger(args[++index], '--documents');
     else if (argument === '--baseline') baselinePath = requiredValue(args[++index], '--baseline');
     else if (argument === '--no-baseline') baselinePath = undefined;

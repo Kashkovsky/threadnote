@@ -939,7 +939,7 @@ function renderOverviewSvg(
 function nodeColor(kind: string): string {
   const palette = ['#67e8c7', '#7dd3fc', '#a78bfa', '#f9a8d4', '#fcd34d', '#86efac'];
   const hash = stableHash(kind, 0);
-  return palette[hash % palette.length]!;
+  return palette[hash % palette.length];
 }
 
 function stableHash(value: string, seed: number): number {

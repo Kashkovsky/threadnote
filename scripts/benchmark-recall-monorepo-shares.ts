@@ -110,7 +110,7 @@ const benchmarkRecallMonorepoShares = Effect.gen(function* () {
       ...options.fixture,
       laneBudgets: recallCrossScopeLaneBudgets(options.fixture.topK),
       personalCopies: options.fixture.packages * options.fixture.logicalMemoriesPerPackage,
-      physicalCandidatesPerScenario: fixtures[0]!.candidates.length,
+      physicalCandidatesPerScenario: fixtures[0].candidates.length,
       scenarios: Object.fromEntries(
         fixtures.map(fixture => [
           fixture.scenario,
@@ -151,7 +151,7 @@ export function parseRecallMonorepoSharesBenchmarkArguments(
   let warmups = 2;
   let outputPath: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--packages') packages = positiveInteger(args[++index], argument);
     else if (argument === '--logical-per-package') {
       logicalMemoriesPerPackage = positiveInteger(args[++index], argument);

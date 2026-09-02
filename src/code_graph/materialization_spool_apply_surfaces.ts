@@ -33,7 +33,7 @@ export function codeGraphMaterializationSpoolApplyPlan(
     ready.surfaces.length !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES.length ||
     ready.surfaces.some(
       (surface, index) =>
-        surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index]!.name ||
+        surface.name !== CODE_GRAPH_MATERIALIZATION_SPOOL_SURFACES[index].name ||
         !Number.isSafeInteger(surface.rowCount) ||
         surface.rowCount < 0,
     ) ||
@@ -50,6 +50,6 @@ export function codeGraphMaterializationSpoolApplyPlan(
         ? 1
         : surface.name === 'lexical_terms'
           ? ready.lexicalTermCount
-          : physicalCounts.get(surface.source!)!,
+          : physicalCounts.get(surface.source)!,
   }));
 }

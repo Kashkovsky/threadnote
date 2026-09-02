@@ -205,7 +205,7 @@ function assessOwnTypeScriptPathLookupKey(
     return {gate: 'scope-mismatch', lookupKeyForm};
   }
   try {
-    return decodeURIComponent(match[2]!) === symbol.path
+    return decodeURIComponent(match[2]) === symbol.path
       ? {gate: 'own-path-local', lookupKeyForm}
       : {gate: 'foreign-path', lookupKeyForm};
   } catch {

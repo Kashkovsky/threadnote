@@ -39,7 +39,7 @@ describe('governed large ready-query workflow', () => {
     const actionlint = load(readFileSync('.github/actionlint.yml', 'utf8'), {
       schema: JSON_SCHEMA,
     }) as ActionlintConfiguration;
-    const job = workflow.jobs['ready-query-evidence']!;
+    const job = workflow.jobs['ready-query-evidence'];
     const command = job.steps?.flatMap(step => (step.run ? [step.run] : [])).join('\n') ?? '';
     const upload = job.steps?.find(step => step.uses?.startsWith('actions/upload-artifact@'));
     const checkout = job.steps?.find(step => step.uses?.startsWith('actions/checkout@'));

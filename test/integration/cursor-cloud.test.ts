@@ -919,7 +919,7 @@ async function withCloudMcp<T>(
       THREADNOTE_MANIFEST: join(fixture.home, 'seed-manifest.yaml'),
       THREADNOTE_MCP_TOOLSET: toolset,
       THREADNOTE_USER: 'cloud-user',
-    } as Record<string, string>,
+    },
     stderr: 'pipe',
   });
   const client = new Client({name: 'threadnote-cursor-cloud-test', version: '0.0.0'});
@@ -958,7 +958,7 @@ async function withLocalMcp<T>(
       THREADNOTE_MANIFEST: join(home, 'seed-manifest.yaml'),
       THREADNOTE_MCP_TOOLSET: 'cursor-cloud-local',
       THREADNOTE_USER: 'cloud-user',
-    } as Record<string, string>,
+    },
     stderr: 'pipe',
   });
   const client = new Client({name: 'threadnote-cursor-cloud-local-test', version: '0.0.0'});

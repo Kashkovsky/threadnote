@@ -651,7 +651,7 @@ export function recordAnonymousTelemetryFields(fields: AnonymousTelemetryFields)
  * the surrounding context for later requests.
  */
 export function omitAnonymousTelemetryRecorder<R>(context: Context.Context<R>): Context.Context<R> {
-  return Context.omit(CurrentAnonymousTelemetryRecorder)(context) as Context.Context<R>;
+  return Context.omit(CurrentAnonymousTelemetryRecorder)(context);
 }
 
 export function withAnonymousTelemetryPhase<A, E, R>(
@@ -1298,7 +1298,7 @@ function mergeTelemetryFields(
       merged[key] = value;
     }
   }
-  return merged as AnonymousTelemetryFields;
+  return merged;
 }
 
 /** Result-derived Context Brief classifications are terminal-success-only. */

@@ -15,7 +15,7 @@ export function memoryIdFromIdentityAlias(input: string): string | undefined {
       resource.anchor !== undefined ||
       resource.namespace !== 'memory' ||
       resource.segments.length !== 1 ||
-      !isMemoryId(resource.segments[0]!)
+      !isMemoryId(resource.segments[0])
     ) {
       return undefined;
     }

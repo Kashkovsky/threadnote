@@ -279,7 +279,7 @@ describe('native ResourceStore', () => {
                       truncate: length => opened.truncate(length),
                       write: buffer => opened.write(buffer),
                       writeAll: buffer => opened.writeAll(buffer),
-                    } as FileSystem.File;
+                    };
                   }),
                 ),
               stat: filePath => fs.stat(filePath).pipe(Effect.map(withoutIdentity)),

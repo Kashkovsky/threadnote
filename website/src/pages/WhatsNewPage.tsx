@@ -121,7 +121,7 @@ function UpdateDetail({update}: {readonly update: WebsiteUpdate}) {
 }
 
 function WhatsNewIndex({updates}: {readonly updates: readonly WebsiteUpdate[]}) {
-  const latest = updates[0]!;
+  const latest = updates[0];
   const earlier = updates.slice(1);
 
   useEffect(() => {

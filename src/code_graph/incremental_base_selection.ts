@@ -27,7 +27,7 @@ export function gitCommitDistanceGroups(output: string, headCommit: string): rea
   const distanceByCommit = new Map<string, number>([[headCommit, 0]]);
   const queue = [headCommit];
   for (let index = 0; index < queue.length; index += 1) {
-    const commit = queue[index]!;
+    const commit = queue[index];
     const distance = distanceByCommit.get(commit)!;
     for (const parent of parentsByCommit.get(commit) ?? []) {
       const nextDistance = distance + 1;

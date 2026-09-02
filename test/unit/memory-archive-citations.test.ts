@@ -58,8 +58,8 @@ describe('memory archive code citations', () => {
           recursive: true,
         });
         expect(entries).toHaveLength(1);
-        const archivedContent = yield* store.read(location, entries[0]!.uri);
-        const archived = parseMemoryDocument(entries[0]!.uri, archivedContent);
+        const archivedContent = yield* store.read(location, entries[0].uri);
+        const archived = parseMemoryDocument(entries[0].uri, archivedContent);
         expect(archived?.metadata).toMatchObject({
           archivedFrom: sourceUri,
           authority: 'user_approved',

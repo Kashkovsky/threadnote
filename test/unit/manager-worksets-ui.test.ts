@@ -216,7 +216,7 @@ describe('Manager Worksets interaction fencing', () => {
 
     await clickButtonStartingWith('beta');
     expect(pendingQueries[0]?.signal?.aborted).toBe(true);
-    pendingQueries[0]!.resolve(jsonResponse(evidence('alpha', 'AlphaOnlySymbol')));
+    pendingQueries[0].resolve(jsonResponse(evidence('alpha', 'AlphaOnlySymbol')));
     await flush();
     expect(document.body.textContent).toContain('beta');
     expect(document.body.textContent).not.toContain('AlphaOnlySymbol');
@@ -230,7 +230,7 @@ describe('Manager Worksets interaction fencing', () => {
 
     await clickButton('Search published workset');
     expect(pendingQueries).toHaveLength(3);
-    pendingQueries[2]!.resolve(jsonResponse(evidence('beta', 'BetaOwnership')));
+    pendingQueries[2].resolve(jsonResponse(evidence('beta', 'BetaOwnership')));
     await flush();
     expect(document.body.textContent).toContain('BetaOwnership');
     expect(document.body.textContent).toContain('observed branch main');
@@ -250,7 +250,7 @@ describe('Manager Worksets interaction fencing', () => {
     );
     await changeInput(queryInput, 'ownership');
     await clickButton('Search published workset');
-    pendingQueries[0]!.resolve(jsonResponse(evidence('alpha', 'OldGenerationSymbol')));
+    pendingQueries[0].resolve(jsonResponse(evidence('alpha', 'OldGenerationSymbol')));
     await flush();
     expect(document.body.textContent).toContain('OldGenerationSymbol');
     expect(document.body.textContent).toContain('Current members');
@@ -340,9 +340,9 @@ describe('Manager Worksets interaction fencing', () => {
 
     const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
     expect(inputs).toHaveLength(3);
-    await changeInput(inputs[0]!, 'checkout');
-    await changeInput(inputs[1]!, '~/src/checkout');
-    await changeInput(inputs[2]!, 'threadnote://resources/repos/checkout');
+    await changeInput(inputs[0], 'checkout');
+    await changeInput(inputs[1], '~/src/checkout');
+    await changeInput(inputs[2], 'threadnote://resources/repos/checkout');
     const seeds = await waitForElement<HTMLTextAreaElement>('.project-editor textarea');
     await changeTextArea(seeds, 'AGENTS.md\ndocs/**/*.md');
     await clickButton('Save project');
@@ -384,8 +384,8 @@ describe('Manager Worksets interaction fencing', () => {
     await waitForButtonEnabled('Edit project');
     await clickButton('Edit project');
     const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
-    await changeInput(inputs[0]!, 'alpha-renamed');
-    await changeInput(inputs[1]!, '/workspace/alpha-renamed');
+    await changeInput(inputs[0], 'alpha-renamed');
+    await changeInput(inputs[1], '/workspace/alpha-renamed');
     projectRevisionConflictOnce = true;
     await clickButton('Save project');
     await waitForText('your draft is preserved');
@@ -423,10 +423,10 @@ describe('Manager Worksets interaction fencing', () => {
     await waitForPendingProjectDetails(2);
     expect(pendingProjectDetails[0]?.signal?.aborted).toBe(true);
 
-    pendingProjectDetails[0]!.resolve(jsonResponse(manifestProject('alpha')));
+    pendingProjectDetails[0].resolve(jsonResponse(manifestProject('alpha')));
     await flush();
     expect(document.body.textContent).not.toContain('threadnote://resources/repos/alpha');
-    pendingProjectDetails[1]!.resolve(jsonResponse(manifestProject('beta')));
+    pendingProjectDetails[1].resolve(jsonResponse(manifestProject('beta')));
     await waitForText('threadnote://resources/repos/beta');
   });
 
@@ -440,12 +440,12 @@ describe('Manager Worksets interaction fencing', () => {
     await waitForButtonEnabled('Edit project');
     await clickButton('Edit project');
     const inputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
-    await changeInput(inputs[0]!, 'gamma');
+    await changeInput(inputs[0], 'gamma');
     await clickButton('Save project');
     await waitForText('Manifest project saved.');
     expect(pendingCatalogs[0]?.signal?.aborted).toBe(true);
 
-    pendingCatalogs[0]!.resolve(jsonResponse(pendingCatalogs[0]!.body));
+    pendingCatalogs[0].resolve(jsonResponse(pendingCatalogs[0].body));
     await flush();
     expect(findButtonStartingWith('gamma')).toBeDefined();
     expect(findButtonStartingWith('alpha')).toBeUndefined();
@@ -453,7 +453,7 @@ describe('Manager Worksets interaction fencing', () => {
     await waitForButtonEnabled('Edit project');
     await clickButton('Edit project');
     const updatedInputs = [...document.querySelectorAll<HTMLInputElement>('.project-editor input')];
-    await changeInput(updatedInputs[1]!, '/workspace/gamma');
+    await changeInput(updatedInputs[1], '/workspace/gamma');
     await clickButton('Save project');
     await waitForText('Manifest project saved.');
     expect(projectMutationBodies[1]?.expectedRevision).toBe('j'.repeat(64));
@@ -629,7 +629,7 @@ function jsonResponse(body: unknown, statusCode = 200): Response {
 function catalog() {
   return {
     definitions: [...definitionProjects].map(([name, projects]) => ({
-      description: `${name[0]!.toUpperCase()}${name.slice(1)} services`,
+      description: `${name[0].toUpperCase()}${name.slice(1)} services`,
       memberCount: projects.length,
       name,
     })),

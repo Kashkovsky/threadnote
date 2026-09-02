@@ -135,15 +135,15 @@ export function makeCodeGraphStoreMaintenanceMethods(runtime: CodeGraphStoreRunt
           );
         }
 
-        const ownerLayout = codeGraphLayout(path, options.threadnoteHome!, options.checkoutId!, candidate.worktreeId);
+        const ownerLayout = codeGraphLayout(path, options.threadnoteHome, options.checkoutId, candidate.worktreeId);
         if (ownerLayout.databasePath !== databasePath || ownerLayout.databaseWriteLockPath !== writerLockPath) {
           return {reason: 'writer-lock-unavailable', state: 'skipped'} as const;
         }
         const worktreeLockPath = ownerLayout.lockPath;
         const snapshotLockPath = codeGraphSnapshotBuildLockPath(
           path,
-          options.threadnoteHome!,
-          options.checkoutId!,
+          options.threadnoteHome,
+          options.checkoutId,
           candidate.logicalSnapshotId,
         );
         const retire = withExclusiveFileLock(

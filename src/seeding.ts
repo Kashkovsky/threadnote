@@ -307,7 +307,7 @@ const seedProject = Effect.fn('seeding.seedProject')(function* ({
   yield* flush();
 
   for (const uri of Object.keys(state.files).filter(
-    uri => seedStateEntryOwnedByProject(uri, state.files[uri]!, project, manifest.projects) && !currentUris.has(uri),
+    uri => seedStateEntryOwnedByProject(uri, state.files[uri], project, manifest.projects) && !currentUris.has(uri),
   )) {
     if (options.dryRun === true) {
       yield* log(`Would remove stale seeded resource: ${uri}`);
@@ -893,7 +893,7 @@ function inspectSeedPathWithinBoundary(
     let currentPath = boundary.logicalRoot;
     const segments = relativePath.split(path.sep).filter(segment => segment !== '' && segment !== '.');
     for (let index = 0; index < segments.length; index += 1) {
-      currentPath = path.join(currentPath, segments[index]!);
+      currentPath = path.join(currentPath, segments[index]);
       let inspection = boundary.inspections.get(currentPath);
       if (inspection === undefined && !boundary.inspections.has(currentPath)) {
         const link = yield* readSeedLink(fs, currentPath);

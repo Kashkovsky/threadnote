@@ -34,7 +34,7 @@ function parsePackageJson(
   for (const key of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
     const section = object[key];
     if (section && typeof section === 'object' && !Array.isArray(section)) {
-      for (const name of Object.keys(section as Record<string, unknown>)) {
+      for (const name of Object.keys(section)) {
         dependencies.add(name);
       }
     }

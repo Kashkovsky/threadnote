@@ -51,7 +51,7 @@ describe('Workset prepare deferred-anchor recovery', () => {
       );
       expect(mocks.healWorkset).toHaveBeenCalledOnce();
       expect(mocks.healWorkset).toHaveBeenCalledWith(config, 'platform');
-      expect(JSON.parse(output[0]!)).toMatchObject({state: 'ready', workset: 'platform'});
+      expect(JSON.parse(output[0])).toMatchObject({state: 'ready', workset: 'platform'});
     }).pipe(Effect.provideService(CliOutput, collectingCliOutput(output)), provideTestLayer(ApplicationLayer));
   });
 
@@ -64,7 +64,7 @@ describe('Workset prepare deferred-anchor recovery', () => {
 
       expect(failure.message).toContain('preparation was incomplete');
       expect(mocks.healWorkset).not.toHaveBeenCalled();
-      expect(JSON.parse(output[0]!)).toMatchObject({state: 'failed', workset: 'platform'});
+      expect(JSON.parse(output[0])).toMatchObject({state: 'failed', workset: 'platform'});
     }).pipe(Effect.provideService(CliOutput, collectingCliOutput(output)), provideTestLayer(ApplicationLayer));
   });
 });

@@ -633,7 +633,7 @@ export function assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1(input: {
   evaluateCodeMemoryLinkAgentAb({...input, manifest, trials});
   if (trials.length > manifest.schedule.length) invalid('trial ledger is longer than the frozen schedule');
   for (const [index, trial] of trials.entries()) {
-    const scheduled = manifest.schedule[index]!;
+    const scheduled = manifest.schedule[index];
     if (trial.evidenceKind !== 'external-agent') invalid('trial ledger may contain only external-agent receipts');
     if (
       trial.runOrder !== index ||
@@ -645,7 +645,7 @@ export function assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1(input: {
     ) {
       invalid(`trial ledger entry ${index} is not the next frozen schedule receipt`);
     }
-    const expectedPrevious = index === 0 ? null : codeMemoryLinkAgentAbTrialReceiptDigest(trials[index - 1]!);
+    const expectedPrevious = index === 0 ? null : codeMemoryLinkAgentAbTrialReceiptDigest(trials[index - 1]);
     if (trial.previousReceiptDigest !== expectedPrevious) {
       invalid(`trial ledger entry ${index} does not extend the previous receipt digest`);
     }
@@ -1560,7 +1560,7 @@ function deriveValidatedSchedule(
       const offset = schedulePermutationOffset(scheduleSeed, client.clientId, taskKind);
       return stratum.map((block, index) => ({
         ...block,
-        permutation: BALANCED_BLIND_LABEL_PERMUTATIONS[(index + offset) % BALANCED_BLIND_LABEL_PERMUTATIONS.length]!,
+        permutation: BALANCED_BLIND_LABEL_PERMUTATIONS[(index + offset) % BALANCED_BLIND_LABEL_PERMUTATIONS.length],
       }));
     }),
   );
@@ -1917,7 +1917,7 @@ function literal<const Values extends readonly string[]>(
   label: string,
 ): Values[number] {
   if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) invalid(`${label} is invalid`);
-  return value as Values[number];
+  return value;
 }
 
 function matchingString(value: unknown, pattern: RegExp, label: string): string {

@@ -84,8 +84,8 @@ describe('code graph lifecycle classification properties', () => {
           for (let step = 0; step <= candidates.length; step += 1) {
             const page = planCodeGraphLifecycleReclamation(remaining, 1);
             if (page.length === 0) break;
-            reclaimed.push(page[0]!.id);
-            remaining = remaining.filter(candidate => candidate.id !== page[0]!.id);
+            reclaimed.push(page[0].id);
+            remaining = remaining.filter(candidate => candidate.id !== page[0].id);
           }
           expect(reclaimed).toEqual(expected);
           expect(planCodeGraphLifecycleReclamation(remaining, 1)).toEqual([]);

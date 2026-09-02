@@ -713,59 +713,65 @@ const sharedArtifactInstallState = Effect.fn('share.sharedArtifactInstallState')
   const sourceSha = yield* sha256(sourceContent);
   const existingContent = (yield* readFileIfExists(artifact.installPath)) ?? undefined;
   if (existingContent === undefined) {
-    return {sourceContent, sourceSha, status: 'not_installed'} as SharedArtifactInstallState;
+    const state: SharedArtifactInstallState = {sourceContent, sourceSha, status: 'not_installed'};
+    return state;
   }
   const existingSha = yield* sha256(existingContent);
   const metadata = yield* readSharedArtifactMetadata(artifact);
   if (existingSha === sourceSha) {
-    return {
+    const state: SharedArtifactInstallState = {
       existingContent,
       existingSha,
       metadata,
       sourceContent,
       sourceSha,
       status: 'current',
-    } as SharedArtifactInstallState;
+    };
+    return state;
   }
   if (metadata === undefined) {
-    return {
+    const state: SharedArtifactInstallState = {
       existingContent,
       existingSha,
       sourceContent,
       sourceSha,
       status: 'local_modified',
-    } as SharedArtifactInstallState;
+    };
+    return state;
   }
   const remoteChanged = metadata.sourceSha256 !== sourceSha;
   const localChanged = metadata.installedSha256 !== existingSha;
   if (remoteChanged && localChanged) {
-    return {
+    const state: SharedArtifactInstallState = {
       existingContent,
       existingSha,
       metadata,
       sourceContent,
       sourceSha,
       status: 'remote_changed_and_local_modified',
-    } as SharedArtifactInstallState;
+    };
+    return state;
   }
   if (remoteChanged) {
-    return {
+    const state: SharedArtifactInstallState = {
       existingContent,
       existingSha,
       metadata,
       sourceContent,
       sourceSha,
       status: 'update_available',
-    } as SharedArtifactInstallState;
+    };
+    return state;
   }
-  return {
+  const state: SharedArtifactInstallState = {
     existingContent,
     existingSha,
     metadata,
     sourceContent,
     sourceSha,
     status: 'local_modified',
-  } as SharedArtifactInstallState;
+  };
+  return state;
 });
 
 const readSharedArtifactMetadata = Effect.fn('share.readSharedArtifactMetadata')(function* (

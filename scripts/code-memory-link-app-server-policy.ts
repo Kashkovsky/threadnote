@@ -227,7 +227,7 @@ function reviewableCommands(item: Record<string, unknown>, repositoryRoot: strin
       throw new Error('Code Memory Link shell command lacks bounded reviewed local action projections.');
     }
     const actions = item.commandActions.map(action => object(action, 'command action'));
-    const projected = shellTokens[2]!;
+    const projected = shellTokens[2];
     for (const action of actions) {
       if (action.type === 'unknown') {
         exactKeys(action, ['command', 'type'], 'code-mode unknown command action', false);
@@ -257,7 +257,7 @@ function splitReadCommandChain(command: string): readonly string[] {
   let start = 0;
   let quote: 'single' | 'double' | null = null;
   for (let index = 0; index < command.length; index += 1) {
-    const character = command[index]!;
+    const character = command[index];
     if (quote === 'single') {
       if (character === "'") quote = null;
       continue;
@@ -302,7 +302,7 @@ function assertSimpleRead(executable: string, args: readonly string[], root: str
   const flags = SIMPLE_FLAGS.get(executable)!;
   const paths: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
-    const value = args[index]!;
+    const value = args[index];
     if (flags.has(value)) {
       if (['head', 'tail'].includes(executable) && value === '-n') positiveCount(args[++index], `${executable} -n`);
       else if (executable === 'stat' && value === '-f') boundedLiteral(args[++index], 'stat format');
@@ -323,7 +323,7 @@ function assertOd(args: readonly string[], root: string, cwd: string): void {
   const paths: string[] = [];
   let optionsEnded = false;
   for (let index = 0; index < args.length; index += 1) {
-    const value = args[index]!;
+    const value = args[index];
     if (!optionsEnded && value === '--') {
       optionsEnded = true;
       continue;
@@ -371,7 +371,7 @@ function assertLs(args: readonly string[], root: string, cwd: string): void {
 }
 
 function assertSed(args: readonly string[], root: string, cwd: string): void {
-  if (args.length < 2 || args[0] !== '-n' || !/^[0-9]+(?:,[0-9]+)?p$/u.test(args[1]!)) {
+  if (args.length < 2 || args[0] !== '-n' || !/^[0-9]+(?:,[0-9]+)?p$/u.test(args[1])) {
     throw new Error('sed is limited to one numeric print range.');
   }
   for (const path of args.slice(2)) {
@@ -411,7 +411,7 @@ function assertRipgrep(args: readonly string[], root: string, cwd: string): void
     '--smart-case',
   ]);
   for (let index = 0; index < args.length; index += 1) {
-    const value = args[index]!;
+    const value = args[index];
     if (value === '--') {
       positionals.push(...args.slice(index + 1));
       break;
@@ -459,7 +459,7 @@ function tokenize(command: string): readonly string[] {
   let quote: 'single' | 'double' | null = null;
   let active = false;
   for (let index = 0; index < command.length; index += 1) {
-    const character = command[index]!;
+    const character = command[index];
     if (quote === 'single') {
       if (character === "'") quote = null;
       else token += character;

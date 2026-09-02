@@ -416,23 +416,10 @@ describe('shouldAwaitExistingBuilder and statusBelongsToChild', () => {
       owner: {processId: 7, runtime: 'bun' as const, runtimeVersion: '1'},
     } as ObservedCodeGraphBuildStatus;
     expect(statusBelongsToChild(status, 7, 'old-build')).toBe(false);
-    expect(
-      statusBelongsToChild({...status, buildId: 'new-build'} as ObservedCodeGraphBuildStatus, 7, 'old-build'),
-    ).toBe(true);
-    expect(
-      statusBelongsToChild({...status, buildId: 'old-build'} as ObservedCodeGraphBuildStatus, 8, 'old-build'),
-    ).toBe(false);
-    expect(
-      statusBelongsToChild({...status, buildId: 'new-build'} as ObservedCodeGraphBuildStatus, 8, 'old-build'),
-    ).toBe(false);
-    expect(
-      statusBelongsToChild(
-        {...status, buildId: 'other-build'} as ObservedCodeGraphBuildStatus,
-        7,
-        'old-build',
-        'new-build',
-      ),
-    ).toBe(false);
+    expect(statusBelongsToChild({...status, buildId: 'new-build'}, 7, 'old-build')).toBe(true);
+    expect(statusBelongsToChild({...status, buildId: 'old-build'}, 8, 'old-build')).toBe(false);
+    expect(statusBelongsToChild({...status, buildId: 'new-build'}, 8, 'old-build')).toBe(false);
+    expect(statusBelongsToChild({...status, buildId: 'other-build'}, 7, 'old-build', 'new-build')).toBe(false);
   });
 });
 
@@ -668,7 +655,7 @@ describe('isolated builder cross-host spawn admission', () => {
               observation: {heartbeatAgeMilliseconds: 0, liveness: 'completed'},
               result: {dirty: false, edges: 11, files: 2, snapshotId: 'snapshot', symbols: 7},
               state: 'completed',
-            } as ObservedCodeGraphBuildStatus;
+            };
             resolveExit(0);
 
             expect(yield* Effect.all([Fiber.join(owner), Fiber.join(waiter)], {concurrency: 'unbounded'})).toEqual([
@@ -768,8 +755,8 @@ describe('isolated builder cross-host spawn admission', () => {
               observation: {heartbeatAgeMilliseconds: 0, liveness: 'completed'},
               result: {dirty: false, edges: 11, files: 2, snapshotId: 'snapshot-a', symbols: 7},
               state: 'completed',
-            } as ObservedCodeGraphBuildStatus;
-            exits[0]!(0);
+            };
+            exits[0](0);
 
             expect(yield* Fiber.join(owner)).toEqual({
               dirty: false,
@@ -785,8 +772,8 @@ describe('isolated builder cross-host spawn admission', () => {
               observation: {heartbeatAgeMilliseconds: 0, liveness: 'completed'},
               result: {dirty: true, edges: 13, files: 1, snapshotId: 'snapshot-b', symbols: 9},
               state: 'completed',
-            } as ObservedCodeGraphBuildStatus;
-            exits[1]!(0);
+            };
+            exits[1](0);
 
             expect(yield* Fiber.join(waiter)).toEqual({
               dirty: true,

@@ -493,7 +493,7 @@ function discoverXcodeProjects(
     const projectName = basename(projectBundle).replace(/\.xcodeproj$/i, '');
     const targetNames = file.content
       ? [...file.content.matchAll(/isa\s*=\s*PBXNativeTarget;[\s\S]*?\bname\s*=\s*"?([^";\n]+)"?;/g)].map(match =>
-          match[1]!.trim(),
+          match[1].trim(),
         )
       : [];
     output.push({
@@ -504,7 +504,7 @@ function discoverXcodeProjects(
       evidence: file.path,
       kind: 'project',
       languages: ['swift'],
-      name: targetNames.length === 1 ? targetNames[0]! : projectName,
+      name: targetNames.length === 1 ? targetNames[0] : projectName,
       provenance: 'declared',
       resolutionDomain: 'swift',
       root,
@@ -650,7 +650,7 @@ function materializeProjects(
     for (const alias of uniqueStrings(candidate.dependencyAliases)) {
       const targets = aliases.get(alias);
       if (targets?.size === 1) {
-        const target = [...targets][0]!;
+        const target = [...targets][0];
         if (target !== id) dependencies.add(target);
       } else if (targets && targets.size > 1) {
         const qualifier = [...targets].every(target => candidatesById.get(target)?.provenance === 'declared')
@@ -847,7 +847,7 @@ function hasIndexedPathWithin(sortedPaths: readonly string[], root: string): boo
   let upper = sortedPaths.length;
   while (lower < upper) {
     const middle = lower + Math.floor((upper - lower) / 2);
-    if (sortedPaths[middle]! < root) {
+    if (sortedPaths[middle] < root) {
       lower = middle + 1;
     } else {
       upper = middle;
@@ -900,7 +900,7 @@ function gradleIncludes(content: string): readonly string[] {
   for (const line of content.split(/\r?\n/)) {
     if (!/^\s*include\b/.test(line)) continue;
     for (const match of line.matchAll(/["'](:[^"']+)["']/g)) {
-      const path = match[1]!.replace(/^:/, '').replaceAll(':', '/');
+      const path = match[1].replace(/^:/, '').replaceAll(':', '/');
       if (path) output.add(path);
     }
   }
@@ -912,15 +912,15 @@ function gradleProjectDirectories(content: string, root: string): ReadonlyMap<st
   for (const match of content.matchAll(
     /project\s*\(\s*["'](:[^"']+)["']\s*\)\.projectDir\s*=\s*(?:file\s*\(\s*)?["']([^"']+)["']/g,
   )) {
-    const normalized = normalizeContainedPath(root, match[2]!);
-    if (normalized !== undefined) output.set(match[1]!, normalized);
+    const normalized = normalizeContainedPath(root, match[2]);
+    if (normalized !== undefined) output.set(match[1], normalized);
   }
   return output;
 }
 
 function gradleProjectDependencies(content: string): readonly string[] {
   return unique(
-    [...content.matchAll(/\bproject\s*\(\s*(?:path\s*:\s*)?["'](:[^"']+)["']\s*\)/g)].map(match => match[1]!),
+    [...content.matchAll(/\bproject\s*\(\s*(?:path\s*:\s*)?["'](:[^"']+)["']\s*\)/g)].map(match => match[1]),
   );
 }
 
@@ -935,10 +935,10 @@ function swiftTargets(content: string): readonly {
     const body = content.slice(match.index, starts[index + 1]?.index ?? content.length);
     const path = /\bpath\s*:\s*"([^"]+)"/.exec(body)?.[1];
     const dependencyBlock = /\bdependencies\s*:\s*\[([\s\S]*?)\]/.exec(body)?.[1] ?? '';
-    const dependencies = unique([...dependencyBlock.matchAll(/"([^"]+)"/g)].map(value => value[1]!));
+    const dependencies = unique([...dependencyBlock.matchAll(/"([^"]+)"/g)].map(value => value[1]));
     return {
       dependencies,
-      name: match[2]!,
+      name: match[2],
       path,
       test: match[1] === 'testTarget',
     };
@@ -950,7 +950,7 @@ function inferJvmRoot(
 ): {readonly name: string; readonly root: string; readonly sourceRoot: string} | undefined {
   const match = /^(.*?)(?:\/)?src\/(?:[^/]+\/)?(?:java|kotlin)\//.exec(path);
   if (!match) return undefined;
-  const root = match[1]!.replace(/\/$/, '');
+  const root = match[1].replace(/\/$/, '');
   const sourceRoot = path.slice(0, match[0].length - 1);
   return {name: root.split('/').at(-1) || 'root', root, sourceRoot};
 }
@@ -961,7 +961,7 @@ function inferSwiftRoot(
   const match = /^(.*?)(?:\/)?(?:Sources|Tests)\/([^/]+)\//.exec(path);
   if (!match) return undefined;
   const sourceRoot = path.slice(0, match[0].length - 1);
-  return {name: match[2]!, root: sourceRoot, sourceRoot};
+  return {name: match[2], root: sourceRoot, sourceRoot};
 }
 
 function xmlTag(content: string, tag: string): string | undefined {
@@ -970,7 +970,7 @@ function xmlTag(content: string, tag: string): string | undefined {
 
 function xmlTags(content: string, tag: string): readonly string[] {
   return [...content.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>\\s*([^<]+?)\\s*</${tag}>`, 'gi'))].map(match =>
-    match[1]!.trim(),
+    match[1].trim(),
   );
 }
 

@@ -610,7 +610,7 @@ function readPublishedQualifiedRefRoute(
   );
   // The catalog reader's inferred generic environment is intentionally broad;
   // this adapter has captured the only concrete services used by that read.
-  return captured as Effect.Effect<CodeGraphWorksetCatalogPublishedGenerationV1 | undefined, unknown>;
+  return captured;
 }
 
 /** Resolve one qualified handle through the same batched routing boundary. */
@@ -619,7 +619,7 @@ export const resolveCodeGraphQualifiedRefTarget = Effect.fn('codeGraphWorksetV2.
   ref: string,
   callerCwd?: string,
 ) {
-  return (yield* resolveCodeGraphQualifiedRefTargets(config, [ref], callerCwd))[0]!;
+  return (yield* resolveCodeGraphQualifiedRefTargets(config, [ref], callerCwd))[0];
 });
 
 interface PreparedCoreInput extends CodeGraphWorksetQueryV2InputV1 {

@@ -594,7 +594,8 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
   const path = yield* teamsFilePath(config);
   const raw = yield* readFileIfExists(path);
   if (!raw) {
-    return {teams: {}, version: TEAMS_FILE_VERSION} as ShareTeamsFile;
+    const empty: ShareTeamsFile = {teams: {}, version: TEAMS_FILE_VERSION};
+    return empty;
   }
   const parsed = parseJsonConfigObject(raw);
   if (!parsed) {
@@ -632,7 +633,8 @@ export const readTeamsFile = Effect.fn('share.readTeamsFile')(function* (config:
     }
   }
   const defaultTeam = typeof parsed.defaultTeam === 'string' ? parsed.defaultTeam : undefined;
-  return {defaultTeam, teams, version: TEAMS_FILE_VERSION} as ShareTeamsFile;
+  const teamsFile: ShareTeamsFile = {defaultTeam, teams, version: TEAMS_FILE_VERSION};
+  return teamsFile;
 });
 
 export function shareTeamAccess(team: ShareTeamConfig): ShareTeamAccess {
@@ -858,7 +860,7 @@ export function stripPersonalProvenance(
   }
   const cleaned: string[] = [];
   for (let index = 0; index < headerEnd; index += 1) {
-    const line = lines[index]!;
+    const line = lines[index];
     const stableRelation = options.preserveStableMemoryRelations === true && isStableMemoryRelationHeader(line);
     if (
       !stableRelation &&

@@ -558,7 +558,7 @@ function requireMetadataLiteral(
   values: readonly (boolean | number | string)[],
   missing: string[],
 ): void {
-  if (!values.includes(metadata[name] as boolean | number | string)) missing.push(`${name} reviewed metadata`);
+  if (!values.includes(metadata[name])) missing.push(`${name} reviewed metadata`);
 }
 
 function requirePositiveInteger(metadata: BenchmarkArtifactV1['metadata'], name: string, missing: string[]): void {

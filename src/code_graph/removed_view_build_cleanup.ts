@@ -375,32 +375,32 @@ function parseBuildStatusCursor(cursor: string): BuildStatusCursor | undefined {
   if (
     fields.length === 4 &&
     fields[1] === 'r' &&
-    BUILD_DIGEST.test(fields[2]!) &&
-    validBuildCursorSeal(fields.slice(0, -1), fields[3]!)
+    BUILD_DIGEST.test(fields[2]) &&
+    validBuildCursorSeal(fields.slice(0, -1), fields[3])
   ) {
     return {mode: 'reset'};
   }
   if (
     fields.length === 5 &&
     fields[1] === 's' &&
-    BUILD_ID.test(fields[2]!) &&
-    BUILD_DIGEST.test(fields[3]!) &&
-    validBuildCursorSeal(fields.slice(0, -1), fields[4]!)
+    BUILD_ID.test(fields[2]) &&
+    BUILD_DIGEST.test(fields[3]) &&
+    validBuildCursorSeal(fields.slice(0, -1), fields[4])
   ) {
-    return {afterBuildId: fields[2]!, digest: fields[3]!, mode: 'scan'};
+    return {afterBuildId: fields[2], digest: fields[3], mode: 'scan'};
   }
   if (
     fields.length === 6 &&
     fields[1] === 'v' &&
-    BUILD_DIGEST.test(fields[2]!) &&
-    (fields[3] === '-' || BUILD_ID.test(fields[3]!)) &&
-    BUILD_DIGEST.test(fields[4]!) &&
-    validBuildCursorSeal(fields.slice(0, -1), fields[5]!)
+    BUILD_DIGEST.test(fields[2]) &&
+    (fields[3] === '-' || BUILD_ID.test(fields[3])) &&
+    BUILD_DIGEST.test(fields[4]) &&
+    validBuildCursorSeal(fields.slice(0, -1), fields[5])
   ) {
     return {
-      ...(fields[3] === '-' ? {} : {afterBuildId: fields[3]!}),
-      digest: fields[4]!,
-      expectedDigest: fields[2]!,
+      ...(fields[3] === '-' ? {} : {afterBuildId: fields[3]}),
+      digest: fields[4],
+      expectedDigest: fields[2],
       mode: 'verify',
     };
   }

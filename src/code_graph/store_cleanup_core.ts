@@ -55,7 +55,7 @@ const observeSnapshotPurge = Effect.fn('codeGraph.observeSnapshotPurge')(functio
   if (snapshots.length !== 1) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph snapshot purge target is ambiguous.'));
   }
-  const snapshot = snapshotFromRow(snapshots[0]!);
+  const snapshot = snapshotFromRow(snapshots[0]);
   const boundedLimit = CODE_GRAPH_SNAPSHOT_PURGE_EVIDENCE_LIMIT + 1;
   const [activeRows, childRows, leaseRows, ownerRows, cleanupRows] = yield* Effect.all(
     [

@@ -101,7 +101,7 @@ export const runLocalAiEnable = Effect.fn('localAi.compat.enable')(function* (
       new LocalAiOperationError('No generation model is installed. Run `threadnote models install <model-id>` first.'),
     );
   }
-  const selected = models[0]!;
+  const selected = models[0];
   if (options.dryRun) {
     yield* Console.log(`Would select ${selected.definition.id} for local generation.`);
     return;

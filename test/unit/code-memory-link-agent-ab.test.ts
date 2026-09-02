@@ -167,7 +167,7 @@ describe('Code Memory Link agent A/B evidence', () => {
       'no external-agent trials; mock receipts cannot support a release claim',
     );
     expect(result.gate.insufficiencies).toContain(
-      `manifest paired block ${CLIENT_IDS[0]}/${MANIFEST.tasks[0]!.taskId} requires exactly one X, Y, and Z external-agent trial`,
+      `manifest paired block ${CLIENT_IDS[0]}/${MANIFEST.tasks[0].taskId} requires exactly one X, Y, and Z external-agent trial`,
     );
   });
 
@@ -178,7 +178,7 @@ describe('Code Memory Link agent A/B evidence', () => {
     expect(result.evidence.distinctClients).toBe(2);
     expect(result.gate.status).toBe('insufficient');
     expect(result.gate.insufficiencies).toContain(
-      `manifest paired block ${CLIENT_IDS[1]}/${MANIFEST.tasks[0]!.taskId} requires exactly one X, Y, and Z external-agent trial`,
+      `manifest paired block ${CLIENT_IDS[1]}/${MANIFEST.tasks[0].taskId} requires exactly one X, Y, and Z external-agent trial`,
     );
   });
 
@@ -566,11 +566,11 @@ describe('Code Memory Link agent A/B evidence', () => {
       first,
       second,
     ]);
-    const {attestation: _attestation, previousReceiptDigest, trialId, ...clientSummary} = first!;
+    const {attestation: _attestation, previousReceiptDigest, trialId, ...clientSummary} = first;
     expect(() =>
       createCodeMemoryLinkAgentAbTrialV1({
         candidate: MANIFEST.candidate,
-        invocationNonce: first!.attestation.invocationNonce,
+        invocationNonce: first.attestation.invocationNonce,
         postRuntime: RUNTIME,
         preRuntime: RUNTIME,
         previousReceiptDigest,
@@ -588,10 +588,7 @@ describe('Code Memory Link agent A/B evidence', () => {
     expect(() =>
       codeMemoryLinkAgentAbManifestHash({
         ...MANIFEST,
-        clients: [
-          CLIENTS[0]!,
-          {...CLIENTS[1]!, implementationDescriptorHash: CLIENTS[0]!.implementationDescriptorHash},
-        ],
+        clients: [CLIENTS[0], {...CLIENTS[1], implementationDescriptorHash: CLIENTS[0].implementationDescriptorHash}],
         version: 1,
       }),
     ).toThrow(/implementation descriptor hashes must be unique/);
@@ -601,7 +598,7 @@ describe('Code Memory Link agent A/B evidence', () => {
     expect(() =>
       parseCodeMemoryLinkAgentAbManifestV1({
         ...MANIFEST,
-        tasks: [MANIFEST.tasks[0], {...MANIFEST.tasks[1]!, packetHash: MANIFEST.tasks[0]!.packetHash}],
+        tasks: [MANIFEST.tasks[0], {...MANIFEST.tasks[1], packetHash: MANIFEST.tasks[0].packetHash}],
       }),
     ).toThrow(/packet hashes must be unique/);
     const reassignedFamilies = MANIFEST.tasks.map((task, index) =>
@@ -626,21 +623,21 @@ describe('Code Memory Link agent A/B evidence', () => {
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [reseal({...first!, clientId: `cli_${'f'.repeat(16)}`})],
+        trials: [reseal({...first, clientId: `cli_${'f'.repeat(16)}`})],
       }),
     ).toThrow(/outside the manifest roster/);
     expect(() =>
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [reseal({...first!, packetHash: 'f'.repeat(64)})],
+        trials: [reseal({...first, packetHash: 'f'.repeat(64)})],
       }),
     ).toThrow(/task contract does not match/);
     expect(() =>
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [reseal({...first!, runNonce: `run_${'f'.repeat(16)}`})],
+        trials: [reseal({...first, runNonce: `run_${'f'.repeat(16)}`})],
       }),
     ).toThrow(/preregistered run position and nonce/);
     expect(() =>
@@ -685,7 +682,7 @@ describe('Code Memory Link agent A/B evidence', () => {
     );
     expect(() =>
       parseCodeMemoryLinkAgentAbTrialsJsonl(
-        JSON.stringify({...first, totalTaskUsage: {steps: 1, tokens: first!.budget.tokens + 1}}),
+        JSON.stringify({...first, totalTaskUsage: {steps: 1, tokens: first.budget.tokens + 1}}),
       ),
     ).toThrow(/total task usage exceeds/);
     expect(() =>
@@ -693,8 +690,8 @@ describe('Code Memory Link agent A/B evidence', () => {
         JSON.stringify({
           ...first,
           firstUsefulMemoryUse: {
-            steps: first!.totalTaskUsage.steps,
-            tokens: first!.totalTaskUsage.tokens + 1,
+            steps: first.totalTaskUsage.steps,
+            tokens: first.totalTaskUsage.tokens + 1,
           },
         }),
       ),
@@ -759,11 +756,11 @@ describe('Code Memory Link agent A/B evidence', () => {
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [{...first!, taskPassed: !first!.taskPassed}],
+        trials: [{...first, taskPassed: !first.taskPassed}],
       }),
     ).toThrow(/output digest|summary digest/);
 
-    const {attestation: _attestation, previousReceiptDigest, trialId, ...summary} = first!;
+    const {attestation: _attestation, previousReceiptDigest, trialId, ...summary} = first;
     const otherCandidate = {buildIdentityHash: hash(999_001), commit: 'f'.repeat(40), dirty: false as const};
     const otherRuntime = {
       executableSha256: otherCandidate.buildIdentityHash,
@@ -771,7 +768,7 @@ describe('Code Memory Link agent A/B evidence', () => {
     };
     const otherRuntimeTrial = createCodeMemoryLinkAgentAbTrialV1({
       candidate: otherCandidate,
-      invocationNonce: first!.attestation.invocationNonce,
+      invocationNonce: first.attestation.invocationNonce,
       postRuntime: otherRuntime,
       preRuntime: otherRuntime,
       previousReceiptDigest,
@@ -786,7 +783,7 @@ describe('Code Memory Link agent A/B evidence', () => {
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [first!, {...second!, attestation: first!.attestation}],
+        trials: [first, {...second, attestation: first.attestation}],
       }),
     ).toThrow(/invocation digest|replayed harness receipts/);
 
@@ -796,8 +793,8 @@ describe('Code Memory Link agent A/B evidence', () => {
         manifest: MANIFEST,
         trials: [
           {
-            ...first!,
-            attestation: {...first!.attestation, outputDigest: hash(555_555)},
+            ...first,
+            attestation: {...first.attestation, outputDigest: hash(555_555)},
           },
         ],
       }),
@@ -808,8 +805,8 @@ describe('Code Memory Link agent A/B evidence', () => {
         manifest: MANIFEST,
         trials: [
           {
-            ...first!,
-            attestation: {...first!.attestation, harnessCommit: 'f'.repeat(40)},
+            ...first,
+            attestation: {...first.attestation, harnessCommit: 'f'.repeat(40)},
           },
         ],
       }),
@@ -823,13 +820,13 @@ describe('Code Memory Link agent A/B evidence', () => {
     ).not.toThrow();
 
     const reordered = [...trials];
-    [reordered[0], reordered[1]] = [reordered[1]!, reordered[0]!];
+    [reordered[0], reordered[1]] = [reordered[1], reordered[0]];
     expect(() =>
       assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1({assignment: ASSIGNMENT, manifest: MANIFEST, trials: reordered}),
     ).toThrow(/next frozen schedule receipt/);
 
     const broken = [...trials];
-    broken[1] = reseal(broken[1]!, hash(444_444));
+    broken[1] = reseal(broken[1], hash(444_444));
     expect(() =>
       assertCodeMemoryLinkAgentAbTrialLedgerPrefixV1({assignment: ASSIGNMENT, manifest: MANIFEST, trials: broken}),
     ).toThrow(/extend the previous receipt digest/);
@@ -841,14 +838,14 @@ describe('Code Memory Link agent A/B evidence', () => {
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [first!, reseal({...second!, providerUsageHash: first!.providerUsageHash}), ...remaining],
+        trials: [first, reseal({...second, providerUsageHash: first.providerUsageHash}), ...remaining],
       }),
     ).toThrow(/provider usage hashes must be unique/);
     expect(() =>
       evaluateCodeMemoryLinkAgentAb({
         assignment: ASSIGNMENT,
         manifest: MANIFEST,
-        trials: [first!, reseal({...second!, adjudicationHash: first!.adjudicationHash}), ...remaining],
+        trials: [first, reseal({...second, adjudicationHash: first.adjudicationHash}), ...remaining],
       }),
     ).toThrow(/adjudication hashes must be unique/);
   });
@@ -955,7 +952,7 @@ function manifestTask(
         ? index < 5
           ? 'hidden:lexical'
           : 'hidden:anchored-only'
-        : CONTROL_SCENARIO_FAMILIES[(index - 12) % CONTROL_SCENARIO_FAMILIES.length]!,
+        : CONTROL_SCENARIO_FAMILIES[(index - 12) % CONTROL_SCENARIO_FAMILIES.length],
     taskId: opaqueId('tsk', index),
     taskKind,
   };
@@ -980,7 +977,7 @@ function chainedReleaseTrials(): readonly CodeMemoryLinkAgentAbTrialV1[] {
   const chained: CodeMemoryLinkAgentAbTrialV1[] = [];
   for (const trial of [...releaseTrials()].sort((left, right) => left.runOrder - right.runOrder)) {
     const previousReceiptDigest =
-      chained.length === 0 ? null : codeMemoryLinkAgentAbTrialReceiptDigest(chained[chained.length - 1]!);
+      chained.length === 0 ? null : codeMemoryLinkAgentAbTrialReceiptDigest(chained[chained.length - 1]);
     chained.push(reseal(trial, previousReceiptDigest));
   }
   return chained;
@@ -1082,7 +1079,7 @@ function attemptEventsForTrials(
   let retryOfAttemptId: string | null = null;
   let retryReason: 'client-execution' | null = null;
   if (failFirst) {
-    const trial = trials[0]!;
+    const trial = trials[0];
     const failedStart = attemptStart(
       trial,
       'attempt_deadbeefdeadbeefdeadbeefdeadbeef',
@@ -1103,7 +1100,7 @@ function attemptEventsForTrials(
   }
   for (const [index, trial] of trials.entries()) {
     const previousEventDigest =
-      events.length === 0 ? null : codeMemoryLinkAgentAttemptEventDigest(events[events.length - 1]!);
+      events.length === 0 ? null : codeMemoryLinkAgentAttemptEventDigest(events[events.length - 1]);
     const started = attemptStart(
       trial,
       `attempt_${index.toString(16).padStart(32, '0')}`,

@@ -359,7 +359,7 @@ export const productionLogSupportExcerpt = Effect.fn('productionLog.productionLo
   const includedNewestFirst: string[] = [];
   let includedCharacters = 0;
   for (let index = serializedEntries.length - 1; index >= 0; index -= 1) {
-    const serialized = serializedEntries[index] as string;
+    const serialized = serializedEntries[index];
     const nextCharacters = serialized.length + (includedNewestFirst.length === 0 ? 0 : 1);
     if (includedCharacters + nextCharacters > characterBudget) {
       break;
@@ -918,9 +918,7 @@ function optionalSafeParsedLabel(value: unknown): string | undefined | false {
 }
 
 function oneOf<const Values extends readonly string[]>(value: unknown, values: Values): Values[number] | undefined {
-  return typeof value === 'string' && (values as readonly string[]).includes(value)
-    ? (value as Values[number])
-    : undefined;
+  return typeof value === 'string' && (values as readonly string[]).includes(value) ? value : undefined;
 }
 
 function optionalOneOf<const Values extends readonly string[]>(

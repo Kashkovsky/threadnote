@@ -266,10 +266,10 @@ describe('isolated local model worker protocol properties', () => {
           }),
         ).toEqual([[input.length, 7]]);
         expect(processes).toHaveLength(2);
-        expect(processes[0]!.killed).toBe(true);
-        expect(processes[0]!.writes).toHaveLength(1);
-        expect(processes[1]!.writes).toHaveLength(1);
-        expect(processes[0]!.writes[0]!.id).not.toBe(processes[1]!.writes[0]!.id);
+        expect(processes[0].killed).toBe(true);
+        expect(processes[0].writes).toHaveLength(1);
+        expect(processes[1].writes).toHaveLength(1);
+        expect(processes[0].writes[0].id).not.toBe(processes[1].writes[0].id);
       }).pipe(provideTestLayer(workerRuntimeLayer(spawn)));
     },
     {fastCheck: {numRuns: 40}},

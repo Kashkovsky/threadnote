@@ -74,11 +74,8 @@ export async function runRemoteMemoryService(
     const indexer = new RemoteMemoryIndexer(sql);
     const retention = new RemoteHandoffRetentionWorker(sql);
     workerTasks = [indexer.run({signal: workers.signal}), retention.run({signal: workers.signal})];
-    const indexerTask = workerTasks[0];
-    const retentionTask = workerTasks[1];
-    if (!indexerTask || !retentionTask) throw new Error('Remote memory workers did not initialize.');
-    workerHealth.supervise('indexer', indexerTask);
-    workerHealth.supervise('retention', retentionTask);
+    workerHealth.supervise('indexer', workerTasks[0]);
+    workerHealth.supervise('retention', workerTasks[1]);
     const shutdown = (reason: string) => {
       stopping ??= (async () => {
         runtime.error(`Threadnote remote memory stopping after ${reason}; draining requests.`);

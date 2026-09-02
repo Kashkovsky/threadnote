@@ -475,10 +475,10 @@ export function renderProcessDiagnosticsTable(processes: readonly ThreadnoteProc
       process.currentOperation ?? '-',
     ]),
   ];
-  const widths = rows[0]!.map((_, column) => Math.max(...rows.map(row => row[column]!.length)));
+  const widths = rows[0].map((_, column) => Math.max(...rows.map(row => row[column].length)));
   return rows
     .map(row =>
-      row.map((value, column) => (column === row.length - 1 ? value : value.padEnd(widths[column]! + 2))).join(''),
+      row.map((value, column) => (column === row.length - 1 ? value : value.padEnd(widths[column] + 2))).join(''),
     )
     .join('\n');
 }

@@ -422,9 +422,9 @@ function languageDefinition(
 
 function pythonImport(value: string) {
   const from = /^\s*from\s+([\w.]+)\s+import\s+([\w.*]+)/.exec(value);
-  if (from) return simpleImport(`${from[1]}.${from[2]}`, from[2]!.split('.').at(-1));
+  if (from) return simpleImport(`${from[1]}.${from[2]}`, from[2].split('.').at(-1));
   const direct = /^\s*import\s+([\w.]+)(?:\s+as\s+(\w+))?/.exec(value);
-  return direct ? simpleImport(direct[1]!, direct[1]!.split('.').at(-1), direct[2]) : Option.none();
+  return direct ? simpleImport(direct[1], direct[1].split('.').at(-1), direct[2]) : Option.none();
 }
 
 function goImport(value: string) {
@@ -438,38 +438,38 @@ function goImport(value: string) {
 function rustImport(value: string) {
   const match = /^\s*use\s+(.+?);?\s*$/.exec(value);
   if (!match) return Option.none();
-  const module = match[1]!.replace(/\s+as\s+\w+$/, '').replace(/[{}\s]/g, '');
+  const module = match[1].replace(/\s+as\s+\w+$/, '').replace(/[{}\s]/g, '');
   const alias = /\s+as\s+(\w+)\s*;?$/.exec(value)?.[1];
   return simpleImport(module, module.split('::').at(-1), alias);
 }
 
 function includeImport(value: string) {
   const match = /#\s*include\s*[<"]([^>"]+)[>"]/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function csharpImport(value: string) {
   const match = /^\s*(?:global\s+)?using\s+(?:(\w+)\s*=\s*)?([^;]+);/.exec(value);
-  if (!match || /^static\s+/.test(match[2]!)) return Option.none();
-  const module = match[2]!.trim();
+  if (!match || /^static\s+/.test(match[2])) return Option.none();
+  const module = match[2].trim();
   return simpleImport(module, module.split('.').at(-1), match[1]);
 }
 
 function rubyImport(value: string) {
   const match = /^\s*(?:require|require_relative|load)\s*\(?\s*["']([^"']+)["']/.exec(value);
-  return match ? simpleImport(match[1]!) : Option.none();
+  return match ? simpleImport(match[1]) : Option.none();
 }
 
 function phpImport(value: string) {
   const match = /^\s*use\s+([^;{,]+?)(?:\s+as\s+(\w+))?\s*;/i.exec(value);
   if (!match) return Option.none();
-  const module = match[1]!.trim();
+  const module = match[1].trim();
   return simpleImport(module, module.split('\\').at(-1), match[2]);
 }
 
 function bashImport(value: string) {
   const match = /^\s*(?:source|\.)\s+(["']?)([^\s"']+)\1/.exec(value);
-  return match ? simpleImport(match[2]!) : Option.none();
+  return match ? simpleImport(match[2]) : Option.none();
 }
 
 function relationForCapture(capture: string) {

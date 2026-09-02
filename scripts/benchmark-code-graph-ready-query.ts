@@ -190,7 +190,7 @@ export function parseReadyQueryBenchmarkArguments(args: readonly string[]): Read
   let quiet = false;
   let repository: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--home') home = required(args[++index], argument);
     else if (argument === '--output') output = required(args[++index], argument);
     else if (argument === '--preflight') preflight = true;
@@ -553,9 +553,9 @@ function timingSeries(
     const observations = results.map(result => {
       const matches = result.stages.filter(candidate => candidate.phase === phase && candidate.stage === stage);
       if (matches.length !== 1) throw new ScriptError(`Ready-query stage ${phase}/${stage} is incomplete.`);
-      return matches[0]!;
+      return matches[0];
     });
-    const disposition = observations[0]!.disposition;
+    const disposition = observations[0].disposition;
     if (observations.some(observation => observation.disposition !== disposition)) {
       throw new ScriptError(`Ready-query stage ${phase}/${stage} disposition changed within the run.`);
     }
@@ -568,10 +568,10 @@ function timingSeries(
   });
   const serviceMilliseconds = results.map(result => result.serviceMilliseconds);
   const attributed = results.map((_, index) =>
-    stages.reduce((sum, stage) => sum + stage.durationMilliseconds[index]!, 0),
+    stages.reduce((sum, stage) => sum + stage.durationMilliseconds[index], 0),
   );
   return {
-    endToEndMilliseconds: serviceMilliseconds.map((service, index) => service + queueLatencyMilliseconds[index]!),
+    endToEndMilliseconds: serviceMilliseconds.map((service, index) => service + queueLatencyMilliseconds[index]),
     freshness: kind === 'exact' ? 'current' : 'deferred',
     ...(kind === 'deferred' ? {intervalMilliseconds: READY_QUERY_FIXED_RATE_INTERVAL_MILLISECONDS} : {}),
     maxConcurrency: 1,
@@ -584,7 +584,7 @@ function timingSeries(
     stages,
     structuredResponseBytes: results.map(result => result.structuredResponseBytes),
     textResponseBytes: results.map(result => result.textResponseBytes),
-    unattributedMilliseconds: serviceMilliseconds.map((service, index) => Math.max(0, service - attributed[index]!)),
+    unattributedMilliseconds: serviceMilliseconds.map((service, index) => Math.max(0, service - attributed[index])),
     warmups: READY_QUERY_MINIMUM_WARMUPS,
   };
 }

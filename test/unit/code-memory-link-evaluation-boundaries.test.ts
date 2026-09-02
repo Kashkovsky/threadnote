@@ -65,7 +65,7 @@ describe('Code Memory Link evaluation boundaries', () => {
     const files = await assertCodeMemoryLinkRepositorySnapshot(snapshot);
     const artifacts = await collectCodeMemoryLinkPublicArtifacts(snapshot);
     expect(files.map(file => file.relativePath)).toEqual(['src/service.ts']);
-    expect(new TextDecoder().decode(files[0]!.bytes)).toContain('value = 1');
+    expect(new TextDecoder().decode(files[0].bytes)).toContain('value = 1');
     expect(artifacts).toHaveLength(1);
     expect(snapshot.repositorySnapshotHash).toMatch(/^[0-9a-f]{64}$/u);
     expect(await readFile(join(snapshot.root, 'src/service.ts'), 'utf8')).toContain('value = 1');

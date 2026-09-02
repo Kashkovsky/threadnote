@@ -4302,15 +4302,15 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
     });
   }
   const nodeDetail = yield* timedJsonEffect(
-    managerGraphNodeDetail(threadnoteHome, indexedView.id, queryResult.nodes[0]!.id, expectedSnapshot),
+    managerGraphNodeDetail(threadnoteHome, indexedView.id, queryResult.nodes[0].id, expectedSnapshot),
   );
   const renderGraph = [overviewCold.value, detailCold.value, queryResult].sort(
     (left, right) => right.nodes.length + right.edges.length - (left.nodes.length + left.edges.length),
-  )[0]!;
+  )[0];
   const layoutPreparationProxyMilliseconds: number[] = [];
   for (let index = 0; index < samples; index += 1) {
     const started = yield* Clock.currentTimeNanos;
-    const rendered = managerGraphClientRenderProxy(renderGraph as GraphVisualization);
+    const rendered = managerGraphClientRenderProxy(renderGraph);
     layoutPreparationProxyMilliseconds.push(
       Math.max(Number.EPSILON, Number((yield* Clock.currentTimeNanos) - started) / NANOSECONDS_PER_MILLISECOND),
     );
@@ -4351,7 +4351,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
         expectedSnapshot,
       ),
       signal ? {signal} : undefined,
-    ) as Promise<GraphQueryVisualization>;
+    );
   const awaitRequestPair = <A, B>(left: Promise<A>, right: Promise<B>, cancel: () => void) =>
     Effect.tryPromise({
       try: signal => {
@@ -4430,7 +4430,7 @@ const benchmarkManagerPerformanceMeasured = Effect.fn('benchmarkCodeGraph.manage
         yield* Deferred.await(releaseLateResponse);
         return graph;
       }),
-    ) as Promise<GraphQueryVisualization>;
+    );
   });
   yield* Deferred.await(lateQueryCompleted);
   const acceptedAfterLateResponse = staleResponseGate.request(requestInput, runManagerQuery);
@@ -4697,7 +4697,7 @@ function assertExternalQueryPositiveControl(
     expectedMatches: expectedNodes.length,
     result,
     returnedNodes: result.nodes.length,
-    stableNodeId: expectedNodes[0]!.id,
+    stableNodeId: expectedNodes[0].id,
   };
 }
 
@@ -5531,7 +5531,7 @@ export function parseCodeGraphBenchmarkArguments(args: readonly string[]): CodeG
   let failOnBudget = false;
   let vectors = false;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--embedding-contexts') {
       const value = integer(args[++index], argument, 1);
@@ -5836,7 +5836,7 @@ const prepareExternalCodeGraphFixture = Effect.fn('benchmarkCodeGraph.prepareExt
     }),
     publicRepository,
     publicRepositoryVerification,
-    queryText: externalControls[0]!.query,
+    queryText: externalControls[0].query,
     referenceHome,
     repository,
   } satisfies PreparedCodeGraphBenchmarkFixture;
@@ -5846,7 +5846,7 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
   const trimmed = remote.trim();
   const scp = /^git@github\.com:([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?$/.exec(trimmed);
   const [owner, repository] = scp
-    ? ([scp[1]!, scp[2]!] as const)
+    ? ([scp[1], scp[2]] as const)
     : (() => {
         let parsed: URL;
         try {
@@ -5870,7 +5870,7 @@ export function publicGitHubRepositoryEvidence(remote: string): PublicGitHubRepo
         }
         const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(parsed.pathname);
         if (!match) throw new ScriptError('External benchmark origin must be a public GitHub repository URL.');
-        return [match[1]!, match[2]!] as const;
+        return [match[1], match[2]] as const;
       })();
   const name = `${owner}/${repository}`;
   return {name, url: `https://github.com/${name}`};
@@ -6960,7 +6960,7 @@ export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtif
   if (values.length < 3) throw new ScriptError('Production ratchet generation requires at least three artifacts.');
   const artifacts = values.map(parseBenchmarkArtifactV1);
   for (const artifact of artifacts) assertProductionLargeEvidence(artifact);
-  const first = artifacts[0]!;
+  const first = artifacts[0];
   const names = productionRatchetMeasurements(first)
     .map(measurement => measurement.name)
     .sort();
@@ -6996,7 +6996,7 @@ export function createCodeGraphProductionRatchet(values: readonly BenchmarkArtif
       throw new ScriptError(`Production ratchet measurement ${name} is missing.`);
     }
     const complete = samples as readonly BenchmarkArtifactV1['measurements'][number][];
-    const unit = complete[0]!.unit;
+    const unit = complete[0].unit;
     if (complete.some(sample => sample.unit !== unit || sample.samples !== 1)) {
       throw new ScriptError(`Production ratchet measurement ${name} has inconsistent samples or units.`);
     }
@@ -7123,7 +7123,7 @@ function productionRatchetMetadata(artifact: BenchmarkArtifactV1): Readonly<Reco
   if (Object.values(selected).some(value => !['boolean', 'number', 'string'].includes(typeof value))) {
     throw new ScriptError('Production ratchet artifact metadata is incomplete.');
   }
-  return selected as Readonly<Record<string, BenchmarkRatchetPrimitive>>;
+  return selected;
 }
 
 function productionRatchetGenerationIdentity(artifact: BenchmarkArtifactV1): string {
@@ -7385,7 +7385,7 @@ export function enforceCodeGraphBenchmarkRatchet(
       failures.push(`${name} measurement occurs ${matches.length} times instead of exactly once`);
       continue;
     }
-    const measurement = matches[0]!;
+    const measurement = matches[0];
     if (measurement.unit !== limit.unit) {
       failures.push(`${name} unit ${measurement.unit} does not match ${limit.unit}`);
       continue;
@@ -7402,7 +7402,7 @@ export function enforceCodeGraphBenchmarkRatchet(
       );
       continue;
     }
-    const initialMeasurement = initialMatches[0]!;
+    const initialMeasurement = initialMatches[0];
     if (initialMeasurement.unit !== measurement.unit || initialMeasurement.samples !== measurement.samples) {
       failures.push(`initial candidate ${name} unit or sample count does not match the remeasured candidate`);
       continue;
@@ -7419,7 +7419,7 @@ export function enforceCodeGraphBenchmarkRatchet(
       failures.push(`paired control ${name} measurement occurs ${controlMatches.length} times instead of exactly once`);
       continue;
     }
-    const controlMeasurement = controlMatches[0]!;
+    const controlMeasurement = controlMatches[0];
     if (controlMeasurement.unit !== measurement.unit || controlMeasurement.samples !== measurement.samples) {
       failures.push(`paired control ${name} unit or sample count does not match both candidates`);
       continue;

@@ -277,7 +277,7 @@ describe('code graph checkpoint CLI', () => {
       });
 
       const corrupted = Uint8Array.from(originalBytes);
-      corrupted[corrupted.length - 1] = corrupted[corrupted.length - 1]! ^ 0xff;
+      corrupted[corrupted.length - 1] = corrupted[corrupted.length - 1] ^ 0xff;
       await writeFile(corruptedArtifact, corrupted);
       const corruptInspection = JSON.parse(
         (await runCli(['graph', 'checkpoint', 'inspect', '--input', corruptedArtifact, '--json'])).stdout,

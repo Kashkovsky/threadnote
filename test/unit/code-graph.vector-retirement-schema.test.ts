@@ -617,7 +617,7 @@ describe('code graph vector retirement schema', () => {
 
                 const markers = yield* Effect.sync(() => readRetirementRows(databasePath));
                 expect(markers, scenario.name).toHaveLength(1);
-                expect(Object.values(markers[0]!), scenario.name).toEqual(
+                expect(Object.values(markers[0]), scenario.name).toEqual(
                   expect.arrayContaining(['generation-old', 'snapshot-old', worktreeId]),
                 );
               }),
@@ -671,7 +671,7 @@ describe('code graph vector retirement schema', () => {
           );
           const markers = yield* Effect.sync(() => readRetirementRows(databasePath));
           expect(markers).toHaveLength(1);
-          expect(Object.values(markers[0]!)).toEqual(
+          expect(Object.values(markers[0])).toEqual(
             expect.arrayContaining(['generation-shared', 'snapshot-shared', lastWorktree]),
           );
         }),
@@ -741,7 +741,7 @@ describe('code graph vector retirement schema', () => {
           expect(after.pointers).toEqual([]);
           const markers = yield* Effect.sync(() => readRetirementRows(databasePath));
           expect(markers).toHaveLength(1);
-          expect(Object.values(markers[0]!)).toEqual(
+          expect(Object.values(markers[0])).toEqual(
             expect.arrayContaining(['generation-exact', 'snapshot-exact', worktreeId]),
           );
           expect(yield* Effect.sync(() => readPointerDeleteAuthority(databasePath))).toEqual({
@@ -1444,7 +1444,7 @@ describe('code graph vector retirement schema', () => {
                     expectedSnapshotId: 'snapshot-corrupt',
                     worktreeId,
                   });
-                  const epoch = retirementEpoch((yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!);
+                  const epoch = retirementEpoch((yield* Effect.sync(() => readRetirementRows(databasePath)))[0]);
                   yield* Effect.sync(() =>
                     corruptMarkedGeneration(databasePath, corruption.column, corruption.value, generation),
                   );
@@ -1523,7 +1523,7 @@ describe('code graph vector retirement schema', () => {
                   expectedSnapshotId: 'snapshot-live',
                   worktreeId,
                 });
-                const epoch = retirementEpoch((yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!);
+                const epoch = retirementEpoch((yield* Effect.sync(() => readRetirementRows(databasePath)))[0]);
                 yield* Effect.sync(() =>
                   withWritableDatabase(databasePath, database => {
                     scenario.apply(database);
@@ -1586,7 +1586,7 @@ describe('code graph vector retirement schema', () => {
             expectedSnapshotId: 'snapshot-reused',
             worktreeId,
           });
-          const firstMarker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!;
+          const firstMarker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0];
           const firstEpoch = retirementEpoch(firstMarker);
           const expectedFirstPageBytes = yield* Effect.sync(() =>
             readVectorRetirementPageBytes(databasePath, 'generation-reused', 1_000),
@@ -1616,7 +1616,7 @@ describe('code graph vector retirement schema', () => {
             },
             {capacityProtector: firstPageProtector},
           );
-          const progressedMarker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!;
+          const progressedMarker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0];
           const second = yield* retireCodeGraphVectorGenerationPage(
             databasePath,
             {
@@ -1672,7 +1672,7 @@ describe('code graph vector retirement schema', () => {
             expectedSnapshotId: 'snapshot-reused',
             worktreeId,
           });
-          const secondMarker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!;
+          const secondMarker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0];
           const secondEpoch = retirementEpoch(secondMarker);
           expect(secondEpoch).toBeGreaterThan(firstEpoch);
           const beforeStale = yield* Effect.sync(() => ({
@@ -1733,7 +1733,7 @@ describe('code graph vector retirement schema', () => {
             expectedSnapshotId: 'snapshot-bytes',
             worktreeId,
           });
-          const marker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0]!;
+          const marker = (yield* Effect.sync(() => readRetirementRows(databasePath)))[0];
           const epoch = retirementEpoch(marker);
           const before = yield* Effect.sync(() => readVectorPayload(databasePath, 'generation-bytes'));
 
@@ -2106,7 +2106,7 @@ function retirementEpoch(marker: Readonly<Record<string, unknown>>): number {
       /epoch|retirement.*id/i.test(key) && typeof value === 'number' && Number.isSafeInteger(value) && value > 0,
   );
   expect(candidates).toHaveLength(1);
-  return candidates[0]![1] as number;
+  return candidates[0][1] as number;
 }
 
 function withWritableDatabase<A>(databasePath: string, use: (database: Database) => A): A {
@@ -2142,7 +2142,7 @@ function beforeTransactionSqlClient(sql: SqlClient.SqlClient, before: () => void
       return <R, E, A>(transaction: Effect.Effect<A, E, R>) =>
         Effect.sync(before).pipe(Effect.andThen(target.withTransaction(transaction)));
     },
-  }) as SqlClient.SqlClient;
+  });
 }
 
 function expectPathFreeError(error: unknown, databasePath: string): void {

@@ -659,7 +659,7 @@ function spawnBunParserWorker(options: ParserWorkerSpawnOptions): ParserWorkerPr
     stderr: child.stderr as ReadableStream<Uint8Array>,
     stdout: child.stdout as ReadableStream<Uint8Array>,
     write: async line => {
-      input.write(line);
+      await input.write(line);
       await input.flush();
     },
   };

@@ -606,7 +606,7 @@ describe('hosted Windows native replica adjudication', () => {
   it('requires exact ordinals, distinct runner identities and digests, and matching provenance', () => {
     const valid = replicas();
     expect(adjudicate(valid.slice(0, 2)).gate.failures).toContain('replica ordinals must be exactly 1,2,3');
-    expect(adjudicate([valid[0]!, valid[0]!, valid[2]!]).gate.failures).toEqual(
+    expect(adjudicate([valid[0], valid[0], valid[2]]).gate.failures).toEqual(
       expect.arrayContaining([
         'artifact digests must be distinct across all replicas',
         'replica ordinals must be exactly 1,2,3',

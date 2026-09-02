@@ -1543,16 +1543,16 @@ function App(): React.ReactElement {
         {panel === 'shares' ? (
           <SharesPanel
             createShare={() =>
-              runAction('Created share', () =>
+              void runAction('Created share', () =>
                 api('/api/shares/init', {confirm: true, remoteUrl: shareRemote, team: shareTeam}),
               ).then(loadShares)
             }
             keepShareFiles={keepShareFiles}
-            loadShares={loadShares}
+            loadShares={() => void loadShares()}
             preserveShare={preserveShare}
             removeShare={() => void removeSelectedShare()}
             renameShare={() =>
-              runAction('Renamed share', () =>
+              void runAction('Renamed share', () =>
                 api('/api/shares/rename', {confirm: true, team: selectedShare, to: renameShareTo}),
               ).then(loadShares)
             }
@@ -1570,12 +1570,12 @@ function App(): React.ReactElement {
             shares={shares}
             shareTeam={shareTeam}
             setShareUrl={() =>
-              runAction('Updated share URL', () =>
+              void runAction('Updated share URL', () =>
                 api('/api/shares/set-url', {confirm: true, remoteUrl: shareNewUrl, team: selectedShare}),
               ).then(loadShares)
             }
             syncShare={() =>
-              runAction('Synced share', () => api('/api/shares/sync', {team: selectedShare})).then(loadShares)
+              void runAction('Synced share', () => api('/api/shares/sync', {team: selectedShare})).then(loadShares)
             }
           />
         ) : null}

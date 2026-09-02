@@ -1372,7 +1372,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
         const groupTransactionMilliseconds = (yield* Clock.currentTimeMillis) - transactionStartedAt;
         transactionMilliseconds += groupTransactionMilliseconds;
         for (let index = 0; index < group.length; index += 1) {
-          const batch = group[index]!;
+          const batch = group[index];
           const accountedTransactionMilliseconds = index === group.length - 1 ? groupTransactionMilliseconds : 0;
           materializedFiles += batch.fileCount;
           batchesCompleted += 1;
@@ -1529,7 +1529,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       }
       if (directPersistentMaterialization && materializedShardCacheBatchPlan.associate) {
         const selectedShardIds = materializedShardBatchComplete
-          ? materializedShards.materializedShardIdsByPath!
+          ? materializedShards.materializedShardIdsByPath
           : new Map(
               files.map(file => [
                 file.path,
@@ -1579,7 +1579,7 @@ export const buildAndActivate = Effect.fn('codeGraph.buildAndActivate')(function
       const filesByPath = new Map(files.map(file => [file.path, file]));
       for (let finalBatchIndex = 0; finalBatchIndex < finalBatches.length; finalBatchIndex += 1) {
         const rowPreparationStartedAt = performance.now();
-        const finalBatch = finalBatches[finalBatchIndex]!;
+        const finalBatch = finalBatches[finalBatchIndex];
         const finalFacts = finalBatch.map(value => value.facts);
         const batchFinalFactBytes = finalBatch.reduce((total, value) => total + value.bytes, 0);
         const batchFiles = finalFacts.map(fact => filesByPath.get(fact.path)!);

@@ -238,7 +238,7 @@ const selectReusableCleanBase = Effect.fn('codeGraph.selectReusableCleanBase')(f
           AND snapshot.state = 'ready'
           AND snapshot.dirty = 0
           AND snapshot.base_snapshot_id IS NULL
-          AND snapshot.commit_id = ${matches[0]!}
+          AND snapshot.commit_id = ${matches[0]}
           AND receipt.format_version = ${CODE_GRAPH_REUSABLE_BASE_RECEIPT_VERSION}
           AND receipt.resolution_surface_version = ${CODE_GRAPH_RESOLUTION_SURFACE_VERSION}
           AND receipt.workspace_fingerprint = ${workspaceFingerprint}
@@ -778,8 +778,8 @@ const selectReusableFoldForwardBase = Effect.fn('codeGraph.selectReusableFoldFor
     })),
     logicalSnapshot: snapshotFromRow(logicalRow),
     priorDeltaPaths: priorPaths.map(row => row.path),
-    priorStagedPayloadBytes: counts[2]!,
-    priorStagedRows: counts[1]!,
+    priorStagedPayloadBytes: counts[2],
+    priorStagedRows: counts[1],
     rootReceipt,
     rootSnapshot: snapshotFromRow(rootRow),
   } satisfies CodeGraphReusableFoldForwardBase;

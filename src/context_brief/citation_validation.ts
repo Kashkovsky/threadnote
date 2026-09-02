@@ -192,7 +192,7 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
         ).pipe(
           Effect.map(results => ({
             repositoryId,
-            tuples: tasks.map((task, index) => [task, results[index]!.receipt, results[index]!.cacheHit] as const),
+            tuples: tasks.map((task, index) => [task, results[index].receipt, results[index].cacheHit] as const),
           })),
           Effect.catch(() =>
             Effect.succeed({
@@ -220,9 +220,7 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
               ? statusAndValidate
               : Effect.succeed({
                   repositoryId,
-                  tuples: tasks.map(
-                    (task, index) => [task, results[index]!.receipt, results[index]!.cacheHit] as const,
-                  ),
+                  tuples: tasks.map((task, index) => [task, results[index].receipt, results[index].cacheHit] as const),
                 }),
           ),
           Effect.option,
@@ -260,7 +258,7 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
     resolution.worksetGeneration !== undefined &&
     !(yield* worksetGenerationIsStillPublished(config, resolution.worksetGeneration))
   ) {
-    return candidates.flatMap(candidate =>
+    const staleValidations: readonly ContextBriefMemoryCitationValidationV2[] = candidates.flatMap(candidate =>
       candidate.codeCitations.length === 0
         ? []
         : [
@@ -269,9 +267,10 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
               uri: candidate.uri,
             },
           ],
-    ) as readonly ContextBriefMemoryCitationValidationV2[];
+    );
+    return staleValidations;
   }
-  return candidates.flatMap(candidate => {
+  const validations: readonly ContextBriefMemoryCitationValidationV2[] = candidates.flatMap(candidate => {
     const receipts = receiptsByUri.get(candidate.uri);
     if (!receipts) return [];
     const byId = new Map(receipts.map(receipt => [receipt.citationId, receipt]));
@@ -285,7 +284,8 @@ export const validateContextBriefMemoryCitations = Effect.fn('contextBrief.valid
         uri: candidate.uri,
       },
     ];
-  }) as readonly ContextBriefMemoryCitationValidationV2[];
+  });
+  return validations;
 });
 
 const validatePublishedRepositoryTasks = Effect.fn('contextBrief.validatePublishedRepositoryCitationTasks')(function* (
@@ -539,7 +539,7 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
           },
           {concurrency: VALIDATION_CONCURRENCY},
         );
-        for (const [index, task] of uncachedTasks.entries()) computed.set(task, receipts[index]!);
+        for (const [index, task] of uncachedTasks.entries()) computed.set(task, receipts[index]);
       }
 
       const fenceCurrent = yield* repository.finalFence.pipe(Effect.catch(() => Effect.succeed(false)));
@@ -554,7 +554,7 @@ const validateRepositoryTasks = Effect.fn('contextBrief.validateRepositoryCitati
         const cachedReceipt = cached[index];
         if (cachedReceipt !== undefined) return {cacheHit: true, receipt: {...cachedReceipt, observedAt}};
         const computedReceipt = computed.get(task)!;
-        if (computedReceipt.reason !== 'validation-error') validationCacheSet(cacheKeys[index]!, computedReceipt);
+        if (computedReceipt.reason !== 'validation-error') validationCacheSet(cacheKeys[index], computedReceipt);
         return {cacheHit: false, receipt: computedReceipt};
       }) satisfies readonly ValidatedCitation[];
     }),
@@ -606,12 +606,12 @@ export function validateContextBriefFileCitation(
   }
   if (matches.length === 1) {
     return result(
-      matches[0]!.path === citation.path ? 'exact' : 'relocated',
-      matches[0]!.path === citation.path ? 'exact' : 'relocated',
+      matches[0].path === citation.path ? 'exact' : 'relocated',
+      matches[0].path === citation.path ? 'exact' : 'relocated',
       {
         candidateCount: 1,
         coverage: 'current-complete',
-        observedPath: matches[0]!.path,
+        observedPath: matches[0].path,
         strategy: 'content-hash',
       },
     );
@@ -705,7 +705,7 @@ export const validateContextBriefSymbolCitation = Effect.fn('contextBrief.valida
     symbol => symbol.path === citation.path && sameSpan(symbol.span, citation.target.span),
   );
   if (originalLocatorCandidates.length === 1) {
-    const original = yield* observe(originalLocatorCandidates[0]!);
+    const original = yield* observe(originalLocatorCandidates[0]);
     if (original === undefined) {
       return result('unknown', 'validation-error', {
         candidateCount: candidates.size,
@@ -761,7 +761,7 @@ export const validateContextBriefSymbolCitation = Effect.fn('contextBrief.valida
     });
   }
   if (matching.length === 1) {
-    const match = matching[0]!.symbol;
+    const match = matching[0].symbol;
     const exact =
       match.id === citation.target.nodeId && match.path === citation.path && sameSpan(match.span, citation.target.span);
     return result(
@@ -774,7 +774,7 @@ export const validateContextBriefSymbolCitation = Effect.fn('contextBrief.valida
     return result(
       'changed',
       'source-changed',
-      symbolObservation(observed[0]!.symbol, 1, 'current-complete', 'semantic-locator'),
+      symbolObservation(observed[0].symbol, 1, 'current-complete', 'semantic-locator'),
     );
   }
   if (exactFile?.contentHash === citation.fileContentHash.value) {
@@ -1052,7 +1052,7 @@ export function routeContextBriefWorksetValidation(
   for (const repositoryId of admittedRepositoryIds) {
     const routes = routedByRepository.get(repositoryId) ?? [];
     if (routes.length > 1) ambiguousRepositoryIds.add(repositoryId);
-    else if (routes.length === 1) members.push(routes[0]!);
+    else if (routes.length === 1) members.push(routes[0]);
   }
   return {
     ambiguousRepositoryIds,

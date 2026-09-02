@@ -34,7 +34,7 @@ export function codeGraphInventorySha256Hex<A extends {readonly path: string}>(
 function codeGraphInventoryInStrictCanonicalOrder(files: readonly {readonly path: string}[]): boolean {
   if (files[0]?.path.includes('\0')) return false;
   for (let index = 1; index < files.length; index += 1) {
-    if (files[index]!.path.includes('\0') || compareCodeUnits(files[index - 1]!.path, files[index]!.path) >= 0) {
+    if (files[index].path.includes('\0') || compareCodeUnits(files[index - 1].path, files[index].path) >= 0) {
       return false;
     }
   }

@@ -103,7 +103,7 @@ export function codeGraphGitIndexSemanticSha256(
     // required extensions; split and sparse indexes change entry
     // interpretation. Invalid or required formats deliberately ask Git for
     // the canonical view instead of guessing.
-    if (signature[0]! < 0x41 || signature[0]! > 0x5a) return undefined;
+    if (signature[0] < 0x41 || signature[0] > 0x5a) return undefined;
     offset = extensionEnd;
   }
   if (offset !== contentEnd) return undefined;
@@ -123,7 +123,7 @@ function decodeGitIndexVariableWidthInteger(
 ): {readonly nextOffset: number; readonly value: number} | undefined {
   let offset = start;
   if (offset >= end) return undefined;
-  let byte = bytes[offset++]!;
+  let byte = bytes[offset++];
   let value = byte & 0x7f;
   while ((byte & 0x80) !== 0) {
     if (offset >= end || value > Math.floor(Number.MAX_SAFE_INTEGER / 128) - 1) return undefined;

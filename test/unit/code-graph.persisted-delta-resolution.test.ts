@@ -212,7 +212,7 @@ function persistedDeltaFixture(root: string, noiseSymbolCount: number) {
     edgeId: edge.id,
     evidencePath: edge.evidencePath,
     evidenceSpan: edge.evidenceSpan,
-    lookupTiers: [[target.lookupKeys![0]!]],
+    lookupTiers: [[target.lookupKeys![0]]],
     provenance: edge.provenance,
     relation: edge.relation,
     resolutionDomain: 'typescript',

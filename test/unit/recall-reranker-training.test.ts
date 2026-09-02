@@ -53,11 +53,11 @@ describe('recall reranker training dataset v1', () => {
     const dataset = createRecallRerankerSmokeDatasetV1();
     const train = dataset.groups.find(group => group.split === 'train')!;
     const testIndex = dataset.groups.findIndex(group => group.split === 'test');
-    const test = dataset.groups[testIndex]!;
+    const test = dataset.groups[testIndex];
     const partitionLeak = replaceGroup(dataset.groups, testIndex, {...test, partitionKey: train.partitionKey});
     const documentLeak = replaceGroup(dataset.groups, testIndex, {
       ...test,
-      candidates: [{...test.candidates[0]!, text: train.candidates[0]!.text}, ...test.candidates.slice(1)],
+      candidates: [{...test.candidates[0], text: train.candidates[0].text}, ...test.candidates.slice(1)],
     });
 
     expect(() => rebuild(dataset, partitionLeak)).toThrow(/partition key leaks across/);
@@ -66,7 +66,7 @@ describe('recall reranker training dataset v1', () => {
 
   it('rejects credentials, local paths, and opt-in sources without consent', () => {
     const dataset = createRecallRerankerSmokeDatasetV1();
-    const first = dataset.groups[0]!;
+    const first = dataset.groups[0];
     const credentialGroups = replaceGroup(dataset.groups, 0, {
       ...first,
       query: 'Find token sk-1234567890abcdef1234567890',
@@ -75,7 +75,7 @@ describe('recall reranker training dataset v1', () => {
       ...first,
       query: 'Inspect C:\\Users\\someone\\private\\notes.md',
     });
-    const source = dataset.manifest.sources[0]!;
+    const source = dataset.manifest.sources[0];
 
     expect(() => rebuild(dataset, credentialGroups)).toThrow(/sensitive data/);
     expect(() => rebuild(dataset, pathGroups)).toThrow(/contains sensitive data \(Windows absolute path\)/);
@@ -95,10 +95,10 @@ describe('recall reranker training dataset v1', () => {
 
   it('requires every labeled candidate, including negatives, to be reviewed', () => {
     const dataset = createRecallRerankerSmokeDatasetV1();
-    const group = dataset.groups[0]!;
+    const group = dataset.groups[0];
     const negativeIndex = group.candidates.findIndex(candidate => candidate.relevance === 0);
     const candidates = [...group.candidates];
-    candidates[negativeIndex] = {...candidates[negativeIndex]!, reviewed: false};
+    candidates[negativeIndex] = {...candidates[negativeIndex], reviewed: false};
     const groups = replaceGroup(dataset.groups, 0, {...group, candidates});
 
     expect(() => rebuild(dataset, groups)).toThrow(/candidate .* must be reviewed/);
@@ -141,15 +141,15 @@ describe('recall reranker training dataset v1', () => {
       .trim()
       .split('\n')
       .map(line => JSON.parse(line) as RecallRerankerQueryGroupV1);
-    const candidate = groups[0]!.candidates[1]!;
+    const candidate = groups[0].candidates[1];
     groups[0] = {
-      ...groups[0]!,
-      candidates: [groups[0]!.candidates[0]!, {...candidate, reviewed: false}, ...groups[0]!.candidates.slice(2)],
+      ...groups[0],
+      candidates: [groups[0].candidates[0], {...candidate, reviewed: false}, ...groups[0].candidates.slice(2)],
     };
     const unreviewed = `${groups.map(group => JSON.stringify(group)).join('\n')}\n`;
     expect(() => prepareReviewedRecallRerankerDatasetV1(draft, unreviewed)).toThrow(/must be reviewed/);
 
-    const source = (draft.sources as readonly Record<string, unknown>[])[0]!;
+    const source = (draft.sources as readonly Record<string, unknown>[])[0];
     const unapproved = {...draft, sources: [{...source, trainingApproved: false}]};
     expect(() => prepareReviewedRecallRerankerDatasetV1(unapproved, groupContent)).toThrow(/not approved for training/);
   });
@@ -160,7 +160,7 @@ describe('recall reranker training dataset v1', () => {
     ({weights}) => {
       const groups = createRecallRerankerSmokeDatasetV1().groups;
       const shuffled = groups
-        .map((group, index) => ({group, index, weight: weights[index]!}))
+        .map((group, index) => ({group, index, weight: weights[index]}))
         .sort((left, right) => left.weight - right.weight || right.index - left.index)
         .map(entry => entry.group);
 
@@ -175,8 +175,8 @@ describe('recall reranker training dataset v1', () => {
     ({candidateIndex}) => {
       const dataset = createRecallRerankerSmokeDatasetV1();
       const groupIndex = dataset.groups.findIndex(group => group.answerability === 'no_answer');
-      const group = dataset.groups[groupIndex]!;
-      const candidate = group.candidates[candidateIndex]!;
+      const group = dataset.groups[groupIndex];
+      const candidate = group.candidates[candidateIndex];
       const candidates = [...group.candidates];
       candidates[candidateIndex] = {...candidate, negativeKind: undefined, relevance: 1};
       const invalid = replaceGroup(dataset.groups, groupIndex, {...group, candidates});

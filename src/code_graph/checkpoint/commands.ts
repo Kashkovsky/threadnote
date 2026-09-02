@@ -211,7 +211,7 @@ export const runCodeGraphCheckpointExport = Effect.fn('codeGraph.checkpoint.expo
           }),
       });
       if (encoder === undefined) return yield* checkpointFailure('Checkpoint projection did not emit metadata.');
-      const finishedEncoder = encoder as CodeGraphCheckpointStreamEncoderV1;
+      const finishedEncoder = encoder;
       const finalChunks: Uint8Array[] = [];
       const prepared = yield* attemptCheckpoint(() => finishedEncoder.finish(chunk => finalChunks.push(chunk.bytes)));
       if (finalChunks.length > 1) return yield* checkpointFailure('Checkpoint encoder emitted an invalid final spool.');

@@ -78,8 +78,8 @@ describe('Code Memory Link real-agent protocol', () => {
       }),
     ).not.toThrow();
 
-    const tampered = structuredClone(corpus.suite) as CodeMemoryLinkSealedSuiteV1;
-    (tampered.tasks as unknown as {packetHash: string}[])[0]!.packetHash = HASH_A;
+    const tampered = structuredClone(corpus.suite);
+    (tampered.tasks as unknown as {packetHash: string}[])[0].packetHash = HASH_A;
     expect(() => parseCodeMemoryLinkSealedSuiteV1(tampered)).toThrow(/suite hash/u);
     expect(() => parseCodeMemoryLinkSealedSuiteV1({...corpus.suite, unexpected: true})).toThrow(
       /unsupported or missing fields/u,
@@ -126,14 +126,14 @@ describe('Code Memory Link real-agent protocol', () => {
     const [text, json] = structuredClone(passingStaticArtifacts());
     expect(() =>
       evaluateCodeMemoryLinkStaticArtifactsV1({
-        artifacts: [{...text!, sha256: HASH_A}, json!],
+        artifacts: [{...text, sha256: HASH_A}, json],
         qualifyingActionItemId: ACTION_ITEM_ID,
         rubric,
       }),
     ).toThrow(/content hash/u);
     expect(() =>
       evaluateCodeMemoryLinkStaticArtifactsV1({
-        artifacts: [{...text!, path: '/private/result.txt'}, json!],
+        artifacts: [{...text, path: '/private/result.txt'}, json],
         qualifyingActionItemId: ACTION_ITEM_ID,
         rubric,
       }),
@@ -366,7 +366,7 @@ describe('Code Memory Link real-agent protocol', () => {
       checkpoint => checkpoint.method === 'item/started' && checkpoint.itemType === 'commandExecution',
     );
     const [actionStart] = reordered.splice(actionStartIndex, 1);
-    reordered.splice(callIndex + 1, 0, actionStart!);
+    reordered.splice(callIndex + 1, 0, actionStart);
     reordered.forEach((checkpoint, index) => {
       checkpoint.ordinal = index + 1;
     });
@@ -375,7 +375,7 @@ describe('Code Memory Link real-agent protocol', () => {
     ).toThrow(/immediately followed/u);
 
     const nonmonotone = structuredClone(evidence.checkpoints) as unknown as Array<Record<string, unknown>>;
-    const secondUsage = nonmonotone.filter(checkpoint => checkpoint.method === 'thread/tokenUsage/updated')[1]!;
+    const secondUsage = nonmonotone.filter(checkpoint => checkpoint.method === 'thread/tokenUsage/updated')[1];
     secondUsage.total = {
       cachedInputTokens: 0,
       inputTokens: 0,
@@ -418,7 +418,7 @@ describe('Code Memory Link real-agent protocol', () => {
 
     const unrelated = traceEvents([100, 200, 300, 400]);
     const unrelatedDirect = contextBriefResult(unrelated).durableDecisions as Array<Record<string, unknown>>;
-    unrelatedDirect[0]!.citationReceipts = [{citationId: `tncc_${'2'.repeat(40)}`, reason: 'exact', status: 'exact'}];
+    unrelatedDirect[0].citationReceipts = [{citationId: `tncc_${'2'.repeat(40)}`, reason: 'exact', status: 'exact'}];
     sealContextBriefResult(unrelated);
     expect(projectTrace(unrelated, rubric, passingStaticArtifacts()).firstUsefulMemoryUse).toEqual({
       steps: 2,
@@ -427,11 +427,11 @@ describe('Code Memory Link real-agent protocol', () => {
 
     const inconsistent = traceEvents([100, 200, 300, 400]);
     const direct = contextBriefResult(inconsistent).durableDecisions as Array<Record<string, unknown>>;
-    direct[0]!.citationReceipts = [{citationId: GOLD_CITATION_ID, reason: 'changed', status: 'changed'}];
+    direct[0].citationReceipts = [{citationId: GOLD_CITATION_ID, reason: 'changed', status: 'changed'}];
     expect(() => projectTrace(inconsistent, rubric, passingStaticArtifacts())).toThrow(/inconsistent/u);
 
     const conflictingRelations = contextBriefStructuredContent();
-    const conflictingMemory = (conflictingRelations.durableDecisions as Array<Record<string, unknown>>)[0]!;
+    const conflictingMemory = (conflictingRelations.durableDecisions as Array<Record<string, unknown>>)[0];
     conflictingMemory.codeRelations = [
       {anchorOrdinal: 0, citationId: GOLD_CITATION_ID, kind: 'file', status: 'exact'},
       {anchorOrdinal: 1, citationId: GOLD_CITATION_ID, kind: 'file', status: 'changed'},
@@ -444,7 +444,7 @@ describe('Code Memory Link real-agent protocol', () => {
       const structured = contextBriefStructuredContent();
       structured.version = version;
       (structured.output as Record<string, unknown>).projectorVersion = version;
-      const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0]!;
+      const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0];
       memory.excerpt = `Unicode evidence survives: Łódź → 東京 (${version}).`;
       if (version === 2) {
         delete memory.codeRelations;
@@ -468,7 +468,7 @@ describe('Code Memory Link real-agent protocol', () => {
       CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1.structuredContent,
     );
     expect(empty.content).toHaveLength(1);
-    expect(JSON.parse(empty.content[0]!.text)).toEqual(empty.structuredContent);
+    expect(JSON.parse(empty.content[0].text)).toEqual(empty.structuredContent);
   });
 
   it('treats MCP content object-key order as insignificant while preserving exact content', () => {
@@ -477,7 +477,7 @@ describe('Code Memory Link real-agent protocol', () => {
         const events = traceEvents([100, 200, 300, 400]);
         const item = eventItem(events, 'item/completed', 'item-memory');
         const canonical = canonicalizeCodeMemoryLinkContextBriefResultV1(contextBriefStructuredContent());
-        const block = canonical.content[0]!;
+        const block = canonical.content[0];
         item.result = {
           ...contextBriefResultPayload(canonical.structuredContent),
           content: [textFirst ? {text: block.text, type: block.type} : {type: block.type, text: block.text}],
@@ -516,7 +516,7 @@ describe('Code Memory Link real-agent protocol', () => {
         fc.array(receiptStatus, {maxLength: 8}),
         (relationStatus, sameCitationStatuses, unrelatedStatuses, relationStatuses, handoffStatuses) => {
           const structured = contextBriefStructuredContent();
-          const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0]!;
+          const memory = (structured.durableDecisions as Array<Record<string, unknown>>)[0];
           memory.codeRelations = [
             {anchorOrdinal: 0, citationId: GOLD_CITATION_ID, kind: 'file', status: relationStatus},
             ...relationStatuses.map((status, index) => ({
@@ -587,7 +587,7 @@ describe('Code Memory Link real-agent protocol', () => {
     [
       'nonmonotone usage',
       (events: unknown[]) => {
-        events[usageIndexes(events)[1]!] = usageEvent(90);
+        events[usageIndexes(events)[1]] = usageEvent(90);
       },
     ],
     [
@@ -925,7 +925,7 @@ function hiddenRubric(): CodeMemoryLinkRubricV1 {
   return {
     ...withoutHash,
     rubricHash: codeMemoryLinkRubricHashV1(withoutHash),
-  } as CodeMemoryLinkRubricV1;
+  };
 }
 
 function suiteCorpus(): {
@@ -944,7 +944,7 @@ function suiteCorpus(): {
     suiteId: `sui_${'1'.repeat(16)}`,
     tasks: packets.map((packet, index) => ({
       packetHash: packet.packetHash,
-      rubricHash: rubrics[index]!.rubricHash,
+      rubricHash: rubrics[index].rubricHash,
       taskId: packet.taskId,
       taskKind: packet.taskKind,
     })),
@@ -1024,16 +1024,16 @@ function traceEvents(totals: readonly number[]): unknown[] {
     notification('turn/started', {threadId: THREAD_ID, turn: {id: TURN_ID, status: 'inProgress'}}),
     itemStarted('item-reasoning', 'reasoning'),
     itemCompleted('item-reasoning', 'reasoning'),
-    usageEvent(totals[0]!),
+    usageEvent(totals[0]),
     itemStarted('item-memory', 'mcpToolCall'),
     itemCompleted('item-memory', 'mcpToolCall'),
-    usageEvent(totals[1]!),
+    usageEvent(totals[1]),
     itemStarted(ACTION_ITEM_ID, 'commandExecution'),
     itemCompleted(ACTION_ITEM_ID, 'commandExecution'),
-    usageEvent(totals[2]!),
+    usageEvent(totals[2]),
     itemStarted('item-final', 'agentMessage'),
     itemCompleted('item-final', 'agentMessage'),
-    usageEvent(totals[3]!),
+    usageEvent(totals[3]),
     turnCompleted(),
   ];
 }

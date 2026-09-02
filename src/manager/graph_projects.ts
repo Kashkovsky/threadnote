@@ -188,7 +188,7 @@ const readManagerGraphManifestCatalog = Effect.fn('managerGraphProjects.readMani
   return {
     projects: observed.map((display, index) => ({
       display: {folder: display.folder, name: display.name, path: display.path},
-      manifest: manifest.projects[index]!,
+      manifest: manifest.projects[index],
     })),
     revision: sha256HexSync(raw),
   } satisfies ManagerGraphManifestCatalog;

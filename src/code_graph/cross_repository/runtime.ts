@@ -428,7 +428,7 @@ function readLocalAdjacencyPage(
       );
       const selected: Array<{readonly edge: CodeGraphCrossRepositoryLocalEdgeV1; readonly rawIndex: number}> = [];
       for (let index = offset; index < rows.length && selected.length < limit; index += 1) {
-        const edge = localTraversalEdge(member.published, rows[index]!, nodeId, direction);
+        const edge = localTraversalEdge(member.published, rows[index], nodeId, direction);
         if (edge !== undefined) selected.push({edge, rawIndex: index});
       }
       const lastRawIndex = selected.at(-1)?.rawIndex;
@@ -542,7 +542,7 @@ function resolveTraversalEndpoint(config: RuntimeConfig, runtime: PreparedRuntim
           'A component selector in a multi-repository workset must use <repository>:<cgp_...>.',
         );
       }
-      return traversalEndpoint(runtime.published.members[0]!, {componentId: normalized, kind: 'component'});
+      return traversalEndpoint(runtime.published.members[0], {componentId: normalized, kind: 'component'});
     }
     const marker = normalized.lastIndexOf(':cgp_');
     if (marker > 0) {

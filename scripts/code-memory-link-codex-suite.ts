@@ -199,7 +199,7 @@ export async function loadCodeMemoryLinkCodexSuiteTask(input: {
   const requestedTaskId = matching(input.taskId, TASK_ID, 'requested task id');
   const selectedIndex = layout.tasks.findIndex(task => task.taskId === requestedTaskId);
   if (selectedIndex < 0) throw new Error('The requested task is outside the sealed suite roster.');
-  const selected = parsedTasks[selectedIndex]!;
+  const selected = parsedTasks[selectedIndex];
   const commandArtifact = artifactByLoadedId(judgeFiles, layout.judge.commandArtifactId, 'judge command');
   const command = parseCodeMemoryLinkCodexJudgeCommandV1(parseJson(commandArtifact.bytes, 'judge command'));
   const programArtifact = artifactByLoadedId(judgeFiles, command.programArtifactId, 'judge program');
@@ -209,9 +209,7 @@ export async function loadCodeMemoryLinkCodexSuiteTask(input: {
   ) {
     throw new Error('The static judge program must be a distinct reviewed artifact.');
   }
-  const selectedFixtureFiles = fixtureFiles.filter(
-    (_, index) => layout.fixtureFiles[index]!.taskId === requestedTaskId,
-  );
+  const selectedFixtureFiles = fixtureFiles.filter((_, index) => layout.fixtureFiles[index].taskId === requestedTaskId);
   const selectedRepositoryFiles = selectedFixtureFiles.filter(
     file => layout.fixtureFiles.find(mapped => mapped.artifactId === file.artifactId)!.scope === 'repository',
   );
@@ -368,7 +366,7 @@ function assertTaskRoster(layout: CodeMemoryLinkCodexSuiteLayoutV1, suite: CodeM
   if (layout.tasks.length !== suite.tasks.length)
     throw new Error('Suite layout must map every sealed task exactly once.');
   for (let index = 0; index < suite.tasks.length; index += 1) {
-    const expected = suite.tasks[index]!;
+    const expected = suite.tasks[index];
     const actual = layout.tasks[index];
     if (
       !actual ||
@@ -387,7 +385,7 @@ function assertArtifactCoverage(
   descriptors: readonly CodeMemoryLinkArtifactV1[],
   label: string,
 ) {
-  if (ids.length !== descriptors.length || ids.some((id, index) => id !== descriptors[index]!.artifactId)) {
+  if (ids.length !== descriptors.length || ids.some((id, index) => id !== descriptors[index].artifactId)) {
     throw new Error(`Suite layout must map the canonical ${label} artifact roster exactly once and in order.`);
   }
 }
@@ -514,7 +512,7 @@ function codeRefs(value: unknown): readonly string[] {
 function sortedHashes(value: unknown, label: string, maximum: number): readonly string[] {
   if (!Array.isArray(value) || value.length > maximum) invalid(`${label} is invalid`);
   const parsed = value.map((entry, index) => matching(entry, HASH, `${label}[${index}]`));
-  if (parsed.some((entry, index) => index > 0 && parsed[index - 1]! >= entry)) {
+  if (parsed.some((entry, index) => index > 0 && parsed[index - 1] >= entry)) {
     invalid(`${label} must be unique and sorted`);
   }
   return parsed;
@@ -555,9 +553,9 @@ function selectedMemories(
     parsed.some(
       (entry, index) =>
         index > 0 &&
-        (parsed[index - 1]!.memoryIdDigest > entry.memoryIdDigest ||
-          (parsed[index - 1]!.memoryIdDigest === entry.memoryIdDigest &&
-            parsed[index - 1]!.contentSha256 >= entry.contentSha256)),
+        (parsed[index - 1].memoryIdDigest > entry.memoryIdDigest ||
+          (parsed[index - 1].memoryIdDigest === entry.memoryIdDigest &&
+            parsed[index - 1].contentSha256 >= entry.contentSha256)),
     )
   ) {
     invalid(`${label} must be unique and sorted`);

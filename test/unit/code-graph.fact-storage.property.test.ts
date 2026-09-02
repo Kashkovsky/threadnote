@@ -190,22 +190,22 @@ describe('compact code graph fact storage', () => {
         const references = candidate.references as Array<Record<string, unknown>>;
         switch (mutation) {
           case 0:
-            symbols[0]!.unexpected = true;
+            symbols[0].unexpected = true;
             break;
           case 1:
-            symbols[0]!.span = {...(symbols[0]!.span as object), line: 0};
+            symbols[0].span = {...(symbols[0].span as object), line: 0};
             break;
           case 2:
-            edges[0]!.confidence = 2;
+            edges[0].confidence = 2;
             break;
           case 3:
-            edges[0]!.relation = 'future-relation';
+            edges[0].relation = 'future-relation';
             break;
           case 4:
-            references[0]!.lookupTiers = [['valid'], [1]];
+            references[0].lookupTiers = [['valid'], [1]];
             break;
           case 5:
-            references[0]!.evidencePath = '../escape.ts';
+            references[0].evidencePath = '../escape.ts';
             break;
           case 6:
             candidate.derivationInputs = {rationale: [{documentation: '', line: -1, marker: 'why', name: 'x'}]};

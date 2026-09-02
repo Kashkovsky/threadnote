@@ -1247,7 +1247,7 @@ describe('code graph query budgets', () => {
       );
 
       expect(baseFrontierSizes).toEqual(Array.from({length: 8}, () => 500));
-      expect(new Set(baseFrontiers[0]!.slice(0, 200).map(id => Number(id.split('-')[1]))).size).toBe(200);
+      expect(new Set(baseFrontiers[0].slice(0, 200).map(id => Number(id.split('-')[1]))).size).toBe(200);
       expect(result.nodes).toHaveLength(200);
       expect(result.nodes.map(node => node.id)).toContain('current-199');
       expect(result.warnings.some(warning => warning.includes('recovered 200 deleted path(s)'))).toBe(true);

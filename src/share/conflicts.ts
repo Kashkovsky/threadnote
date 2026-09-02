@@ -161,7 +161,7 @@ export const resolveShareConflict = Effect.fn('share.resolveShareConflict')(func
   if (rawTake !== undefined && rawTake !== 'shared' && rawTake !== 'local') {
     throw new ShareOperationError(`Unsupported --take value "${rawTake}". Expected "shared" or "local".`);
   }
-  const take = rawTake as ShareConflictTake | undefined;
+  const take = rawTake;
   if ((take ? 1 : 0) + (fromFile ? 1 : 0) + (mergedContent !== undefined ? 1 : 0) !== 1) {
     throw new ShareOperationError(
       'Choose exactly one resolution: --take shared, --take local, --from-file <path>, or mergedContent via MCP.',

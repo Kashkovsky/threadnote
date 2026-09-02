@@ -266,7 +266,7 @@ function performanceProfile(
       citationsCaptured: shape.citations,
       citationsValidated: shape.citations,
       coldBuilds: 0,
-      contextBriefMilliseconds: contextBriefMilliseconds[index]!,
+      contextBriefMilliseconds: contextBriefMilliseconds[index],
       databaseStatements: shape.citations * 2,
       estimatedTokens: 1_200 + index * 50,
       maintenanceOperations: 0,

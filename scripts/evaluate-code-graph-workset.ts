@@ -56,7 +56,7 @@ export function parseCodeGraphWorksetEvaluationArguments(
   let requestedSizes: readonly CodeGraphWorksetFixtureSize[] | undefined;
   let smoke = false;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--created-at') createdAt = parseCreatedAt(required(args[++index], argument), argument);
     else if (argument === '--output') outputPath = required(args[++index], argument);
     else if (argument === '--sizes') requestedSizes = parseEvaluationSizes(required(args[++index], argument));

@@ -353,7 +353,7 @@ export function parseContextBriefAgentViewText(text: string): ContextBriefAgentV
     throw invalid('agent view is missing required version, mode, scope, or trust fields');
   }
   assertAgentViewKeys(value.scope, ['freshness', 'readyRepositories', 'requestedRepositories'], 'scope');
-  if ((value.scope.readyRepositories as number) > (value.scope.requestedRepositories as number)) {
+  if (value.scope.readyRepositories > value.scope.requestedRepositories) {
     throw invalid('scope readyRepositories cannot exceed requestedRepositories');
   }
   for (const field of [
@@ -991,7 +991,7 @@ function requiredCodeLinkedEvidenceCore(
     const component = [seed];
     const componentKeys = new Set(seed.items.map(projectionItemKey));
     for (let index = 0; index < pendingGroups.length;) {
-      const group = pendingGroups[index]!;
+      const group = pendingGroups[index];
       if (!group.items.some(item => componentKeys.has(projectionItemKey(item)))) {
         index += 1;
         continue;

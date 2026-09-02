@@ -533,12 +533,12 @@ describe('code graph maintenance lanes', () => {
               if (index === activeLimit) {
                 if (!(yield* Ref.get(capacityOpened))) return completed();
                 yield* Deferred.succeed(admittedAfterCapacity, undefined);
-                yield* Deferred.await(releases[index]!);
+                yield* Deferred.await(releases[index]);
                 return completed();
               }
               const count = yield* Ref.updateAndGet(started, current => current + 1);
               if (count === activeLimit) yield* Deferred.succeed(startedAll, undefined);
-              yield* Deferred.await(releases[index]!);
+              yield* Deferred.await(releases[index]);
               return completed();
             });
         const run = yield* makeCodeGraphMaintenanceLaneRunner({
@@ -550,14 +550,14 @@ describe('code graph maintenance lanes', () => {
         const owners = yield* Effect.forEach(inputs.slice(0, activeLimit), input => run(input).pipe(Effect.forkChild));
         yield* Deferred.await(startedAll);
 
-        expect(yield* run(inputs[activeLimit]!)).toMatchObject({state: 'deferred'});
+        expect(yield* run(inputs[activeLimit])).toMatchObject({state: 'deferred'});
 
-        yield* Deferred.succeed(releases[0]!, undefined);
-        yield* Fiber.join(owners[0]!);
-        yield* run(inputs[0]!);
-        yield* run(inputs[0]!);
+        yield* Deferred.succeed(releases[0], undefined);
+        yield* Fiber.join(owners[0]);
+        yield* run(inputs[0]);
+        yield* run(inputs[0]);
         yield* Ref.set(capacityOpened, true);
-        const admitted = yield* run(inputs[activeLimit]!).pipe(Effect.forkChild);
+        const admitted = yield* run(inputs[activeLimit]).pipe(Effect.forkChild);
         yield* Deferred.await(admittedAfterCapacity);
 
         yield* Effect.forEach(releases, release => Deferred.succeed(release, undefined));
@@ -626,7 +626,7 @@ describe('code graph maintenance lanes', () => {
         const expected = homes.map(home => {
           const visit = visits.get(home) ?? 0;
           visits.set(home, visit + 1);
-          const lane = CODE_GRAPH_MAINTENANCE_LANES[visit % CODE_GRAPH_MAINTENANCE_LANES.length]!;
+          const lane = CODE_GRAPH_MAINTENANCE_LANES[visit % CODE_GRAPH_MAINTENANCE_LANES.length];
           return `${home}:${lane}`;
         });
         expect(yield* Ref.get(observed)).toEqual(expected);

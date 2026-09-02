@@ -128,7 +128,7 @@ describe('Code Memory Link sealed preparation', () => {
   });
 
   it('validates lifecycle destinations by parsed topic rather than file order', () => {
-    const base = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0]!;
+    const base = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0];
     const memorySeeds = (['active', 'archived', 'superseded'] as const).map((status, index) => ({
       citationPath: null,
       foreignRepository: false,
@@ -153,7 +153,7 @@ describe('Code Memory Link sealed preparation', () => {
         },
         seed.text,
       );
-    const files = [memorySeeds[2]!, memorySeeds[0]!, memorySeeds[1]!].map(seed => ({
+    const files = [memorySeeds[2], memorySeeds[0], memorySeeds[1]].map(seed => ({
       content: contentFor(seed),
       destination: `${codeMemoryLinkAgentPreparedMemoryDirectory(seed.status)}/${seed.topic}.md`,
     }));
@@ -189,7 +189,7 @@ describe('Code Memory Link sealed preparation', () => {
     const archivedFile = files.find(file => file.content.includes('topic: lifecycle-archived-1'))!;
     expect(() =>
       validateCodeMemoryLinkPreparedMemories(
-        files.map(file => (file === archivedFile ? {...file, content: contentFor(memorySeeds[1]!, 'active')} : file)),
+        files.map(file => (file === archivedFile ? {...file, content: contentFor(memorySeeds[1], 'active')} : file)),
         definition,
         graph,
         null,
@@ -201,7 +201,7 @@ describe('Code Memory Link sealed preparation', () => {
     const definition = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks.find(
       task => task.controlScenario === 'malformed-citation',
     )!;
-    const seed = definition.memorySeeds[0]!;
+    const seed = definition.memorySeeds[0];
     const canonical = formatMemoryDocument(
       'MEMORY',
       {
@@ -274,7 +274,7 @@ describe('Code Memory Link sealed preparation', () => {
       preciseStatus: 'exact',
       rank: 0,
       selectionBasis: 'code-citation',
-      uri: `threadnote://user/code-memory-link/memories/durable/projects/code-memory-link-gate/${definition.memorySeeds[0]!.topic}.md`,
+      uri: `threadnote://user/code-memory-link/memories/durable/projects/code-memory-link-gate/${definition.memorySeeds[0].topic}.md`,
       ...overrides,
     });
     const assertDirect = (memories: readonly Record<string, unknown>[]) =>
@@ -287,7 +287,7 @@ describe('Code Memory Link sealed preparation', () => {
 
     expect(new TextEncoder().encode(compactExcerpt)).toHaveLength(96);
     expect(() => assertDirect([directMemory()])).not.toThrow();
-    expect(() => assertDirect([directMemory({excerpt: definition.memorySeeds[0]!.text})])).not.toThrow();
+    expect(() => assertDirect([directMemory({excerpt: definition.memorySeeds[0].text})])).not.toThrow();
     expect(() =>
       assertDirect([
         directMemory({
@@ -321,7 +321,7 @@ describe('Code Memory Link sealed preparation', () => {
     const base = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks.find(
       task => task.slug === 'control-superseded-mica',
     )!;
-    const seed = base.memorySeeds[0]!;
+    const seed = base.memorySeeds[0];
     const fixtureSource = base.initialFiles.find(file => file.path === seed.citationPath)!.content;
     const prepared = (
       sourceContent: string,

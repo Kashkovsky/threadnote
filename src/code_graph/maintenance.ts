@@ -260,7 +260,7 @@ export const codeGraphDoctorCheck = Effect.fn('codeGraph.doctorCheck')(function*
       continue;
     }
     const checked = yield* diagnoseCodeGraphDatabaseReadOnly(database, false).pipe(
-      Effect.map(health => ({health, state: 'checked'}) as CodeGraphQuickCheck),
+      Effect.map(health => ({health, state: 'checked'})),
       Effect.catch(() => Effect.succeed<CodeGraphQuickCheck>({state: 'unreadable'})),
     );
     const health = checked.state === 'checked' ? checked.health : undefined;
@@ -545,7 +545,7 @@ export const repairCodeGraphIndexes = Effect.fn('codeGraph.repairIndexes')(funct
             // not apply the empty-retention model to its newly durable state.
             if (yield* fs.exists(database)) return undefined;
             const repositoryTarget = yield* openCodeGraphIndexPurgeTarget(fs, path, threadnoteHome, checkoutId);
-            if (repositoryTarget === undefined) return 0 as number | undefined;
+            if (repositoryTarget === undefined) return 0;
             yield* options.interlock?.beforeSpoolCleanupVerification?.(repositoryTarget.path) ?? Effect.void;
             return yield* cleanTemporaryMaterializationSpoolFiles(
               fs,
@@ -1176,7 +1176,7 @@ function obsoleteGraphFileName(
 ): {readonly kind: ObsoleteCodeGraphStoreFile['kind']; readonly schemaVersion: number} | undefined {
   const match = OBSOLETE_GRAPH_FILE_PATTERN.exec(fileName);
   if (!match) return undefined;
-  const schemaVersion = Number.parseInt(match[1]!, 10);
+  const schemaVersion = Number.parseInt(match[1], 10);
   if (!Number.isSafeInteger(schemaVersion) || schemaVersion >= CODE_GRAPH_SCHEMA_VERSION) return undefined;
   return {
     kind: match[2] === 'wal' ? 'wal' : match[2] === 'shm' ? 'shm' : 'database',

@@ -179,7 +179,7 @@ export function createResolutionAttributorFromIndex(
         const declared = declaredReferences.get(edge.id);
         if (declared !== undefined && declared.lookupTiers.length > 0) return [declared];
         return referenceForLegacyEdge(
-          edges[index]!,
+          edges[index],
           imports,
           existingPaths,
           packages,
@@ -788,7 +788,7 @@ function extractPackageManifest(content: string, context: ExtractionContext): Co
   for (const sectionName of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'] as const) {
     const section = manifest[sectionName];
     if (!section || typeof section !== 'object' || Array.isArray(section)) continue;
-    for (const dependency of Object.keys(section as Record<string, unknown>).sort()) {
+    for (const dependency of Object.keys(section).sort()) {
       addTextEdge(facts, context, symbol, dependency, 'depends_on', 'declared', content);
     }
   }
@@ -816,7 +816,7 @@ function extractMarkdown(content: string, context: ExtractionContext): CodeGraph
   const document = makeTextSymbol(context, 'document', context.path, context.path, true, content, 0, 1);
   facts.symbols.push(document);
   for (const match of content.matchAll(/^(#{1,6})\s+(.+)$/gm)) {
-    const name = match[2]!.trim().replace(/\s+#+$/, '');
+    const name = match[2].trim().replace(/\s+#+$/, '');
     const symbol = makeTextSymbol(
       context,
       'heading',
@@ -833,7 +833,7 @@ function extractMarkdown(content: string, context: ExtractionContext): CodeGraph
   }
   const references = new Set<string>();
   for (const match of content.matchAll(/`([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?)`/g)) {
-    references.add(match[1]!);
+    references.add(match[1]);
   }
   for (const match of content.matchAll(
     /\b(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|mdx?|pdf|docx|pptx|xlsx|od[stp]|png|jpe?g|gif|webp|svg|mp[34]|m4[av]|mov|webm|wav|flac)\b/gi,
@@ -1176,9 +1176,9 @@ function parseImportBindingTarget(
   if (!match) return undefined;
   try {
     return {
-      imported: decodeURIComponent(match[2]!),
-      local: decodeURIComponent(match[3]!),
-      specifier: decodeURIComponent(match[1]!),
+      imported: decodeURIComponent(match[2]),
+      local: decodeURIComponent(match[3]),
+      specifier: decodeURIComponent(match[1]),
     };
   } catch {
     return undefined;
@@ -1376,7 +1376,7 @@ function aliasCandidates(sourcePath: string, target: string, index: ResolutionAl
     ...matches.map(match => (match.exact ? Number.MAX_SAFE_INTEGER : match.specificity)),
   );
   const best = matches.filter(match => (match.exact ? Number.MAX_SAFE_INTEGER : match.specificity) === bestSpecificity);
-  return best.length === 1 ? best[0]!.candidates : [];
+  return best.length === 1 ? best[0].candidates : [];
 }
 
 function packageEntry(exportsValue: unknown, mainValue: unknown): string | undefined {
@@ -1865,7 +1865,7 @@ function parseLocallyBoundTarget(value: string): string | undefined {
   const match = /^local:(.+)$/.exec(value);
   if (!match) return undefined;
   try {
-    return decodeURIComponent(match[1]!);
+    return decodeURIComponent(match[1]);
   } catch {
     return undefined;
   }

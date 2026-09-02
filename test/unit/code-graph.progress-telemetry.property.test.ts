@@ -82,7 +82,7 @@ describe('code graph progress telemetry properties', () => {
           );
           expect(
             forward.every(
-              (sample, index) => index === 0 || sample.durationMilliseconds <= forward[index - 1]!.durationMilliseconds,
+              (sample, index) => index === 0 || sample.durationMilliseconds <= forward[index - 1].durationMilliseconds,
             ),
           ).toBe(true);
         },

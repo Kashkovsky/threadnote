@@ -438,8 +438,7 @@ export function WorksetsPanel(): React.ReactElement {
     if (direction === 0) return;
     event.preventDefault();
     const currentIndex = WORKSET_OPERATIONS.indexOf(current);
-    const next =
-      WORKSET_OPERATIONS[(currentIndex + direction + WORKSET_OPERATIONS.length) % WORKSET_OPERATIONS.length]!;
+    const next = WORKSET_OPERATIONS[(currentIndex + direction + WORKSET_OPERATIONS.length) % WORKSET_OPERATIONS.length];
     setOperation(next);
     window.requestAnimationFrame(() => document.getElementById(`worksets-tab-${next}`)?.focus());
   }
@@ -744,7 +743,7 @@ export function WorksetsPanel(): React.ReactElement {
                       tabIndex={operation === value ? 0 : -1}
                       type="button"
                     >
-                      {value === 'brief' ? 'Context brief' : value[0]!.toUpperCase() + value.slice(1)}
+                      {value === 'brief' ? 'Context brief' : value[0].toUpperCase() + value.slice(1)}
                     </button>
                   ))}
                 </div>

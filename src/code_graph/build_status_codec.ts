@@ -1042,9 +1042,9 @@ function parseExtraction(value: unknown): CodeGraphBuildExtraction | undefined {
     samples.some(
       (sample, index) =>
         index > 0 &&
-        (sample.durationMilliseconds > samples[index - 1]!.durationMilliseconds ||
-          (sample.durationMilliseconds === samples[index - 1]!.durationMilliseconds &&
-            sample.pathHash.localeCompare(samples[index - 1]!.pathHash) < 0)),
+        (sample.durationMilliseconds > samples[index - 1].durationMilliseconds ||
+          (sample.durationMilliseconds === samples[index - 1].durationMilliseconds &&
+            sample.pathHash.localeCompare(samples[index - 1].pathHash) < 0)),
     )
   ) {
     return undefined;
@@ -1169,7 +1169,7 @@ function parseCounters(value: unknown): CodeGraphBuildCounters | undefined {
     return undefined;
   return Object.fromEntries(
     [...keys, 'unit' as const].flatMap(key => (value[key] === undefined ? [] : [[key, value[key]]])),
-  ) as CodeGraphBuildCounters;
+  );
 }
 
 function parseError(value: unknown): CodeGraphBuildStatus['error'] | undefined {

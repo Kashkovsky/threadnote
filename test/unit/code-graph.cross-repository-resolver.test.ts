@@ -60,7 +60,7 @@ describe('cross-repository bridge resolver', () => {
       },
       version: 1,
     });
-    expect(result.bridges[0]!.id).toMatch(/^cgb_[0-9a-f]{64}$/u);
+    expect(result.bridges[0].id).toMatch(/^cgb_[0-9a-f]{64}$/u);
   });
 
   it('resolves exact protobuf file, package, message, service, and RPC imports to repository-qualified exports', () => {
@@ -309,7 +309,7 @@ function onlyBridge(repositories: readonly CodeGraphBridgeRepositoryV1[]) {
   const result = resolveCodeGraphCrossRepositoryBridges(repositories);
   expect(result.rejections).toEqual([]);
   expect(result.bridges).toHaveLength(1);
-  return result.bridges[0]!;
+  return result.bridges[0];
 }
 
 function repository(

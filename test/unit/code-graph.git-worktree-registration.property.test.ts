@@ -114,8 +114,8 @@ describe('code graph common-gitdir authority properties', () => {
           const adminName = 'recycled-admin';
           const adminEntry = join(common, 'worktrees', adminName);
           mkdirSync(adminEntry);
-          const target = join(common, 'removed', segments[0]!);
-          const replacement = join(common, 'replacement', segments[1]!);
+          const target = join(common, 'removed', segments[0]);
+          const replacement = join(common, 'replacement', segments[1]);
           const pointedAt = join(targetMatches ? target : replacement, '.git');
           writeFileSync(
             join(adminEntry, 'gitdir'),

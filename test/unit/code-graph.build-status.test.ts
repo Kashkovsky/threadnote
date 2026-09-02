@@ -292,9 +292,9 @@ describe('code graph cross-process build status', () => {
         const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
         const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* reporter.progress({completed: 1, phase: 'materializing', reused: 0, total: 10, unit: 'files'});
-        const afterTransition = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const afterTransition = (yield* readCodeGraphBuildStatuses(layout))[0];
         yield* reporter.progress({completed: 2, phase: 'materializing', reused: 0, total: 10, unit: 'files'});
-        const afterThrottledCounter = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const afterThrottledCounter = (yield* readCodeGraphBuildStatuses(layout))[0];
         yield* reporter.progress({
           completed: 0,
           embedded: 0,
@@ -303,7 +303,7 @@ describe('code graph cross-process build status', () => {
           total: 10,
           unit: 'symbols',
         });
-        const afterPhaseTransition = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const afterPhaseTransition = (yield* readCodeGraphBuildStatuses(layout))[0];
         yield* reporter.progress({
           completed: 1,
           embedded: 1,
@@ -312,7 +312,7 @@ describe('code graph cross-process build status', () => {
           total: 10,
           unit: 'symbols',
         });
-        const afterThrottledEmbeddingCounter = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const afterThrottledEmbeddingCounter = (yield* readCodeGraphBuildStatuses(layout))[0];
         yield* Effect.sleep(CODE_GRAPH_BUILD_PROGRESS_WRITE_INTERVAL_MILLISECONDS + 10);
         yield* reporter.progress({
           completed: 3,
@@ -322,7 +322,7 @@ describe('code graph cross-process build status', () => {
           total: 10,
           unit: 'symbols',
         });
-        const afterInterval = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const afterInterval = (yield* readCodeGraphBuildStatuses(layout))[0];
         return {
           afterInterval,
           afterPhaseTransition,
@@ -411,7 +411,7 @@ describe('code graph cross-process build status', () => {
           total: 10,
           unit: 'files',
         });
-        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        return (yield* readCodeGraphBuildStatuses(layout))[0];
       }),
     );
 
@@ -465,14 +465,14 @@ describe('code graph cross-process build status', () => {
           phase: 'resolving',
           subphase: 'references',
         });
-        const first = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const first = (yield* readCodeGraphBuildStatuses(layout))[0];
         yield* Effect.sleep(10);
         yield* reporter.progress({
           activity: resolutionActivity({pass: 2, referencesCompleted: 5_000, referencesExamined: 15_000}),
           phase: 'resolving',
           subphase: 'references',
         });
-        const second = (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        const second = (yield* readCodeGraphBuildStatuses(layout))[0];
         return {first, second};
       }),
     );
@@ -600,7 +600,7 @@ describe('code graph cross-process build status', () => {
             });
           }
         }
-        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        return (yield* readCodeGraphBuildStatuses(layout))[0];
       }),
     );
 
@@ -692,7 +692,7 @@ describe('code graph cross-process build status', () => {
           phase: 'activating',
           snapshotId: 'cgsn_activation-progress',
         });
-        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        return (yield* readCodeGraphBuildStatuses(layout))[0];
       }),
     );
 
@@ -724,7 +724,7 @@ describe('code graph cross-process build status', () => {
         const layout = codeGraphLayout(path, home, identity.checkoutId, identity.worktreeId);
         const reporter = yield* makeCodeGraphBuildReporter(identity, layout);
         yield* reporter.progress({phase: 'waiting'});
-        return (yield* readCodeGraphBuildStatuses(layout))[0]!;
+        return (yield* readCodeGraphBuildStatuses(layout))[0];
       }),
     );
     const now = Date.parse(status.timestamps.heartbeatAt);
@@ -853,7 +853,7 @@ describe('code graph cross-process build status', () => {
             staleAfterMilliseconds: 1_000,
             waitTimeoutMilliseconds: 1_000,
           },
-          Effect.map(readCodeGraphBuildStatuses(layout), statuses => statuses[0]!),
+          Effect.map(readCodeGraphBuildStatuses(layout), statuses => statuses[0]),
         );
       }),
     );

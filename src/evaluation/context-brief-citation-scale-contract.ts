@@ -1280,7 +1280,7 @@ function rederiveArtifactFailures(input: {
 /** Measure retained root growth independently from each request's transient peak. */
 export function contextBriefCitationScaleRetainedRootRssGrowthBytes(baselines: readonly number[]): number {
   if (baselines.length === 0) return 0;
-  return Math.max(0, Math.max(...baselines) - baselines[0]!);
+  return Math.max(0, Math.max(...baselines) - baselines[0]);
 }
 
 /** Fail closed when hosted release evidence is relabeled or detached from its exact candidate. */

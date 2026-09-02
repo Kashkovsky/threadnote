@@ -44,20 +44,20 @@ describe('incremental clean-base ancestry', () => {
         (masks, priorities, reverseParents) => {
           const ids = masks.map((_, index) => objectId(index + 1));
           const parents = ids.map((_, source) =>
-            ids.filter((__, target) => target > source && (masks[source]! & (1 << target)) !== 0),
+            ids.filter((__, target) => target > source && (masks[source] & (1 << target)) !== 0),
           );
           const lines = ids
             .map((id, index) => ({
               id,
               index,
-              parents: reverseParents[index] ? [...parents[index]!].reverse() : parents[index]!,
+              parents: reverseParents[index] ? [...parents[index]].reverse() : parents[index],
               priority: priorities[index] ?? 0,
             }))
             .sort((left, right) => left.priority - right.priority || left.index - right.index)
             .map(row => [row.id, ...row.parents].join(' '));
 
-          expect(gitCommitDistanceGroups(lines.join('\n'), ids[0]!)).toEqual(
-            independentDistanceGroups(ids[0]!, new Map(ids.map((id, index) => [id, parents[index]!] as const))),
+          expect(gitCommitDistanceGroups(lines.join('\n'), ids[0])).toEqual(
+            independentDistanceGroups(ids[0], new Map(ids.map((id, index) => [id, parents[index]] as const))),
           );
         },
       ),

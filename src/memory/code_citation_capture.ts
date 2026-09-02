@@ -565,7 +565,7 @@ function worksetGraphPreparation(worksetName: string): MemoryCodeCitationGraphPr
 }
 
 function captureGroupPreparation(targets: readonly CaptureTarget[]): MemoryCodeCitationGraphPreparationV1 {
-  return targets.find(target => target.preparation.target === 'callerCwd')?.preparation ?? targets[0]!.preparation;
+  return targets.find(target => target.preparation.target === 'callerCwd')?.preparation ?? targets[0].preparation;
 }
 
 function captureRecoveryMessage(preparation: MemoryCodeCitationGraphPreparationV1): string {

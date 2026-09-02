@@ -55,7 +55,7 @@ export function rankCodeGraphWorksetEvidenceCards(
     validateDeepQueryProvenance(deep, repository);
     const nodes = deduplicateAndRankLocalNodes(deep.graph.nodes);
     for (let localIndex = 0; localIndex < nodes.length; localIndex += 1) {
-      const node = nodes[localIndex]!;
+      const node = nodes[localIndex];
       const routed = routerSymbols.get(symbolKey(deep.repositoryKey, node.id));
       const score = globalScore(repository, routed, localIndex + 1, node.exported);
       const ref = codeGraphQualifiedRefHandle({nodeId: node.id, repositoryId: deep.graph.repository.repositoryId});

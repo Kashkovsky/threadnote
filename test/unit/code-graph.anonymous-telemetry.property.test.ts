@@ -179,7 +179,7 @@ describe('code graph anonymous telemetry', () => {
       yield* report({phase: 'waiting', reason: 'repository-lock'});
 
       expect(capture.spans).toHaveLength(3);
-      const first = Object.fromEntries(capture.spans[0]!.span.attributes);
+      const first = Object.fromEntries(capture.spans[0].span.attributes);
       expect(first).toMatchObject({
         'threadnote.component': 'mcp',
         'threadnote.event': 'checkpoint',
@@ -202,7 +202,7 @@ describe('code graph anonymous telemetry', () => {
       expect(serialized).not.toContain('private-language');
       expect(serialized).not.toContain('private-role');
 
-      expect(Object.fromEntries(capture.spans[2]!.span.attributes)).toMatchObject({
+      expect(Object.fromEntries(capture.spans[2].span.attributes)).toMatchObject({
         'threadnote.phase': 'graph.waiting',
         'threadnote.waiting_reason': 'repository-lock',
       });

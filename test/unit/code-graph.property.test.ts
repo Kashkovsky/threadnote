@@ -207,7 +207,7 @@ describe('native code graph parser properties', () => {
         size: blob.byteLength,
       }));
       const chunks = blobs.flatMap((blob, index) => [
-        new TextEncoder().encode(`${entries[index]!.blobId} blob ${blob.byteLength}\n`),
+        new TextEncoder().encode(`${entries[index].blobId} blob ${blob.byteLength}\n`),
         blob,
         Uint8Array.of(10),
       ]);
@@ -370,7 +370,7 @@ describe('native code graph traversal properties', () => {
     },
     ({graph}) => {
       const nodes = Array.from({length: graph.nodeCount}, (_, index) => graphNode(index));
-      const seed = nodes[graph.seedIndex % graph.nodeCount]!;
+      const seed = nodes[graph.seedIndex % graph.nodeCount];
       const edges = graphEdges(graph.nodeCount, graph.rawEdges);
       const store = graphStore(nodes, seed, edges);
       const expected = referenceTraversal(seed.id, edges, graph.depth);
@@ -409,7 +409,7 @@ describe('native code graph traversal properties', () => {
     },
     ({graph}) => {
       const nodes = Array.from({length: graph.nodeCount}, (_, index) => graphNode(index));
-      const seed = nodes[graph.seedIndex % graph.nodeCount]!;
+      const seed = nodes[graph.seedIndex % graph.nodeCount];
       const edges = graphEdges(graph.nodeCount, graph.rawEdges);
       const store = graphStore(nodes, seed, edges);
       const reachable = referenceNeighborReachability(seed.id, edges, graph.direction, graph.depth);

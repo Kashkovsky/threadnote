@@ -596,7 +596,7 @@ const selectRemovedViewCleanupEntry = Effect.fn('codeGraph.selectRemovedViewClea
     [worktreeId, expectedSnapshotId],
   );
   if (rows.length === 0) return undefined;
-  const entry = decodeRemovedViewCleanupRow(rows[0]!);
+  const entry = decodeRemovedViewCleanupRow(rows[0]);
   if (entry === undefined) {
     return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view cleanup row is invalid.'));
   }
@@ -628,7 +628,7 @@ const validateRemovedViewSnapshotAuthority = Effect.fn('codeGraph.validateRemove
     if (!requireSnapshot) return;
     return yield* Effect.fail(new CodeGraphStoreError('Code graph removed view snapshot authority is unavailable.'));
   }
-  const snapshot = snapshots[0]!;
+  const snapshot = snapshots[0];
   if (
     snapshots.length !== 1 ||
     snapshot.id !== expectedSnapshotId ||

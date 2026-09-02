@@ -468,11 +468,11 @@ function summarize(values: readonly number[], expectedSamples: number): Summary 
   }
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
-  const medianMilliseconds = sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+  const medianMilliseconds = sorted.length % 2 === 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
   return {
     maximumMilliseconds: sorted.at(-1)!,
     medianMilliseconds,
-    minimumMilliseconds: sorted[0]!,
+    minimumMilliseconds: sorted[0],
     samples: sorted.length,
   };
 }
@@ -571,7 +571,7 @@ function parseArguments(arguments_: readonly string[]): BenchmarkOptions {
   let samples = DEFAULT_SAMPLES;
   let warmups = DEFAULT_WARMUPS;
   for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index]!;
+    const argument = arguments_[index];
     if (argument === '--baseline-ref') baselineRef = required(arguments_[++index], argument);
     else if (argument === '--candidate-ref') candidateRef = required(arguments_[++index], argument);
     else if (argument === '--output') outputPath = required(arguments_[++index], argument);

@@ -442,7 +442,7 @@ export const CODE_GRAPH_WORKSET_FIXTURE_ARCHETYPES: readonly CodeGraphWorksetFix
   ARCHETYPES.map(archetype => ({
     description: archetype.description,
     id: archetype.id,
-    sha256: CODE_GRAPH_WORKSET_ARCHETYPE_DIGESTS[archetype.id] as string,
+    sha256: CODE_GRAPH_WORKSET_ARCHETYPE_DIGESTS[archetype.id],
     tags: archetype.tags,
   })),
 );
@@ -502,9 +502,7 @@ export function createCodeGraphWorksetFixturePlan(
     }),
   );
   const usedArchetypes = [...new Set(repositories.map(repository => repository.archetype))].sort();
-  const archetypeDigests = Object.fromEntries(
-    usedArchetypes.map(id => [id, CODE_GRAPH_WORKSET_ARCHETYPE_DIGESTS[id] as string]),
-  );
+  const archetypeDigests = Object.fromEntries(usedArchetypes.map(id => [id, CODE_GRAPH_WORKSET_ARCHETYPE_DIGESTS[id]]));
   const membershipDigest = digest(canonicalJson(repositories.map(repository => repository.repositoryKey)));
   const querySpecificationDigest = digest(canonicalJson(queries));
   const identitySeed = {

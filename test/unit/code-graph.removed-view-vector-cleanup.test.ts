@@ -749,7 +749,7 @@ function assertDeadlineStopsBeforeUse(
     let reads = 0;
     const preparation: CodeGraphRemovedViewVectorUnitPreparation = {
       deadlineMonotonicMilliseconds: 250,
-      monotonicMilliseconds: () => readings[Math.min(reads++, readings.length - 1)]!,
+      monotonicMilliseconds: () => readings[Math.min(reads++, readings.length - 1)],
       reservationMode: 'nonblocking-one-attempt',
     };
 
@@ -791,7 +791,7 @@ function parseCursor(result: CodeGraphRemovedViewVectorUnitResult): ParsedCursor
   expect(match).not.toBeNull();
   if (match === null) throw new TestError('Vector-unit cursor is not canonical.');
   return {
-    digest: match[2]!,
+    digest: match[2],
     mode: match[1] as ParsedCursor['mode'],
     ...(match[3] === undefined ? {} : {modelName: match[3]}),
     ...(match[4] === undefined ? {} : {step: Number(match[4])}),

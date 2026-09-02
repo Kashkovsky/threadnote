@@ -69,7 +69,7 @@ describe('Threadnote storage layout migration properties', () => {
             action: 'no_legacy_layout',
           });
 
-          const first = scaffolds[0]!;
+          const first = scaffolds[0];
           yield* fs.writeFileString(path.join(legacyRoot, ...first, 'material.md'), '# Material beta data\n');
           expect(yield* isThreadnoteStorageLayoutMigrationPending({home})).toBe(true);
         }),

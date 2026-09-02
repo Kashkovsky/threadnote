@@ -29,9 +29,9 @@ describe('Code Memory Link client implementation descriptors', () => {
       configurationHash: hash('7'),
       configurationProjectionHash: hash('8'),
       dependenciesLockHash: hash('9'),
-      entrypointHash: artifactBindings[1]!.sha256,
+      entrypointHash: artifactBindings[1].sha256,
       environmentPolicyHash: hash('a'),
-      executionBundleHash: artifactBindings[0]!.sha256,
+      executionBundleHash: artifactBindings[0].sha256,
       expectedClientProjectionHash: hash('b'),
       version: 2 as const,
     };
@@ -52,11 +52,11 @@ describe('Code Memory Link client implementation descriptors', () => {
       {clientId: `cli_${'1'.repeat(16)}`, implementationDescriptorHash: descriptorHash},
       {clientId: `cli_${'2'.repeat(16)}`, implementationDescriptorHash: hash('4')},
     ];
-    expect(assertCodeMemoryLinkClientImplementationBinding({clientId: roster[0]!.clientId, descriptor, roster})).toBe(
+    expect(assertCodeMemoryLinkClientImplementationBinding({clientId: roster[0].clientId, descriptor, roster})).toBe(
       descriptorHash,
     );
     expect(() =>
-      assertCodeMemoryLinkClientImplementationBinding({clientId: roster[1]!.clientId, descriptor, roster}),
+      assertCodeMemoryLinkClientImplementationBinding({clientId: roster[1].clientId, descriptor, roster}),
     ).toThrow(/does not match the selected client id/);
 
     expect(() =>

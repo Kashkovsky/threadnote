@@ -90,8 +90,8 @@ describe('recall index foreground freshness', () => {
     ({generations}) =>
       Effect.sync(() => {
         let merged = mergeRecallIndexCanonicalMutationContinuity(undefined, {
-          currentGeneration: generations[1]!,
-          previousGeneration: generations[0]!,
+          currentGeneration: generations[1],
+          previousGeneration: generations[0],
         });
         for (let index = 2; index < generations.length; index += 1) {
           merged = mergeRecallIndexCanonicalMutationContinuity(
@@ -101,8 +101,8 @@ describe('recall index foreground freshness', () => {
               ...(merged.previousGeneration === undefined ? {} : {previousGeneration: merged.previousGeneration}),
             },
             {
-              currentGeneration: generations[index]!,
-              previousGeneration: generations[index - 1]!,
+              currentGeneration: generations[index],
+              previousGeneration: generations[index - 1],
             },
           );
         }

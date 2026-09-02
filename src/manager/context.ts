@@ -305,7 +305,7 @@ export const readManagerContextPage = Effect.fn('managerContext.read')(function*
   }
   return {
     canonicalUri: resolved.canonicalUri,
-    content: pages[page]!,
+    content: pages[page],
     ...(memory === undefined ? {} : {metadata: projectMemoryMetadata(memory.metadata)}),
     page: {
       complete: page === pages.length - 1,
@@ -517,7 +517,7 @@ const readManagerContextUri = Effect.fn('managerContext.readUri')(function* (con
           config,
           [uri],
           [`threadnote://user/${uriSegment(config.user)}/memories`],
-        ))[0]!;
+        ))[0];
   const resource = parseResourceId(resolvedIdentity.canonicalUri);
   if (
     resource.namespace === 'user' &&

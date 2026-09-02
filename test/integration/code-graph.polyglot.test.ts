@@ -111,10 +111,10 @@ describe('polyglot code graph lifecycle', () => {
           ),
         ).toMatchObject({provenance: 'resolved', targetId: expect.stringMatching(/^cgs_/)});
         expect(operations.every(operation => operation.snapshot.id === indexed.snapshot.id)).toBe(true);
-        expect(operations[0]!.nodes.some(node => node.language === 'java')).toBe(true);
-        expect(operations[1]!.nodes.some(node => node.name === 'KotlinApp')).toBe(true);
-        expect(operations[2]!.edges.some(edge => edge.targetName === 'typescriptHelper')).toBe(true);
-        expect(operations[3]!.nodes.some(node => node.name === 'swiftBoot')).toBe(true);
+        expect(operations[0].nodes.some(node => node.language === 'java')).toBe(true);
+        expect(operations[1].nodes.some(node => node.name === 'KotlinApp')).toBe(true);
+        expect(operations[2].edges.some(edge => edge.targetName === 'typescriptHelper')).toBe(true);
+        expect(operations[3].nodes.some(node => node.name === 'swiftBoot')).toBe(true);
       }).pipe(provideTestLayer(ApplicationLayer), TestClock.withLive),
     60_000,
   );

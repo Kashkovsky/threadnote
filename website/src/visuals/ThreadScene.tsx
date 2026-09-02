@@ -85,7 +85,7 @@ export default function ThreadScene() {
         ];
 
         const lineGeometry = new THREE.BufferGeometry();
-        lineGeometry.setFromPoints(edges.flatMap(([from, to]) => [points[from]!, points[to]!]));
+        lineGeometry.setFromPoints(edges.flatMap(([from, to]) => [points[from], points[to]]));
         const lines = new THREE.LineSegments(
           lineGeometry,
           new THREE.LineBasicMaterial({
@@ -158,10 +158,10 @@ export default function ThreadScene() {
             const scale = (index === 6 ? 1.7 : 1) + Math.sin(elapsed * 1.5 + index) * 0.12;
             node.scale.setScalar(scale);
           });
-          const route = [points[0]!, points[1]!, points[6]!, points[7]!, points[8]!];
+          const route = [points[0], points[1], points[6], points[7], points[8]];
           const cursor = (elapsed * 0.34) % (route.length - 1);
           const segment = Math.floor(cursor);
-          pulse.position.lerpVectors(route[segment]!, route[segment + 1]!, cursor - segment);
+          pulse.position.lerpVectors(route[segment], route[segment + 1], cursor - segment);
           renderer.render(scene, camera);
           frame = window.requestAnimationFrame(render);
         };

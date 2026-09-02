@@ -91,7 +91,7 @@ interface Options {
 function parseArguments(args: readonly string[], resolve: (value: string) => string): Options {
   let dataset = resolve('.artifacts/training/recall-reranker/datasets/smoke-v1');
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--dataset') dataset = resolve(required(args[++index], argument));
     else throw new ScriptError(`Unknown recall reranker validation option: ${argument}. Pass --help for usage.`);
   }

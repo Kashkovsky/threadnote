@@ -373,7 +373,7 @@ export function registerCandidateMemoryTools(server: EffectMcpServerAdapter, con
             );
           }
           if (candidate.state === 'applying' && candidate.applyTargetUri) {
-            const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri as string]);
+            const [appliedRecord] = yield* readMemoryRecordsByUri(config, [candidate?.applyTargetUri]);
             if (appliedRecord?.metadata.candidateId === candidate.candidateId) {
               if (
                 !candidate.applyContentHash ||
@@ -806,7 +806,7 @@ export function registerSearchTool(
       const scopedUri =
         checkedUri.value ??
         selectedShare?.root ??
-        (memoryScope?.shares.length === 1 ? memoryScope.shares[0]!.root : undefined);
+        (memoryScope?.shares.length === 1 ? memoryScope.shares[0].root : undefined);
       if (scopedUri && memoryScope && !cursorCloudUriWithinScope(memoryScope, scopedUri)) {
         return argumentError(`${name} uri must stay within a configured Personal Cursor Cloud share.`);
       }
@@ -1415,7 +1415,7 @@ export function registerReadTool(
           : [];
         const syncTeams =
           memoryScope && requestedShares.every(share => share !== undefined)
-            ? [...new Set(requestedShares.map(share => share!.team))]
+            ? [...new Set(requestedShares.map(share => share.team))]
             : undefined;
         const syncWarnings: string[] = [];
         const syncedTeams = yield* syncCursorCloudMemoryShares(config, memoryScope, syncTeams).pipe(
@@ -1593,9 +1593,7 @@ function canonicalReadMetadata(result: CallToolResult):
       ? {canonicalUri, contentIndex: entry.contentIndex as number, requestedUri}
       : undefined;
   });
-  return resources.every(resource => resource !== undefined)
-    ? {resources: resources as readonly {canonicalUri: string; contentIndex: number; requestedUri: string}[]}
-    : undefined;
+  return resources.every(resource => resource !== undefined) ? {resources: resources} : undefined;
 }
 
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {

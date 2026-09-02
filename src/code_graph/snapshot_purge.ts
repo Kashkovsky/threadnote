@@ -167,7 +167,11 @@ export const purgeCodeGraphSnapshot = Effect.fn('codeGraph.purgeSnapshotAction')
                   if (graph.state === 'not-found') return stateChangedResult(target);
                   const current = observedResult(target, false, graph.evidence, vectors);
                   if (current.approvalDigest !== options.approvalDigest || !current.eligible) {
-                    return {...current, applied: false, state: 'state-changed'} as CodeGraphSnapshotPurgeActionResult;
+                    return {
+                      ...current,
+                      applied: false,
+                      state: 'state-changed',
+                    } satisfies CodeGraphSnapshotPurgeActionResult;
                   }
                   yield* reporter.progress({completed: 4, phase: 'retiring-and-cleaning', total: 5});
                   const core = yield* store.purgeSnapshot(

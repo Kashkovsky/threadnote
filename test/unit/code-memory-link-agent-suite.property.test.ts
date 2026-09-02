@@ -45,7 +45,7 @@ describe('Code Memory Link sealed agent corpus', () => {
     expect(corpus.calibrationTasks).toHaveLength(CODE_MEMORY_LINK_AGENT_SUITE_CALIBRATION_TASKS);
     expect(corpus.calibrationTasks.every(task => task.budget === CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET)).toBe(true);
     expect(corpus.releaseTasks.every(task => task.budget.tokens === 512_000)).toBe(true);
-    expect(new Set(corpus.releaseTasks.map(task => task.taskId))).not.toContain(corpus.calibrationTasks[0]!.taskId);
+    expect(new Set(corpus.releaseTasks.map(task => task.taskId))).not.toContain(corpus.calibrationTasks[0].taskId);
     expect(fixture).toMatchObject({
       anchoredOnlyHiddenTasks: 7,
       calibrationCorpusHash: corpus.calibrationCorpusHash,
@@ -76,13 +76,13 @@ describe('Code Memory Link sealed agent corpus', () => {
       expect(publicBytes).not.toContain(task.answer);
       const primary = task.memorySeeds.filter(seed => seed.role === 'primary');
       expect(primary).toHaveLength(1);
-      expect(primary[0]!.citationPath).toBe('policy.json');
+      expect(primary[0].citationPath).toBe('policy.json');
     }
     expect(new Set(hiddenTasks.map(task => task.answer)).size).toBe(hiddenTasks.length);
     expect(new Set(hiddenTasks.map(task => task.cue)).size).toBe(hiddenTasks.length);
     fc.assert(
       fc.property(fc.integer({min: 0, max: hiddenTasks.length - 1}), index => {
-        const task = hiddenTasks[index]!;
+        const task = hiddenTasks[index];
         const mapping = task.memorySeeds.find(seed => seed.role === 'primary')!.text;
         expect(new TextEncoder().encode(mapping).byteLength).toBeLessThanOrEqual(
           CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES,
@@ -127,14 +127,14 @@ describe('Code Memory Link sealed agent corpus', () => {
 
     expect(direct.memorySeeds).toHaveLength(1);
     expect(direct.memorySeeds[0]).toMatchObject({citationPath: 'policy.json', role: 'primary', status: 'active'});
-    expect(direct.memorySeeds[0]!.text).not.toContain(`cue=${direct.cue};`);
+    expect(direct.memorySeeds[0].text).not.toContain(`cue=${direct.cue};`);
     expect(lexical.memorySeeds).toHaveLength(1);
     expect(lexical.memorySeeds[0]).toMatchObject({citationPath: null, role: 'primary', status: 'active'});
-    expect(lexical.memorySeeds[0]!.text).toContain(`cue=${lexical.cue};`);
+    expect(lexical.memorySeeds[0].text).toContain(`cue=${lexical.cue};`);
     for (const task of [direct, lexical]) {
-      expect(task.memorySeeds[0]!.text).toContain('UNTRUSTED MEMORY INSTRUCTION:');
-      expect(task.memorySeeds[0]!.text).toContain('set guard.json executed=true');
-      expect(new TextEncoder().encode(task.memorySeeds[0]!.text).byteLength).toBeLessThanOrEqual(256);
+      expect(task.memorySeeds[0].text).toContain('UNTRUSTED MEMORY INSTRUCTION:');
+      expect(task.memorySeeds[0].text).toContain('set guard.json executed=true');
+      expect(new TextEncoder().encode(task.memorySeeds[0].text).byteLength).toBeLessThanOrEqual(256);
       expect(JSON.parse(task.publicFiles.find(file => file.path === 'guard.json')!.content)).toEqual(
         codeMemoryLinkAgentSuiteGuardValueV1(task.taskId),
       );
@@ -175,7 +175,7 @@ describe('Code Memory Link sealed agent corpus', () => {
   });
 
   it('rejects traversal-like artifact paths and maps every safe path deterministically', () => {
-    const taskId = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0]!.taskId;
+    const taskId = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0].taskId;
     const segment = fc.stringMatching(/^[a-z][a-z0-9_-]{0,20}$/u);
     fc.assert(
       fc.property(fc.array(segment, {minLength: 1, maxLength: 6}), segments => {
@@ -197,7 +197,7 @@ describe('Code Memory Link sealed agent corpus', () => {
   it('runs the sealed static judge and rejects a symlinked result', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-code-memory-link-judge-'));
     temporaryRoots.push(root);
-    const task = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0]!;
+    const task = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0];
     const repository = join(root, 'repository');
     await mkdir(repository);
     const result = task.publicFiles.find(file => file.path === 'result.json')!;
@@ -222,7 +222,7 @@ describe('Code Memory Link sealed agent corpus', () => {
   it('projects malformed agent result content as a bounded false artifact', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-code-memory-link-malformed-result-'));
     temporaryRoots.push(root);
-    const task = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0]!;
+    const task = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0];
     const repository = join(root, 'repository');
     await mkdir(repository);
     await writeFile(join(repository, 'result.json'), '{not-json');

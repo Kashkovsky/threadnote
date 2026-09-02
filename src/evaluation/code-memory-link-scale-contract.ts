@@ -350,7 +350,7 @@ function computeMetrics(
     canonicalMismatchCount: all.reduce((total, observation) => total + observation.canonicalMismatchCount, 0),
     directFirstRate: mean(
       positiveObservations.map(({observation, scenario}) =>
-        observation.returnedUris[0] !== undefined && scenario.expectedUris.includes(observation.returnedUris[0]!)
+        observation.returnedUris[0] !== undefined && scenario.expectedUris.includes(observation.returnedUris[0])
           ? 1
           : 0,
       ),

@@ -138,7 +138,7 @@ describe('CodeMemoryLinkBench contract', () => {
     fc.assert(
       fc.property(fc.integer({min: 1, max: 12}), duplicateCount => {
         const candidate = replaceObservation(OBSERVATIONS, 'exact-symbol', observation => {
-          const first = observation.rankedMemories[0]!;
+          const first = observation.rankedMemories[0];
           return {
             ...observation,
             rankedMemories: [
@@ -165,7 +165,7 @@ describe('CodeMemoryLinkBench contract', () => {
 
   it('scores direct code-citation Recall/Precision@3 while preserving visible ordering safety', () => {
     const candidate = replaceObservation(OBSERVATIONS, 'exact-symbol', observation => {
-      const direct = observation.rankedMemories[0]!;
+      const direct = observation.rankedMemories[0];
       const lexicalDecoy: CodeMemoryLinkBenchRankedMemoryV1 = {
         freshness: 'unknown',
         relationStatus: null,
@@ -190,7 +190,7 @@ describe('CodeMemoryLinkBench contract', () => {
 
   it('does not let empty no-answer controls dilute a 0.333 direct-query Precision@3', () => {
     const lowPrecision = replaceObservation(OBSERVATIONS, 'exact-symbol', observation => {
-      const direct = observation.rankedMemories[0]!;
+      const direct = observation.rankedMemories[0];
       const harmful = (suffix: string): CodeMemoryLinkBenchRankedMemoryV1 => ({
         freshness: 'unknown',
         relationStatus: 'unknown',

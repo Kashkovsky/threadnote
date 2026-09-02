@@ -282,7 +282,7 @@ describe('local recall index', () => {
       loadRecallIndex(config(), {includeInactive: false, limit: 1, query: 'package-local anchor'}),
     );
     expect(recalled).toHaveLength(1);
-    expect([recalled[0]!.uri, ...(recalled[0]!.equivalentUris ?? [])].sort()).toEqual([
+    expect([recalled[0].uri, ...(recalled[0].equivalentUris ?? [])].sort()).toEqual([
       'threadnote://user/me/memories/shared/alpha/durable/projects/threadnote/package-scope.md',
       'threadnote://user/me/memories/shared/beta/durable/projects/threadnote/package-scope.md',
     ]);
@@ -401,7 +401,7 @@ describe('local recall index', () => {
       const aliases =
         selected.recentCandidates?.filter(candidate => candidate.memoryId === `tn_latest_alias_${suffix}`) ?? [];
       expect(aliases).toHaveLength(1);
-      expect([aliases[0]!.uri, ...(aliases[0]!.equivalentUris ?? [])]).toHaveLength(40);
+      expect([aliases[0].uri, ...(aliases[0].equivalentUris ?? [])]).toHaveLength(40);
     }
     expect(
       queryDatabase<{readonly recorded_at: string; readonly source_modified_at: string}>(
@@ -503,7 +503,7 @@ describe('local recall index', () => {
 
     expect(recalled).toHaveLength(1);
     expect(recalled[0]?.identityConflict).toBeUndefined();
-    expect([recalled[0]!.uri, ...(recalled[0]!.equivalentUris ?? [])].sort()).toEqual([personalUri, sharedUri].sort());
+    expect([recalled[0].uri, ...(recalled[0].equivalentUris ?? [])].sort()).toEqual([personalUri, sharedUri].sort());
   });
 
   it('removes bounded v7 lexical files and their pointer generation after a successful v8 build', async () => {

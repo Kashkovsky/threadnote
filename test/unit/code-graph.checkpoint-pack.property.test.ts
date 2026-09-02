@@ -74,7 +74,7 @@ describe('code graph checkpoint canonical JSON', () => {
     'gives recursively reordered file facts one identity and separates semantic changes',
     {
       diagnostics: FC.array(FC.string({maxLength: 20}), {maxLength: 4}),
-      path: pathArbitrary.map(paths => paths[0]!),
+      path: pathArbitrary.map(paths => paths[0]),
     },
     ({diagnostics, path}) => {
       const facts = {derivationInputs: {rationale: []}, diagnostics, edges: [], path, symbols: []};
@@ -254,7 +254,7 @@ describe('code graph checkpoint pack', () => {
             inventory: {
               ...metadata.reuse!.inventory!,
               attributionFiles: [
-                {...metadata.reuse!.inventory!.attributionFiles[0]!, blobSize: UTF8.encode(path).byteLength + 1},
+                {...metadata.reuse!.inventory!.attributionFiles[0], blobSize: UTF8.encode(path).byteLength + 1},
               ],
             },
           },
@@ -270,7 +270,7 @@ describe('code graph checkpoint pack', () => {
             ...metadata.reuse!,
             inventory: {
               ...metadata.reuse!.inventory!,
-              attributionFiles: [{...metadata.reuse!.inventory!.attributionFiles[0]!, path: 'src/missing.ts'}],
+              attributionFiles: [{...metadata.reuse!.inventory!.attributionFiles[0], path: 'src/missing.ts'}],
             },
           },
         },
@@ -285,7 +285,7 @@ describe('code graph checkpoint pack', () => {
     encoder.write(recordsFor(['src/a.ts']).sort(compareCodeGraphCheckpointRecords), chunk => chunks.push(chunk));
     const prepared = encoder.finish(chunk => chunks.push(chunk));
     const writer = new CodeGraphCheckpointArtifactWriterV1(prepared);
-    const mutated = chunks[0]!.bytes.slice();
+    const mutated = chunks[0].bytes.slice();
     mutated[mutated.byteLength - 1] ^= 1;
     writer.write(mutated);
     expect(() => writer.finish()).toThrow(/spool digest/u);
@@ -388,7 +388,7 @@ function concatenateFirstGzipMember(pack: CodeGraphCheckpointEncodedPackV1): Uin
   const payloadOffset = 24 + originalHeaderBytes + 52;
   const originalPayload = pack.bytes.subarray(payloadOffset);
   const payload = join([originalPayload, originalPayload]);
-  const chunk = pack.header.chunks[0]!;
+  const chunk = pack.header.chunks[0];
   const header: CodeGraphCheckpointHeaderV1 = {
     ...pack.header,
     chunks: [{...chunk, compressedBytes: payload.byteLength}],

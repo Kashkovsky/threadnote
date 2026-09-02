@@ -232,11 +232,11 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
               return yield* Effect.fail(corrupt('Catalog capacity receipt is missing.'));
             }
             const bridgeLogicalBytes = requiredInteger(
-              capacities[0]!.bridge_logical_bytes,
+              capacities[0].bridge_logical_bytes,
               'catalog bridge logical bytes',
             );
             const projectionLogicalBytes = requiredInteger(
-              capacities[0]!.projection_logical_bytes,
+              capacities[0].projection_logical_bytes,
               'catalog projection logical bytes',
             );
             const nextBridgeLogicalBytes = bridgeLogicalBytes - stored.totalBytes + prepared.totalBytes;
@@ -281,7 +281,7 @@ export const replaceCodeGraphWorksetCatalogBridgeSet = Effect.fn('codeGraphCross
               ],
             );
             for (let ordinal = 0; ordinal < prepared.bridges.length; ordinal += 1) {
-              yield* insertBridge(sql, input.generationId, ordinal, prepared.bridges[ordinal]!);
+              yield* insertBridge(sql, input.generationId, ordinal, prepared.bridges[ordinal]);
             }
           }),
         );
@@ -616,8 +616,8 @@ function loadStoredBridgeFootprint(sql: SqlClient.SqlClient, generationId: strin
         validateStored(() => {
           if (rows.length === 0) return {bridgeCount: 0, totalBytes: 0} satisfies StoredBridgeFootprint;
           if (rows.length !== 1) throw corrupt('Stored bridge footprint query returned an invalid row set.');
-          const bridgeCount = requiredInteger(rows[0]!.bridge_count, 'stored bridge count');
-          const totalBytes = requiredInteger(rows[0]!.bridge_bytes, 'stored bridge byte count');
+          const bridgeCount = requiredInteger(rows[0].bridge_count, 'stored bridge count');
+          const totalBytes = requiredInteger(rows[0].bridge_bytes, 'stored bridge byte count');
           if (
             bridgeCount > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgesPerGeneration ||
             totalBytes > CODE_GRAPH_WORKSET_CATALOG_LIMITS.bridgeSetBytesMaximum
@@ -682,8 +682,8 @@ function loadWritableGeneration(sql: SqlClient.SqlClient, generationId: string) 
           if (rows.length !== 1) {
             throw new CodeGraphWorksetCatalogError('missing', 'The bridge generation does not exist.');
           }
-          const state = requiredText(rows[0]!.state, 'generation state');
-          const worksetName = requiredText(rows[0]!.workset_name, 'workset name');
+          const state = requiredText(rows[0].state, 'generation state');
+          const worksetName = requiredText(rows[0].workset_name, 'workset name');
           if (state !== 'staging' && state !== 'ready') {
             throw new CodeGraphWorksetCatalogError('stale', 'A retired generation cannot receive bridges.');
           }
@@ -826,7 +826,7 @@ function loadPublishedBridgeSet(sql: SqlClient.SqlClient, generationId: string) 
         rows.length === 0
           ? Effect.succeed(undefined)
           : validateStored(() => {
-              const row = rows[0]!;
+              const row = rows[0];
               const resolverVersion = requiredInteger(row.resolver_version, 'bridge resolver version');
               const bridgeCount = requiredInteger(row.bridge_count, 'bridge count');
               const bridgeBytes = requiredInteger(row.bridge_bytes, 'bridge byte count');

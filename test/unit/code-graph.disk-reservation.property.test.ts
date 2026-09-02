@@ -164,7 +164,7 @@ describe('code graph disk reservation ledger', () => {
       Effect.sync(() => {
         const receipts = entries.map((entry, index): CodeGraphDiskReservationReceipt => ({
           calibrationIdentity: 'fixture-v1',
-          filesystems: [{bytes: entry.bytes, key: ['a', 'b', 'c'][entry.keyIndex]!.repeat(64)}],
+          filesystems: [{bytes: entry.bytes, key: ['a', 'b', 'c'][entry.keyIndex].repeat(64)}],
           operation: 'stage persistent code graph facts',
           processId: index + 1,
           processStartIdentity: `linux:${index + 1}`,
@@ -173,7 +173,7 @@ describe('code graph disk reservation ledger', () => {
         }));
         const independent = new Map<string, number>();
         for (const entry of entries) {
-          const key = ['a', 'b', 'c'][entry.keyIndex]!.repeat(64);
+          const key = ['a', 'b', 'c'][entry.keyIndex].repeat(64);
           independent.set(key, saturatingCapacityAdd(independent.get(key) ?? 0, entry.bytes));
         }
         const expected = [...independent]

@@ -103,7 +103,7 @@ describe('Code Memory Link Codex graph preflight', () => {
       'selected-memory identity/content roster',
     );
     expect(() =>
-      assertCodeMemoryLinkSelectedMemoryRosterV1(roster, [{...roster[0]!, contentSha256: '0'.repeat(64)}, roster[1]!]),
+      assertCodeMemoryLinkSelectedMemoryRosterV1(roster, [{...roster[0], contentSha256: '0'.repeat(64)}, roster[1]]),
     ).toThrow('selected-memory identity/content roster');
   });
 

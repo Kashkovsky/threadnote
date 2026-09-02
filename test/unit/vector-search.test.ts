@@ -48,7 +48,7 @@ describe('exact vector search', () => {
       vector: normalizeVector([index + 1, 2_000 - index]),
     }));
     const expected = records
-      .map(record => ({id: record.id, score: record.vector[0]!}))
+      .map(record => ({id: record.id, score: record.vector[0]}))
       .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
       .slice(0, 7);
 

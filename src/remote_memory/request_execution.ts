@@ -76,7 +76,7 @@ export async function withRemoteMemoryRequestCancellation<A>(
       }
       return result;
     },
-  }) as TransactionSql;
+  });
 
   execution.signal.addEventListener('abort', cancelActive);
   try {

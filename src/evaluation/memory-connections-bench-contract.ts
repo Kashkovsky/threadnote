@@ -368,7 +368,7 @@ function literal<const Values extends readonly string[]>(
   label: string,
 ): Values[number] {
   if (typeof value !== 'string' || !(values as readonly string[]).includes(value)) invalid(`${label} is invalid`);
-  return value as Values[number];
+  return value;
 }
 
 function literalArray<const Values extends readonly string[]>(

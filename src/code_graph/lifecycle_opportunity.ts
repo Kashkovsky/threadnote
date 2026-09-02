@@ -214,7 +214,7 @@ export function selectCodeGraphLifecycleOpportunityTarget(
         (target.anchorIdentity !== undefined || target.anchorPath !== undefined),
     ) ?? ordered[0])[1];
   }
-  return (ordered.find(([key]) => compareCodeUnits(key, cursor) > 0) ?? ordered[0])![1];
+  return (ordered.find(([key]) => compareCodeUnits(key, cursor) > 0) ?? ordered[0])[1];
 }
 
 /** @internal Plan one deterministic bounded ring without deriving deletion authority. */
@@ -393,7 +393,7 @@ function rememberOpportunityCursor(cursors: Map<string, string>, key: string, cu
   cursors.delete(key);
   cursors.set(key, cursor);
   while (cursors.size > LIFECYCLE_OPPORTUNITY_CURSOR_LIMIT) {
-    const oldest = cursors.keys().next().value as string | undefined;
+    const oldest = cursors.keys().next().value;
     if (oldest === undefined) break;
     cursors.delete(oldest);
   }

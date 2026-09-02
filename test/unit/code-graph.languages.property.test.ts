@@ -183,7 +183,7 @@ describe('polyglot code graph extractor properties', () => {
         return Effect.gen(function* () {
           const extracted = yield* BUILTIN_LANGUAGE_PACK_REGISTRY.extractFile(file);
           const attributed = createResolutionAttributor([file])([extracted]);
-          const resolved = createRepositoryFactResolver(attributed, [file]).resolve(attributed)[0]!;
+          const resolved = createRepositoryFactResolver(attributed, [file]).resolve(attributed)[0];
           const declarations = resolved.symbols.filter(
             symbol => symbol.kind === 'interface' && symbol.name === 'Shape',
           );

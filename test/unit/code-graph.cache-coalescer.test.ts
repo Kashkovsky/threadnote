@@ -132,7 +132,7 @@ describe('code graph parser cache coalescer', () => {
             return writes === 1
               ? Effect.sync(() => {
                   for (let index = 0; index < call.files.length; index += 1) {
-                    committed.set(call.files[index]!.path, call.facts[index]!.json);
+                    committed.set(call.files[index].path, call.facts[index].json);
                   }
                 })
               : Deferred.succeed(secondWriterEntered, undefined).pipe(Effect.andThen(Effect.never));
@@ -146,7 +146,7 @@ describe('code graph parser cache coalescer', () => {
         yield* Fiber.interrupt(interrupted);
 
         expect(harness.calls).toHaveLength(2);
-        expect(committed.size).toBe(harness.calls[0]!.files.length);
+        expect(committed.size).toBe(harness.calls[0].files.length);
         expect(committed.size).toBeGreaterThan(0);
         expect(committed.size).toBeLessThan(files.length);
         assertCacheCallsBounded(harness.calls);
@@ -163,7 +163,7 @@ describe('code graph parser cache coalescer', () => {
           onCache: call =>
             Effect.sync(() => {
               for (let index = 0; index < call.files.length; index += 1) {
-                committed.set(call.files[index]!.path, call.facts[index]!.json);
+                committed.set(call.files[index].path, call.facts[index].json);
               }
             }),
         });
@@ -554,7 +554,7 @@ function assertCacheCallsBounded(calls: readonly CacheCall[]) {
           contentHash: file.contentHash,
           createdAt: '1970-01-01T00:00:00.000Z',
           extractorSet: call.cacheIdentity,
-          factsJson: call.facts[index]!.json,
+          factsJson: call.facts[index].json,
           path: file.path,
         }),
       0,

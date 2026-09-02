@@ -645,8 +645,8 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
           return;
         }
         counters.analyzedEdges += 1;
-        const source = nodes[sourceIndex]!;
-        const target = nodes[targetIndex]!;
+        const source = nodes[sourceIndex];
+        const target = nodes[targetIndex];
         source.outgoing += 1;
         target.incoming += 1;
         componentSets.union(sourceIndex, targetIndex);
@@ -670,16 +670,16 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   const communityRootByNode = new Array<number>(nodes.length);
   let postprocessIndex: number;
   for (let index = 0; index < nodes.length; index += 1) {
-    const node = nodes[index]!;
+    const node = nodes[index];
     componentRootByNode[index] = componentSets.find(index);
     communityRootByNode[index] = communitySets.find(index);
-    updateGroup(componentGroups, componentRootByNode[index]!, node, index, nodes);
-    updateGroup(communityGroups, communityRootByNode[index]!, node, index, nodes);
+    updateGroup(componentGroups, componentRootByNode[index], node, index, nodes);
+    updateGroup(communityGroups, communityRootByNode[index], node, index, nodes);
     if (isCooperativeCheckpoint(index)) yield* Effect.yieldNow;
   }
   postprocessIndex = 0;
   for (const group of communityGroups.values()) {
-    const componentRoot = componentRootByNode[group.representativeIndex]!;
+    const componentRoot = componentRootByNode[group.representativeIndex];
     componentGroups.get(componentRoot)!.communityCount += 1;
     if (isCooperativeCheckpoint(postprocessIndex++)) yield* Effect.yieldNow;
   }
@@ -705,7 +705,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     for (const [root, group] of componentGroups) {
       componentIds.set(root, groupId(group, 'connected-component-v1', 'cgcc'));
       if (limits.components > 0) {
-        componentLabels.set(root, componentLabel(nodes[group.representativeIndex]!, group.memberCount));
+        componentLabels.set(root, componentLabel(nodes[group.representativeIndex], group.memberCount));
       }
       if (isCooperativeCheckpoint(postprocessIndex++)) yield* Effect.yieldNow;
     }
@@ -716,7 +716,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
     for (const [root, group] of communityGroups) {
       communityIds.set(root, groupId(group, 'community-v1', 'cgc'));
       if (limits.communities > 0 || limits.surprisingLinks > 0 || options.communityId !== undefined) {
-        communityLabels.set(root, communityLabel(nodes[group.representativeIndex]!, group.memberCount));
+        communityLabels.set(root, communityLabel(nodes[group.representativeIndex], group.memberCount));
       }
       if (isCooperativeCheckpoint(postprocessIndex++)) yield* Effect.yieldNow;
     }
@@ -727,7 +727,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   let isolatedNodeCount = 0;
   let maximumDegree = 0;
   for (let index = 0; index < nodes.length; index += 1) {
-    const degree = nodes[index]!.incoming + nodes[index]!.outgoing;
+    const degree = nodes[index].incoming + nodes[index].outgoing;
     degreeVarianceTotal += (degree - averageDegree) ** 2;
     maximumDegree = Math.max(maximumDegree, degree);
     if (degree === 0) isolatedNodeCount += 1;
@@ -748,7 +748,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
   let hubCandidateCount = 0;
   let relationshipGroupCandidateCount = 0;
   for (let index = 0; index < nodes.length; index += 1) {
-    const node = nodes[index]!;
+    const node = nodes[index];
     const degree = node.incoming + node.outgoing;
     if (degree >= hubThreshold) {
       if (limits.hubs > 0) {
@@ -757,8 +757,8 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
           hubs,
           {
             classification: degree >= godNodeThreshold ? 'god-node' : 'hub',
-            communityId: communityIds.get(communityRootByNode[index]!)!,
-            componentId: componentIds.get(componentRootByNode[index]!)!,
+            communityId: communityIds.get(communityRootByNode[index])!,
+            componentId: componentIds.get(componentRootByNode[index])!,
             degree,
             degreeShare: stableNumber(degree / Math.max(1, counters.analyzedEdges * 2)),
             incoming: node.incoming,
@@ -826,15 +826,15 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
           const sourceIndex = edge.sourceId === undefined ? undefined : nodeIndex.get(edge.sourceId);
           const targetIndex = edge.targetId === undefined ? undefined : nodeIndex.get(edge.targetId);
           if (sourceIndex === undefined || targetIndex === undefined) return;
-          const componentRoot = componentRootByNode[sourceIndex]!;
+          const componentRoot = componentRootByNode[sourceIndex];
           componentGroups.get(componentRoot)!.edgeCount += 1;
-          const sourceCommunityRoot = communityRootByNode[sourceIndex]!;
-          const targetCommunityRoot = communityRootByNode[targetIndex]!;
+          const sourceCommunityRoot = communityRootByNode[sourceIndex];
+          const targetCommunityRoot = communityRootByNode[targetIndex];
           const fanOutGroup = fanOutGroups.get(sourceIndex);
           if (fanOutGroup && sourceIndex !== targetIndex) {
             retainBestDistinct(
               fanOutGroup.members,
-              nodeReference(nodes[targetIndex]!),
+              nodeReference(nodes[targetIndex]),
               limits.relationshipGroupMembers,
               compareNodeReferences,
               member => member.id,
@@ -844,7 +844,7 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
           if (fanInGroup && sourceIndex !== targetIndex) {
             retainBestDistinct(
               fanInGroup.members,
-              nodeReference(nodes[sourceIndex]!),
+              nodeReference(nodes[sourceIndex]),
               limits.relationshipGroupMembers,
               compareNodeReferences,
               member => member.id,
@@ -857,8 +857,8 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
           communityGroups.get(sourceCommunityRoot)!.crossCommunityOutgoing += 1;
           communityGroups.get(targetCommunityRoot)!.crossCommunityIncoming += 1;
           if (limits.surprisingLinks === 0) return;
-          const source = nodes[sourceIndex]!;
-          const target = nodes[targetIndex]!;
+          const source = nodes[sourceIndex];
+          const target = nodes[targetIndex];
           const relationCount = relationCounts.get(edge.relation) ?? 1;
           const relationRarity = Math.log1p(counters.analyzedEdges / relationCount);
           const sourceDegree = source.incoming + source.outgoing;
@@ -1012,9 +1012,9 @@ export const analyzeCodeGraph = Effect.fn('codeGraph.analyze')(function* (
           } satisfies CodeGraphCommunityDrillDown);
 
   const relationshipGroups: CodeGraphStructuralRelationshipGroup[] = mutableRelationshipGroups.map(group => ({
-    center: nodeReference(nodes[group.centerIndex]!),
+    center: nodeReference(nodes[group.centerIndex]),
     direction: group.direction,
-    id: structuralRelationshipGroupId(nodes[group.centerIndex]!, group.direction),
+    id: structuralRelationshipGroupId(nodes[group.centerIndex], group.direction),
     kind: 'structural-hyperedge',
     members: group.members,
     memberSampleComplete: edgeMetricsComplete && group.relationshipCount <= limits.relationshipGroupMembers,
@@ -1488,7 +1488,7 @@ class DisjointSets {
     let root = index;
     while (this.#parents[root] !== root) root = this.#parents[root]!;
     while (this.#parents[index] !== index) {
-      const parent = this.#parents[index]!;
+      const parent = this.#parents[index];
       this.#parents[index] = root;
       index = parent;
     }
@@ -1499,8 +1499,8 @@ class DisjointSets {
     let leftRoot = this.find(left);
     let rightRoot = this.find(right);
     if (leftRoot === rightRoot) return;
-    const leftRank = this.#ranks[leftRoot]!;
-    const rightRank = this.#ranks[rightRoot]!;
+    const leftRank = this.#ranks[leftRoot];
+    const rightRank = this.#ranks[rightRoot];
     if (leftRank < rightRank || (leftRank === rightRank && leftRoot > rightRoot)) {
       [leftRoot, rightRoot] = [rightRoot, leftRoot];
     }
@@ -1532,7 +1532,7 @@ function updateGroup(
   }
   group.memberCount += 1;
   if (compareCodeUnits(node.id, group.minimumNodeId) < 0) group.minimumNodeId = node.id;
-  if (compareRepresentatives(node, nodes[group.representativeIndex]!) < 0) group.representativeIndex = index;
+  if (compareRepresentatives(node, nodes[group.representativeIndex]) < 0) group.representativeIndex = index;
 }
 
 function groupId(group: MutableGroup, recipe: string, prefix: string): string {
@@ -1623,7 +1623,7 @@ function componentResult(
     id: componentIds.get(root)!,
     label: componentLabels.get(root)!,
     memberCount: group.memberCount,
-    representative: nodeReference(nodes[group.representativeIndex]!),
+    representative: nodeReference(nodes[group.representativeIndex]),
   };
 }
 
@@ -1637,14 +1637,14 @@ function communityResult(
   nodes: readonly NodeState[],
 ): CodeGraphCommunity {
   return {
-    componentId: componentIds.get(componentRootByNode[group.representativeIndex]!)!,
+    componentId: componentIds.get(componentRootByNode[group.representativeIndex])!,
     crossCommunityIncoming: group.crossCommunityIncoming,
     crossCommunityOutgoing: group.crossCommunityOutgoing,
     id: communityIds.get(root)!,
     internalEdgeCount: group.internalEdgeCount,
     label: communityLabels.get(root)!,
     memberCount: group.memberCount,
-    representative: nodeReference(nodes[group.representativeIndex]!),
+    representative: nodeReference(nodes[group.representativeIndex]),
   };
 }
 
@@ -1657,9 +1657,9 @@ function communityMembership(
   communityIds: ReadonlyMap<number, string>,
 ): CodeGraphCommunityMembership {
   return {
-    communityId: communityIds.get(communityRootByNode[index]!)!,
-    componentId: componentIds.get(componentRootByNode[index]!)!,
-    node: nodeReference(nodes[index]!),
+    communityId: communityIds.get(communityRootByNode[index])!,
+    componentId: componentIds.get(componentRootByNode[index])!,
+    node: nodeReference(nodes[index]),
   };
 }
 
@@ -1685,8 +1685,8 @@ function compareStructuralGroupCandidates(
   right: StructuralRelationshipGroupCandidate,
   nodes: readonly NodeState[],
 ): number {
-  const leftNode = nodes[left.centerIndex]!;
-  const rightNode = nodes[right.centerIndex]!;
+  const leftNode = nodes[left.centerIndex];
+  const rightNode = nodes[right.centerIndex];
   return (
     right.relationshipCount - left.relationshipCount ||
     compareCodeUnits(leftNode.qualifiedName, rightNode.qualifiedName) ||
@@ -1734,7 +1734,7 @@ function retainBest<T>(values: T[], candidate: T, limit: number, compare: (left:
   let high = values.length;
   while (low < high) {
     const middle = (low + high) >>> 1;
-    if (compare(candidate, values[middle]!) < 0) high = middle;
+    if (compare(candidate, values[middle]) < 0) high = middle;
     else low = middle + 1;
   }
   values.splice(low, 0, candidate);
@@ -1751,7 +1751,7 @@ function retainBestDistinct<T>(
   const candidateKey = key(candidate);
   const duplicate = values.findIndex(value => key(value) === candidateKey);
   if (duplicate >= 0) {
-    if (compare(candidate, values[duplicate]!) >= 0) return;
+    if (compare(candidate, values[duplicate]) >= 0) return;
     values.splice(duplicate, 1);
   }
   retainBest(values, candidate, limit, compare);
@@ -1857,7 +1857,7 @@ function architectureQuestions(input: {
     );
   } else if (input.communities.length >= 2) {
     questions.push(
-      `Where do ${input.communities[0]!.label} and ${input.communities[1]!.label} exchange data or control?`,
+      `Where do ${input.communities[0].label} and ${input.communities[1].label} exchange data or control?`,
     );
   }
   questions.push('Which current-source relationships have the highest reverse-impact risk for the next change?');

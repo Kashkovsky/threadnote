@@ -101,7 +101,7 @@ describe('code graph parser worker pool', () => {
 
   it('degrades emitted symbol and fact-byte exhaustion to one searchable module', () => {
     const file = inventoryFile('src/emission-budget.ts', 'export const emissionBudget = true;');
-    const root = factsFor(file).symbols[0]!;
+    const root = factsFor(file).symbols[0];
     const symbolHeavyFacts: CodeGraphFileFacts = {
       diagnostics: [],
       edges: [],
@@ -144,7 +144,7 @@ describe('code graph parser worker pool', () => {
     },
     ({maximumSymbols, symbolCount}) => {
       const file = inventoryFile('src/symbol-property.ts', 'export const symbolProperty = true;');
-      const root = factsFor(file).symbols[0]!;
+      const root = factsFor(file).symbols[0];
       const facts: CodeGraphFileFacts = {
         diagnostics: [],
         edges: [],
@@ -369,7 +369,7 @@ describe('code graph parser worker pool', () => {
       expect(degraded.degraded).toBe(true);
       expect(recovered.degraded).toBe(false);
       expect(processes).toHaveLength(2);
-      expect(processes[0]!.inputClosed).toBe(true);
+      expect(processes[0].inputClosed).toBe(true);
     }).pipe(provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn})), Effect.scoped);
   });
 
@@ -478,7 +478,7 @@ describe('code graph parser worker pool', () => {
       yield* Fiber.interrupt(fiber);
 
       expect(processes).toHaveLength(1);
-      expect(processes[0]!.killed).toBe(true);
+      expect(processes[0].killed).toBe(true);
 
       const recovered = yield* pool.extract(inventoryFile('src/recovered.ts', 'export const recovered = true;'), home);
       expect(recovered.degraded).toBe(false);
@@ -611,7 +611,7 @@ describe('code graph parser worker pool', () => {
 
       yield* pool.extract(inventoryFile('src/before-idle.ts', 'export const beforeIdle = true;'), home);
       yield* Effect.promise(() => new Promise(resolve => setTimeout(resolve, 40)));
-      expect(processes[0]!.inputClosed).toBe(true);
+      expect(processes[0].inputClosed).toBe(true);
 
       const afterIdle = yield* pool.extract(inventoryFile('src/after-idle.ts', 'export const afterIdle = true;'), home);
       expect(afterIdle.degraded).toBe(false);
@@ -637,8 +637,8 @@ describe('code graph parser worker pool', () => {
 
       yield* pool.extract(inventoryFile('src/before-trim.ts', 'export const beforeTrim = true;'), home);
       yield* Effect.all([pool.trimIdle, pool.trimIdle], {concurrency: 'unbounded'});
-      expect(processes[0]!.closeInputCalls).toBe(1);
-      expect(yield* Effect.promise(() => processes[0]!.exited)).toBe(0);
+      expect(processes[0].closeInputCalls).toBe(1);
+      expect(yield* Effect.promise(() => processes[0].exited)).toBe(0);
 
       const afterTrim = yield* pool.extract(inventoryFile('src/after-trim.ts', 'export const afterTrim = true;'), home);
       expect(afterTrim.degraded).toBe(false);
@@ -664,14 +664,14 @@ describe('code graph parser worker pool', () => {
       yield* waitUntil(() => processes[0]?.writes.length === 1);
 
       yield* pool.trimIdle;
-      expect(processes[0]!.inputClosed).toBe(false);
-      expect(processes[0]!.killed).toBe(false);
+      expect(processes[0].inputClosed).toBe(false);
+      expect(processes[0].killed).toBe(false);
 
-      const request = processes[0]!.writes[0]!;
-      processes[0]!.respond(request, factsFor(request.file));
+      const request = processes[0].writes[0];
+      processes[0].respond(request, factsFor(request.file));
       expect((yield* Fiber.join(fiber)).degraded).toBe(false);
       yield* pool.trimIdle;
-      expect(processes[0]!.closeInputCalls).toBe(1);
+      expect(processes[0].closeInputCalls).toBe(1);
     }).pipe(
       provideTestLayer(parserLayer({capacity: 1, requestTimeoutMilliseconds: 5_000, spawnWorker: spawn})),
       Effect.scoped,
@@ -699,8 +699,8 @@ describe('code graph parser worker pool', () => {
 
         expect(result.degraded).toBe(false);
         expect(launches).toHaveLength(1);
-        expect(launches[0]!.executable).toBe('C:\\Program Files\\Threadnote\\threadnote.exe');
-        expect(launches[0]!.arguments).toEqual([CODE_GRAPH_PARSER_WORKER_ARGUMENT]);
+        expect(launches[0].executable).toBe('C:\\Program Files\\Threadnote\\threadnote.exe');
+        expect(launches[0].arguments).toEqual([CODE_GRAPH_PARSER_WORKER_ARGUMENT]);
       }).pipe(
         provideTestLayer(parserLayer({capacity: 1, spawnWorker: spawn}, Layer.succeed(SystemInfo, windowsSystem))),
         Effect.scoped,

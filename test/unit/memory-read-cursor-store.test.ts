@@ -89,7 +89,7 @@ effectIt.effect('isolates every authority dimension and fails closed on collisio
       for (const options of [{ttlMilliseconds: MEMORY_READ_CURSOR_TTL_MILLISECONDS + 1}, {maximumEntries: 257}]) {
         const rejectedBound = yield* putPersistentMemoryReadCursor(
           home,
-          namespaces[0]!,
+          namespaces[0],
           memoryReadCursorToken(JSON.stringify(options)),
           state,
           99,
@@ -98,35 +98,35 @@ effectIt.effect('isolates every authority dimension and fails closed on collisio
         expect(rejectedBound).toBeInstanceOf(PersistentMemoryReadCursorStoreError);
       }
       const collisionCursor = memoryReadCursorToken('collision');
-      yield* putPersistentMemoryReadCursor(home, namespaces[0]!, collisionCursor, state, 100);
+      yield* putPersistentMemoryReadCursor(home, namespaces[0], collisionCursor, state, 100);
       const collision = yield* putPersistentMemoryReadCursor(
         home,
-        namespaces[0]!,
+        namespaces[0],
         collisionCursor,
         stateFor('replacement-must-not-win'),
         101,
       ).pipe(Effect.match({onFailure: error => error, onSuccess: () => undefined}));
       expect(collision).toBeInstanceOf(PersistentMemoryReadCursorStoreError);
-      expect(yield* takePersistentMemoryReadCursor(home, namespaces[0]!, collisionCursor, 102)).toEqual(state);
+      expect(yield* takePersistentMemoryReadCursor(home, namespaces[0], collisionCursor, 102)).toEqual(state);
 
       const corruptCursor = memoryReadCursorToken('corrupt');
-      yield* putPersistentMemoryReadCursor(home, namespaces[0]!, corruptCursor, state, 200);
+      yield* putPersistentMemoryReadCursor(home, namespaces[0], corruptCursor, state, 200);
       const databasePath = path.join(home, ...CURSOR_DATABASE_RELATIVE_PATH);
       yield* Effect.sync(() => {
         const database = new Database(databasePath, {strict: true});
         try {
           database
             .query('UPDATE read_context_cursors SET state_json = ? WHERE namespace = ? AND token = ?')
-            .run('{"version":1}', namespaces[0]!, corruptCursor);
+            .run('{"version":1}', namespaces[0], corruptCursor);
         } finally {
           database.close();
         }
       });
-      const corrupt = yield* takePersistentMemoryReadCursor(home, namespaces[0]!, corruptCursor, 201).pipe(
+      const corrupt = yield* takePersistentMemoryReadCursor(home, namespaces[0], corruptCursor, 201).pipe(
         Effect.match({onFailure: error => error, onSuccess: () => undefined}),
       );
       expect(corrupt).toBeInstanceOf(PersistentMemoryReadCursorStoreError);
-      expect(yield* takePersistentMemoryReadCursor(home, namespaces[0]!, corruptCursor, 201)).toBeUndefined();
+      expect(yield* takePersistentMemoryReadCursor(home, namespaces[0], corruptCursor, 201)).toBeUndefined();
     }),
   ).pipe(provideTestLayer(BunServices.layer)),
 );
@@ -168,7 +168,7 @@ effectIt.effect.prop(
         for (const [index, step] of steps.entries()) {
           now += step.advanceMilliseconds;
           pruneModel(model, now);
-          const namespace = namespaces[step.putNamespace]!;
+          const namespace = namespaces[step.putNamespace];
           const token = memoryReadCursorToken(`property-${index}`);
           const state = stateFor(`property-${index}`);
           yield* putPersistentMemoryReadCursor(home, namespace, token, state, now, {
@@ -181,7 +181,7 @@ effectIt.effect.prop(
 
           const targetIndex = step.takeToken % (index + 1);
           const targetToken = memoryReadCursorToken(`property-${targetIndex}`);
-          const targetNamespace = namespaces[step.takeNamespace]!;
+          const targetNamespace = namespaces[step.takeNamespace];
           pruneModel(model, now);
           const targetKey = modelKey(targetNamespace, targetToken);
           const expected = model.get(targetKey)?.state;

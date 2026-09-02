@@ -35,7 +35,7 @@ describe('memory-connections release-scale workflow', () => {
       readonly on: {readonly workflow_dispatch?: {readonly inputs?: Readonly<Record<string, unknown>>}};
     };
     const releaseGuide = await Bun.file('docs/releasing.md').text();
-    const job = workflow.jobs['memory-connections-one-hop-scale']!;
+    const job = workflow.jobs['memory-connections-one-hop-scale'];
     const benchmark = job.steps?.find(step => step.run?.includes('bench:memory-connections-scale'));
     const upload = job.steps?.find(step => step.uses === 'actions/upload-artifact@v7');
 

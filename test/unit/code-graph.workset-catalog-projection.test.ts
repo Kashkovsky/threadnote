@@ -404,11 +404,11 @@ describe('code graph ready-snapshot workset routing projections', {timeout: CI_S
             expect(codeGraphWorksetRoutingProjectionLogicalBytes(page)).toBeLessThanOrEqual(pageBytesMaximum);
           }
           for (let index = 0; index + 1 < pages.length; index += 1) {
-            const page = pages[index]!;
-            const next = pages[index + 1]!;
+            const page = pages[index];
+            const next = pages[index + 1];
             expect(
               page.length === pageSymbolsMaximum ||
-                codeGraphWorksetRoutingProjectionLogicalBytes([...page, next[0]!]) > pageBytesMaximum,
+                codeGraphWorksetRoutingProjectionLogicalBytes([...page, next[0]]) > pageBytesMaximum,
             ).toBe(true);
           }
         },

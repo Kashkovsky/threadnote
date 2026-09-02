@@ -412,7 +412,7 @@ export async function scanCodeGraphGitWorktreeRegistry(
     entryCount: observation.entryCount,
     registryRootIdentity: observation.registryRootIdentity,
     registryRootKind: observation.registryRootKind,
-    state: observation.states[0]!,
+    state: observation.states[0],
   };
 }
 
@@ -486,7 +486,7 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
         return {reason: 'ambiguous', state: 'unknown'};
       }
       const keys = codeGraphGitWorktreeAdminNameKeys(checkoutId, nameBytes);
-      exactEntryKeys.push(keys[0]!);
+      exactEntryKeys.push(keys[0]);
       const matchingTargetIndexes = new Set<number>();
       for (const key of keys) {
         for (const index of targetIndexesByKey.get(key) ?? []) matchingTargetIndexes.add(index);
@@ -498,11 +498,11 @@ async function scanCodeGraphGitWorktreeRegistryTargetSets(
         const matches = await observeCodeGraphGitdirBacklinkMatches(
           registryRoot,
           nameBytes,
-          indexes.map(index => canonicalWorktreePaths[index]!),
+          indexes.map(index => canonicalWorktreePaths[index]),
         );
         if (matches === undefined) return {reason: 'ambiguous', state: 'unknown'};
         for (const [matchIndex, matchesTarget] of matches.entries()) {
-          if (matchesTarget) targetPresence[indexes[matchIndex]!] = true;
+          if (matchesTarget) targetPresence[indexes[matchIndex]] = true;
         }
       }
     }

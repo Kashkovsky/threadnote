@@ -125,12 +125,12 @@ describe('code graph terminal anonymous telemetry', () => {
             codeGraphBuildAnonymousTelemetryFields({
               ...evidence,
               ...firstPrivate,
-            } as CodeGraphBuildAnonymousTelemetryInput),
+            }),
           ).toEqual(
             codeGraphBuildAnonymousTelemetryFields({
               ...evidence,
               ...secondPrivate,
-            } as CodeGraphBuildAnonymousTelemetryInput),
+            }),
           );
         },
       ),

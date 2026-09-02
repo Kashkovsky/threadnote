@@ -19,12 +19,12 @@ const program = Effect.gen(function* () {
   for (let unit = 0; unit < 16; unit += 1) {
     const startedAt = performance.now();
     const result = yield* runCodeGraphOrdinaryVectorMaintenanceUnit(
-      {checkoutId: checkoutId!, threadnoteHome: threadnoteHome!},
+      {checkoutId: checkoutId, threadnoteHome: threadnoteHome},
       {
         afterModelCommitBeforeFinalCursorCas: () =>
           Effect.gen(function* () {
             const marker = JSON.stringify({event: 'vector-page-committed', processId: process.pid});
-            yield* fs.writeFileString(markerPath!, marker, {flag: 'wx', mode: 0o600});
+            yield* fs.writeFileString(markerPath, marker, {flag: 'wx', mode: 0o600});
             process.stdout.write(`${marker}\n`);
             // Retain a real event-loop handle until the parent performs SIGKILL.
             for (;;) yield* Effect.sleep(60_000);

@@ -166,14 +166,14 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
     return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
   }
   const repoRoot = yield* fs
-    .realPath(metadata[0]!)
+    .realPath(metadata[0])
     .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-  const commonRaw = metadata[1]!;
+  const commonRaw = metadata[1];
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs
     .realPath(commonAbsolute)
     .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-  const objectFormat = metadata[2]!;
+  const objectFormat = metadata[2];
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
     return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
   }
@@ -186,7 +186,7 @@ export const revalidateRepositoryIdentityFence = Effect.fn('codeGraph.revalidate
     checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
     displayName: repositoryDisplayName(remoteIdentity, repoRoot),
     gitCommonDirectory,
-    headCommit: metadata[3]!,
+    headCommit: metadata[3],
     objectFormat,
     remoteIdentity,
     repoRoot,
@@ -298,8 +298,8 @@ export function parseRepositoryReadFenceSetupObservation(
     }
   }
   if (matches.gitCommonDirectory.length !== 1 || matches.worktree.length !== 1) return undefined;
-  const gitCommonDirectory = matches.gitCommonDirectory[0]!;
-  const worktree = matches.worktree[0]!;
+  const gitCommonDirectory = matches.gitCommonDirectory[0];
+  const worktree = matches.worktree[0];
   if (
     gitCommonDirectory.length === 0 ||
     worktree.length === 0 ||
@@ -349,15 +349,15 @@ const observeRepositoryReadFenceMetadata = Effect.fn('codeGraph.observeRepositor
   if (metadata.length !== 4) {
     return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
   }
-  const repoRoot = yield* fs.realPath(metadata[0]!);
-  const commonRaw = metadata[1]!;
+  const repoRoot = yield* fs.realPath(metadata[0]);
+  const commonRaw = metadata[1];
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs.realPath(commonAbsolute);
-  const objectFormat = metadata[2]!;
+  const objectFormat = metadata[2];
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
     return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
   }
-  const headCommit = metadata[3]!;
+  const headCommit = metadata[3];
   const expectedLength = objectFormat === 'sha256' ? 64 : 40;
   if (!new RegExp(`^[0-9a-f]{${expectedLength}}$`, 'u').test(headCommit)) {
     return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
@@ -365,9 +365,9 @@ const observeRepositoryReadFenceMetadata = Effect.fn('codeGraph.observeRepositor
   return {
     gitCommonDirectory,
     headCommit,
-    objectFormat: objectFormat as RepositoryIdentity['objectFormat'],
+    objectFormat,
     repoRoot,
-  };
+  } satisfies Pick<RepositoryIdentity, 'gitCommonDirectory' | 'headCommit' | 'objectFormat' | 'repoRoot'>;
 });
 
 /**
@@ -429,14 +429,14 @@ const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRe
     return yield* Effect.fail(new CodeGraphRepositoryError('Git repository identity metadata is invalid.'));
   }
   const repoRoot = yield* fs
-    .realPath(metadata[0]!)
+    .realPath(metadata[0])
     .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-  const commonRaw = metadata[1]!;
+  const commonRaw = metadata[1];
   const commonAbsolute = path.isAbsolute(commonRaw) ? commonRaw : path.resolve(repoRoot, commonRaw);
   const gitCommonDirectory = yield* fs
     .realPath(commonAbsolute)
     .pipe(Effect.mapError(() => new CodeGraphRepositoryError('Repository identity could not be revalidated.')));
-  const objectFormat = metadata[2]!;
+  const objectFormat = metadata[2];
   if (objectFormat !== 'sha1' && objectFormat !== 'sha256') {
     return yield* Effect.fail(new CodeGraphRepositoryError(`Unsupported Git object format: ${objectFormat}`));
   }
@@ -462,7 +462,7 @@ const resolveExpectedRepositoryIdentity = Effect.fn('codeGraph.resolveExpectedRe
     checkoutId: checkoutIdForGitCommonDirectory(gitCommonDirectory),
     displayName: repositoryDisplayName(remoteIdentity, repoRoot),
     gitCommonDirectory,
-    headCommit: metadata[3]!,
+    headCommit: metadata[3],
     objectFormat,
     remoteIdentity,
     repoRoot,
@@ -495,7 +495,7 @@ export function parseRepositoryIdentityWorktreeObservation(
   const heads = records.filter(record => record.startsWith('# branch.oid '));
   const branches = records.filter(record => record.startsWith('# branch.head '));
   if (heads.length !== 1 || branches.length > 1) return undefined;
-  const headCommit = heads[0]!.slice('# branch.oid '.length);
+  const headCommit = heads[0].slice('# branch.oid '.length);
   const expectedLength = objectFormat === 'sha256' ? 64 : 40;
   if (!new RegExp(`^[0-9a-f]{${expectedLength}}$`, 'u').test(headCommit)) return undefined;
   const rawBranch = branches[0]?.slice('# branch.head '.length);
@@ -575,7 +575,7 @@ function parseRegisteredRepositoryWorktrees(
     if (fields.some(field => field.length === 0)) throw invalid();
     const worktreeFields = fields.filter(field => field.startsWith('worktree '));
     if (worktreeFields.length !== 1) throw invalid();
-    const rawRoot = worktreeFields[0]!.slice('worktree '.length);
+    const rawRoot = worktreeFields[0].slice('worktree '.length);
     if (!rawRoot || byteLength(rawRoot) > CODE_GRAPH_WORKTREE_REGISTRY_LIMITS.maxPathBytes) throw invalid();
     const root = path.normalize(rawRoot);
     if (!path.isAbsolute(rawRoot) || !path.isAbsolute(root)) throw invalid();
@@ -658,7 +658,7 @@ export function normalizeCredentialFreeRemote(value: string): string | undefined
   if (!trimmed || trimmed.includes('\0') || /[\r\n]/.test(trimmed)) return undefined;
   const scp = trimmed.includes('://') ? undefined : /^(?:[^@/:]+@)?([^/:]+):(.+)$/.exec(trimmed);
   if (scp && !/^[A-Za-z]:[\\/]/.test(trimmed)) {
-    return normalizeRemoteParts(scp[1]!, scp[2]!);
+    return normalizeRemoteParts(scp[1], scp[2]);
   }
   try {
     const url = new URL(trimmed);
@@ -720,7 +720,7 @@ function parseGitDirectoryOutput(
     ) {
       return undefined;
     }
-    return {commonDirectory: records[0]!, gitDirectory: records[1]!};
+    return {commonDirectory: records[0], gitDirectory: records[1]};
   } catch {
     return undefined;
   }

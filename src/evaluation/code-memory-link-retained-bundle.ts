@@ -240,7 +240,7 @@ export function parseCodeMemoryLinkRetainedBundleIndexV1(value: unknown): CodeMe
     blobs.map(blob => blob.sha256),
     'blob hashes',
   );
-  if (blobs.some((blob, index) => index > 0 && blob.sha256 <= blobs[index - 1]!.sha256)) {
+  if (blobs.some((blob, index) => index > 0 && blob.sha256 <= blobs[index - 1].sha256)) {
     invalid('blob map must use canonical SHA-256 order');
   }
   if (!Array.isArray(index.clients) || index.clients.length < 2) {
@@ -259,7 +259,7 @@ export function parseCodeMemoryLinkRetainedBundleIndexV1(value: unknown): CodeMe
     clients.map(client => client.clientId),
     'client ids',
   );
-  if (clients.some((client, index) => index > 0 && client.clientId <= clients[index - 1]!.clientId)) {
+  if (clients.some((client, index) => index > 0 && client.clientId <= clients[index - 1].clientId)) {
     invalid('clients must use canonical client-id order');
   }
   if (
@@ -281,7 +281,7 @@ export function parseCodeMemoryLinkRetainedBundleIndexV1(value: unknown): CodeMe
     sealedFiles.map(file => file.path),
     'sealed file paths',
   );
-  if (sealedFiles.some((file, index) => index > 0 && file.path <= sealedFiles[index - 1]!.path)) {
+  if (sealedFiles.some((file, index) => index > 0 && file.path <= sealedFiles[index - 1].path)) {
     invalid('sealed files must use canonical path order');
   }
   const knownHashes = new Set(blobs.map(blob => blob.sha256));

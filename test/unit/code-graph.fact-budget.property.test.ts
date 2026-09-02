@@ -292,13 +292,13 @@ describe('cached code graph fact persistence budget', () => {
     const attributed = createCachedCodeGraphFactsAttributor(
       [file],
       discoverManifestWorkspace([file]),
-    )([postprocessed])[0]!;
+    )([postprocessed])[0];
 
     expect(utf8Bytes(raw)).toBeLessThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
     expect(utf8Bytes(postprocessed)).toBeGreaterThan(utf8Bytes(raw));
     expect(utf8Bytes(attributed)).toBeGreaterThan(CODE_GRAPH_CACHED_FACT_BYTES_MAXIMUM);
     const batches = finalCodeGraphFactBatches([attributed]);
-    const bounded = batches[0]![0]!;
+    const bounded = batches[0][0];
 
     expect(batches).toHaveLength(1);
     expect(bounded.bytes).toBe(utf8Bytes(bounded.facts));
@@ -391,13 +391,13 @@ describe('cached code graph fact persistence budget', () => {
           spec.relation,
           path,
           index + 1,
-          symbols[spec.source % symbols.length]!.id,
-          symbols[spec.target % symbols.length]!.id,
+          symbols[spec.source % symbols.length].id,
+          symbols[spec.target % symbols.length].id,
           spec.payload,
         ),
       );
       const references = edgeSpecs.flatMap((spec, index) =>
-        spec.hasReference ? [graphReference(edges[index]!, spec.payload)] : [],
+        spec.hasReference ? [graphReference(edges[index], spec.payload)] : [],
       );
       const facts: CodeGraphFileFacts = {
         derivationInputs: {

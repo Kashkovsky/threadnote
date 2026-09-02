@@ -403,7 +403,7 @@ describe('remote memory HTTP transport', () => {
       totalResults: 100,
       type: 'threadnote-remote-recall',
     });
-    expect(compact.blocks[0]?.text).not.toContain(recallResults[0]!.uri);
+    expect(compact.blocks[0]?.text).not.toContain(recallResults[0].uri);
 
     const explained = await callRecall(3_101, true);
     const explainedResults = explained.structured.results as readonly Readonly<Record<string, unknown>>[];

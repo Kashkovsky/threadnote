@@ -378,7 +378,7 @@ export const resolveProjectedMemoryPath = Effect.fn('obsidian.resolveProjectedMe
       ),
     );
   }
-  return matches[0] as (typeof matches)[number];
+  return matches[0];
 });
 
 const buildProjectionPlan = Effect.fn('obsidian.buildProjectionPlan')(function* (

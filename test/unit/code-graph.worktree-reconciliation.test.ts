@@ -870,7 +870,7 @@ describe('automatic missing-worktree reconciliation', () => {
         expect(secondEmptyPage).toEqual([]);
         expect(readReconciliationCursor(databasePath)).toBe(worktreeIds[63]);
 
-        yield* Effect.sync(() => removeViewTombstone(databasePath, worktreeIds[64]!));
+        yield* Effect.sync(() => removeViewTombstone(databasePath, worktreeIds[64]));
         const sparsePage = yield* store.claimWorktreeReconciliationCandidates(databasePath, 32, {
           waitTimeoutMilliseconds: 0,
         });
@@ -939,7 +939,7 @@ describe('automatic missing-worktree reconciliation', () => {
         const worktreeIds = Array.from({length: 5}, (_, index) => String(index + 1).repeat(64));
         const snapshotIds = Array.from({length: 5}, (_, index) => `cgsn_${index.toString(16).padStart(40, '0')}`);
         yield* Effect.sync(() => seedCandidateViews(databasePath, worktreeIds, false));
-        const leaseToken = yield* store.acquireSnapshotLease(databasePath, snapshotIds[0]!, 60_000);
+        const leaseToken = yield* store.acquireSnapshotLease(databasePath, snapshotIds[0], 60_000);
         // Lease acquisition legitimately prunes one existing retired page and
         // may schedule detached cleanup. Seed the retired ancestry afterward
         // so this authority test cannot race its own setup cleanup.
@@ -948,7 +948,7 @@ describe('automatic missing-worktree reconciliation', () => {
         const results = yield* Effect.forEach(
           worktreeIds,
           (worktreeId, index) =>
-            store.removeView(databasePath, worktreeId, snapshotIds[index]!, {
+            store.removeView(databasePath, worktreeId, snapshotIds[index], {
               requireReconciliationSchema: true,
               // Each committed removal may schedule bounded detached cleanup.
               // This sequential authority test waits through that legitimate
@@ -971,14 +971,14 @@ describe('automatic missing-worktree reconciliation', () => {
           {id: snapshotIds[4], state: 'retired'},
         ]);
         const childAfterRemoval = `cgsn_${'d'.repeat(40)}`;
-        yield* Effect.sync(() => seedReadySnapshotChild(databasePath, snapshotIds[0]!, childAfterRemoval));
+        yield* Effect.sync(() => seedReadySnapshotChild(databasePath, snapshotIds[0], childAfterRemoval));
         yield* store.releaseSnapshotLease(databasePath, leaseToken);
-        expect(
-          yield* Effect.sync(() => readSnapshotStates(databasePath, [snapshotIds[0]!, childAfterRemoval])),
-        ).toEqual([
-          {id: snapshotIds[0], state: 'ready'},
-          {id: childAfterRemoval, state: 'ready'},
-        ]);
+        expect(yield* Effect.sync(() => readSnapshotStates(databasePath, [snapshotIds[0], childAfterRemoval]))).toEqual(
+          [
+            {id: snapshotIds[0], state: 'ready'},
+            {id: childAfterRemoval, state: 'ready'},
+          ],
+        );
       }).pipe(provideTestLayer(storeLayer)),
     ),
   );
@@ -2381,13 +2381,13 @@ function seedRetirementProtectionGraph(databasePath: string, snapshotIds: readon
     };
     database.transaction(() => {
       const warmChild = `cgsn_${'a'.repeat(40)}`;
-      insertDerived(warmChild, '6'.repeat(64), snapshotIds[1]!, 'ready');
+      insertDerived(warmChild, '6'.repeat(64), snapshotIds[1], 'ready');
 
-      insertActive.run('9'.repeat(64), snapshotIds[2]!, new Date(30_000).toISOString());
+      insertActive.run('9'.repeat(64), snapshotIds[2], new Date(30_000).toISOString());
 
       const retiredIntermediate = `cgsn_${'b'.repeat(40)}`;
       const activeGrandchild = `cgsn_${'c'.repeat(40)}`;
-      insertDerived(retiredIntermediate, '7'.repeat(64), snapshotIds[3]!, 'retired');
+      insertDerived(retiredIntermediate, '7'.repeat(64), snapshotIds[3], 'retired');
       insertDerived(activeGrandchild, '8'.repeat(64), retiredIntermediate, 'ready');
       insertActive.run('8'.repeat(64), activeGrandchild, new Date(30_001).toISOString());
 
@@ -2396,7 +2396,7 @@ function seedRetirementProtectionGraph(databasePath: string, snapshotIds: readon
           `INSERT INTO snapshot_leases (token, snapshot_id, expires_at, retire_when_inactive)
            VALUES ('expired-only', ?, ?, 0)`,
         )
-        .run(snapshotIds[4]!, Date.now() - 1);
+        .run(snapshotIds[4], Date.now() - 1);
     })();
   } finally {
     database.close(false);

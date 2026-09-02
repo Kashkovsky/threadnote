@@ -224,10 +224,10 @@ function cursorRuleProblem(content: string): string | undefined {
 function compareSemver(left: string, right: string): number {
   const [leftCore, leftPrerelease] = left.split('-', 2);
   const [rightCore, rightPrerelease] = right.split('-', 2);
-  const leftParts = leftCore!.split('.').map(Number);
-  const rightParts = rightCore!.split('.').map(Number);
+  const leftParts = leftCore.split('.').map(Number);
+  const rightParts = rightCore.split('.').map(Number);
   for (let index = 0; index < 3; index += 1) {
-    const difference = leftParts[index]! - rightParts[index]!;
+    const difference = leftParts[index] - rightParts[index];
     if (difference !== 0) return difference;
   }
   if (leftPrerelease === rightPrerelease) return 0;

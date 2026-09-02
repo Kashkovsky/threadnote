@@ -256,7 +256,7 @@ export async function runReleaseMatrix(options: ReleaseOptions, candidateInstall
       );
       return;
     }
-    const scheduled = manifest.schedule[state.trials]!;
+    const scheduled = manifest.schedule[state.trials];
     const client = registry.clients.find(value => value.clientId === scheduled.clientId);
     if (!client) throw new Error('Frozen schedule names a client absent from the reviewed registry.');
     let result: Awaited<ReturnType<typeof invoke>>;
@@ -377,7 +377,7 @@ async function runCalibrationSchedule(
       );
       return;
     }
-    const run = plan.runs[results.length]!;
+    const run = plan.runs[results.length];
     const output = await capture(command, options.calibrationArguments, {
       cwd: sandbox,
       environment: {
@@ -397,7 +397,7 @@ async function runCalibrationSchedule(
       throw new Error(`Calibration command failed at run ${run.runOrder}; calibration stopped without skipping.`);
     }
     const raw = parseJson(output.stdout, 'calibration command output');
-    const prior = results.length === 0 ? null : calibrationResultDigest(results[results.length - 1]!);
+    const prior = results.length === 0 ? null : calibrationResultDigest(results[results.length - 1]);
     const next = createCalibrationResult(plan, run, raw, prior);
     const appended = [...results, next];
     assertCodeMemoryLinkCalibrationPrefixV1(plan, appended);
@@ -740,7 +740,7 @@ export function parseCalibrationPlan(value: unknown): CodeMemoryLinkCalibrationP
     fixtureFiles.map(file => file.artifactId),
     'calibration fixture artifact ids',
   );
-  if (fixtureFiles.some((file, index) => file.artifactId !== fixture.artifacts[index]!.artifactId)) {
+  if (fixtureFiles.some((file, index) => file.artifactId !== fixture.artifacts[index].artifactId)) {
     throw new Error('Calibration fixture layout differs from the content-addressed fixture roster.');
   }
   unique(
@@ -972,8 +972,8 @@ export function assertCodeMemoryLinkCalibrationPrefixV1(
   const results = resultsInput.map(parseCodeMemoryLinkCalibrationResultV1);
   if (results.length > plan.runs.length) throw new Error('Calibration results exceed the frozen schedule.');
   for (const [index, result] of results.entries()) {
-    const run = plan.runs[index]!;
-    const previous = index === 0 ? null : calibrationResultDigest(results[index - 1]!);
+    const run = plan.runs[index];
+    const previous = index === 0 ? null : calibrationResultDigest(results[index - 1]);
     if (
       result.planHash !== plan.planHash ||
       result.runOrder !== run.runOrder ||
@@ -1034,7 +1034,7 @@ function parseArguments(arguments_: readonly string[]): Options {
     '--trials',
   ]);
   for (let index = 0; index < arguments_.length; index += 1) {
-    const option = arguments_[index]!;
+    const option = arguments_[index];
     if (option === '--calibration-arg') {
       calibrationArguments.push(required(arguments_[++index], option));
     } else if (scalarOptions.has(option)) {
@@ -1298,14 +1298,14 @@ export function boundedCodeMemoryLinkChildFailureDiagnostic(input: {
   const budgets = streams.map(stream => Math.min(stream.value.length, fairShare));
   let remaining = payloadBudget - budgets.reduce((total, budget) => total + budget, 0);
   for (let index = streams.length - 1; index >= 0 && remaining > 0; index -= 1) {
-    const available = streams[index]!.value.length - budgets[index]!;
+    const available = streams[index].value.length - budgets[index];
     const granted = Math.min(available, remaining);
-    budgets[index]! += granted;
+    budgets[index] += granted;
     remaining -= granted;
   }
   return streams
     .map((stream, index) => {
-      return `${headers[index]}${stream.value.slice(-budgets[index]!)}`;
+      return `${headers[index]}${stream.value.slice(-budgets[index])}`;
     })
     .join('\n');
 }
@@ -1396,9 +1396,9 @@ function selectedMemoryRoster(
     parsed.some(
       (entry, index) =>
         index > 0 &&
-        (parsed[index - 1]!.memoryIdDigest > entry.memoryIdDigest ||
-          (parsed[index - 1]!.memoryIdDigest === entry.memoryIdDigest &&
-            parsed[index - 1]!.contentSha256 >= entry.contentSha256)),
+        (parsed[index - 1].memoryIdDigest > entry.memoryIdDigest ||
+          (parsed[index - 1].memoryIdDigest === entry.memoryIdDigest &&
+            parsed[index - 1].contentSha256 >= entry.contentSha256)),
     ) ||
     new Set(parsed.map(memory => memory.memoryIdDigest)).size !== parsed.length
   ) {
@@ -1408,7 +1408,7 @@ function selectedMemoryRoster(
 }
 
 function canonicalAscendingUnique(values: readonly string[], label: string): void {
-  if (values.some((value, index) => index > 0 && value <= values[index - 1]!)) {
+  if (values.some((value, index) => index > 0 && value <= values[index - 1])) {
     throw new Error(`${label} must be unique in canonical ascending order.`);
   }
 }

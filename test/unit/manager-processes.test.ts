@@ -87,7 +87,7 @@ describe('Manager process API', () => {
       const serialized = JSON.stringify(listed!.body);
       expect(serialized).not.toContain(token);
       expect(serialized).not.toContain(home);
-      const process = (listed!.body as {processes: readonly {processId: number; processRef?: string}[]}).processes[0]!;
+      const process = (listed!.body as {processes: readonly {processId: number; processRef?: string}[]}).processes[0];
       expect(process).toMatchObject({processId, processRef: expect.stringMatching(/^tnp_[0-9a-f]{64}$/u)});
 
       const terminated = yield* handleManagerProcessRequest({

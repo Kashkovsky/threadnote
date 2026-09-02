@@ -421,7 +421,7 @@ export const runRecall = Effect.fn('runRecall')(function* (config: RuntimeConfig
   const nodeLimit = options.nodeLimit
     ? yield* attemptSync(() => parsePositiveInteger(options.nodeLimit!, 'node limit'))
     : undefined;
-  const explicitWorkset = options.workset ? yield* requireWorkset(config.manifestPath, options.workset!) : undefined;
+  const explicitWorkset = options.workset ? yield* requireWorkset(config.manifestPath, options.workset) : undefined;
   const explicitThreshold = options.threshold;
   const thresholdPolicy =
     explicitThreshold === undefined
@@ -758,7 +758,7 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
     [uri],
     [`threadnote://user/${uriSegment(config.user)}/memories`],
   );
-  const canonicalUri = identity!.canonicalUri;
+  const canonicalUri = identity.canonicalUri;
   if (isMemoryRelocationUri(config, canonicalUri)) {
     const resolved = yield* readMemoryWithRelocations(config, canonicalUri).pipe(
       Effect.tapError(error => {
@@ -766,15 +766,15 @@ export const runRead = Effect.fn('runRead')(function* (config: RuntimeConfig, ur
         return recovery === undefined ? Effect.void : Console.error(memoryReadRecoveryText(recovery));
       }),
     );
-    yield* verifyResolvedMemoryIdentity(identity!, resolved.canonicalUri, resolved.content);
-    if (identity!.requestedUri !== resolved.canonicalUri) {
-      yield* Console.error(`Resolved memory: ${identity!.requestedUri} -> ${resolved.canonicalUri}`);
+    yield* verifyResolvedMemoryIdentity(identity, resolved.canonicalUri, resolved.content);
+    if (identity.requestedUri !== resolved.canonicalUri) {
+      yield* Console.error(`Resolved memory: ${identity.requestedUri} -> ${resolved.canonicalUri}`);
     }
     yield* writeFinalCliOutput(resolved.content);
     return;
   }
   const content = yield* store.read(resourceStoreLocation(config), canonicalUri);
-  yield* verifyResolvedMemoryIdentity(identity!, canonicalUri, content);
+  yield* verifyResolvedMemoryIdentity(identity, canonicalUri, content);
   yield* writeFinalCliOutput(content);
 });
 
@@ -1346,7 +1346,7 @@ export const runImportPack = Effect.fn('runImportPack')(function* (config: Runti
   if (!options.path) {
     return yield* Effect.fail(new MemoryOperationError('Provide --path for import-pack.'));
   }
-  const inputPath = yield* expandPath(options.path!);
+  const inputPath = yield* expandPath(options.path);
   const fs = yield* FileSystem.FileSystem;
   const rawPack = yield* fs.readFileString(inputPath);
   const pack = yield* Effect.try({
@@ -1535,12 +1535,12 @@ export const storeMemory = Effect.fn('storeMemory')(function* (config: RuntimeCo
       );
     }
     if (options.dryRun) {
-      yield* storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string);
+      yield* storeSharedMemoryReplacement(config, ov, options, options.replaceUri);
       return options.replaceUri;
     }
     const fs = yield* FileSystem.FileSystem;
     const sharedWrite = verifyAuthoredMemoryRelationTargetIdentities(config, options.expectedSourceContent ?? []).pipe(
-      Effect.andThen(storeSharedMemoryReplacement(config, ov, options, options.replaceUri as string)),
+      Effect.andThen(storeSharedMemoryReplacement(config, ov, options, options.replaceUri)),
     );
     yield* withSharedRepositoryLock(
       config,

@@ -473,7 +473,7 @@ function normalizeGraphPreflightWithoutHash(
   const observedCitationDigests = preflight.observedCitationDigests.map(value =>
     matching(value, HASH, 'observed citation digest'),
   );
-  if (observedCitationDigests.some((entry, index) => index > 0 && observedCitationDigests[index - 1]! >= entry)) {
+  if (observedCitationDigests.some((entry, index) => index > 0 && observedCitationDigests[index - 1] >= entry)) {
     invalid('observed citation digests must be unique and sorted');
   }
   const responses = object(preflight.observedResponses, 'graph preflight response projections');
@@ -504,7 +504,7 @@ function normalizeGraphPreflightWithoutHash(
   if (
     observedSelectedMemories.some((entry, index) => {
       if (index === 0) return false;
-      const previous = observedSelectedMemories[index - 1]!;
+      const previous = observedSelectedMemories[index - 1];
       return (
         previous.memoryIdDigest > entry.memoryIdDigest ||
         (previous.memoryIdDigest === entry.memoryIdDigest && previous.contentSha256 >= entry.contentSha256)

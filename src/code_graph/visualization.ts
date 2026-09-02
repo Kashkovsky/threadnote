@@ -642,7 +642,7 @@ export function groupManagerGraphRepositories(
     .map(([repositoryId, group]) => {
       const views = group.views.sort(compareIndexedViews);
       return {
-        defaultViewId: views[0]!.id,
+        defaultViewId: views[0].id,
         displayName: group.displayName,
         id: repositoryId,
         repositoryId,

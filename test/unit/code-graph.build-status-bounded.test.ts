@@ -185,7 +185,7 @@ describe('bounded code graph build-status maintenance', () => {
             fixtureStatus(identity, `${index.toString(16).padStart(16, '0')}`, index),
           );
           for (const status of statuses) yield* writeStatusPair(fs, path, directory, status);
-          const target = statuses[0]!;
+          const target = statuses[0];
           const replacement = {
             ...target,
             error: {summary: 'replacement'},
@@ -233,7 +233,7 @@ describe('bounded code graph build-status maintenance', () => {
             fixtureStatus(identity, `${index.toString(16).padStart(16, '0')}`, index),
           );
           for (const status of statuses) yield* writeStatusPair(fs, path, directory, status);
-          const target = statuses[0]!;
+          const target = statuses[0];
           const currentBuildId = statuses.at(-1)!.buildId;
 
           const interrupted = yield* pruneCodeGraphBuildHistoryUnit(
@@ -279,14 +279,14 @@ describe('bounded code graph build-status maintenance', () => {
           const first = yield* pruneCodeGraphBuildHistoryUnit(layout, identity.worktreeId, protectedBuildId);
 
           expect(first).toEqual({cursorToken: `bh1:s:${prefix.at(-1)!.buildId}`, state: 'progress'});
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.json`))).toBe(true);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.json`))).toBe(true);
           if (first.state !== 'progress') return;
 
           expect(
             yield* pruneCodeGraphBuildHistoryUnit(layout, identity.worktreeId, protectedBuildId, first.cursorToken),
           ).toEqual({cursorToken: 'bh1:r', state: 'progress'});
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.json`))).toBe(false);
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.manager-context`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.json`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.manager-context`))).toBe(false);
           for (const status of prefix) {
             expect(yield* fs.exists(path.join(directory, `${status.buildId}.json`))).toBe(true);
           }
@@ -316,14 +316,14 @@ describe('bounded code graph build-status maintenance', () => {
           yield* firstReporter.completeSnapshot(fixtureSnapshot(identity));
 
           expect(yield* fs.exists(path.join(directory, '.history-prune-cursor'))).toBe(true);
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.json`))).toBe(true);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.json`))).toBe(true);
 
           const secondReporter = yield* makeCodeGraphBuildReporter(identity, layout);
           yield* secondReporter.completeSnapshot(fixtureSnapshot(identity));
 
           expect(yield* fs.exists(path.join(directory, '.history-prune-cursor'))).toBe(false);
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.json`))).toBe(false);
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.manager-context`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.json`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.manager-context`))).toBe(false);
         }),
       ),
     );
@@ -360,8 +360,8 @@ describe('bounded code graph build-status maintenance', () => {
 
           expect(yield* fs.exists(temporary)).toBe(false);
           expect(yield* fs.exists(path.join(directory, '.history-prune-cursor'))).toBe(false);
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.json`))).toBe(false);
-          expect(yield* fs.exists(path.join(directory, `${terminal[0]!.buildId}.manager-context`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.json`))).toBe(false);
+          expect(yield* fs.exists(path.join(directory, `${terminal[0].buildId}.manager-context`))).toBe(false);
         }),
       ),
     );
@@ -386,7 +386,7 @@ describe('bounded code graph build-status maintenance', () => {
           const temporary = path.join(outside, '.history-prune-cursor.tmp');
           yield* fs.writeFileString(
             temporary,
-            `${JSON.stringify({cursorToken: `bh1:s:${statuses[0]!.buildId}`, schemaVersion: 1})}\n`,
+            `${JSON.stringify({cursorToken: `bh1:s:${statuses[0].buildId}`, schemaVersion: 1})}\n`,
             {flag: 'wx', mode: 0o600},
           );
           yield* fs.symlink(outside, directory);
@@ -527,7 +527,7 @@ describe('bounded code graph build-status maintenance', () => {
             expect(removed.length).toBeLessThanOrEqual(2);
             expect(removed.filter(name => name.endsWith('.json'))).toHaveLength(1);
             expect(removed.filter(name => name.endsWith('.manager-context'))).toHaveLength(1);
-            expect(removed[0]!.slice(0, -'.json'.length)).toBe(removed[1]!.slice(0, -'.manager-context'.length));
+            expect(removed[0].slice(0, -'.json'.length)).toBe(removed[1].slice(0, -'.manager-context'.length));
             expect(after.has(`${currentBuildId}.json`)).toBe(true);
           }),
         ),

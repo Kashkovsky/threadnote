@@ -97,7 +97,7 @@ describe('Context Brief compiler', () => {
       );
       expect(result.structuredContent.stalenessAndConflicts).toEqual([]);
       expect(result.structuredContent.recommendedFollowUps).toEqual([
-        expect.objectContaining({operation: 'inspect-node', rank: 0, ref: graphEvidence().cards[0]!.ref}),
+        expect.objectContaining({operation: 'inspect-node', rank: 0, ref: graphEvidence().cards[0].ref}),
       ]);
       expectTextCarriesSelectedEvidence(result.text, result.structuredContent);
 
@@ -172,7 +172,7 @@ describe('Context Brief compiler', () => {
       expect(agentShared).toBeDefined();
       if (agentShared === undefined) throw new Error('Expected shared memory in the agent view.');
       expect(agentShared.codeRelations).toEqual(shared.codeRelations);
-      const relation = shared.codeRelations![0]!;
+      const relation = shared.codeRelations![0];
       const oversizedRelations = Array.from({length: 9}, (_, anchorOrdinal) => ({...relation, anchorOrdinal}));
       expect(() =>
         parseContextBriefV1({
@@ -353,8 +353,8 @@ describe('Context Brief compiler', () => {
           mode: 'impact',
         });
         const brief = result.structuredContent;
-        const contract = brief.graph.contracts[0]!;
-        const recovery = brief.recommendedFollowUps[0]!;
+        const contract = brief.graph.contracts[0];
+        const recovery = brief.recommendedFollowUps[0];
         const agentView = parseContextBriefAgentViewText(result.text);
 
         expect(brief.activeHandoffs[0]?.selectionBasis).toBe('code-citation');
@@ -414,9 +414,9 @@ describe('Context Brief compiler', () => {
             task: 'T'.repeat(4_096),
           });
           const brief = result.structuredContent;
-          const memory = includeActiveHandoff ? brief.activeHandoffs[0]! : brief.durableDecisions[0]!;
-          const contract = brief.graph.contracts[0]!;
-          const recovery = brief.recommendedFollowUps[0]!;
+          const memory = includeActiveHandoff ? brief.activeHandoffs[0] : brief.durableDecisions[0];
+          const contract = brief.graph.contracts[0];
+          const recovery = brief.recommendedFollowUps[0];
           const agentMemory = includeActiveHandoff
             ? parseContextBriefAgentViewText(result.text).activeHandoffs?.[0]
             : parseContextBriefAgentViewText(result.text).durableDecisions?.[0];
@@ -912,7 +912,7 @@ describe('Context Brief compiler', () => {
       );
       const uri = `threadnote://user/test/memories/durable/projects/threadnote/${'u'.repeat(120)}.md`;
       const graph = minimalGraphEvidence();
-      const card = graph.cards[0]!;
+      const card = graph.cards[0];
       const result = yield* compileContextBriefWith(
         {
           citationValidation: () =>
@@ -1391,7 +1391,7 @@ describe('Context Brief compiler', () => {
         });
         expect(decision?.citationReceipts).toHaveLength(8);
         expect(decision?.citationReceipts?.[0]).toEqual({
-          citationId: fixture.memory.candidates[0]!.codeCitations[0]!.id,
+          citationId: fixture.memory.candidates[0].codeCitations[0].id,
           observedNodeId: fixture.observedNodeId,
           reason: 'relocated',
           status: 'relocated',
@@ -1427,7 +1427,7 @@ describe('Context Brief compiler', () => {
       expect(expanded.structuredContent.recommendedFollowUps).toEqual(
         expect.arrayContaining([expect.objectContaining({operation: 'inspect-node', ref: fixture.observedNodeId})]),
       );
-      const firstDecision = expanded.structuredContent.durableDecisions[0]!;
+      const firstDecision = expanded.structuredContent.durableDecisions[0];
       const relocatedTargets = [`cgs_${'a'.repeat(32)}`, `cgs_${'b'.repeat(32)}`] as const;
       const multiTargetView = projectContextBriefAgentView({
         ...expanded.structuredContent,
@@ -1494,8 +1494,8 @@ describe('Context Brief compiler', () => {
         const graph = graphEvidence();
         const memory = memoryEvidence();
         const reordered = yield* compile(
-          {...graph, cards: graphOrder.map(index => graph.cards[index]!)},
-          {...memory, candidates: memoryOrder.map(index => memory.candidates[index]!)},
+          {...graph, cards: graphOrder.map(index => graph.cards[index])},
+          {...memory, candidates: memoryOrder.map(index => memory.candidates[index])},
           1_500,
         );
         expect(reordered.structuredContent).toEqual(baseline.structuredContent);
@@ -1611,7 +1611,7 @@ describe('Context Brief compiler', () => {
     });
 
     expect(merged.candidates).toHaveLength(9);
-    expect(logical.durableDecisions.map(memory => memory.uri)).toEqual([lexical.candidates[0]!.uri]);
+    expect(logical.durableDecisions.map(memory => memory.uri)).toEqual([lexical.candidates[0].uri]);
     expect(logical.coverage.memory.codeAnchors?.matchedMemories).toBe(0);
   });
 
@@ -1846,7 +1846,7 @@ describe('Context Brief compiler', () => {
         expect(brief.recommendedFollowUps[0]).toMatchObject({operation: 'inspect-node', rank: 0});
         expect(brief.graph.contracts.length).toBeLessThanOrEqual(1);
         if (brief.graph.contracts.length === 1) {
-          const contract = brief.graph.contracts[0]!;
+          const contract = brief.graph.contracts[0];
           expect(contract.id).toBe('recovery-contract-0');
           expect(new TextEncoder().encode(contract.evidence.path).byteLength).toBeLessThanOrEqual(48);
           expect(contract.evidence.pathTruncated).toBe(
@@ -1974,7 +1974,7 @@ describe('Context Brief compiler', () => {
         fc.uniqueArray(SHA256_ARBITRARY, {minLength: 2, maxLength: 2}),
         (coarse, [sourceHash, observedHash]) => {
           const status = validateContextBriefPreciseCodeEvidence({
-            evidence: {...preciseEvidence(), contentHash: sourceHash!},
+            evidence: {...preciseEvidence(), contentHash: sourceHash},
             observation: {...preciseObservation(), contentHash: observedHash},
           });
           expect(status).toBe('changed');
@@ -2063,7 +2063,7 @@ function compileCodeLinkedRecoveryFixture(
         : {}),
       codeCitations: citations,
       codeLinkMatches: citations.map((citation, relationIndex) => ({
-        anchorOrdinal: anchorOrdinalsByMemory[rank]![relationIndex]!,
+        anchorOrdinal: anchorOrdinalsByMemory[rank][relationIndex],
         anchorPath: citation.path,
         citationId: citation.id,
         matchKind: 'file-path' as const,
@@ -2129,14 +2129,14 @@ function compileCodeLinkedRecoveryFixture(
         Effect.succeed({
           ...graph,
           cards: Array.from({length: cardCount}, (_, rank) => ({
-            ...graph.cards[0]!,
+            ...graph.cards[0],
             id: `recovery-card-${rank}`,
             rank,
             reason: `Bounded recovery graph evidence ${rank}: ${'r'.repeat(96)}`,
             ref: recoveryGraphCardRef(rank),
             ...(options.maximumMemoryIdentity === true ? {repositoryKey: '界'.repeat(85)} : {}),
             symbol: {
-              ...graph.cards[0]!.symbol,
+              ...graph.cards[0].symbol,
               line: rank + 1,
               name: `recoveryContextBrief${rank}`,
               path: `src/context_brief/recovery-${rank}.ts`,
@@ -2145,9 +2145,9 @@ function compileCodeLinkedRecoveryFixture(
           })),
           continuation: undefined,
           contracts: Array.from({length: options.contractCount ?? 0}, (_, rank) => ({
-            ...graph.contracts[0]!,
+            ...graph.contracts[0],
             evidence: {
-              ...graph.contracts[0]!.evidence,
+              ...graph.contracts[0].evidence,
               line: rank + 1,
               path:
                 rank === 0 && options.contractEvidencePath !== undefined

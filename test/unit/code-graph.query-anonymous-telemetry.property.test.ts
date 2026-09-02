@@ -212,7 +212,7 @@ describe('code graph query anonymous telemetry', () => {
 
       expect(result).toBe('done');
       expect(capture.spans).toHaveLength(4);
-      const status = spanAttributes(capture.spans[0]!);
+      const status = spanAttributes(capture.spans[0]);
       expect(status).toMatchObject({
         'threadnote.event': 'checkpoint',
         'threadnote.graph.request_kind': 'inspect.query',
@@ -223,7 +223,7 @@ describe('code graph query anonymous telemetry', () => {
       });
       expect(status).not.toHaveProperty('threadnote.graph.snapshot_selection');
 
-      for (const attributes of [spanAttributes(capture.spans[1]!), spanAttributes(capture.spans[2]!)]) {
+      for (const attributes of [spanAttributes(capture.spans[1]), spanAttributes(capture.spans[2])]) {
         expect(attributes).toMatchObject({
           'threadnote.graph.request_kind': 'inspect.query',
           'threadnote.graph.request_scope': 'local',
@@ -234,9 +234,9 @@ describe('code graph query anonymous telemetry', () => {
           'threadnote.graph.snapshot_symbols_bucket': '2^7',
         });
       }
-      expect(spanAttributes(capture.spans[1]!)).toMatchObject({'threadnote.phase': 'graph.query.snapshot'});
-      expect(spanAttributes(capture.spans[2]!)).toMatchObject({'threadnote.phase': 'graph.query.execute'});
-      expect(spanAttributes(capture.spans[3]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[1])).toMatchObject({'threadnote.phase': 'graph.query.snapshot'});
+      expect(spanAttributes(capture.spans[2])).toMatchObject({'threadnote.phase': 'graph.query.execute'});
+      expect(spanAttributes(capture.spans[3])).toMatchObject({
         'threadnote.event': 'completion',
         'threadnote.graph.request_kind': 'inspect.query',
         'threadnote.graph.request_scope': 'local',
@@ -309,7 +309,7 @@ describe('code graph query anonymous telemetry', () => {
       for (const span of capture.spans.slice(0, 4)) {
         expect(spanAttributes(span)).not.toHaveProperty('threadnote.graph.snapshot_selection');
       }
-      const completion = spanAttributes(capture.spans[4]!);
+      const completion = spanAttributes(capture.spans[4]);
       expect(completion).not.toHaveProperty('threadnote.phase');
       expect(completion).not.toHaveProperty('threadnote.stage');
       expect(completion).not.toHaveProperty('threadnote.subphase');
@@ -335,7 +335,7 @@ describe('code graph query anonymous telemetry', () => {
       expect(Exit.isFailure(exit)).toBe(true);
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(original);
       expect(capture.spans).toHaveLength(2);
-      const checkpoint = spanAttributes(capture.spans[0]!);
+      const checkpoint = spanAttributes(capture.spans[0]);
       expect(checkpoint).toMatchObject({
         'threadnote.graph.request_kind': 'inspect.path',
         'threadnote.graph.request_scope': 'local',
@@ -344,7 +344,7 @@ describe('code graph query anonymous telemetry', () => {
       });
       expect(checkpoint).not.toHaveProperty('threadnote.graph.snapshot_selection');
       expect(JSON.stringify(checkpoint)).not.toContain('/Users/private');
-      expect(spanAttributes(capture.spans[1]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[1])).toMatchObject({
         'threadnote.event': 'completion',
         'threadnote.outcome': 'failure',
       });
@@ -364,11 +364,11 @@ describe('code graph query anonymous telemetry', () => {
         reporter.annotate.pipe(Effect.andThen(reporter.status(Effect.succeed('unavailable')))),
       );
       expect(capture.spans).toHaveLength(2);
-      expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+      expect(spanAttributes(capture.spans[0])).toMatchObject({
         'threadnote.phase': 'graph.query.status',
         'threadnote.phase.outcome': 'success',
       });
-      const completion = spanAttributes(capture.spans[1]!);
+      const completion = spanAttributes(capture.spans[1]);
       expect(completion).toMatchObject({
         'threadnote.event': 'completion',
         'threadnote.graph.request_kind': 'analyze.stats',
@@ -406,13 +406,13 @@ describe('code graph query anonymous telemetry', () => {
         const exit = yield* Fiber.await(fiber);
         expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
         expect(capture.spans).toHaveLength(2);
-        expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[0])).toMatchObject({
           'threadnote.event': 'checkpoint',
           'threadnote.phase': 'graph.query.execute',
           'threadnote.phase.outcome': 'interrupted',
           'threadnote.stage': 'query-strict-reobservation',
         });
-        expect(spanAttributes(capture.spans[1]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[1])).toMatchObject({
           'threadnote.event': 'completion',
           'threadnote.outcome': 'interrupted',
         });
@@ -445,15 +445,15 @@ describe('code graph query anonymous telemetry', () => {
         yield* Effect.yieldNow;
 
         expect(capture.spans).toHaveLength(1);
-        expect(spanAttributes(capture.spans[0]!)).toMatchObject({
+        expect(spanAttributes(capture.spans[0])).toMatchObject({
           'threadnote.event': 'checkpoint',
           'threadnote.graph.request_kind': 'analyze.full',
           'threadnote.graph.request_scope': 'local',
           'threadnote.operation': 'analyze_code_graph',
           'threadnote.operation.elapsed_ms': 30_000,
         });
-        expect(spanAttributes(capture.spans[0]!)).not.toHaveProperty('threadnote.phase');
-        expect(spanAttributes(capture.spans[0]!)).not.toHaveProperty('threadnote.graph.snapshot_selection');
+        expect(spanAttributes(capture.spans[0])).not.toHaveProperty('threadnote.phase');
+        expect(spanAttributes(capture.spans[0])).not.toHaveProperty('threadnote.graph.snapshot_selection');
 
         yield* Fiber.interrupt(fiber);
         yield* Fiber.await(fiber);

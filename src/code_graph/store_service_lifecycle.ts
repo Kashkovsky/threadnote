@@ -868,7 +868,7 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
           const result = yield* options?.requireReconciliationSchema === true
             ? useExistingDatabase(databasePath, remove)
             : useDatabase(databasePath, remove);
-          return result as CodeGraphViewRemovalResult;
+          return result;
         }),
         // View removal is opportunistic foreground maintenance. Never
         // queue it behind a checkout writer unless an internal caller
@@ -876,7 +876,9 @@ export function makeCodeGraphStoreLifecycleMethods(runtime: CodeGraphStoreRuntim
         options?.waitTimeoutMilliseconds ?? 0,
       ).pipe(
         Effect.tap(result =>
-          options?.requireReconciliationSchema !== true && 'retiredSnapshots' in result && result.retiredSnapshots > 0
+          options?.requireReconciliationSchema !== true &&
+          result.retiredSnapshots !== undefined &&
+          result.retiredSnapshots > 0
             ? scheduleRoutinePhysicalCleanup(databasePath)
             : Effect.void,
         ),

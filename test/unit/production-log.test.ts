@@ -461,7 +461,7 @@ describe('production log writer', () => {
         const {fs, home, path} = yield* ownedTestHome('bounded-read');
         yield* withProductionLogging(home, {component: 'cli', operation: 'doctor'}, Effect.void);
         const active = productionLogPath(path, home);
-        const validLine = (yield* fs.readFileString(active)).trim().split('\n')[0] as string;
+        const validLine = (yield* fs.readFileString(active)).trim().split('\n')[0];
         yield* fs.writeFileString(active, `${validLine}\n`.repeat(4_000));
         yield* fs.makeDirectory(`${active}.5`);
 

@@ -18,7 +18,7 @@ describe('report issue', () => {
         const {config, fs, path} = yield* reportIssueTestHome('preview');
         yield* withProductionLogging(config.agentContextHome, {component: 'cli', operation: 'doctor'}, Effect.void);
         const logPath = path.join(config.agentContextHome, 'logs', 'threadnote.log');
-        const validEntry = JSON.parse((yield* fs.readFileString(logPath)).trim().split('\n')[0] as string) as Record<
+        const validEntry = JSON.parse((yield* fs.readFileString(logPath)).trim().split('\n')[0]) as Record<
           string,
           unknown
         >;
@@ -92,7 +92,7 @@ describe('report issue', () => {
           execute: (executable, args, options) =>
             Effect.gen(function* () {
               const inputIndex = args.indexOf('--input');
-              const requestPath = args[inputIndex + 1] as string;
+              const requestPath = args[inputIndex + 1];
               invocation = {args, environment: options?.env, executable, requestPath};
               request = JSON.parse(yield* fs.readFileString(requestPath)) as {
                 readonly body?: unknown;

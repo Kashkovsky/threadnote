@@ -129,7 +129,7 @@ function parseSwiftImport(value: string) {
 
 function callTarget(node: Node): string {
   const target = node.namedChildren.find(child => child.type !== 'call_suffix');
-  return target?.text.trim() ?? node.text.split('(', 1)[0]!.trim();
+  return target?.text.trim() ?? node.text.split('(', 1)[0].trim();
 }
 
 function header(node: Node): string {

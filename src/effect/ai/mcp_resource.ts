@@ -42,7 +42,7 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
       [requestedUri],
       scopeRoots ?? [canonicalResourceUri('user', [uriSegment(config.user), 'memories'])],
     );
-    const canonicalUri = identity!.canonicalUri;
+    const canonicalUri = identity.canonicalUri;
     if (scopeRoots && !scopeRoots.some(scopeRoot => resourceIdIsWithin(canonicalUri, scopeRoot))) {
       return yield* new McpSchema.InvalidParams({
         data: MCP_RESOURCE_ERROR_DATA,
@@ -81,13 +81,13 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
     if (Buffer.byteLength(read.content, 'utf8') > MCP_RESOURCE_READ_MAX_BYTES) {
       return yield* resourceTooLarge();
     }
-    yield* verifyResolvedMemoryIdentity(identity!, resolved.canonicalUri, read.content);
+    yield* verifyResolvedMemoryIdentity(identity, resolved.canonicalUri, read.content);
     return {
       contents: [
         {
           mimeType: MCP_RESOURCE_MIME_TYPE,
           text: read.content,
-          uri: identity!.expectedMemoryId === undefined ? resolved.canonicalUri : identity!.requestedUri,
+          uri: identity.expectedMemoryId === undefined ? resolved.canonicalUri : identity.requestedUri,
         },
       ],
     } satisfies typeof McpSchema.ReadResourceResult.Type;

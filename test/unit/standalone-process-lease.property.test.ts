@@ -18,7 +18,7 @@ describe('standalone process retirement properties', () => {
           const leases: Pick<StandaloneProcessLease, 'parentProcessId' | 'processId' | 'retirementPolicy'>[] = [];
           for (let index = 0; index < size; index += 1) {
             const processId = index + 1;
-            const parentIndex = index === 0 ? undefined : parentSeeds[index]! % (index + 1);
+            const parentIndex = index === 0 ? undefined : parentSeeds[index] % (index + 1);
             leases.push({
               parentProcessId:
                 parentIndex === undefined || parentIndex === index ? Option.none() : Option.some(parentIndex + 1),

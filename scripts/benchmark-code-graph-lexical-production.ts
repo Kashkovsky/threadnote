@@ -369,7 +369,7 @@ function compactValidationMeasurements(databasePath: string, snapshotId: string)
       expectedPostingCount: Number(result.expected_posting_count),
       expectedSymbolCount: Number(result.expected_symbol_count),
       expectedTermCount: Number(result.expected_term_count),
-      firstMilliseconds: durations[0]!,
+      firstMilliseconds: durations[0],
       parity:
         Number(result.posting_count) === Number(result.expected_posting_count) &&
         Number(result.symbol_count) === Number(result.expected_symbol_count) &&
@@ -511,7 +511,7 @@ function lexicalFixture(
   const symbols = Array.from({length: symbolCount}, (_, index): CodeGraphSymbol => {
     const padded = String(index).padStart(7, '0');
     const module = index % 64;
-    const file = files[Math.floor(index / 10)]!;
+    const file = files[Math.floor(index / 10)];
     const name = `renderPipelineService${padded}`;
     const qualifiedName = `packages.module${module}.${name}`;
     return {

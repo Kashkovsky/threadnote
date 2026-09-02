@@ -808,7 +808,7 @@ describe('CodeGraphWatcher', () => {
         yield* watcher.refresh(options);
         yield* Deferred.await(firstStarted);
         currentTarget = 'commit-b';
-        yield* trigger!();
+        yield* trigger();
         currentTarget = 'commit-c';
         yield* Effect.all(
           Array.from({length: 64}, () => trigger!()),

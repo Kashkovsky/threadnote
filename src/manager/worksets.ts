@@ -1067,7 +1067,7 @@ function applyProjectMutation(
   const projects = document.get('projects', true);
   if (!isSeq(projects))
     throw new ManagerWorksetApiError('manifest-invalid', 'Manifest projects must be a YAML sequence.', 409);
-  const sequence = projects as YAMLSeq;
+  const sequence = projects;
   const targetName = mutation.operation === 'create' ? mutation.name : mutation.project;
   const targetIndexes = findNamedMapIndexes(sequence, targetName);
   if (targetIndexes.length > 1) {
@@ -1107,7 +1107,7 @@ function applyProjectMutation(
   const value = validatedProject(manifest, mutation, current);
   const node = sequence.items[index];
   if (!isMap(node)) throw unsupportedProjectYaml();
-  const map = node as YAMLMap;
+  const map = node;
   const configuredUri = map.get('uri');
   if (typeof configuredUri !== 'string') throw unsupportedProjectYaml();
   const configuredUriChanged = mutation.uri !== configuredUri;
@@ -1298,7 +1298,7 @@ function applyDefinitionMutation(
   }
   if (!isSeq(worksets))
     throw new ManagerWorksetApiError('manifest-invalid', 'Manifest worksets must be a YAML sequence.', 409);
-  const sequence = worksets as YAMLSeq;
+  const sequence = worksets;
   const targetName = mutation.operation === 'create' ? mutation.name : mutation.workset;
   const targetIndexes = findWorksetNodeIndexes(sequence, targetName);
   if (targetIndexes.length > 1) {
@@ -1335,7 +1335,7 @@ function applyDefinitionMutation(
   if (current && definitionsEqual(current, value)) return {changed: false, retireWorksets: [], warnings: []};
   const node = sequence.items[index];
   if (!isMap(node)) throw new ManagerWorksetApiError('manifest-invalid', 'Workset entries must be YAML maps.', 409);
-  const map = node as YAMLMap;
+  const map = node;
   if (current?.name !== value.name) map.set('name', value.name);
   if (current?.description !== value.description) {
     if (value.description === undefined) map.delete('description');
@@ -1856,7 +1856,7 @@ function reconcileSeedSequence(map: YAMLMap, patterns: readonly string[]): void 
       continue;
     }
     current.add(pattern);
-    next.push(current.items.pop()!);
+    next.push(current.items.pop());
   }
   current.items = next;
 }
@@ -1873,10 +1873,10 @@ function setManagerYamlString(map: YAMLMap, key: string, value: string): void {
 function setManagerProjectPath(document: ReturnType<typeof parseDocument>, projectName: string, value: string): void {
   const projects = document.get('projects', true);
   if (!isSeq(projects)) throw unsupportedProjectYaml();
-  const indexes = findNamedMapIndexes(projects as YAMLSeq, projectName);
-  const item = indexes.length === 1 ? projects.items[indexes[0]!] : undefined;
+  const indexes = findNamedMapIndexes(projects, projectName);
+  const item = indexes.length === 1 ? projects.items[indexes[0]] : undefined;
   if (!isMap(item)) throw unsupportedProjectYaml();
-  setManagerYamlString(item as YAMLMap, 'path', value);
+  setManagerYamlString(item, 'path', value);
 }
 
 function managerWorksetErrorResponse(error: unknown): ManagerWorksetApiResponse {

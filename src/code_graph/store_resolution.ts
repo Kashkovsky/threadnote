@@ -536,7 +536,7 @@ const resolveActivationReferences = Effect.fn('codeGraph.resolveActivationRefere
       for (const reservation of reservations) {
         const transactions = Effect.gen(function* () {
           for (let index = 0; index < reservation.transactions.length; index += 1) {
-            const observedTransactionMilliseconds = yield* commitTransactionPages(reservation.transactions[index]!);
+            const observedTransactionMilliseconds = yield* commitTransactionPages(reservation.transactions[index]);
             if (persistentFull && observedTransactionMilliseconds !== undefined) {
               persistentTransactionPageLimit = nextPersistentReferenceResolutionTransactionPages(
                 persistentTransactionPageLimit,

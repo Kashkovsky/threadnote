@@ -215,7 +215,7 @@ export const makeCodeGraphOrphanProvenanceCleaner = Effect.fn('codeGraph.makeOrp
               state: 'preserved',
             } as const);
           }
-          const target = repositoryCandidates[targetIndex]!;
+          const target = repositoryCandidates[targetIndex];
           const result = yield* dependencies
             .withTargetLock(
               input,
@@ -310,8 +310,8 @@ const cleanupLockedTarget = (
       !codeGraphWorktreeReconciliationAuthorized({
         anchorMatches: true,
         evidenceStable: true,
-        finalRegistryState: finalAuthority.value.registryStates[0]!,
-        initialRegistryState: initialAuthority.registryStates[targetIndex]!,
+        finalRegistryState: finalAuthority.value.registryStates[0],
+        initialRegistryState: initialAuthority.registryStates[targetIndex],
         maintenanceActive: false,
         missingEvidence: true,
         registrationKind: finalEvidence.value.registration.kind,

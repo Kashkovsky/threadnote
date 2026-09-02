@@ -248,7 +248,7 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
               state: 'preserved',
             } as const;
           }
-          const target = evidenceCandidates[targetIndex]!;
+          const target = evidenceCandidates[targetIndex];
 
           const locked = yield* dependencies
             .withTargetLock(
@@ -311,8 +311,8 @@ export const makeCodeGraphWorktreeReconciler = Effect.fn('codeGraph.makeWorktree
                   !codeGraphWorktreeReconciliationAuthorized({
                     anchorMatches: true,
                     evidenceStable: true,
-                    finalRegistryState: finalAuthority.value.registryStates[0]!,
-                    initialRegistryState: completeInitialAuthority.registryStates[targetIndex]!,
+                    finalRegistryState: finalAuthority.value.registryStates[0],
+                    initialRegistryState: completeInitialAuthority.registryStates[targetIndex],
                     maintenanceActive: false,
                     missingEvidence: true,
                     registrationKind: finalEvidence.value.registration.kind,

@@ -54,7 +54,7 @@ describe('Code Memory Link retained evidence bundle', () => {
       clients: CLIENTS,
       sealedFiles: SEALED_FILES,
     });
-    const first = bundle.index.blobs[0]!;
+    const first = bundle.index.blobs[0];
     const changed = new Map(bundle.blobs);
     changed.set(first.sha256, `${changed.get(first.sha256)} `);
     expect(() => verifyCodeMemoryLinkRetainedBundleV1({blobs: changed, indexContent: bundle.indexContent})).toThrow(

@@ -382,8 +382,7 @@ function currentBasePackProvenance(
     .map(codeGraphLanguagePackProvenance)
     .sort((left, right) => compareCodeUnits(left.id, right.id));
   const expected = [...persisted].sort((left, right) => compareCodeUnits(left.id, right.id));
-  return current.length === expected.length &&
-    current.every((pack, index) => samePackProvenance(pack, expected[index]!))
+  return current.length === expected.length && current.every((pack, index) => samePackProvenance(pack, expected[index]))
     ? current
     : undefined;
 }

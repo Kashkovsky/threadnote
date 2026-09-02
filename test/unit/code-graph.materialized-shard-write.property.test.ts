@@ -34,8 +34,8 @@ describe('materialized shard batched write properties', () => {
         expect(sameMaterializedShardWriteIds(ids, [...ids].reverse())).toBe(true);
         expect(sameMaterializedShardWriteIds(ids, ids.slice(1))).toBe(false);
         if (ids.length > 1) {
-          expect(sameMaterializedShardWriteIds(ids, [...ids.slice(0, -1), ids[0]!])).toBe(false);
-          expect(sameMaterializedShardWriteIds([...ids.slice(0, -1), ids[0]!], ids)).toBe(false);
+          expect(sameMaterializedShardWriteIds(ids, [...ids.slice(0, -1), ids[0]])).toBe(false);
+          expect(sameMaterializedShardWriteIds([...ids.slice(0, -1), ids[0]], ids)).toBe(false);
         }
       }),
       {numRuns: 150},

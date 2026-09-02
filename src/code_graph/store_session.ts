@@ -35,7 +35,7 @@ export function useDatabase<A, E, R>(
         ? effect.pipe(Effect.provideService(SqlClient.SqlClient, session.value.sql))
         : useDatabaseDirect(databasePath, effect),
     ),
-  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+  );
 }
 
 export function useReadOnlyDatabase<A, E, R>(
@@ -48,7 +48,7 @@ export function useReadOnlyDatabase<A, E, R>(
         ? effect.pipe(Effect.provideService(SqlClient.SqlClient, session.value.sql))
         : useDatabaseDirect(databasePath, effect, true),
     ),
-  ) as Effect.Effect<A, E, Exclude<R, SqlClient.SqlClient>>;
+  );
 }
 
 export function useExistingDatabase<A, E, R>(

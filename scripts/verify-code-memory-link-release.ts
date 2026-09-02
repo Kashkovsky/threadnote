@@ -305,7 +305,7 @@ export const loadCodeMemoryLinkRetainedBundleAtHead = Effect.fn('codeMemoryLinkR
         ),
       );
     }
-    const bundleHash = match[1]!;
+    const bundleHash = match[1];
     const indexContent = yield* readTrackedGitBlob(sourceRoot, governanceCommit, repositoryPath);
     if (sha256HexSync(indexContent) !== bundleHash) {
       return yield* Effect.fail(new ScriptError('Retained bundle directory name differs from bundle.json SHA-256.'));
@@ -506,15 +506,15 @@ export function assertRetainedBundleBindings(input: {
       packet.length !== 1 ||
       rubric.length !== 1 ||
       layoutTask.length !== 1 ||
-      packet[0]!.packetHash !== task.packetHash ||
-      rubric[0]!.rubricHash !== task.rubricHash ||
-      layoutTask[0]!.packetHash !== task.packetHash ||
-      layoutTask[0]!.rubricHash !== task.rubricHash ||
-      codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0]!.preflightExpectedResponses.anchored) !==
+      packet[0].packetHash !== task.packetHash ||
+      rubric[0].rubricHash !== task.rubricHash ||
+      layoutTask[0].packetHash !== task.packetHash ||
+      layoutTask[0].rubricHash !== task.rubricHash ||
+      codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0].preflightExpectedResponses.anchored) !==
         task.expectedResponseHashes.anchored ||
-      codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0]!.preflightExpectedResponses.noMemory) !==
+      codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0].preflightExpectedResponses.noMemory) !==
         task.expectedResponseHashes.noMemory ||
-      codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0]!.preflightExpectedResponses.taskOnly) !==
+      codeMemoryLinkContextBriefResponseReceiptHashV1(layoutTask[0].preflightExpectedResponses.taskOnly) !==
         task.expectedResponseHashes.taskOnly
     ) {
       throw new ScriptError(
@@ -535,7 +535,7 @@ export function assertRetainedBundleBindings(input: {
     throw new ScriptError('Retained client descriptor/config-projection roster differs from the manifest.');
   }
   for (const [index, client] of retainedClients.entries()) {
-    const expected = expectedClients[index]!;
+    const expected = expectedClients[index];
     const descriptorInput = json(client.descriptor, `${client.clientId} retained descriptor`);
     const descriptor = parseCodeMemoryLinkClientImplementationDescriptorV1(descriptorInput);
     const descriptorHash = codeMemoryLinkClientImplementationDescriptorHash(descriptorInput);
@@ -743,7 +743,7 @@ export const verifyManifestApproval = Effect.fn('codeMemoryLinkRelease.verifyMan
   if (parents.length !== 2) {
     return yield* Effect.fail(new ScriptError('Manifest approval must be a single-parent governance commit.'));
   }
-  const parentCommit = parents[1]!;
+  const parentCommit = parents[1];
   if (parentCommit !== candidateCommit) {
     return yield* Effect.fail(
       new ScriptError('Manifest approval must be the immediate governance commit after the tested candidate.'),
@@ -980,7 +980,7 @@ function parseArguments(args: readonly string[]): {
   const values: Record<string, string | undefined> = {};
   let printCandidateCommit = false;
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (argument === '--print-candidate-commit') {
       if (printCandidateCommit) throw new ScriptError('--print-candidate-commit may be specified only once.');
       printCandidateCommit = true;

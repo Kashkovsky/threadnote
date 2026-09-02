@@ -34,7 +34,7 @@ export function withMemoryUriLocks<A, E, R>(
     const protect = (index: number): Effect.Effect<A, unknown, R | Crypto.Crypto | Path.Path | SystemInfo> =>
       index >= sortedLockPaths.length
         ? effect
-        : withExclusiveFileLock(fs, sortedLockPaths[index]!, MEMORY_LOCK_OPTIONS, protect(index + 1));
+        : withExclusiveFileLock(fs, sortedLockPaths[index], MEMORY_LOCK_OPTIONS, protect(index + 1));
     return yield* protect(0);
   });
 }

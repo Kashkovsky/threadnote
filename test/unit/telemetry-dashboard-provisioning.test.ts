@@ -295,8 +295,8 @@ describe('direct Grafana dashboard provisioning', () => {
     }
 
     const [tempoRequest, expressionRequest] = requests;
-    const tempoRequestQueries = requestQueries(tempoRequest!);
-    const expressionRequestQueries = requestQueries(expressionRequest!);
+    const tempoRequestQueries = requestQueries(tempoRequest);
+    const expressionRequestQueries = requestQueries(expressionRequest);
     const expressionQueries = expressionRequestQueries.filter(query => {
       const datasource = query.datasource as Readonly<Record<string, JsonValue>>;
       return datasource.type === '__expr__';
@@ -344,7 +344,7 @@ describe('direct Grafana dashboard provisioning', () => {
   it('rejects an unguarded unexpected-full percentage expression', () => {
     const source = clone(readDashboardSource()) as Record<string, JsonValue>;
     const panel = (source.panels as Record<string, JsonValue>[]).find(candidate => candidate.id === 13)!;
-    const expression = (panel.targets as Record<string, JsonValue>[])[2]!;
+    const expression = (panel.targets as Record<string, JsonValue>[])[2];
     expression.expression = '$A / $B * 100';
 
     expect(() => renderDashboardArtifact(source)).toThrow(/guarded executable A\/B percentage expression/u);
@@ -388,13 +388,13 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(canonicalDashboardSemantics(migrated)).toBe(canonicalDashboardSemantics(resource.spec));
 
     const queryDrift = clone(migrated);
-    const firstPanel = (queryDrift.panels as Record<string, JsonValue>[])[0]!;
-    const firstTarget = (firstPanel.targets as Record<string, JsonValue>[])[0]!;
+    const firstPanel = (queryDrift.panels as Record<string, JsonValue>[])[0];
+    const firstTarget = (firstPanel.targets as Record<string, JsonValue>[])[0];
     firstTarget.query = '{}';
     expect(canonicalDashboardSemantics(queryDrift)).not.toBe(canonicalDashboardSemantics(resource.spec));
 
     const unapprovedEmptyRemoval = clone(resource.spec);
-    delete (unapprovedEmptyRemoval.panels as Record<string, JsonValue>[])[19]!.fieldConfig;
+    delete (unapprovedEmptyRemoval.panels as Record<string, JsonValue>[])[19].fieldConfig;
     expect(canonicalDashboardSemantics(unapprovedEmptyRemoval)).not.toBe(canonicalDashboardSemantics(resource.spec));
 
     const wrongRefreshIntervals = clone(migrated);
@@ -402,16 +402,18 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(canonicalDashboardSemantics(wrongRefreshIntervals)).not.toBe(canonicalDashboardSemantics(resource.spec));
 
     const wrongMixedDatasource = clone(migrated);
-    (wrongMixedDatasource.panels as Record<string, JsonValue>[])[12]!.datasource = {
+    (wrongMixedDatasource.panels as Record<string, JsonValue>[])[12].datasource = {
       type: 'mixed',
       uid: 'other',
     };
     expect(canonicalDashboardSemantics(wrongMixedDatasource)).not.toBe(canonicalDashboardSemantics(resource.spec));
 
     const mismatchedTargetDatasources = clone(migrated);
-    const expressionTargets = (mismatchedTargetDatasources.panels as Record<string, JsonValue>[])[12]!
-      .targets as Record<string, JsonValue>[];
-    expressionTargets[1]!.datasource = {type: 'tempo', uid: 'other'};
+    const expressionTargets = (mismatchedTargetDatasources.panels as Record<string, JsonValue>[])[12].targets as Record<
+      string,
+      JsonValue
+    >[];
+    expressionTargets[1].datasource = {type: 'tempo', uid: 'other'};
     expect(canonicalDashboardSemantics(mismatchedTargetDatasources)).not.toBe(
       canonicalDashboardSemantics(resource.spec),
     );
@@ -422,11 +424,11 @@ describe('direct Grafana dashboard provisioning', () => {
     {datasourceUid: FC.string({maxLength: 32, minLength: 1})},
     ({datasourceUid}) => {
       const historical = clone(readDashboardArtifact().spec);
-      const panel = (historical.panels as Record<string, JsonValue>[])[12]!;
+      const panel = (historical.panels as Record<string, JsonValue>[])[12];
       panel.datasource = {type: 'tempo', uid: datasourceUid};
       const targets = panel.targets as Record<string, JsonValue>[];
-      targets[0]!.datasource = {type: 'tempo', uid: datasourceUid};
-      targets[1]!.datasource = {type: 'tempo', uid: datasourceUid};
+      targets[0].datasource = {type: 'tempo', uid: datasourceUid};
+      targets[1].datasource = {type: 'tempo', uid: datasourceUid};
 
       expect(canonicalDashboardSemantics(grafanaV42DashboardSpec(historical))).toBe(
         canonicalDashboardSemantics(historical),
@@ -441,7 +443,7 @@ describe('direct Grafana dashboard provisioning', () => {
     ({pluginVersion}) => {
       const resource = readDashboardArtifact();
       const drift = clone(resource.spec) as Record<string, JsonValue>;
-      (drift.panels as Record<string, JsonValue>[])[0]!.pluginVersion = pluginVersion;
+      (drift.panels as Record<string, JsonValue>[])[0].pluginVersion = pluginVersion;
       expect(canonicalDashboardSemantics(drift)).not.toBe(canonicalDashboardSemantics(resource.spec));
     },
     {fastCheck: {numRuns: 40}},
@@ -569,15 +571,15 @@ describe('direct Grafana dashboard provisioning', () => {
   it('loads reviewed historical artifacts without applying the current renderer contract', async () => {
     const historicalCommit = 'b'.repeat(40);
     const historical = clone(readDashboardArtifact());
-    const firstPanel = (historical.spec.panels as Record<string, JsonValue>[])[0]!;
-    const firstTarget = (firstPanel.targets as Record<string, JsonValue>[])[0]!;
+    const firstPanel = (historical.spec.panels as Record<string, JsonValue>[])[0];
+    const firstTarget = (firstPanel.targets as Record<string, JsonValue>[])[0];
     firstPanel.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
     firstTarget.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
-    const expressionPanel = (historical.spec.panels as Record<string, JsonValue>[])[12]!;
+    const expressionPanel = (historical.spec.panels as Record<string, JsonValue>[])[12];
     expressionPanel.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
     const expressionTargets = expressionPanel.targets as Record<string, JsonValue>[];
-    expressionTargets[0]!.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
-    expressionTargets[1]!.datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
+    expressionTargets[0].datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
+    expressionTargets[1].datasource = {type: 'tempo', uid: 'previous-traces-datasource'};
     const reader = async (args: readonly string[]): Promise<string | undefined> => {
       if (args[0] === 'log') {
         expect(args).toEqual([
@@ -855,7 +857,7 @@ describe('direct Grafana dashboard provisioning', () => {
     'fails closed on a %s result in query request %i',
     async (failure, failedRequestIndex, failedReferenceIndex) => {
       const resource = readDashboardArtifact();
-      const failedReference = requestQueries(queryRequests(resource)[failedRequestIndex]!)[failedReferenceIndex]!
+      const failedReference = requestQueries(queryRequests(resource)[failedRequestIndex])[failedReferenceIndex]
         .refId as string;
       let queryRequestIndex = 0;
       await expect(
@@ -944,10 +946,10 @@ describe('direct Grafana dashboard provisioning', () => {
     expect(workflow.concurrency.group).toContain("github.event_name != 'pull_request'");
     expect(workflow.concurrency.group).toContain("'production' || github.run_id");
 
-    const validation = workflow.jobs.validate!;
-    const deployment = workflow.jobs.deploy!;
-    const verification = workflow.jobs['verify-live']!;
-    const completion = workflow.jobs.complete!;
+    const validation = workflow.jobs.validate;
+    const deployment = workflow.jobs.deploy;
+    const verification = workflow.jobs['verify-live'];
+    const completion = workflow.jobs.complete;
     const validationText = JSON.stringify(validation);
     const deploymentText = JSON.stringify(deployment);
     const verificationText = JSON.stringify(verification);

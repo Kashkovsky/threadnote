@@ -568,13 +568,13 @@ function jsonDependencySpans(
   for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
     const sectionIndex = lastJsonTokenIndex(tokens, token => token.depth === 1 && token.key && token.value === section);
     if (sectionIndex < 0) continue;
-    const sectionToken = tokens[sectionIndex]!;
+    const sectionToken = tokens[sectionIndex];
     const colon = nextNonWhitespace(content, sectionToken.end);
     const objectStart = nextNonWhitespace(content, colon + 1);
     if (content[objectStart] !== '{') continue;
     const objectEnd = jsonObjectEnd(content, objectStart);
     for (let index = sectionIndex + 1; index < tokens.length; index += 1) {
-      const key = tokens[index]!;
+      const key = tokens[index];
       if (key.start >= objectEnd) break;
       if (key.depth !== 2 || !key.key) continue;
       const value = tokens[index + 1];
@@ -588,7 +588,7 @@ function jsonDependencySpans(
 function jsonStringEnd(content: string, start: number): number {
   let escaped = false;
   for (let index = start + 1; index < content.length; index += 1) {
-    const character = content[index]!;
+    const character = content[index];
     if (escaped) {
       escaped = false;
       continue;
@@ -617,7 +617,7 @@ function jsonObjectEnd(content: string, start: number): number {
 
 function nextNonWhitespace(content: string, start: number): number {
   let index = start;
-  while (index < content.length && /\s/u.test(content[index]!)) index += 1;
+  while (index < content.length && /\s/u.test(content[index])) index += 1;
   return index;
 }
 
@@ -626,7 +626,7 @@ function lastJsonTokenIndex(
   predicate: (token: JsonStringToken) => boolean,
 ): number {
   for (let index = tokens.length - 1; index >= 0; index -= 1) {
-    if (predicate(tokens[index]!)) return index;
+    if (predicate(tokens[index])) return index;
   }
   return -1;
 }
@@ -749,7 +749,7 @@ function stripJsonCommentsAndTrailingCommas(content: string): string {
   let inString = false;
   let escaped = false;
   for (let index = 0; index < content.length; index += 1) {
-    const character = content[index]!;
+    const character = content[index];
     const next = content[index + 1];
     if (inString) {
       output += character;

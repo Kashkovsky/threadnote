@@ -1146,7 +1146,7 @@ describe('hybrid recall ranker', () => {
     ];
     const corpusStatistics = buildRecallCorpusStatistics(corpus);
     const alone = rankRecallCandidates('rare-identifier', [target], {corpusStatistics});
-    const withPool = rankRecallCandidates('rare-identifier', [target, corpus[1]!], {corpusStatistics});
+    const withPool = rankRecallCandidates('rare-identifier', [target, corpus[1]], {corpusStatistics});
 
     expect(alone.results[0]?.signals.bm25).toBe(withPool.results[0]?.signals.bm25);
     expect(corpusStatistics.documentCount).toBe(101);

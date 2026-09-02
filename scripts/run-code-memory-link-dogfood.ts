@@ -598,7 +598,7 @@ function parseArguments(args: readonly string[]): {
 } {
   const values: Record<string, string | undefined> = {};
   for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index]!;
+    const argument = args[index];
     if (!['--approval-commit', '--candidate-commit', '--output', '--repository'].includes(argument)) {
       throw new ScriptError(`Unknown Code Memory Link dogfood option: ${argument}`);
     }

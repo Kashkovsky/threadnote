@@ -85,7 +85,7 @@ describe('Context Brief code-linked memory recovery', () => {
           Effect.succeed([
             {
               anchorOrdinal: 0,
-              citationId: input.anchors[0]!.id,
+              citationId: input.anchors[0].id,
               matchKind: 'file-path',
               uri: MEMORY_URI,
             },
@@ -106,7 +106,7 @@ describe('Context Brief code-linked memory recovery', () => {
   effectIt.effect('preserves resolved anchors when stable identity lookup fails after canonical reads', () =>
     Effect.gen(function* () {
       const refs = ['src/first.ts'];
-      const citation = codeCitation(refs[0]!, 0);
+      const citation = codeCitation(refs[0], 0);
       mocks.captureMemoryCodeCitations.mockReturnValue(Effect.succeed([citation]));
       mocks.loadRecallCodeLinks.mockReturnValue(
         Effect.succeed([{anchorOrdinal: 0, citationId: citation.id, matchKind: 'file-path', uri: MEMORY_URI}]),
@@ -134,7 +134,7 @@ describe('Context Brief code-linked memory recovery', () => {
             if (requested.length > 1 || requested[0] === refs[1]) {
               return Effect.fail(unresolvedCaptureError());
             }
-            return Effect.succeed([codeCitation(requested[0]!, refs.indexOf(requested[0]!))]);
+            return Effect.succeed([codeCitation(requested[0], refs.indexOf(requested[0]))]);
           },
         );
 
@@ -173,7 +173,7 @@ describe('Context Brief code-linked memory recovery', () => {
           const requested = input.refs ?? [];
           if (requested.length > 1 || requested[0] === refs[1]) return Effect.fail(unresolvedCaptureError());
           if (requested[0] === refs[2]) return Effect.fail(new MemoryCodeCitationCaptureError('permission denied'));
-          return Effect.succeed([codeCitation(requested[0]!, 0)]);
+          return Effect.succeed([codeCitation(requested[0], 0)]);
         },
       );
 

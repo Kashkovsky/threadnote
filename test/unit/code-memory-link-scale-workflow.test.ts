@@ -29,7 +29,7 @@ describe('code-memory-link inverse-selector scale workflow', () => {
         readonly workflow_dispatch?: {readonly inputs?: Readonly<Record<string, unknown>>};
       };
     };
-    const job = workflow.jobs['code-memory-link-inverse-scale']!;
+    const job = workflow.jobs['code-memory-link-inverse-scale'];
     const benchmark = job.steps?.find(step => step.run?.includes('bench:code-memory-link-scale'));
     const stage = job.steps?.find(step => step.name === 'Stage the exact content-addressed G artifact');
     const upload = job.steps?.find(step => step.uses === 'actions/upload-artifact@v7');

@@ -63,7 +63,7 @@ describe('code graph cache capacity load calibration', () => {
             const ledgerLockPath = path.join(root, 'reservation.lock');
             const files = Array.from({length: LOAD_ROWS}, (_, index) => loadFile(index));
             const facts = files.map(file => emptyFacts(file.path));
-            facts[0] = {...facts[0]!, diagnostics: ['界'.repeat(2_500_000)]};
+            facts[0] = {...facts[0], diagnostics: ['界'.repeat(2_500_000)]};
             const store = yield* CodeGraphStore;
             yield* store.initialize(databasePath);
             const sqliteProfile = yield* Effect.sync(() => readSqliteProfile(databasePath));
@@ -413,7 +413,7 @@ describe('code graph cache capacity load calibration', () => {
                 );
               const blocked: CodeGraphDirectPersistentCapacityProtector = (boundary, _transaction) =>
                 reserve(boundary, Deferred.succeed(receiptAcquired, undefined).pipe(Effect.andThen(Effect.never)));
-              const caching = yield* runCacheMode(store, mode, databasePath, [files[0]!], [facts[0]!], blocked).pipe(
+              const caching = yield* runCacheMode(store, mode, databasePath, [files[0]], [facts[0]], blocked).pipe(
                 Effect.forkChild,
               );
               yield* Deferred.await(receiptAcquired);
@@ -425,7 +425,7 @@ describe('code graph cache capacity load calibration', () => {
 
               const healthy: CodeGraphDirectPersistentCapacityProtector = (boundary, transaction) =>
                 reserve(boundary, transaction);
-              yield* runCacheMode(store, mode, databasePath, [files[0]!], [facts[0]!], healthy);
+              yield* runCacheMode(store, mode, databasePath, [files[0]], [facts[0]], healthy);
               expect(readCacheRowCount(databasePath, mode)).toBe(1);
               expectCacheMapping(databasePath, mode, files.slice(0, 1));
             }).pipe(

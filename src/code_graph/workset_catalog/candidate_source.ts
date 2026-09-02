@@ -215,13 +215,13 @@ function readCompleteCoverage(sql: SqlClient.SqlClient, request: CodeGraphWorkse
           if (rows.length === 0) {
             throw new CodeGraphWorksetCatalogError('missing', 'No published workset generation exists.');
           }
-          const generationId = requiredText(rows[0]!.generation_id, 'generation identity');
+          const generationId = requiredText(rows[0].generation_id, 'generation identity');
           if (generationId !== request.generationId) {
             throw new CodeGraphWorksetCatalogError('stale', 'The published workset generation changed.');
           }
-          const declared = requiredInteger(rows[0]!.member_count, 'generation member count');
-          const actual = requiredInteger(rows[0]!.actual_member_count, 'actual generation member count');
-          const ready = requiredInteger(rows[0]!.ready_member_count, 'ready generation member count');
+          const declared = requiredInteger(rows[0].member_count, 'generation member count');
+          const actual = requiredInteger(rows[0].actual_member_count, 'actual generation member count');
+          const ready = requiredInteger(rows[0].ready_member_count, 'ready generation member count');
           if (
             declared > CODE_GRAPH_WORKSET_CATALOG_LIMITS.membersPerGeneration ||
             actual !== declared ||
@@ -556,9 +556,7 @@ function validateRequest(
       );
       if (expectedDigest !== request.query.digest) throw invalid('Candidate query digest does not match its terms.');
       const cursor = request.after === undefined ? undefined : decodeCursor(request.after, request, lane);
-      return {...request, cursor, query: {...request.query, terms}} as CodeGraphWorksetCatalogCandidateRequestV1 & {
-        readonly cursor?: CandidateCursor;
-      };
+      return {...request, cursor, query: {...request.query, terms}};
     },
     catch: cause =>
       cause instanceof CodeGraphWorksetCatalogError

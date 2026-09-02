@@ -54,8 +54,8 @@ function rationaleCandidates(content: string): readonly CodeGraphRationaleInput[
     const line = content.slice(offset, end);
     const marker = RATIONALE_MARKER.exec(line);
     if (marker) {
-      const name = marker[1]!.toUpperCase();
-      const documentation = marker[2]!.trim();
+      const name = marker[1].toUpperCase();
+      const documentation = marker[2].trim();
       const key = `${lineNumber}\0${name}\0${documentation}`;
       if (!seen.has(key)) {
         seen.add(key);
@@ -63,7 +63,7 @@ function rationaleCandidates(content: string): readonly CodeGraphRationaleInput[
       }
     }
     for (const reference of line.matchAll(DESIGN_REFERENCE)) {
-      const name = reference[0]!.replace(/[ #:-]+/, '-').toUpperCase();
+      const name = reference[0].replace(/[ #:-]+/, '-').toUpperCase();
       const key = `${lineNumber}\0REFERENCE\0${name}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -119,7 +119,7 @@ function rationaleOwners(
     .filter(symbol => symbol.kind !== 'rationale' && symbol.span.line <= candidate.line)
     .sort((left, right) => right.span.line - left.span.line);
   if (preceding[0]) return [preceding[0]];
-  return symbols.length > 0 ? [symbols[0]!] : [];
+  return symbols.length > 0 ? [symbols[0]] : [];
 }
 
 function rationaleEdge(
