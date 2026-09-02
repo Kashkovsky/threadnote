@@ -629,7 +629,50 @@ export function commandEnvironment(
 }
 
 export function formatShellCommand(executable: string, args: readonly string[]): string {
-  return redactSensitiveText([executable, ...args].map(shellQuote).join(' '));
+  const values = isGitExecutable(executable) ? formatGitCommandValues(executable, args) : [executable, ...args];
+  return redactSensitiveText(values.map(shellQuote).join(' '));
+}
+
+const GIT_PATH_ARGUMENT_ROLES = new Map<string, 'gitdir' | 'worktree'>([
+  ['-C', 'worktree'],
+  ['--git-dir', 'gitdir'],
+  ['--separate-git-dir', 'gitdir'],
+  ['--work-tree', 'worktree'],
+]);
+
+function formatGitCommandValues(executable: string, args: readonly string[]): readonly string[] {
+  const formattedArgs = [...args];
+  const separatorIndex = args.indexOf('--');
+  const optionLimit = separatorIndex >= 0 ? separatorIndex : args.length;
+  for (let index = 0; index < optionLimit; index += 1) {
+    const argument = args[index];
+    const role = GIT_PATH_ARGUMENT_ROLES.get(argument);
+    if (role !== undefined && index + 1 < optionLimit) {
+      formattedArgs[index + 1] = replaceSensitiveValueWithRole(args[index + 1]!, role);
+      index += 1;
+      continue;
+    }
+    for (const [option, optionRole] of GIT_PATH_ARGUMENT_ROLES) {
+      const prefix = `${option}=`;
+      if (argument.startsWith(prefix)) {
+        formattedArgs[index] = `${prefix}${replaceSensitiveValueWithRole(argument.slice(prefix.length), optionRole)}`;
+        break;
+      }
+    }
+  }
+
+  if (args[0] === 'clone' && separatorIndex > 0 && separatorIndex + 1 < args.length) {
+    formattedArgs[separatorIndex + 1] = replaceSensitiveValueWithRole(args[separatorIndex + 1]!, 'repository');
+    if (separatorIndex + 2 < args.length) {
+      formattedArgs[separatorIndex + 2] = replaceSensitiveValueWithRole(args[separatorIndex + 2]!, 'worktree');
+    }
+  }
+
+  return [replaceSensitiveValueWithRole(executable, 'git'), ...formattedArgs];
+}
+
+function replaceSensitiveValueWithRole(value: string, role: 'git' | 'gitdir' | 'repository' | 'worktree'): string {
+  return redactSensitiveText(value) === value ? value : `<${role}>`;
 }
 
 export function shellQuote(value: string): string {
