@@ -25,7 +25,7 @@ lines.on('line', line => {
     result?: {decision?: string};
   };
   if (request.id === 899 && request.method === undefined) {
-    if (request.result?.decision !== 'cancel' || !pendingTurnParams) {
+    if (request.result?.decision !== 'decline' || !pendingTurnParams) {
       process.stderr.write('expected denied command cancellation\n');
       process.exit(9);
     }

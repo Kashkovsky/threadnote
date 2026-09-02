@@ -33,7 +33,7 @@ describe('Code Memory Link Codex terminal receipts', () => {
 
   it('admits the exact sealed budget and rejects any provider overrun even after a file change', () => {
     fc.assert(
-      fc.property(fc.integer({min: 2, max: 64}), fc.integer({min: 2_000, max: 384_000}), (stepBudget, tokenBudget) => {
+      fc.property(fc.integer({min: 2, max: 64}), fc.integer({min: 2_000, max: 512_000}), (stepBudget, tokenBudget) => {
         const taskBudget = {steps: stepBudget, tokens: tokenBudget};
         expect(() => assertCodeMemoryLinkTurnProgress(usageEvents(stepBudget, tokenBudget), taskBudget)).not.toThrow();
         expect(() => assertCodeMemoryLinkTurnProgress(usageEvents(stepBudget + 1, tokenBudget), taskBudget)).toThrow(
