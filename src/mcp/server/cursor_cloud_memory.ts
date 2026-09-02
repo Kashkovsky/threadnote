@@ -1,4 +1,9 @@
-import {cursorCloudScopeTeams, type CursorCloudMemoryScope} from '../../cursor/cloud.js';
+import {Effect} from 'effect';
+import {
+  assertCursorCloudMemoryTeamsReady,
+  cursorCloudScopeTeams,
+  type CursorCloudMemoryScope,
+} from '../../cursor/cloud.js';
 import {syncSharedReposBeforeAgentRead} from '../../effect/share.js';
 import type {RuntimeConfig} from './common.js';
 
@@ -14,5 +19,7 @@ export function syncCursorCloudMemoryShares(
       : typeof teamSelector === 'string'
         ? [teamSelector]
         : teamSelector;
-  return syncSharedReposBeforeAgentRead(config, teams);
+  return assertCursorCloudMemoryTeamsReady(config, teams).pipe(
+    Effect.andThen(syncSharedReposBeforeAgentRead(config, teams)),
+  );
 }

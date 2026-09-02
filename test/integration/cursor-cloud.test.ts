@@ -93,6 +93,57 @@ describe('Cursor Cloud integration', () => {
         defaultTeam: 'engineering',
         teams: {engineering: {name: 'engineering', remote: fixture.remote}},
       });
+      expect(JSON.parse(await readFile(join(fixture.home, 'cursor-cloud', 'profile.json'), 'utf8'))).toEqual({
+        account: 'local',
+        agentId: 'cloud-agent',
+        provider: 'cursor-cloud',
+        user: 'cloud-user',
+        version: 1,
+      });
+      const implicitConfig = await runCli(
+        ['cloud', 'cursor', 'config', '--home', fixture.home, '--team', 'engineering'],
+        {HOME: fixture.userHome},
+      );
+      expect(JSON.parse(implicitConfig.stdout)).toMatchObject({
+        env: {THREADNOTE_AGENT_ID: 'cloud-agent', THREADNOTE_USER: 'cloud-user'},
+      });
+      const implicitRemember = await runCli(
+        [
+          'remember',
+          '--home',
+          fixture.home,
+          '--kind',
+          'handoff',
+          '--project',
+          'threadnote',
+          '--topic',
+          'cursor-cloud-profile-fallback',
+          '--text',
+          'The saved Cursor Cloud profile selects the canonical user.',
+        ],
+        {HOME: fixture.userHome},
+      );
+      expect(implicitRemember.stdout).toContain('threadnote://user/cloud-user/memories/handoffs/active/');
+      await expect(
+        runCli(
+          [
+            'cloud',
+            'cursor',
+            'bootstrap',
+            '--home',
+            fixture.home,
+            '--remote',
+            fixture.remote,
+            '--team',
+            'engineering',
+            '--user',
+            'different-user',
+            '--agent-id',
+            'cloud-agent',
+          ],
+          {HOME: fixture.userHome},
+        ),
+      ).rejects.toMatchObject({stderr: expect.stringContaining('already uses user "cloud-user"')});
       expect(await readFile(join(fixture.userHome, '.cursor', 'rules', 'threadnote.mdc'), 'utf8')).toContain(
         'Personal Cursor Cloud',
       );
@@ -124,6 +175,24 @@ describe('Cursor Cloud integration', () => {
         memoryRoot: 'threadnote://user/cloud-user/memories/shared/engineering',
         profile: 'shared-read-write',
         status: 'ok',
+      });
+    } finally {
+      await rm(fixture.root, {force: true, recursive: true});
+    }
+  });
+
+  it('keeps MCP discovery available while declared shares are still bootstrapping', async () => {
+    const fixture = await cloudFixture();
+    try {
+      await withCloudMcp(fixture, ['engineering', 'docs'], async client => {
+        const tools = await client.listTools();
+        expect(tools.tools.map(tool => tool.name)).toEqual(CLOUD_TOOL_NAMES);
+        const recallError = await callError(client, 'recall_context', {
+          callerCwd: process.cwd(),
+          query: 'bootstrap race sentinel',
+        });
+        expect(recallError).toContain('is not configured yet');
+        expect(recallError).toContain('MCP discovery remains available');
       });
     } finally {
       await rm(fixture.root, {force: true, recursive: true});

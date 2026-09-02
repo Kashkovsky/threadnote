@@ -20,11 +20,18 @@ type CursorCloudMode = 'personal' | 'remote-hybrid';
 
 export function makeCursorCloudIdentityFlags(
   defaultString: (name: string, description: string, value: string) => Flag.Flag<string>,
+  optionalString: (name: string, description: string) => Flag.Flag<string | undefined>,
 ) {
   return {
-    agentId: defaultString('agent-id', 'Stable agent identity used by Cursor Cloud', 'cursor-cloud'),
+    agentId: optionalString(
+      'agent-id',
+      'Stable agent identity; defaults to the saved Personal Cursor Cloud profile or cursor-cloud',
+    ),
     team: defaultString('team', 'Shared-memory team reserved for Cursor Cloud', 'cursor-cloud'),
-    user: defaultString('user', 'Stable Threadnote user identity used by Cursor Cloud', 'cursor-cloud'),
+    user: optionalString(
+      'user',
+      'Stable Threadnote user identity; defaults to the saved Personal Cursor Cloud profile or cursor-cloud',
+    ),
   } as const;
 }
 

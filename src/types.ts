@@ -6,13 +6,16 @@ export type ClaudeMcpScope = 'local' | 'project' | 'user';
 export type CommandStatus = 'fail' | 'ok' | 'warn';
 export type MemoryKind = 'durable' | 'handoff' | 'incident' | 'preference' | 'smoke';
 export type MemoryStatus = 'active' | 'archived' | 'expired' | 'superseded';
+export type RuntimeIdentitySource = 'cursor-cloud-command' | 'cursor-cloud-profile' | 'environment' | 'system';
 
 export interface RuntimeConfig {
   readonly account: string;
   readonly agentContextHome: string;
   readonly agentId: string;
+  readonly agentIdSource?: RuntimeIdentitySource;
   readonly manifestPath: string;
   readonly user: string;
+  readonly userSource?: RuntimeIdentitySource;
 }
 
 export interface ProjectManifest {

@@ -1526,13 +1526,13 @@ const finalizeCodeRefs = Command.make(
   options => withRuntimeEffect(config => runFinalizeCodeRefs(config, options)),
 ).pipe(Command.withDescription('Finalize private pending memory code citations from exact-current ready graphs'));
 
-const cursorCloudIdentityFlags = makeCursorCloudIdentityFlags(defaultString);
+const cursorCloudIdentityFlags = makeCursorCloudIdentityFlags(defaultString, optionalString);
 const cursorCloudBaseIdentityFlags = {
   agentId: cursorCloudIdentityFlags.agentId,
   user: cursorCloudIdentityFlags.user,
 };
 const cursorCloudMode = makeCursorCloudModeFlag(defaultChoice);
-const cursorCloudRuntime = (config: RuntimeConfig, agentId: string, user: string) =>
+const cursorCloudRuntime = (config: RuntimeConfig, agentId: string | undefined, user: string | undefined) =>
   cursorCloudRuntimeConfig(config, {agentId, user});
 
 const cursorCloudConfig = Command.make(

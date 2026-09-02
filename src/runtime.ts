@@ -1,5 +1,6 @@
 import {Effect, FileSystem, Path} from 'effect';
 import {DEFAULT_ACCOUNT, DEFAULT_AGENT_ID, USER_MANIFEST_NAME} from './constants.js';
+import {readCursorCloudIdentityProfile} from './cursor/profile.js';
 import {expandPath, toolRoot} from './utils.js';
 import {SystemInfo} from './effect/system.js';
 
@@ -15,14 +16,27 @@ export const getRuntimeConfig = Effect.fn('runtime.getRuntimeConfig')(function* 
   const system = yield* SystemInfo;
   const environment = system.environment();
   const threadnoteHome = yield* expandPath(options.home ?? environment.THREADNOTE_HOME ?? '~/.threadnote');
+  const cursorCloudProfile = yield* readCursorCloudIdentityProfile(threadnoteHome);
   const configuredManifest = manifestOverride ?? options.manifest ?? environment.THREADNOTE_MANIFEST;
   const manifestPath = yield* expandPath(configuredManifest ?? (yield* defaultManifestPath(threadnoteHome)));
+  const environmentAgentId = environment.THREADNOTE_AGENT_ID;
+  const environmentUser = environment.THREADNOTE_USER;
   return {
-    account: environment.THREADNOTE_ACCOUNT ?? DEFAULT_ACCOUNT,
+    account: environment.THREADNOTE_ACCOUNT ?? cursorCloudProfile?.account ?? DEFAULT_ACCOUNT,
     agentContextHome: threadnoteHome,
-    agentId: environment.THREADNOTE_AGENT_ID ?? DEFAULT_AGENT_ID,
+    agentId: environmentAgentId ?? cursorCloudProfile?.agentId ?? DEFAULT_AGENT_ID,
+    agentIdSource: environmentAgentId
+      ? ('environment' as const)
+      : cursorCloudProfile
+        ? ('cursor-cloud-profile' as const)
+        : ('system' as const),
     manifestPath,
-    user: environment.THREADNOTE_USER ?? system.userName,
+    user: environmentUser ?? cursorCloudProfile?.user ?? system.userName,
+    userSource: environmentUser
+      ? ('environment' as const)
+      : cursorCloudProfile
+        ? ('cursor-cloud-profile' as const)
+        : ('system' as const),
   };
 });
 

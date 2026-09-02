@@ -8,6 +8,7 @@ import {SystemInfo} from '../effect/system.js';
 import {canonicalResourceUri, resourceIdIsWithin} from '../storage/resource-id.js';
 import {uriSegment} from '../mcp/server/common.js';
 import {installCursorCloudAgentIntegration} from '../agent_integration/index.js';
+import {persistCursorCloudIdentityProfile} from './profile.js';
 
 /** Legacy selector retained for Threadnote 4.2 Dashboard configurations. */
 export const CURSOR_CLOUD_MCP_TOOLSET = 'cursor-cloud' as const;
@@ -302,8 +303,17 @@ export function cursorCloudRuntimeConfig(
   config: RuntimeConfig,
   options: {readonly agentId?: string; readonly user?: string},
 ): RuntimeConfig {
-  const profile = buildCursorCloudProfile(config, options);
-  return {...config, agentId: profile.agentId, user: profile.user};
+  const profile = buildCursorCloudProfile(config, {
+    agentId: options.agentId ?? cursorCloudDefaultIdentity(config.agentId, config.agentIdSource),
+    user: options.user ?? cursorCloudDefaultIdentity(config.user, config.userSource),
+  });
+  return {
+    ...config,
+    agentId: profile.agentId,
+    agentIdSource: options.agentId ? 'cursor-cloud-command' : config.agentIdSource,
+    user: profile.user,
+    userSource: options.user ? 'cursor-cloud-command' : config.userSource,
+  };
 }
 
 export function credentialFreeGitRemote(remote: string): string {
@@ -344,29 +354,37 @@ export function planCursorCloudBootstrap(
   return {action: 'reuse', remote, team};
 }
 
-export const resolveCursorCloudMemoryScope = Effect.fn('cursorCloud.resolveMemoryScope')(function* (
+export const resolveCursorCloudMemoryScope = Effect.fn('cursorCloud.resolveMemoryScope')(function (
   config: RuntimeConfig,
   environment: Readonly<Record<string, string | undefined>>,
 ) {
-  const teams = cursorCloudTeamsFromEnvironment(environment);
+  return Effect.sync(() => {
+    const teams = cursorCloudTeamsFromEnvironment(environment);
+    return {
+      mode: 'shared-read-write',
+      shares: teams.map(team => ({root: cursorCloudMemoryRoot(config.user, team), team})),
+    } satisfies CursorCloudMemoryScope;
+  });
+});
+
+export const assertCursorCloudMemoryTeamsReady = Effect.fn('cursorCloud.assertMemoryTeamsReady')(function* (
+  config: RuntimeConfig,
+  teams: readonly string[],
+) {
   const teamsFile = yield* readTeamsFile(config);
   for (const team of teams) {
     const configured = teamsFile.teams[team];
     if (!configured) {
       throw new CursorCloudOperationError(
-        `Cursor Cloud memory team "${team}" is not configured. Run threadnote cloud cursor bootstrap --team ${team} first.`,
+        `Cursor Cloud memory team "${team}" is not configured yet. MCP discovery remains available while bootstrap runs; wait for the environment Build to finish, then retry. If bootstrap is not running, run threadnote cloud cursor bootstrap --team ${team} first.`,
       );
     }
     if (shareTeamAccess(configured) !== 'read-write') {
       throw new CursorCloudOperationError(
-        `Cursor Cloud memory team "${team}" must be read-write before the MCP profile can start.`,
+        `Cursor Cloud memory team "${team}" is not read-write yet. MCP discovery remains available while bootstrap runs; wait for the environment Build to finish, then retry.`,
       );
     }
   }
-  return {
-    mode: 'shared-read-write',
-    shares: teams.map(team => ({root: cursorCloudMemoryRoot(config.user, team), team})),
-  } satisfies CursorCloudMemoryScope;
 });
 
 export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
@@ -381,7 +399,12 @@ export const runCursorCloudConfig = Effect.fn('cursorCloud.config')(function* (
   },
 ) {
   const teams = normalizeCursorCloudTeams(options.teams);
-  const profile = buildCursorCloudProfile(config, {...options, team: teams[0]});
+  const profile = buildCursorCloudProfile(config, {
+    ...options,
+    agentId: options.agentId ?? config.agentId,
+    team: teams[0],
+    user: options.user ?? config.user,
+  });
   const output =
     options.mode === 'remote-hybrid'
       ? buildCursorCloudRemoteHybridMcpConfig(
@@ -412,6 +435,9 @@ export const runCursorCloudBootstrap = Effect.fn('cursorCloud.bootstrap')(functi
   yield* withSharedRepositoryLock(
     config,
     Effect.gen(function* () {
+      if (options.dryRun !== true) {
+        yield* persistCursorCloudIdentityProfile(config);
+      }
       const plan = planCursorCloudBootstrap(yield* readTeamsFile(config), remote, options.team);
       if (plan.action === 'initialize') {
         yield* runShareInit(config, plan.remote, {
@@ -701,6 +727,13 @@ function requiredIdentity(value: string, label: string): string {
     throw new CursorCloudOperationError(`Cursor Cloud ${label} must contain a portable identifier.`);
   }
   return normalized;
+}
+
+function cursorCloudDefaultIdentity(
+  configured: string,
+  source: RuntimeConfig['userSource'] | RuntimeConfig['agentIdSource'],
+): string {
+  return source === 'cursor-cloud-profile' || source === 'environment' ? configured : DEFAULT_CURSOR_CLOUD_IDENTITY;
 }
 
 function assertEquivalentWritableTeam(existing: ShareTeamConfig, remote: string, team: string): void {
