@@ -354,34 +354,37 @@ function normalize(value: unknown, hasHash: boolean): Omit<CodeMemoryLinkCodexRa
   if (graphPreflight.runBindingHash !== expectedRunBindingHash) {
     invalid('graph preflight differs from the independently reconstructed run binding');
   }
-  const contextCall = appServer.checkpoints.find(
+  const contextCalls = appServer.checkpoints.filter(
     checkpoint => checkpoint.method === 'item/completed' && checkpoint.itemType === 'mcpToolCall',
   );
-  if (!contextCall || !contextCall.proxyReceipt || !contextCall.response) {
-    invalid('retained app-server evidence lacks its successful Context Brief response');
-  }
-  if (contextCall.proxyReceipt.armPacketHash !== expectedArmPacketHash) {
-    invalid('Context Brief proxy receipt uses another arm packet');
-  }
   const expectedResponseClass = {
     anchored: 'anchored-v3',
     'no-memory': 'empty-v1',
     'task-only': 'task-v2',
   }[bindings.arm];
-  if (contextCall.response.responseClass !== expectedResponseClass) {
-    invalid('model-visible Context Brief response class differs from the assigned arm');
-  }
   const preflightResponse =
     bindings.arm === 'anchored'
       ? graphPreflight.observedResponses.anchored
       : bindings.arm === 'task-only'
         ? graphPreflight.observedResponses.taskOnly
         : graphPreflight.observedResponses.noMemory;
-  if (
-    contextCall.proxyReceipt.responseHash !== codeMemoryLinkContextBriefResponseReceiptHashV1(preflightResponse) ||
-    contextCall.proxyReceipt.responseHash !== codeMemoryLinkContextBriefResponseReceiptHashV1(contextCall.response)
-  ) {
-    invalid('model-visible Context Brief response differs from the exact preflight arm projection');
+  for (const contextCall of contextCalls) {
+    if (!contextCall.succeeded) continue;
+    if (!contextCall.proxyReceipt || !contextCall.response) {
+      invalid('successful Context Brief evidence lacks its response receipt');
+    }
+    if (contextCall.proxyReceipt.armPacketHash !== expectedArmPacketHash) {
+      invalid('Context Brief proxy receipt uses another arm packet');
+    }
+    if (contextCall.response.responseClass !== expectedResponseClass) {
+      invalid('model-visible Context Brief response class differs from the assigned arm');
+    }
+    if (
+      contextCall.proxyReceipt.responseHash !== codeMemoryLinkContextBriefResponseReceiptHashV1(preflightResponse) ||
+      contextCall.proxyReceipt.responseHash !== codeMemoryLinkContextBriefResponseReceiptHashV1(contextCall.response)
+    ) {
+      invalid('model-visible Context Brief response differs from the exact preflight arm projection');
+    }
   }
 
   const judgeInput = object(evidence.judge, 'judge evidence');
