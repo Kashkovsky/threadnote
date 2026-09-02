@@ -185,39 +185,26 @@ describe('standalone release workflows', () => {
     }),
   );
 
-  it.effect('blocks release payload builds on exact C-to-A-to-G Code Memory Link evidence', () =>
+  it.effect('builds every release payload from the exact protected-main tag commit without experiment gating', () =>
     Effect.gen(function* () {
       const workflow = yield* readProjectFile('.github/workflows/publish.yml');
       const publisher = yield* readProjectFile('.github/workflows/publish-release-assets.yml');
       const verifyJob = workflow.slice(workflow.indexOf('  verify:'), workflow.indexOf('\n  linux:'));
-      const resolveCandidate = verifyJob.indexOf('Resolve exact Code Memory Link candidate C');
-      const installCandidate = verifyJob.indexOf('Build and install exact Code Memory Link candidate C');
-      const verifyGovernance = verifyJob.indexOf(
-        'Verify exact final Code Memory Link governance G and retained 100k scale evidence',
-      );
+      const resolveRelease = verifyJob.indexOf('Resolve exact release source');
       const releaseSmokes = verifyJob.indexOf('Run release contract smokes');
 
-      expect(verifyJob).toContain('runs-on: macos-15');
-      expect(verifyJob).toContain('.github/release-evidence/code-memory-link/${release_tag}.json');
-      expect(verifyJob).toContain('--print-candidate-commit');
-      expect(verifyJob).toContain('git worktree add --detach "$candidate_root" "$CANDIDATE_COMMIT"');
-      expect(verifyJob).toContain('bun run dev:install-global');
-      expect(verifyJob).toContain('bun run eval:code-memory-link-release --');
-      expect(verifyJob).toContain('retained 100k scale evidence');
-      expect(verifyJob).toContain('--release-descriptor "$RELEASE_DESCRIPTOR"');
-      expect(verifyJob).toContain('--release-tag "$RELEASE_TAG"');
-      expect(verifyJob).toContain('THREADNOTE_BUILD_TARGET: bun-darwin-arm64');
+      expect(verifyJob).toContain('runs-on: ubuntu-latest');
+      expect(verifyJob).toContain('release_commit: ${{ steps.release_source.outputs.release_commit }}');
       expect(verifyJob).toContain('refs/tags/${release_tag}^{commit}');
       expect(verifyJob).toContain('git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main');
-      const candidateAncestry = verifyJob.indexOf('git merge-base --is-ancestor "$candidate_commit" "$head_commit"');
-      const candidateWorktree = verifyJob.indexOf('git worktree add --detach "$candidate_root" "$CANDIDATE_COMMIT"');
-      expect(candidateAncestry).toBeGreaterThan(resolveCandidate);
-      expect(candidateWorktree).toBeGreaterThan(candidateAncestry);
-      expect(resolveCandidate).toBeGreaterThan(0);
-      expect(installCandidate).toBeGreaterThan(resolveCandidate);
-      expect(verifyGovernance).toBeGreaterThan(installCandidate);
-      expect(releaseSmokes).toBeGreaterThan(verifyGovernance);
+      expect(verifyJob).toContain('printf \'release_commit=%s\\n\' "$head_commit"');
+      expect(verifyJob).not.toContain('code-memory-link');
+      expect(verifyJob).not.toContain('CANDIDATE_COMMIT');
+      expect(resolveRelease).toBeGreaterThan(0);
+      expect(releaseSmokes).toBeGreaterThan(resolveRelease);
       expect(workflow.match(/needs: verify/g)).toHaveLength(3);
+      expect(workflow.match(/name: Select exact verified release source/g)).toHaveLength(3);
+      expect(workflow.match(/RELEASE_COMMIT: \$\{\{ needs\.verify\.outputs\.release_commit \}\}/g)).toHaveLength(3);
       expect(workflow.match(/ref: \$\{\{ github\.sha \}\}/g)).toHaveLength(5);
       expect(workflow.match(/persist-credentials: false/g)).toHaveLength(5);
       expect(workflow).toContain('release_sha: ${{ github.sha }}');

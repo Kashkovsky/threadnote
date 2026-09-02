@@ -1,4 +1,5 @@
 import {cursorCloudDocsSection} from './docsCursorCloud.js';
+import {cursorCloudPersonalDocsSection} from './docsCursorCloudPersonal.js';
 import {graphCheckpointsDocsArticle} from './docsGraphCheckpoints.js';
 import {
   contextBriefMcpTool,
@@ -491,7 +492,7 @@ threadnote doctor`,
           },
           {
             type: 'note',
-            text: 'Threadnote supports a Cursor Cloud remote-hybrid profile with local checkout evidence and an explicitly bound organization-operated remote memory share. The legacy 4.2 Git-backed beta remains separate. See [Bootstrap Threadnote for a Cursor organization](cursor-cloud-agents/).',
+            text: 'For individual use, see [Personal Cursor Cloud setup](personal-cursor-cloud/): one personal stdio MCP can expose one or more private Git memory shares and bootstrap installs Cloud-specific Cursor skills. Organizations operating managed remote memory should use [Bootstrap Threadnote for a Cursor organization](cursor-cloud-agents/).',
           },
         ],
       },
@@ -889,6 +890,7 @@ threadnote index status`,
     ],
   },
   memoryWorkflowsDocsSection,
+  cursorCloudPersonalDocsSection,
   cursorCloudDocsSection,
   {
     id: 'team-sharing',

@@ -17,7 +17,15 @@ import {
   MAX_DEFERRED_CODE_ANCHOR_FINALIZE_LIMIT,
   type DeferredCodeAnchorWriteRequest,
 } from '../../memory/deferred_code_anchor.js';
-import type {CursorCloudMemoryScope} from '../../cursor/cloud.js';
+import {
+  cursorCloudScopeRoots,
+  cursorCloudScopeTeams,
+  cursorCloudShareForTeam,
+  cursorCloudShareForUri,
+  cursorCloudUriWithinScope,
+  type CursorCloudMemoryScope,
+  type CursorCloudShareScope,
+} from '../../cursor/cloud.js';
 import {resourceIdIsWithin} from '../../storage/resource-id.js';
 import {resolveWorkspaceComponentContext} from '../../utils.js';
 import {withCodeAnchorFinalizationAnonymousTelemetry} from '../../telemetry/code_anchor_finalization.js';
@@ -73,6 +81,7 @@ export function registerStoreTool(
         text: McpInput.string(),
         sourceAgentClient: McpInput.string(),
         status: McpInput.literals(['active', 'archived', 'expired', 'superseded']),
+        ...(memoryScope ? {team: McpInput.string('Target Personal Cursor Cloud share for durable memory')} : {}),
         topic: McpInput.string(),
       },
     },
@@ -87,6 +96,7 @@ export function registerStoreTool(
       replaceUri,
       sourceAgentClient,
       status,
+      team,
       text,
       topic,
     }) => {
@@ -103,24 +113,48 @@ export function registerStoreTool(
         return checkedReferences.error;
       }
       const memoryKind = kind ?? 'durable';
+      let selectedShare: CursorCloudShareScope | undefined;
+      const requestedTeam = typeof team === 'string' ? team : undefined;
+      if (memoryScope) {
+        try {
+          const teamShare = requestedTeam?.trim() ? cursorCloudShareForTeam(memoryScope, requestedTeam) : undefined;
+          const replaceShare = checkedReplaceUri.value
+            ? cursorCloudShareForUri(memoryScope, checkedReplaceUri.value)
+            : undefined;
+          if (requestedTeam?.trim() && !teamShare) {
+            return argumentError(`${name} team must be one of: ${cursorCloudScopeTeams(memoryScope).join(', ')}.`);
+          }
+          if (memoryKind === 'durable' && checkedReplaceUri.value && !replaceShare) {
+            return argumentError(`${name} replaceUri must stay within a configured Personal Cursor Cloud share.`);
+          }
+          if (teamShare && replaceShare && teamShare.team !== replaceShare.team) {
+            return argumentError(`${name} team must match the share containing replaceUri.`);
+          }
+          selectedShare = teamShare ?? replaceShare ?? cursorCloudShareForTeam(memoryScope, undefined);
+        } catch (error) {
+          return argumentError(error instanceof Error ? error.message : String(error));
+        }
+        if (memoryKind === 'durable' && !selectedShare) {
+          return argumentError(
+            `${name} requires team when several Personal Cursor Cloud shares are configured: ${cursorCloudScopeTeams(memoryScope).join(', ')}.`,
+          );
+        }
+      }
       if (memoryScope && memoryKind !== 'durable' && memoryKind !== 'handoff') {
         return argumentError(
           `${name} supports durable shared memories and transient local handoffs in the Cursor Cloud profile.`,
         );
       }
       if (memoryScope) {
-        const outsideReference = checkedReferences.value?.find(
-          reference => !resourceIdIsWithin(reference, memoryScope.root),
+        const outsideReference = checkedReferences.value?.find(reference =>
+          memoryKind === 'durable'
+            ? !resourceIdIsWithin(reference, selectedShare!.root)
+            : !cursorCloudUriWithinScope(memoryScope, reference),
         );
         if (outsideReference) {
-          return argumentError(`${name} references must stay within ${memoryScope.root}.`);
-        }
-        if (
-          memoryKind === 'durable' &&
-          checkedReplaceUri.value &&
-          !resourceIdIsWithin(checkedReplaceUri.value, memoryScope.root)
-        ) {
-          return argumentError(`${name} replaceUri must stay within ${memoryScope.root}.`);
+          return argumentError(
+            `${name} references must stay within ${memoryKind === 'durable' ? `the selected share ${selectedShare!.team}` : 'the configured Personal Cursor Cloud shares'}.`,
+          );
         }
         const handoffRoot = `threadnote://user/${uriSegment(config.user)}/memories/handoffs`;
         if (
@@ -186,13 +220,17 @@ export function registerStoreTool(
           ? yield* readMemoryRecordsByUri(config, [checkedReplaceUri.value])
           : [];
         const sharedTeam = checkedReplaceUri.value ? sharedTeamNameForUri(config, checkedReplaceUri.value) : undefined;
-        const relationScope =
-          memoryScope?.root ??
-          (sharedTeam
-            ? `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(sharedTeam)}`
-            : `threadnote://user/${uriSegment(config.user)}/memories`);
+        const relationScopes = memoryScope
+          ? memoryKind === 'durable'
+            ? [selectedShare!.root]
+            : cursorCloudScopeRoots(memoryScope)
+          : [
+              sharedTeam
+                ? `threadnote://user/${uriSegment(config.user)}/memories/shared/${uriSegment(sharedTeam)}`
+                : `threadnote://user/${uriSegment(config.user)}/memories`,
+            ];
         const authoredRelations = yield* resolveAuthoredMemoryRelations(config, relations ?? [], {
-          allowedUriScopes: [relationScope],
+          allowedUriScopes: relationScopes,
           sourceMemoryId: replaced?.metadata.memoryId,
         });
         const scopedMetadata = {
@@ -211,7 +249,7 @@ export function registerStoreTool(
               `Refusing shared memory write: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
             );
           }
-          const result = yield* writeCursorCloudSharedMemory(config, memoryScope, {
+          const result = yield* writeCursorCloudSharedMemory(config, selectedShare!, {
             bodyText: checkedText.value,
             expectedSourceContent: authoredRelations.targets,
             metadata: scopedMetadata,

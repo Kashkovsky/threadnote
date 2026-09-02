@@ -60,19 +60,23 @@ export function buildOnboardingGuide(state: OnboardingState): string {
       'and returns only the opaque attestation ID.',
     ].join('\n');
   }
-  if (state.toolset === 'cursor-cloud' || state.toolset === 'cursor-cloud-git-beta') {
+  if (
+    state.toolset === 'cursor-cloud-personal' ||
+    state.toolset === 'cursor-cloud' ||
+    state.toolset === 'cursor-cloud-git-beta'
+  ) {
     return [
-      '# Threadnote Cursor Cloud Git beta',
+      '# Threadnote Personal Cursor Cloud',
       '',
-      'This session has one exclusive shared-memory scope. Start with recall_context.',
+      'This session has one MCP bounded to its configured Git memory shares. Start with recall_context.',
       'Its results are unread pointers, not evidence; use read_context before relying on relevant URIs.',
-      'Read only the threadnote:// URIs it returns. list_context can browse within that same scope.',
+      'Read only the threadnote:// URIs it returns. Pass team to narrow recall or select a list root.',
       '',
       'The code graph is local to the current cloud checkout. Use inspect_code_graph before broad text',
       'search and analyze_code_graph for repository-wide structure. Named worksets are unavailable.',
       '',
-      'Store durable knowledge with remember_context. Each write is committed and pushed to the configured',
-      'share so it survives the ephemeral cloud session. A kind=handoff write stays local and may not survive',
+      'Store durable knowledge with remember_context. When several shares are configured, pass team explicitly.',
+      'Each write is committed and pushed only to that share. A kind=handoff write stays local and may not survive',
       'a new cloud session; all other personal/local memory kinds stay inaccessible.',
       'Review/apply actions, separate publishing, Obsidian operations, and maintenance tools are unavailable.',
       'Use the remote-hybrid profile instead when managed Threadnote memory is enabled for the environment.',

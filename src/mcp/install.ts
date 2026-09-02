@@ -162,6 +162,14 @@ export const mcpConfigurationChecks = Effect.fn('mcp.configurationChecks')(funct
     const receipt = registry?.hosts[agent];
     const name = receipt?.mcp.name ?? THREADNOTE_MCP_NAME;
     const repair = receipt?.mcp.repair ?? true;
+    if (receipt?.mcp.external === true) {
+      checks.push({
+        detail: `${name} is registered in the Cursor Cloud Dashboard; verify its status from an active Cloud Agent`,
+        name: `${agent} MCP`,
+        status: 'warn',
+      });
+      continue;
+    }
     if (agent === 'cursor') {
       checks.push(
         yield* jsonMcpConfigurationCheck('cursor MCP', yield* cursorMcpConfigPath(), 'mcpServers', name, repair),
@@ -494,6 +502,11 @@ export const removeMcpConfigs = Effect.fn('mcp.removeConfigs')(function* (
   const removed: AgentClient[] = [];
   for (const client of clients) {
     const receipt = receipts[client];
+    if (receipt?.external === true) {
+      yield* Console.log(`Released external ${client} MCP registration without modifying local host configuration.`);
+      removed.push(client);
+      continue;
+    }
     const name = receipt?.name ?? THREADNOTE_MCP_NAME;
     if (client === 'cursor') {
       if (yield* removeCursorMcpConfig(name, dryRun)) removed.push(client);

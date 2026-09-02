@@ -8,6 +8,7 @@ import {
   cursorCloudMemoryEndpoint,
   cursorCloudMemoryRoot,
   cursorCloudRemoteShareId,
+  normalizeCursorCloudTeams,
   planCursorCloudBootstrap,
 } from '../../src/cursor/cloud.js';
 import type {RuntimeConfig, ShareTeamConfig, ShareTeamsFile} from '../../src/types.js';
@@ -44,11 +45,36 @@ describe('Cursor Cloud profile', () => {
         THREADNOTE_ACCOUNT: 'local',
         THREADNOTE_AGENT_ID: 'cursor-agent',
         THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
-        THREADNOTE_MCP_TOOLSET: 'cursor-cloud-git-beta',
+        THREADNOTE_MCP_TOOLSET: 'cursor-cloud-personal',
         THREADNOTE_USER: 'cloud-user',
       },
       type: 'stdio',
     });
+  });
+
+  it('renders one MCP configuration for a deterministic bounded share set', () => {
+    const profile = buildCursorCloudProfile(runtime, {agentId: 'cursor-agent', team: 'platform', user: 'cloud-user'});
+    expect(buildCursorCloudMcpConfig(profile, ['platform', 'docs', 'platform'])).toMatchObject({
+      env: {
+        THREADNOTE_CURSOR_CLOUD_TEAM: 'docs',
+        THREADNOTE_CURSOR_CLOUD_TEAMS: '["docs","platform"]',
+        THREADNOTE_MCP_TOOLSET: 'cursor-cloud-personal',
+      },
+    });
+  });
+
+  it('normalizes repeated share selections independent of order and duplicates', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.stringMatching(/^[a-z][a-z0-9-]{0,15}$/u), {maxLength: 12, minLength: 1}),
+        fc.array(fc.nat(), {maxLength: 24}),
+        (teams, order) => {
+          const reordered = order.map(index => teams[index % teams.length]!).concat(teams);
+          expect(normalizeCursorCloudTeams(reordered)).toEqual([...teams].sort());
+        },
+      ),
+      {numRuns: 100},
+    );
   });
 
   it('renders two credential-free Dashboard entries for remote-hybrid mode', () => {
@@ -166,6 +192,23 @@ describe('Cursor Cloud profile', () => {
       ),
       {numRuns: 100},
     );
+  });
+
+  it('rejects query- and fragment-bearing Git remotes without reflecting them', () => {
+    for (const remote of [
+      'https://example.com/team/memories.git?token=cursorSecretValue',
+      'https://example.com/team/memories.git#cursorSecretValue',
+    ]) {
+      let message = '';
+      try {
+        credentialFreeGitRemote(remote);
+      } catch (cause) {
+        message = cause instanceof Error ? cause.message : String(cause);
+      }
+      expect(message).toContain('query parameters, or fragments');
+      expect(message).not.toContain(remote);
+      expect(message).not.toContain('cursorSecretValue');
+    }
   });
 });
 

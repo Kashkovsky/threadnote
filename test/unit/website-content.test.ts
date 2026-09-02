@@ -2380,6 +2380,57 @@ Measure the system before changing its implementation language.
     ).toBe('cursor-cloud-agents');
   });
 
+  it('documents the standalone Personal Cursor Cloud one-MCP multi-share setup', () => {
+    const article = docsSections
+      .flatMap(section => section.articles)
+      .find(candidate => candidate.id === 'personal-cursor-cloud');
+    const content = JSON.stringify(article);
+    const mcpConfiguration = article?.body.find(
+      block =>
+        block.type === 'code' && block.language === 'json' && block.code.includes('THREADNOTE_CURSOR_CLOUD_TEAMS'),
+    );
+    const install = article?.body.find(
+      block => block.type === 'code' && block.language === 'sh' && block.code.includes('cloud cursor bootstrap'),
+    );
+
+    expect(article?.title).toBe('Personal Cursor Cloud setup');
+    expect(content).toContain('one personal stdio MCP');
+    expect(content).toContain('up to 16');
+    expect(content).toContain('create a new environment');
+    expect(content).toContain('personal environment');
+    expect(content).toContain('MCP dropdown');
+    expect(content).toContain('Register exactly one Threadnote personal MCP');
+    expect(content).toContain('one bootstrap command per Git repository');
+    expect(content).toContain('Cursor 4.6');
+    expect(content).toContain('does not copy the skills from your laptop');
+    expect(content).toContain('Do not run `threadnote mcp-install cursor --apply`');
+    expect(content).toContain('`remember_context requires team`');
+    expect(content).not.toContain('Git beta');
+
+    if (!mcpConfiguration || mcpConfiguration.type !== 'code') {
+      throw new TestError('Missing Personal Cursor Cloud MCP configuration.');
+    }
+    expect(JSON.parse(mcpConfiguration.code)).toEqual({
+      type: 'stdio',
+      command: '/bin/sh',
+      args: ['-lc', 'exec "$HOME/.local/bin/threadnote-mcp-server"'],
+      env: {
+        THREADNOTE_ACCOUNT: 'local',
+        THREADNOTE_AGENT_ID: 'cursor-cloud',
+        THREADNOTE_CURSOR_CLOUD_TEAM: 'docs',
+        THREADNOTE_CURSOR_CLOUD_TEAMS: '["docs","personal"]',
+        THREADNOTE_MCP_TOOLSET: 'cursor-cloud-personal',
+        THREADNOTE_USER: 'cursor-cloud',
+      },
+    });
+    if (!install || install.type !== 'code') throw new TestError('Missing Personal Cursor Cloud install command.');
+    expect(install.code.match(/cloud cursor bootstrap/gu)).toHaveLength(2);
+    expect(install.code).toContain('$HOME/.cursor/skills/threadnote-memory/SKILL.md');
+    expect(
+      searchDocs(createDocsSearchIndex(docsSections), 'personal Cursor Cloud multiple shares one MCP')[0]?.article.id,
+    ).toBe('personal-cursor-cloud');
+  });
+
   it('uses the real Manager labels and share status fields in the mock data', () => {
     expect(managerDemoTabs.map(tab => tab.label)).toEqual(['Graph', 'Library', 'Sharing', 'Health', 'Tools']);
     for (const share of managerDemoShares) {

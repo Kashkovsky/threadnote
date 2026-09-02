@@ -337,8 +337,8 @@ export interface SharedMemoryUriParts {
 
 interface AutoShareState {
   behindTeams: ReadonlySet<string>;
+  checkedAtByTeam: Map<string, number>;
   forceNextCheck: boolean;
-  lastCheckedAt: number;
   pendingReindexes: Map<string, readonly ChangedFile[]>;
 }
 
@@ -472,7 +472,12 @@ function autoShareState(config: ShareRuntime): AutoShareState {
   const key = `${config.agentContextHome}:${config.account}:${config.user}`;
   let state = autoShareStates.get(key);
   if (!state) {
-    state = {behindTeams: new Set(), forceNextCheck: false, lastCheckedAt: 0, pendingReindexes: new Map()};
+    state = {
+      behindTeams: new Set(),
+      checkedAtByTeam: new Map(),
+      forceNextCheck: false,
+      pendingReindexes: new Map(),
+    };
     autoShareStates.set(key, state);
   }
   return state;

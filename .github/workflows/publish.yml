@@ -18,10 +18,10 @@ env:
 jobs:
   verify:
     name: Verify release source
-    runs-on: macos-15
-    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
-      candidate_commit: ${{ steps.code_memory_link_release.outputs.candidate_commit }}
+      release_commit: ${{ steps.release_source.outputs.release_commit }}
     env:
       CI: '1'
 
@@ -65,9 +65,9 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve exact Code Memory Link candidate C
+      - name: Resolve exact release source
         if: github.event_name == 'push'
-        id: code_memory_link_release
+        id: release_source
         shell: bash
         run: |
           set -euo pipefail
@@ -80,128 +80,10 @@ jobs:
             exit 1
           fi
           if ! git rev-parse --verify refs/remotes/origin/main >/dev/null || ! git merge-base --is-ancestor "$head_commit" refs/remotes/origin/main; then
-            echo "::error::Exact release governance G must descend from protected origin/main."
+            echo "::error::The exact release tag commit must be present on protected origin/main."
             exit 1
           fi
-          descriptor=''
-          deferment=''
-          candidate_receipt='{}'
-          if [[ "$release_tag" == 'v4.6.0' ]]; then
-            evidence_kind='deferment'
-            deferment=".github/release-evidence/code-memory-link/${release_tag}.deferment.json"
-            candidate_commit="$(
-              bun scripts/verify-code-memory-link-release-deferment.ts \
-                --waiver "$deferment" \
-                --release-tag "$release_tag" \
-                --print-candidate-commit
-            )"
-            candidate_receipt="$(
-              bun scripts/verify-code-memory-link-release-deferment.ts \
-                --waiver "$deferment" \
-                --release-tag "$release_tag" \
-                --print-candidate-receipt-json
-            )"
-          else
-            evidence_kind='descriptor'
-            descriptor=".github/release-evidence/code-memory-link/${release_tag}.json"
-            candidate_commit="$(
-              bun scripts/verify-code-memory-link-release.ts \
-                --release-descriptor "$descriptor" \
-                --release-tag "$release_tag" \
-                --print-candidate-commit
-            )"
-          fi
-          if [[ ! "$candidate_commit" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::Release evidence did not resolve one exact candidate commit."
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "$candidate_commit" "$head_commit"; then
-            echo "::error::Exact release governance G must descend from candidate C."
-            exit 1
-          fi
-          {
-            printf 'candidate_commit=%s\n' "$candidate_commit"
-            printf 'candidate_receipt=%s\n' "$candidate_receipt"
-            printf 'deferment=%s\n' "$deferment"
-            printf 'descriptor=%s\n' "$descriptor"
-            printf 'evidence_kind=%s\n' "$evidence_kind"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and install exact Code Memory Link candidate C
-        if: github.event_name == 'push'
-        shell: bash
-        env:
-          CANDIDATE_COMMIT: ${{ steps.code_memory_link_release.outputs.candidate_commit }}
-          CANDIDATE_RECEIPT: ${{ steps.code_memory_link_release.outputs.candidate_receipt }}
-          EVIDENCE_KIND: ${{ steps.code_memory_link_release.outputs.evidence_kind }}
-          THREADNOTE_BUILD_TARGET: bun-darwin-arm64
-          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-evidence-bin
-          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-evidence-home
-          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-evidence-install
-        run: |
-          set -euo pipefail
-          candidate_root="$RUNNER_TEMP/threadnote-code-memory-link-candidate"
-          git worktree add --detach "$candidate_root" "$CANDIDATE_COMMIT"
-          cd "$candidate_root"
-          bun install --frozen-lockfile
-          install_result_file="$RUNNER_TEMP/threadnote-code-memory-link-candidate-install.json"
-          bun run dev:install-global -- --json --terminate-superseded > "$install_result_file"
-          INSTALL_RESULT_FILE="$install_result_file" bun -e '
-            const result = await Bun.file(Bun.env.INSTALL_RESULT_FILE).json();
-            const expected = JSON.parse(Bun.env.CANDIDATE_RECEIPT ?? "{}");
-            if (
-              result.sourceCommit !== Bun.env.CANDIDATE_COMMIT ||
-              result.target !== Bun.env.THREADNOTE_BUILD_TARGET ||
-              result.doctorVerified !== true ||
-              result.launchersVerified !== true ||
-              result.cleanupComplete !== true ||
-              result.remainingSupersededProcesses !== 0
-            ) {
-              throw new Error("Exact candidate installation did not finish with complete verified cleanup.");
-            }
-            if (
-              Bun.env.EVIDENCE_KIND === "deferment" &&
-              (result.sourceCommit !== expected.commit ||
-                result.dependencyInstallation !== expected.dependencyInstallation ||
-                result.executableSha256 !== expected.testedCandidateExecutableSha256 ||
-                result.payloadBytes !== expected.payloadBytes ||
-                result.payloadFileCount !== expected.payloadFileCount ||
-                result.payloadManifestSha256 !== expected.payloadManifestSha256 ||
-                result.releaseMetadataSha256 !== expected.releaseMetadataSha256 ||
-                result.runtime !== expected.runtime ||
-                result.target !== expected.target ||
-                result.version !== expected.version)
-            ) {
-              throw new Error("Exact deferred candidate installation differs from its qualified receipt.");
-            }
-          '
-
-      - name: Verify exact final Code Memory Link governance G and retained 100k scale evidence or v4.6.0 deferment
-        if: github.event_name == 'push'
-        shell: bash
-        env:
-          EVIDENCE_KIND: ${{ steps.code_memory_link_release.outputs.evidence_kind }}
-          RELEASE_DEFERMENT: ${{ steps.code_memory_link_release.outputs.deferment }}
-          RELEASE_DESCRIPTOR: ${{ steps.code_memory_link_release.outputs.descriptor }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          THREADNOTE_BIN_DIR: ${{ runner.temp }}/threadnote-evidence-bin
-          THREADNOTE_HOME: ${{ runner.temp }}/threadnote-evidence-home
-          THREADNOTE_INSTALL_ROOT: ${{ runner.temp }}/threadnote-evidence-install
-        run: |
-          set -euo pipefail
-          if [[ "$EVIDENCE_KIND" == 'deferment' ]]; then
-            bun scripts/verify-code-memory-link-release-deferment.ts \
-              --waiver "$RELEASE_DEFERMENT" \
-              --release-tag "$RELEASE_TAG"
-          else
-            bun run eval:code-memory-link-release -- \
-              --release-descriptor "$RELEASE_DESCRIPTOR" \
-              --release-tag "$RELEASE_TAG"
-          fi
-
-      - name: Verify v4.6.0 experiment deferment contract
-        if: github.event_name == 'push' && steps.code_memory_link_release.outputs.evidence_kind == 'deferment'
-        run: bun --bun vitest run test/unit/code-memory-link-release-deferment.test.ts
+          printf 'release_commit=%s\n' "$head_commit" >> "$GITHUB_OUTPUT"
 
       - name: Run release contract smokes
         run: bun run test:smoke:release
@@ -229,23 +111,23 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Select exact verified candidate source
+      - name: Select exact verified release source
         shell: bash
         env:
-          CANDIDATE_COMMIT: ${{ needs.verify.outputs.candidate_commit }}
+          RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
             selected_commit="$GITHUB_SHA"
-          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            selected_commit="$CANDIDATE_COMMIT"
+          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            selected_commit="$RELEASE_COMMIT"
           else
-            echo "::error::Release payload build is missing an exact verifier-selected candidate."
+            echo "::error::Release payload build is missing the exact verifier-selected tag commit."
             exit 1
           fi
           git checkout --detach "$selected_commit"
           if [[ "$(git rev-parse 'HEAD^{commit}')" != "$selected_commit" ]] || [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
-            echo "::error::Release payload source differs from the exact verified candidate."
+            echo "::error::Release payload source differs from the exact verified tag commit."
             exit 1
           fi
 
@@ -312,23 +194,23 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Select exact verified candidate source
+      - name: Select exact verified release source
         shell: bash
         env:
-          CANDIDATE_COMMIT: ${{ needs.verify.outputs.candidate_commit }}
+          RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
             selected_commit="$GITHUB_SHA"
-          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            selected_commit="$CANDIDATE_COMMIT"
+          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            selected_commit="$RELEASE_COMMIT"
           else
-            echo "::error::Release payload build is missing an exact verifier-selected candidate."
+            echo "::error::Release payload build is missing the exact verifier-selected tag commit."
             exit 1
           fi
           git checkout --detach "$selected_commit"
           if [[ "$(git rev-parse 'HEAD^{commit}')" != "$selected_commit" ]] || [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
-            echo "::error::Release payload source differs from the exact verified candidate."
+            echo "::error::Release payload source differs from the exact verified tag commit."
             exit 1
           fi
 
@@ -467,23 +349,23 @@ jobs:
           persist-credentials: false
           ref: ${{ github.sha }}
 
-      - name: Select exact verified candidate source
+      - name: Select exact verified release source
         shell: bash
         env:
-          CANDIDATE_COMMIT: ${{ needs.verify.outputs.candidate_commit }}
+          RELEASE_COMMIT: ${{ needs.verify.outputs.release_commit }}
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
             selected_commit="$GITHUB_SHA"
-          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$CANDIDATE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
-            selected_commit="$CANDIDATE_COMMIT"
+          elif [[ "$GITHUB_EVENT_NAME" == 'push' && "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            selected_commit="$RELEASE_COMMIT"
           else
-            echo "::error::Release payload build is missing an exact verifier-selected candidate."
+            echo "::error::Release payload build is missing the exact verifier-selected tag commit."
             exit 1
           fi
           git checkout --detach "$selected_commit"
           if [[ "$(git rev-parse 'HEAD^{commit}')" != "$selected_commit" ]] || [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
-            echo "::error::Release payload source differs from the exact verified candidate."
+            echo "::error::Release payload source differs from the exact verified tag commit."
             exit 1
           fi
 

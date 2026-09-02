@@ -645,12 +645,17 @@ describe('website and standalone release boundary', () => {
     }
   });
 
-  it('packages the agent instruction template outside the public docs tree', async () => {
+  it('packages agent instruction profiles outside the public docs tree', async () => {
     const agentIntegrations = await readFile(join(root, 'src', 'agent_integration', 'index.ts'), 'utf8');
-    const template = await stat(join(root, 'config', 'agent-instructions.md'));
+    const [defaultTemplate, personalCursorCloudTemplate] = await Promise.all([
+      stat(join(root, 'config', 'agent-instructions.md')),
+      stat(join(root, 'config', 'agent-profiles', 'cursor-cloud-personal', 'agent-instructions.md')),
+    ]);
 
-    expect(agentIntegrations).toContain("'config', 'agent-instructions.md'");
+    expect(agentIntegrations).toContain("path.join(root, 'config')");
+    expect(agentIntegrations).toContain("path.join(root, 'config', 'agent-profiles', profile)");
     expect(agentIntegrations).not.toContain("'docs', 'agent-instructions.md'");
-    expect(template.isFile()).toBe(true);
+    expect(defaultTemplate.isFile()).toBe(true);
+    expect(personalCursorCloudTemplate.isFile()).toBe(true);
   });
 });

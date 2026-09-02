@@ -38,12 +38,16 @@ describe('buildOnboardingGuide', () => {
   });
 
   it('describes shared durable writes and transient local handoffs for Cursor Cloud', () => {
-    const guide = buildOnboardingGuide({seededProjects: [], teams: ['engineering'], toolset: 'cursor-cloud'});
-    expect(guide).toContain('exclusive shared-memory scope');
+    const guide = buildOnboardingGuide({
+      seededProjects: [],
+      teams: ['engineering'],
+      toolset: 'cursor-cloud-personal',
+    });
+    expect(guide).toContain('one MCP bounded to its configured Git memory shares');
     expect(guide).toContain('unread pointers, not evidence');
     expect(guide).toContain('use read_context before relying');
     expect(guide).toContain('remember_context');
-    expect(guide).toContain('committed and pushed');
+    expect(guide).toContain('committed and pushed only to that share');
     expect(guide).toContain('kind=handoff write stays local');
     expect(guide).toContain('all other personal/local memory kinds stay inaccessible');
     expect(guide).not.toContain('share_publish(');

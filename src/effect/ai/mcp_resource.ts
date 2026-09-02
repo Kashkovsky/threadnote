@@ -34,16 +34,16 @@ interface McpResourceConfig {
   readonly user: string;
 }
 
-export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string, scopeRoot?: string) {
+export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string, scopeRoots?: readonly string[]) {
   return Effect.gen(function* () {
     const requestedUri = yield* canonicalThreadnoteUri(uri);
     const [identity] = yield* resolveMemoryIdentityAliases(
       config,
       [requestedUri],
-      [scopeRoot ?? canonicalResourceUri('user', [uriSegment(config.user), 'memories'])],
+      scopeRoots ?? [canonicalResourceUri('user', [uriSegment(config.user), 'memories'])],
     );
     const canonicalUri = identity!.canonicalUri;
-    if (scopeRoot && !resourceIdIsWithin(canonicalUri, scopeRoot)) {
+    if (scopeRoots && !scopeRoots.some(scopeRoot => resourceIdIsWithin(canonicalUri, scopeRoot))) {
       return yield* new McpSchema.InvalidParams({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'The requested resource is outside the active Cursor Cloud memory scope.',
@@ -68,7 +68,7 @@ export function readThreadnoteMcpResource(config: McpResourceConfig, uri: string
             message: `Resource does not exist: ${canonicalUri}`,
             uri: canonicalUri,
           }));
-    if (scopeRoot && !resourceIdIsWithin(resolved.canonicalUri, scopeRoot)) {
+    if (scopeRoots && !scopeRoots.some(scopeRoot => resourceIdIsWithin(resolved.canonicalUri, scopeRoot))) {
       return yield* new McpSchema.InvalidParams({
         data: MCP_RESOURCE_ERROR_DATA,
         message: 'The relocated resource is outside the active Cursor Cloud memory scope.',

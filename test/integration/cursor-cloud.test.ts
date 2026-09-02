@@ -36,6 +36,12 @@ describe('Cursor Cloud integration', () => {
   it('prints deterministic Dashboard configuration and idempotently bootstraps a writable share', async () => {
     const fixture = await cloudFixture();
     try {
+      const existingSkillPath = join(fixture.userHome, '.cursor', 'skills', 'threadnote-context', 'SKILL.md');
+      await mkdir(join(fixture.userHome, '.cursor', 'skills', 'threadnote-context'), {recursive: true});
+      await writeFile(
+        existingSkillPath,
+        await readFile(join(process.cwd(), 'config', 'agent-skills', 'threadnote-context', 'SKILL.md'), 'utf8'),
+      );
       const firstConfig = await runCli([
         'cloud',
         'cursor',
@@ -68,7 +74,7 @@ describe('Cursor Cloud integration', () => {
         command: '/bin/sh',
         env: {
           THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
-          THREADNOTE_MCP_TOOLSET: 'cursor-cloud-git-beta',
+          THREADNOTE_MCP_TOOLSET: 'cursor-cloud-personal',
           THREADNOTE_USER: 'cloud-user',
         },
         type: 'stdio',
@@ -87,6 +93,16 @@ describe('Cursor Cloud integration', () => {
         defaultTeam: 'engineering',
         teams: {engineering: {name: 'engineering', remote: fixture.remote}},
       });
+      expect(await readFile(join(fixture.userHome, '.cursor', 'rules', 'threadnote.mdc'), 'utf8')).toContain(
+        'Personal Cursor Cloud',
+      );
+      expect(await readFile(existingSkillPath, 'utf8')).toContain('Threadnote context in Personal Cursor Cloud');
+      const cloudMemorySkill = await readFile(
+        join(fixture.userHome, '.cursor', 'skills', 'threadnote-memory', 'SKILL.md'),
+        'utf8',
+      );
+      expect(cloudMemorySkill).toContain('pass `team`');
+      expect(cloudMemorySkill).not.toContain('Git beta');
 
       const verified = await runCli([
         'cloud',
@@ -109,6 +125,160 @@ describe('Cursor Cloud integration', () => {
         profile: 'shared-read-write',
         status: 'ok',
       });
+    } finally {
+      await rm(fixture.root, {force: true, recursive: true});
+    }
+  });
+
+  it('exposes several personal Git shares through one bounded MCP server', async () => {
+    const fixture = await cloudFixture();
+    const docsRemote = await seedRemote(fixture.root, 'docs-share');
+    try {
+      await bootstrap(fixture, 'engineering', fixture.remote);
+      await bootstrap(fixture, 'docs', docsRemote);
+      const dashboard = await runCli([
+        'cloud',
+        'cursor',
+        'config',
+        '--home',
+        fixture.home,
+        '--team',
+        'engineering',
+        '--team',
+        'docs',
+        '--user',
+        'cloud-user',
+        '--agent-id',
+        'cloud-agent',
+      ]);
+      expect(JSON.parse(dashboard.stdout)).toMatchObject({
+        env: {
+          THREADNOTE_CURSOR_CLOUD_TEAM: 'docs',
+          THREADNOTE_CURSOR_CLOUD_TEAMS: '["docs","engineering"]',
+          THREADNOTE_MCP_TOOLSET: 'cursor-cloud-personal',
+        },
+      });
+
+      await withCloudMcp(fixture, ['engineering', 'docs'], async client => {
+        await callText(client, 'list_context', {recursive: true, team: 'engineering'});
+        const allSharesRemoteUri =
+          'threadnote://user/cloud-user/memories/shared/docs/durable/projects/threadnote/remote-all-shares.md';
+        await pushRemoteMemory(
+          fixture.root,
+          docsRemote,
+          'durable/projects/threadnote/remote-all-shares.md',
+          memoryDocument('remote-all-shares', 'REMOTE_ALL_SHARES_REFRESH_SENTINEL'),
+        );
+        const refreshedAllShares = await client.callTool({
+          arguments: {callerCwd: process.cwd(), query: 'REMOTE_ALL_SHARES_REFRESH_SENTINEL'},
+          name: 'recall_context',
+        });
+        expect(JSON.stringify(refreshedAllShares)).toContain(allSharesRemoteUri);
+
+        await expect(
+          callError(client, 'remember_context', {
+            kind: 'durable',
+            project: 'threadnote',
+            text: 'An ambiguous write must be rejected.',
+            topic: 'ambiguous-write',
+          }),
+        ).resolves.toContain('requires team');
+
+        for (const [team, topic] of [
+          ['engineering', 'engineering-contract'],
+          ['docs', 'docs-contract'],
+        ] as const) {
+          const stored = await client.callTool({
+            arguments: {
+              kind: 'durable',
+              project: 'threadnote',
+              team,
+              text: `Durable contract for ${team}.`,
+              topic,
+            },
+            name: 'remember_context',
+          });
+          expect(stored.isError, JSON.stringify(stored)).not.toBe(true);
+          expect(stored.structuredContent).toMatchObject({
+            memoryUri: `threadnote://user/cloud-user/memories/shared/${team}/durable/projects/threadnote/${topic}.md`,
+            persistence: 'shared-git-pushed',
+          });
+          await expect(
+            callText(client, 'read_context', {
+              uri: `threadnote://user/cloud-user/memories/shared/${team}/durable/projects/threadnote/${topic}.md`,
+            }),
+          ).resolves.toContain(`Durable contract for ${team}.`);
+        }
+
+        await expect(callError(client, 'list_context', {})).resolves.toContain('requires team or uri');
+        await expect(callText(client, 'list_context', {recursive: true, team: 'docs'})).resolves.toContain(
+          'docs-contract.md',
+        );
+        await expect(
+          callError(client, 'list_context', {
+            team: 'docs',
+            uri: 'threadnote://user/cloud-user/memories/shared/engineering',
+          }),
+        ).resolves.toContain('team must match the share containing uri');
+        const allSharesRecall = await client.callTool({
+          arguments: {callerCwd: process.cwd(), query: 'Durable contract'},
+          name: 'recall_context',
+        });
+        expect(JSON.stringify(allSharesRecall.structuredContent)).toContain('/shared/docs/');
+        expect(JSON.stringify(allSharesRecall.structuredContent)).toContain('/shared/engineering/');
+        const docsRecall = await client.callTool({
+          arguments: {callerCwd: process.cwd(), query: 'Durable contract', team: 'docs'},
+          name: 'recall_context',
+        });
+        expect(JSON.stringify(docsRecall.structuredContent)).toContain('/shared/docs/');
+        expect(JSON.stringify(docsRecall.structuredContent)).not.toContain('/shared/engineering/');
+        await expect(
+          callError(client, 'recall_context', {
+            callerCwd: process.cwd(),
+            query: 'Durable contract',
+            team: 'docs',
+            uri: 'threadnote://user/cloud-user/memories/shared/engineering',
+          }),
+        ).resolves.toContain('team must match the share containing uri');
+        await expect(
+          callError(client, 'remember_context', {
+            kind: 'durable',
+            project: 'threadnote',
+            relations: [
+              {
+                type: 'references',
+                uri: 'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/engineering-contract.md',
+              },
+            ],
+            team: 'docs',
+            text: 'Cross-share relations remain forbidden.',
+            topic: 'cross-share-relation',
+          }),
+        ).resolves.toContain('authorized memory scope');
+      });
+
+      await rm(join(fixture.home, 'share', 'fetch-receipts', 'docs.json'), {force: true});
+      await withCloudMcp(fixture, ['engineering', 'docs'], async client => {
+        await callText(client, 'list_context', {recursive: true, team: 'engineering'});
+        const teamScopedRemoteUri =
+          'threadnote://user/cloud-user/memories/shared/docs/durable/projects/threadnote/remote-team-scoped.md';
+        await pushRemoteMemory(
+          fixture.root,
+          docsRemote,
+          'durable/projects/threadnote/remote-team-scoped.md',
+          memoryDocument('remote-team-scoped', 'REMOTE_TEAM_SCOPED_REFRESH_SENTINEL'),
+        );
+        await expect(callText(client, 'read_context', {uri: teamScopedRemoteUri})).resolves.toContain(
+          'REMOTE_TEAM_SCOPED_REFRESH_SENTINEL',
+        );
+      });
+
+      const engineeringTree = await gitTree(fixture.remote);
+      const docsTree = await gitTree(docsRemote);
+      expect(engineeringTree).toContain('engineering-contract.md');
+      expect(engineeringTree).not.toContain('docs-contract.md');
+      expect(docsTree).toContain('docs-contract.md');
+      expect(docsTree).not.toContain('engineering-contract.md');
     } finally {
       await rm(fixture.root, {force: true, recursive: true});
     }
@@ -262,6 +432,41 @@ describe('Cursor Cloud integration', () => {
     }
   });
 
+  it('keeps legacy MCP toolset identifiers on the Personal Cursor Cloud boundary', async () => {
+    const fixture = await cloudFixture();
+    try {
+      await bootstrap(fixture);
+      for (const toolset of ['cursor-cloud', 'cursor-cloud-git-beta'] as const) {
+        await withCloudMcp(
+          fixture,
+          ['engineering'],
+          async client => {
+            await expect(
+              callError(client, 'read_context', {
+                uri: 'threadnote://user/cloud-user/memories/durable/projects/threadnote/private.md',
+              }),
+            ).resolves.toContain('must stay within');
+            const listed = await client.callTool({
+              arguments: {recursive: true, team: 'engineering'},
+              name: 'list_context',
+            });
+            expect(listed.structuredContent).toMatchObject({
+              memoryScope: {
+                mode: 'shared-read-write',
+                teams: ['engineering'],
+                type: 'threadnote-memory-scope',
+                version: 2,
+              },
+            });
+          },
+          toolset,
+        );
+      }
+    } finally {
+      await rm(fixture.root, {force: true, recursive: true});
+    }
+  });
+
   it('confines reads, persists durable writes to Git, and keeps handoffs local', async () => {
     const fixture = await cloudFixture();
     await bootstrap(fixture);
@@ -325,6 +530,14 @@ describe('Cursor Cloud integration', () => {
         })}\n`,
         {mode: 0o600},
       );
+      const referencedSourceUri =
+        'threadnote://user/cloud-user/memories/shared/engineering/durable/projects/threadnote/reference-scope-source.md';
+      await pushRemoteMemory(
+        fixture.root,
+        fixture.remote,
+        'durable/projects/threadnote/reference-scope-source.md',
+        memoryDocument('reference-scope-source', 'REFERENCE_SCOPE_SOURCE_SENTINEL', privateUri),
+      );
 
       await withCloudMcp(fixture, async client => {
         const tools = await client.listTools();
@@ -348,6 +561,12 @@ describe('Cursor Cloud integration', () => {
         await expect(client.readResource({uri: formerSharedUri})).rejects.toThrow(
           'relocated resource is outside the active Cursor Cloud memory scope',
         );
+        const referencedRecall = await client.callTool({
+          arguments: {callerCwd: process.cwd(), query: 'REFERENCE_SCOPE_SOURCE_SENTINEL'},
+          name: 'recall_context',
+        });
+        expect(JSON.stringify(referencedRecall)).toContain(referencedSourceUri);
+        expect(JSON.stringify(referencedRecall)).not.toContain(privateUri);
         await expect(
           callError(client, 'inspect_code_graph', {
             callerCwd: process.cwd(),
@@ -372,6 +591,24 @@ describe('Cursor Cloud integration', () => {
         expect(handoff).toContain(
           'Stored memory: threadnote://user/cloud-user/memories/handoffs/active/threadnote/cursor-cloud-transient.md',
         );
+        const handoffCanonicalOutside = await callError(client, 'remember_context', {
+          kind: 'handoff',
+          project: 'threadnote',
+          relations: [{type: 'references', uri: privateUri}],
+          text: 'This handoff relation must stay inside configured shares.',
+          topic: 'cursor-cloud-handoff-canonical-outside',
+        });
+        expect(handoffCanonicalOutside).toContain('authorized memory scope');
+        expect(handoffCanonicalOutside).not.toContain(privateSentinel);
+        const handoffAliasOutside = await callError(client, 'remember_context', {
+          kind: 'handoff',
+          project: 'threadnote',
+          relations: [{type: 'references', uri: privateAlias}],
+          text: 'This handoff alias must stay inside configured shares.',
+          topic: 'cursor-cloud-handoff-alias-outside',
+        });
+        expect(handoffAliasOutside).toContain('does not resolve inside the authorized active corpus');
+        expect(handoffAliasOutside).not.toContain(privateSentinel);
 
         const sharedCitationWithoutReadyGraph = await client.callTool({
           arguments: {
@@ -493,13 +730,21 @@ interface CloudFixture {
   readonly home: string;
   readonly remote: string;
   readonly root: string;
+  readonly userHome: string;
 }
 
 async function cloudFixture(): Promise<CloudFixture> {
   const root = await mkdtemp(join(tmpdir(), 'threadnote-cursor-cloud-'));
-  const remote = join(root, 'memory-share.git');
-  const source = join(root, 'seed');
+  const remote = await seedRemote(root, 'memory-share');
   const home = join(root, 'home');
+  const userHome = join(root, 'user-home');
+  await mkdir(userHome, {recursive: true});
+  return {home, remote, root, userHome};
+}
+
+async function seedRemote(root: string, name: string): Promise<string> {
+  const remote = join(root, `${name}.git`);
+  const source = join(root, `${name}-seed`);
   await mkdir(source, {recursive: true});
   await execFilePromise('git', ['init', '--bare', '--initial-branch=main', remote], {
     env: {...process.env, ...gitIdentityEnvironment},
@@ -520,25 +765,59 @@ async function cloudFixture(): Promise<CloudFixture> {
   await execFilePromise('git', ['-C', source, 'push', '-u', 'origin', 'main'], {
     env: {...process.env, ...gitIdentityEnvironment},
   });
-  return {home, remote, root};
+  return remote;
 }
 
-function bootstrap(fixture: CloudFixture) {
-  return runCli([
-    'cloud',
-    'cursor',
-    'bootstrap',
-    '--home',
-    fixture.home,
-    '--remote',
-    fixture.remote,
-    '--team',
-    'engineering',
-    '--user',
-    'cloud-user',
-    '--agent-id',
-    'cloud-agent',
-  ]);
+async function pushRemoteMemory(root: string, remote: string, relativePath: string, content: string): Promise<void> {
+  const source = await mkdtemp(join(root, 'remote-memory-update-'));
+  await execFilePromise('git', ['clone', remote, source], {env: {...process.env, ...gitIdentityEnvironment}});
+  const target = join(source, relativePath);
+  await mkdir(join(target, '..'), {recursive: true});
+  await writeFile(target, content, 'utf8');
+  await execFilePromise('git', ['-C', source, 'add', relativePath], {
+    env: {...process.env, ...gitIdentityEnvironment},
+  });
+  await execFilePromise('git', ['-C', source, 'commit', '-m', `add ${relativePath}`], {
+    env: {...process.env, ...gitIdentityEnvironment},
+  });
+  await execFilePromise('git', ['-C', source, 'push', 'origin', 'main'], {
+    env: {...process.env, ...gitIdentityEnvironment},
+  });
+}
+
+function memoryDocument(topic: string, body: string, reference?: string): string {
+  return [
+    'MEMORY',
+    'kind: durable',
+    'status: active',
+    'project: threadnote',
+    `topic: ${topic}`,
+    ...(reference ? [`references: ${reference}`] : []),
+    '',
+    body,
+    '',
+  ].join('\n');
+}
+
+function bootstrap(fixture: CloudFixture, team = 'engineering', remote = fixture.remote) {
+  return runCli(
+    [
+      'cloud',
+      'cursor',
+      'bootstrap',
+      '--home',
+      fixture.home,
+      '--remote',
+      remote,
+      '--team',
+      team,
+      '--user',
+      'cloud-user',
+      '--agent-id',
+      'cloud-agent',
+    ],
+    {HOME: fixture.userHome},
+  );
 }
 
 function runCli(args: readonly string[], environment: Readonly<Record<string, string>> = {}) {
@@ -548,7 +827,14 @@ function runCli(args: readonly string[], environment: Readonly<Record<string, st
   });
 }
 
-async function withCloudMcp<T>(fixture: CloudFixture, use: (client: Client) => Promise<T>): Promise<T> {
+async function withCloudMcp<T>(
+  fixture: CloudFixture,
+  teamsOrUse: readonly string[] | ((client: Client) => Promise<T>),
+  maybeUse?: (client: Client) => Promise<T>,
+  toolset: 'cursor-cloud' | 'cursor-cloud-git-beta' | 'cursor-cloud-personal' = 'cursor-cloud-personal',
+): Promise<T> {
+  const teams = typeof teamsOrUse === 'function' ? ['engineering'] : teamsOrUse;
+  const use = typeof teamsOrUse === 'function' ? teamsOrUse : maybeUse!;
   const transport = new StdioClientTransport({
     args: [join(process.cwd(), 'src', 'standalone.ts'), 'mcp-server'],
     command: process.execPath,
@@ -559,9 +845,10 @@ async function withCloudMcp<T>(fixture: CloudFixture, use: (client: Client) => P
       THREADNOTE_ACCOUNT: 'local',
       THREADNOTE_AGENT_ID: 'cloud-agent',
       THREADNOTE_CURSOR_CLOUD_TEAM: 'engineering',
+      ...(teams.length === 1 ? {} : {THREADNOTE_CURSOR_CLOUD_TEAMS: JSON.stringify([...teams].sort())}),
       THREADNOTE_HOME: fixture.home,
       THREADNOTE_MANIFEST: join(fixture.home, 'seed-manifest.yaml'),
-      THREADNOTE_MCP_TOOLSET: 'cursor-cloud',
+      THREADNOTE_MCP_TOOLSET: toolset,
       THREADNOTE_USER: 'cloud-user',
     } as Record<string, string>,
     stderr: 'pipe',
@@ -573,6 +860,13 @@ async function withCloudMcp<T>(fixture: CloudFixture, use: (client: Client) => P
   } finally {
     await client.close();
   }
+}
+
+async function gitTree(remote: string): Promise<string> {
+  const result = await execFilePromise('git', ['--git-dir', remote, 'ls-tree', '-r', '--name-only', 'main'], {
+    env: {...process.env, ...gitIdentityEnvironment},
+  });
+  return result.stdout;
 }
 
 async function withLocalMcp<T>(

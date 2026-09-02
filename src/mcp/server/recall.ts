@@ -42,7 +42,6 @@ import {resolveEffectAiConfiguration} from '../../effect/ai/consolidator.js';
 import {sha256Hex} from '../../effect/digest.js';
 import {withMemoryUriLocks} from '../../effect/memory_lock.js';
 import {SystemInfo} from '../../effect/system.js';
-import {syncSharedReposBeforeAgentRead} from '../../effect/share.js';
 import {
   assertMemoryRecordArchivable,
   canonicalMemoryDocumentContent,
@@ -87,8 +86,15 @@ import {
 } from '../../memory/candidate.js';
 import {recordRecallFeedback} from '../../recall/feedback.js';
 import {AgentResponseBudgetTooSmallError} from '../../evaluation/agent-response.js';
-import type {CursorCloudMemoryScope} from '../../cursor/cloud.js';
-import {resourceIdIsWithin} from '../../storage/resource-id.js';
+import {
+  cursorCloudMemoryScopeReceipt,
+  cursorCloudScopeRoots,
+  cursorCloudScopeTeams,
+  cursorCloudShareForTeam,
+  cursorCloudShareForUri,
+  cursorCloudUriWithinScope,
+  type CursorCloudMemoryScope,
+} from '../../cursor/cloud.js';
 import {memoryIdFromIdentityAlias} from '../../memory/identity_alias.js';
 import {loadRecallExactMatches} from '../../recall/index.js';
 import {deriveRecallEligibilityPolicy, type RecallEligibilityPolicy} from '../../recall/eligibility.js';
@@ -148,11 +154,12 @@ import {
   readMemoryRecordsByUri,
   removeResourceWithRetry,
   resourceExists,
-  runNativeListTool,
   runNativeReadTool,
   textFromCallToolResult,
   writeDurableMemory,
 } from './memory.js';
+import {syncCursorCloudMemoryShares} from './cursor_cloud_memory.js';
+import {resourceIdIsWithin} from '../../storage/resource-id.js';
 
 function stringList(value: string | readonly string[] | undefined): readonly string[] {
   return typeof value === 'string' ? [value] : (value ?? []);
@@ -721,6 +728,7 @@ export function registerSearchTool(
           minimum: 0,
           maximum: 1,
         }),
+        ...(memoryScope ? {team: McpInput.string('Configured Personal Cursor Cloud share')} : {}),
         workset: McpInput.string('Named workset'),
       },
     },
@@ -736,6 +744,7 @@ export function registerSearchTool(
         query,
         relationTypes,
         threshold,
+        team,
         uri,
         workset,
       },
@@ -775,9 +784,31 @@ export function registerSearchTool(
           ].join('\n'),
         );
       }
-      const scopedUri = checkedUri.value ?? memoryScope?.root;
-      if (scopedUri && memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
-        return argumentError(`${name} uri must stay within ${memoryScope.root}.`);
+      const requestedTeam = typeof team === 'string' ? team : undefined;
+      let selectedShare;
+      try {
+        selectedShare =
+          memoryScope && requestedTeam?.trim() ? cursorCloudShareForTeam(memoryScope, requestedTeam) : undefined;
+      } catch (error) {
+        return argumentError(errorMessage(error));
+      }
+      if (memoryScope && requestedTeam?.trim() && !selectedShare) {
+        return argumentError(`${name} team must be one of: ${cursorCloudScopeTeams(memoryScope).join(', ')}.`);
+      }
+      const uriShare =
+        memoryScope && checkedUri.value ? cursorCloudShareForUri(memoryScope, checkedUri.value) : undefined;
+      if (memoryScope && checkedUri.value && !uriShare) {
+        return argumentError(`${name} uri must stay within a configured Personal Cursor Cloud share.`);
+      }
+      if (selectedShare && uriShare && selectedShare.team !== uriShare.team) {
+        return argumentError(`${name} team must match the share containing uri.`);
+      }
+      const scopedUri =
+        checkedUri.value ??
+        selectedShare?.root ??
+        (memoryScope?.shares.length === 1 ? memoryScope.shares[0]!.root : undefined);
+      if (scopedUri && memoryScope && !cursorCloudUriWithinScope(memoryScope, scopedUri)) {
+        return argumentError(`${name} uri must stay within a configured Personal Cursor Cloud share.`);
       }
       return runRecallTool(
         config,
@@ -793,6 +824,8 @@ export function registerSearchTool(
           memoryRefs: memoryConnections?.memoryRefs,
           relationTypes: memoryConnections?.relationTypes,
           threshold: threshold === undefined ? undefined : String(threshold),
+          allowedUriScopes: memoryScope ? (scopedUri ? [scopedUri] : cursorCloudScopeRoots(memoryScope)) : undefined,
+          syncTeam: selectedShare?.team ?? uriShare?.team,
           workset: workset?.trim() || undefined,
         },
         progress,
@@ -815,6 +848,7 @@ function normalizeStringOrStrings(value: string | readonly string[] | undefined)
 }
 
 interface RecallToolParams {
+  readonly allowedUriScopes: readonly string[] | undefined;
   readonly budgetTokens: number | undefined;
   readonly callerCwd: string | undefined;
   readonly explain: boolean;
@@ -826,6 +860,7 @@ interface RecallToolParams {
   readonly query: string;
   readonly relationTypes: readonly MemoryRelationType[] | undefined;
   readonly threshold: string | undefined;
+  readonly syncTeam: string | undefined;
   readonly workset: string | undefined;
 }
 
@@ -854,9 +889,9 @@ function runRecallTool(
         withProductionPhaseTiming(
           'recall.shared-sync',
           progressTiming.sharedSyncDelayMilliseconds === 0
-            ? syncSharedReposBeforeAgentRead(config, memoryScope?.team)
+            ? syncCursorCloudMemoryShares(config, memoryScope, params.syncTeam)
             : Effect.sleep(progressTiming.sharedSyncDelayMilliseconds).pipe(
-                Effect.andThen(syncSharedReposBeforeAgentRead(config, memoryScope?.team)),
+                Effect.andThen(syncCursorCloudMemoryShares(config, memoryScope, params.syncTeam)),
               ),
         ),
       ),
@@ -933,7 +968,9 @@ function runRecallTool(
     const thresholdConfigured = thresholdPolicy.source !== 'default';
     const explicitWorkset = params.workset ? yield* requireWorkset(config.manifestPath, params.workset) : undefined;
     const passes: Array<readonly RecallHit[]> = [];
-    const scopedRecallUris = new Set([params.pinnedUri].filter((uri): uri is string => uri !== undefined));
+    const scopedRecallUris = new Set(
+      [params.pinnedUri, ...(params.allowedUriScopes ?? [])].filter((uri): uri is string => uri !== undefined),
+    );
     for (const scope of projectMemoryScopeUris(config, recallProjectName, params.includeArchived)) {
       if (!scopedRecallUris.has(scope)) {
         scopedRecallUris.add(scope);
@@ -979,6 +1016,7 @@ function runRecallTool(
       eligibility,
       recallProjectName,
       project,
+      params.allowedUriScopes,
     );
     const exactMatches = exactLookup.matches;
     let operationalWarnings: readonly RecallOperationalWarning[] = exactLookup.operationalWarnings;
@@ -1012,7 +1050,7 @@ function runRecallTool(
                 query,
                 recallLimit,
                 eligibility,
-                params.pinnedUri ? [params.pinnedUri] : undefined,
+                params.allowedUriScopes ?? (params.pinnedUri ? [params.pinnedUri] : undefined),
               ),
               result =>
                 result.status === 'available'
@@ -1054,7 +1092,7 @@ function runRecallTool(
             Effect.gen(function* () {
               const prepared = yield* prepareRecallSections(config, {
                 allowExactRescue: !thresholdConfigured,
-                allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : undefined,
+                allowedUriScopes: params.allowedUriScopes ?? (params.pinnedUri ? [params.pinnedUri] : undefined),
                 candidateUris,
                 eligibility,
                 exactMatches,
@@ -1117,7 +1155,7 @@ function runRecallTool(
       groundedExpansionQueries.length < recallRewriteLimitForConfidence(recallSections.confidence);
     const expansionVocabulary = needsFallbackExpansion
       ? yield* loadRecallExpansionVocabulary(config, {
-          allowedUriScopes: params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris],
+          allowedUriScopes: params.allowedUriScopes ?? (params.pinnedUri ? [params.pinnedUri] : [...scopedRecallUris]),
           eligibility,
           includeInactive: params.includeArchived,
           project: recallProjectName,
@@ -1177,7 +1215,7 @@ function runRecallTool(
     if (exactTail) {
       sections.push(exactTail);
     }
-    const referencedContext = yield* referencedContextSection(config, semanticSection ?? '');
+    const referencedContext = yield* referencedContextSection(config, semanticSection ?? '', params.allowedUriScopes);
     if (referencedContext) {
       sections.push(referencedContext);
     }
@@ -1249,13 +1287,16 @@ const MAX_REFERENCED_CONTEXT = 5;
 const referencedContextSection = Effect.fn('mcpServer.referencedContext')(function* (
   config: RuntimeConfig,
   recallText: string,
+  allowedUriScopes?: readonly string[],
 ) {
-  const surfacedUris = activePersonalMemoryUrisFromText(recallText, config.user);
+  const withinAllowedScope = (uri: string) =>
+    allowedUriScopes === undefined || allowedUriScopes.some(scope => resourceIdIsWithin(uri, scope));
+  const surfacedUris = activePersonalMemoryUrisFromText(recallText, config.user).filter(withinAllowedScope);
   if (surfacedUris.length === 0) {
     return undefined;
   }
   const surfaced = yield* readMemoryRecordsByUri(config, surfacedUris);
-  const referenced = referencedUrisFromRecords(surfaced, recallText);
+  const referenced = referencedUrisFromRecords(surfaced, recallText).filter(withinAllowedScope);
   if (referenced.length === 0) {
     return undefined;
   }
@@ -1271,12 +1312,13 @@ const collectExactMemoryMatches = Effect.fn('mcp_server.collectExactMemoryMatche
   eligibility: RecallEligibilityPolicy,
   projectName: string | undefined,
   project: ProjectManifest | undefined,
+  allowedUriScopes?: readonly string[],
 ) {
   const terms = exactRecallTerms(query);
   if (terms.length === 0) {
     return {matches: [], operationalWarnings: []};
   }
-  const scopes = exactMemoryScopes(config, includeArchived, query, projectName, project);
+  const scopes = allowedUriScopes ?? exactMemoryScopes(config, includeArchived, query, projectName, project);
   const result = yield* loadRecallExactMatches(config, {
     eligibility,
     includeInactive: includeArchived,
@@ -1298,7 +1340,12 @@ export function registerReadTool(
 ): void {
   const cursorNamespace = memoryReadCursorNamespace({
     account: config.account,
-    ...(memoryScope ? {memoryRoot: memoryScope.root, team: memoryScope.team} : {}),
+    ...(memoryScope
+      ? {
+          memoryRoot: cursorCloudScopeRoots(memoryScope).join('\n'),
+          team: cursorCloudScopeTeams(memoryScope).join(','),
+        }
+      : {}),
     toolName: name,
     user: config.user,
   });
@@ -1355,14 +1402,23 @@ export function registerReadTool(
         }
         const outsideScope = memoryScope
           ? requestedUris.find(
-              uri => memoryIdFromIdentityAlias(uri) === undefined && !resourceIdIsWithin(uri, memoryScope.root),
+              uri => memoryIdFromIdentityAlias(uri) === undefined && !cursorCloudUriWithinScope(memoryScope, uri),
             )
           : undefined;
         if (outsideScope) {
-          return argumentError(`${name} uri must stay within ${memoryScope!.root}.`);
+          return argumentError(`${name} uri must stay within a configured Personal Cursor Cloud share.`);
         }
+        const requestedShares = memoryScope
+          ? requestedUris.map(uri =>
+              memoryIdFromIdentityAlias(uri) === undefined ? cursorCloudShareForUri(memoryScope, uri) : undefined,
+            )
+          : [];
+        const syncTeams =
+          memoryScope && requestedShares.every(share => share !== undefined)
+            ? [...new Set(requestedShares.map(share => share!.team))]
+            : undefined;
         const syncWarnings: string[] = [];
-        const syncedTeams = yield* syncSharedReposBeforeAgentRead(config, memoryScope?.team).pipe(
+        const syncedTeams = yield* syncCursorCloudMemoryShares(config, memoryScope, syncTeams).pipe(
           Effect.map(result => {
             syncWarnings.push(...result.warnings);
             return result.syncedTeams;
@@ -1373,7 +1429,9 @@ export function registerReadTool(
           }),
         );
         const result = yield* runNativeReadTool(config, requestedUris, {
-          allowedUriScopes: [memoryScope?.root ?? `threadnote://user/${uriSegment(config.user)}/memories`],
+          allowedUriScopes: memoryScope
+            ? cursorCloudScopeRoots(memoryScope)
+            : [`threadnote://user/${uriSegment(config.user)}/memories`],
           resolveIdentityAliases: true,
         });
         const scopedResult = memoryScope
@@ -1396,10 +1454,10 @@ export function registerReadTool(
         if (!resources) return argumentError(`${name} could not project the canonical read response.`);
         const canonicalRead = canonicalReadMetadata(result);
         const relocatedOutsideScope = memoryScope
-          ? canonicalRead?.resources.find(resource => !resourceIdIsWithin(resource.canonicalUri, memoryScope.root))
+          ? canonicalRead?.resources.find(resource => !cursorCloudUriWithinScope(memoryScope, resource.canonicalUri))
           : undefined;
         if (relocatedOutsideScope) {
-          return argumentError(`${name} relocated uri must stay within ${memoryScope!.root}.`);
+          return argumentError(`${name} relocated uri must stay within a configured Personal Cursor Cloud share.`);
         }
         if (continuation && !memoryReadSourcesMatch(resources, continuation.sourceHashes)) {
           return argumentError(`${name} source changed after the prior page; restart from the URI.`);
@@ -1538,61 +1596,6 @@ function canonicalReadMetadata(result: CallToolResult):
   return resources.every(resource => resource !== undefined)
     ? {resources: resources as readonly {canonicalUri: string; contentIndex: number; requestedUri: string}[]}
     : undefined;
-}
-
-export function registerListTool(
-  server: EffectMcpServerAdapter,
-  config: RuntimeConfig,
-  name: string,
-  description: string,
-  memoryScope?: CursorCloudMemoryScope,
-): void {
-  server.registerTool(
-    name,
-    {
-      annotations: {readOnlyHint: true, destructiveHint: false},
-      description,
-      inputSchema: {
-        uri: McpInput.string('Optional threadnote:// directory URI; defaults to threadnote://'),
-        all: McpInput.boolean('Show hidden files like .abstract.md and .overview.md'),
-        recursive: McpInput.boolean('List recursively'),
-        simple: McpInput.boolean('Only return paths'),
-        nodeLimit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
-        node_limit: McpInput.integer('Maximum node count', {minimum: 1, maximum: 1000}),
-      },
-    },
-    Effect.fn('mcp_server.callback')(function* ({all, nodeLimit, node_limit, recursive, simple, uri}) {
-      const checkedUri = optionalResourceUri(uri, name);
-      if (!checkedUri.ok) {
-        return checkedUri.error;
-      }
-      const scopedUri = checkedUri.value ?? memoryScope?.root ?? 'threadnote://';
-      if (memoryScope && !resourceIdIsWithin(scopedUri, memoryScope.root)) {
-        return argumentError(`${name} uri must stay within ${memoryScope.root}.`);
-      }
-      yield* syncSharedReposBeforeAgentRead(config, memoryScope?.team).pipe(Effect.catch(() => Effect.void));
-      const result = yield* runNativeListTool(config, {
-        all,
-        nodeLimit: nodeLimit ?? node_limit,
-        recursive,
-        simple,
-        uri: scopedUri,
-      });
-      return memoryScope && result.structuredContent
-        ? {
-            ...result,
-            structuredContent: {
-              ...result.structuredContent,
-              memoryScope: cursorCloudMemoryScopeReceipt(memoryScope),
-            },
-          }
-        : result;
-    }),
-  );
-}
-
-function cursorCloudMemoryScopeReceipt(scope: CursorCloudMemoryScope) {
-  return {mode: scope.mode, root: scope.root, team: scope.team, type: 'threadnote-memory-scope', version: 1} as const;
 }
 
 function sessionCloseoutHasCandidateMaterial(input: SessionCloseoutInput): boolean {

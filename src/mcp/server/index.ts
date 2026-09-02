@@ -4,7 +4,7 @@ import {
   DEFAULT_MCP_TOOLSET,
   MCP_TOOLSET_ENV,
   type McpToolset,
-  isCursorCloudGitBetaToolset,
+  isCursorCloudPersonalToolset,
   mcpToolCapabilities,
   parseMcpToolset,
 } from '../toolset.js';
@@ -27,6 +27,7 @@ import {
   CURSOR_CLOUD_LOCAL_MCP_TOOLSET,
   CURSOR_CLOUD_MEMORY_ENDPOINT_ENV,
   cursorCloudRemoteHybridStatus,
+  cursorCloudScopeRoots,
   resolveCursorCloudMemoryScope,
   type CursorCloudMemoryScope,
 } from '../../cursor/cloud.js';
@@ -48,11 +49,11 @@ import {registerCodeGraphTool, registerContextBriefTool} from './code_graph.js';
 import {
   registerArchiveTool,
   registerCandidateMemoryTools,
-  registerListTool,
   registerReadTool,
   registerRecallFeedbackTool,
   registerSearchTool,
 } from './recall.js';
+import {registerListTool} from './list.js';
 import {registerFinalizeCodeRefsTool, registerStoreTool} from './store.js';
 import {
   registerCompactTool,
@@ -104,12 +105,12 @@ export const mcpServerEffect = withAnonymousTelemetry(
           heartbeatMilliseconds: mcpProgressHeartbeatMilliseconds(system.environment()),
           sharedSyncDelayMilliseconds: mcpProgressTestSharedSyncDelayMilliseconds(system.environment()),
         };
-        const memoryScope = isCursorCloudGitBetaToolset(toolset)
+        const memoryScope = isCursorCloudPersonalToolset(toolset)
           ? yield* resolveCursorCloudMemoryScope(config, system.environment())
           : undefined;
         setMcpStartupVersion(yield* currentPackageVersion().pipe(Effect.catch(() => Effect.succeed(undefined))));
         const instructions = memoryScope
-          ? `Cursor Cloud Git beta uses the exclusive shared memory scope ${memoryScope.root}. Call recall_context with an absolute callerCwd. Its results are unread pointers, not evidence; read relevant threadnote:// URIs with read_context before relying on them. Store durable memories with remember_context; writes are committed and pushed to the configured share. Memory tools reject any URI outside that scope. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
+          ? `Personal Cursor Cloud uses one MCP bounded to these Git memory shares: ${memoryScope.shares.map(share => `${share.team} (${share.root})`).join(', ')}. Call recall_context with an absolute callerCwd; optionally pass team to narrow recall. Results are unread pointers, not evidence, so read relevant threadnote:// URIs with read_context. With multiple shares, durable remember_context writes require team; writes are committed and pushed only to that share. Memory tools reject URIs outside the configured share set. Use inspect_code_graph and analyze_code_graph only for the local checkout; worksets are disabled.`
           : toolset === CURSOR_CLOUD_LOCAL_MCP_TOOLSET
             ? 'Cursor Cloud remote-hybrid mode uses this local server only for checkout-specific code graph evidence, diagnostics, and workload attestation. All historical memory reads and writes belong to the managed threadnote-memory HTTP server. Never fall back to local personal memory or a Git memory share.'
             : 'Call `recall_context` with absolute `callerCwd`. `project` excludes others; omit it for global recall. Nested cwd prefers its package; repo-wide/sibling evidence remains eligible. Results are unread `threadnote://` pointers, not evidence; read them via `read_context`. Use `inspect_code_graph` before broad search and `analyze_code_graph` for architecture. Retry indexing when advised; exact search remains useful. Store durable knowledge/handoffs under project/topic; replace duplicates. `review_session_context` only adds user-approved candidates. Do not store sensitive data. Confirm publishes; never publish handoffs/preferences.';
@@ -156,7 +157,7 @@ function registerResources(
       routerPath: '*',
       uriTemplate: 'threadnote://{+resourcePath}',
     },
-    uri => readThreadnoteMcpResource(config, uri, memoryScope?.root),
+    uri => readThreadnoteMcpResource(config, uri, memoryScope ? cursorCloudScopeRoots(memoryScope) : undefined),
   );
 }
 

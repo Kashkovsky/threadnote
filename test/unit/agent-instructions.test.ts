@@ -14,6 +14,14 @@ async function agentSkills(): Promise<readonly string[]> {
   );
 }
 
+async function personalCursorCloudArtifacts(): Promise<readonly string[]> {
+  const root = join(process.cwd(), 'config', 'agent-profiles', 'cursor-cloud-personal');
+  return Promise.all([
+    readFile(join(root, 'agent-instructions.md'), 'utf8'),
+    ...skillNames.map(skill => readFile(join(root, 'agent-skills', skill, 'SKILL.md'), 'utf8')),
+  ]);
+}
+
 describe('agent instructions', () => {
   it('keeps the packaged bootstrap aligned with the contributor-facing copy', async () => {
     const [runtime, documentation] = await Promise.all([
@@ -21,6 +29,29 @@ describe('agent instructions', () => {
       readFile(join(process.cwd(), 'docs', 'agent-instructions.md'), 'utf8'),
     ]);
     expect(runtime).toBe(documentation);
+  });
+
+  it('ships Personal Cursor Cloud skills that match its one-MCP multi-share capabilities', async () => {
+    const artifacts = (await personalCursorCloudArtifacts()).join('\n').replace(/\s+/g, ' ');
+    for (const requiredText of [
+      'one Threadnote MCP',
+      'several configured Git memory shares',
+      'pass `team`',
+      '`recall_context`',
+      '`read_context`',
+      '`list_context`',
+      '`remember_context`',
+      'commits and pushes',
+      'VM-local',
+      '`inspect_code_graph`',
+      '`analyze_code_graph`',
+      'Named Worksets are unavailable',
+      'Never store secrets, credentials, customer data, or raw production logs',
+    ]) {
+      expect(artifacts).toContain(requiredText);
+    }
+    expect(artifacts).not.toContain('Call `context_brief`');
+    expect(artifacts).not.toContain('Git beta');
   });
 
   it('keeps the always-loaded bootstrap compact and routes detailed work to skills', async () => {
