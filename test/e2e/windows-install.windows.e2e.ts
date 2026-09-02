@@ -219,7 +219,7 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
       if (process.env.GITHUB_ACTIONS === 'true') {
         expect(gitBash, 'Git Bash is required on Windows CI to cover issue 347').toBeDefined();
       } else if (gitBash === undefined) {
-        console.warn('Git Bash not found; skipping Git Bash launcher execution for issue 347.');
+        process.stderr.write('Git Bash not found; skipping Git Bash launcher execution for issue 347.\n');
       }
       if (gitBash !== undefined) {
         const gitBashVersion = await execute(gitBash, [posixLauncher, '--version'], {

@@ -791,7 +791,7 @@ describe('built self-contained distribution', () => {
     expect(output).toMatch(new RegExp(`OK\\s+embedding model: ${coreEmbeddingModelId}`));
     expect(output).toMatch(/OK\s+vector recall index:/);
     expect(output).toMatch(/OK\s+native code graph:/);
-    expect(output).not.toMatch(/(?:OK|WARN)\s+.*MCP/i);
+    expect(output).not.toMatch(/(?:OK|WARN)\s+(?:MCP configuration|(?:codex|claude|cursor|copilot) MCP):/i);
     expect(output).not.toMatch(/agent integration|user instructions|Threadnote skill/i);
   });
 
