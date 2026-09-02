@@ -205,6 +205,55 @@ windowsIt('PowerShell bootstrap verifies and installs the standalone Bun release
         },
       });
       expect(launcherVersion.stdout).toContain(packageManifest.version);
+      const posixLauncher = join(binRoot, 'threadnote');
+      const posixMcpLauncher = join(binRoot, 'threadnote-mcp-server');
+      const posixLauncherContent = await readFile(posixLauncher, 'utf8');
+      expect(posixLauncherContent.startsWith('#!/usr/bin/env sh\n')).toBe(true);
+      expect(posixLauncherContent).toContain('threadnote.exe');
+      expect(posixLauncherContent).not.toContain('\r');
+      expect(posixLauncherContent).not.toContain('\\');
+      const posixMcpLauncherContent = await readFile(posixMcpLauncher, 'utf8');
+      expect(posixMcpLauncherContent.startsWith('#!/usr/bin/env sh\n')).toBe(true);
+      expect(posixMcpLauncherContent).toContain('mcp-broker');
+      const gitBash = await windowsGitBashExecutable();
+      if (process.env.GITHUB_ACTIONS === 'true') {
+        expect(gitBash, 'Git Bash is required on Windows CI to cover issue 347').toBeDefined();
+      } else if (gitBash === undefined) {
+        console.warn('Git Bash not found; skipping Git Bash launcher execution for issue 347.');
+      }
+      if (gitBash !== undefined) {
+        const gitBashVersion = await execute(gitBash, [posixLauncher, '--version'], {
+          env: {
+            ...process.env,
+            HOME: userHome,
+            LOCALAPPDATA: join(userHome, 'AppData', 'Local'),
+            THREADNOTE_HOME: join(userHome, '.threadnote'),
+            USERPROFILE: userHome,
+          },
+        });
+        expect(gitBashVersion.stdout).toContain(packageManifest.version);
+        const gitBashWhich = await execute(
+          gitBash,
+          ['-c', 'command -v threadnote && command -v threadnote-mcp-server'],
+          {
+            env: {
+              ...process.env,
+              HOME: userHome,
+              LOCALAPPDATA: join(userHome, 'AppData', 'Local'),
+              PATH: `${binRoot}${delimiter}${process.env.PATH ?? ''}`,
+              THREADNOTE_HOME: join(userHome, '.threadnote'),
+              USERPROFILE: userHome,
+            },
+          },
+        );
+        const resolved = gitBashWhich.stdout
+          .trim()
+          .split(/\r?\n/u)
+          .map(line => line.trim());
+        expect(gitBashWhich.stdout).not.toContain('.cmd');
+        expect(resolved[0]).toMatch(/\/threadnote$/);
+        expect(resolved[1]).toMatch(/\/threadnote-mcp-server$/);
+      }
       const transport = new StdioClientTransport({
         args: ['/d', '/c', join(binRoot, 'threadnote-mcp-server.cmd')],
         command: join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'),
@@ -318,4 +367,23 @@ function expectInstallerFailure(
 
 function boundedFailureOutput(output: string): string {
   return output.length <= failureOutputLimit ? output : `${output.slice(0, failureOutputLimit)}\n[output truncated]`;
+}
+
+async function windowsGitBashExecutable(): Promise<string | undefined> {
+  const candidates = [
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+    join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Git', 'bin', 'bash.exe'),
+    Bun.which('bash') ?? undefined,
+  ];
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    try {
+      await stat(candidate);
+    } catch {
+      continue;
+    }
+    const identity = await execute(candidate, ['-c', 'uname -s'], {timeout: 10_000}).catch(() => undefined);
+    if (identity !== undefined && /^(MINGW|MSYS)/u.test(identity.stdout.trim())) return candidate;
+  }
+  return undefined;
 }

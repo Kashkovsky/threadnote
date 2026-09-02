@@ -9,39 +9,54 @@ const THREADNOTE_COMMAND = 'threadnote';
 const THREADNOTE_MCP_COMMAND = 'threadnote-mcp-server';
 type LauncherMode = 'cli' | 'mcp';
 
-export function shouldManageCommandShim(_currentPlatform: NodeJS.Platform): boolean {
-  return true;
+export type CommandLauncherKind = 'cmd' | 'posix';
+
+export function managedCommandLauncherKinds(platform: NodeJS.Platform): readonly CommandLauncherKind[] {
+  return platform === 'win32' ? ['cmd', 'posix'] : ['posix'];
 }
 
-export const commandLauncherPath = Effect.fn('commandShim.launcherPath')((mode: LauncherMode = 'cli') =>
-  managedCommandShimPath(mode),
+export function primaryCommandLauncherKind(platform: NodeJS.Platform): CommandLauncherKind {
+  const [primary] = managedCommandLauncherKinds(platform);
+  return primary ?? 'posix';
+}
+
+/** Omitting `kind` selects the platform-primary launcher (`.cmd` on Windows). Pass `'posix'` for Git Bash. */
+export const commandLauncherPath = Effect.fn('commandShim.launcherPath')(
+  (mode: LauncherMode = 'cli', kind?: CommandLauncherKind) => managedCommandShimPath(mode, kind),
 );
 
 export const commandShimCheck = Effect.fn('commandShim.check')(function* () {
-  const shimPath = yield* managedCommandShimPath('cli');
-  const content = yield* readFileIfExists(shimPath);
-  if (content === undefined) {
-    return {
-      detail: `${shimPath} missing; repair will create it`,
-      name: 'threadnote launcher',
-      status: 'warn',
-    } satisfies DoctorCheck;
+  const system = yield* SystemInfo;
+  const paths: string[] = [];
+  for (const mode of ['cli', 'mcp'] as const) {
+    for (const kind of managedCommandLauncherKinds(system.platform)) {
+      const shimPath = yield* managedCommandShimPath(mode, kind);
+      const content = yield* readFileIfExists(shimPath);
+      if (content === undefined) {
+        return {
+          detail: `${shimPath} missing; repair will create it`,
+          name: 'threadnote launcher',
+          status: 'warn',
+        } satisfies DoctorCheck;
+      }
+      if (!isManagedCommandShim(content)) {
+        return {
+          detail: `${shimPath} exists but is not managed by Threadnote; repair will not overwrite it`,
+          name: 'threadnote launcher',
+          status: 'warn',
+        } satisfies DoctorCheck;
+      }
+      if (content !== (yield* renderCommandShim(undefined, mode, kind))) {
+        return {
+          detail: `${shimPath} points at a different standalone release; repair will rewrite it`,
+          name: 'threadnote launcher',
+          status: 'warn',
+        } satisfies DoctorCheck;
+      }
+      paths.push(shimPath);
+    }
   }
-  if (!isManagedCommandShim(content)) {
-    return {
-      detail: `${shimPath} exists but is not managed by Threadnote; repair will not overwrite it`,
-      name: 'threadnote launcher',
-      status: 'warn',
-    } satisfies DoctorCheck;
-  }
-  if (content !== (yield* renderCommandShim())) {
-    return {
-      detail: `${shimPath} points at a different standalone release; repair will rewrite it`,
-      name: 'threadnote launcher',
-      status: 'warn',
-    } satisfies DoctorCheck;
-  }
-  return {detail: shimPath, name: 'threadnote launcher', status: 'ok'} satisfies DoctorCheck;
+  return {detail: paths.join('; '), name: 'threadnote launcher', status: 'ok'} satisfies DoctorCheck;
 });
 
 export const installCommandShim = Effect.fn('commandShim.install')(function* (dryRun: boolean, releaseRoot?: string) {
@@ -81,10 +96,22 @@ const installLauncher = Effect.fn('commandShim.installLauncher')(function* (
   dryRun: boolean,
   releaseRoot?: string,
 ) {
+  const system = yield* SystemInfo;
+  for (const kind of managedCommandLauncherKinds(system.platform)) {
+    yield* installLauncherFile(mode, kind, dryRun, releaseRoot);
+  }
+});
+
+const installLauncherFile = Effect.fn('commandShim.installLauncherFile')(function* (
+  mode: LauncherMode,
+  kind: CommandLauncherKind,
+  dryRun: boolean,
+  releaseRoot?: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
-  const shimPath = yield* managedCommandShimPath(mode);
+  const shimPath = yield* managedCommandShimPath(mode, kind);
   const existingContent = yield* readFileIfExists(shimPath);
   if (existingContent === undefined && (yield* pathEntryExists(fs, shimPath))) {
     yield* Console.warn(`WARN not overwriting unreadable command launcher: ${shimPath}`);
@@ -94,7 +121,7 @@ const installLauncher = Effect.fn('commandShim.installLauncher')(function* (
     yield* Console.warn(`WARN not overwriting unmanaged command launcher: ${shimPath}`);
     return;
   }
-  const content = yield* renderCommandShim(releaseRoot, mode);
+  const content = yield* renderCommandShim(releaseRoot, mode, kind);
   if (existingContent === content) {
     yield* Console.log(`Command launcher already current: ${shimPath}`);
     return;
@@ -115,31 +142,36 @@ const installLauncher = Effect.fn('commandShim.installLauncher')(function* (
 });
 
 export const removeCommandShim = Effect.fn('commandShim.remove')(function* (dryRun: boolean) {
+  const system = yield* SystemInfo;
   for (const mode of ['cli', 'mcp'] as const) {
-    const shimPath = yield* managedCommandShimPath(mode);
-    const content = yield* readFileIfExists(shimPath);
-    if (content === undefined) {
-      yield* Console.log(`Command launcher already absent: ${shimPath}`);
-      continue;
+    for (const kind of managedCommandLauncherKinds(system.platform)) {
+      const shimPath = yield* managedCommandShimPath(mode, kind);
+      const content = yield* readFileIfExists(shimPath);
+      if (content === undefined) {
+        yield* Console.log(`Command launcher already absent: ${shimPath}`);
+        continue;
+      }
+      if (!isManagedCommandShim(content)) {
+        yield* Console.warn(`WARN not removing unmanaged command launcher: ${shimPath}`);
+        continue;
+      }
+      yield* removePath(shimPath, 'command launcher', dryRun);
     }
-    if (!isManagedCommandShim(content)) {
-      yield* Console.warn(`WARN not removing unmanaged command launcher: ${shimPath}`);
-      continue;
-    }
-    yield* removePath(shimPath, 'command launcher', dryRun);
   }
 });
 
 export const renderCommandShim = Effect.fn('commandShim.render')(function* (
   releaseRoot?: string,
   mode: LauncherMode = 'cli',
+  kind?: CommandLauncherKind,
 ) {
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const root = releaseRoot ?? (yield* toolRoot());
   const executable = path.join(root, system.platform === 'win32' ? 'threadnote.exe' : 'threadnote');
+  const resolvedKind = kind ?? primaryCommandLauncherKind(system.platform);
   const modeArguments = mode === 'mcp' ? ['mcp-broker'] : [];
-  if (system.platform === 'win32') {
+  if (resolvedKind === 'cmd') {
     const command = [cmdQuote(executable), ...modeArguments, '%*'].join(' ');
     return [
       '@echo off',
@@ -151,11 +183,12 @@ export const renderCommandShim = Effect.fn('commandShim.render')(function* (
       '',
     ].join('\r\n');
   }
+  const posixExecutable = system.platform === 'win32' ? executable.replaceAll('\\', '/') : executable;
   return [
     '#!/usr/bin/env sh',
     `# ${SHIM_MARKER}`,
     'set -eu',
-    `THREADNOTE_ENTRY=${shellQuote(executable)}`,
+    `THREADNOTE_ENTRY=${shellQuote(posixExecutable)}`,
     'if [ ! -x "$THREADNOTE_ENTRY" ]; then',
     '  echo "Threadnote standalone executable is missing: $THREADNOTE_ENTRY" >&2',
     '  echo "Reinstall Threadnote from a stable or beta GitHub release." >&2',
@@ -179,7 +212,10 @@ function isManagedCommandShim(content: string): boolean {
   );
 }
 
-const managedCommandShimPath = Effect.fn('commandShim.path')(function* (mode: LauncherMode) {
+const managedCommandShimPath = Effect.fn('commandShim.path')(function* (
+  mode: LauncherMode,
+  kind?: CommandLauncherKind,
+) {
   const path = yield* Path.Path;
   const system = yield* SystemInfo;
   const environment = system.environment();
@@ -191,7 +227,8 @@ const managedCommandShimPath = Effect.fn('commandShim.path')(function* (mode: La
       ? path.join(localAppData, 'Threadnote', 'bin')
       : yield* expandPath('~/.local/bin');
   const command = mode === 'mcp' ? THREADNOTE_MCP_COMMAND : THREADNOTE_COMMAND;
-  return path.join(binDirectory, system.platform === 'win32' ? `${command}.cmd` : command);
+  const resolvedKind = kind ?? primaryCommandLauncherKind(system.platform);
+  return path.join(binDirectory, resolvedKind === 'cmd' ? `${command}.cmd` : command);
 });
 
 function cmdQuote(value: string): string {

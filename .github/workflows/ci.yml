@@ -269,6 +269,7 @@ jobs:
       - run: >-
           bun --bun vitest run
           test/unit/windows-support.test.ts
+          test/unit/command-shim.test.ts
           test/unit/effect-command.test.ts
           test/unit/effect-system.test.ts
           test/unit/local-ai.test.ts

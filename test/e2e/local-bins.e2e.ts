@@ -41,11 +41,16 @@ let initialVectorRevision: string;
 let installOutput: string;
 let installedFiles: string[];
 
-function installedLauncher(mode: 'cli' | 'mcp' = 'cli'): string {
+function installedLauncher(
+  mode: 'cli' | 'mcp' = 'cli',
+  kind: 'cmd' | 'posix' = process.platform === 'win32' ? 'cmd' : 'posix',
+): string {
   const command = mode === 'mcp' ? 'threadnote-mcp-server' : 'threadnote';
-  return process.platform === 'win32'
-    ? join(userHome, 'AppData', 'Local', 'Threadnote', 'bin', `${command}.cmd`)
-    : join(userHome, '.local', 'bin', command);
+  const binDirectory =
+    process.platform === 'win32'
+      ? join(userHome, 'AppData', 'Local', 'Threadnote', 'bin')
+      : join(userHome, '.local', 'bin');
+  return join(binDirectory, kind === 'cmd' ? `${command}.cmd` : command);
 }
 
 beforeAll(async () => {
@@ -126,6 +131,15 @@ describe('built self-contained distribution', () => {
     expect(await readFile(commandShim, 'utf8')).toContain(
       process.platform === 'win32' ? 'THREADNOTE_CALLER_CWD' : 'Threadnote standalone executable is missing',
     );
+    if (process.platform === 'win32') {
+      const posixShim = installedLauncher('cli', 'posix');
+      expect(installOutput).toContain(`Wrote command launcher: ${posixShim}`);
+      const posixContent = await readFile(posixShim, 'utf8');
+      expect(posixContent.startsWith('#!/usr/bin/env sh\n')).toBe(true);
+      expect(posixContent).toContain('threadnote.exe');
+      expect(posixContent).not.toContain('\r');
+      expect(posixContent).not.toContain('\\');
+    }
   });
 
   it('ships the Manager UI as a classic browser bundle', async () => {

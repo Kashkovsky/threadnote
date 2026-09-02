@@ -100,7 +100,7 @@ function isQualityPath(path: string): boolean {
 function isReleaseTestPath(path: string): boolean {
   return (
     path.startsWith('test/e2e/') ||
-    /^test\/(?:integration|unit)\/(?:build-code-sanitization|bun-package-contract|development-runtime|effect-system|installations|legacy-installation|lifecycle|process-diagnostics|release_notes|update|windows-support)/u.test(
+    /^test\/(?:integration|unit)\/(?:build-code-sanitization|bun-package-contract|command-shim|development-runtime|effect-system|installations|legacy-installation|lifecycle|process-diagnostics|release_notes|update|windows-support)/u.test(
       path,
     ) ||
     path === 'vitest.e2e.config.ts' ||
