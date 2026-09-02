@@ -561,6 +561,7 @@ function totalTokensFromUsageEvent(event: Record<string, unknown>): number {
 export const CODE_MEMORY_LINK_AGENT_DEVELOPER_INSTRUCTIONS = [
   'Use only the repository, the code-mode functions.exec tool, its reviewed local-shell and apply_patch capabilities, and the context_brief MCP tool.',
   'Call context_brief directly; never call list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource.',
+  'After inspecting policy.json, complete exactly one successful context_brief call before any other task work; never skip it when memory may be empty and never call it a second time.',
   'Use functions.exec with tools.exec_command for read-only shell inspection and with tools.apply_patch for file edits.',
   'Never write through a shell command or shell redirection. If a read command is declined, continue with the reviewed tools.',
   'When the task requires changing a file, you MUST call tools.apply_patch through functions.exec and complete the edit before replying; a final message alone does not complete the task.',

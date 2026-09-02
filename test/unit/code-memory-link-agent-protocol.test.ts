@@ -230,6 +230,7 @@ describe('Code Memory Link real-agent protocol', () => {
     );
     expect(projection).toMatchObject({
       acceptedStaleOrHarmful: false,
+      contextBriefProtocolAdhered: true,
       constraintAdherence: {satisfied: 2, total: 2},
       effectiveModel: CLIENT.model,
       firstUsefulMemoryUse: {steps: 2, tokens: 200},
@@ -279,6 +280,33 @@ describe('Code Memory Link real-agent protocol', () => {
       firstUsefulMemoryUse: null,
       taskPassed: false,
     });
+  });
+
+  it('retains a missing Context Brief call as a deterministic intention-to-treat failure', () => {
+    fc.assert(
+      fc.property(fc.array(fc.integer({min: 1, max: 1_000}), {minLength: 4, maxLength: 4}), increments => {
+        let total = 0;
+        const totals = increments.map(increment => (total += increment));
+        const events = traceEvents(totals).filter(event => !hasItemId(event, 'item-memory'));
+        const projection = projectCodeMemoryLinkCodexAppServerTraceV1({
+          approvalReceipts: actionApprovalReceipts(),
+          events,
+          expectedClient: CLIENT,
+          proxyTool: PROXY,
+          qualifyingActionItemId: ACTION_ITEM_ID,
+          rubric: hiddenRubric(),
+          runBindingHash: RUN_BINDING_HASH,
+          staticArtifacts: passingStaticArtifacts(),
+          threadStartResponse: threadStart(),
+        });
+
+        expect(projection.contextBriefCalls).toEqual([]);
+        expect(projection.contextBriefProtocolAdhered).toBe(false);
+        expect(projection.constraintAdherence).toEqual({satisfied: 2, total: 2});
+        expect(projection.taskPassed).toBe(false);
+      }),
+      {numRuns: 50},
+    );
   });
 
   it('retains declined actions without requiring an accepted-action approval receipt', () => {
@@ -1008,6 +1036,14 @@ function traceEvents(totals: readonly number[]): unknown[] {
     usageEvent(totals[3]!),
     turnCompleted(),
   ];
+}
+
+function hasItemId(event: unknown, id: string): boolean {
+  if (typeof event !== 'object' || event === null) return false;
+  const params = Reflect.get(event, 'params');
+  if (typeof params !== 'object' || params === null) return false;
+  const item = Reflect.get(params, 'item');
+  return typeof item === 'object' && item !== null && Reflect.get(item, 'id') === id;
 }
 
 function itemStarted(id: string, type: string): unknown {

@@ -214,6 +214,27 @@ describe('Code Memory Link sealed agent corpus', () => {
     expect(rejected.stderr.toString()).toContain('non-linked regular file');
   });
 
+  it('projects malformed agent result content as a bounded false artifact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'threadnote-code-memory-link-malformed-result-'));
+    temporaryRoots.push(root);
+    const task = createCodeMemoryLinkAgentSuiteCorpusV1().releaseTasks[0]!;
+    const repository = join(root, 'repository');
+    await mkdir(repository);
+    await writeFile(join(repository, 'result.json'), '{not-json');
+    const judge = join(process.cwd(), 'test/evaluation/fixtures/code-memory-link-agent-suite-v1/judge.ts');
+
+    const judged = Bun.spawnSync([process.execPath, judge, '--repository', repository, '--task-id', task.taskId]);
+    expect(judged.exitCode).toBe(0);
+    const output = JSON.parse(judged.stdout.toString()) as {artifacts: {artifactId: string; content: string}[]};
+    expect(output.artifacts).toEqual([
+      {
+        ...output.artifacts[0],
+        artifactId: codeMemoryLinkAgentSuiteOutputArtifactId(task.taskId),
+        content: JSON.stringify({caseId: task.taskId, role: 'result', state: 'invalid', version: 1}),
+      },
+    ]);
+  });
+
   it('makes the sealed judge expose guard mutation and deletion as bounded synthetic artifacts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'threadnote-code-memory-link-guard-judge-'));
     temporaryRoots.push(root);
