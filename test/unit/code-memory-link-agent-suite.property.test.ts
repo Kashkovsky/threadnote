@@ -67,9 +67,9 @@ describe('Code Memory Link sealed agent corpus', () => {
     for (const task of allTasks) {
       expect(task.prompt).toContain('omit budgetTokens so the preregistered 1250-token default applies');
       if (task.taskKind !== 'hidden-constraint') continue;
-      expect(task.prompt).toContain('the VALUE is the required result');
+      expect(task.prompt).toContain('the text after that equals sign is the required result');
       expect(task.prompt).toContain('This rule applies equally to a v2 or v3 brief');
-      expect(task.prompt).toContain('Immediately use the file-edit tool on result.json');
+      expect(task.prompt).toContain('Read result.json once, then immediately use the file-edit tool');
       expect(task.prompt).toContain('output.truncated');
       expect(task.prompt).toContain('stop after the edit');
       const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
