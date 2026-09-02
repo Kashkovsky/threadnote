@@ -19,6 +19,7 @@ import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
   canonicalizeCodeMemoryLinkContextBriefResultV1,
   codeMemoryLinkArmPacketHashV1,
+  codeMemoryLinkCodexAppServerEvidenceHashV1,
   codeMemoryLinkContextBriefProxyDecisionHashV1,
   codeMemoryLinkContextBriefRawRequestHashV1,
   codeMemoryLinkContextBriefResponseReceiptHashV1,
@@ -27,6 +28,7 @@ import {
   codeMemoryLinkStaticArtifactSha256,
   deriveCodeMemoryLinkCodexAppServerProjectionV1,
   normalizeCodeMemoryLinkCodexAppServerEvidenceV1,
+  type CodeMemoryLinkCodexAppServerEvidenceV1,
   type CodeMemoryLinkContextBriefResponseReceiptV1,
 } from '../../src/evaluation/code-memory-link-agent-protocol.js';
 import {
@@ -277,6 +279,39 @@ describe('Code Memory Link Codex app-server transport', () => {
     });
     expect(parseCodeMemoryLinkCodexRawEvidenceV1(rawEvidence)).toEqual(rawEvidence);
     const {evidenceHash: _rawEvidenceHash, ...rawEvidenceWithoutHash} = rawEvidence;
+    const missingCallEvidence = rehashAppServerEvidence(
+      evidence,
+      evidence.checkpoints.filter(checkpoint => !('itemType' in checkpoint) || checkpoint.itemType !== 'mcpToolCall'),
+    );
+    const missingCallRawEvidence = createCodeMemoryLinkCodexRawEvidenceV1({
+      ...rawEvidenceWithoutHash,
+      appServer: missingCallEvidence,
+    });
+    expect(parseCodeMemoryLinkCodexRawEvidenceV1(missingCallRawEvidence)).toEqual(missingCallRawEvidence);
+    expect(deriveCodeMemoryLinkCodexAppServerProjectionV1({evidence: missingCallEvidence, rubric})).toMatchObject({
+      contextBriefCalls: [],
+      contextBriefProtocolAdhered: false,
+      taskPassed: false,
+    });
+
+    const failedCallEvidence = rehashAppServerEvidence(
+      evidence,
+      evidence.checkpoints.map(checkpoint =>
+        checkpoint.method === 'item/completed' && checkpoint.itemType === 'mcpToolCall'
+          ? {...checkpoint, proxyReceipt: null, response: null, status: 'failed' as const, succeeded: false}
+          : checkpoint,
+      ),
+    );
+    const failedCallRawEvidence = createCodeMemoryLinkCodexRawEvidenceV1({
+      ...rawEvidenceWithoutHash,
+      appServer: failedCallEvidence,
+    });
+    expect(parseCodeMemoryLinkCodexRawEvidenceV1(failedCallRawEvidence)).toEqual(failedCallRawEvidence);
+    expect(deriveCodeMemoryLinkCodexAppServerProjectionV1({evidence: failedCallEvidence, rubric})).toMatchObject({
+      contextBriefCalls: [expect.objectContaining({succeeded: false})],
+      contextBriefProtocolAdhered: false,
+      taskPassed: false,
+    });
     const directCitationId = `tncc_${'1'.repeat(40)}`;
     const anchoredReceipt = canonicalizeCodeMemoryLinkContextBriefResultV1({
       activeHandoffs: [],
@@ -990,6 +1025,19 @@ function withPreflightReceipt(
   input: Omit<CodeMemoryLinkCodexGraphPreflightEvidenceV1, 'preflightReceiptHash'>,
 ): CodeMemoryLinkCodexGraphPreflightEvidenceV1 {
   return {...input, preflightReceiptHash: codeMemoryLinkCodexPreflightReceiptHashV1(input)};
+}
+
+function rehashAppServerEvidence(
+  evidence: CodeMemoryLinkCodexAppServerEvidenceV1,
+  checkpoints: CodeMemoryLinkCodexAppServerEvidenceV1['checkpoints'],
+): CodeMemoryLinkCodexAppServerEvidenceV1 {
+  const {evidenceHash: _evidenceHash, ...withoutHash} = evidence;
+  const ordered: CodeMemoryLinkCodexAppServerEvidenceV1['checkpoints'] = checkpoints.map((checkpoint, index) => ({
+    ...checkpoint,
+    ordinal: index + 1,
+  }));
+  const candidate = {...withoutHash, checkpoints: ordered};
+  return {...candidate, evidenceHash: codeMemoryLinkCodexAppServerEvidenceHashV1(candidate)};
 }
 
 async function sha256File(path: string): Promise<string> {
