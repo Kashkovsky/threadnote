@@ -113,23 +113,14 @@ function approveCommand(
       throw new Error(`Command approval ${field} differs from its started action item.`);
     }
   }
-  denyUnsupportedAction(() => assertReadCommand(item, scope.repositoryRoot));
+  denyUnsupportedAction(() => {
+    assertProposedExecpolicyAmendment(params.proposedExecpolicyAmendment);
+    assertReadCommand(item, scope.repositoryRoot);
+  });
   return receipt('commandExecution', String(params.itemId), params);
 }
 
 function assertTemporaryCommandApproval(params: Record<string, unknown>): void {
-  if (params.proposedExecpolicyAmendment != null) {
-    if (
-      !Array.isArray(params.proposedExecpolicyAmendment) ||
-      params.proposedExecpolicyAmendment.length === 0 ||
-      params.proposedExecpolicyAmendment.length > 32 ||
-      params.proposedExecpolicyAmendment.some(
-        token => typeof token !== 'string' || token.length === 0 || token.length > 256 || token.includes('\0'),
-      )
-    ) {
-      throw new Error('Code Memory Link command approval proposes an invalid execpolicy amendment.');
-    }
-  }
   if (params.availableDecisions == null) return;
   if (
     !Array.isArray(params.availableDecisions) ||
@@ -138,6 +129,18 @@ function assertTemporaryCommandApproval(params: Record<string, unknown>): void {
     new TextEncoder().encode(JSON.stringify(params.availableDecisions)).byteLength > 4_096
   ) {
     throw new Error('Code Memory Link command approval lacks bounded one-time decisions.');
+  }
+}
+
+function assertProposedExecpolicyAmendment(value: unknown): void {
+  if (value == null) return;
+  if (
+    !Array.isArray(value) ||
+    value.length > 256 ||
+    value.some(token => typeof token !== 'string' || token.length > 1_024 || token.includes('\0')) ||
+    new TextEncoder().encode(JSON.stringify(value)).byteLength > 64 * 1_024
+  ) {
+    throw new Error('Code Memory Link command approval proposes an invalid execpolicy amendment.');
   }
 }
 

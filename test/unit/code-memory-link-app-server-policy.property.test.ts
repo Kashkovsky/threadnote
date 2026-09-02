@@ -16,6 +16,14 @@ describe('Code Memory Link pre-execution app-server policy', () => {
         startedItem: item,
       }),
     ).toMatchObject({itemType: 'commandExecution'});
+    expect(
+      approveCodeMemoryLinkAppServerRequest({
+        method: 'item/commandExecution/requestApproval',
+        params: {...params, proposedExecpolicyAmendment: Array.from({length: 64}, () => 'pwd')},
+        scope: SCOPE,
+        startedItem: item,
+      }),
+    ).toMatchObject({itemType: 'commandExecution'});
     expect(() =>
       approveCodeMemoryLinkAppServerRequest({
         method: 'item/commandExecution/requestApproval',
