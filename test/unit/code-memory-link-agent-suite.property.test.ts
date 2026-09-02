@@ -67,6 +67,7 @@ describe('Code Memory Link sealed agent corpus', () => {
     for (const task of allTasks) {
       expect(task.prompt).toContain('omit budgetTokens so the preregistered 1250-token default applies');
       if (task.taskKind !== 'hidden-constraint') continue;
+      expect(task.prompt).toContain('VALUE substring after the single equals sign');
       const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
       expect(publicBytes).not.toContain(task.answer);
       const primary = task.memorySeeds.filter(seed => seed.role === 'primary');
