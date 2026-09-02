@@ -59,7 +59,9 @@ interface CalibrationEnvironment {
 interface CalibrationDiagnosticV1 {
   readonly arm: CalibrationEnvironment['arm'];
   readonly clientId: string;
+  readonly contextBriefGoldCitationMatched: boolean;
   readonly contextBriefProtocolAdhered: boolean;
+  readonly contextBriefResponseClass: 'anchored-v3' | 'empty-v1' | 'task-v2' | null;
   readonly diagnosticHash: string;
   readonly evidenceHash: string | null;
   readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
@@ -229,9 +231,12 @@ function completedDiagnostic(
     evidence: output.rawEvidence.appServer,
     rubric: output.rawEvidence.rubric,
   });
+  const onlyCall = projection.contextBriefCalls.length === 1 ? projection.contextBriefCalls[0]! : null;
   return sealDiagnostic({
     environment,
+    contextBriefGoldCitationMatched: projection.contextBriefCalls.some(call => call.goldCitationMatched),
     contextBriefProtocolAdhered: projection.contextBriefProtocolAdhered,
+    contextBriefResponseClass: onlyCall?.responseClass ?? null,
     evidenceHash: output.rawEvidence.evidenceHash,
     eventSummary: null,
     fileChangeStarted: output.rawEvidence.appServer.qualifyingActionItemId !== null,
@@ -247,7 +252,9 @@ function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown)
   const eventSummary = cause instanceof CodeMemoryLinkCodexTerminalError ? cause.diagnostics : null;
   return sealDiagnostic({
     environment,
+    contextBriefGoldCitationMatched: false,
     contextBriefProtocolAdhered: false,
+    contextBriefResponseClass: null,
     evidenceHash: null,
     eventSummary,
     fileChangeStarted: (eventSummary?.startedItems.fileChange ?? 0) > 0,
@@ -299,7 +306,9 @@ async function calibrationFixture(
 
 function sealDiagnostic(input: {
   readonly environment: CalibrationEnvironment;
+  readonly contextBriefGoldCitationMatched: boolean;
   readonly contextBriefProtocolAdhered: boolean;
+  readonly contextBriefResponseClass: CalibrationDiagnosticV1['contextBriefResponseClass'];
   readonly evidenceHash: string | null;
   readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly fileChangeStarted: boolean;
@@ -312,7 +321,9 @@ function sealDiagnostic(input: {
   const withoutHash = {
     arm: input.environment.arm,
     clientId: input.environment.clientId,
+    contextBriefGoldCitationMatched: input.contextBriefGoldCitationMatched,
     contextBriefProtocolAdhered: input.contextBriefProtocolAdhered,
+    contextBriefResponseClass: input.contextBriefResponseClass,
     evidenceHash: input.evidenceHash,
     eventSummary: input.eventSummary,
     fileChangeStarted: input.fileChangeStarted,
@@ -393,7 +404,9 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
   const expected = [
     'arm',
     'clientId',
+    'contextBriefGoldCitationMatched',
     'contextBriefProtocolAdhered',
+    'contextBriefResponseClass',
     'diagnosticHash',
     'evidenceHash',
     'eventSummary',
@@ -417,7 +430,12 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
     diagnostic.kind !== CODE_MEMORY_LINK_CALIBRATION_KIND ||
     (diagnostic.arm !== 'anchored' && diagnostic.arm !== 'task-only' && diagnostic.arm !== 'no-memory') ||
     (diagnostic.status !== 'completed' && diagnostic.status !== 'terminal') ||
+    typeof diagnostic.contextBriefGoldCitationMatched !== 'boolean' ||
     typeof diagnostic.contextBriefProtocolAdhered !== 'boolean' ||
+    (diagnostic.contextBriefResponseClass !== null &&
+      diagnostic.contextBriefResponseClass !== 'anchored-v3' &&
+      diagnostic.contextBriefResponseClass !== 'task-v2' &&
+      diagnostic.contextBriefResponseClass !== 'empty-v1') ||
     typeof diagnostic.fileChangeStarted !== 'boolean' ||
     typeof diagnostic.firstUsefulMemoryUse !== 'boolean' ||
     (diagnostic.taskPassed !== null && typeof diagnostic.taskPassed !== 'boolean') ||
@@ -428,7 +446,9 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
   const parsed = {
     arm: diagnostic.arm,
     clientId: matching(diagnostic.clientId, CLIENT_ID, 'diagnostic client'),
+    contextBriefGoldCitationMatched: diagnostic.contextBriefGoldCitationMatched,
     contextBriefProtocolAdhered: diagnostic.contextBriefProtocolAdhered,
+    contextBriefResponseClass: diagnostic.contextBriefResponseClass,
     evidenceHash:
       diagnostic.evidenceHash === null ? null : matching(diagnostic.evidenceHash, HASH, 'diagnostic evidence hash'),
     eventSummary: parseEventSummary(diagnostic.eventSummary),
