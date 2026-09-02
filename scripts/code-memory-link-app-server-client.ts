@@ -305,7 +305,7 @@ export class CodeMemoryLinkAppServerClient {
           return;
         }
         this.#declinedItemIds.add(itemId);
-        this.#write({id, result: {decision: 'cancel'}});
+        this.#write({id, result: {decision: 'decline'}});
         return;
       }
       this.#unexpectedServerRequests.push(message);

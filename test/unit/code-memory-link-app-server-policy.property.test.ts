@@ -51,7 +51,12 @@ describe('Code Memory Link pre-execution app-server policy', () => {
     };
     const params = {
       approvalId: null,
-      availableDecisions: ['accept', {acceptWithExecpolicyAmendment: {execpolicy_amendment: ['pwd']}}, 'cancel'],
+      availableDecisions: [
+        'accept',
+        {acceptWithExecpolicyAmendment: {execpolicy_amendment: ['pwd']}},
+        'decline',
+        'cancel',
+      ],
       command,
       commandActions,
       cwd: ROOT,
