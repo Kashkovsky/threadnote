@@ -141,25 +141,29 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    Measured lookup p95 must be at most 250 ms and every measured lookup at most 1,000 ms. The materialized corpus must
    be at most 256 MiB, recall storage at most 2 GiB, added peak RSS at most 3 GiB, materialization at most 5 minutes,
    and index construction at most 10 minutes. Download and review the retained 90-day workflow artifact before tagging.
-   For any release that changes Context Brief or memory retrieval, also retain a three-arm agent experiment artifact
-   whose gate status is `passed`, whose clean candidate/build identity matches that SHA, and whose preregistered
+   Run the three-arm Code Memory Link agent experiment independently after publication. It is research and regression
+   evidence, not a release gate: an incomplete, insufficient, or failed experiment must never block a patch, tag,
+   platform build, or immutable release. Retain an experiment artifact whose gate status is `passed`, whose clean
+   candidate/build identity matches the evaluated release SHA, and whose preregistered
    manifest and post-run evidence hashes are both present in the source-reviewed allowlists. It must cover at least two
    reviewed client roster entries, 12 hidden-constraint tasks, 16 negative controls, task-only memory versus no-memory,
    and anchored v3 versus task-only v2. Two model configurations routed through one client implementation satisfy the
    roster gate but do not support a scientific claim of replication across independent client implementations. An
-   empty allowlist or an `insufficient`/`failed` result blocks the release.
+   empty allowlist or an `insufficient`/`failed` result invalidates the experiment claim and should inform a later
+   patch; it does not change the publication status of the evaluated release.
    Because the post-run evidence hash can only be approved after execution, keep the tested candidate/build identity
    immutable: the later approval or release commit may contain only reviewed evaluation-governance metadata (for
    example, allowlist entries and retained evidence references), with no runtime or product-logic delta from the tested
    build. If runtime or product logic changes, rerun the experiment against the new candidate.
-   Coordinate three signed, single-parent squash merges with no intervening main-branch commit: tested candidate **C**,
-   manifest approval **A**, then final governance **G**. Freeze main after C until the release tag is pushed. A must be
+   Coordinate three signed, single-parent commits on the experiment branch: tested candidate **C**, manifest approval
+   **A**, then final governance **G**. C is the exact published commit under evaluation; do not freeze main or move the
+   immutable release tag while the experiment runs. A must be
    the immediate child of C and may add only the manifest hash to
    `src/evaluation/code-memory-link-approvals.json`. G must be the immediate child of A and may only update that JSON,
    add the exact hash-named bundle under `test/evaluation/retained/code-memory-link/`, add the exact content-addressed
    scale artifact under `test/evaluation/retained/code-memory-link-scale/`, and add the version-bound final descriptor
    under `.github/release-evidence/code-memory-link/vX.Y.Z.json`. Put documentation and all executable
-   release-control changes in C, not A or G. External receipts must name A. The executable verifier checks this exact
+   experiment-control changes in C, not A or G. External receipts must name A. The executable verifier checks this exact
    C→A→G ancestry, parses the allowlist deltas, proves the outcome hashes did not preexist G, requires the bundle and
    descriptor and scale artifact to be newly added at G, and rejects dirty, merged, delayed, change-then-revert, executable
    approval-loader changes, extra hashes, or any other post-candidate history.
@@ -212,11 +216,13 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    This pre-G scorer inspection is expected to exit nonzero because A cannot yet approve the newly computed outcome
    hash. Accept only `gate.status=insufficient`, `gate.qualityFailures=[]`, and the sole insufficiency
    `external evidence hash is not in the code-reviewed release allowlist`; record `evidence.externalEvidenceHash` for
-   independent review and G. Any other insufficiency, any quality failure, or a missing hash blocks the release.
+   independent review and G. Any other insufficiency, any quality failure, or a missing hash invalidates that experiment
+   run without blocking release publication.
 
-   The workflow also requires tagged G to be an ancestor of fetched `origin/main`. Signed-commit enforcement, required
-   review, and protection against updating or deleting `v*` tags are repository-ruleset prerequisites; the local
-   verifier does not claim to authenticate Git signatures or make a movable tag immutable by itself.
+   The standalone experiment verifier requires linear C→A→G ancestry and does not publish or move a release tag.
+   Signed-commit enforcement, required review, and protection against updating or deleting `v*` tags remain repository
+   ruleset prerequisites for product releases; the local verifier does not claim to authenticate Git signatures or make
+   a movable tag immutable by itself.
    Capture each external trial with `bun run eval:code-memory-link-agent-trial`; its harness launches the reviewed client
    with the canonical managed executable in the environment. It requires an explicit roster id, verifies the invoked
    command, argument vector, implementation artifacts, and configuration against that client's reviewed descriptor,
@@ -311,16 +317,16 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
      --release-tag vX.Y.Z
    ```
 
-   Require `gate.status=passed`; this reads exact non-executable Git blobs from G, rejects arbitrary ephemeral evidence
+   Require `gate.status=passed` before making an experiment claim; this reads exact non-executable Git blobs from G,
+   rejects arbitrary ephemeral evidence
    paths, rederives the tracked scale artifact against the frozen budget, requires a passed release-scale gate with
    exact clean C identity, and independently rebuilds the scale target to match its recorded digest. It also revalidates the complete managed C payload against its source commit, executable, copied payload
-   manifest, release metadata, dependency manifests, runtime, target, version, counts, and hashes. The tag
-   workflow repeats the check on the same `macos-15`/arm64 class with pinned Bun, an explicit `bun-darwin-arm64` target, and an isolated
-   install root: it resolves C only from the tracked descriptor, builds and installs exact C in a detached clean
-   worktree, then runs the full verifier from exact G before any release payload build or signing job. Treat a
-   cross-machine executable-hash mismatch as a release blocker to investigate; do not weaken the binding. A manual
-   workflow dispatch may rehearse signing but cannot publish and therefore does not claim this exact-tag evidence.
-   Investigate every observed Threadnote issue before tagging.
+   manifest, release metadata, dependency manifests, runtime, target, version, counts, and hashes. Run the verifier in
+   an isolated environment on the reviewed `macos-15`/arm64 class with pinned Bun and an explicit
+   `bun-darwin-arm64` target. It resolves C only from the tracked descriptor, builds and installs exact C in a detached
+   clean worktree, then runs the full verifier from exact G. Treat a cross-machine executable-hash mismatch as an
+   experiment blocker to investigate; do not weaken the binding. This verifier is deliberately absent from the
+   release-publishing workflow.
 
 4. Review the candidate's retained production-large and heavy-tail evidence plus required PR checks when assessing
    graph correctness and performance. The tag starts one separate exact-tag production-large capacity classification
@@ -330,25 +336,25 @@ creates a GitHub prerelease; do not use an unnumbered `-beta` suffix.
    still requires signed linear reviewed merges, and an active `v*` tag ruleset forbids tag updates and deletion. The
    workflow can compare the pushed tag, exact checkout, protected-main ancestry, and remote tag peel; repository tag
    protection is what closes the remaining check-to-publication movement window.
-6. While main is still frozen, verify that HEAD is exact G, create the version tag matching both `package.json` and the
+6. Verify that HEAD is the exact reviewed release commit, create the version tag matching both `package.json` and the
    release-notes filename (for example `v4.0.1`) on that commit, and push it immediately. Do not merge or push another
-   main-branch commit between G and the tag. Keep main frozen until the tag push is visible; the publish workflow binds
-   its checkout, every platform build, and the reusable publisher to that tag-event Git object and rechecks that the
-   remote tag still peels to the verified G commit before creating the immutable release.
+   main-branch commit between the final check and the tag. The publish workflow binds its checkout, every platform
+   build, and the reusable publisher to that tag-event Git object and rechecks that the remote tag still peels to the
+   same protected-main commit before creating the immutable release.
 7. Wait for `Publish standalone release`. Do not create a GitHub Release manually. Every channel publishes after all
    four enabled archives are verified while its bounded production-large observation continues independently.
 
 The main-branch website build includes the prepared stable `package.json` version when its matching release note is
-checked in but its tag does not exist yet. For a C→A→G release, this wording is intentionally future-facing only during
-the bounded, coordinated main freeze: merge only a ready-to-run C, merge A and G without intervening commits, and tag G
-immediately. Until a later main deployment observes the tag, What's New uses the release-preparation commit date and
-its release link is intentionally future-facing. If the governance or tag gate cannot finish promptly, stop the
-release window instead of continuing ordinary main development under unreleased stable-version wording.
+checked in but its tag does not exist yet. Merge only a ready-to-tag release commit and push the matching tag promptly.
+Until a later main deployment observes the tag, What's New uses the release-preparation commit date and its release
+link is intentionally future-facing. If tagging cannot finish promptly, stop the release window instead of continuing
+ordinary main development under unreleased stable-version wording.
 
-The release evidence record must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
-close implementation gates before merge, but only the tag-triggered artifact may claim exact release provenance. Keep
-public surrogate results, private path-free aggregate evidence, and checked-in same-machine comparisons separate; do
-not combine them into a synthetic percentile. The current beta closeout contract is documented in
+Optional experiment evidence must distinguish a clean candidate run from exact-tag evidence. Candidate evidence can
+close implementation gates before merge, but only a tag-triggered artifact may claim exact release provenance. None of
+these experiments are publication dependencies. Keep public surrogate results, private path-free aggregate evidence,
+and checked-in same-machine comparisons separate; do not combine them into a synthetic percentile. The current beta
+closeout contract is documented in
 [`4.1.0-beta.2-release-evidence.md`](./4.1.0-beta.2-release-evidence.md).
 
 Every Threadnote 4 version tag starts a separate production-large evidence workflow on `ubuntu-24.04`; publication

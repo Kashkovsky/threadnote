@@ -117,24 +117,24 @@ describe('Code Memory Link 4.6 release deferment', () => {
     );
   });
 
-  it('pins every shipping platform build to the verifier-selected candidate while preserving normal C-A-G', async () => {
+  it('keeps the one-shot v4.6.0 deferment out of later release publication', async () => {
     const workflow = await Bun.file(`${process.cwd()}/.github/workflows/publish.yml`).text();
+    const recovery = await Bun.file(`${process.cwd()}/.github/workflows/publish-v4.6.0-recovery.yml`).text();
     const shippingJobs = workflow.slice(workflow.indexOf('\n  linux:'), workflow.indexOf('\n  windows-sign:'));
 
-    expect(workflow).toContain('if [[ "$release_tag" == \'v4.6.0\' ]]');
-    expect(workflow).toContain('bun scripts/verify-code-memory-link-release-deferment.ts');
-    expect(workflow).toContain('bun scripts/verify-code-memory-link-release.ts');
-    expect(workflow).toContain('bun run eval:code-memory-link-release --');
-    expect(workflow).toContain('test/unit/code-memory-link-release-deferment.test.ts');
-    expect(workflow).toContain('candidate_commit: ${{ steps.code_memory_link_release.outputs.candidate_commit }}');
-    expect(shippingJobs.match(/name: Select exact verified candidate source/g)).toHaveLength(3);
+    expect(recovery).toContain('bun scripts/verify-code-memory-link-release-deferment.ts');
+    expect(recovery).toContain('test/unit/code-memory-link-release-deferment.test.ts');
+    expect(workflow).not.toContain('verify-code-memory-link-release-deferment.ts');
+    expect(workflow).not.toContain('verify-code-memory-link-release.ts');
+    expect(workflow).toContain('release_commit: ${{ steps.release_source.outputs.release_commit }}');
+    expect(shippingJobs.match(/name: Select exact verified release source/g)).toHaveLength(3);
     expect(shippingJobs.match(/fetch-depth: 3/g)).toHaveLength(3);
     expect(shippingJobs.match(/git checkout --detach "\$selected_commit"/g)).toHaveLength(3);
-    expect(shippingJobs.match(/needs\.verify\.outputs\.candidate_commit/g)).toHaveLength(3);
+    expect(shippingJobs.match(/needs\.verify\.outputs\.release_commit/g)).toHaveLength(3);
     expect(shippingJobs.match(/GITHUB_EVENT_NAME" == 'workflow_dispatch'/g)).toHaveLength(3);
     expect(shippingJobs.match(/GITHUB_EVENT_NAME" == 'push'/g)).toHaveLength(3);
-    expect(shippingJobs.match(/missing an exact verifier-selected candidate/g)).toHaveLength(3);
-    expect(shippingJobs).not.toContain('${CANDIDATE_COMMIT:-$GITHUB_SHA}');
+    expect(shippingJobs.match(/missing the exact verifier-selected tag commit/g)).toHaveLength(3);
+    expect(shippingJobs).not.toContain('CANDIDATE_COMMIT');
   });
 });
 
