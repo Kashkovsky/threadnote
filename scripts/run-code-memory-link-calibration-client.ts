@@ -59,6 +59,7 @@ interface CalibrationEnvironment {
 interface CalibrationDiagnosticV1 {
   readonly arm: CalibrationEnvironment['arm'];
   readonly clientId: string;
+  readonly contextBriefProtocolAdhered: boolean;
   readonly diagnosticHash: string;
   readonly evidenceHash: string | null;
   readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
@@ -230,6 +231,7 @@ function completedDiagnostic(
   });
   return sealDiagnostic({
     environment,
+    contextBriefProtocolAdhered: projection.contextBriefProtocolAdhered,
     evidenceHash: output.rawEvidence.evidenceHash,
     eventSummary: null,
     fileChangeStarted: output.rawEvidence.appServer.qualifyingActionItemId !== null,
@@ -245,6 +247,7 @@ function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown)
   const eventSummary = cause instanceof CodeMemoryLinkCodexTerminalError ? cause.diagnostics : null;
   return sealDiagnostic({
     environment,
+    contextBriefProtocolAdhered: false,
     evidenceHash: null,
     eventSummary,
     fileChangeStarted: (eventSummary?.startedItems.fileChange ?? 0) > 0,
@@ -296,6 +299,7 @@ async function calibrationFixture(
 
 function sealDiagnostic(input: {
   readonly environment: CalibrationEnvironment;
+  readonly contextBriefProtocolAdhered: boolean;
   readonly evidenceHash: string | null;
   readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly fileChangeStarted: boolean;
@@ -308,6 +312,7 @@ function sealDiagnostic(input: {
   const withoutHash = {
     arm: input.environment.arm,
     clientId: input.environment.clientId,
+    contextBriefProtocolAdhered: input.contextBriefProtocolAdhered,
     evidenceHash: input.evidenceHash,
     eventSummary: input.eventSummary,
     fileChangeStarted: input.fileChangeStarted,
@@ -388,6 +393,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
   const expected = [
     'arm',
     'clientId',
+    'contextBriefProtocolAdhered',
     'diagnosticHash',
     'evidenceHash',
     'eventSummary',
@@ -411,6 +417,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
     diagnostic.kind !== CODE_MEMORY_LINK_CALIBRATION_KIND ||
     (diagnostic.arm !== 'anchored' && diagnostic.arm !== 'task-only' && diagnostic.arm !== 'no-memory') ||
     (diagnostic.status !== 'completed' && diagnostic.status !== 'terminal') ||
+    typeof diagnostic.contextBriefProtocolAdhered !== 'boolean' ||
     typeof diagnostic.fileChangeStarted !== 'boolean' ||
     typeof diagnostic.firstUsefulMemoryUse !== 'boolean' ||
     (diagnostic.taskPassed !== null && typeof diagnostic.taskPassed !== 'boolean') ||
@@ -421,6 +428,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
   const parsed = {
     arm: diagnostic.arm,
     clientId: matching(diagnostic.clientId, CLIENT_ID, 'diagnostic client'),
+    contextBriefProtocolAdhered: diagnostic.contextBriefProtocolAdhered,
     evidenceHash:
       diagnostic.evidenceHash === null ? null : matching(diagnostic.evidenceHash, HASH, 'diagnostic evidence hash'),
     eventSummary: parseEventSummary(diagnostic.eventSummary),
