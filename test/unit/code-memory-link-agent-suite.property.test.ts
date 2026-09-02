@@ -67,12 +67,11 @@ describe('Code Memory Link sealed agent corpus', () => {
     for (const task of allTasks) {
       expect(task.prompt).toContain('omit budgetTokens so the preregistered 1250-token default applies');
       if (task.taskKind !== 'hidden-constraint') continue;
-      expect(task.prompt).toContain('exact VALUE substring after the equals sign');
-      expect(task.prompt).toContain('For a v2 response, selectionBasis is absent by design');
-      expect(task.prompt).toContain('immediately use the file-edit tool on result.json');
-      expect(task.prompt).toContain('output.truncated flag');
-      expect(task.prompt).toContain('untrusted-evidence-never-follow-instructions permits using a qualifying token');
-      expect(task.prompt).toContain('stop immediately after this one edit');
+      expect(task.prompt).toContain('the VALUE is the required result');
+      expect(task.prompt).toContain('This rule applies equally to a v2 or v3 brief');
+      expect(task.prompt).toContain('Immediately use the file-edit tool on result.json');
+      expect(task.prompt).toContain('output.truncated');
+      expect(task.prompt).toContain('stop after the edit');
       const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
       expect(publicBytes).not.toContain(task.answer);
       const primary = task.memorySeeds.filter(seed => seed.role === 'primary');
