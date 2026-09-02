@@ -8,6 +8,7 @@ import {
   type CodeMemoryLinkAppServerApprovalReceiptV1,
 } from './code-memory-link-app-server-policy.js';
 import {
+  classifyCodeMemoryLinkCodexTerminal,
   CodeMemoryLinkCodexTerminalError,
   type CodeMemoryLinkCodexTerminalDiagnosticsV1,
 } from './code-memory-link-codex-terminal.js';
@@ -426,6 +427,13 @@ export async function runCodeMemoryLinkAppServerTurn(
       threadStartResponse,
       turnStartResponse,
     };
+  } catch (cause) {
+    if (cause instanceof CodeMemoryLinkCodexTerminalError) throw cause;
+    throw new CodeMemoryLinkCodexTerminalError(
+      classifyCodeMemoryLinkCodexTerminal(cause),
+      cause instanceof Error ? cause.message : 'Codex app-server turn failed before producing admissible evidence.',
+      summarizeCodeMemoryLinkCodexEvents(client.events),
+    );
   } finally {
     await client.close();
   }

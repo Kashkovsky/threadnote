@@ -15,6 +15,7 @@ import {
   createCodeMemoryLinkCodexIsolation,
   type CodeMemoryLinkCodexClientConfigV1,
 } from '../../scripts/code-memory-link-codex-isolation.js';
+import {CodeMemoryLinkCodexTerminalError} from '../../scripts/code-memory-link-codex-terminal.js';
 import {
   CODE_MEMORY_LINK_CANONICAL_EMPTY_CONTEXT_BRIEF_V1,
   canonicalizeCodeMemoryLinkContextBriefResultV1,
@@ -551,31 +552,40 @@ describe('Code Memory Link Codex app-server transport', () => {
     await mkdir(join(repositoryRoot, 'src'));
     await writeFile(join(repositoryRoot, 'src/service.ts'), 'export const service = true;\n');
 
-    await expect(
-      runCodeMemoryLinkAppServerTurn({
-        appServer: {
-          argumentsBeforeSubcommand: [join(process.cwd(), 'test/helpers/fake-code-memory-link-app-server.ts')],
-          executable: process.execPath,
-        },
-        cwd: repositoryRoot,
-        environment: {
-          HOME: repositoryRoot,
-          PATH: process.env.PATH ?? '/usr/bin:/bin',
-          [variable]: '1',
-        },
-        expected: {model: 'gpt-5.6-luna', modelProvider: 'openai', reasoningEffort: 'medium'},
-        outputSchema: {
-          additionalProperties: false,
-          properties: {status: {const: 'done', type: 'string'}},
-          required: ['status'],
-          type: 'object',
-        },
-        prompt: 'Complete the public fixture task.',
-        proxyServerName: 'context_brief_gate',
-        taskBudget: {steps: 2, tokens: 150},
-        timeoutMilliseconds: 10_000,
-      }),
-    ).rejects.toThrow(expected);
+    const cause = await runCodeMemoryLinkAppServerTurn({
+      appServer: {
+        argumentsBeforeSubcommand: [join(process.cwd(), 'test/helpers/fake-code-memory-link-app-server.ts')],
+        executable: process.execPath,
+      },
+      cwd: repositoryRoot,
+      environment: {
+        HOME: repositoryRoot,
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        [variable]: '1',
+      },
+      expected: {model: 'gpt-5.6-luna', modelProvider: 'openai', reasoningEffort: 'medium'},
+      outputSchema: {
+        additionalProperties: false,
+        properties: {status: {const: 'done', type: 'string'}},
+        required: ['status'],
+        type: 'object',
+      },
+      prompt: 'Complete the public fixture task.',
+      proxyServerName: 'context_brief_gate',
+      taskBudget: {steps: 2, tokens: 150},
+      timeoutMilliseconds: 10_000,
+    }).then(
+      () => null,
+      error => error,
+    );
+    expect(cause).toBeInstanceOf(CodeMemoryLinkCodexTerminalError);
+    if (!(cause instanceof CodeMemoryLinkCodexTerminalError)) throw cause;
+    expect(cause.message).toMatch(expected);
+    expect(cause.diagnostics).toMatchObject({
+      contextBriefCallStarts: 0,
+      totalTaskUsage: {steps: 0, tokens: 0},
+      version: 1,
+    });
   });
 
   it('turns an unsafe completed action into a bounded client failure', async () => {
