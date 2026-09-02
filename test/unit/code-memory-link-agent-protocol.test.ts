@@ -208,10 +208,18 @@ describe('Code Memory Link real-agent protocol', () => {
       threadStartResponse: threadStart(),
     } as const;
     const evidence = normalizeCodeMemoryLinkCodexAppServerEvidenceV1(input);
+    const timestampedEvidence = normalizeCodeMemoryLinkCodexAppServerEvidenceV1({
+      ...input,
+      events: events.map((event, index) => ({
+        ...(event as Record<string, unknown>),
+        emittedAtMs: 1_788_307_000_000 + index,
+      })),
+    });
     const parsedEvidence = parseCodeMemoryLinkCodexAppServerEvidenceV1(structuredClone(evidence));
     const projection = deriveCodeMemoryLinkCodexAppServerProjectionV1({evidence: parsedEvidence, rubric});
 
     expect(projectCodeMemoryLinkCodexAppServerTraceV1(input)).toEqual(projection);
+    expect(timestampedEvidence).toEqual(evidence);
     expect(evidence).toMatchObject({
       preTurn: {remoteControlDisabled: true, threadStarted: true},
       staticArtifactSetHash: expect.stringMatching(/^[0-9a-f]{64}$/u),

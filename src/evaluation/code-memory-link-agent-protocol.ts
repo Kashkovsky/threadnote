@@ -1333,7 +1333,13 @@ function parseThreadStartResponse(
 
 function parseTraceNotification(value: unknown, eventIndex: number): ParsedNotification {
   const notification = record(value, `app-server notification ${eventIndex + 1}`);
-  exactKeys(notification, ['jsonrpc', 'method', 'params'], `app-server notification ${eventIndex + 1}`, true);
+  exactKeys(
+    notification,
+    ['emittedAtMs', 'jsonrpc', 'method', 'params'],
+    `app-server notification ${eventIndex + 1}`,
+    true,
+  );
+  if (notification.emittedAtMs !== undefined) nonnegativeInteger(notification.emittedAtMs, 'notification timestamp');
   if (notification.jsonrpc !== undefined && notification.jsonrpc !== '2.0') {
     invalid(`app-server notification ${eventIndex + 1} has an unsupported JSON-RPC version`);
   }
@@ -1341,7 +1347,6 @@ function parseTraceNotification(value: unknown, eventIndex: number): ParsedNotif
   if (!TRACE_METHODS.has(method)) invalid(`app-server notification ${eventIndex + 1} uses unexpected method ${method}`);
   return {eventIndex, method, params: record(notification.params, `app-server notification ${eventIndex + 1} params`)};
 }
-
 function collectTraceState(
   notifications: readonly ParsedNotification[],
   threadId: string,
@@ -1898,7 +1903,6 @@ function parseContextBriefCallResult(item: Record<string, unknown>): {
     succeeded: true,
   };
 }
-
 function contextBriefRequestDigest(value: unknown): string {
   const normalized = normalizeJsonValue(value, 'Context Brief MCP request');
   if (UTF8.encode(JSON.stringify(normalized)).byteLength > MAXIMUM_EVENT_TEXT_BYTES) {
@@ -1906,12 +1910,10 @@ function contextBriefRequestDigest(value: unknown): string {
   }
   return protocolDigest('context-brief-mcp-request', normalized);
 }
-
 function parseItemStatus(value: unknown): AppServerItemStatus | null {
   if (value === undefined || value === null) return null;
   return literal(value, ['completed', 'declined', 'failed', 'inProgress'] as const, 'app-server item status');
 }
-
 function parseUsage(value: unknown): CodeMemoryLinkProviderUsageV1 {
   const usage = record(value, 'provider token usage');
   const total = record(usage.total, 'provider total token usage');
@@ -1927,7 +1929,6 @@ function parseUsage(value: unknown): CodeMemoryLinkProviderUsageV1 {
   }
   return parsed;
 }
-
 function strictlyMonotoneUsage(
   previous: CodeMemoryLinkProviderUsageV1,
   current: CodeMemoryLinkProviderUsageV1,
@@ -1978,7 +1979,6 @@ function parseStaticArtifacts(value: readonly unknown[]): readonly CodeMemoryLin
   );
   return artifacts;
 }
-
 function evaluateStaticAssertion(
   assertion: CodeMemoryLinkPredicateV1['assertion'],
   artifact: CodeMemoryLinkStaticArtifactInputV1,
