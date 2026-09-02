@@ -69,7 +69,7 @@ describe('Code Memory Link sealed agent corpus', () => {
       if (task.taskKind !== 'hidden-constraint') continue;
       expect(task.prompt).toContain('VALUE substring after the single equals sign');
       expect(task.prompt).toContain('For a v2 response, selectionBasis is absent by design');
-      expect(task.prompt).toContain('replace only the six characters unset');
+      expect(task.prompt).toContain('replace only selected\'s exact JSON string value "unset"');
       const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
       expect(publicBytes).not.toContain(task.answer);
       const primary = task.memorySeeds.filter(seed => seed.role === 'primary');
