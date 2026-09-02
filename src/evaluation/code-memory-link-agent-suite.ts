@@ -7,6 +7,8 @@ export const CODE_MEMORY_LINK_AGENT_SUITE_ANCHORED_ONLY_HIDDEN_TASKS = 7 as cons
 export const CODE_MEMORY_LINK_AGENT_SUITE_NEGATIVE_CONTROLS = 16 as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_CALIBRATION_TASKS = 2 as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_ANCHORED_DECOY_MEMORIES = 10 as const;
+// Context Brief 4.6 protects a code-linked relationship bundle with a 32-byte memory excerpt.
+export const CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES = 32 as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_PROJECT = 'code-memory-link-gate' as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_USER = 'code-memory-link' as const;
 export const CODE_MEMORY_LINK_AGENT_SUITE_ACCOUNT = 'local' as const;
@@ -241,8 +243,8 @@ export function assertCodeMemoryLinkAgentSuiteCorpusV1(input: CodeMemoryLinkAgen
 
 function hiddenTask(seed: HiddenSeed, calibration: boolean): CodeMemoryLinkAgentSuiteTaskDefinitionV1 {
   const taskId = taskIdFor(seed.slug);
-  const cue = opaqueToken('cue', seed.slug);
-  const answer = opaqueAtom('hidden-value', seed.slug);
+  const cue = shortOpaqueAtom('c', 'cue', seed.slug);
+  const answer = shortOpaqueAtom('v', 'hidden-value', seed.slug);
   const policy = canonicalJson({caseId: taskId, role: 'policy', selected: 'unset', version: 1});
   const result = canonicalJson({caseId: taskId, role: 'result', selected: 'unset', version: 1});
   const auditFiles = Array.from({length: 6}, (_, index) => ({
@@ -261,7 +263,9 @@ function hiddenTask(seed: HiddenSeed, calibration: boolean): CodeMemoryLinkAgent
     `Work only in this synthetic repository. Inspect policy.json first. Call context_brief exactly once with this entire task text, callerCwd set to the repository root, project ${CODE_MEMORY_LINK_AGENT_SUITE_PROJECT}, and codeRefs containing exactly policy.json; omit budgetTokens so the preregistered 1250-token default applies.${lexicalClause} ` +
     'If trustworthy context supplies one opaque key=value activation mapping, copy only the value into result.json selected while preserving its other fields. Never guess or infer a missing value. Code is authoritative wherever it specifies a value. If trustworthy context is absent, read audit/01.json through audit/06.json one at a time in lexical order using separate reads, append one bounded entry to audit.json after each read, leave result.json unchanged, and finish with a concise abstention.';
   const memoryText =
-    seed.retrievalClass === 'lexical' ? `${cue}=${answer}` : `${opaqueAtom('hidden-binding', seed.slug)}=${answer}`;
+    seed.retrievalClass === 'lexical'
+      ? `${cue}=${answer}`
+      : `${shortOpaqueAtom('k', 'hidden-binding', seed.slug)}=${answer}`;
   return {
     answer,
     budget: calibration ? CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET : CODE_MEMORY_LINK_AGENT_SUITE_BUDGET,
@@ -460,6 +464,9 @@ function assertTask(task: CodeMemoryLinkAgentSuiteTaskDefinitionV1): void {
     if (task.retrievalClass === 'lexical' && !task.prompt.includes(task.cue)) {
       invalid(`lexical hidden task omits its public retrieval cue for ${task.slug}`);
     }
+    if (new TextEncoder().encode(primary[0]!.text).byteLength > CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES) {
+      invalid(`hidden mapping exceeds the protected Context Brief excerpt for ${task.slug}`);
+    }
   } else {
     if (task.controlScenario === null || task.retrievalClass !== 'code-authoritative-control') {
       invalid(`negative-control shape differs for ${task.slug}`);
@@ -594,8 +601,8 @@ function opaqueToken(domain: string, seed: string): string {
   return `${domain.replaceAll('-', '_')}_${suiteDigest(domain, seed).slice(0, 24)}`;
 }
 
-function opaqueAtom(domain: string, seed: string): string {
-  return `z${suiteDigest(domain, seed).slice(0, 31)}`;
+function shortOpaqueAtom(prefix: 'c' | 'k' | 'v', domain: string, seed: string): string {
+  return `${prefix}_${suiteDigest(domain, seed).slice(0, 12)}`;
 }
 
 function opaqueId(prefix: 'art' | 'prd' | 'tsk', value: unknown): string {

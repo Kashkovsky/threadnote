@@ -8,6 +8,7 @@ import {recallLexicalTerms} from '../../src/recall/tokenize.js';
 import {
   assertCodeMemoryLinkAgentSuiteCorpusV1,
   CODE_MEMORY_LINK_AGENT_CALIBRATION_BUDGET,
+  CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES,
   CODE_MEMORY_LINK_AGENT_SUITE_ANCHORED_ONLY_HIDDEN_TASKS,
   CODE_MEMORY_LINK_AGENT_SUITE_CALIBRATION_TASKS,
   CODE_MEMORY_LINK_AGENT_SUITE_HIDDEN_TASKS,
@@ -61,7 +62,9 @@ describe('Code Memory Link sealed agent corpus', () => {
 
   it('keeps every hidden answer out of public prompts and repository bytes', () => {
     const corpus = createCodeMemoryLinkAgentSuiteCorpusV1();
-    for (const task of [...corpus.releaseTasks, ...corpus.calibrationTasks]) {
+    const allTasks = [...corpus.releaseTasks, ...corpus.calibrationTasks];
+    const hiddenTasks = allTasks.filter(task => task.taskKind === 'hidden-constraint');
+    for (const task of allTasks) {
       expect(task.prompt).toContain('omit budgetTokens so the preregistered 1250-token default applies');
       if (task.taskKind !== 'hidden-constraint') continue;
       const publicBytes = `${task.prompt}\n${task.publicFiles.map(file => file.content).join('\n')}`;
@@ -70,6 +73,19 @@ describe('Code Memory Link sealed agent corpus', () => {
       expect(primary).toHaveLength(1);
       expect(primary[0]!.citationPath).toBe('policy.json');
     }
+    expect(new Set(hiddenTasks.map(task => task.answer)).size).toBe(hiddenTasks.length);
+    expect(new Set(hiddenTasks.map(task => task.cue)).size).toBe(hiddenTasks.length);
+    fc.assert(
+      fc.property(fc.integer({min: 0, max: hiddenTasks.length - 1}), index => {
+        const task = hiddenTasks[index]!;
+        const mapping = task.memorySeeds.find(seed => seed.role === 'primary')!.text;
+        expect(new TextEncoder().encode(mapping).byteLength).toBeLessThanOrEqual(
+          CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES,
+        );
+        expect(mapping.split('=')).toEqual([expect.stringMatching(/^[ck]_[0-9a-f]{12}$/u), task.answer]);
+      }),
+      {numRuns: 100},
+    );
   });
 
   it('keeps every anchored-only gold mapping lexically disjoint while crowding fallback with inert decoys', () => {
@@ -79,7 +95,9 @@ describe('Code Memory Link sealed agent corpus', () => {
     ].filter(task => task.retrievalClass === 'anchored-only');
     for (const task of anchored) {
       const primary = task.memorySeeds.find(seed => seed.role === 'primary')!;
-      expect(new TextEncoder().encode(primary.text).byteLength).toBeLessThanOrEqual(96);
+      expect(new TextEncoder().encode(primary.text).byteLength).toBeLessThanOrEqual(
+        CODE_MEMORY_LINK_AGENT_SUITE_ACTIONABLE_MEMORY_BYTES,
+      );
       const promptTerms = new Set(recallLexicalTerms(task.prompt));
       expect(recallLexicalTerms(primary.text).filter(term => promptTerms.has(term))).toEqual([]);
       const decoys = task.memorySeeds.filter(seed => seed.role === 'decoy');
