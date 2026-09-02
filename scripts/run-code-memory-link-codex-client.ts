@@ -319,7 +319,7 @@ export async function runCodeMemoryLinkCodexExecutionTask(
     }
     if (
       projection.adjudicationHash !== judge.judgment.adjudicationHash ||
-      projection.taskPassed !== judge.judgment.taskPassed
+      projection.taskPassed !== (judge.judgment.taskPassed && projection.contextBriefProtocolAdhered)
     ) {
       throw new Error('Retained app-server evidence differs from the independent static judgment.');
     }

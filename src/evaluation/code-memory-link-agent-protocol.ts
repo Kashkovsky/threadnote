@@ -220,6 +220,7 @@ export interface CodeMemoryLinkCodexAppServerProjectionV1 {
   readonly adjudicationHash: string;
   readonly appServerVersion: typeof CODE_MEMORY_LINK_CODEX_APP_SERVER_VERSION;
   readonly contextBriefCalls: readonly contextBriefProtocol.CodeMemoryLinkCodexContextBriefCallProjectionV1[];
+  readonly contextBriefProtocolAdhered: boolean;
   readonly constraintAdherence: {readonly satisfied: number; readonly total: number};
   readonly effectiveModel: string;
   readonly evidenceHash: string;
@@ -1091,15 +1092,13 @@ function normalizeCodexEvidence(
   const checkpoints = parseEvidenceCheckpoints(evidence.checkpoints);
   const approvalReceipts = parseApprovalReceipts(evidence.approvalReceipts);
   const runBindingHash = matchingHash(evidence.runBindingHash, 'run binding');
-  const successfulCalls = checkpoints.filter(
+  const completedCalls = checkpoints.filter(
     checkpoint => checkpoint.method === 'item/completed' && checkpoint.itemType === 'mcpToolCall',
   );
-  if (successfulCalls.length !== 1 || successfulCalls[0]!.succeeded !== true) {
-    invalid('retained release trace requires exactly one successful Context Brief call');
-  }
-  const proxyReceipt = successfulCalls[0]!.proxyReceipt;
-  if (!proxyReceipt || proxyReceipt.runBindingHash !== runBindingHash) {
-    invalid('Context Brief proxy receipt does not match the retained run binding');
+  for (const call of completedCalls) {
+    if (call.succeeded && call.proxyReceipt?.runBindingHash !== runBindingHash) {
+      invalid('Context Brief proxy receipt does not match the retained run binding');
+    }
   }
   const publicActions = checkpoints.flatMap(checkpoint =>
     checkpoint.method === 'item/completed' &&
@@ -1688,6 +1687,7 @@ function deriveProjectionFromEvidence(
   if (useful && !usage.some(entry => entry.step > useful.associatedStep)) {
     invalid('a useful Context Brief call must be followed by a later provider inference');
   }
+  const contextBriefProtocolAdhered = callProjections.length === 1 && callProjections[0]!.succeeded;
   const itemCounts = Object.fromEntries(ALLOWED_ITEM_TYPES.map(type => [type, 0])) as Record<AllowedItemType, number>;
   for (const item of completed) itemCounts[item.type] += 1;
   const providerUsageHash = protocolDigest('provider-usage', {
@@ -1700,6 +1700,7 @@ function deriveProjectionFromEvidence(
     adjudicationHash: judgment.adjudicationHash,
     appServerVersion: evidence.appServerVersion,
     contextBriefCalls: callProjections,
+    contextBriefProtocolAdhered,
     constraintAdherence: judgment.constraintAdherence,
     effectiveModel: evidence.effectiveModel,
     evidenceHash: evidence.evidenceHash,
@@ -1711,7 +1712,7 @@ function deriveProjectionFromEvidence(
     providerUsageHash,
     proxyToolDigest: evidence.proxyToolDigest,
     reasoningEffortDigest: evidence.reasoningEffortDigest,
-    taskPassed: judgment.taskPassed,
+    taskPassed: judgment.taskPassed && contextBriefProtocolAdhered,
     threadIdDigest: evidence.threadIdDigest,
     totalTaskUsage: {steps: lastUsage.step, tokens: lastUsage.total.totalTokens},
     turnIdDigest: evidence.turnIdDigest,
@@ -1719,7 +1720,6 @@ function deriveProjectionFromEvidence(
   } satisfies Omit<CodeMemoryLinkCodexAppServerProjectionV1, 'projectionHash'>;
   return {...withoutHash, projectionHash: protocolDigest('codex-app-server-projection', withoutHash)};
 }
-
 function qualifyingActionFromEvidence(
   completed: readonly {
     readonly digest: string;

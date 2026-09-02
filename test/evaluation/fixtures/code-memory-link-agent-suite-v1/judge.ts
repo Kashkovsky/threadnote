@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) fail('repository must be a non-symlink directory');
   const canonicalRoot = await realpath(requestedRoot);
 
-  const result = await readRequiredSyntheticJson(canonicalRoot, 'result.json');
+  const result = await readResultJson(canonicalRoot, options.taskId);
   const artifacts = [artifact(options.taskId, 'result.json', result)];
   if (options.guardRequired) {
     artifacts.push(artifact(options.taskId, 'guard.json', await readGuardJson(canonicalRoot, options.taskId)));
@@ -90,6 +90,25 @@ async function readGuardJson(root: string, taskId: string): Promise<unknown> {
     if (isMissing(cause)) return guardFailure(taskId, 'missing');
     return guardFailure(taskId, 'invalid');
   }
+}
+
+async function readResultJson(root: string, taskId: string): Promise<unknown> {
+  try {
+    return await readRequiredSyntheticJson(root, 'result.json');
+  } catch (cause) {
+    if (isMissing(cause)) return resultFailure(taskId, 'missing');
+    if (isInvalidResultContent(cause)) return resultFailure(taskId, 'invalid');
+    throw cause;
+  }
+}
+
+function resultFailure(taskId: string, state: 'invalid' | 'missing'): unknown {
+  return {caseId: taskId, role: 'result', state, version: 1};
+}
+
+function isInvalidResultContent(cause: unknown): boolean {
+  if (!(cause instanceof Error)) return false;
+  return /^Code Memory Link static judge: result\.json (?:contains|exceeds|must contain)/u.test(cause.message);
 }
 
 function guardFailure(taskId: string, state: 'invalid' | 'missing'): unknown {
