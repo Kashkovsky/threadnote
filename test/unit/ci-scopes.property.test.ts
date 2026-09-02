@@ -86,6 +86,7 @@ describe('CI changed-path scope properties', () => {
 
   it('maps representative repository paths to the expected expensive scopes', () => {
     expect(enabledScopes(['test/unit/utils.test.ts'])).toEqual(['code']);
+    expect(enabledScopes(['test/unit/command-shim.test.ts'])).toEqual(['code', 'release', 'windows']);
     expect(enabledScopes(['src/installations.ts'])).toEqual(['code', 'release', 'windows']);
     expect(enabledScopes(['src/recall/index.ts'])).toEqual(['code', 'quality', 'release', 'windows']);
     expect(enabledScopes(['src/context_brief/citation_validation.ts'])).toEqual([

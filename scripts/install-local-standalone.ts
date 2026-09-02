@@ -2,7 +2,13 @@ import {provideScriptLayer, ScriptError} from './effect/errors.js';
 import * as BunRuntime from '@effect/platform-bun/BunRuntime';
 import * as BunServices from '@effect/platform-bun/BunServices';
 import {Cause, Console, Crypto, Effect, Exit, FileSystem, Layer, Option, Path} from 'effect';
-import {commandLauncherPath, installCommandShim, renderCommandShim} from '../src/command-shim.js';
+import {
+  commandLauncherPath,
+  installCommandShim,
+  managedCommandLauncherKinds,
+  primaryCommandLauncherKind,
+  renderCommandShim,
+} from '../src/command-shim.js';
 import {CommandExecutor, runCommandEffect} from '../src/effect/command.js';
 import {captureConsole} from '../src/effect/console.js';
 import {sha256FileHex, sha256Hex} from '../src/effect/digest.js';
@@ -403,17 +409,26 @@ export const activateLocalStandaloneRelease = Effect.fn('developmentInstall.acti
           new ScriptError('The installed development executable did not complete doctor verification.'),
         );
       }
-      return yield* Effect.all([
-        captureFileSnapshot(fs, yield* commandLauncherPath('cli'), 'CLI launcher', 0o755),
-        captureFileSnapshot(fs, yield* commandLauncherPath('mcp'), 'MCP launcher', 0o755),
-        captureFileSnapshot(fs, path.join(installRoot, 'active-release.json'), 'active release pointer', 0o600),
-        captureFileSnapshot(
+      const managedFileSnapshots: LocalFileSnapshot[] = [];
+      for (const mode of ['cli', 'mcp'] as const) {
+        for (const kind of managedCommandLauncherKinds(system.platform)) {
+          managedFileSnapshots.push(
+            yield* captureFileSnapshot(fs, yield* commandLauncherPath(mode, kind), `${mode} ${kind} launcher`, 0o755),
+          );
+        }
+      }
+      managedFileSnapshots.push(
+        yield* captureFileSnapshot(fs, path.join(installRoot, 'active-release.json'), 'active release pointer', 0o600),
+      );
+      managedFileSnapshots.push(
+        yield* captureFileSnapshot(
           fs,
           path.join(installRoot, DEVELOPMENT_RUNTIME_OWNER_FILE),
           'development runtime owner',
           0o600,
         ),
-      ]);
+      );
+      return managedFileSnapshots;
     }).pipe(
       Effect.catchCause(validationCause =>
         promotedByThisInstall
@@ -831,22 +846,32 @@ const verifyLaunchers = Effect.fn('developmentInstall.verifyLaunchers')(function
   const system = yield* SystemInfo;
   let cliLauncher = '';
   for (const mode of ['cli', 'mcp'] as const) {
-    const [launcher, expected] = yield* Effect.all([commandLauncherPath(mode), renderCommandShim(releaseRoot, mode)]);
-    const actual = yield* fs.readFileString(launcher);
-    if (actual !== expected) {
-      return yield* Effect.fail(
-        new ScriptError(`The managed ${mode} launcher did not activate the development release.`),
-      );
-    }
-    if (system.platform !== 'win32') {
-      const info = yield* fs.stat(launcher);
-      if ((info.mode & 0o777) !== 0o755) yield* fs.chmod(launcher, 0o755);
-      const repaired = yield* fs.stat(launcher);
-      if ((repaired.mode & 0o777) !== 0o755) {
-        return yield* Effect.fail(new ScriptError(`The managed ${mode} launcher does not have safe executable mode.`));
+    for (const kind of managedCommandLauncherKinds(system.platform)) {
+      const [launcher, expected] = yield* Effect.all([
+        commandLauncherPath(mode, kind),
+        renderCommandShim(releaseRoot, mode, kind),
+      ]);
+      const actual = yield* fs.readFileString(launcher);
+      if (actual !== expected) {
+        return yield* Effect.fail(
+          new ScriptError(`The managed ${mode} ${kind} launcher did not activate the development release.`),
+        );
       }
+      if (system.platform !== 'win32') {
+        const info = yield* fs.stat(launcher);
+        if ((info.mode & 0o777) !== 0o755) yield* fs.chmod(launcher, 0o755);
+        const repaired = yield* fs.stat(launcher);
+        if ((repaired.mode & 0o777) !== 0o755) {
+          return yield* Effect.fail(
+            new ScriptError(`The managed ${mode} ${kind} launcher does not have safe executable mode.`),
+          );
+        }
+      }
+      if (mode === 'cli' && kind === primaryCommandLauncherKind(system.platform)) cliLauncher = launcher;
     }
-    if (mode === 'cli') cliLauncher = launcher;
+  }
+  if (cliLauncher === '') {
+    return yield* Effect.fail(new ScriptError('No primary CLI launcher was verified for this platform.'));
   }
   const version = yield* runCommandEffect(cliLauncher, ['--version'], {
     env: {...system.environment(), THREADNOTE_INSTALL_ROOT: installationRoot(path, system)},

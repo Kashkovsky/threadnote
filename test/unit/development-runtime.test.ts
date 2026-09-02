@@ -1488,7 +1488,7 @@ describe('exact-head development runtime', () => {
         }),
       ).pipe(provideTestLayer(ApplicationLayer));
 
-      expect(result.failure).toContain('managed mcp launcher did not activate');
+      expect(result.failure).toContain('managed mcp posix launcher did not activate');
       expect(result.activePointer).toBe(result.priorPointer);
       expect(result.cli).toBe(result.priorCli);
       expect(result.mcp).toBe('unmanaged launcher\n');
