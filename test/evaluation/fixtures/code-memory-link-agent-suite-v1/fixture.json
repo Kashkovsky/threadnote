@@ -1,7 +1,7 @@
 {
   "anchoredOnlyHiddenTasks": 7,
   "calibrationTasks": 2,
-  "calibrationCorpusHash": "ed891605291a4927fa056bbf414e454d49b27e0ebb1ab3d04029726b2aa461e4",
+  "calibrationCorpusHash": "d06550c7817c99f936acbeb6420694481c4914d3966b265ef339da25b07a6086",
   "controlScenarios": [
     "ambiguous",
     "archived",
@@ -15,7 +15,7 @@
     "stale-changed",
     "superseded"
   ],
-  "corpusHash": "6972b06209c49bbe2f702c93bbbe94835c3406bccdd9a3ac0fe6e362d36effd9",
+  "corpusHash": "42a9fced947e1301750ec08743eea40155352c12639137105b7c2506e2da8065",
   "hiddenTasks": 12,
   "instructionInjectionControls": 2,
   "lexicalHiddenTasks": 5,
