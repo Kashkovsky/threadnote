@@ -67,6 +67,7 @@ interface CalibrationDiagnosticV1 {
   readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly fileChangeStarted: boolean;
   readonly firstUsefulMemoryUse: boolean;
+  readonly finalResultState: 'changed-incorrectly' | 'expected' | 'missing' | 'unchanged' | null;
   readonly kind: typeof CODE_MEMORY_LINK_CALIBRATION_KIND;
   readonly planHash: string;
   readonly runOrder: number;
@@ -199,7 +200,7 @@ async function main(): Promise<void> {
       rubric: task.rubric,
       taskPacket: task.packet,
     });
-    diagnostic = completedDiagnostic(environment, output);
+    diagnostic = completedDiagnostic(environment, output, plan);
   } catch (cause) {
     diagnostic = terminalDiagnostic(environment, cause);
   }
@@ -226,6 +227,7 @@ async function main(): Promise<void> {
 function completedDiagnostic(
   environment: CalibrationEnvironment,
   output: Awaited<ReturnType<typeof runCodeMemoryLinkCodexExecutionTask>>,
+  plan: CodeMemoryLinkCalibrationPlanV1,
 ): CalibrationDiagnosticV1 {
   const projection = deriveCodeMemoryLinkCodexAppServerProjectionV1({
     evidence: output.rawEvidence.appServer,
@@ -241,6 +243,7 @@ function completedDiagnostic(
     eventSummary: null,
     fileChangeStarted: output.rawEvidence.appServer.qualifyingActionItemId !== null,
     firstUsefulMemoryUse: projection.firstUsefulMemoryUse !== null,
+    finalResultState: classifyFinalResult(plan, environment.taskId, output.rawEvidence.finalPublicArtifacts),
     status: 'completed',
     taskPassed: projection.taskPassed,
     terminalKind: null,
@@ -259,11 +262,39 @@ function terminalDiagnostic(environment: CalibrationEnvironment, cause: unknown)
     eventSummary,
     fileChangeStarted: (eventSummary?.startedItems.fileChange ?? 0) > 0,
     firstUsefulMemoryUse: false,
+    finalResultState: null,
     status: 'terminal',
     taskPassed: null,
     terminalKind: classifyCodeMemoryLinkCodexTerminal(cause),
     totalTaskUsage: eventSummary?.totalTaskUsage ?? null,
   });
+}
+
+function classifyFinalResult(
+  plan: CodeMemoryLinkCalibrationPlanV1,
+  taskId: string,
+  finalArtifacts: readonly {readonly contentSha256: string; readonly pathDigest: string}[],
+): Exclude<CalibrationDiagnosticV1['finalResultState'], null> {
+  const mapping = plan.fixtureFiles.find(
+    entry => entry.taskId === taskId && entry.scope === 'repository' && entry.destination === 'result.json',
+  );
+  if (!mapping) throw new Error('Calibration task has no result.json fixture mapping.');
+  const initial = plan.fixture.artifacts.find(artifact => artifact.artifactId === mapping.artifactId);
+  if (!initial) throw new Error('Calibration result.json fixture artifact is missing.');
+  const final = finalArtifacts.find(
+    artifact => artifact.pathDigest === sha256HexSync('threadnote-code-memory-link-public-path-v1\0result.json'),
+  );
+  if (!final) return 'missing';
+  const task = plan.tasks.find(candidate => candidate.packet.taskId === taskId);
+  const resultPredicate = task?.rubric.predicates.find(
+    predicate => predicate.roles.includes('task-pass') && predicate.assertion.kind === 'json-equals',
+  );
+  if (!resultPredicate || resultPredicate.assertion.kind !== 'json-equals') {
+    throw new Error('Calibration task has no JSON result predicate.');
+  }
+  const expectedHash = sha256HexSync(`${JSON.stringify(resultPredicate.assertion.expected)}\n`);
+  if (final.contentSha256 === expectedHash) return 'expected';
+  return final.contentSha256 === initial.sha256 ? 'unchanged' : 'changed-incorrectly';
 }
 
 async function calibrationFixture(
@@ -313,6 +344,7 @@ function sealDiagnostic(input: {
   readonly eventSummary: CodeMemoryLinkCodexTerminalDiagnosticsV1 | null;
   readonly fileChangeStarted: boolean;
   readonly firstUsefulMemoryUse: boolean;
+  readonly finalResultState: CalibrationDiagnosticV1['finalResultState'];
   readonly status: 'completed' | 'terminal';
   readonly taskPassed: boolean | null;
   readonly terminalKind: string | null;
@@ -328,6 +360,7 @@ function sealDiagnostic(input: {
     eventSummary: input.eventSummary,
     fileChangeStarted: input.fileChangeStarted,
     firstUsefulMemoryUse: input.firstUsefulMemoryUse,
+    finalResultState: input.finalResultState,
     kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
     planHash: input.environment.planHash,
     runOrder: input.environment.runOrder,
@@ -412,6 +445,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
     'eventSummary',
     'fileChangeStarted',
     'firstUsefulMemoryUse',
+    'finalResultState',
     'kind',
     'planHash',
     'runOrder',
@@ -438,6 +472,11 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
       diagnostic.contextBriefResponseClass !== 'empty-v1') ||
     typeof diagnostic.fileChangeStarted !== 'boolean' ||
     typeof diagnostic.firstUsefulMemoryUse !== 'boolean' ||
+    (diagnostic.finalResultState !== null &&
+      diagnostic.finalResultState !== 'changed-incorrectly' &&
+      diagnostic.finalResultState !== 'expected' &&
+      diagnostic.finalResultState !== 'missing' &&
+      diagnostic.finalResultState !== 'unchanged') ||
     (diagnostic.taskPassed !== null && typeof diagnostic.taskPassed !== 'boolean') ||
     (diagnostic.terminalKind !== null && typeof diagnostic.terminalKind !== 'string')
   ) {
@@ -454,6 +493,7 @@ function parseDiagnostic(value: unknown): CalibrationDiagnosticV1 {
     eventSummary: parseEventSummary(diagnostic.eventSummary),
     fileChangeStarted: diagnostic.fileChangeStarted,
     firstUsefulMemoryUse: diagnostic.firstUsefulMemoryUse,
+    finalResultState: diagnostic.finalResultState,
     kind: CODE_MEMORY_LINK_CALIBRATION_KIND,
     planHash: matching(diagnostic.planHash, HASH, 'diagnostic plan hash'),
     runOrder: integer(diagnostic.runOrder, 'diagnostic run order'),
