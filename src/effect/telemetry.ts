@@ -50,6 +50,7 @@ export const ANONYMOUS_TELEMETRY_PHASES = [
   'recall.obsidian-sync',
   'recall.semantic-retrieval',
   'recall.shared-sync',
+  'recall.workspace-context',
   'storage.reading',
   'storage.writing',
 ] as const;

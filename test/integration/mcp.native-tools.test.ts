@@ -900,6 +900,7 @@ describe('Threadnote MCP toolsets', () => {
 
         expect(phaseTimings?.filter(timing => timing.phase === 'recall.shared-sync')).toHaveLength(1);
         expect(phaseTimings?.filter(timing => timing.phase === 'recall.obsidian-sync')).toHaveLength(1);
+        expect(phaseTimings?.filter(timing => timing.phase === 'recall.workspace-context')).toHaveLength(1);
         expect(phaseTimings?.filter(timing => timing.phase === 'recall.semantic-retrieval')).toHaveLength(1);
         expect(phaseTimings?.filter(timing => timing.phase === 'recall.lexical-ranking').length).toBeGreaterThanOrEqual(
           1,
