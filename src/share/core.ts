@@ -833,11 +833,12 @@ const isRegularFileNoSymlink = Effect.fn('share.isRegularFileNoSymlink')(functio
 /**
  * Removes personal lifecycle, candidate, session, evidence, and relation
  * provenance from the header block before a memory is published to a team's
- * shared git repo. Callers that already validated a shared write may retain only
- * stable identity-alias relation headers. Personal threadnote:// URIs do not
- * resolve for teammates, and candidate/session IDs are local workflow state.
- * Defence-in-depth: even if a producer accidentally retains local provenance,
- * it stops here.
+ * shared git repo. Shared writers must call
+ * `stripPersonalProvenanceForSharedPublication` so already-valid
+ * `threadnote://memory/tn_...` relation headers survive. Personal
+ * `threadnote://user/...` URIs do not resolve for teammates, and
+ * candidate/session IDs are local workflow state. Defence-in-depth: even if a
+ * producer accidentally retains local provenance, it stops here.
  *
  * Operates only on the contiguous header block (everything up to the first
  * blank line). Prose mentions of "supersedes:" elsewhere in the body are
@@ -871,6 +872,11 @@ export function stripPersonalProvenance(
     cleaned.push(lines[index]);
   }
   return stripGeneratedMemoryHygieneSources(cleaned.join('\n'));
+}
+
+/** Shared publication, ingest, and replace: keep identity-alias relations, drop local projection URIs. */
+export function stripPersonalProvenanceForSharedPublication(content: string): string {
+  return stripPersonalProvenance(content, {preserveStableMemoryRelations: true});
 }
 
 function isStableMemoryRelationHeader(line: string): boolean {
@@ -1067,9 +1073,7 @@ const prepareSharedInboundContentEffect = Effect.fn('share.prepareSharedInboundC
 });
 
 function prepareSharedInboundContent(uri: string, rawContent: string): string {
-  const stripped = stripPersonalProvenance(canonicalMemoryDocumentContent(rawContent), {
-    preserveStableMemoryRelations: true,
-  });
+  const stripped = stripPersonalProvenanceForSharedPublication(canonicalMemoryDocumentContent(rawContent));
   const citationBlocker = memoryCodeCitationContentSharingBlocker(uri, stripped);
   if (citationBlocker) {
     throw new ShareOperationError(

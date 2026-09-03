@@ -81,7 +81,7 @@ import {
   rm,
   setMemoryVisibility,
   sharedUriFor,
-  stripPersonalProvenance,
+  stripPersonalProvenanceForSharedPublication,
   workfileToResourceUri,
   writeFile,
   writeMemoryFile,
@@ -116,7 +116,7 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
       `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
     );
   }
-  const stripped = setMemoryVisibility(stripPersonalProvenance(rawContent), 'shared');
+  const stripped = setMemoryVisibility(stripPersonalProvenanceForSharedPublication(rawContent), 'shared');
   const scrub = applyScrubber(stripped, {redact: options.redact === true});
   const targetUri = sharedUriFor(config, sourceUri, team.name);
 
@@ -154,9 +154,12 @@ export const runSharePublish = Effect.fn('share.runSharePublish')(function* (
         `Refusing to publish ${sourceUri}: ${memoryCodeCitationSharingBlockerMessage(currentCitationBlocker)}.`,
       );
     }
-    const currentScrub = applyScrubber(setMemoryVisibility(stripPersonalProvenance(currentRawContent), 'shared'), {
-      redact: options.redact === true,
-    });
+    const currentScrub = applyScrubber(
+      setMemoryVisibility(stripPersonalProvenanceForSharedPublication(currentRawContent), 'shared'),
+      {
+        redact: options.redact === true,
+      },
+    );
     if (currentScrub.blocker) {
       throw new ShareOperationError(
         `Refusing to publish ${sourceUri}: possible ${currentScrub.blocker}. Strip the sensitive value or pass --redact for soft-leak patterns.`,

@@ -19,7 +19,7 @@ import {
   applyScrubber,
   sharedMemoryUriParts,
   sharedTeamNameForUri,
-  stripPersonalProvenance,
+  stripPersonalProvenanceForSharedPublication,
   resourceUriToWorktreeRelative,
   setMemoryVisibility,
   sharedUriFor,
@@ -872,7 +872,7 @@ const writeSharedMemoryReplacement = Effect.fn('mcp_server.writeSharedMemoryRepl
       `Refusing to update shared memory ${targetUri}: ${memoryCodeCitationSharingBlockerMessage(citationBlocker)}.`,
     );
   }
-  const scrub = applyScrubber(stripPersonalProvenance(rawMemory, {preserveStableMemoryRelations: true}), {
+  const scrub = applyScrubber(stripPersonalProvenanceForSharedPublication(rawMemory), {
     redact: false,
   });
   if (scrub.blocker) {
