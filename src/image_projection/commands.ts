@@ -20,7 +20,7 @@ export const runImageProjectionCommand = Effect.fn('imageProjection.command')(fu
   options: ImageProjectionCommandOptions,
 ) {
   if (options.enable && options.disable) {
-    return yield* Effect.fail(applicationError('image-projection', 'Specify only one of --enable or --disable.'));
+    return yield* applicationError('image-projection', 'Specify only one of --enable or --disable.');
   }
   if (options.enable) {
     yield* writeImageProjectionConfiguration(config, imageProjectionConfiguration(true)).pipe(

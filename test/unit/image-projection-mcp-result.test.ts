@@ -131,7 +131,7 @@ describe('image projection MCP results', () => {
         yield* writeImageProjectionConfiguration(config, imageProjectionConfiguration(false));
         const disabled = yield* tryProjectMemoryReadAsImages({
           config,
-          render: () => Effect.die(new TestError('render must not run when projection is disabled')),
+          render: () => Effect.die(TestError.make({message: 'render must not run when projection is disabled'})),
           resources: [large],
         });
         expect(disabled).toBeUndefined();

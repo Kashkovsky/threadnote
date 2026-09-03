@@ -163,7 +163,7 @@ export const tryProjectMemoryReadAsImages = Effect.fn('imageProjection.tryProjec
   const source = imageProjectionSourceText(input.resources).trim();
   if (source.length === 0) return undefined;
   const rendered = yield* (input.render ?? renderMemoryTextToImages)(source).pipe(
-    Effect.catch(() => Effect.succeed(undefined)),
+    Effect.orElseSucceed(() => undefined),
   );
   if (rendered === undefined || rendered.droppedChars > IMAGE_PROJECTION_MAX_DROPPED_CHARS) return undefined;
   return buildImageProjectedReadResult({
